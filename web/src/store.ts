@@ -40,8 +40,11 @@ interface State {
   open: Record<string, OpenSession>; // sessionId -> transcript
   selected?: string; // sessionId
   toasts: Toast[];
+  /** the mobile drawer */
   sidebarOpen: boolean;
-  dialog?: "new" | "addProject" | "settings";
+  /** desktop: sidebar collapsed to focus on one session */
+  sidebarHidden: boolean;
+  dialog?: "new" | "addProject" | "settings" | "notify";
   newSessionProject?: string;
   usage?: UsageReport;
   /** recent notifications from the runner (newest first), for the bell */
@@ -62,6 +65,7 @@ export const useStore = create<State>(() => ({
   open: {},
   toasts: [],
   sidebarOpen: false,
+  sidebarHidden: loadJSON("tether.sidebarHidden", false),
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
@@ -318,12 +322,44 @@ async function doLoad(sessionId: string) {
   }
 }
 
+// Links carry only the harness's own session id ("<harness>:" is dropped); this device remembers
+// which harness each one belongs to, and otherwise the projects are searched for it.
+const linkId = (sessionId: string) => sessionId.slice(sessionId.indexOf(":") + 1);
+
+function rememberLink(sessionId: string) {
+  const links = loadJSON<Record<string, string>>("tether.links", {});
+  if (links[linkId(sessionId)] === sessionId) return;
+  links[linkId(sessionId)] = sessionId;
+  localStorage.setItem("tether.links", JSON.stringify(Object.fromEntries(Object.entries(links).slice(-500))));
+}
+
+/** Opens a session from a link: a full id, or just the harness's own id. */
+export async function openLink(id: string) {
+  if (id.includes(":")) return selectSession(id);
+  const known = loadJSON<Record<string, string>>("tether.links", {})[id];
+  if (known) return selectSession(known);
+  if (!get().projectsLoaded)
+    await new Promise<void>((res) => {
+      const unsub = useStore.subscribe((s) => s.projectsLoaded && (unsub(), res()));
+    });
+  const find = () => Object.values(get().sessions).flat().find((x) => linkId(x.id) === id)?.id;
+  let full = find();
+  for (const p of get().projects) {
+    if (full) break;
+    await refreshSessions(p.path);
+    full = find();
+  }
+  if (full) selectSession(full);
+  else toast("error", "That session wasn't found on this runner.");
+}
+
 export function selectSession(sessionId: string | undefined) {
   set({ selected: sessionId, sidebarOpen: false });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
     if (!get().open[sessionId]) loadSession(sessionId);
-    history.replaceState(null, "", `#/s/${encodeURIComponent(sessionId)}`);
+    rememberLink(sessionId);
+    history.replaceState(null, "", `#/s/${encodeURIComponent(linkId(sessionId))}`);
   } else history.replaceState(null, "", "#/");
 }
 
@@ -397,6 +433,14 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
   }
 }
 
-export function requestNotifications() {
-  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+/** Below Astryx's md breakpoint the sidebar is a drawer. */
+export const NARROW_QUERY = "(max-width: 767px)";
+export const isNarrow = () => window.matchMedia(NARROW_QUERY).matches;
+
+/** Opens/closes the drawer on phones; collapses/expands the sidebar on wider screens. */
+export function toggleSidebar() {
+  if (isNarrow()) return set((s) => ({ sidebarOpen: !s.sidebarOpen }));
+  const sidebarHidden = !useStore.getState().sidebarHidden;
+  localStorage.setItem("tether.sidebarHidden", JSON.stringify(sidebarHidden));
+  set({ sidebarHidden });
 }

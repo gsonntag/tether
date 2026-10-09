@@ -77,7 +77,7 @@ class AgySession extends LiveSession {
     if (this.effort) args.push("--effort", this.effort);
     // Guard: "full" skips approvals; "auto" fences commands in agy's sandbox (project read-write,
     // no network, secrets hidden) and lets the guard decide each call through the PreToolUse
-    // hook; "ask" sends each call to a person through the same hook.
+    // hook; "ask"/"edits" send each call to a person through the same hook.
     const guard = this.guardMode;
     if (guard === "full" || this.mode === "bypassPermissions") args.push("--dangerously-skip-permissions");
     if (guard === "auto") args.push("--sandbox");

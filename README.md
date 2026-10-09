@@ -34,7 +34,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   drag, switch or cancel them until then:
   - Messages leave from the top. A steer at the top goes into the running turn after a 5-second
     grace period. A queued message holds back everything below it until the turn ends.
-  - When the turn ends, everything still waiting goes in together as one message.
+  - Queued messages go out one per turn, in order. A steer below a queued message goes into that
+    message's turn once it starts.
   - ↑ in an empty composer pulls all waiting messages back into the box.
   - Stop keeps waiting messages, held until you send them.
   - A steer the agent already has can't be taken back. Editing it sends a correction.

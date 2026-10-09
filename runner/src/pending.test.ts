@@ -73,7 +73,7 @@ describe("pending messages", () => {
     expect(s.t.state.amendable?.length).toBe(1);
   });
 
-  test("a queued message blocks steers behind it; at turn end everything goes as one turn", async () => {
+  test("a queued message blocks steers behind it; they steer into the turn it starts", async () => {
     const { s, log, texts } = fake();
     await s.prompt("go");
     await s.prompt("later", "followUp");
@@ -81,8 +81,69 @@ describe("pending messages", () => {
     await tick();
     expect(texts()).toEqual(["followUp:later", "steer:steer"]);
     await (s as any).endTurn();
-    expect(log).toEqual(["turn: go", "turn: later\n\nsteer"]);
+    expect(log).toEqual(["turn: go", "turn: later"]);
+    expect(texts()).toEqual(["steer:steer"]);
+    await tick();
+    expect(log).toEqual(["turn: go", "turn: later", "steer: steer"]);
+    expect(texts()).toEqual([]);
+  });
+
+  test("queued messages go one per turn, in order", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("one", "followUp");
+    await s.prompt("two", "followUp");
+    await s.prompt("three", "followUp");
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "turn: one"]);
+    expect(texts()).toEqual(["followUp:two", "followUp:three"]);
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "turn: one", "turn: two"]);
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "turn: one", "turn: two", "turn: three"]);
+    await (s as any).endTurn();
+    expect(s.t.state.status).toBe("idle");
     expect(s.t.state.amendable).toBeUndefined();
+  });
+
+  test("steers between queued messages wait for their turn", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("q1", "followUp");
+    await s.prompt("s1", "steer");
+    await s.prompt("q2", "followUp");
+    await s.prompt("s2", "steer");
+    await tick();
+    expect(log).toEqual(["turn: go"]);
+    await (s as any).endTurn();
+    await tick();
+    expect(log).toEqual(["turn: go", "turn: q1", "steer: s1"]);
+    expect(texts()).toEqual(["followUp:q2", "steer:s2"]);
+    await (s as any).endTurn();
+    await tick();
+    expect(log).toEqual(["turn: go", "turn: q1", "steer: s1", "turn: q2", "steer: s2"]);
+  });
+
+  test("a steer with nothing queued above it doesn't wait for the turn to end", async () => {
+    const { s, log } = fake();
+    await s.prompt("go");
+    await s.prompt("s", "steer");
+    await s.prompt("q", "followUp");
+    await tick();
+    expect(log).toEqual(["turn: go", "steer: s"]);
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "steer: s", "turn: q"]);
+  });
+
+  test("steers left at the top when a turn ends go as their own turn, before the queue", async () => {
+    const { s, log } = fake({ steers: false });
+    await s.prompt("go");
+    await s.prompt("a", "steer");
+    await s.prompt("q", "followUp");
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "turn: a"]);
+    await (s as any).endTurn();
+    expect(log).toEqual(["turn: go", "turn: a", "turn: q"]);
   });
 
   test("dragging a steer above a queued message lets it go", async () => {
@@ -137,13 +198,32 @@ describe("pending messages", () => {
     expect(s.t.state.pendingHeld).toBeUndefined();
   });
 
-  test("a new message after Stop goes with the held ones", async () => {
-    const { s, log } = fake();
+  test("Stop, then send now on one of several held messages: it goes first, the rest one at a time", async () => {
+    const { s, log, texts } = fake();
     await s.prompt("go");
-    await s.prompt("held", "followUp");
+    await s.prompt("one", "followUp");
+    await s.prompt("two", "followUp");
     await s.stop();
-    await s.prompt("new");
-    expect(log.at(-1)).toBe("turn: held\n\nnew");
+    await s.editPending(s.t.state.pending![1]!.id, { now: true });
+    expect(log).toEqual(["turn: go", "abort", "turn: two"]);
+    expect(texts()).toEqual(["followUp:one"]);
+    await (s as any).endTurn();
+    expect(log.at(-1)).toBe("turn: one");
+  });
+
+  test("a new message after Stop releases the held ones and joins the bottom", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("held1", "followUp");
+    await s.prompt("held2", "followUp");
+    await s.stop();
+    await s.prompt("new", "followUp");
+    expect(log.at(-1)).toBe("turn: held1");
+    expect(texts()).toEqual(["followUp:held2", "followUp:new"]);
+    expect(s.t.state.pendingHeld).toBeUndefined();
+    await (s as any).endTurn();
+    await (s as any).endTurn();
+    expect(log.slice(-3)).toEqual(["turn: held1", "turn: held2", "turn: new"]);
   });
 
   test("↑ takes everything pending back", async () => {

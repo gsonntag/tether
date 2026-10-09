@@ -14,8 +14,8 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import { config } from "./config";
 
-export type GuardMode = "ask" | "auto" | "full";
-export const GUARD_MODES: GuardMode[] = ["ask", "auto", "full"];
+export type GuardMode = "ask" | "edits" | "auto" | "full";
+export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
 
 export interface ToolCall {
   tool: string;
@@ -45,7 +45,7 @@ const KINDS: [RegExp, Kind][] = [
   [/^browser_/i, "browser"],
 ];
 
-function kindOf(tool: string): Kind {
+export function kindOf(tool: string): Kind {
   for (const [re, k] of KINDS) if (re.test(tool)) return k;
   return "other";
 }

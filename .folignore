@@ -7,3 +7,4 @@ web/dist/
 .env
 .env.*
 *.log
+.claude/

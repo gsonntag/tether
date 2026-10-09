@@ -475,7 +475,7 @@ class ClaudeSession extends LiveSession {
       const id = newId("q");
       signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
       // Unattended (auto/full guard): don't stall forever on a question nobody is there to answer.
-      const timeout = this.guardMode === "ask" ? undefined : 15 * 60_000;
+      const timeout = this.guardMode === "ask" || this.guardMode === "edits" ? undefined : 15 * 60_000;
       const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, timeout);
       if (res.cancelled || !res.answers)
         return { behavior: "deny", message: "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue." };
@@ -520,6 +520,11 @@ class ClaudeSession extends LiveSession {
     await this.q?.setPermissionMode(mode as any);
     this.setState({ permissionMode: mode });
   }
+
+  // The guard decides approvals; a mode from Claude's settings (acceptEdits, …) would skip it.
+  protected onGuardChanged = () => {
+    if (this.t.state.permissionMode !== "default") this.setPermissionMode("default").catch(() => {});
+  };
 
   async rename(title: string) {
     await renameSession(this.nativeId, title, { dir: this.projectPath });

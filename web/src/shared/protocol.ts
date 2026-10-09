@@ -36,7 +36,14 @@ export type Part =
       guard?: GuardVerdict;
     };
 
-export type GuardMode = "ask" | "auto" | "full";
+export type GuardMode = "ask" | "edits" | "auto" | "full";
+/** Who approves tool calls, strictest first. "ask" also asks before edits inside the project. */
+export const GUARD_MODES: { id: GuardMode; label: string }[] = [
+  { id: "ask", label: "Ask permission" },
+  { id: "edits", label: "Accept edits" },
+  { id: "auto", label: "Auto" },
+  { id: "full", label: "Dangerously skip" },
+];
 
 export interface GuardVerdict {
   decision: "allow" | "deny";

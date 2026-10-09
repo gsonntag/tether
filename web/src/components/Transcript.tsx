@@ -1,7 +1,30 @@
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { ChatMessage, ChatMessageBubble, ChatMessageList, ChatSystemMessage } from "@astryxdesign/core/Chat";
+import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Icon } from "@astryxdesign/core/Icon";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { Markdown } from "@astryxdesign/core/Markdown";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Text } from "@astryxdesign/core/Text";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { Token } from "@astryxdesign/core/Token";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
+import {
+  ArrowDownRightIcon,
+  ArrowsPointingInIcon,
+  ArrowUpLeftIcon,
+  ArrowUturnLeftIcon,
+  ChevronRightIcon,
+  Cog6ToothIcon,
+  EnvelopeIcon,
+  NoSymbolIcon,
+  PencilSquareIcon,
+} from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
-import { memo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { memo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { act, selectSession } from "../store";
 
@@ -9,15 +32,69 @@ type ToolPart = Extract<Part, { type: "tool" }>;
 
 const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 
+// Static style objects (tokens only) so memoized rows don't get fresh props each render.
+const listStyle: CSSProperties = { padding: "var(--spacing-0)" };
+const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
+const imgStyle: CSSProperties = { display: "block", maxWidth: "100%", maxHeight: "40vh", borderRadius: "var(--radius-element)" };
+const thinkBody: CSSProperties = {
+  ...preWrap,
+  display: "block",
+  borderInlineStart: "var(--border-width) solid var(--color-border)",
+  paddingInlineStart: "var(--spacing-2)",
+};
+const eventBody: CSSProperties = { maxHeight: "70vh" };
+const errorText: CSSProperties = {
+  ...preWrap,
+  display: "block",
+  color: "var(--color-error)",
+  borderInlineStart: "var(--border-width) solid var(--color-error)",
+  paddingInlineStart: "var(--spacing-2)",
+};
+const minZero: CSSProperties = { minWidth: 0 };
+const addText: CSSProperties = { color: "var(--color-success)", whiteSpace: "nowrap" };
+const delText: CSSProperties = { color: "var(--color-error)", whiteSpace: "nowrap" };
+const noWrap: CSSProperties = { whiteSpace: "nowrap" };
+const blockText: CSSProperties = { color: "var(--color-text-red)" };
+const diffBox: CSSProperties = {
+  maxHeight: "60vh",
+  background: "var(--color-background-muted)",
+  borderRadius: "var(--radius-inner)",
+  paddingBlock: "var(--spacing-1-5)",
+};
+const diffLineBase: CSSProperties = { whiteSpace: "pre", minHeight: "1.5em", paddingInline: "var(--spacing-3)" };
+const diffLine: Record<"add" | "del" | "ctx", CSSProperties> = {
+  add: { ...diffLineBase, background: "var(--color-success-muted)", color: "var(--color-text-green)" },
+  del: { ...diffLineBase, background: "var(--color-error-muted)", color: "var(--color-text-red)" },
+  ctx: { ...diffLineBase, color: "var(--color-text-secondary)" },
+};
+
 export const Transcript = memo(function Transcript({ messages, running, amendable }: { messages: Msg[]; running: boolean; amendable?: string[] }) {
   return (
-    <>
+    <ChatMessageList align="top" isStreaming={running} style={listStyle}>
       {messages.map((m, i) => (
         <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} />
       ))}
-    </>
+    </ChatMessageList>
   );
 });
+
+/**
+ * Open state that follows `want` whenever it changes (like `<details open={...}>`
+ * re-applied by React), while still letting the user toggle in between.
+ */
+function useFollowOpen(want: boolean) {
+  const [open, setOpen] = useState(want);
+  const [prev, setPrev] = useState(want);
+  if (prev !== want) {
+    setPrev(want);
+    setOpen(want);
+  }
+  return [open, setOpen] as const;
+}
+
+function StreamCursor() {
+  return <StatusDot variant="accent" isPulsing label="Writing" />;
+}
 
 /** A steer the agent already has: it can't be taken back, so an edit goes in as a correction. */
 function AmendableUser({ m, text }: { m: Msg; text: string }) {
@@ -28,130 +105,201 @@ function AmendableUser({ m, text }: { m: Msg; text: string }) {
   };
   if (draft === undefined)
     return (
-      <div className="user">
-        {text}
-        <button className="amend" title="The agent already has this message. Editing sends the change as a correction." onClick={() => setDraft(text)}>
-          ✎ Edit
-        </button>
-      </div>
+      <ChatMessage sender="user">
+        <ChatMessageBubble
+          metadata={
+            <HStack hAlign="end">
+              <Button
+                label="Edit"
+                variant="ghost"
+                size="sm"
+                icon={<Icon icon={PencilSquareIcon} />}
+                tooltip="The agent already has this message. Editing sends the change as a correction."
+                onClick={() => setDraft(text)}
+              />
+            </HStack>
+          }
+        >
+          <Text style={preWrap}>{text}</Text>
+        </ChatMessageBubble>
+      </ChatMessage>
     );
   return (
-    <div className="user editing">
-      <textarea
-        autoFocus
-        value={draft}
-        rows={Math.min(10, draft.split("\n").length + 1)}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") setDraft(undefined);
-          if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), save());
-        }}
-      />
-      <div className="hint">The agent already has the original, so this goes in as a correction.</div>
-      <div className="btns">
-        <button className="btn" onClick={() => setDraft(undefined)}>
-          Cancel
-        </button>
-        <button className="btn pri" onClick={save}>
-          Send correction
-        </button>
-      </div>
-    </div>
+    <ChatMessage sender="user">
+      <ChatMessageBubble width="80%">
+        <VStack gap={2}>
+          <TextArea
+            label="Correction"
+            isLabelHidden
+            hasAutoFocus
+            value={draft}
+            rows={Math.min(10, draft.split("\n").length + 1)}
+            onChange={(v) => setDraft(v)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setDraft(undefined);
+              if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), save());
+            }}
+          />
+          <Text type="supporting">The agent already has the original, so this goes in as a correction.</Text>
+          <HStack gap={1.5} hAlign="end">
+            <Button label="Cancel" size="sm" onClick={() => setDraft(undefined)} />
+            <Button label="Send correction" variant="primary" size="sm" onClick={save} />
+          </HStack>
+        </VStack>
+      </ChatMessageBubble>
+    </ChatMessage>
   );
 }
+
+const EVENT_ICONS = {
+  agent: ArrowUturnLeftIcon,
+  task: Cog6ToothIcon,
+  compaction: ArrowsPointingInIcon,
+  channel: EnvelopeIcon,
+} as const;
 
 const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: boolean; amendable?: boolean }) {
   if (m.role === "user") {
     const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
     if (text.startsWith(BRIEF_PREFIX))
       return (
-        <details className="brief">
-          <summary>Handoff brief given to this agent (conversation + repository state)</summary>
-          <div className="body">{text}</div>
-        </details>
+        <Card width="100%" padding={3} variant="transparent">
+          <Collapsible
+            defaultIsOpen={false}
+            chevronPosition="start"
+            trigger={<Text type="supporting">Handoff brief given to this agent (conversation + repository state)</Text>}
+          >
+            <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
+          </Collapsible>
+        </Card>
       );
     const tools = m.parts.filter((p): p is ToolPart => p.type === "tool");
     return (
       <>
         {text.trim() && amendable && <AmendableUser m={m} text={text} />}
         {text.trim() && !amendable && (
-          <div className="user">
-            {text}
-            {m.parts.map((p, i) => (p.type === "image" ? <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" /> : null))}
-          </div>
+          <ChatMessage sender="user">
+            <ChatMessageBubble>
+              <VStack gap={1.5}>
+                <Text style={preWrap}>{text}</Text>
+                {m.parts.map((p, i) => (p.type === "image" ? <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} /> : null))}
+              </VStack>
+            </ChatMessageBubble>
+          </ChatMessage>
         )}
-        {tools.map((t) => (
-          <Tool key={t.id} t={t} />
-        ))}
+        {tools.length > 0 && (
+          <ChatMessage sender="assistant">
+            <VStack gap={2} width="100%">
+              {tools.map((t) => (
+                <Tool key={t.id} t={t} />
+              ))}
+            </VStack>
+          </ChatMessage>
+        )}
       </>
     );
   }
   if (m.role === "notice") {
     const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
     if (m.title) {
-      const icon = m.source === "agent" ? "↩" : m.source === "task" ? "⚙" : m.source === "compaction" ? "⇣" : m.source === "channel" ? "✉" : "›";
-      if (!text.trim())
-        return (
-          <div className={`event ${m.source ?? ""}`}>
-            <span>{icon}</span>
-            <span>{m.title}</span>
-          </div>
-        );
-      return (
-        <details className={`event-card ${m.source ?? ""}`} open={!m.collapsed || undefined}>
-          <summary>
-            <span>{icon}</span> {m.title}
-          </summary>
-          <div className="md body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-          </div>
-        </details>
-      );
+      const icon = <Icon icon={(m.source && m.source in EVENT_ICONS ? EVENT_ICONS[m.source as keyof typeof EVENT_ICONS] : ChevronRightIcon)} size="sm" />;
+      if (!text.trim()) return <ChatSystemMessage icon={icon}>{m.title}</ChatSystemMessage>;
+      return <EventCard title={m.title} icon={icon} text={text} agent={m.source === "agent"} collapsed={!!m.collapsed} />;
     }
-    return (
-      <div className={`notice ${m.level ?? "info"}`}>
-        <span>{m.level === "error" ? "✕" : m.level === "warning" ? "⚠" : "ℹ"}</span>
-        <div className="md">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-        </div>
-      </div>
-    );
+    return <NoticeCard level={m.level ?? "info"}>{<Markdown density="compact" contentWidth="100%">{text}</Markdown>}</NoticeCard>;
   }
   return (
-    <div className="asst">
-      {m.parts.map((p, i) => {
-        const tail = last && i === m.parts.length - 1 && m.streaming;
-        switch (p.type) {
-          case "text":
-            return p.text ? (
-              <div key={i} className="md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{p.text}</ReactMarkdown>
-                {tail && <span className="cursor" />}
-              </div>
-            ) : tail ? (
-              <span key={i} className="cursor" />
-            ) : null;
-          case "thinking":
-            return p.text.trim() ? <Thinking key={i} text={p.text} live={!!tail} /> : null;
-          case "tool":
-            return <Tool key={p.id ?? i} t={p} />;
-          case "image":
-            return <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={{ maxWidth: "100%" }} />;
-        }
-      })}
-      {m.error && m.error !== "aborted" && <div className="err">{m.error}</div>}
-      {m.error === "aborted" && <div className="hint">Stopped.</div>}
-      {last && m.streaming && m.parts.length === 0 && <span className="cursor" />}
-    </div>
+    <ChatMessage sender="assistant">
+      <VStack gap={2} width="100%">
+        {m.parts.map((p, i) => {
+          const tail = last && i === m.parts.length - 1 && m.streaming;
+          switch (p.type) {
+            case "text":
+              return p.text ? (
+                <VStack key={i} gap={1}>
+                  <Markdown density="compact" contentWidth="100%" isStreaming={!!tail}>
+                    {p.text}
+                  </Markdown>
+                  {tail && <StreamCursor />}
+                </VStack>
+              ) : tail ? (
+                <StreamCursor key={i} />
+              ) : null;
+            case "thinking":
+              return p.text.trim() ? <Thinking key={i} text={p.text} live={!!tail} /> : null;
+            case "tool":
+              return <Tool key={p.id ?? i} t={p} />;
+            case "image":
+              return <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} />;
+          }
+        })}
+        {m.error && m.error !== "aborted" && <Text style={errorText}>{m.error}</Text>}
+        {m.error === "aborted" && <Text type="supporting">Stopped.</Text>}
+        {last && m.streaming && m.parts.length === 0 && <StreamCursor />}
+      </VStack>
+    </ChatMessage>
   );
 });
 
-function Thinking({ text, live }: { text: string; live: boolean }) {
+function EventCard({ title, icon, text, agent, collapsed }: { title: string; icon: ReactNode; text: string; agent: boolean; collapsed: boolean }) {
+  const [open, setOpen] = useFollowOpen(!collapsed);
   return (
-    <details className="think" open={live || undefined}>
-      <summary>▸ {live ? "Thinking…" : "Thought"}</summary>
-      <div className="body">{text}</div>
-    </details>
+    <Card width="100%" padding={3} variant={agent ? "blue" : "default"}>
+      <Collapsible
+        isOpen={open}
+        onOpenChange={setOpen}
+        chevronPosition="start"
+        trigger={
+          <HStack as="span" gap={2} vAlign="center">
+            {icon}
+            <Text type="label" color={agent ? "accent" : "secondary"}>
+              {title}
+            </Text>
+          </HStack>
+        }
+      >
+        <VStack isScrollable style={eventBody}>
+          <Markdown density="compact" contentWidth="100%">
+            {text}
+          </Markdown>
+        </VStack>
+      </Collapsible>
+    </Card>
+  );
+}
+
+const NOTICE_VARIANT = { info: "muted", warning: "yellow", error: "red" } as const;
+
+function NoticeCard({ level, children }: { level: "info" | "warning" | "error"; children: ReactNode }) {
+  return (
+    <Card width="100%" padding={3} variant={NOTICE_VARIANT[level]}>
+      <HStack gap={2} vAlign="start">
+        <Icon icon={level} color={level === "info" ? "secondary" : level} size="sm" />
+        <StackItem size="fill" style={minZero}>
+          {children}
+        </StackItem>
+      </HStack>
+    </Card>
+  );
+}
+
+function Thinking({ text, live }: { text: string; live: boolean }) {
+  const [open, setOpen] = useFollowOpen(live);
+  return (
+    <Collapsible
+      isOpen={open}
+      onOpenChange={setOpen}
+      chevronPosition="start"
+      trigger={
+        <Text type="supporting" color="secondary">
+          {live ? "Thinking…" : "Thought"}
+        </Text>
+      }
+    >
+      <Text type="supporting" color="secondary" style={thinkBody}>
+        {text}
+      </Text>
+    </Collapsible>
   );
 }
 
@@ -185,23 +333,28 @@ function edits(input: any): { oldText: string; newText: string }[] {
 
 function Diff({ pairs }: { pairs: { oldText: string; newText: string }[] }) {
   return (
-    <div className="diff">
+    <VStack isScrollable style={diffBox}>
       {pairs.map((e, k) => (
-        <div key={k} style={{ padding: 0 }}>
-          {k > 0 && <div className="sep">⋯</div>}
-          {diffLines(e.oldText, e.newText).flatMap((part, j) =>
-            part.value
+        <VStack key={k}>
+          {k > 0 && (
+            <Text type="code" color="secondary" display="block" style={diffLineBase}>
+              ⋯
+            </Text>
+          )}
+          {diffLines(e.oldText, e.newText).flatMap((part, j) => {
+            const kind = part.added ? "add" : part.removed ? "del" : "ctx";
+            return part.value
               .replace(/\n$/, "")
               .split("\n")
               .map((line, n) => (
-                <div key={`${j}-${n}`} className={part.added ? "add" : part.removed ? "del" : "ctx"}>
+                <Text key={`${j}-${n}`} type="code" as="div" display="block" style={diffLine[kind]}>
                   {(part.added ? "+ " : part.removed ? "- " : "  ") + line}
-                </div>
-              )),
-          )}
-        </div>
+                </Text>
+              ));
+          })}
+        </VStack>
       ))}
-    </div>
+    </VStack>
   );
 }
 
@@ -216,6 +369,9 @@ function countDiff(pairs: { oldText: string; newText: string }[]) {
     }
   return { add, del };
 }
+
+const GUARD_LABEL = { rule: "auto", judge: "judged ✓", user: "you ✓" } as const;
+const GUARD_COLOR = { rule: "gray", judge: "blue", user: "green" } as const;
 
 function Tool({ t }: { t: ToolPart }) {
   const name = t.name;
@@ -242,67 +398,103 @@ function Tool({ t }: { t: ToolPart }) {
 
   const blocked = t.guard?.decision === "deny";
   const icon = blocked ? (
-    <span className="bad">⛔</span>
+    <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
   ) : t.status === "running" ? (
-    <span className="spin" />
+    <Spinner size="sm" aria-label="Running" />
   ) : t.status === "error" ? (
-    <span className="bad">✕</span>
+    <Icon icon="error" color="error" size="sm" label="Failed" />
   ) : (
-    <span className="ok">✓</span>
+    <Icon icon="success" color="success" size="sm" label="Done" />
   );
   const lines = t.output ? t.output.trimEnd().split("\n").length : 0;
+  const guard = t.guard && !blocked && t.guard.by !== "mode" ? t.guard : undefined;
+
+  const header = (
+    <HStack as="span" gap={2} vAlign="center" width="100%">
+      {icon}
+      <StackItem as="span" size="static">
+        <Text type="label" weight="semibold">
+          {name}
+        </Text>
+      </StackItem>
+      <StackItem as="span" size="fill" style={minZero}>
+        <Text type="code" color="secondary" maxLines={1}>
+          {arg}
+        </Text>
+      </StackItem>
+      {stat ? (
+        <StackItem as="span" size="static">
+          <Text type="supporting" style={addText}>
+            +{stat.add}
+          </Text>
+          {stat.del > 0 && (
+            <Text type="supporting" style={delText}>
+              {" "}
+              −{stat.del}
+            </Text>
+          )}
+        </StackItem>
+      ) : lines > 1 ? (
+        <StackItem as="span" size="static">
+          <Text type="supporting" style={noWrap}>
+            {lines} lines
+          </Text>
+        </StackItem>
+      ) : null}
+      {guard && (
+        <StackItem as="span" size="static">
+          <Tooltip content={guard.reason} isEnabled={!!guard.reason} hasHoverIndication={false}>
+            <Token size="sm" label={GUARD_LABEL[guard.by as keyof typeof GUARD_LABEL] ?? guard.by} color={GUARD_COLOR[guard.by as keyof typeof GUARD_COLOR] ?? "gray"} />
+          </Tooltip>
+        </StackItem>
+      )}
+    </HStack>
+  );
 
   return (
-    <div className={`tool${blocked ? " blocked" : ""}`}>
-      <button className="hd" onClick={() => setOpen(!open)}>
-        {icon}
-        <span className="nm">{name}</span>
-        <span className="arg mono">{arg}</span>
-        <span className="grow" />
-        {stat ? (
-          <span style={{ whiteSpace: "nowrap", flex: "none" }}>
-            <span className="ok">+{stat.add}</span>
-            {stat.del > 0 && <span className="bad"> −{stat.del}</span>}
-          </span>
-        ) : lines > 1 ? (
-          <span style={{ whiteSpace: "nowrap", flex: "none" }}>{lines} lines</span>
-        ) : null}
-        {t.guard && !blocked && t.guard.by !== "mode" && (
-          <span className={`gv ${t.guard.by}`} title={t.guard.reason}>
-            {t.guard.by === "rule" ? "auto" : t.guard.by === "judge" ? "judged ✓" : "you ✓"}
-          </span>
+    <Card width="100%" padding={0} variant={blocked ? "red" : "default"}>
+      <VStack paddingInline={3} paddingBlock={1} gap={1}>
+        <Collapsible isOpen={open} onOpenChange={setOpen} trigger={header}>
+          {open && (
+            <VStack gap={2} paddingBlockEnd={1}>
+              {pairs.length > 0 && <Diff pairs={pairs} />}
+              {isTodo && (
+                <VStack gap={0.5}>
+                  {input.todos.map((td: any, i: number) => {
+                    const done = td.status === "completed";
+                    return (
+                      <HStack key={i} gap={2}>
+                        <Text color={done ? "secondary" : undefined}>{done ? "☑" : td.status === "in_progress" ? "◐" : "☐"}</Text>
+                        <Text color={done ? "secondary" : undefined} hasStrikethrough={done}>
+                          {td.content ?? td.activeForm}
+                        </Text>
+                      </HStack>
+                    );
+                  })}
+                </VStack>
+              )}
+              {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
+                <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
+              )}
+              {t.output && (!pairs.length || t.status === "error") && (
+                <CodeBlock code={t.output.length > 20000 ? t.output.slice(0, 20000) + "\n…" : t.output} isWrapped width="100%" size="sm" maxHeight="50vh" />
+              )}
+            </VStack>
+          )}
+        </Collapsible>
+        {blocked && (
+          <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
+            <StackItem size="fill" style={minZero}>
+              <Text type="supporting" style={blockText}>
+                Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : "the safety rules"}:{" "}
+                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
+              </Text>
+            </StackItem>
+            {t.guard!.by !== "user" && <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })} />}
+          </HStack>
         )}
-      </button>
-      {blocked && (
-        <div className="blockbar">
-          <span className="grow">
-            Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : "the safety rules"}: {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
-          </span>
-          {t.guard!.by !== "user" && (
-            <button className="btn" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })}>
-              Approve &amp; retry
-            </button>
-          )}
-        </div>
-      )}
-      {open && (
-        <>
-          {pairs.length > 0 && <Diff pairs={pairs} />}
-          {isTodo && (
-            <div className="todo">
-              {input.todos.map((td: any, i: number) => (
-                <div key={i} className={td.status === "completed" ? "done" : ""}>
-                  <span>{td.status === "completed" ? "☑" : td.status === "in_progress" ? "◐" : "☐"}</span>
-                  <span>{td.content ?? td.activeForm}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && <pre>{str(input)}</pre>}
-          {t.output && (!pairs.length || t.status === "error") && <pre>{t.output.length > 20000 ? t.output.slice(0, 20000) + "\n…" : t.output}</pre>}
-        </>
-      )}
-    </div>
+      </VStack>
+    </Card>
   );
 }
 
@@ -310,24 +502,23 @@ export function LinkBanner({ from, to }: { from?: { sessionId: string; reason: s
   return (
     <>
       {from && (
-        <div className="link-banner">
-          ↖ Continued from{" "}
-          <button className="btn" onClick={() => selectSession(from.sessionId)}>
-            {from.sessionId.split(":")[0]} session
-          </button>
-          <span className="hint">{from.reason}</span>
-        </div>
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={ArrowUpLeftIcon} color="secondary" size="sm" />
+            <Text type="supporting">Continued from</Text>
+            <Button label={`${from.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(from.sessionId)} />
+            <Text type="supporting">{from.reason}</Text>
+          </HStack>
+        </Card>
       )}
       {to && (
-        <div className="notice warning">
-          <span>↘</span>
-          <div>
-            This conversation continues in another session ({to.reason}).{" "}
-            <button className="link" onClick={() => selectSession(to.sessionId)}>
-              Open it
-            </button>
-          </div>
-        </div>
+        <Card width="100%" padding={3} variant="yellow">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={ArrowDownRightIcon} color="warning" size="sm" />
+            <Text>This conversation continues in another session ({to.reason}).</Text>
+            <Button label="Open it" variant="ghost" size="sm" onClick={() => selectSession(to.sessionId)} />
+          </HStack>
+        </Card>
       )}
     </>
   );

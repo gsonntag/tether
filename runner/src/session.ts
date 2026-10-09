@@ -19,7 +19,7 @@ import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
-import { commandOf, judge, rules, type GuardMode, type Verdict } from "./guard";
+import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import type { Checkpoint, GuardVerdict, Part, PendingMessage } from "../../web/src/shared/protocol";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -219,7 +219,9 @@ export abstract class LiveSession {
   // device can edit, reorder or cancel, saved to disk. Messages only leave from the top:
   //  - steers at the top go into the running turn once their grace period is over (the harness
   //    folds them in at its next step); a queued message blocks everything behind it;
-  //  - when the turn ends, everything still pending goes in together as the next turn.
+  //  - when the turn ends, the top of the list starts the next turn: the steers at the top (together),
+  //    or else the first queued message alone. Queued messages go one per turn, never merged; steers
+  //    right below a queued message become eligible to steer into the turn it starts.
   // After Stop nothing leaves on its own (`pendingHeld`) until you send.
   // A steer that already went out can't be taken back; editing it sends a correction instead.
 
@@ -227,13 +229,20 @@ export abstract class LiveSession {
   private steerTimer?: ReturnType<typeof setTimeout>;
   /** user messages delivered as steers into the running turn (editable through a correction) */
   private steered = new Map<string, string>();
+  /** a turn is being started from the pending list: steers wait until it has been sent */
+  private draining = false;
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
-      const held = this.takeAllPending();
-      return this.send(held ? `${held}\n\n${text}` : text);
+      if (!this.t.state.pending?.length) return this.send(text);
+      // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
+      // and the list goes out from the top as usual (one queued message per turn).
+      this.pend(text, mode);
+      this.setState({ pendingHeld: undefined });
+      await this.drainPending();
+      return;
     }
     this.pend(text, mode);
   }
@@ -253,13 +262,13 @@ export abstract class LiveSession {
   private scheduleSteers() {
     clearTimeout(this.steerTimer);
     const head = this.t.state.pending?.[0];
-    if (!head || head.mode !== "steer" || !this.steer || this.t.state.pendingHeld || this.t.state.status !== "running") return;
+    if (!head || head.mode !== "steer" || !this.steer || this.draining || this.t.state.pendingHeld || this.t.state.status !== "running") return;
     this.steerTimer = setTimeout(() => this.deliverSteers(), Math.max(0, (head.readyAt ?? 0) - Date.now()));
   }
 
   private async deliverSteers() {
     const list = this.t.state.pending ?? [];
-    if (this.closed || this.t.state.status !== "running" || this.t.state.pendingHeld) return;
+    if (this.closed || this.draining || this.t.state.status !== "running" || this.t.state.pendingHeld) return;
     const now = Date.now();
     let n = 0;
     while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now) n++;
@@ -282,6 +291,12 @@ export abstract class LiveSession {
       // The turn ended meanwhile (or can't take steers right now): back on top, for the next turn.
       this.setState({ pending: [...batch, ...(this.t.state.pending ?? [])] });
       if ((this.t.state.status as string) === "idle") await this.drainPending();
+      else if (this.t.state.status === "running" && !this.draining) {
+        // Still running but not taking steers right now (e.g. compaction): try again shortly, not in a tight loop.
+        clearTimeout(this.steerTimer);
+        this.steerTimer = setTimeout(() => this.deliverSteers(), 1_000);
+        return;
+      }
     }
     this.scheduleSteers();
   }
@@ -294,9 +309,18 @@ export abstract class LiveSession {
       this.setState({ amendable: undefined });
     }
     if (this.closed || this.t.state.pendingHeld) return false;
-    const text = this.takeAllPending();
-    if (!text) return false;
-    await this.send(text);
+    const list = this.t.state.pending ?? [];
+    const n = nextTurnSize(list);
+    if (!n) return false;
+    // Steers left at the top may go into this new turn, but only once it has really been sent.
+    this.draining = true;
+    try {
+      this.setPending(list.slice(n));
+      await this.send(joinPending(list.slice(0, n)));
+    } finally {
+      this.draining = false;
+    }
+    this.scheduleSteers();
     return true;
   }
 
@@ -327,7 +351,8 @@ export abstract class LiveSession {
     const to = change.now ? 0 : Math.max(0, Math.min(list.length, change.index ?? i));
     list.splice(to, 0, p);
     if (change.now && this.t.state.status === "idle") {
-      // Held after Stop (or the turn just ended): everything pending goes now, in order.
+      // Held after Stop (or the turn just ended): the hold is released and this message starts the
+      // next turn; the rest follow from the top as usual.
       this.setState({ pending: list, pendingHeld: undefined });
       await this.drainPending();
       return;
@@ -602,8 +627,9 @@ export abstract class LiveSession {
     else if (this.guardMode === "full") v = { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
-      if (r?.decision === "allow") v = r;
-      else if (this.guardMode === "ask") {
+      const askEdit = this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit";
+      if (r?.decision === "allow" && !askEdit) v = r;
+      else if (this.guardMode === "ask" || this.guardMode === "edits") {
         const res = await this.askUi({
           id: newId("perm"),
           kind: "permission",
@@ -760,6 +786,12 @@ export abstract class LiveSession {
   protected abstract shutdown(): void;
 }
 
+/** How many messages from the top start the next turn: the steers at the top, else one queued message. */
+export function nextTurnSize(list: PendingMessage[]): number {
+  let n = 0;
+  while (n < list.length && list[n]!.mode === "steer") n++;
+  return n || (list.length ? 1 : 0);
+}
 const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
 

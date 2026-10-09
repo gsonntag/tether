@@ -148,6 +148,7 @@ function connect(attempt = 0) {
 
 async function handle(id: string, op: OpName, args: any) {
   try {
+    if (!ops[op]) throw new Error(`This runner doesn't know "${op}": it's older than the web app. Restart it to update.`);
     const data = await (ops[op] as (a: any) => Promise<unknown>)(args ?? {});
     send({ t: "result", id, ok: true, data });
   } catch (e: any) {

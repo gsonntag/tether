@@ -21,7 +21,7 @@ export interface RunnerConfig {
   exhausted: Record<string, number>;
   /** per-session settings that must survive runner restarts */
   sessions: Record<string, SessionPrefs>;
-  guard?: { judgeModel?: string; defaultMode?: "ask" | "auto" | "full" };
+  guard?: { judgeModel?: string; defaultMode?: import("./guard").GuardMode };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
@@ -32,7 +32,7 @@ export interface SessionPrefs {
   preferEarlier?: boolean;
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
-  guard?: "ask" | "auto" | "full";
+  guard?: import("./guard").GuardMode;
   checkpoints?: { id: string; sha: string; ts: number; label: string }[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */
   diffBaseSha?: string;

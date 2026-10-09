@@ -1,7 +1,20 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
+import { Button } from "@astryxdesign/core/Button";
+import { Code } from "@astryxdesign/core/Code";
+import { HStack } from "@astryxdesign/core/HStack";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Item } from "@astryxdesign/core/Item";
+import { Selector } from "@astryxdesign/core/Selector";
+import type { SelectorOptionType } from "@astryxdesign/core/Selector";
+import { StackItem } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Token } from "@astryxdesign/core/Token";
+import { VStack } from "@astryxdesign/core/VStack";
 import { formatEntry, HARNESSES, parseEntry, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
 import { useStore } from "../store";
-import { badge } from "../util";
+import { HarnessBadge } from "./HarnessBadge";
 import { useModels } from "./ModelMenu";
 
 /** Groups a harness's models by provider prefix ("openai-codex/gpt-6-luna" → "openai-codex"). */
@@ -18,6 +31,19 @@ function useAvailable(): HarnessId[] {
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   return runner?.harnesses ?? [];
 }
+
+const plainList: CSSProperties = { listStyle: "none", margin: 0 };
+const row = (tone: "bad" | "warn" | "ok"): CSSProperties => ({
+  border: "var(--border-width) solid",
+  borderColor: tone === "bad" ? "var(--color-border-red)" : tone === "warn" ? "var(--color-border-yellow)" : "var(--color-border)",
+  borderRadius: "var(--radius-element)",
+});
+const allBox: CSSProperties = {
+  maxHeight: "40vh",
+  overflowY: "auto",
+  border: "var(--border-width) solid var(--color-border)",
+  borderRadius: "var(--radius-element)",
+};
 
 /**
  * Edits a fallback chain: ordered harness:model entries with dropdowns for adding, a check on each
@@ -82,109 +108,168 @@ export function ChainEditor({
     }));
   }, [available, models, filter]);
 
+  const harnessOptions: SelectorOptionType[] = HARNESSES.map((x) => ({
+    value: x.id,
+    label: available.includes(x.id) ? x.label : `${x.label} (not installed)`,
+    disabled: !available.includes(x.id),
+  }));
+  const optionLabel = (x: ModelRef, prefix: string) => {
+    const id = prefix ? x.id.slice(prefix.length + 1) : x.id;
+    return x.label && x.label !== x.id ? `${id} · ${x.label}` : id;
+  };
+  const modelOptions: SelectorOptionType[] = groups(list).flatMap(([g, ms]): SelectorOptionType[] =>
+    g
+      ? [{ type: "section", title: g, options: ms.map((x) => ({ value: x.id, label: optionLabel(x, g) })) }]
+      : ms.map((x) => ({ value: x.id, label: optionLabel(x, "") })),
+  );
+  const notInstalled = HARNESSES.filter((x) => !available.includes(x.id));
+
   return (
-    <div className="chained">
-      {chain.length === 0 && <div className="hint" style={{ margin: "0 0 6px" }}>Empty: a usage limit just stops the session.</div>}
-      <ol className="chainlist">
-        {chain.map((raw, i) => {
-          const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
-          const c = check(raw);
-          const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
-          return (
-            <li key={raw + i} className={c.bad ? "bad" : c.warn ? "warn" : ""}>
-              <span className="n">{i + 1}</span>
-              <span className={`h ${eh}`}>{badge(eh)}</span>
-              <span className="grow ce-main">
-                <span className="mono">{em || "default"}</span>
-                {isCur && <span className="cur">current</span>}
-                {c.label && c.label !== em && <span className="ce-sub">{c.label}</span>}
-                {(c.bad || c.warn) && <span className="ce-sub ce-err">{c.bad ?? c.warn}</span>}
-                {c.usage && <span className="ce-sub">{c.usage}</span>}
-              </span>
-              <button type="button" className="x" disabled={i === 0} onClick={() => move(i, -1)} title="Up">
-                ↑
-              </button>
-              <button type="button" className="x" disabled={i === chain.length - 1} onClick={() => move(i, 1)} title="Down">
-                ↓
-              </button>
-              <button type="button" className="x" onClick={() => onChange(chain.filter((_, j) => j !== i))} title="Remove">
-                ✕
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+    <VStack gap={1.5}>
+      {chain.length === 0 && <Text type="supporting">Empty: a usage limit just stops the session.</Text>}
+      {chain.length > 0 && (
+        <VStack as="ol" gap={0.5} padding={0} style={plainList}>
+          {chain.map((raw, i) => {
+            const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
+            const c = check(raw);
+            const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
+            const subs = [c.label && c.label !== em ? c.label : undefined, c.usage].filter(Boolean) as string[];
+            return (
+              <Item
+                key={raw + i}
+                as="li"
+                density="compact"
+                style={row(c.bad ? "bad" : c.warn ? "warn" : "ok")}
+                marker={
+                  <Text type="supporting" hasTabularNumbers>
+                    {i + 1}
+                  </Text>
+                }
+                startContent={<HarnessBadge harness={eh} />}
+                label={
+                  <HStack gap={1.5} vAlign="center">
+                    <Code size="inherit">{em || "default"}</Code>
+                    {isCur && <Token size="sm" color="blue" label="current" />}
+                  </HStack>
+                }
+                description={
+                  subs.length || c.bad || c.warn ? (
+                    <VStack>
+                      {(c.bad || c.warn) && (
+                        <Text type="supporting" style={{ color: c.bad ? "var(--color-text-red)" : "var(--color-text-yellow)" }}>
+                          {c.bad ?? c.warn}
+                        </Text>
+                      )}
+                      {subs.map((s) => (
+                        <Text key={s} type="supporting">
+                          {s}
+                        </Text>
+                      ))}
+                    </VStack>
+                  ) : undefined
+                }
+                endContent={
+                  <HStack gap={0.5}>
+                    <IconButton label="Up" tooltip="Up" variant="ghost" size="sm" icon={<Icon icon="arrowUp" />} isDisabled={i === 0} onClick={() => move(i, -1)} />
+                    <IconButton
+                      label="Down"
+                      tooltip="Down"
+                      variant="ghost"
+                      size="sm"
+                      icon={<Icon icon="arrowDown" />}
+                      isDisabled={i === chain.length - 1}
+                      onClick={() => move(i, 1)}
+                    />
+                    <IconButton
+                      label="Remove"
+                      tooltip="Remove"
+                      variant="ghost"
+                      size="sm"
+                      icon={<Icon icon="close" />}
+                      onClick={() => onChange(chain.filter((_, j) => j !== i))}
+                    />
+                  </HStack>
+                }
+              />
+            );
+          })}
+        </VStack>
+      )}
 
-      <div className="ce-add">
-        <select value={harness} onChange={(e) => (setH(e.target.value as HarnessId), setM(""))}>
-          {HARNESSES.map((x) => (
-            <option key={x.id} value={x.id} disabled={!available.includes(x.id)}>
-              {x.label}
-              {available.includes(x.id) ? "" : " (not installed)"}
-            </option>
-          ))}
-        </select>
-        <select value={model} onChange={(e) => setM(e.target.value)} disabled={!list.length}>
-          {!models[harness] && <option>Loading…</option>}
-          {groups(list).map(([g, ms]) =>
-            g ? (
-              <optgroup key={g} label={g}>
-                {ms.map((x) => (
-                  <option key={x.id} value={x.id}>
-                    {x.id.slice(g.length + 1)}
-                    {x.label && x.label !== x.id ? ` · ${x.label}` : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ) : (
-              ms.map((x) => (
-                <option key={x.id} value={x.id}>
-                  {x.id}
-                  {x.label && x.label !== x.id ? ` · ${x.label}` : ""}
-                </option>
-              ))
-            ),
-          )}
-        </select>
-        <button type="button" className="btn" disabled={!model || chain.includes(formatEntry({ harness, model }))} onClick={() => add(formatEntry({ harness, model }))}>
-          Add
-        </button>
-      </div>
+      <HStack gap={1.5} vAlign="center">
+        <Selector
+          label="Harness"
+          isLabelHidden
+          size="sm"
+          width={140}
+          presentation="adaptive"
+          options={harnessOptions}
+          value={harness}
+          onChange={(v) => (setH(v as HarnessId), setM(""))}
+        />
+        <StackItem size="fill">
+          <Selector
+            label="Model"
+            isLabelHidden
+            size="sm"
+            width="100%"
+            presentation="adaptive"
+            hasSearch={list.length > 8}
+            searchPlaceholder="Filter models…"
+            options={modelOptions}
+            value={model || undefined}
+            placeholder={models[harness] ? "No models" : "Loading…"}
+            isLoading={!models[harness]}
+            isDisabled={!list.length}
+            onChange={setM}
+          />
+        </StackItem>
+        <Button
+          label="Add"
+          size="sm"
+          isDisabled={!model || chain.includes(formatEntry({ harness, model }))}
+          onClick={() => add(formatEntry({ harness, model }))}
+        />
+      </HStack>
 
-      <button type="button" className="linkbtn" style={{ marginTop: 6 }} onClick={() => setShowAll(!showAll)}>
-        {showAll ? "Hide the list of valid entries" : `Show every valid entry (${all.reduce((n, g) => n + (models[g.harness]?.length ?? 0), 0)})`}
-      </button>
+      <HStack>
+        <Button
+          variant="ghost"
+          size="sm"
+          label={showAll ? "Hide the list of valid entries" : `Show every valid entry (${all.reduce((n, g) => n + (models[g.harness]?.length ?? 0), 0)})`}
+          onClick={() => setShowAll(!showAll)}
+        />
+      </HStack>
       {showAll && (
-        <div className="ce-all">
-          <input type="text" placeholder="Filter, e.g. codex, opus, azure…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <VStack gap={1.5} padding={2} style={allBox}>
+          <TextInput label="Filter entries" isLabelHidden size="sm" placeholder="Filter, e.g. codex, opus, azure…" value={filter} onChange={setFilter} hasClear />
           {all.map((g) => (
-            <div key={g.harness}>
-              <div className="ce-h">
-                <span className={`h ${g.harness}`}>{badge(g.harness)}</span> {HARNESSES.find((x) => x.id === g.harness)?.label}
-                {!models[g.harness] && <span className="hint"> loading…</span>}
-              </div>
+            <VStack key={g.harness} gap={0.5}>
+              <HStack gap={1.5} vAlign="center">
+                <HarnessBadge harness={g.harness} />
+                <Text type="label" color="secondary">
+                  {HARNESSES.find((x) => x.id === g.harness)?.label}
+                </Text>
+                {!models[g.harness] && <Text type="supporting">loading…</Text>}
+              </HStack>
               {g.models.map((x) => {
                 const entry = formatEntry({ harness: g.harness, model: x.id });
                 return (
-                  <div key={x.id} className="ce-row">
-                    <span className="mono grow" title={x.label}>
-                      {entry}
-                    </span>
-                    <button type="button" className="btn" style={{ padding: "1px 8px" }} disabled={chain.includes(entry)} onClick={() => add(entry)}>
-                      {chain.includes(entry) ? "added" : "+ add"}
-                    </button>
-                  </div>
+                  <HStack key={x.id} gap={1.5} vAlign="center">
+                    <StackItem size="fill">
+                      <Text maxLines={1} type="code">
+                        {entry}
+                      </Text>
+                    </StackItem>
+                    <Button label={chain.includes(entry) ? "added" : "+ add"} size="sm" variant="ghost" isDisabled={chain.includes(entry)} onClick={() => add(entry)} />
+                  </HStack>
                 );
               })}
-            </div>
+            </VStack>
           ))}
-          {HARNESSES.filter((x) => !available.includes(x.id)).length > 0 && (
-            <div className="hint">
-              Not installed on this runner: {HARNESSES.filter((x) => !available.includes(x.id)).map((x) => x.label).join(", ")}.
-            </div>
-          )}
-        </div>
+          {notInstalled.length > 0 && <Text type="supporting">Not installed on this runner: {notInstalled.map((x) => x.label).join(", ")}.</Text>}
+        </VStack>
       )}
-    </div>
+    </VStack>
   );
 }

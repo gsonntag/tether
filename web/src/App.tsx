@@ -1,26 +1,56 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AppShell } from "@astryxdesign/core/AppShell";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { VStack } from "@astryxdesign/core/Layout";
+import { ToastViewport, useToast } from "@astryxdesign/core/Toast";
+import { Bars3Icon } from "@heroicons/react/24/outline";
 import { Dialogs } from "./components/Dialogs";
 import { SessionView } from "./components/SessionView";
 import { Sidebar } from "./components/Sidebar";
-import { listenForOpen } from "./push";
-import { selectSession, switchRunner, useStore } from "./store";
+import { listenForOpen, pushOnHere, pushSupported } from "./push";
+import { NARROW_QUERY, openLink, switchRunner, toggleSidebar, useStore } from "./store";
 
 listenForOpen();
 
+function useNarrow() {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return narrow;
+}
+
 export function App() {
+  return (
+    <ToastViewport position="bottomEnd" maxVisible={4}>
+      <Shell />
+      <ToastBridge />
+    </ToastViewport>
+  );
+}
+
+function Shell() {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const sidebarHidden = useStore((s) => s.sidebarHidden);
   const selected = useStore((s) => s.selected);
   const connected = useStore((s) => s.connected);
   const runnerId = useStore((s) => s.runnerId);
-  const toasts = useStore((s) => s.toasts);
+  const narrow = useNarrow();
 
-  // Deep links: #/s/<sessionId>, and #/r/<runnerId>/s/<sessionId> from notifications
+  // Deep links: #/s/<id>, and #/r/<runnerId>/s/<sessionId> from notifications
   useEffect(() => {
     const fromHash = () => {
       const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
       if (r) switchRunner(decodeURIComponent(r[1]!));
       const m = r ?? location.hash.match(/^#\/s\/(.+)$/);
-      if (m) selectSession(decodeURIComponent(m[r ? 2 : 1]!));
+      if (m) openLink(decodeURIComponent(m[r ? 2 : 1]!));
     };
     // Right away, not after the runner connects: a saved copy can show while it does.
     fromHash();
@@ -28,61 +58,87 @@ export function App() {
     return () => window.removeEventListener("hashchange", fromHash);
   }, []);
 
-  // Ctrl/Cmd+K: new session
+  // Ctrl/Cmd+Shift+O: new session; Ctrl/Cmd+B: toggle the sidebar
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key.toLowerCase();
+      if (e.shiftKey && k === "o") {
         e.preventDefault();
         useStore.setState({ dialog: "new", newSessionProject: undefined });
+      } else if (!e.shiftKey && k === "b") {
+        e.preventDefault();
+        toggleSidebar();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // First visit with no answer yet on this device: offer push notifications once.
+  useEffect(() => {
+    if (!runnerId || !pushSupported() || Notification.permission === "denied") return;
+    if (localStorage.getItem("tether.notifyAsked") || pushOnHere(runnerId)) return;
+    localStorage.setItem("tether.notifyAsked", "1");
+    if (!useStore.getState().dialog) useStore.setState({ dialog: "notify" });
+  }, [runnerId]);
+
+  const showSide = narrow || !sidebarHidden;
+  const banner = !connected ? (
+    <Banner status="error" container="section" collapsible={false} title="Disconnected · reconnecting…" />
+  ) : !runnerId ? (
+    <Banner status="warning" container="section" collapsible={false} title="No runner is connected" description="Start one on your machine (see README)." />
+  ) : undefined;
+
   return (
-    <div className={`app${sidebarOpen ? " side-open" : ""}`}>
-      <div className="scrim" onClick={() => useStore.setState({ sidebarOpen: false })} />
-      <Sidebar />
-      <main>
-        {!connected && <div className="offline">Reconnecting…</div>}
-        {connected && !runnerId && <div className="offline">No runner is connected. Start one on your machine (see README).</div>}
+    <AppShell
+      variant="section"
+      banner={banner}
+      sideNav={showSide ? <Sidebar narrow={narrow} /> : undefined}
+      mobileNav={{ hasToggle: false, isOpen: sidebarOpen, onOpenChange: (open) => useStore.setState({ sidebarOpen: open }) }}
+    >
+      <VStack height="100%" style={{ position: "relative", minHeight: 0 }}>
+        {(narrow || sidebarHidden) && (
+          <IconButton
+            label="Show sidebar"
+            tooltip="Show sidebar (⌘B)"
+            variant="secondary"
+            size="sm"
+            icon={<Icon icon={Bars3Icon} />}
+            onClick={toggleSidebar}
+            style={{ position: "absolute", top: "var(--spacing-2)", insetInlineStart: "var(--spacing-2)", zIndex: 2 }}
+          />
+        )}
         {selected ? <SessionView key={selected} sessionId={selected} /> : <Home />}
-      </main>
+      </VStack>
       <Dialogs />
-      <div className="toasts">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.level}`}>
-            {t.text}
-          </div>
-        ))}
-      </div>
-    </div>
+    </AppShell>
   );
+}
+
+/** Shows the store's toasts (from rpc errors and the like) through Astryx's toast stack. */
+function ToastBridge() {
+  const show = useToast();
+  const toasts = useStore((s) => s.toasts);
+  const shown = useRef(new Set<number>());
+  useEffect(() => {
+    for (const t of toasts) {
+      if (shown.current.has(t.id)) continue;
+      shown.current.add(t.id);
+      show({ body: t.text, type: t.level === "error" ? "error" : "info", uniqueID: `t${t.id}` });
+    }
+  }, [toasts, show]);
+  return null;
 }
 
 function Home() {
   return (
-    <>
-      <header className="top">
-        <button className="menu-btn" onClick={() => useStore.setState({ sidebarOpen: true })} aria-label="Menu">
-          ☰
-        </button>
-        <div className="ttl">
-          <div className="title">Tether</div>
-        </div>
-      </header>
-      <div className="empty">
-        <div>
-          <h2>Pick a session or start a new one</h2>
-          <div>Agents keep running on your runner when you close this page.</div>
-          <div className="btns" style={{ justifyContent: "center", marginTop: 16 }}>
-            <button className="btn pri" onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })}>
-              New session
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
+    <VStack height="100%" vAlign="center" hAlign="center" padding={6}>
+      <EmptyState
+        title="Pick a session or start a new one"
+        description="Agents keep running on your runner when you close this page."
+        actions={<Button label="New session" variant="primary" onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })} />}
+      />
+    </VStack>
   );
 }

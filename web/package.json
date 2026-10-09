@@ -5,20 +5,24 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p . && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "dependencies": {
+    "@astryxdesign/core": "^0.6.6",
+    "@astryxdesign/theme-neutral": "^0.6.6",
+    "@heroicons/react": "^2.2.0",
+    "@stylexjs/stylex": "^0.19.1",
     "diff": "^9.0.0",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
+    "react": "19",
+    "react-dom": "19",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "^0.6.6",
     "@types/diff": "^8.0.0",
-    "@types/react": "18",
-    "@types/react-dom": "18",
+    "@types/react": "19",
+    "@types/react-dom": "19",
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.3"

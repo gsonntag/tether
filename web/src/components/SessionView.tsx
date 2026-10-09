@@ -1,23 +1,68 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { LiveState, Ops, PendingMessage } from "../shared/protocol";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import {
+  ChatComposer,
+  ChatComposerDrawer,
+  ChatComposerInput,
+  ChatLayout,
+  ChatMessage,
+  ChatMessageBubble,
+  type ChatComposerInputHandle,
+} from "@astryxdesign/core/Chat";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
+import { HStack } from "@astryxdesign/core/HStack";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Item } from "@astryxdesign/core/Item";
+import { Popover } from "@astryxdesign/core/Popover";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { StackItem } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { Token } from "@astryxdesign/core/Token";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
+import { VStack } from "@astryxdesign/core/VStack";
+import { ArrowUturnLeftIcon, EllipsisVerticalIcon } from "@heroicons/react/24/outline";
+import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
 import { act, rpc, selectSession, useStore } from "../store";
-import { badge, fmtClock, harnessLabel, tildify } from "../util";
-import { ModelMenu, PickMenu } from "./ModelMenu";
-import { archive, PencilIcon, RenameInput } from "./Sidebar";
+import { fmtClock } from "../util";
+import { HarnessBadge } from "./HarnessBadge";
+import { MenuTitle, ModelMenu, PickMenu } from "./ModelMenu";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
-import { ChangesPanel } from "./Changes";
+
+/** Phones: Enter makes a new line, and the less important settings hide. */
+const NARROW = "(max-width: 760px)";
+const useNarrow = () => useMediaQuery(NARROW);
+
+const fill: CSSProperties = { flex: 1, minHeight: 0 };
+const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
+const ctxBar: CSSProperties = { width: "var(--spacing-12)" };
+const composerDock: CSSProperties = { paddingBlockEnd: "env(safe-area-inset-bottom)" };
+const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
+const queuedRow = (dragging: boolean): CSSProperties => ({
+  border: "var(--border-width) solid var(--color-border)",
+  borderRadius: "var(--radius-element)",
+  opacity: dragging ? 0.4 : 1,
+  cursor: "grab",
+});
+const steerBubble = (blocked: boolean): CSSProperties => ({
+  background: "transparent",
+  border: "var(--border-width) dashed var(--color-border-emphasized)",
+  opacity: blocked ? 0.5 : 0.85,
+});
+/** Bash mode types in the code font: the input reads its family from this token. */
+const shellFont = { "--font-family-body": "var(--font-family-code)" } as CSSProperties;
 
 export function SessionView({ sessionId }: { sessionId: string }) {
   const o = useStore((s) => s.open[sessionId]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const [showChanges, setShowChanges] = useState(false);
-  const toggleChanges = () => {
-    stick.current = true;
-    setShowChanges((v) => !v);
-  };
+  const narrow = useNarrow();
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -27,197 +72,149 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     seenHandoff.current = handoffTo;
   }, [handoffTo]);
 
-  // Stay pinned to the bottom unless the reader scrolled up.
+  // No header: the tab shows which session this is.
+  const title = o?.session?.title;
+  useEffect(() => {
+    document.title = title ? `${title} · Tether` : "Tether";
+    return () => void (document.title = "Tether");
+  }, [title]);
+
+  // Stay pinned to the bottom unless the reader scrolled up. ChatLayout follows growth of the
+  // transcript on its own; this also covers what sits after it (pending steers, prompts, the dock).
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current && !showChanges) el.scrollTop = el.scrollHeight;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
   if (!o || o.loading || !o.session)
     return (
-      <>
-        <Header sessionId={sessionId} showChanges={showChanges} onToggleChanges={toggleChanges} />
-        <div className="empty">Loading session…</div>
-      </>
+      <VStack style={fill} vAlign="center" hAlign="center">
+        <EmptyState title="Loading session…" icon={<Spinner />} isCompact />
+      </VStack>
     );
 
   const st = o.state;
   setProjectRoot(o.session.projectPath, sessionId);
   return (
     <>
-      <Header sessionId={sessionId} showChanges={showChanges} onToggleChanges={toggleChanges} />
-      {o.syncing && (
-        <div className="syncbar">
-          <span className="spin" />
-          Connecting… showing the last copy this browser saw
-        </div>
-      )}
-      <div
-        className="scroll"
+      {o.syncing && <Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
+      <ChatLayout
         ref={scroller}
+        density="spacious"
+        style={{ overscrollBehavior: "contain" }}
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
+        composer={<Composer sessionId={sessionId} state={st} />}
       >
-        <div className="col">
-          {showChanges ? (
-            <ChangesPanel sessionId={sessionId} />
-          ) : (
-            <>
-              <LinkBanner from={st.handoffFrom} />
-              {o.messages.length === 0 && <div className="hint">No messages yet.</div>}
-              <Transcript messages={o.messages} running={st.status === "running"} amendable={st.amendable} />
-              {st.handoffTo && <LinkBanner to={st.handoffTo} />}
-              {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
-            </>
-          )}
-        </div>
-      </div>
-      <Composer sessionId={sessionId} state={st} />
+        {/* Room at the top on phones for the floating sidebar button. */}
+        <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
+          <LinkBanner from={st.handoffFrom} />
+          {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
+          <Transcript messages={o.messages} running={st.status === "running"} amendable={st.amendable} />
+          <PendingSteers sessionId={sessionId} state={st} />
+          {st.handoffTo && <LinkBanner to={st.handoffTo} />}
+          {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
+        </VStack>
+      </ChatLayout>
     </>
   );
 }
 
-function Header({ sessionId, showChanges, onToggleChanges }: { sessionId: string; showChanges: boolean; onToggleChanges: () => void }) {
-  const o = useStore((s) => s.open[sessionId]);
-  const [editing, setEditing] = useState(false);
-  const st = o?.state;
-  const sess = o?.session;
-  const busy = st?.status === "running" || st?.status === "waiting";
+/** Under the message box: what the session runs on and how, plus context and plan usage. */
+function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveState }) {
+  const sess = useStore((s) => s.open[sessionId]?.session);
+  const narrow = useNarrow();
+  if (!sess) return null;
+  const ctx = st.contextPercent;
   return (
-    <header className="top">
-      <button className="menu-btn" onClick={() => useStore.setState({ sidebarOpen: true })} aria-label="Menu">
-        ☰
-      </button>
-      <div className="ttl">
-        {editing && sess ? (
-          <RenameInput session={sess} onDone={() => setEditing(false)} />
-        ) : (
-          <div className="title editable" onClick={() => sess && setEditing(true)} title={sess ? "Rename" : undefined}>
-            <span className="tt">{sess?.title ?? "Session"}</span>
-            {sess && <PencilIcon />}
-          </div>
-        )}
-        {sess && <div className="path mono">{tildify(sess.projectPath)}</div>}
-      </div>
-      {sess && (
-        <span className="pill hide-m" title={harnessLabel(sess.harness)}>
-          <span className={`h ${sess.harness}`}>{badge(sess.harness)}</span>
-        </span>
+    <HStack gap={1} vAlign="center" wrap="wrap" paddingInline={1}>
+      <HarnessBadge harness={sess.harness} />
+      <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />
+      {!narrow && <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />}
+      <PickMenu
+        label=""
+        value={GUARD_MODES.find((g) => g.id === (st.guard ?? "auto"))?.label ?? st.guard!}
+        options={GUARD_MODES.map((g) => g.label)}
+        onPick={(label) => act("setGuard", { sessionId, mode: GUARD_MODES.find((g) => g.label === label)!.id })}
+      />
+      {!narrow && st.checkpoints && st.checkpoints.length > 0 && <Checkpoints sessionId={sessionId} state={st} />}
+      <StackItem size="fill" />
+      {!narrow &&
+        Object.entries(st.statuses).map(([k, v]) => (
+          <Tooltip key={k} content={k}>
+            <Text type="code" color="secondary">
+              {v}
+            </Text>
+          </Tooltip>
+        ))}
+      {ctx != null && (
+        <Tooltip content="Context window used">
+          <HStack gap={1} vAlign="center" paddingInline={1}>
+            <Text type="supporting" hasTabularNumbers>
+              ctx {Math.round(ctx)}%
+            </Text>
+            <ProgressBar label="Context window used" isLabelHidden value={Math.min(100, ctx)} style={ctxBar} />
+          </HStack>
+        </Tooltip>
       )}
-      {sess && st && <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />}
-      {sess && st && <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />}
-      {st?.modes && st.modes.length > 0 && (
-        <PickMenu
-          className="hide-m"
-          label="mode"
-          value={st.permissionMode ?? "default"}
-          options={st.modes}
-          onPick={(mode) => act("setPermissionMode", { sessionId, mode })}
-        />
+      {!narrow && st.cost != null && st.cost > 0 && (
+        <Text type="supporting" hasTabularNumbers>
+          ${st.cost.toFixed(2)}
+        </Text>
       )}
-      {st && (
-        <PickMenu
-          label="guard"
-          value={st.guard ?? "auto"}
-          options={["ask", "auto", "full"]}
-          describe={{
-            ask: "Ask me before anything the safety rules don't clearly allow",
-            auto: "Rules + a safety judge decide; never waits for me",
-            full: "Allow everything (sandbox and checkpoints only)",
-          }}
-          onPick={(mode) => act("setGuard", { sessionId, mode: mode as any })}
-        />
-      )}
-      {sess && (
-        <button className={`pill changes-toggle${showChanges ? " active" : ""}`} onClick={onToggleChanges}>
-          {showChanges ? "Transcript" : "Changes"}
-        </button>
-      )}
-      {sess && <UsagePill harness={sess.harness} model={st?.model} />}
-      {st?.checkpoints && st.checkpoints.length > 0 && <Checkpoints sessionId={sessionId} state={st} />}
-      {sess && (
-        <MoreMenu
-          items={[
-            { label: "Rename", run: () => setEditing(true) },
-            { label: sess.archived ? "Unarchive" : "Archive", run: () => archive(sess, !sess.archived), disabled: busy },
-            { label: "Stop the agent process", run: () => act("closeSession", { sessionId }), disabled: busy || !sess.live },
-          ]}
-        />
-      )}
-      {busy && (
-        <button className="pill stop" onClick={() => act("abort", { sessionId })}>
-          ■ Stop
-        </button>
-      )}
-    </header>
-  );
-}
-
-function MoreMenu({ items }: { items: { label: string; run: () => void; disabled?: boolean }[] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span className="pill" style={{ cursor: "pointer", padding: "4px 8px" }} onClick={() => setOpen(!open)} aria-label="More">
-      ⋯
-      {open && (
-        <div className="pop" style={{ width: 220 }} onClick={(e) => e.stopPropagation()}>
-          {items.map((it) => (
-            <button
-              key={it.label}
-              className="item"
-              disabled={it.disabled}
-              style={it.disabled ? { opacity: 0.45 } : undefined}
-              onClick={() => {
-                setOpen(false);
-                it.run();
-              }}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </span>
+      <UsagePill harness={sess.harness} model={st.model} />
+    </HStack>
   );
 }
 
 function Checkpoints({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const [open, setOpen] = useState(false);
   const cps = [...(state.checkpoints ?? [])].reverse();
+  const idle = state.status === "idle";
+  const content = (
+    <VStack gap={1.5}>
+      <MenuTitle>Restore files to before…</MenuTitle>
+      <VStack style={pendingScroll}>
+        {cps.map((c) => (
+          <Item
+            key={c.id}
+            density="compact"
+            label={c.label}
+            labelLines={1}
+            description={fmtClock(c.ts)}
+            endContent={
+              <Button
+                label="Restore"
+                size="sm"
+                isDisabled={!idle}
+                onClick={() => {
+                  if (confirm(`Restore the project files to how they were before "${c.label}"? The current state is saved as a checkpoint first.`)) {
+                    act("restoreCheckpoint", { sessionId, id: c.id });
+                    setOpen(false);
+                  }
+                }}
+              />
+            }
+          />
+        ))}
+      </VStack>
+      {!idle && <Text type="supporting">Stop the agent to restore.</Text>}
+    </VStack>
+  );
   return (
-    <span className="pill hide-m" style={{ cursor: "pointer" }} onClick={() => setOpen(!open)} title="Undo: restore files to before a turn">
-      ⟲ {cps.length}
-      {open && (
-        <div className="pop" onClick={(e) => e.stopPropagation()}>
-          <h4>Restore files to before…</h4>
-          <div className="list">
-            {cps.map((c) => (
-              <div key={c.id} className="chainrow">
-                <span className="grow" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.label}>
-                  {c.label}
-                </span>
-                <span className="ago">{fmtClock(c.ts)}</span>
-                <button
-                  className="btn"
-                  style={{ padding: "2px 8px" }}
-                  disabled={state.status !== "idle"}
-                  onClick={() => {
-                    if (confirm(`Restore the project files to how they were before "${c.label}"? The current state is saved as a checkpoint first.`)) {
-                      act("restoreCheckpoint", { sessionId, id: c.id });
-                      setOpen(false);
-                    }
-                  }}
-                >
-                  Restore
-                </button>
-              </div>
-            ))}
-          </div>
-          {state.status !== "idle" && <div className="hint" style={{ padding: 6 }}>Stop the agent to restore.</div>}
-        </div>
-      )}
-    </span>
+    <Popover label="Checkpoints" content={content} isOpen={open} onOpenChange={setOpen} placement="above" width={340}>
+      <Button
+        label={`${cps.length} checkpoints`}
+        variant="ghost"
+        size="sm"
+        tooltip="Undo: restore files to before a turn"
+        icon={<Icon icon={ArrowUturnLeftIcon} />}
+      >
+        {String(cps.length)}
+      </Button>
+    </Popover>
   );
 }
 
@@ -233,7 +230,6 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   if (!levels.length) return null;
   return (
     <PickMenu
-      className="hide-m"
       label={harness === "claude-code" || harness === "codex" ? "effort" : "thinking"}
       value={state.thinking ?? "default"}
       options={levels}
@@ -242,52 +238,99 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   );
 }
 
-/**
- * Messages Tether holds until they go to the agent, top first. Steers at the top go into the
- * running turn after a short grace period; a queued message holds back everything below it until
- * the turn ends. Until then any device can edit, reorder, switch or cancel them.
- */
-function PendingList({ sessionId, state }: { sessionId: string; state: LiveState }) {
-  const list = state.pending ?? [];
-  const [editing, setEditing] = useState<{ id: string; text: string }>();
-  const [drag, setDrag] = useState<string>();
-  const [, tick] = useState(0);
-  const counting = list.some((p) => p.mode === "steer" && (p.readyAt ?? 0) > Date.now());
-  useEffect(() => {
-    if (!counting) return;
-    const t = setInterval(() => tick((n) => n + 1), 500);
-    return () => clearInterval(t);
-  }, [counting]);
+type EditPending = (id: string, change: Omit<Ops["editPending"]["args"], "sessionId" | "id">) => void;
 
-  const edit = (id: string, change: Omit<Ops["editPending"]["args"], "sessionId" | "id">) => act("editPending", { sessionId, id, ...change });
-  const blockedAt = list.findIndex((p) => p.mode === "followUp");
-  const label = (p: PendingMessage, i: number) => {
-    if (state.pendingHeld) return "Held · the agent was stopped";
-    if (p.mode === "followUp") return "Queued · after this turn";
-    if (blockedAt >= 0 && i > blockedAt) return "Steer · waits behind a queued message (drag it above)";
-    const left = Math.ceil(((p.readyAt ?? 0) - Date.now()) / 1000);
-    return left > 0 ? `Steer · goes in ${left}s` : "Steer · goes in at the agent's next step";
-  };
+/** A waiting message's text; click to edit it until it goes out. */
+function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending; clamp?: boolean }) {
+  const [draft, setDraft] = useState<string>();
   const save = () => {
-    if (editing) edit(editing.id, { text: editing.text });
-    setEditing(undefined);
+    if (draft !== undefined && draft !== p.text) edit(p.id, { text: draft });
+    setDraft(undefined);
   };
-
+  if (draft === undefined)
+    return (
+      <Tooltip content="Click to edit" hasHoverIndication={false}>
+        <Text display="block" maxLines={clamp ? 3 : 0} hasTruncateTooltip={false} style={preWrap} onClick={() => setDraft(p.text)}>
+          {p.text.split("\n\n<bash-input>")[0]}
+        </Text>
+      </Tooltip>
+    );
   return (
-    <div className="pending">
-      {state.pendingHeld && (
-        <div className="heldbar">
-          <span className="grow">Stopped. These messages wait until you send them.</span>
-          <button className="btn pri" onClick={() => edit(list[0]!.id, { now: true })}>
-            Send all
-          </button>
-        </div>
+    <TextArea
+      label="Edit message"
+      isLabelHidden
+      size="sm"
+      hasAutoFocus
+      value={draft}
+      rows={Math.min(8, draft.split("\n").length + 1)}
+      onChange={(v) => setDraft(v)}
+      onBlur={save}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") setDraft(undefined);
+        if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), save());
+      }}
+    />
+  );
+}
+
+const usePendingEdit = (sessionId: string): EditPending => (id, change) => act("editPending", { sessionId, id, ...change });
+
+/**
+ * Steers that haven't reached the agent yet: dashed user bubbles at the end of the chat. They go into
+ * the running turn at its next step (one behind a queued message waits for that message's turn).
+ */
+function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveState }) {
+  const edit = usePendingEdit(sessionId);
+  const list = state.pending ?? [];
+  const firstQueued = list.findIndex((p) => p.mode === "followUp");
+  return (
+    <>
+      {list.map((p, i) =>
+        p.mode !== "steer" ? null : (
+          <ChatMessage key={p.id} sender="user">
+            <ChatMessageBubble
+              style={steerBubble(firstQueued >= 0 && i > firstQueued)}
+              metadata={
+                <HStack gap={0.5} hAlign="end" vAlign="center">
+                  <Button label="Queue instead" variant="ghost" size="sm" tooltip="Send after this turn instead" onClick={() => edit(p.id, { mode: "followUp" })} />
+                  <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
+                </HStack>
+              }
+            >
+              <PendingText p={p} edit={edit} />
+            </ChatMessageBubble>
+          </ChatMessage>
+        ),
       )}
-      {list.map((p, i) => (
-        <div
+    </>
+  );
+}
+
+/** Queued messages wait in the box and go out one per turn, top first. */
+function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState }) {
+  const edit = usePendingEdit(sessionId);
+  const list = state.pending ?? [];
+  const [drag, setDrag] = useState<string>();
+  const queued = list.map((p, i) => ({ p, i })).filter((x) => x.p.mode === "followUp");
+  if (!queued.length && !state.pendingHeld) return null;
+  return (
+    <VStack gap={1.5} style={pendingScroll}>
+      {state.pendingHeld && list.length > 0 && (
+        <HStack gap={2} vAlign="center">
+          <StackItem size="fill">
+            <Text type="supporting">Stopped. Waiting messages hold until you send them.</Text>
+          </StackItem>
+          <Button label="Send" variant="primary" size="sm" onClick={() => edit(list[0]!.id, { now: true })} />
+        </HStack>
+      )}
+      {queued.map(({ p, i }) => (
+        <HStack
           key={p.id}
-          className={`pend ${p.mode}${drag === p.id ? " dragging" : ""}`}
-          draggable={editing?.id !== p.id}
+          gap={1.5}
+          vAlign="start"
+          padding={1.5}
+          style={queuedRow(drag === p.id)}
+          draggable
           onDragStart={(e) => {
             setDrag(p.id);
             e.dataTransfer.effectAllowed = "move";
@@ -300,49 +343,17 @@ function PendingList({ sessionId, state }: { sessionId: string; state: LiveState
             setDrag(undefined);
           }}
         >
-          <div className="phd">
-            <span className="grip" title="Drag to reorder">
-              ⋮⋮
-            </span>
-            <span className="lbl grow">{label(p, i)}</span>
-            {i > 0 && (
-              <button title="Move up" onClick={() => edit(p.id, { index: i - 1 })}>
-                ▲
-              </button>
-            )}
-            <button
-              title={p.mode === "steer" ? "Make it queued: runs after this turn" : "Make it a steer: goes into the running turn"}
-              onClick={() => edit(p.id, { mode: p.mode === "steer" ? "followUp" : "steer" })}
-            >
-              {p.mode === "steer" ? "→ queue" : "→ steer"}
-            </button>
-            <button title="Send now" onClick={() => edit(p.id, { now: true })}>
-              ⏵
-            </button>
-            <button title="Cancel this message" onClick={() => edit(p.id, { remove: true })}>
-              ✕
-            </button>
-          </div>
-          {editing?.id === p.id ? (
-            <textarea
-              autoFocus
-              value={editing.text}
-              rows={Math.min(8, editing.text.split("\n").length + 1)}
-              onChange={(e) => setEditing({ id: p.id, text: e.target.value })}
-              onBlur={save}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setEditing(undefined);
-                if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), save());
-              }}
-            />
-          ) : (
-            <div className="txt" title="Click to edit" onClick={() => setEditing({ id: p.id, text: p.text })}>
-              {p.text.split("\n\n<bash-input>")[0]}
-            </div>
-          )}
-        </div>
+          <Icon icon={EllipsisVerticalIcon} size="sm" color="secondary" label="Drag to reorder" />
+          <StackItem size="fill">
+            <PendingText p={p} edit={edit} clamp />
+          </StackItem>
+          <HStack gap={0.5} vAlign="center">
+            <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
+            <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
+          </HStack>
+        </HStack>
       ))}
-    </div>
+    </VStack>
   );
 }
 
@@ -350,7 +361,8 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<{ name: string; description?: string }[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
-  const ta = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<ChatComposerInputHandle>(null);
+  const narrow = useNarrow();
   const running = state.status === "running";
 
   useEffect(() => {
@@ -358,13 +370,6 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       text ? localStorage.setItem(`tether.draft.${sessionId}`, text) : localStorage.removeItem(`tether.draft.${sessionId}`);
     } catch {}
   }, [text, sessionId]);
-
-  useLayoutEffect(() => {
-    const el = ta.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.4) + "px";
-  }, [text]);
 
   // Slash commands: load once when the user types "/" at the start.
   const slash = text.startsWith("/") && !text.includes(" ") ? text.slice(1).toLowerCase() : null;
@@ -384,131 +389,135 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
     if (r === undefined) setText(t);
   };
 
+  const pick = (name: string) => {
+    setText(`/${name} `);
+    input.current?.focus();
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (matches.length) {
+      if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((cmdIdx + 1) % matches.length));
+      if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((cmdIdx - 1 + matches.length) % matches.length));
+      if (e.key === "Tab" || (e.key === "Enter" && !text.includes(" ") && `/${matches[cmdIdx]!.name}` !== text)) {
+        e.preventDefault();
+        setText(`/${matches[cmdIdx]!.name} `);
+        return;
+      }
+    }
+    if (e.key === "ArrowUp" && !text && state.pending?.length) {
+      // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
+      e.preventDefault();
+      rpc("takePending", { sessionId })
+        .then((r) => r.text && setText(r.text))
+        .catch(() => {});
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      // Always ours: the input's own submit doesn't know steer from queue.
+      e.preventDefault();
+      if (window.innerWidth <= 760) {
+        // Phones: Enter is a new line; the button sends.
+        if (!document.execCommand("insertLineBreak")) input.current?.insertText("\n");
+        return;
+      }
+      send(e.altKey ? "followUp" : "steer");
+    }
+  };
+
   const shell = text.startsWith("!");
-  const ctx = state.contextPercent;
-  return (
-    <div className="composer">
-      {state.status === "waiting" && (
-        <div className="waitbar">
-          <span className="wait" />
-          <span className="grow">
-            {state.waitingReason ?? "Waiting"}
-            {state.waitingUntil ? ` · resumes ${fmtClock(state.waitingUntil)}` : ""}
-          </span>
-          <button className="btn" onClick={() => act("abort", { sessionId })}>
-            Cancel
-          </button>
-        </div>
-      )}
-      <div className={`box${shell ? " shell" : ""}`} style={{ position: "relative" }}>
-        {shell && (
-          <div className="shellbar" title="Runs on the runner in the project folder, not through the agent or the guard. The agent sees the output with your next message.">
-            <span className="mono">!</span> Bash mode: runs directly, outside the guard
-          </div>
-        )}
+  const bg = state.background ?? [];
+  const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
+  const hasDrawer = matches.length > 0 || bg.length > 0 || !!state.pending?.length || legacyQueued;
+  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for commands)";
+
+  const drawer = hasDrawer ? (
+    <ChatComposerDrawer>
+      <VStack gap={2}>
         {matches.length > 0 && (
-          <div className="cmds">
+          <VStack style={pendingScroll}>
             {matches.map((c, i) => (
-              <button
+              <Item
                 key={c.name}
-                className={i === cmdIdx ? "on" : ""}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setText(`/${c.name} `);
-                  ta.current?.focus();
-                }}
-              >
-                <span className="mono">/{c.name}</span>
-                <small>{c.description}</small>
-              </button>
+                density="compact"
+                layout="inline"
+                isHighlighted={i === cmdIdx}
+                label={<Text type="code">/{c.name}</Text>}
+                description={c.description}
+                onClick={() => pick(c.name)}
+              />
             ))}
-          </div>
+          </VStack>
         )}
-        {state.background?.length ? (
-          <div className="bgtasks" title="Work the agent keeps running between turns">
-            <span className="spin" />
-            <span className="grow">
-              {state.background.length} background task{state.background.length > 1 ? "s" : ""}: {state.background.map((b) => b.description).join(" · ")}
-            </span>
-          </div>
-        ) : null}
-        {state.pending?.length ? (
-          <PendingList sessionId={sessionId} state={state} />
-        ) : (
-          !state.pending &&
-          state.queued.length > 0 && (
-            <div className="queued">
-              {state.queued.map((q, i) => (
-                <span key={i} className="chip" title={q}>
-                  queued: {q}
-                </span>
-              ))}
-            </div>
-          )
+        {bg.length > 0 && (
+          <Tooltip content="Work the agent keeps running between turns">
+            <HStack gap={2} vAlign="center">
+              <Spinner size="sm" />
+              <StackItem size="fill">
+                <Text type="supporting" maxLines={1}>
+                  {bg.length} background task{bg.length > 1 ? "s" : ""}: {bg.map((b) => b.description).join(" · ")}
+                </Text>
+              </StackItem>
+            </HStack>
+          </Tooltip>
         )}
-        <textarea
-          ref={ta}
-          rows={1}
-          value={text}
-          placeholder={shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for commands)"}
-          onChange={(e) => {
-            setText(e.target.value);
-            setCmdIdx(0);
-          }}
-          onKeyDown={(e) => {
-            if (matches.length) {
-              if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((cmdIdx + 1) % matches.length));
-              if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((cmdIdx - 1 + matches.length) % matches.length));
-              if (e.key === "Tab" || (e.key === "Enter" && !text.includes(" ") && `/${matches[cmdIdx]!.name}` !== text)) {
-                e.preventDefault();
-                setText(`/${matches[cmdIdx]!.name} `);
-                return;
-              }
-            }
-            if (e.key === "ArrowUp" && !text && state.pending?.length) {
-              // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
-              e.preventDefault();
-              rpc("takePending", { sessionId })
-                .then((r) => r.text && setText(r.text))
-                .catch(() => {});
-              return;
-            }
-            if (e.key === "Enter" && !e.shiftKey && !(e.nativeEvent as any).isComposing && window.innerWidth > 760) {
-              e.preventDefault();
-              send(e.altKey ? "followUp" : "steer");
-            }
-          }}
+        {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
+        {legacyQueued && (
+          <HStack gap={1.5} wrap="wrap">
+            {state.queued.map((q, i) => (
+              <Token key={i} size="sm" label={`queued: ${q}`} />
+            ))}
+          </HStack>
+        )}
+      </VStack>
+    </ChatComposerDrawer>
+  ) : undefined;
+
+  return (
+    <VStack gap={2} style={composerDock}>
+      {state.status === "waiting" && (
+        <Banner
+          status="warning"
+          title={`${state.waitingReason ?? "Waiting"}${state.waitingUntil ? ` · resumes ${fmtClock(state.waitingUntil)}` : ""}`}
+          endContent={<Button label="Cancel" size="sm" onClick={() => act("abort", { sessionId })} />}
         />
-        <div className="row">
-          <span className="hide-m">{shell ? "Enter to run · output goes to the agent with your next message" : "Shift+Enter for a new line · ! for bash mode"}</span>
-          <span className="send">
-            {running && !shell && (
-              <button className="btn" onClick={() => send("followUp")} disabled={!text.trim()}>
-                Queue
-              </button>
-            )}
-            <button className="btn pri" onClick={() => send("steer")} disabled={!text.trim()}>
-              {shell ? "Run ↵" : running ? "Steer ↵" : "Send ↵"}
-            </button>
-          </span>
-        </div>
-      </div>
-      <div className="status">
-        {ctx != null && (
-          <span>
-            context {Math.round(ctx)}%
-            <span className="bar">
-              <i style={{ width: `${Math.min(100, ctx)}%` }} />
-            </span>
-          </span>
-        )}
-        {state.cost != null && state.cost > 0 && <span>${state.cost.toFixed(2)}</span>}
-        {Object.entries(state.statuses).map(([k, v]) => (
-          <span key={k} className="hide-m" title={k}>
-            {v}
-          </span>
-        ))}
-      </div>
-    </div>
+      )}
+      <ChatComposer
+        value={text}
+        onChange={(v) => {
+          setText(v);
+          setCmdIdx(0);
+        }}
+        onSubmit={() => send("steer")}
+        placeholder={placeholder}
+        status={shell ? { type: "warning", message: "Bash mode: runs directly on the runner in the project folder, outside the agent and the guard" } : undefined}
+        statusPosition="top"
+        drawer={drawer}
+        input={
+          <ChatComposerInput
+            handleRef={input}
+            label={shell ? "Bash command" : "Message"}
+            placeholder={placeholder}
+            hasHistory={false}
+            pasteAsToken={false}
+            maxRows={12}
+            onKeyDown={onKeyDown}
+            style={shell ? shellFont : undefined}
+          />
+        }
+        footerActions={
+          narrow ? undefined : (
+            <Text type="supporting">{shell ? "Enter to run · output goes to the agent with your next message" : "Shift+Enter for a new line · ! for bash mode"}</Text>
+          )
+        }
+        sendActions={
+          <>
+            {running && <Button label="Stop" variant="destructive" size="sm" icon={<Icon icon="stop" />} onClick={() => act("abort", { sessionId })} />}
+            {running && !shell && <Button label="Queue" size="sm" isDisabled={!text.trim()} onClick={() => send("followUp")} />}
+          </>
+        }
+        sendButton={<Button label={shell ? "Run ↵" : running ? "Steer ↵" : "Send ↵"} variant="primary" size="sm" isDisabled={!text.trim()} onClick={() => send("steer")} />}
+      />
+      <SettingsBar sessionId={sessionId} state={state} />
+    </VStack>
   );
 }
