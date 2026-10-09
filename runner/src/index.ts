@@ -1,0 +1,635 @@
+// Tether runner: runs coding agents on this machine and serves them to the Tether app.
+// It dials out to the app (TETHER_URL) with an app service token (TETHER_TOKEN), so the
+// machine needs no inbound port.
+
+import { existsSync, statSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
+import { basename, dirname, resolve } from "node:path";
+import type {
+  HarnessId,
+  Msg,
+  OpName,
+  Ops,
+  ProjectInfo,
+  RunnerToServer,
+  ServerToRunner,
+  SessionSearchResult,
+  SessionEvent,
+  SessionSummary,
+} from "../../web/src/shared/protocol";
+import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
+import { agyHookInstalled, antigravityAdapter, installAgyHook } from "./adapters/antigravity";
+import { claudeAdapter } from "./adapters/claude";
+import { codexAdapter } from "./adapters/codex";
+import { piAdapter } from "./adapters/pi";
+import type { Adapter, Sink } from "./adapters/types";
+import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./config";
+import { workingTreeDiff } from "./checkpoint";
+import { buildBrief } from "./handoff";
+import { getUsage } from "./usage";
+import { recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import type { ChainEntry } from "../../web/src/shared/protocol";
+import type { LiveSession } from "./session";
+
+const VERSION = "0.1.0";
+const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
+const TOKEN = process.env.TETHER_TOKEN ?? "dev";
+
+const adapters: Record<HarnessId, Adapter> = {
+  "claude-code": claudeAdapter,
+  codex: codexAdapter,
+  pi: piAdapter,
+  opencode: opencodeAdapter,
+  kiro: kiroAdapter,
+  antigravity: antigravityAdapter,
+};
+const live = new Map<string, LiveSession>();
+
+// ---------------- connection ----------------
+
+let ws: WebSocket | undefined;
+let connected = false;
+const outbox: RunnerToServer[] = [];
+
+function send(m: RunnerToServer) {
+  if (connected && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+  else if (m.t !== "event") outbox.push(m); // events are re-synced by snapshots on reconnect
+}
+
+/** Applies runner-side overrides (archive, user title) to a summary. */
+function decorate(s: SessionSummary): SessionSummary {
+  const cfg = config();
+  const title = cfg.titles[s.id];
+  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}) };
+}
+
+const sink: Sink = {
+  emit: (sessionId: string, seq: number, event: SessionEvent) => send({ t: "event", sessionId, seq, event }),
+  summary: (s: SessionSummary) => send({ t: "sessions", projectPath: s.projectPath, session: decorate(s) }),
+  handoff: (from, to, reason, pendingPrompt) => handoff(from, to, reason, pendingPrompt),
+};
+
+/**
+ * Cross-harness fallback: a new session in `to.harness`, same directory, seeded with a brief of
+ * the conversation so far. The two sessions are linked both ways, and browsers on the old one
+ * follow the link.
+ */
+async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) {
+  const a = adapters[to.harness];
+  const brief = await buildBrief({
+    messages: from.t.messages,
+    cwd: from.projectPath,
+    fromLabel: `${from.harness}, ${from.t.state.model ?? "default model"}`,
+    reason,
+    pendingPrompt,
+  });
+  const next = a.create(from.projectPath, { model: to.model, permissionMode: from.t.state.permissionMode }, sink);
+  next.t.state.guard = from.guardMode;
+  await next.start();
+  track(next);
+  next.inheritDiffBase(from.diffBase);
+  next.setTitle(from.title);
+  next.setState({
+    chain: from.t.state.chain,
+    profile: from.t.state.profile,
+    preferEarlier: from.t.state.preferEarlier,
+    handoffFrom: { sessionId: from.id, reason },
+    guard: from.guardMode,
+  });
+  if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
+  from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
+  from.notice(`${reason}. Continued in ${to.harness} · ${to.model}.`, "warning");
+  next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
+  if (pendingPrompt) next.addUserMessage(pendingPrompt);
+  // Messages still waiting on the old session move over and wait on the new one.
+  const carry = from.t.state.pending ?? [];
+  if (carry.length) from.setState({ pending: [], pendingHeld: undefined });
+  await next.continueTurn(brief);
+  if (carry.length) next.setState({ pending: carry });
+  sink.summary(next.summary());
+}
+
+function connect(attempt = 0) {
+  const url = URL_BASE.replace(/^http/, "ws") + "/api/runner";
+  const sock = new WebSocket(url, { headers: { Authorization: `Bearer ${TOKEN}` } } as any);
+  ws = sock;
+  let pinger: ReturnType<typeof setInterval> | undefined;
+  sock.onopen = async () => {
+    connected = true;
+    attempt = 0;
+    console.log(`connected to ${URL_BASE}`);
+    const harnesses = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available()) ? a.id : null)))).filter(Boolean) as HarnessId[];
+    sock.send(JSON.stringify({ t: "hello", runner: { id: config().runnerId, hostname: hostname(), version: VERSION, harnesses } } satisfies RunnerToServer));
+    while (outbox.length) sock.send(JSON.stringify(outbox.shift()));
+    // Cloudflare closes idle WebSockets after ~100 s.
+    pinger = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send(JSON.stringify({ t: "pong" })), 20_000);
+  };
+  sock.onmessage = (ev) => {
+    let m: ServerToRunner;
+    try {
+      m = JSON.parse(String(ev.data));
+    } catch {
+      return;
+    }
+    if (m.t === "ping") send({ t: "pong" });
+    else if (m.t === "rpc") handle(m.id, m.op, m.args);
+  };
+  sock.onclose = (ev) => {
+    clearInterval(pinger);
+    if (ws !== sock) return;
+    connected = false;
+    const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+    console.log(`disconnected (${ev.code} ${ev.reason || ""}); retrying in ${delay / 1000}s`);
+    setTimeout(() => connect(attempt + 1), delay);
+  };
+  sock.onerror = () => {};
+}
+
+async function handle(id: string, op: OpName, args: any) {
+  try {
+    const data = await (ops[op] as (a: any) => Promise<unknown>)(args ?? {});
+    send({ t: "result", id, ok: true, data });
+  } catch (e: any) {
+    send({ t: "result", id, ok: false, error: e?.message ?? String(e) });
+  }
+}
+
+// ---------------- sessions ----------------
+
+function track(s: LiveSession) {
+  live.set(s.id, s);
+  s.onClose = () => live.delete(s.id);
+  s.loadPrefs();
+  return s;
+}
+
+function parseId(sessionId: string): { harness: HarnessId; nativeId: string } {
+  const i = sessionId.indexOf(":");
+  const harness = sessionId.slice(0, i) as HarnessId;
+  if (!adapters[harness]) throw new Error(`unknown harness in ${sessionId}`);
+  return { harness, nativeId: sessionId.slice(i + 1) };
+}
+
+async function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
+  const existing = live.get(sessionId);
+  if (existing && !existing.closed) return existing;
+  const { harness, nativeId } = parseId(sessionId);
+  let path = projectPath;
+  if (!path) {
+    for (const p of await allProjects()) {
+      if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) {
+        path = p.path;
+        break;
+      }
+    }
+  }
+  if (!path) throw new Error(`session ${sessionId} not found`);
+  const s = await adapters[harness].resume(nativeId, path, sink);
+  await s.start();
+  return track(s);
+}
+
+function requireLive(sessionId: string): LiveSession {
+  const s = live.get(sessionId);
+  if (!s || s.closed) throw new Error("Session is not running. Open it again.");
+  return s;
+}
+
+// Scanning every harness's session store takes seconds; serve a cached copy and refresh it behind.
+let projectCache: { at: number; lists: Awaited<ReturnType<Adapter["listProjects"]>>[] } | undefined;
+let projectScan: Promise<void> | undefined;
+function scanProjects() {
+  projectScan ??= Promise.all(Object.values(adapters).map((a) => a.listProjects().catch(() => [])))
+    .then((lists) => void (projectCache = { at: Date.now(), lists }))
+    .finally(() => (projectScan = undefined));
+  return projectScan;
+}
+
+async function allProjects(): Promise<ProjectInfo[]> {
+  const cfg = config();
+  const by = new Map<string, ProjectInfo>();
+  if (!projectCache) await scanProjects();
+  else if (Date.now() - projectCache.at > 15_000) scanProjects();
+  const lists = projectCache!.lists;
+  for (const list of lists)
+    for (const p of list) {
+      const cur = by.get(p.path) ?? { path: p.path, name: basename(p.path) || p.path, sessionCount: 0, updatedAt: 0, pinned: false, live: [] };
+      cur.sessionCount += p.count;
+      cur.updatedAt = Math.max(cur.updatedAt, p.updatedAt);
+      by.set(p.path, cur);
+    }
+  for (const path of cfg.projects) {
+    const cur = by.get(path) ?? { path, name: basename(path) || path, sessionCount: 0, updatedAt: 0, pinned: true, live: [] };
+    cur.pinned = true;
+    by.set(path, cur);
+  }
+  for (const s of live.values()) if (!s.closed) by.get(s.projectPath)?.live.push(decorate(s.summary()));
+  return [...by.values()]
+    .filter((p) => existsSync(p.path))
+    .map((p) => (cfg.hidden.includes(p.path) ? { ...p, archived: true } : p))
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+}
+
+function expand(path: string) {
+  return resolve(path.replace(/^~(?=$|\/)/, homedir()));
+}
+
+async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
+  const stored = (await Promise.all(Object.values(adapters).map((a) => a.listSessions(projectPath).catch(() => [])))).flat();
+  const out = new Map(stored.map((s) => [s.id, s]));
+  for (const s of live.values()) if (s.projectPath === projectPath && !s.closed) out.set(s.id, s.summary());
+  return [...out.values()].map(decorate).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+type IndexedUserMessage = { ts: number; text: string };
+const searchableMessages = new Map<string, { updatedAt: number; messages: IndexedUserMessage[] }>();
+const searchLoads = new Map<string, { updatedAt: number; promise: Promise<IndexedUserMessage[]> }>();
+let searchableChars = 0;
+const MAX_SEARCHABLE_CHARS = 8_000_000;
+
+function cacheSearchableMessages(session: SessionSummary, messages: IndexedUserMessage[]) {
+  const previous = searchableMessages.get(session.id);
+  if (previous) searchableChars -= previous.messages.reduce((n, message) => n + message.text.length, 0);
+  searchableMessages.delete(session.id);
+  const size = messages.reduce((n, message) => n + message.text.length, 0);
+  if (size > MAX_SEARCHABLE_CHARS) return;
+  searchableMessages.set(session.id, { updatedAt: session.updatedAt, messages });
+  searchableChars += size;
+  while (searchableChars > MAX_SEARCHABLE_CHARS || searchableMessages.size > 2000) {
+    const oldestId = searchableMessages.keys().next().value;
+    if (!oldestId) break;
+    const oldest = searchableMessages.get(oldestId)!;
+    searchableChars -= oldest.messages.reduce((n, message) => n + message.text.length, 0);
+    searchableMessages.delete(oldestId);
+  }
+}
+
+async function userMessages(session: SessionSummary): Promise<IndexedUserMessage[]> {
+  const active = live.get(session.id);
+  if (active && !active.closed) return indexUserMessages(active.t.messages);
+  const cached = searchableMessages.get(session.id);
+  if (cached?.updatedAt === session.updatedAt) return cached.messages;
+  const pending = searchLoads.get(session.id);
+  if (pending?.updatedAt === session.updatedAt) return pending.promise;
+  const readHistory = adapters[session.harness].readHistory;
+  if (!readHistory) return [];
+  const promise = readHistory(session.nativeId, session.projectPath).then((transcript) => {
+    const messages = indexUserMessages(transcript);
+    cacheSearchableMessages(session, messages);
+    return messages;
+  });
+  searchLoads.set(session.id, { updatedAt: session.updatedAt, promise });
+  try {
+    return await promise;
+  } finally {
+    if (searchLoads.get(session.id)?.promise === promise) searchLoads.delete(session.id);
+  }
+}
+
+function indexUserMessages(messages: Msg[]): IndexedUserMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "user") return [];
+    const text = message.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
+    return text ? [{ ts: message.ts, text }] : [];
+  });
+}
+
+function excerpt(text: string, query: string): string {
+  const lower = text.toLocaleLowerCase();
+  const at = lower.indexOf(query);
+  const start = Math.max(0, at - 90);
+  const end = Math.min(text.length, at + query.length + 110);
+  return `${start ? "…" : ""}${text.slice(start, end).replace(/\s+/g, " ")}${end < text.length ? "…" : ""}`;
+}
+
+async function findSessionMatches(queryText: string): Promise<SessionSearchResult[]> {
+  const terms = queryText.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const projects = await allProjects();
+  const sessions = (await Promise.all(projects.map((project) => projectSessions(project.path)))).flat();
+  const matches: SessionSearchResult[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < sessions.length) {
+      const session = sessions[next++]!;
+      const title = session.title.toLocaleLowerCase();
+      if (terms.every((term) => title.includes(term))) {
+        matches.push({ session, excerpt: session.title, ts: session.updatedAt });
+        continue;
+      }
+      try {
+        const messages = await userMessages(session);
+        const hit = [...messages].reverse().find((message) => {
+          const lower = message.text.toLocaleLowerCase();
+          return terms.every((term) => lower.includes(term));
+        });
+        if (hit) matches.push({ session, excerpt: excerpt(hit.text, terms[0]!), ts: hit.ts });
+      } catch {
+        // A harness may have removed or locked a stored transcript since its summary was listed.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, sessions.length) }, worker));
+  return matches.sort((a, b) => b.session.updatedAt - a.session.updatedAt);
+}
+
+// ---------------- ops ----------------
+
+type Handlers = { [K in OpName]: (args: Ops[K]["args"]) => Promise<Ops[K]["result"]> };
+
+const ops: Handlers = {
+  async listProjects() {
+    return allProjects();
+  },
+
+  async addProject({ path }) {
+    const p = expand(path);
+    if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`${p} is not a directory`);
+    const cfg = config();
+    if (!cfg.projects.includes(p)) cfg.projects.push(p);
+    cfg.hidden = cfg.hidden.filter((h) => h !== p);
+    saveConfig();
+    return (await allProjects()).find((x) => x.path === p)!;
+  },
+
+  async removeProject({ path }) {
+    const cfg = config();
+    cfg.projects = cfg.projects.filter((p) => p !== path);
+    if (!cfg.hidden.includes(path)) cfg.hidden.push(path);
+    saveConfig();
+    return {};
+  },
+
+  async archiveProject({ path, archived }) {
+    const cfg = config();
+    cfg.hidden = cfg.hidden.filter((h) => h !== path);
+    if (archived) cfg.hidden.push(path);
+    saveConfig();
+    return {};
+  },
+
+  async listDirs({ path }) {
+    const p = expand(path || "~");
+    const entries = await readdir(p, { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
+      .map((e) => e.name)
+      .sort();
+    return { path: p, dirs: p === "/" ? dirs : ["..", ...dirs].map((d) => (d === ".." ? dirname(p) : resolve(p, d))) };
+  },
+
+  async listSessions({ projectPath }) {
+    return projectSessions(projectPath);
+  },
+
+  async searchSessions({ query }) {
+    const clean = query.trim().slice(0, 200);
+    return clean ? findSessionMatches(clean) : [];
+  },
+
+  async createSession({ projectPath, harness, model, profile, prompt, permissionMode, guard }) {
+    const a = adapters[harness];
+    if (!a) throw new Error(`unknown harness ${harness}`);
+    const s = a.create(expand(projectPath), { model: profile ? undefined : model, permissionMode }, sink);
+    // Set before start() so harnesses that take it as a launch flag (Antigravity) see it.
+    s.t.state.guard = guard ?? config().guard?.defaultMode ?? "auto";
+    await s.start();
+    track(s);
+    s.setState({ guard: s.t.state.guard });
+    if (profile) await s.setModelOrProfile(undefined, profile);
+    if (prompt) await s.prompt(prompt);
+    sink.summary(s.summary());
+    return s.summary();
+  },
+
+  async openSession({ sessionId, projectPath }) {
+    return (await getLive(sessionId, projectPath)).snapshot();
+  },
+
+  async closeSession({ sessionId }) {
+    live.get(sessionId)?.close();
+    return {};
+  },
+
+  async archiveSession({ sessionId, archived }) {
+    const cfg = config();
+    cfg.archived = cfg.archived.filter((id) => id !== sessionId);
+    if (archived) {
+      cfg.archived.push(sessionId);
+      const s = live.get(sessionId);
+      if (s && s.t.state.status === "idle") s.close();
+    }
+    saveConfig();
+    return {};
+  },
+
+  async prompt({ sessionId, text, mode }) {
+    const s = await getLive(sessionId);
+    if (text.startsWith("!")) {
+      const command = text.slice(1).trim();
+      if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
+      return {};
+    }
+    await s.prompt(s.withShellContext(text), mode);
+    return {};
+  },
+
+  async abort({ sessionId }) {
+    await requireLive(sessionId).stop();
+    return {};
+  },
+
+  async editPending({ sessionId, id, ...change }) {
+    await requireLive(sessionId).editPending(id, change);
+    return {};
+  },
+
+  async takePending({ sessionId }) {
+    return { text: requireLive(sessionId).takePending() };
+  },
+
+  async pushStatus({ endpoint }) {
+    return { publicKey: vapidPublicKey(), kinds: endpoint ? subscription(endpoint)?.kinds : undefined };
+  },
+
+  async pushSubscribe({ subscription: sub, kinds, label }) {
+    if (!/^https:\/\//.test(sub.endpoint)) throw new Error("Push endpoints must be https");
+    subscribe({ endpoint: sub.endpoint, keys: sub.keys, kinds, label });
+    return {};
+  },
+
+  async pushUnsubscribe({ endpoint }) {
+    unsubscribe(endpoint);
+    return {};
+  },
+
+  async pushTest({ endpoint }) {
+    await sendTest(endpoint);
+    return {};
+  },
+
+  async listNotifications() {
+    return recent();
+  },
+
+  async amendSteer({ sessionId, msgId, text }) {
+    requireLive(sessionId).amendSteer(msgId, text);
+    return {};
+  },
+
+  async setModel({ sessionId, model, profile }) {
+    await requireLive(sessionId).setModelOrProfile(model, profile);
+    return {};
+  },
+
+  async setGuard({ sessionId, mode }) {
+    requireLive(sessionId).setGuard(mode);
+    return {};
+  },
+
+  async restoreCheckpoint({ sessionId, id }) {
+    await (await getLive(sessionId)).restoreCheckpoint(id);
+    return {};
+  },
+
+  async getSessionDiff({ sessionId }) {
+    const session = await getLive(sessionId);
+    return workingTreeDiff(session.projectPath, session.diffBase);
+  },
+
+  async approveBlocked({ sessionId, toolId }) {
+    await (await getLive(sessionId)).approveBlocked(toolId);
+    return {};
+  },
+
+  async guardSetup({ install, judgeModel, defaultMode }) {
+    const cfg = config();
+    if (install) installAgyHook();
+    if (judgeModel || defaultMode) {
+      cfg.guard = { ...cfg.guard, ...(judgeModel ? { judgeModel } : {}), ...(defaultMode ? { defaultMode } : {}) };
+      saveConfig();
+    }
+    return { antigravityHook: agyHookInstalled(), judgeModel: cfg.guard?.judgeModel ?? "haiku", defaultMode: cfg.guard?.defaultMode ?? "auto" };
+  },
+
+  async setChain({ sessionId, chain, preferEarlier }) {
+    await requireLive(sessionId).setChain(chain, preferEarlier, undefined);
+    return {};
+  },
+
+  async setThinking({ sessionId, level }) {
+    await requireLive(sessionId).setThinking(level);
+    return {};
+  },
+
+  async setPermissionMode({ sessionId, mode }) {
+    await requireLive(sessionId).setPermissionMode(mode);
+    return {};
+  },
+
+  async uiRespond({ sessionId, response }) {
+    requireLive(sessionId).uiRespond(response);
+    return {};
+  },
+
+  async getUsage({ force }) {
+    return getUsage(force);
+  },
+
+  async renameSession({ sessionId, projectPath, title }) {
+    const cfg = config();
+    title = title.replace(/\s+/g, " ").trim().slice(0, 200);
+    if (title) cfg.titles[sessionId] = title;
+    else delete cfg.titles[sessionId];
+    saveConfig();
+    // Also rename in the harness when its process is up; the stored title covers the rest.
+    const s = live.get(sessionId);
+    if (s && !s.closed) {
+      if (title) await s.rename(title).catch(() => s.setTitle(title));
+      sink.summary(s.summary());
+    } else {
+      const found = (await ops.listSessions({ projectPath })).find((x) => x.id === sessionId);
+      if (found) sink.summary(found);
+    }
+    return {};
+  },
+
+  async listModels({ harness, sessionId }) {
+    const s = sessionId ? live.get(sessionId) : undefined;
+    return adapters[harness].listModels(s);
+  },
+
+  async getProfiles() {
+    return availableProfiles();
+  },
+
+  async setProfiles({ profiles }) {
+    const clean = profiles
+      .map((p) => ({ name: p.name.trim(), chain: p.chain.map((c) => c.trim()).filter(Boolean) }))
+      .filter((p) => p.name && p.chain.length);
+    config().profiles = clean;
+    saveConfig();
+    return clean;
+  },
+
+  async listCommands({ sessionId }) {
+    return requireLive(sessionId).listCommands();
+  },
+};
+
+// ---------------- main ----------------
+
+process.on("unhandledRejection", (e) => console.error("unhandled:", e));
+for (const sig of ["SIGINT", "SIGTERM"] as const)
+  process.on(sig, () => {
+    // Record what each session was doing before closing anything, then keep it: resumeActive()
+    // on the next start picks these sessions back up.
+    for (const s of live.values()) if (!s.closed) s.savePrefs();
+    freezeConfig();
+    console.log(`stopping (${sig}); ${[...live.values()].filter((s) => !s.closed && s.busy).length} busy session(s) will resume on restart`);
+    for (const s of live.values()) s.close();
+    setTimeout(() => process.exit(0), 500);
+  });
+
+/**
+ * Turns that were running when the runner last stopped are resumed, and messages the agent had
+ * not taken yet are sent again, so a restart never strands an agent or loses what you typed.
+ */
+async function resumeActive() {
+  // Copy what was saved now: opening a session re-saves its prefs (as idle), overwriting these.
+  const saved = Object.entries(config().sessions).map(([id, p]) => [id, structuredClone(p)] as const);
+  for (const [id, p] of saved) {
+    const unsent = p.pending ?? [];
+    if (!p.active && !unsent.length) continue;
+    try {
+      const s = await getLive(id, p.projectPath);
+      if (p.active) {
+        const bg = p.background ?? [];
+        const parts = ["The runner restarted while this session was working. Resuming."];
+        if (bg.length) parts.push(`Stopped background work: ${bg.map((b) => b.description).join("; ")}.`);
+        if (unsent.length) parts.push(`Resending ${unsent.length} message${unsent.length > 1 ? "s" : ""} it had not received.`);
+        s.notice(parts.join(" "), "warning");
+        await s.continueTurn(
+          bg.length
+            ? `The session was interrupted by a restart, which also stopped these background tasks: ${bg
+                .map((b) => `"${b.description}"${b.type ? ` (${b.type})` : ""}`)
+                .join(", ")}. Check what they had finished, restart the ones still needed, and continue where you left off.`
+            : "The session was interrupted by a restart. Continue where you left off.",
+        );
+      }
+      for (const m of unsent) await s.prompt(m.text, m.mode);
+      console.log(`resumed ${id}${unsent.length ? ` (resent ${unsent.length})` : ""}`);
+    } catch (e: any) {
+      console.error(`could not resume ${id}: ${e?.message ?? e}`);
+      prefs(id).active = false;
+      saveConfig();
+    }
+  }
+}
+
+console.log(`Tether runner ${VERSION} (${config().runnerId}) → ${URL_BASE}`);
+connect();
+scanProjects();
+// A second runner on the same machine (tests, dev) must never take over live sessions.
+if (!process.env.TETHER_NO_RESUME) resumeActive();

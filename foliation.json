@@ -1,0 +1,12 @@
+{
+  "name": "tether",
+  "description": "Run Claude Code, pi, opencode, Kiro and Antigravity agents on your machines from anywhere.",
+  "icon": "🧑‍💻",
+  "frontend": { "dir": "web" },
+  "backend": {
+    "dir": "server",
+    "entry": "src/index.ts",
+    "healthcheck": "/api/health"
+  },
+  "resources": { "memory_mb": 512 }
+}

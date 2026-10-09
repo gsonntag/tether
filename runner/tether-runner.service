@@ -1,0 +1,23 @@
+# systemd user unit for the Tether runner.
+#   mkdir -p ~/.config/systemd/user && cp tether-runner.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now tether-runner
+#   loginctl enable-linger $USER   # keep it running when you're logged out
+[Unit]
+Description=Tether runner (coding agents for the Tether app)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/web-coder/runner
+EnvironmentFile=%h/.config/tether/runner.env
+# Agents need the same PATH you use interactively (bun, node, pi, claude, opencode, ...).
+Environment=PATH=%h/.bun/bin:%h/.local/bin:%h/.nvm/versions/node/v22.22.2/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.bun/bin/bun src/index.ts
+Restart=always
+RestartSec=3
+# Let agent child processes finish their current write; the runner resumes active turns on start.
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

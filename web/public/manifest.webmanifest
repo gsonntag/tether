@@ -1,0 +1,10 @@
+{
+  "name": "Tether",
+  "short_name": "Tether",
+  "description": "Run coding agents on your machines from anywhere.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0c0e",
+  "theme_color": "#0b0c0e",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

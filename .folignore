@@ -1,0 +1,9 @@
+# The runner runs on your own machines, not on Foliation.
+runner/
+docs/
+**/node_modules/
+web/dist/
+.git/
+.env
+.env.*
+*.log
