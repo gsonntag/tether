@@ -53,6 +53,7 @@ import type {
   ContextActivityKind,
   ContextImportPreview,
   ContextSkill,
+  ContextStatus,
   MemoryCommit,
   MemoryConflict,
   MemoryEntry,
@@ -147,6 +148,22 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
                 <Heading level={1}>Memory & Skills</Heading>
               </StackItem>
               {status?.busy && !wizard && <Spinner size="sm" label="Merging…" />}
+              {!wizard && (
+                <Button
+                  label="Turn off"
+                  size="sm"
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        "Turn the master context off? Tether removes its managed blocks, MCP entries and skill links from every harness (skills it had replaced become real copies again). The store, its history and the backups are kept; importing again turns it back on.",
+                      )
+                    )
+                      return;
+                    const st = await act("contextDisable", {});
+                    if (st) useStore.setState({ contextStatus: st });
+                  }}
+                />
+              )}
             </HStack>
             {!wizard && (
               <TabList value={tab} onChange={(v) => setTab(v as TabId)} role="tablist" hasDivider isFullBleed>
@@ -201,6 +218,14 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
 
 // ---------------- first-run import wizard ----------------
 
+const PHASE_LABEL: Record<NonNullable<ContextStatus["progress"]>["phase"], string> = {
+  skills: "Importing skills…",
+  scan: "Reading memory sources…",
+  merge: "Merging memories…",
+  export: "Updating each harness's files…",
+  disable: "Turning off…",
+};
+
 function ImportWizard({ importing, onImport, onFailed }: { importing: boolean; onImport: () => void; onFailed: () => void }) {
   const [preview, setPreview] = useState<ContextImportPreview>();
   const [err, setErr] = useState<string>();
@@ -232,11 +257,21 @@ function ImportWizard({ importing, onImport, onFailed }: { importing: boolean; o
     const progress = live.filter((a) => a.ts >= startedAt.current - 1000);
     const merged = progress.filter((a) => a.kind === "new" || a.kind === "update" || a.kind === "duplicate" || a.kind === "contradicts").length;
     const skills = progress.filter((a) => a.kind === "skill").length;
+    const p = status?.progress;
+    const known = !!p && p.total > 0;
     return (
       <VStack padding={4} gap={4} style={capped}>
         <VStack gap={2}>
-          <Text type="label">Importing…</Text>
-          <ProgressBar label="Import progress" isLabelHidden />
+          <Text type="label">{p ? PHASE_LABEL[p.phase] : "Importing…"}</Text>
+          <ProgressBar
+            label="Import progress"
+            isLabelHidden
+            isIndeterminate={!known}
+            value={known ? p!.done : 0}
+            max={known ? p!.total : 100}
+            hasValueLabel={known}
+            formatValueLabel={(v, max) => `${v} of ${max}`}
+          />
           <Text type="supporting" color="secondary">
             {`${merged} ${merged === 1 ? "memory" : "memories"} merged, ${skills} skill ${skills === 1 ? "change" : "changes"} so far.`} You can leave this
             page; the import keeps going on the runner.

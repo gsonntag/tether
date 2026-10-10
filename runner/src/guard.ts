@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import { config } from "./config";
-import { parseJsonReply, runBackground } from "./context/background";
+import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
@@ -267,8 +267,7 @@ When denying, say what the agent should do instead if there is a safer way.`;
 const cache = new Map<string, Verdict>();
 
 export async function judge(call: ToolCall, goal: string): Promise<Verdict> {
-  const g = config().guard ?? {};
-  if (g.judgeModel === "off") return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
+  if (!judgeEnabled()) return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
   const key = JSON.stringify([call.cwd, call.tool, call.input]);
   const hit = cache.get(key);
   if (hit) return hit;

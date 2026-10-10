@@ -1,7 +1,7 @@
 // The master store: memory files, the skill library, and the bookkeeping beside them
 // (watermarks, activity feed, conflicts). Memory and skills are committed; bookkeeping is not.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { ContextActivity, MemoryConflict, MemoryEntry } from "../../../web/src/shared/protocol";
 import { contentHash, parseMemory, serializeMemory, similarity, slugify, words, type Memory } from "./format";
@@ -21,11 +21,17 @@ export function scopeDir(scope: string): string {
   return scope.startsWith("repo:") ? `repos/${keyDir(scope.slice(5))}` : "global";
 }
 
-export function writeAtomic(path: string, text: string) {
+export function writeAtomic(path: string, text: string, mode?: number) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tether-tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, text);
+    if (mode !== undefined) chmodSync(tmp, mode);
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -54,6 +60,10 @@ export class Store {
   }
 
   async init() {
+    // Only this runner commits here; a lock left by a crash would block every commit after it.
+    const lock = join(this.dir, ".git", "index.lock");
+    const st = statSync(lock, { throwIfNoEntry: false });
+    if (st && Date.now() - st.mtimeMs > 60_000) rmSync(lock, { force: true });
     await ensureRepo(this.dir);
     for (const d of ["memory/global", "memory/repos", "skills", "inbox"]) mkdirSync(join(this.dir, d), { recursive: true });
   }
