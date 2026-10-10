@@ -192,7 +192,25 @@ export interface LiveState {
   statuses: Record<string, string>;
   pendingUi: UiRequest[];
   cost?: number;
+  /** older runners: context window used, 0-100 (newer ones send `context`) */
   contextPercent?: number;
+  /** how full the model's context window is, as of its last request */
+  context?: ContextUsage;
+}
+
+export interface ContextUsage {
+  /** tokens the model saw on its last request (input + cache read + cache write); unknown right after compaction */
+  used?: number;
+  /** the model's context window */
+  max?: number;
+  /** the model these numbers are for */
+  model?: string;
+  /** breakdown of `used`, when the harness reports one */
+  input?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** `max` is Tether's guess from the model name; the harness hasn't reported it */
+  maxEstimated?: boolean;
 }
 
 export interface UsageWindow {

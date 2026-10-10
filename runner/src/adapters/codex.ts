@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
+import { codexRollout, codexTokenUsage } from "../context";
 import type { Classified } from "../fallback";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -361,6 +362,13 @@ class CodexSession extends LiveSession {
     modelCache = this.models;
     modelCacheAt = Date.now();
     this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels() });
+    // Codex reports token usage only as turns run; a resumed thread's last count is in its rollout.
+    if (this.opts.resume && r.thread.path && !this.t.state.context)
+      await Bun.file(r.thread.path)
+        .slice(-4_000_000)
+        .text()
+        .then((text) => this.setContext(codexRollout(text, r.model)))
+        .catch(() => {});
   }
 
   private levels(): string[] {
@@ -465,6 +473,7 @@ class CodexSession extends LiveSession {
         if (item.type === "userMessage") break;
         if (item.type === "contextCompaction") {
           this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text: "Context compacted." }], ts: Date.now(), source: "compaction" } });
+          this.contextCompacted();
           break;
         }
         this.patches.delete(item.id);
@@ -492,8 +501,7 @@ class CodexSession extends LiveSession {
         if (p.willRetry) this.setRetrying(`retrying: ${p.error?.message ?? "error"}`);
         break;
       case "thread/tokenUsage/updated": {
-        const u = p.tokenUsage;
-        if (u?.modelContextWindow) this.setState({ contextPercent: (u.last.totalTokens / u.modelContextWindow) * 100 });
+        this.setContext(codexTokenUsage(p.tokenUsage, this.model ?? this.t.state.model));
         break;
       }
       case "account/rateLimits/updated":
