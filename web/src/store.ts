@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import type {
   AgentNotice,
+  ContextActivity,
+  ContextEvent,
+  ContextStatus,
+  MemoryConflict,
   OpName,
   Ops,
   ProjectInfo,
@@ -46,8 +50,6 @@ interface State {
   sidebarHidden: boolean;
   /** the session's Activity panel (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
-  /** a runner-wide page instead of a session */
-  page?: "running";
   dialog?: "new" | "addProject" | "settings" | "notify";
   newSessionProject?: string;
   usage?: UsageReport;
@@ -57,6 +59,16 @@ interface State {
   noticesSeen: number;
   /** individual notices opened on this device */
   noticesRead: string[];
+  /** a full page shown instead of a session */
+  page?: "memory" | "running";
+  /** the Memory & Skills tab to switch to (set by links into the page) */
+  memoryTab?: "memory" | "activity" | "conflicts" | "skills";
+  /** master context (shared memory and skills) */
+  contextStatus?: ContextStatus;
+  /** memory conflicts nobody has resolved yet, newest first */
+  conflicts: MemoryConflict[];
+  /** activity that arrived while this tab was open, newest first */
+  contextLive: ContextActivity[];
 }
 
 export const useStore = create<State>(() => ({
@@ -75,6 +87,8 @@ export const useStore = create<State>(() => ({
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
+  conflicts: [],
+  contextLive: [],
 }));
 
 const set = useStore.setState;
@@ -170,6 +184,7 @@ function onMessage(m: ServerToBrowser) {
         refreshProjects();
         refreshUsage();
         refreshNotices();
+        refreshContext();
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -191,6 +206,9 @@ function onMessage(m: ServerToBrowser) {
       if (m.runnerId === get().runnerId) refreshNoticesSoon();
       if (m.runnerId === get().runnerId && m.session) upsertSummary(m.session);
       else if (m.runnerId === get().runnerId && m.projectPath) refreshSessions(m.projectPath);
+      break;
+    case "context":
+      if (m.runnerId === get().runnerId) onContextEvent(m.event);
       break;
   }
 }
@@ -375,6 +393,39 @@ export function selectSession(sessionId: string | undefined) {
   } else history.replaceState(null, "", "#/");
 }
 
+// ---------------- master context (shared memory and skills) ----------------
+
+/** Shows the Memory & Skills page (or, with no page, the session view again). */
+export function openPage(page: State["page"], tab?: State["memoryTab"]) {
+  set({ page, memoryTab: tab, sidebarOpen: false, ...(page ? { selected: undefined } : {}) });
+  history.replaceState(null, "", page ? `#/${page}` : "#/");
+}
+
+export async function refreshContext() {
+  if (!get().runnerId) return;
+  try {
+    const [contextStatus, conflicts] = await Promise.all([rpc("contextStatus", {}), rpc("listConflicts", { status: "open" })]);
+    set({ contextStatus, conflicts });
+  } catch {
+    // Older runners have no master context: the page says so.
+  }
+}
+
+function onContextEvent(e: ContextEvent) {
+  if (e.type === "status") set({ contextStatus: e.status });
+  else if (e.type === "conflict") {
+    const c = e.conflict;
+    set((s) => ({ conflicts: [...(c.status === "open" ? [c] : []), ...s.conflicts.filter((x) => x.id !== c.id)] }));
+  } else set((s) => ({ contextLive: [e.activity, ...s.contextLive.filter((a) => a.id !== e.activity.id)].slice(0, 300) }));
+}
+
+/** Keep new / keep old / dismiss: the conflict leaves the inbox and the session at once. */
+export async function resolveConflict(id: string, action: "keep-new" | "keep-old" | "dismiss") {
+  const c = await act("resolveConflict", { id, action });
+  if (c) set((s) => ({ conflicts: s.conflicts.filter((x) => x.id !== id) }));
+  return c;
+}
+
 // ---------------- notifications (agent finished / needs you) ----------------
 
 export function refreshNotices() {
@@ -418,9 +469,10 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [] });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [] });
   refreshProjects();
   refreshNotices();
+  refreshContext();
 }
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner
@@ -448,12 +500,6 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
 export function setActivityOpen(open: boolean) {
   set({ activityOpen: open });
   if (!isNarrow()) saveJSON("tether.activityOpen", open);
-}
-
-/** The runner-wide Running page. */
-export function openRunningPage() {
-  set({ page: "running", selected: undefined, sidebarOpen: false });
-  history.replaceState(null, "", "#/running");
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */
