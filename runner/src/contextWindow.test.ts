@@ -13,7 +13,7 @@ import {
   piStats,
   switchModel,
   withKnownMax,
-} from "./context";
+} from "./contextWindow";
 
 describe("knownWindow", () => {
   test("1M variants", () => {

@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
-import { codexRollout, codexTokenUsage } from "../context";
+import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";

@@ -17,7 +17,7 @@ import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
-import { mergeContext, switchModel } from "./context";
+import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";

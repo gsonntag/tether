@@ -21,7 +21,7 @@ import { join } from "node:path";
 import type { ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
-import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../context";
+import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
 import { fileURLToPath } from "node:url";
-import { piStats } from "../context";
+import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";
 

@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
-import { acpUsage } from "../context";
+import { acpUsage } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { ModelRef, Msg, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
 import { config, saveConfigSoon } from "../config";
-import { agyUsage } from "../context";
+import { agyUsage } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { sessionContext, withPreamble } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
