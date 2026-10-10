@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rules } from "../guard";
-import { configOption, denialFeedback, freePort, OPENCODE_ENV, opencodeRejectWithFeedback, permissionCall, selectValues, sessionModes, toolName } from "./acp";
+import { configOption, denialFeedback, freePort, httpServer, OPENCODE_ENV, opencodeRejectWithFeedback, permissionCall, selectValues, sessionModes, toolName } from "./acp";
 
 // Shapes below are what opencode 1.18 sends over `opencode acp`.
 const OPTIONS = [
@@ -66,21 +66,33 @@ describe("guard denial reasons reach opencode", () => {
     }) as any;
     const msg = denialFeedback("Writes outside the project need your OK.");
     expect(msg).toBe("[Tether guard] Writes outside the project need your OK. Don't retry it as is; find another way or explain what you need.");
-    expect(await opencodeRejectWithFeedback("http://127.0.0.1:1", "/p q", "call_9", msg, fake)).toBe(true);
+    expect(await opencodeRejectWithFeedback({ base: "http://127.0.0.1:1", auth: "Basic x" }, "/p q", "call_9", msg, fake)).toBe(true);
     expect(calls[0]!.url).toBe("http://127.0.0.1:1/permission?directory=%2Fp%20q");
     expect(calls[1]!.url).toBe("http://127.0.0.1:1/permission/per_2/reply?directory=%2Fp%20q");
     expect(JSON.parse(calls[1]!.init.body)).toEqual({ reply: "reject", message: msg });
+    for (const c of calls) expect(c.init.headers.Authorization).toBe("Basic x");
   });
 
   test("no matching request, or the API failing: false (the caller falls back)", async () => {
     const none = (async () => Response.json([])) as any;
-    expect(await opencodeRejectWithFeedback("http://x", "/p", "call_9", "m", none)).toBe(false);
+    expect(await opencodeRejectWithFeedback({ base: "http://x", auth: "Basic x" }, "/p", "call_9", "m", none)).toBe(false);
     const down = (async () => new Response("no", { status: 500 })) as any;
-    expect(await opencodeRejectWithFeedback("http://x", "/p", "call_9", "m", down)).toBe(false);
+    expect(await opencodeRejectWithFeedback({ base: "http://x", auth: "Basic x" }, "/p", "call_9", "m", down)).toBe(false);
     expect(denialFeedback(undefined)).toContain("Not allowed.");
   });
 
   test("freePort gives a usable port", () => expect(freePort()).toBeGreaterThan(0));
+
+  test("opencode's HTTP server: loopback only, a fresh password per process", () => {
+    const a = httpServer(4242);
+    const b = httpServer();
+    expect(a.args).toEqual(["--hostname", "127.0.0.1", "--port", "4242"]);
+    expect(b.args).toEqual(["--hostname", "127.0.0.1", "--port", "0"]);
+    expect(b.api).toBeUndefined();
+    expect(a.env.OPENCODE_SERVER_PASSWORD!.length).toBeGreaterThanOrEqual(32);
+    expect(a.env.OPENCODE_SERVER_PASSWORD).not.toBe(b.env.OPENCODE_SERVER_PASSWORD);
+    expect(a.api).toEqual({ base: "http://127.0.0.1:4242", auth: `Basic ${btoa(`opencode:${a.env.OPENCODE_SERVER_PASSWORD}`)}` });
+  });
 });
 
 describe("opencode env", () => {

@@ -12,6 +12,7 @@ import {
   type RequestPermissionResponse,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { checklistMarkdown } from "../../../web/src/shared/plan";
@@ -33,9 +34,31 @@ export interface AcpSpec {
    * opencode: ACP's permission answer has no room for a reason, so a guard denial reaches the
    * model as a bare "rejected" (and ends its turn). `opencode acp` also serves opencode's HTTP API;
    * on a port we pick, Tether answers a denied request there with the reason as feedback, which
-   * opencode hands the model as the tool error and keeps going.
+   * opencode hands the model as the tool error and keeps going. That API can run commands as the
+   * user, so it is bound to loopback and locked with a per-process random password (httpServer).
    */
   httpPermissionReply?: boolean;
+}
+
+/** Where and how to reach the agent's own HTTP API. */
+export interface HttpApi {
+  base: string;
+  /** Authorization header value */
+  auth: string;
+}
+
+/**
+ * Arguments and env for `opencode acp`'s built-in HTTP server. opencode always starts one (it runs
+ * shell commands, answers permission requests...) and leaves it open to anyone who can reach the
+ * port unless OPENCODE_SERVER_PASSWORD is set. So every process gets a fresh random password and
+ * an explicit loopback bind; the port is pinned only when Tether calls the API itself (`port`).
+ */
+export function httpServer(port?: number): { args: string[]; env: Record<string, string>; api?: HttpApi } {
+  const password = randomBytes(24).toString("base64url");
+  const env = { OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: password };
+  const args = ["--hostname", "127.0.0.1", "--port", String(port ?? 0)];
+  const api = port ? { base: `http://127.0.0.1:${port}`, auth: `Basic ${btoa(`opencode:${password}`)}` } : undefined;
+  return { args, env, api };
 }
 
 /** A free loopback port (for `opencode acp --port`). */
@@ -55,9 +78,9 @@ export function denialFeedback(reason: string | undefined): string {
  * Rejects a pending opencode permission request with feedback, over opencode's own HTTP API.
  * The request is found by the ACP tool call id (opencode's `tool.callID`, else the request id).
  */
-export async function opencodeRejectWithFeedback(base: string, directory: string, toolCallId: string, message: string, fetcher: typeof fetch = fetch): Promise<boolean> {
-  const pw = process.env.OPENCODE_SERVER_PASSWORD;
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...(pw ? { Authorization: `Basic ${btoa(`${process.env.OPENCODE_SERVER_USERNAME ?? "opencode"}:${pw}`)}` } : {}) };
+export async function opencodeRejectWithFeedback(api: HttpApi, directory: string, toolCallId: string, message: string, fetcher: typeof fetch = fetch): Promise<boolean> {
+  const base = api.base;
+  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: api.auth };
   const q = `directory=${encodeURIComponent(directory)}`;
   const list = await fetcher(`${base}/permission?${q}`, { headers, signal: AbortSignal.timeout(5_000) });
   if (!list.ok) return false;
@@ -75,7 +98,7 @@ export async function opencodeRejectWithFeedback(base: string, directory: string
 
 // ---------------- connection ----------------
 
-class AcpProcess {
+export class AcpProcess {
   proc: ReturnType<typeof Bun.spawn>;
   conn: ClientSideConnection;
   stderr = "";
@@ -84,21 +107,23 @@ class AcpProcess {
   handlers = new Map<string, (n: SessionNotification) => void>();
   permission?: (r: RequestPermissionRequest) => Promise<RequestPermissionResponse>;
   /** the agent's own HTTP API (spec.httpPermissionReply) */
-  httpBase?: string;
+  http?: HttpApi;
 
   constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean } = {}) {
     const args = [...spec.args];
-    if (opts.http && spec.httpPermissionReply) {
-      const port = freePort();
-      args.push("--port", String(port), "--hostname", "127.0.0.1");
-      this.httpBase = `http://127.0.0.1:${port}`;
+    let env: Record<string, string | undefined> = { ...process.env, ...spec.env };
+    if (spec.httpPermissionReply) {
+      const server = httpServer(opts.http ? freePort() : undefined);
+      args.push(...server.args);
+      env = { ...env, ...server.env };
+      this.http = server.api;
     }
     const proc = Bun.spawn([spec.bin, ...args], {
       cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...spec.env },
+      env,
     });
     this.proc = proc;
     const sink = proc.stdin as import("bun").FileSink;
@@ -442,7 +467,7 @@ class AcpSession extends LiveSession {
    */
   private async explainDenial(toolCallId: string | undefined, reason: string | undefined) {
     const text = denialFeedback(reason);
-    if (toolCallId && this.p.httpBase && (await opencodeRejectWithFeedback(this.p.httpBase, this.projectPath, toolCallId, text).catch(() => false))) return;
+    if (toolCallId && this.p.http && (await opencodeRejectWithFeedback(this.p.http, this.projectPath, toolCallId, text).catch(() => false))) return;
     this.untoldDenials.push(text);
   }
 
