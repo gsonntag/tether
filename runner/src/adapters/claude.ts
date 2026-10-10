@@ -260,7 +260,10 @@ class ClaudeSession extends LiveSession {
       .then((r) => r.effective)
       .catch(() => ({}));
     const model = this.opts.model && this.opts.model !== "default" ? this.opts.model : undefined;
-    const permissionMode = this.opts.permissionMode || undefined;
+    // The guard decides approvals, so Claude's own approving modes (acceptEdits, auto, bypass…) from
+    // settings must not apply: they'd answer before canUseTool is ever asked. Plan mode is safe to keep.
+    const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
+    const permissionMode = this.opts.permissionMode || settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     this.q = query({
       prompt: this.input,
@@ -268,7 +271,7 @@ class ClaudeSession extends LiveSession {
         cwd: this.projectPath,
         ...(this.resumeId ? { resume: this.resumeId } : { sessionId: this.nativeId }),
         ...(model ? { model } : {}),
-        ...(permissionMode ? { permissionMode: permissionMode as any } : {}),
+        permissionMode: permissionMode as any,
         includePartialMessages: true,
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code" },
@@ -280,7 +283,7 @@ class ClaudeSession extends LiveSession {
     this.setState({
       status: "idle",
       model: model ?? eff.model ?? "default",
-      permissionMode: permissionMode ?? eff.permissions?.defaultMode ?? "default",
+      permissionMode,
       thinking: eff.effortLevel,
       modes: PERMISSION_MODES,
     });
