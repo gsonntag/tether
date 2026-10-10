@@ -9,13 +9,15 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { isActive, type SessionActivity } from "../shared/protocol";
-import { rpc, selectSession, useStore } from "../store";
+import { upsertActivity } from "../shared/reducer";
+import { onActivity, rpc, selectSession, useStore } from "../store";
 import { activitySummary } from "../activity";
 import { ActivityRow } from "./Activity";
 import { HarnessBadge } from "./HarnessBadge";
 
 /** Items that ended this recently stay listed, so you see what just finished. */
 const RECENT_MS = 15 * 60_000;
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 export function RunningPage() {
   const runnerId = useStore((s) => s.runnerId);
@@ -24,15 +26,36 @@ export function RunningPage() {
 
   useEffect(() => {
     let stop = false;
+    let soon: ReturnType<typeof setTimeout> | undefined;
     const load = () =>
       rpc("listActivity", { recentMs: RECENT_MS })
         .then((r) => !stop && (setList(r), setError("")))
         .catch((e) => !stop && setError(e.message ?? String(e)));
+    const loadSoon = () => {
+      clearTimeout(soon);
+      soon = setTimeout(load, 500);
+    };
     load();
-    const t = setInterval(() => document.visibilityState === "visible" && load(), 3_000);
+    // Changes arrive pushed (every session's events reach the browser); a session not listed yet
+    // reloads the list. A slow poll drops closed sessions and items past RECENT_MS.
+    const off = onActivity((sessionId, items, replace) =>
+      setList((cur) => {
+        const i = cur?.findIndex((s) => s.session.id === sessionId) ?? -1;
+        if (!cur || i < 0) {
+          if (items.some(isActive)) loadSoon();
+          return cur;
+        }
+        const next = [...cur];
+        next[i] = { ...cur[i]!, items: replace ? items : upsertActivity(cur[i]!.items, items) };
+        return next;
+      }),
+    );
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 30_000);
     return () => {
       stop = true;
+      off();
       clearInterval(t);
+      clearTimeout(soon);
     };
   }, [runnerId]);
 
@@ -46,7 +69,7 @@ export function RunningPage() {
           <VStack gap={0.5} paddingBlockStart={6}>
             <Heading level={1}>Running</Heading>
             <Text type="supporting">
-              {list ? `${running} running across ${list.filter((s) => s.items.some(isActive)).length} sessions · finished in the last 15 minutes stay listed` : "Loading…"}
+              {list ? `${running} running across ${plural(list.filter((s) => s.items.some(isActive)).length, "session")} · finished in the last 15 minutes stay listed` : "Loading…"}
             </Text>
           </VStack>
         </LayoutHeader>
@@ -76,7 +99,10 @@ export function RunningPage() {
                         </Text>
                       </VStack>
                     </StackItem>
-                    <Button label="Open" size="sm" variant="ghost" onClick={() => selectSession(session.id)} />
+                    {/* static: a long title truncates instead of squeezing the button */}
+                    <StackItem>
+                      <Button label="Open" size="sm" variant="ghost" onClick={() => selectSession(session.id)} />
+                    </StackItem>
                   </HStack>
                   <VStack>
                     {sorted.map((a) => (

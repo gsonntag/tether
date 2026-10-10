@@ -1,6 +1,6 @@
 // Helpers the adapters share to build activity items (web/src/shared/protocol.ts ActivityItem).
 
-import { ACTIVITY_MAX_STEPS, type ActivityItem, type ActivityStep, type ToolStatus } from "../../../web/src/shared/protocol";
+import { ACTIVITY_KEEP_FINISHED, ACTIVITY_MAX_STEPS, type ActivityItem, type ActivityStep, type ToolStatus } from "../../../web/src/shared/protocol";
 
 const base = (p: unknown) => (typeof p === "string" ? p.split(/[\\/]/).filter(Boolean).pop() ?? p : "");
 const clip = (s: string, n = 80) => {
@@ -102,10 +102,39 @@ export class ActivityBook {
     this.put({ ...cur, steps: cur.steps.map((s) => (s.id === stepId ? { ...s, status } : s)) });
   }
 
-  /** What changed since the last call. */
+  /** What changed since the last call. Finished items past what the session keeps are forgotten. */
   take(): ActivityItem[] {
     const out = [...this.changed.values()];
     this.changed.clear();
+    this.prune();
     return out;
+  }
+
+  /** Long sessions start hundreds of items: keep the running ones and the newest finished ones. */
+  private prune() {
+    if (this.items.size <= ACTIVITY_KEEP_FINISHED * 2) return;
+    const done = this.list()
+      .filter((a) => a.endedAt)
+      .sort((a, b) => b.endedAt! - a.endedAt!);
+    for (const a of done.slice(ACTIVITY_KEEP_FINISHED)) {
+      this.items.delete(a.id);
+      this.forget(a.id);
+    }
+  }
+
+  /** Subclasses drop what they keep per item. */
+  protected forget(_id: string) {}
+}
+
+/** A Map that drops its oldest entries past `max` (tool-call inputs kept to match their results). */
+export class BoundedMap<K, V> extends Map<K, V> {
+  constructor(private max: number) {
+    super();
+  }
+  override set(k: K, v: V) {
+    if (this.has(k)) this.delete(k);
+    super.set(k, v);
+    while (this.size > this.max) this.delete(this.keys().next().value as K);
+    return this;
   }
 }

@@ -122,7 +122,9 @@ export abstract class LiveSession {
         this.turnTrouble = this.userStopped = false;
         this.finishDeferred = false;
         clearTimeout(this.settleTimer);
+        clearTimeout(this.shellWaitTimer);
       }
+      if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
@@ -205,6 +207,17 @@ export abstract class LiveSession {
   private settleTimer?: ReturnType<typeof setTimeout>;
   /** How long the last item's end waits for a turn the agent starts on its own to report it. */
   static SETTLE_MS = 5_000;
+  /**
+   * Shells and monitors can run for good (a dev server, a log watch): once only they are left,
+   * "Finished" waits this long at most and then says what's still running.
+   */
+  static SHELL_WAIT_MS = 3 * 60_000;
+  private shellWaitTimer?: ReturnType<typeof setTimeout>;
+
+  /** Agents and workflows always end and report back; "Finished" waits for them however long. */
+  private get agentsWorking(): boolean {
+    return (this.t.state.activity ?? []).some((a) => a.status === "running" && (a.kind === "subagent" || a.kind === "workflow"));
+  }
 
   private turnOver() {
     if (this.userStopped || this.turnTrouble || this.closed) return;
@@ -212,11 +225,32 @@ export abstract class LiveSession {
     // jobs don't count). The last one to finish sends it (activityChanged).
     if (this.workingCount) {
       this.finishDeferred = true;
+      this.armShellWait();
       return;
     }
+    this.sendFinished();
+  }
+
+  private sendFinished(stillRunning?: ActivityItem[]) {
+    clearTimeout(this.shellWaitTimer);
     const last = [...this.t.messages].reverse().find((m) => m.role === "assistant");
     const text = last?.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" ") ?? "";
-    this.alert("finished", "Finished", text.slice(-300) || "The agent is waiting for your next message.");
+    const still = stillRunning?.length ? ` (still running: ${stillRunning.map((a) => a.command ?? a.title).join(", ")})` : "";
+    this.alert("finished", "Finished", (text.slice(-300) || "The agent is waiting for your next message.") + still);
+  }
+
+  /** While "Finished" waits on shells and monitors alone, it goes out after SHELL_WAIT_MS anyway. */
+  private armShellWait() {
+    clearTimeout(this.shellWaitTimer);
+    this.shellWaitTimer = setTimeout(() => {
+      if (!this.finishDeferred || this.t.state.status !== "idle" || this.closed) return;
+      if (this.agentsWorking) return this.armShellWait();
+      const running = (this.t.state.activity ?? []).filter((a) => a.status === "running");
+      if (!running.length) return;
+      this.finishDeferred = false;
+      if (this.userStopped || this.turnTrouble) return;
+      this.sendFinished(running);
+    }, LiveSession.SHELL_WAIT_MS);
   }
 
   // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
@@ -237,9 +271,54 @@ export abstract class LiveSession {
     return this.t.state.activity?.find((a) => a.id === id);
   }
 
-  /** Inserts or replaces activity items (by id). */
+  /** updates waiting to go out together (latest action, steps, output): see upsertActivity */
+  private activityQueue = new Map<string, ActivityItem>();
+  private activityTimer?: ReturnType<typeof setTimeout>;
+  /** How long progress-only updates wait to be sent together (a subagent's step comes in 2-3 frames). */
+  static ACTIVITY_BATCH_MS = 250;
+  /** foreground items the session ended when their turn did (the adapter may not know) */
+  private endedWithTurn = new Set<string>();
+  /** items stopped from Tether: their end doesn't send "Finished" (you were there) */
+  private stoppedByUser = new Set<string>();
+
+  /**
+   * Inserts or replaces activity items (by id). A new item or a status change goes out at once
+   * (counts and "Finished" depend on it); progress on a running item is batched, so a busy
+   * subagent sends a few updates a second at most.
+   */
   upsertActivity(...items: ActivityItem[]) {
+    let now = false;
+    for (let a of items) {
+      const cur = this.activityQueue.get(a.id) ?? this.activity(a.id);
+      // Ended with its turn: a late frame from the adapter can't revive it.
+      if (this.endedWithTurn.has(a.id) && cur && !isActive(cur) && isActive(a)) a = { ...a, status: cur.status, endedAt: cur.endedAt };
+      if (!cur || cur.status !== a.status) now = true;
+      this.activityQueue.set(a.id, a);
+    }
+    if (now) this.flushActivity();
+    else if (this.activityQueue.size && !this.activityTimer) this.activityTimer = setTimeout(() => this.flushActivity(), LiveSession.ACTIVITY_BATCH_MS);
+  }
+
+  private flushActivity() {
+    clearTimeout(this.activityTimer);
+    this.activityTimer = undefined;
+    const items = [...this.activityQueue.values()];
+    this.activityQueue.clear();
     if (items.length) this.emit({ type: "activity", items });
+  }
+
+  /**
+   * The turn is over, so nothing that ran inside it (background: false — a long tool call, a
+   * foreground subagent, a sleep) can still be going. Ends any the harness left open (an interrupt
+   * that skipped its result, …): otherwise "Finished" never comes, the session counts as busy
+   * across restarts and never closes when idle.
+   */
+  private endForeground() {
+    this.flushActivity();
+    const now = Date.now();
+    const stale = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background === false);
+    for (const a of stale) this.endedWithTurn.add(a.id);
+    if (stale.length) this.upsertActivity(...stale.map((a) => ({ ...a, status: "stopped" as const, endedAt: now })));
   }
 
   private activityChanged() {
@@ -257,6 +336,9 @@ export abstract class LiveSession {
       this.settleTimer = setTimeout(() => {
         if (!this.finishDeferred || this.workingCount || this.t.state.status !== "idle") return;
         this.finishDeferred = false;
+        // You stopped the last one yourself: you know it's over.
+        const last = (this.t.state.activity ?? []).reduce<ActivityItem | undefined>((l, a) => ((a.endedAt ?? 0) > (l?.endedAt ?? 0) ? a : l), undefined);
+        if (last && this.stoppedByUser.has(last.id)) return;
         this.turnOver();
       }, LiveSession.SETTLE_MS);
     }
@@ -268,6 +350,7 @@ export abstract class LiveSession {
     if (!item) throw new Error("That item is no longer listed.");
     if (!isActive(item)) return;
     if (!item.stoppable || !this.stopActivityItem) throw new Error(`${this.harness} can't stop this from Tether.`);
+    this.stoppedByUser.add(id);
     await this.stopActivityItem(item);
   }
   /** Adapters that can stop an item (Claude Code stopTask, …). */
@@ -936,10 +1019,13 @@ export abstract class LiveSession {
     clearTimeout(this.idleTimer);
     clearInterval(this.watchdog);
     clearTimeout(this.settleTimer);
+    clearTimeout(this.shellWaitTimer);
+    clearTimeout(this.activityTimer);
     unregisterGuard(this.guardKey);
     this.clearJudging();
     this.cancelAllUi();
     this.shutdown();
+    this.flushActivity();
     this.endActivity();
     this.sink.summary(this.summary());
     this.onClose?.();

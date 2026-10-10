@@ -78,8 +78,10 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - **Questions:** a permission prompt or a question from the agent.
   - **Finished:** the agent is truly done: a turn ended and none of its subagents, shells,
     monitors or workflows are still running (armed wakeups and cron jobs don't count). If they
-    are, it comes once the last one ends and the agent has nothing more to say about it. Not
-    when you pressed Stop or the turn failed.
+    are, it comes once the last one ends and the agent has nothing more to say about it. Shells
+    and monitors can run for good (a dev server), so once only they are left it waits 3 minutes
+    at most and names what's still running. Not when you pressed Stop, stopped the last running
+    item yourself, or the turn failed.
   - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes with
     nothing running, or it failed. (A call the guard denies isn't a notification; the verdict
     shows on its tool card.)

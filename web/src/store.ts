@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  ActivityItem,
   AgentNotice,
   ContextActivity,
   ContextEvent,
@@ -200,6 +201,10 @@ function onMessage(m: ServerToBrowser) {
     }
     case "event":
       if (m.runnerId === get().runnerId) onEvent(m.sessionId, m.seq, m.event);
+      if (m.runnerId === get().runnerId && activityListeners.size) {
+        if (m.event.type === "activity") for (const l of activityListeners) l(m.sessionId, m.event.items, false);
+        else if (m.event.type === "state" && m.event.state.activity) for (const l of activityListeners) l(m.sessionId, m.event.state.activity, true);
+      }
       break;
     case "sessions":
       // Notifications follow session changes (finished, needs input), so look for new ones.
@@ -211,6 +216,14 @@ function onMessage(m: ServerToBrowser) {
       if (m.runnerId === get().runnerId) onContextEvent(m.event);
       break;
   }
+}
+
+/** Every session's activity changes as they arrive (the Running page; sessions you haven't opened too). */
+type ActivityListener = (sessionId: string, items: ActivityItem[], replace: boolean) => void;
+const activityListeners = new Set<ActivityListener>();
+export function onActivity(l: ActivityListener): () => void {
+  activityListeners.add(l);
+  return () => void activityListeners.delete(l);
 }
 
 function onEvent(sessionId: string, seq: number, event: SessionEvent) {
