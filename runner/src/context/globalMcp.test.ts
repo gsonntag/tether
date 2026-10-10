@@ -244,6 +244,9 @@ describe("service: only the user's import writes them; disabling undoes", () => 
 
     const st = await s.disable();
     expect(st.enabled).toBe(false);
+    // What was undone, for the page to show.
+    expect(st.turnedOff.files).toEqual(expect.arrayContaining(["~/.claude.json", "~/.config/opencode/opencode.jsonc", "~/.codex/config.toml", "~/.pi/agent/mcp.json"]));
+    expect(st.turnedOff.warnings).toEqual([]);
     expect(config().context?.enabled).toBe(false);
     expect(await sessionContext(process.env.HOME!)).toBeUndefined();
     expect(readFileSync(harness.claudeJson(), "utf8")).toBe(CLAUDE_JSON);

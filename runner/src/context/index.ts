@@ -17,6 +17,7 @@ import type {
   ContextProgress,
   ContextSkill,
   ContextStatus,
+  ContextTurnedOff,
   ConflictStatus,
   MemoryCommit,
   MemoryConflict,
@@ -320,12 +321,13 @@ export class ContextService {
    * own files and index lines, skill symlinks (a link that replaced the user's copy becomes a real
    * copy of the current version). The store, its history and the backups are kept.
    */
-  async disable(): Promise<ContextStatus> {
+  async disable(): Promise<ContextStatus & { turnedOff: ContextTurnedOff }> {
     const cfg = config();
     cfg.context = { ...cfg.context, enabled: false };
     saveConfig();
     setInjectionEnabled(false);
     this.stop();
+    const turnedOff: ContextTurnedOff = { files: [], skillLinks: 0, restoredSkills: 0, warnings: [] };
     await this.harnessLock.run(async () => {
       this.setProgress({ phase: "disable", done: 0, total: 2 });
       const r = await unexportAll(this.store);
@@ -333,16 +335,15 @@ export class ContextService {
       const meta = this.meta();
       const s = unlinkAll(this.store.skillsDir, meta);
       if (this.store.exists()) writeMeta(join(this.store.dir, "skills.json"), meta);
-      for (const w of [...r.warnings, ...s.errors]) this.act({ kind: "error", text: `Turning off: ${w}` });
+      Object.assign(turnedOff, { files: [...new Set(r.changed)].map(tilde), skillLinks: s.removed.length, restoredSkills: s.restored.length, warnings: [...r.warnings, ...s.errors] });
+      for (const w of turnedOff.warnings) this.act({ kind: "error", text: `Turning off: ${w}` });
       this.act({
         kind: "export",
-        text:
-          `Master context turned off: cleaned ${r.changed.length} file(s), removed ${s.removed.length} skill link(s), put back ${s.restored.length} skill copies` +
-          (r.changed.length ? ` (${[...new Set(r.changed)].map(tilde).slice(0, 20).join(", ")}${r.changed.length > 20 ? ", ..." : ""})` : ""),
+        text: `Master context turned off: cleaned ${turnedOff.files.length} file(s), removed ${s.removed.length} skill link(s), put back ${s.restored.length} skill copies`,
       });
       this.setProgress(undefined);
     });
-    return this.status();
+    return { ...this.status(), turnedOff };
   }
 
   // ---------------- memory ops ----------------

@@ -584,6 +584,16 @@ export interface ContextStatus {
   progress?: ContextProgress;
 }
 
+/** What turning the master context off undid, for the page to show afterwards. */
+export interface ContextTurnedOff {
+  /** harness files Tether cleaned (~-shortened): managed blocks, MCP entries, its own files */
+  files: string[];
+  /** skill symlinks removed / skill copies put back as real dirs */
+  skillLinks: number;
+  restoredSkills: number;
+  warnings: string[];
+}
+
 export interface ContextProgress {
   phase: "skills" | "scan" | "merge" | "export" | "disable";
   done: number;
@@ -692,7 +702,7 @@ export interface Ops {
    * registrations, Tether's own files, skill symlinks — replaced copies are put back as real
    * copies). The store and its backups are kept; importing again turns it back on.
    */
-  contextDisable: { args: {}; result: ContextStatus };
+  contextDisable: { args: {}; result: ContextStatus & { turnedOff?: ContextTurnedOff } };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };
