@@ -418,5 +418,8 @@ describe("service", () => {
     const r2 = await s2.handoffMemory({ sessionId: "s7", projectPath: repo, messages: [user("x ".repeat(300))], target: "pi" });
     expect(r2).toBeDefined();
     expect(called).toBe(false);
+    // the merge pass settle() started must finish here: the next test file empties this home
+    await s.idle();
+    await s2.idle();
   });
 });

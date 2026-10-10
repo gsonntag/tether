@@ -1,0 +1,4 @@
+[test]
+# Every test file runs in one process: point HOME, the runner config and git at one scratch
+# directory before any module is loaded (config.ts reads TETHER_CONFIG_DIR at import time).
+preload = ["./src/testenv.ts"]

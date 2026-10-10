@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { HOME, resetHome } from "./testenv";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ContextSkill } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation, splitSkills } from "../../web/src/shared/skill";
@@ -9,20 +9,10 @@ import { codexInput } from "./adapters/codex";
 import { harness } from "./context/paths";
 import { decide, expandSkill, resolveMessage, sessionSkills, skillFiles, slashMenu, type ResolveContext } from "./skillcmd";
 
-// A scratch HOME for this file only (paths are read at call time), put back afterwards so other
-// test files see the environment they expect. Real skill dirs are never read or written.
-const realHome = process.env.HOME;
-let root: string;
-let home: string;
+// The shared scratch HOME (src/testenv.ts), emptied before each test. Real skill dirs are never
+// read or written.
+const home = HOME;
 let repo: string;
-
-beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), "tether-skillcmd-"));
-});
-afterAll(() => {
-  process.env.HOME = realHome;
-  rmSync(root, { recursive: true, force: true });
-});
 
 const put = (path: string, text: string) => {
   mkdirSync(dirname(path), { recursive: true });
@@ -32,10 +22,7 @@ const skill = (dir: string, name: string, body = `Do the ${name} thing.`) =>
   put(join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} skill\n---\n${body}\n`);
 
 beforeEach(() => {
-  home = join(root, "home");
-  rmSync(home, { recursive: true, force: true });
-  mkdirSync(home, { recursive: true });
-  process.env.HOME = home;
+  resetHome();
   repo = join(home, "work", "repo");
   mkdirSync(join(repo, ".git"), { recursive: true });
   skill(join(repo, ".agents", "skills"), "haiku");
