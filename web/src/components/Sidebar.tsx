@@ -29,6 +29,7 @@ import {
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
 import { act, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -542,6 +543,8 @@ function SessionRow({ s }: { s: SessionSummary }) {
   const [removing, setRemoving] = useState(false);
   // The trash button shows on hover or focus; touch screens (no hover) always show it.
   const { getContainerProps, getContentRevealProps } = useContainerReveal();
+  // Not on a row that just slid under a still mouse after a removal (see trashGuard.ts).
+  const held = useTrashHeld();
   if (editing) return <RenameInput session={s} onDone={() => setEditing(false)} />;
   const remove = s.archived ? null : (
     <IconButton
@@ -554,13 +557,15 @@ function SessionRow({ s }: { s: SessionSummary }) {
       icon={<Icon icon={TrashIcon} />}
       onClick={(e) => {
         e.stopPropagation();
+        if (!allowTrashClick(s.id, { x: e.clientX, y: e.clientY })) return;
+        holdTrashUntilMove();
         setRemoving(true);
         removeSession(s).finally(() => setRemoving(false));
       }}
     />
   );
   return (
-    <VStack {...getContainerProps({ forceState: removing ? "active" : undefined })}>
+    <VStack {...getContainerProps({ forceState: removing ? "active" : held ? "inactive" : undefined })}>
     <SideNavItem
       label={s.title}
       size="sm"
