@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import {
@@ -25,7 +25,8 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
 import { effortLabel } from "../models";
-import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
+import { GUARD_MODES, type LiveState, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
@@ -44,6 +45,8 @@ const fill: CSSProperties = { flex: 1, minHeight: 0 };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
 const composerDock: CSSProperties = { paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
+/** Fills the drawer's row without letting long menu rows widen it (they truncate instead). */
+const drawerBody: CSSProperties = { flex: "1 1 100%", width: 0, minWidth: 0 };
 const queuedRow = (dragging: boolean): CSSProperties => ({
   border: "var(--border-width) solid var(--color-border)",
   borderRadius: "var(--radius-element)",
@@ -305,10 +308,45 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
   );
 }
 
+/** One row of the `/` menu: a skill (with where it comes from) or one of the harness's commands. */
+function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highlighted: boolean; narrow: boolean; onPick: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlighted) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [highlighted]);
+  const badges =
+    c.kind === "skill" ? (
+      <HStack gap={0.5} vAlign="center">
+        {(c.sources ?? []).slice(0, narrow ? 1 : 3).map((s) => (
+          <Token key={s} size="sm" label={s} />
+        ))}
+        {c.native === false && (
+          <Tooltip content="This harness can't run it by name, so Tether sends SKILL.md along with your message">
+            <Token size="sm" color="purple" label="inline" />
+          </Tooltip>
+        )}
+      </HStack>
+    ) : undefined;
+  return (
+    <Item
+      ref={ref}
+      density="compact"
+      layout={narrow ? "stacked" : "inline"}
+      descriptionLines={1}
+      isHighlighted={highlighted}
+      label={<Text type="code">/{c.name}</Text>}
+      description={c.description}
+      endContent={badges}
+      onClick={onPick}
+    />
+  );
+}
+
 function Composer({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
-  const [cmds, setCmds] = useState<{ name: string; description?: string }[] | null>(null);
+  const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
+  const [menuClosed, setMenuClosed] = useState(false);
   const input = useRef<ChatComposerInputHandle>(null);
   const narrow = useNarrow();
   const running = state.status === "running";
@@ -319,15 +357,20 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
     } catch {}
   }, [text, sessionId]);
 
-  // Slash commands: load once when the user types "/" at the start.
-  const slash = text.startsWith("/") && !text.includes(" ") ? text.slice(1).toLowerCase() : null;
+  // The `/` menu: skills and the harness's commands, fetched each time it opens (skills change).
+  const slash = slashQuery(text);
+  const open = slash !== null;
   useEffect(() => {
-    if (slash !== null && cmds === null)
-      rpc("listCommands", { sessionId })
-        .then(setCmds)
-        .catch(() => setCmds([]));
-  }, [slash, cmds, sessionId]);
-  const matches = slash !== null && cmds ? cmds.filter((c) => c.name.toLowerCase().includes(slash)).slice(0, 12) : [];
+    setMenuClosed(false);
+    if (!open) return;
+    let current = true;
+    rpc("listCommands", { sessionId })
+      .then((r) => current && setCmds(r))
+      .catch(() => current && setCmds((c) => c ?? []));
+    return () => void (current = false);
+  }, [open, sessionId]);
+  const groups = useMemo(() => slashGroups(cmds ?? [], slash ?? ""), [cmds, slash]);
+  const matches = open && !menuClosed ? groups.flat : [];
 
   const send = async (mode?: "steer" | "followUp") => {
     const t = text.trim();
@@ -344,11 +387,13 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (matches.length) {
-      if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((cmdIdx + 1) % matches.length));
-      if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((cmdIdx - 1 + matches.length) % matches.length));
-      if (e.key === "Tab" || (e.key === "Enter" && !text.includes(" ") && `/${matches[cmdIdx]!.name}` !== text)) {
+      const idx = Math.min(cmdIdx, matches.length - 1);
+      if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
+      if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
+      if (e.key === "Escape") return (e.preventDefault(), setMenuClosed(true));
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && `/${matches[idx]!.name}` !== text)) {
         e.preventDefault();
-        setText(`/${matches[cmdIdx]!.name} `);
+        setText(`/${matches[idx]!.name} `);
         return;
       }
     }
@@ -376,24 +421,32 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   const bg = state.background ?? [];
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
   const hasDrawer = matches.length > 0 || bg.length > 0 || !!state.pending?.length || legacyQueued;
-  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for commands)";
+  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for skills and commands)";
 
   const drawer = hasDrawer ? (
     <ChatComposerDrawer>
-      <VStack gap={2}>
+      {/* The drawer lays its content out in a wrapping row: without a width, long rows overflow it. */}
+      <VStack gap={2} style={drawerBody}>
         {matches.length > 0 && (
           <VStack style={pendingScroll}>
-            {matches.map((c, i) => (
-              <Item
-                key={c.name}
-                density="compact"
-                layout="inline"
-                isHighlighted={i === cmdIdx}
-                label={<Text type="code">/{c.name}</Text>}
-                description={c.description}
-                onClick={() => pick(c.name)}
-              />
-            ))}
+            {[
+              { label: "Skills", list: groups.skills, offset: 0 },
+              { label: "Commands", list: groups.commands, offset: groups.skills.length },
+            ].map(
+              (g) =>
+                g.list.length > 0 && (
+                  <VStack key={g.label}>
+                    <HStack paddingInline={2} paddingBlockStart={1}>
+                      <Text type="label" color="secondary">
+                        {g.label}
+                      </Text>
+                    </HStack>
+                    {g.list.map((c, i) => (
+                      <SlashItem key={`${c.kind}:${c.name}`} c={c} narrow={narrow} highlighted={g.offset + i === Math.min(cmdIdx, matches.length - 1)} onPick={() => pick(c.name)} />
+                    ))}
+                  </VStack>
+                ),
+            )}
           </VStack>
         )}
         {bg.length > 0 && (

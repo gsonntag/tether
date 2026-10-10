@@ -383,7 +383,7 @@ class AcpSession extends LiveSession {
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
     this.addUserMessage(text);
-    if (this.title === "New session") this.setTitle(text.replace(/\s+/g, " ").slice(0, 120));
+    this.autoTitle(text);
     this.runTurn(text);
   }
 
@@ -447,6 +447,11 @@ class AcpSession extends LiveSession {
   }
 
   async listCommands() {
+    return this.commands;
+  }
+
+  /** A skill the agent offers as an ACP command runs as `/name`; any other skill is expanded. */
+  protected async nativeSkills() {
     return this.commands;
   }
 

@@ -238,7 +238,7 @@ class AgySession extends LiveSession {
   // Headless agy has no steering: steers wait for the end of the turn like queued messages.
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
-    if (this.title === "New session") this.setTitle(text.replace(/\s+/g, " ").slice(0, 120));
+    this.autoTitle(text);
     this.write(text, true);
   }
 
@@ -283,6 +283,11 @@ class AgySession extends LiveSession {
   }
 
   async listCommands() {
+    return [];
+  }
+
+  /** Headless agy has no way to run a skill by name: every skill is expanded into the message. */
+  protected async nativeSkills() {
     return [];
   }
 

@@ -12,6 +12,8 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { userParts } from "../../../web/src/shared/bash";
+import { displayText } from "../../../web/src/shared/skill";
 import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
@@ -262,7 +264,26 @@ function itemPart(item: any, cwd: string): Part | undefined {
 }
 
 function userText(item: any): string {
-  return (item.content ?? []).map((c: any) => (c.type === "text" ? c.text : c.type === "image" || c.type === "localImage" ? "[image]" : "")).join("\n");
+  const content: any[] = item.content ?? [];
+  const skills = new Set(content.filter((c) => c.type === "skill").map((c) => c.name));
+  // A skill Tether passed to Codex natively reads as typed: `$name args` → `/name args`.
+  const typed = (t: string) => t.replace(/^\$([\w.:-]+)/, (m, n) => (skills.has(n) ? `/${n}` : m));
+  return content.map((c) => (c.type === "text" ? typed(c.text) : c.type === "image" || c.type === "localImage" ? "[image]" : "")).filter(Boolean).join("\n");
+}
+
+/**
+ * `/name args` for a skill Codex has (at the start of the text, or of a message joined into it):
+ * Codex's own mention (`$name`) plus the skill item that loads it.
+ */
+export function codexInput(text: string, skills: Map<string, string>): any[] {
+  const items: any[] = [];
+  const out = text.replace(/(^|\n\n)\/([\w.:-]+)(?=\s|$)/g, (m, lead: string, name: string) => {
+    const path = skills.get(name);
+    if (!path) return m;
+    if (!items.some((i) => i.name === name)) items.push({ type: "skill", name, path });
+    return `${lead}$${name}`;
+  });
+  return [{ type: "text", text: out, text_elements: [] }, ...items];
 }
 
 /** A resumed thread's turns as a transcript. */
@@ -274,7 +295,7 @@ function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
     for (const item of turn.items ?? []) {
       if (item.type === "userMessage") {
         const text = userText(item);
-        if (text && !text.startsWith(GUARD_NOTE)) out.push({ id: `u-${item.id}`, role: "user", parts: [{ type: "text", text }], ts });
+        if (text && !text.startsWith(GUARD_NOTE)) out.push({ id: `u-${item.id}`, role: "user", parts: userParts(text, `u-${item.id}`), ts });
         a = undefined;
         continue;
       }
@@ -621,7 +642,7 @@ class CodexSession extends LiveSession {
     try {
       const r: any = await this.p.call("turn/start", {
         threadId: this.nativeId,
-        input: [{ type: "text", text, text_elements: [] }],
+        input: codexInput(text, this.skillPaths),
         approvalsReviewer: "user",
         ...this.policy(),
         ...(this.model ? { model: this.model } : {}),
@@ -638,7 +659,7 @@ class CodexSession extends LiveSession {
   protected async steer(text: string) {
     if (!this.turnId) return false;
     try {
-      await this.p.call("turn/steer", { threadId: this.nativeId, input: [{ type: "text", text, text_elements: [] }], expectedTurnId: this.turnId });
+      await this.p.call("turn/steer", { threadId: this.nativeId, input: codexInput(text, this.skillPaths), expectedTurnId: this.turnId });
       return true;
     } catch {
       return false; // the turn just ended, or it's a review/compaction, which can't be steered
@@ -648,8 +669,19 @@ class CodexSession extends LiveSession {
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
     this.addUserMessage(text);
-    if (this.title === "New session") this.setTitle(text.replace(/\s+/g, " ").slice(0, 120));
+    this.autoTitle(text);
     await this.startTurn(text);
+  }
+
+  /** name → SKILL.md of the skills Codex found for this project (from the last skills/list). */
+  private skillPaths = new Map<string, string>();
+
+  /** Codex runs a skill from a `skill` input item (see codexInput); skills/list says which it has. */
+  protected async nativeSkills() {
+    const r: any = await this.p.call("skills/list", { cwds: [this.projectPath] });
+    const skills = (r?.data ?? []).flatMap((e: any) => e.skills ?? []).filter((s: any) => s.enabled !== false);
+    this.skillPaths = new Map(skills.map((s: any) => [s.name, s.path]));
+    return skills.map((s: any) => ({ name: s.name, description: s.description, path: s.path }));
   }
 
   async continueTurn(text = "Continue where you left off.") {
@@ -718,7 +750,7 @@ async function threads(): Promise<any[]> {
   return all;
 }
 
-const titleOf = (t: any) => t.name || (t.preview ?? "").replace(/\s+/g, " ").slice(0, 120) || "Untitled";
+const titleOf = (t: any) => t.name || displayText(t.preview ?? "").replace(/\s+/g, " ").slice(0, 120) || "Untitled";
 
 export const codexAdapter: Adapter = {
   id: "codex",

@@ -1,4 +1,5 @@
 import type { Part } from "./protocol";
+import { splitSkills } from "./skill";
 
 const BASH = /<bash-input>([\s\S]*?)<\/bash-input>\s*(?:<bash-stdout>([\s\S]*?)<\/bash-stdout>)?\s*(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?(?:\s*<bash-exit-code>[\s\S]*?<\/bash-exit-code>)?/g;
 
@@ -8,6 +9,20 @@ const BASH = /<bash-input>([\s\S]*?)<\/bash-input>\s*(?:<bash-stdout>([\s\S]*?)<
  * guard, so they carry a "you" verdict.
  */
 export function userParts(text: string, msgId: string): Part[] {
+  // Skills sent inline (`/name` on a harness that can't run it, or pi's own `/skill:name`) show as
+  // a chip; the request that came with them stays text.
+  if (text.includes("<skill name=")) {
+    const parts: Part[] = [];
+    splitSkills(text).forEach((s, i) => {
+      if (typeof s !== "string") parts.push({ type: "skill", name: s.name, location: s.location, content: s.content });
+      else if (s.trim()) parts.push(...shellParts(s, `${msgId}:${i}`));
+    });
+    return parts;
+  }
+  return shellParts(text, msgId);
+}
+
+function shellParts(text: string, msgId: string): Part[] {
   const parts: Part[] = [];
   let last = 0;
   let n = 0;

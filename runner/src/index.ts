@@ -31,6 +31,7 @@ import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, 
 import type { ChainEntry } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
+import { useContextSkills } from "./skillcmd";
 import { sessionForKey } from "./bridge";
 
 const VERSION = "0.1.0";
@@ -52,6 +53,8 @@ const context = new ContextService({
   sessionForKey: (key) => sessionForKey(key)?.id,
   projects: () => config().projects,
 });
+// `/skill` in the message box: the registry's skills once the master context has been imported.
+useContextSkills(() => ({ enabled: context.enabled, registry: context.store.skillsDir, skills: () => context.listSkills() }));
 
 // ---------------- connection ----------------
 
@@ -596,7 +599,7 @@ const ops: Handlers = {
   },
 
   async listCommands({ sessionId }) {
-    return requireLive(sessionId).listCommands();
+    return requireLive(sessionId).slashMenu();
   },
 
   // ---- master context (runner/src/context) ----

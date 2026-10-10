@@ -5,6 +5,8 @@ import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { userParts } from "../../../web/src/shared/bash";
+import { displayText } from "../../../web/src/shared/skill";
 import { findTool } from "../../../web/src/shared/reducer";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
@@ -97,7 +99,7 @@ async function titleOf(f: PiFile): Promise<string> {
       }
     }
   } catch {}
-  const t = (name || title || "Untitled").replace(/\s+/g, " ").slice(0, 120);
+  const t = displayText(name || title || "Untitled").replace(/\s+/g, " ").slice(0, 120);
   titleCache.set(f.path, { mtime: f.mtime, title: t });
   return t;
 }
@@ -130,10 +132,13 @@ function resultText(content: any): string {
 function convertMessage(m: any, messages: Msg[], id: string): Msg | undefined {
   switch (m.role) {
     case "user": {
+      // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md.
       const parts: Part[] =
         typeof m.content === "string"
-          ? [{ type: "text", text: m.content }]
-          : (m.content ?? []).map((b: any): Part => (b.type === "image" ? { type: "image", mimeType: b.mimeType, data: b.data } : { type: "text", text: b.text ?? "" }));
+          ? userParts(m.content, id)
+          : (m.content ?? []).flatMap((b: any, i: number): Part[] =>
+              b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(b.text ?? "", `${id}:${i}`),
+            );
       return { id, role: "user", parts, ts: m.timestamp ?? Date.now() };
     }
     case "assistant":
@@ -500,7 +505,7 @@ class PiSession extends LiveSession {
 
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
-    if (this.title === "New session") this.setTitle(text.replace(/\s+/g, " ").slice(0, 120));
+    this.autoTitle(text);
     await this.rpc.call("prompt", { message: text });
   }
 
@@ -540,9 +545,23 @@ class PiSession extends LiveSession {
     this.setTitle(title);
   }
 
+  /** pi's own commands; its skills (`skill:name`) are listed as skills instead. */
   async listCommands() {
     const d = await this.rpc.call("get_commands");
-    return (d.commands ?? []).map((c: any) => ({ name: c.name, description: c.description }));
+    return (d.commands ?? []).filter((c: any) => c.source !== "skill").map((c: any) => ({ name: c.name, description: c.description }));
+  }
+
+  /** The skills pi loaded (it skips a repo's .agents/skills until the project is trusted). */
+  protected async nativeSkills() {
+    const d = await this.rpc.call("get_commands");
+    return (d.commands ?? [])
+      .filter((c: any) => c.source === "skill" && typeof c.name === "string")
+      .map((c: any) => ({ name: c.name.replace(/^skill:/, ""), description: c.description, path: c.sourceInfo?.path }));
+  }
+
+  /** pi expands `/skill:name args` itself, in the same block shape Tether uses. */
+  protected nativeSkillText(name: string, args: string) {
+    return args ? `/skill:${name} ${args}` : `/skill:${name}`;
   }
 
   async models() {
