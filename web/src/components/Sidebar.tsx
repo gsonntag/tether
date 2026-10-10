@@ -90,6 +90,9 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
 
   return (
     <SideNav
+      // As a phone drawer, always slide in from the left, where the menu button is. Astryx's "auto"
+      // guesses from the focused element, and iOS doesn't focus a tapped button, so it picked the right.
+      {...({ side: "start" } as {})}
       header={
         <SideNavHeading
           heading="Tether"
