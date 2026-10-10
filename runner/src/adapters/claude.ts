@@ -28,6 +28,11 @@ import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 const PERMISSION_MODES = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+
+/** Claude permission modes that still ask canUseTool (so the guard) before acting. */
+export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
+  return mode === "default" || mode === "plan";
+}
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_MODELS: ModelRef[] = [
   { id: "default", label: "Default" },
@@ -276,8 +281,10 @@ class ClaudeSession extends LiveSession {
     const model = this.opts.model && this.opts.model !== "default" ? this.opts.model : undefined;
     // The guard decides approvals, so Claude's own approving modes (acceptEdits, auto, bypass…) from
     // settings must not apply: they'd answer before canUseTool is ever asked. Plan mode is safe to keep.
+    // The same goes for a mode carried over by a handoff (the previous session's mode, or another
+    // harness's like opencode's "build").
     const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
-    const permissionMode = this.opts.permissionMode || settingsMode;
+    const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Master context: shared memory in the system prompt, and the tether-context MCP server.
     const ctx = await sessionContext(this.projectPath, { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY });
@@ -597,8 +604,9 @@ class ClaudeSession extends LiveSession {
   }
 
   // The guard decides approvals; a mode from Claude's settings (acceptEdits, …) would skip it.
+  // Plan mode approves nothing on its own (see start()), so a guard change keeps it.
   protected onGuardChanged = () => {
-    if (this.t.state.permissionMode !== "default") this.setPermissionMode("default").catch(() => {});
+    if (!keepsGuard(this.t.state.permissionMode)) this.setPermissionMode("default").catch(() => {});
   };
 
   async rename(title: string) {

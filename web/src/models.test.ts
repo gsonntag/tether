@@ -92,6 +92,9 @@ describe("modelDisplay", () => {
 test("chainLabel", () => {
   expect(chainLabel(["claude-code:opus", "codex:gpt-6-luna", "pi:anthropic/claude-sonnet-5-5"])).toBe("Opus → GPT-6 Luna → Sonnet 5.5");
   expect(chainLabel(["claude-opus-5-5"], "claude-code")).toBe("Opus 5.5");
+  // the built-in fallback profiles: one model through two routes stays tell-apart-able
+  expect(chainLabel(["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"])).toBe("GPT-6 Luna (openai-codex) → GPT-6 Luna (azure)");
+  expect(chainLabel(["claude-code:opus", "pi:azure/gpt-6-luna"])).toBe("Opus → GPT-6 Luna");
 });
 
 test("effortLabel", () => {

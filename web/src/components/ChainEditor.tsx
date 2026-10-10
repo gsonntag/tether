@@ -131,7 +131,9 @@ export function ChainEditor({
             const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
             const c = check(raw);
             const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
-            const subs = [c.usage].filter(Boolean) as string[];
+            // The route tells apart one model listed twice ("openai-codex/…" and "azure/…").
+            const via = em ? modelDisplay(em, eh).via : undefined;
+            const subs = [via && `via ${via}`, c.usage].filter(Boolean) as string[];
             return (
               <Item
                 key={raw + i}

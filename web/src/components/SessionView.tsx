@@ -42,7 +42,8 @@ const useNarrow = () => useMediaQuery(NARROW);
 
 const fill: CSSProperties = { flex: 1, minHeight: 0 };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
-const composerDock: CSSProperties = { paddingBlockEnd: "env(safe-area-inset-bottom)" };
+const statusText: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 4)" };
+const composerDock: CSSProperties ={ paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
 const queuedRow = (dragging: boolean): CSSProperties => ({
   border: "var(--border-width) solid var(--color-border)",
@@ -148,8 +149,9 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
       <StackItem size="fill" />
       {!narrow &&
         Object.entries(st.statuses).map(([k, v]) => (
-          <Tooltip key={k} content={k}>
-            <Text type="code" color="secondary">
+          // Extension statuses can be long (pi's usage lines); one short line each keeps the bar on one row.
+          <Tooltip key={k} content={`${k}: ${v}`}>
+            <Text type="code" color="secondary" maxLines={1} style={statusText}>
               {v}
             </Text>
           </Tooltip>
@@ -167,12 +169,14 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
 
 function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harness: string; state: LiveState }) {
   const [fetched, setLevels] = useState<string[]>([]);
+  // A deep link shows the saved copy before the runner is connected; ask again once it is.
+  const online = useStore((s) => s.connected && !!s.runnerId);
   useEffect(() => {
-    if (state.thinkingLevels) return;
+    if (state.thinkingLevels || !online) return;
     rpc("listModels", { harness: harness as any, sessionId })
       .then((r) => setLevels(r.thinkingLevels))
       .catch(() => {});
-  }, [harness, sessionId, state.model, state.thinkingLevels]);
+  }, [harness, sessionId, state.model, state.thinkingLevels, online]);
   const levels = state.thinkingLevels ?? fetched;
   if (!levels.length) return null;
   return (

@@ -409,7 +409,8 @@ class CodexSession extends LiveSession {
     if (!at || !m) return this.addPart(itemId, part);
     const parts = [...m.parts];
     const old = parts[at.idx];
-    parts[at.idx] = old?.type === "tool" && part.type === "tool" && old.guard ? { ...part, guard: old.guard } : part;
+    // Keep the guard's verdict, or its "checking…" while the judge decides.
+    parts[at.idx] = old?.type === "tool" && part.type === "tool" && (old.guard || old.judging) ? { ...part, guard: old.guard, judging: part.status === "running" ? old.judging : undefined } : part;
     this.emit({ type: "msg", msg: { ...m, parts } });
   }
 

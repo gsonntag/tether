@@ -358,7 +358,8 @@ class PiSession extends LiveSession {
             msg.parts = msg.parts.map((p) => {
               if (p.type !== "tool") return p;
               const old = prev.parts.find((q) => q.type === "tool" && q.id === p.id);
-              return old && old.type === "tool" ? { ...p, status: old.status, output: old.output } : p;
+              // ...and the guard's verdict, or its "checking…" while the judge decides
+              return old && old.type === "tool" ? { ...p, status: old.status, output: old.output, guard: old.guard, judging: old.status === "running" ? old.judging : undefined } : p;
             });
           this.emit({ type: "msg", msg });
           if (!msg.error) this.turnSucceeded();
