@@ -88,6 +88,13 @@ function usePlanRequest(sessionId: string, planId: string): UiRequest | undefine
   return useStore((s) => s.open[sessionId]?.state.pendingUi.find((r) => r.kind === "plan" && r.planId === planId));
 }
 
+/**
+ * Escape inside a comment box closes just that box. Astryx's layer stack listens on the document and
+ * skips a press that's already defaultPrevented; stopPropagation alone doesn't reach it, so the
+ * plan dialog (or, on phones, the dialog behind the comments sheet) closed too.
+ */
+const claimEscape = (e: { preventDefault(): void; stopPropagation(): void }) => (e.preventDefault(), e.stopPropagation());
+
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 // ---------------- transcript card ----------------
@@ -359,7 +366,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           value={composing}
           onChange={(v) => setComposing(v)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") (e.stopPropagation(), setSpot(undefined), setComposing(""));
+            if (e.key === "Escape") (claimEscape(e), setSpot(undefined), setComposing(""));
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) (e.preventDefault(), addComment());
           }}
           width="100%"
@@ -391,7 +398,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
               onChange={(v) => updateComment(c.id, v)}
               onBlur={() => setEditing(undefined)}
               onKeyDown={(e) => {
-                if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) (e.stopPropagation(), setEditing(undefined));
+                if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) (claimEscape(e), setEditing(undefined));
               }}
               width="100%"
             />
