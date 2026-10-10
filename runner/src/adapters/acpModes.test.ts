@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const live = !!process.env.OPENCODE_LIVE_TEST && !!process.env.OPENCODE_BIN;
 const root = mkdtempSync(join(tmpdir(), "tether-oc-modes-"));
-process.env.TETHER_CONFIG_DIR = join(root, "tether");
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = join(root, "tether");
 if (live) {
   process.env.HOME = join(root, "home");
   process.env.XDG_CONFIG_HOME = join(root, "home", ".config");

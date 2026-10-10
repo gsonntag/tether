@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-resume-choices-"));
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-resume-choices-"));
 const { LiveSession } = await import("./session");
 const { config, prefs } = await import("./config");
 
