@@ -54,6 +54,7 @@ import type {
   ContextImportPreview,
   ContextSkill,
   ContextStatus,
+  ContextTurnedOff,
   MemoryCommit,
   MemoryConflict,
   MemoryEntry,
@@ -111,6 +112,7 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
   const runnerId = useStore((s) => s.runnerId);
   const [tab, setTab] = useState<TabId>("memory");
   const [importing, setImporting] = useState(false);
+  const [turnedOff, setTurnedOff] = useState<ContextTurnedOff>();
   const [selected, setSelected] = useState<string>();
   const wantTab = useStore((s) => s.memoryTab);
   useEffect(() => {
@@ -150,17 +152,20 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
               {status?.busy && !wizard && <Spinner size="sm" label="Merging…" />}
               {!wizard && (
                 <Button
-                  label="Turn off"
+                  label="Turn off shared memory"
                   size="sm"
                   onClick={async () => {
                     if (
                       !confirm(
-                        "Turn the master context off? Tether removes its managed blocks, MCP entries and skill links from every harness (skills it had replaced become real copies again). The store, its history and the backups are kept; importing again turns it back on.",
+                        "Turn off shared memory? Tether stops syncing and removes what it added to every harness: the managed blocks in CLAUDE.md / AGENTS.md / GEMINI.md, its own memory files, the tether-context MCP entries (~/.claude.json, opencode, Codex, pi, Kiro, Antigravity) and its skill links (skills it had replaced become real copies again). The store, its history and the backups are kept; importing again turns it back on.",
                       )
                     )
                       return;
                     const st = await act("contextDisable", {});
-                    if (st) useStore.setState({ contextStatus: st });
+                    if (!st) return;
+                    const { turnedOff: off, ...rest } = st;
+                    setTurnedOff(off);
+                    useStore.setState({ contextStatus: rest });
                   }}
                 />
               )}
@@ -199,7 +204,15 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
                 <Spinner label="Loading…" />
               </VStack>
             ) : wizard ? (
-              <ImportWizard importing={importing} onImport={() => setImporting(true)} onFailed={() => setImporting(false)} />
+              <ImportWizard
+                importing={importing}
+                turnedOff={turnedOff}
+                onImport={() => {
+                  setTurnedOff(undefined);
+                  setImporting(true);
+                }}
+                onFailed={() => setImporting(false)}
+              />
             ) : tab === "memory" ? (
               <MemoryTab narrow={narrow} selected={selected} onSelect={setSelected} />
             ) : tab === "activity" ? (
@@ -226,7 +239,44 @@ const PHASE_LABEL: Record<NonNullable<ContextStatus["progress"]>["phase"], strin
   disable: "Turning off…",
 };
 
-function ImportWizard({ importing, onImport, onFailed }: { importing: boolean; onImport: () => void; onFailed: () => void }) {
+/** What "Turn off" just undid (shown above the wizard until the next import). */
+function TurnedOffBanner({ off }: { off: ContextTurnedOff }) {
+  const skills = [
+    off.skillLinks ? `${off.skillLinks} skill ${off.skillLinks === 1 ? "link" : "links"} removed` : "",
+    off.restoredSkills ? `${off.restoredSkills} skill ${off.restoredSkills === 1 ? "copy" : "copies"} put back` : "",
+  ].filter(Boolean);
+  const description = [
+    off.files.length ? `Tether's blocks and tether-context entries came out of ${off.files.length} ${off.files.length === 1 ? "file" : "files"}.` : "No harness files needed cleaning.",
+    skills.length ? skills.join(", ") + "." : "",
+    "Your memory store and its history are kept; importing again turns it back on.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <VStack gap={2}>
+      <Banner status="success" title="Shared memory is off" description={description} collapsible={false} isDismissable>
+        {off.files.length > 0 && (
+          <List density="compact">
+            {off.files.map((f) => (
+              <ListItem key={f} label={f} />
+            ))}
+          </List>
+        )}
+      </Banner>
+      {off.warnings.length > 0 && (
+        <Banner status="warning" title="Some files couldn't be cleaned" collapsible={false}>
+          <List density="compact">
+            {off.warnings.map((w) => (
+              <ListItem key={w} label={w} />
+            ))}
+          </List>
+        </Banner>
+      )}
+    </VStack>
+  );
+}
+
+function ImportWizard({ importing, turnedOff, onImport, onFailed }: { importing: boolean; turnedOff?: ContextTurnedOff; onImport: () => void; onFailed: () => void }) {
   const [preview, setPreview] = useState<ContextImportPreview>();
   const [err, setErr] = useState<string>();
   const live = useStore((s) => s.contextLive);
@@ -292,6 +342,7 @@ function ImportWizard({ importing, onImport, onFailed }: { importing: boolean; o
       content={
         <LayoutContent padding={4}>
           <VStack gap={5} style={capped}>
+            {turnedOff && <TurnedOffBanner off={turnedOff} />}
             <VStack gap={2}>
               <Text>
                 Tether can keep one memory and one skill library for every agent you run: Claude Code, Codex, pi, opencode, Kiro and Antigravity. What any of

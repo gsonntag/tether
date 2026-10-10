@@ -17,6 +17,7 @@ import type {
   ContextProgress,
   ContextSkill,
   ContextStatus,
+  ContextTurnedOff,
   ConflictStatus,
   MemoryCommit,
   MemoryConflict,
@@ -26,7 +27,7 @@ import type {
 import { parseEntry } from "../../../web/src/shared/protocol";
 import { config, normalizeModelEntry, saveConfig } from "../config";
 import { BACKGROUND_HARNESSES, backgroundModel, judgeEnabled, setJudgeEnabled } from "./background";
-import { exportAll, isOwnWrite, unexportAll } from "./export";
+import { exportAll, isOwnWrite, registerNativeMcp, unexportAll, type ExportResult } from "./export";
 import { Mutex } from "./git";
 import { asType, slugify, type Memory } from "./format";
 import { assembleHandoffMemory, captureLearnings, nativeIds, type CapturedFact, type Extractor, type HandoffMemory } from "./handoff";
@@ -141,7 +142,7 @@ export class ContextService {
     const scan = await scanSources(this.store.exists() ? this.store : undefined, { changedOnly: true });
     const meta = this.meta();
     const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta), meta);
-    const exp = await exportAll(this.store, { dryRun: true });
+    const exp = await exportAll(this.store, { dryRun: true, globalMcp: true });
     scan.warnings.push(...(plan.warnings ?? []));
     return {
       memories: scan.entries.map((e) => ({ harness: e.harness, path: tilde(e.path), title: e.title, scope: e.scope ?? "decided on import" })),
@@ -168,6 +169,14 @@ export class ContextService {
       try {
         await this.syncSkills();
         await this.sync({ forceExport: true });
+        // Native Claude Code / opencode sessions get the MCP server too; only ever on this explicit import.
+        await this.harnessLock.run(async () => {
+          if (!this.enabled) return;
+          const g: ExportResult = { written: [], mcpConfigs: [], warnings: [] };
+          registerNativeMcp(this.store, g);
+          for (const w of g.warnings) this.act({ kind: "error", text: w });
+          if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
+        });
         if (this.enabled) this.watch();
         this.act({ kind: "import", text: "Import finished" });
       } finally {
@@ -312,12 +321,13 @@ export class ContextService {
    * own files and index lines, skill symlinks (a link that replaced the user's copy becomes a real
    * copy of the current version). The store, its history and the backups are kept.
    */
-  async disable(): Promise<ContextStatus> {
+  async disable(): Promise<ContextStatus & { turnedOff: ContextTurnedOff }> {
     const cfg = config();
     cfg.context = { ...cfg.context, enabled: false };
     saveConfig();
     setInjectionEnabled(false);
     this.stop();
+    const turnedOff: ContextTurnedOff = { files: [], skillLinks: 0, restoredSkills: 0, warnings: [] };
     await this.harnessLock.run(async () => {
       this.setProgress({ phase: "disable", done: 0, total: 2 });
       const r = await unexportAll(this.store);
@@ -325,14 +335,15 @@ export class ContextService {
       const meta = this.meta();
       const s = unlinkAll(this.store.skillsDir, meta);
       if (this.store.exists()) writeMeta(join(this.store.dir, "skills.json"), meta);
-      for (const w of [...r.warnings, ...s.errors]) this.act({ kind: "error", text: `Turning off: ${w}` });
+      Object.assign(turnedOff, { files: [...new Set(r.changed)].map(tilde), skillLinks: s.removed.length, restoredSkills: s.restored.length, warnings: [...r.warnings, ...s.errors] });
+      for (const w of turnedOff.warnings) this.act({ kind: "error", text: `Turning off: ${w}` });
       this.act({
         kind: "export",
-        text: `Master context turned off: cleaned ${r.changed.length} file(s), removed ${s.removed.length} skill link(s), put back ${s.restored.length} skill copies`,
+        text: `Master context turned off: cleaned ${turnedOff.files.length} file(s), removed ${s.removed.length} skill link(s), put back ${s.restored.length} skill copies`,
       });
       this.setProgress(undefined);
     });
-    return this.status();
+    return { ...this.status(), turnedOff };
   }
 
   // ---------------- memory ops ----------------

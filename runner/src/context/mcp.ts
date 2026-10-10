@@ -112,7 +112,9 @@ export async function callTool(name: string, args: any, cwd = process.cwd()): Pr
         scope,
         repo: key,
         sessionId: process.env.TETHER_SESSION_ID,
-        sessionKey: process.env.TETHER_SESSION_KEY,
+        // TETHER_GUARD_KEY: a harness with only a global registration (Antigravity) may pass its
+        // environment through to MCP servers, which still ties the write to the session.
+        sessionKey: process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY,
         ts: Date.now(),
       };
       writeAtomic(join(store.dir, "inbox", `${Date.now()}-${sha(text + Math.random())}.json`), JSON.stringify(note));

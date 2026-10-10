@@ -271,7 +271,9 @@ describe("export and loop prevention", () => {
     // MCP registrations keep other servers.
     const kiro = JSON.parse(readFileSync(join(home, ".kiro", "settings", "mcp.json"), "utf8"));
     expect(Object.keys(kiro.mcpServers).sort()).toEqual(["other", "tether-context"]);
-    expect(JSON.parse(readFileSync(join(home, ".gemini", "antigravity", "mcp_config.json"), "utf8")).mcpServers["tether-context"].args[0]).toEndWith("mcp.ts");
+    // agy reads ~/.gemini/config/mcp_config.json now; the legacy file is left as it was.
+    expect(JSON.parse(readFileSync(join(home, ".gemini", "config", "mcp_config.json"), "utf8")).mcpServers["tether-context"].args[0]).toEndWith("mcp.ts");
+    expect(readFileSync(join(home, ".gemini", "antigravity", "mcp_config.json"), "utf8")).toBe("");
     const toml = readFileSync(join(home, ".codex", "config.toml"), "utf8");
     expect(toml.startsWith('model = "gpt"\n')).toBe(true);
     expect(toml).toContain("[mcp_servers.tether-context]");

@@ -12,6 +12,7 @@ import {
   type UiResponse,
 } from "../../web/src/shared/protocol";
 import { userParts } from "../../web/src/shared/bash";
+import { APPROVING_MODES } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
@@ -134,7 +135,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -682,6 +683,24 @@ export abstract class LiveSession {
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
   }
 
+  /**
+   * After a resume: puts back the model, effort and mode the session last ran with (`saved`, read
+   * before the session started, since starting re-saves its prefs). Not every harness keeps these
+   * in its own session store (Claude doesn't), so a Haiku session would otherwise come back on the
+   * default model. Modes come back only if they keep the guard asking.
+   */
+  async reapplyChoices(saved: { model?: string; thinking?: string; permissionMode?: string } | undefined) {
+    if (!saved) return;
+    const st = this.t.state;
+    const warn = (what: string) => (e: any) => this.notice(`Could not restore the ${what}: ${e?.message ?? e}`, "warning");
+    if (saved.model && saved.model !== "default" && saved.model !== st.model) await this.applyModel(saved.model).catch(warn("model"));
+    const levels = this.t.state.thinkingLevels;
+    if (saved.thinking && saved.thinking !== this.t.state.thinking && (!levels || levels.includes(saved.thinking))) await this.setThinking(saved.thinking).catch(warn("effort"));
+    const mode = saved.permissionMode;
+    if (mode && mode !== this.t.state.permissionMode && this.t.state.modes?.includes(mode) && !APPROVING_MODES.has(mode))
+      await this.setPermissionMode(mode).catch(warn("mode"));
+  }
+
   /** Whether the agent is doing anything a restart would interrupt. */
   get busy(): boolean {
     return this.t.state.status !== "idle" || this.workingCount > 0 || (!this.t.state.activity && !!this.t.state.background?.length);
@@ -706,6 +725,9 @@ export abstract class LiveSession {
       guard: s.guard,
       checkpoints: s.checkpoints,
       context: s.context,
+      model: s.model,
+      thinking: s.thinking,
+      permissionMode: s.permissionMode,
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
