@@ -92,8 +92,16 @@ function usePlanRequest(sessionId: string, planId: string): UiRequest | undefine
  * Escape inside a comment box closes just that box. Astryx's layer stack listens on the document and
  * skips a press that's already defaultPrevented; stopPropagation alone doesn't reach it, so the
  * plan dialog (or, on phones, the dialog behind the comments sheet) closed too.
+ *
+ * The box then unmounts, which would drop focus to <body>; from there the stack's next Escape closes
+ * the comments sheet and the dialog behind it together. Focus goes to the layer's panel instead.
  */
-const claimEscape = (e: { preventDefault(): void; stopPropagation(): void }) => (e.preventDefault(), e.stopPropagation());
+const claimEscape = (e: { preventDefault(): void; stopPropagation(): void; currentTarget: Element }) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const panel = e.currentTarget.parentElement?.closest<HTMLElement>("[tabindex='-1']");
+  if (panel && e.currentTarget.closest("dialog")?.contains(panel)) panel.focus({ preventScroll: true });
+};
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
@@ -103,11 +111,13 @@ const draftMessage = (d: Draft) => formatPlanFeedback([...d.comments].sort((a, b
 /**
  * Approves a waiting plan. Draft comments are never left behind: they follow the approval as notes
  * for the work, and the draft is cleared. The dock's Approve and the dialog's both come here.
+ * False when something failed (reported as a toast); if only the notes failed to send, the plan is
+ * approved but the draft is kept, so they can be sent from the plan as comments.
  */
 async function approvePlan(sessionId: string, requestId: string, key: string): Promise<boolean> {
   const message = draftMessage(readDraft(key));
   if (!(await act("uiRespond", { sessionId, response: { id: requestId, allow: true } }))) return false;
-  if (message) await act("prompt", { sessionId, text: message, mode: "steer" });
+  if (message && !(await act("prompt", { sessionId, text: message, mode: "steer" }))) return false;
   writeDraft(key, EMPTY);
   return true;
 }
