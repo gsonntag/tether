@@ -76,9 +76,13 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
 - **Home.** The landing screen (and the 🏠 in the sidebar header) shows every connected runner's
   sessions at a glance, labeled by runner when there are several:
   - **Needs you:** permission prompts (Approve / Deny right there), questions with a few choices
-    (one tap), plans to review, and memory conflicts (Keep new / Keep old).
+    (one tap), plans to review, and memory conflicts (Keep new / Keep old). An answer goes to
+    that exact request, once; if it was already answered elsewhere or expired, Home says so and
+    nothing happens. A call too long to show in full (over 400 characters) is approved from the
+    session instead. Credentials in commands and the last line are redacted on Home.
   - **Running:** each live session's status, current action, how long the turn has run, its
-    subagents and shells, its context use, and a Stop button. **Running** in the sidebar jumps here.
+    subagents and shells, its context use, and a Stop button. **Running** in the sidebar jumps
+    here; its count is the same, across every runner.
   - **Recently finished:** the last sessions whose turn ended, with the agent's last line and
     what the session changed (**+42 −3**).
 

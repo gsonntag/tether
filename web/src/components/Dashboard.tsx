@@ -318,7 +318,8 @@ function Row({ row, running, ctx, children, controls }: { row: PulseRow; running
   return (
     <HStack gap={1} vAlign="center" paddingInlineEnd={2} {...press}>
       <StackItem size="fill">{children}</StackItem>
-      {controls}
+      {/* static: a long title truncates instead of squeezing Stop to "S…" */}
+      {controls && <StackItem>{controls}</StackItem>}
       <MoreMenu label="Session actions" size={ctx.phone ? "lg" : "md"} alignment="end" presentation="adaptive" items={actions} />
       <BottomSheet isOpen={sheet} onOpenChange={setSheet} label={row.pulse.session.title} height="hug">
         <VStack gap={0} padding={2}>
