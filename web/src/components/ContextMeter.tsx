@@ -4,6 +4,7 @@ import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
+import { modelDisplay } from "../models";
 import type { LiveState } from "../shared/protocol";
 
 const bar: CSSProperties = { width: "var(--spacing-12)" };
@@ -62,7 +63,7 @@ export function ContextMeter({ state }: { state: LiveState }) {
           {breakdown.join(" · ")}
         </Text>
       )}
-      {c.model && <Text type="inherit">Model: {c.model}</Text>}
+      {c.model && <Text type="inherit">Model: {modelDisplay(c.model).name}</Text>}
     </VStack>
   );
   return (
