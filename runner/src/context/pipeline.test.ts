@@ -3,7 +3,7 @@
 
 import "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ContextEvent } from "../../../web/src/shared/protocol";
 import { BEGIN } from "./blocks";
@@ -85,7 +85,26 @@ describe("importers", () => {
     put(join(harness.kiroSteering(), "tether.md"), "---\ninclusion: always\n---\n\n## Mine\n\nnope\n");
     const { entries } = await scanSources(store);
     const kiro = entries.filter((e) => e.harness === "kiro");
-    expect(kiro.map((e) => e.title)).toEqual(["Style"]);
+    // A tether.md without Tether's mark is the user's own file: imported, not skipped.
+    expect(kiro.map((e) => e.title)).toEqual(["Style", "Mine"]);
+    put(join(harness.kiroSteering(), "tether.md"), "---\ninclusion: always\nmanaged-by: tether\n---\n\n## Ours\n\ndigest\n");
+    expect((await scanSources(store)).entries.filter((e) => e.harness === "kiro").map((e) => e.title)).toEqual(["Style"]);
+  });
+
+  test("a user's own Claude memory named tether.md is imported and never overwritten or deleted", async () => {
+    const memDir = join(harness.claudeProjects(), repo.replace(/[/.]/g, "-"), "memory");
+    const mine = claudeMemory("tether", "notes about the Tether project", "project", "Tether runs as a systemd unit.");
+    put(join(memDir, "tether.md"), mine);
+    const { entries } = await scanSources(store);
+    expect(entries.some((e) => e.path === join(memDir, "tether.md"))).toBe(true);
+    await importAll();
+    const r = await exportAll(store);
+    expect(readFileSync(join(memDir, "tether.md"), "utf8")).toBe(mine);
+    expect(r.warnings.some((w) => w.includes("tether.md"))).toBe(true);
+    // Even when the repo has no memory left (the delete path).
+    for (const m of store.list().filter((m) => m.scope.startsWith("repo:"))) await store.put(m.id, undefined, "rm");
+    await exportAll(store);
+    expect(readFileSync(join(memDir, "tether.md"), "utf8")).toBe(mine);
   });
 
   test("markdown sections split at headings, skipping @imports and fenced headings", () => {
@@ -194,6 +213,32 @@ describe("merge pass", () => {
     expect(normalizeDecision("garbage", [], ["global"]).action).toBe("new");
   });
 
+  test("two memory_write calls from one session are two facts, never an overwrite", async () => {
+    await importAll();
+    put(join(store.dir, "inbox", "a.json"), JSON.stringify({ text: "The staging database is called stg-main.", scope: "global", sessionId: "claude-code:s1" }));
+    const first = await importAll();
+    expect(first.map((o) => o.decision)).toEqual(["new"]);
+    // Second write, same session, overlapping words: the first write is the only candidate.
+    put(join(store.dir, "inbox", "b.json"), JSON.stringify({ text: "The staging database is backed up nightly.", scope: "global", sessionId: "claude-code:s1" }));
+    let asked = 0;
+    const second = await importAll(async () => {
+      asked++;
+      return { action: "new" };
+    });
+    expect(asked).toBe(1); // the model decided, no "own edit" shortcut
+    expect(second.map((o) => o.decision)).toEqual(["new"]);
+    const bodies = store.list().map((m) => m.body);
+    expect(bodies).toContain("The staging database is called stg-main.");
+    expect(bodies).toContain("The staging database is backed up nightly.");
+    // And with the model down, the fallback keeps both too.
+    put(join(store.dir, "inbox", "c.json"), JSON.stringify({ text: "The staging database runs Postgres 17.", scope: "global", sessionId: "claude-code:s1" }));
+    await importAll(async () => {
+      throw new Error("down");
+    });
+    expect(store.list().map((m) => m.body)).toContain("The staging database is called stg-main.");
+    expect(store.list().map((m) => m.body)).toContain("The staging database runs Postgres 17.");
+  });
+
   test("MCP inbox entries carry scope and session", () => {
     put(join(store.dir, "inbox", "9.json"), JSON.stringify({ text: "Fact", repo: "github.com/a/b", sessionKey: "k1" }));
     put(join(store.dir, "inbox", "bad.json"), "{");
@@ -238,6 +283,28 @@ describe("export and loop prevention", () => {
     expect((await exportAll(store)).written).toEqual([]);
   });
 
+  test("a symlinked CLAUDE.md (dotfiles) stays a symlink; the block lands in its target, mode kept", async () => {
+    await importAll();
+    const dot = join(home, "dotfiles", "CLAUDE.md");
+    put(dot, "# Mine\n\nkeep me\n");
+    chmodSync(dot, 0o600);
+    rmSync(harness.claudeMd());
+    symlinkSync(dot, harness.claudeMd());
+    await exportAll(store);
+    expect(lstatSync(harness.claudeMd()).isSymbolicLink()).toBe(true);
+    expect(readFileSync(dot, "utf8")).toStartWith("# Mine\n\nkeep me\n");
+    expect(readFileSync(dot, "utf8")).toContain(BEGIN);
+    expect(statSync(dot).mode & 0o777).toBe(0o600);
+  });
+
+  test("no context module reads the home through os.homedir() (Bun ignores HOME changes there)", () => {
+    const dir = import.meta.dir;
+    for (const f of readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
+      const src = readFileSync(join(dir, f), "utf8");
+      expect([f, /homedir\s*\(/.test(src)]).toEqual([f, false]);
+    }
+  });
+
   test("an export never comes back as an import (no loops)", async () => {
     await importAll();
     await exportAll(store);
@@ -252,19 +319,24 @@ describe("export and loop prevention", () => {
     await importAll();
     await exportAll(store);
     let fired = 0;
-    const w = new Watcher(() => fired++, { debounceMs: 1, isOwn: isOwnWrite });
+    // No OS watchers and no timers: events are fed by hand and the debounce is checked directly,
+    // so load on the machine can't reorder or duplicate anything.
+    const w = new Watcher(() => fired++, { debounceMs: 60_000, isOwn: isOwnWrite, fsWatch: false });
     w.add([harness.claudeMd()]);
+    expect(w.watching).toEqual([]);
     w.event(harness.claudeProjects(), "CLAUDE.md"); // wrong dir: filtered by the dir map
     w.event(join(home, ".claude"), "settings.json"); // other file in a watched dir
     w.event(join(home, ".claude"), "CLAUDE.md"); // Tether's own write
     w.event(join(home, ".claude"), "CLAUDE.md.tether-tmp");
-    await Bun.sleep(20);
-    expect(fired).toBe(0);
+    expect(w.pending).toBe(false);
     writeFileSync(harness.claudeMd(), "user edit\n");
     expect(isOwnWrite(harness.claudeMd())).toBe(false);
     w.event(join(home, ".claude"), "CLAUDE.md");
-    await Bun.sleep(20);
+    w.event(join(home, ".claude"), "CLAUDE.md"); // a burst folds into one change
+    expect(w.pending).toBe(true);
+    w.flush();
     expect(fired).toBe(1);
+    expect(w.pending).toBe(false);
     w.stop();
   });
 

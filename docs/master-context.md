@@ -108,12 +108,45 @@ Skills: canonical copy in `context/skills/`; symlinked into `~/.claude/skills/`,
 (covers Codex, pi, opencode), `~/.gemini/antigravity/skills/`, `~/.gemini/skills/`. Name collisions with
 harness builtins: the builtin wins, and the registry copy is exposed as `<name>-tether`.
 
+## Handoffs (runner/src/context/handoff.ts)
+
+When a fallback chain moves a conversation to another harness, and the context is enabled:
+- **Capture**: the background model extracts 0-3 durable facts from the outgoing transcript since
+  the last capture (watermark `handoff-capture:<session>` in `sources.json`, debounced 2 min). The
+  handoff waits at most 8 s; a late answer is still filed. Facts become inbox notes
+  (`via: handoff`, provenance `handoff:<session>#<hash>`) for the normal merge pass, filed only
+  after the new session has started so its injection can't already contain them.
+  `context.handoffCapture: false` in runner.json turns this off.
+  Runner-wide, one extraction runs at a time and a failure or timeout pauses capturing for 5 min, so
+  a usage-limit storm costs at most one background call (and one 8 s wait). An earlier handoff's
+  brief (shown as a user message by some harnesses) is never sent again or used for relevance.
+  Credentials: the transcript is redacted before it's sent (keys, tokens, `NAME=secret`, URLs with
+  passwords, private keys), the prompt forbids them and any fact that still matches is dropped. The
+  transcript goes in a `<transcript>` data block the prompt says not to take instructions from, and
+  only user/feedback facts can be global.
+- **Carry**: the brief gets a `## Memory` section: captured facts, memories relevant to the last user
+  messages and the pending prompt, global user/feedback entries, then this repo's entries, within
+  ~1500 tokens (overflow becomes index lines). Anything the new harness's native injection already
+  shows in full is left out.
+- The new session's handoff notice lists what was carried (collapsed).
+
 ## MCP server `tether-context`
 
 Served by the runner (stdio launcher script so any harness can spawn it, talking to the runner's local
 socket). Registered for Tether sessions per adapter (Claude SDK `mcpServers`, ACP `newSession.mcpServers`,
 codex config override, pi via `pi-mcp-adapter`) and globally in each harness's MCP config for native
 CLI use.
+
+`~/.claude.json` and opencode's `opencode.json(c)` are registered only by the user's Import (never by
+a background re-export) and are edited in place with jsonc-parser: only the `tether-context` key
+changes, comments and formatting stay. `~/.claude.json` is rewritten constantly by every running
+Claude Code process, so the edit (runner/src/context/globalMcp.ts) takes Claude's own lock
+(`~/.claude.json.lock`, proper-lockfile style, stale after 10s), re-reads and compares the file right
+before the atomic rename, reads it back afterwards, and redoes the edit on the new text if anything
+moved. Residual risk: a writer that ignores the lock and lands in the microseconds between the final
+compare and the rename loses that one write (nothing can detect it afterwards). This happens once,
+on Import or Turn off, never in the background. Turning off removes the entry in place (never a
+snapshot restore, which would roll back Claude's own state).
 
 Tools: `memory_search(query, scope?)`, `memory_get(slug)`, `memory_write(text, type?, scope?)`,
 `skill_list()`, `skill_get(name)`. All `mcp__tether-context__*` calls auto-allow in the guard

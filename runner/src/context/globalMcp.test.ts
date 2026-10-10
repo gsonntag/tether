@@ -68,7 +68,10 @@ beforeEach(() => {
 describe("~/.claude.json", () => {
   test("adds only the user-scope entry, keeps every other byte and the file mode, and undoes exactly", () => {
     writeFileSync(harness.claudeJson(), CLAUDE_JSON, { mode: 0o600 });
-    const r = registerGlobalMcp();
+    const seen: string[] = [];
+    // The snapshot hook runs before the write, with the original still in place.
+    const r = registerGlobalMcp({ before: (p) => seen.push(readFileSync(p, "utf8")) });
+    expect(seen).toEqual([CLAUDE_JSON]);
     expect(r.written).toEqual([harness.claudeJson()]);
     const text = readFileSync(harness.claudeJson(), "utf8");
     const cfg = JSON.parse(text);
@@ -77,7 +80,7 @@ describe("~/.claude.json", () => {
     // Byte for byte outside the inserted key.
     expect(text.startsWith(CLAUDE_JSON.trimEnd().slice(0, -2))).toBe(true);
     expect(statSync(harness.claudeJson()).mode & 0o777).toBe(0o600);
-    expect(readFileSync(`${harness.claudeJson()}.tether-backup`, "utf8")).toBe(CLAUDE_JSON);
+    expect(existsSync(`${harness.claudeJson()}.tether-backup`)).toBe(false);
     // Idempotent.
     expect(registerGlobalMcp().written).toEqual([]);
     // Undo: the file reads exactly as before.
@@ -120,7 +123,7 @@ describe("~/.claude.json", () => {
     writeFileSync(harness.claudeJson(), CLAUDE_JSON, { mode: 0o600 });
     const claudes = CLAUDE_JSON.replace(`"numStartups": 412`, `"numStartups": 413`);
     let raced = false;
-    const ok = writeConfigAtomic(harness.claudeJson(), "{}", CLAUDE_JSON, () => {
+    const ok = writeConfigAtomic(harness.claudeJson(), "{}", () => {
       // Claude writes its own change just before our rename.
       if (!raced) writeFileSync(harness.claudeJson(), claudes);
       raced = true;
@@ -216,7 +219,7 @@ describe("service: only the user's import writes them; disabling undoes", () => 
     writeFileSync(harness.claudeJson(), CLAUDE_JSON, { mode: 0o600 });
     put(join(harness.opencodeDir(), "opencode.jsonc"), OPENCODE_JSONC);
     put(harness.codexConfig(), 'model = "gpt"\n');
-    put(harness.agyMcp(), "");
+    // Antigravity installed, its newer config dir (~/.gemini/config) not there yet.
     mkdirSync(harness.agyDir(), { recursive: true });
 
     // Preview (dry run) lists them, writes nothing.
@@ -232,13 +235,8 @@ describe("service: only the user's import writes them; disabling undoes", () => 
     expect(readFileSync(harness.claudeJson(), "utf8")).toBe(CLAUDE_JSON);
 
     await s.runImport();
-    const deadline = Date.now() + 5000;
-    while (!readFileSync(harness.claudeJson(), "utf8").includes("tether-context")) {
-      if (Date.now() > deadline) throw new Error("import never registered tether-context");
-      await Bun.sleep(20);
-    }
-    while (s.status().busy) await Bun.sleep(20);
-    await Bun.sleep(50);
+    await s.idle();
+    expect(readFileSync(harness.claudeJson(), "utf8")).toContain("tether-context");
     expect(readFileSync(join(harness.opencodeDir(), "opencode.jsonc"), "utf8")).toContain("tether-context");
     expect(readFileSync(harness.codexConfig(), "utf8")).toContain("[mcp_servers.tether-context]");
     expect(readFileSync(harness.piMcp(), "utf8")).toContain("tether-context");
@@ -251,8 +249,10 @@ describe("service: only the user's import writes them; disabling undoes", () => 
     expect(readFileSync(harness.claudeJson(), "utf8")).toBe(CLAUDE_JSON);
     expect(readFileSync(join(harness.opencodeDir(), "opencode.jsonc"), "utf8")).not.toContain("tether-context");
     expect(readFileSync(harness.codexConfig(), "utf8")).toBe('model = "gpt"\n');
-    expect(readFileSync(harness.piMcp(), "utf8")).not.toContain("tether-context");
-    expect(readFileSync(harness.agyMcp(), "utf8")).not.toContain("tether-context");
+    // Files the import created are gone again.
+    expect(existsSync(harness.piMcp())).toBe(false);
+    expect(existsSync(harness.agyMcp())).toBe(false);
+    expect(existsSync(`${harness.claudeJson()}.lock`)).toBe(false);
     s.stop();
   });
 });

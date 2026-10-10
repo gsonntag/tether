@@ -6,10 +6,11 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { outsideBlock } from "./blocks";
+import { isTetherOwned, outsideBlock } from "./blocks";
 import { contentHash, parseMemory, slugify, splitFrontMatter, type Memory } from "./format";
 import { harness, store as storePaths, tilde } from "./paths";
-import { claudeDirCwd, isHome, repoKey } from "./repokey";
+import { claudeProjectScope } from "./repokey";
+export { isScratch } from "./repokey";
 import type { Store } from "./store";
 
 export type SourceHarness = "claude" | "codex" | "pi" | "opencode" | "kiro" | "gemini" | "antigravity" | "mcp";
@@ -36,6 +37,11 @@ export interface SourceEntry {
   sessionKey?: string;
   /** inbox file to delete once merged */
   consume?: string;
+  /**
+   * The source can't edit an earlier entry (MCP writes, handoff facts): never shortcut to "update
+   * what this source gave before" — only the model may call it an update.
+   */
+  oneShot?: boolean;
 }
 
 export interface ScanResult {
@@ -43,11 +49,10 @@ export interface ScanResult {
   warnings: string[];
 }
 
-/** Files Tether writes into harness dirs; never imported. */
+/** Names of files Tether writes into harness dirs. Only skipped when they carry Tether's mark. */
 export const OWN_FILES = new Set(["tether.md"]);
 
-/** Claude Code's throwaway scratchpad sessions (/tmp/claude-<uid>/…). */
-export const isScratch = (cwd: string) => /^\/tmp\/claude-\d+(\/|$)/.test(cwd);
+const isOwnFile = (name: string, text: string | undefined) => OWN_FILES.has(name) && isTetherOwned(text);
 
 const read = (p: string) => {
   try {
@@ -117,20 +122,20 @@ async function claudeMemory(warnings: string[]): Promise<SourceEntry[]> {
   for (const d of ls(root)) {
     const memDir = join(root, d, "memory");
     if (!isDir(memDir)) continue;
-    const cwd = claudeDirCwd(join(root, d));
-    if (isScratch(cwd)) continue;
     let scope: string;
     try {
-      scope = isHome(cwd) ? "global" : `repo:${await repoKey(cwd)}`;
+      const s = await claudeProjectScope(join(root, d));
+      if (s.kind === "scratch") continue;
+      scope = s.kind === "global" ? "global" : `repo:${s.key}`;
     } catch (e: any) {
       warnings.push(`${tilde(memDir)}: ${e?.message ?? e}`);
       continue;
     }
     for (const f of ls(memDir)) {
-      if (!f.endsWith(".md") || f === "MEMORY.md" || OWN_FILES.has(f)) continue;
+      if (!f.endsWith(".md") || f === "MEMORY.md") continue;
       const p = join(memDir, f);
       const text = read(p);
-      if (!text?.trim()) continue;
+      if (!text?.trim() || isOwnFile(f, text)) continue;
       const m = parseMemory(text, { name: f.slice(0, -3) });
       out.push({
         key: p,
@@ -155,7 +160,7 @@ function mdFilesUnder(dir: string, depth = 3): string[] {
     if (n.startsWith(".")) continue;
     const p = join(dir, n);
     if (isDir(p)) out.push(...mdFilesUnder(p, depth - 1));
-    else if (n.endsWith(".md") && !OWN_FILES.has(n)) out.push(p);
+    else if (n.endsWith(".md") && !isOwnFile(n, read(p))) out.push(p);
   }
   return out;
 }
@@ -216,7 +221,11 @@ export function inboxEntries(inboxDir = storePaths.inbox()): SourceEntry[] {
         key: `inbox:${f}`,
         harness: "mcp",
         path: p,
-        provenance: w.sessionId ? `mcp:${w.sessionId}` : "mcp",
+        // One provenance per write (session + content hash): two writes from one session, or several
+        // facts from one handoff capture (context/handoff.ts), are separate facts, never "the source
+        // edited what it gave us before".
+        provenance: `${w.via === "handoff" ? "handoff" : "mcp"}:${typeof w.sessionId === "string" && w.sessionId ? w.sessionId : "anon"}#${contentHash(text).slice(0, 8)}`,
+        oneShot: true,
         title: text.split("\n")[0]!.slice(0, 120),
         text,
         memory: { type: w.type, name: w.name },
@@ -250,10 +259,10 @@ export async function scanSources(st: Store | undefined, opts: { changedOnly?: b
   }
   entries.push(...codexDb(warnings));
   for (const f of ls(harness.kiroSteering())) {
-    if (!f.endsWith(".md") || OWN_FILES.has(f)) continue;
+    if (!f.endsWith(".md")) continue;
     const p = join(harness.kiroSteering(), f);
     const text = read(p);
-    if (text) entries.push(...markdownEntries("kiro", p, splitFrontMatter(text).body, "global", `Kiro steering ${f}`));
+    if (text && !isOwnFile(f, text)) entries.push(...markdownEntries("kiro", p, splitFrontMatter(text).body, "global", `Kiro steering ${f}`));
   }
   for (const p of mdFilesUnder(harness.agyKnowledge())) {
     const text = read(p);

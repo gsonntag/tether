@@ -3,7 +3,7 @@
 // ~/.config/opencode/opencode.json(c) (`mcp`). These files hold far more than MCP servers (Claude
 // rewrites ~/.claude.json constantly; opencode configs carry comments), so the edits here are
 // surgical: jsonc-parser edits touch only the one key, everything else stays byte for byte. Each
-// write is atomic, keeps the file's mode, and leaves a `.tether-backup` copy of the previous text.
+// write is atomic and keeps the file's mode; the export snapshots the original first (export.ts).
 //
 // Called only from the user's import (register) and from turning the context off (unregister).
 
@@ -83,16 +83,12 @@ export function lockConfig(path: string, waitMs = 1_000): (() => void) | undefin
 }
 
 /**
- * Atomic replace that keeps the file's permissions; the previous text (`prev`, what the edit was
- * based on) goes to `<path>.tether-backup`. `unchanged` is checked last, right before the rename,
- * so a concurrent writer's change is never overwritten: returns false and nothing is replaced.
+ * Atomic replace that keeps the file's permissions. `unchanged` is checked last, right before the
+ * rename, so a concurrent writer's change is never overwritten: returns false and nothing is
+ * replaced.
  */
-export function writeConfigAtomic(path: string, text: string, prev?: string, unchanged: () => boolean = () => true): boolean {
-  let mode = 0o600;
-  if (existsSync(path)) {
-    mode = statSync(path).mode & 0o777;
-    writeFileSync(`${path}.tether-backup`, prev ?? readFileSync(path, "utf8"), { mode });
-  }
+export function writeConfigAtomic(path: string, text: string, unchanged: () => boolean = () => true): boolean {
+  const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
   const tmp = `${path}.tether-tmp-${process.pid}`;
   writeFileSync(tmp, text, { mode });
   try {
@@ -124,7 +120,7 @@ export function writeConfigAtomic(path: string, text: string, prev?: string, unc
  *     lacks our change (a stale in-memory config written whole), the edit is retried.
  * The text outside our key is never re-serialized, so retries can't reformat anything.
  */
-function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => string | undefined, out: GlobalMcpResult): boolean {
+function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => string | undefined, out: GlobalMcpResult, before?: (path: string) => void): boolean {
   const real = target(path);
   for (let attempt = 0; attempt < 5; attempt++) {
     if (attempt) Bun.sleepSync(50 * attempt);
@@ -145,7 +141,11 @@ function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => 
     let wrote: boolean;
     try {
       // Re-read under the lock: anything written before we got it is in `text` or forces a redo.
-      wrote = readOr(real) === text && writeConfigAtomic(real, next, text, () => readOr(real) === text);
+      if (readOr(real) !== text) wrote = false;
+      else {
+        before?.(path);
+        wrote = writeConfigAtomic(real, next, () => readOr(real) === text);
+      }
     } finally {
       release();
     }
@@ -202,7 +202,7 @@ export function opencodeConfigPath(): string {
 
 // ---------------- register / unregister ----------------
 
-export function register(path: string, key: string, want: object, jsonc: boolean, out: GlobalMcpResult) {
+export function register(path: string, key: string, want: object, jsonc: boolean, out: GlobalMcpResult, before?: (path: string) => void) {
   const done = update(
     path,
     jsonc,
@@ -215,6 +215,7 @@ export function register(path: string, key: string, want: object, jsonc: boolean
       return editJson(text, [key, SERVER], want);
     },
     out,
+    before,
   );
   if (done) out.mcpConfigs.push(path);
 }
@@ -235,20 +236,27 @@ function unregister(path: string, key: string, jsonc: boolean, out: GlobalMcpRes
   );
 }
 
-/** Registers tether-context for native Claude Code and opencode CLI sessions (installed harnesses only). */
-export function registerGlobalMcp(opts: { dryRun?: boolean } = {}): GlobalMcpResult {
+/**
+ * Registers tether-context for native Claude Code and opencode CLI sessions (installed harnesses
+ * only). `before(path)` runs under the file's lock right before its first change is written (the
+ * export snapshots the original there).
+ */
+export function registerGlobalMcp(opts: { dryRun?: boolean; before?: (path: string) => void } = {}): GlobalMcpResult {
   const out: GlobalMcpResult = { dryRun: opts.dryRun, written: [], mcpConfigs: [], warnings: [] };
-  if (claudeInstalled()) register(harness.claudeJson(), "mcpServers", claudeEntry(), false, out);
-  if (existsSync(harness.opencodeDir())) register(opencodeConfigPath(), "mcp", opencodeEntry(), true, out);
+  if (claudeInstalled()) register(harness.claudeJson(), "mcpServers", claudeEntry(), false, out, opts.before);
+  if (existsSync(harness.opencodeDir())) register(opencodeConfigPath(), "mcp", opencodeEntry(), true, out, opts.before);
   return out;
 }
 
-/** Undoes registerGlobalMcp: removes only entries Tether wrote. */
-export function unregisterGlobalMcp(opts: { dryRun?: boolean } = {}): GlobalMcpResult {
-  const out: GlobalMcpResult = { dryRun: opts.dryRun, written: [], mcpConfigs: [], warnings: [] };
-  unregister(harness.claudeJson(), "mcpServers", false, out);
-  for (const f of ["opencode.jsonc", "opencode.json"]) unregister(`${harness.opencodeDir()}/${f}`, "mcp", true, out);
-  // The plain-JSON configs the regular export writes (pi, Kiro, Antigravity old and new paths).
-  for (const p of [harness.piMcp(), harness.kiroMcp(), harness.agyMcp(), harness.agyMcpLegacy()]) unregister(p, "mcpServers", true, out);
+/**
+ * Undoes registerGlobalMcp: removes only entries Tether wrote, in place. Never a restore from a
+ * snapshot: Claude has rewritten ~/.claude.json many times since, and that state must stay.
+ */
+export function unregisterGlobalMcp(): GlobalMcpResult {
+  const out: GlobalMcpResult = { written: [], mcpConfigs: [], warnings: [] };
+  for (const p of nativeMcpFiles()) unregister(p, p === harness.claudeJson() ? "mcpServers" : "mcp", p !== harness.claudeJson(), out);
   return out;
 }
+
+/** Every file registerGlobalMcp may have written. */
+export const nativeMcpFiles = () => [harness.claudeJson(), ...["opencode.jsonc", "opencode.json"].map((f) => `${harness.opencodeDir()}/${f}`)];
