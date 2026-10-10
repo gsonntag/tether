@@ -93,7 +93,7 @@ function Shell() {
 
   const showSide = narrow || !sidebarHidden;
   const banner = !connected ? (
-    <Banner status="error" container="section" collapsible={false} title="Disconnected · reconnecting…" />
+    <Banner status="error" container="section" collapsible={false} title={navigator.onLine ? "Disconnected · reconnecting…" : "Offline · reconnecting…"} />
   ) : !runnerId ? (
     <Banner status="warning" container="section" collapsible={false} title="No runner is connected" description="Start one on your machine (see README)." />
   ) : undefined;

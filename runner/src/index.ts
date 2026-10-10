@@ -29,6 +29,7 @@ import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
 import { resolveForBrief, useContextSkills } from "./skillcmd";
@@ -692,9 +693,11 @@ const ops: Handlers = {
   },
 
   async setProfiles({ profiles }) {
-    const clean = profiles
-      .map((p) => ({ name: p.name.trim(), chain: p.chain.map((c) => c.trim()).filter(Boolean) }))
-      .filter((p) => p.name && p.chain.length);
+    // Reject rather than silently drop a profile the UI let through (an older web app, say).
+    const problems = profileProblems(profiles);
+    const bad = problems.findIndex(Boolean);
+    if (bad >= 0) throw new Error(`Profile ${profiles[bad]!.name.trim() ? `“${profiles[bad]!.name.trim()}”` : bad + 1}: ${problems[bad]}. Nothing was saved.`);
+    const clean = cleanProfiles(profiles);
     config().profiles = clean;
     saveConfig();
     return clean;

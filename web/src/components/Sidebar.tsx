@@ -30,6 +30,7 @@ import {
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { runningCount } from "../dashboard";
 import { HarnessBadge } from "./HarnessBadge";
@@ -94,6 +95,18 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const footer = (
+    <HStack gap={2} vAlign="center" width="100%">
+      <Avatar name={user?.name || user?.email || "?"} size="sm" />
+      <StackItem size="fill">
+        <Text type="supporting" maxLines={1}>
+          {user?.name || user?.email}
+        </Text>
+      </StackItem>
+      <IconButton label="Settings" tooltip="Settings" variant="ghost" size="sm" icon={<Icon icon={Cog6ToothIcon} />} onClick={() => useStore.setState({ dialog: "settings" })} />
+    </HStack>
+  );
+
   return (
     <SideNav
       // As a phone drawer, always slide in from the left, where the menu button is. Astryx's "auto"
@@ -140,18 +153,10 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
           )}
         </VStack>
       }
-      footer={
-        <HStack gap={2} vAlign="center" width="100%">
-          <Avatar name={user?.name || user?.email || "?"} size="sm" />
-          <StackItem size="fill">
-            <Text type="supporting" maxLines={1}>
-              {user?.name || user?.email}
-            </Text>
-          </StackItem>
-          <IconButton label="Settings" tooltip="Settings" variant="ghost" size="sm" icon={<Icon icon={Cog6ToothIcon} />} onClick={() => useStore.setState({ dialog: "settings" })} />
-        </HStack>
-      }
+      // The desktop sidebar keeps its footer pinned; the drawer would put it after the list, so there it's ours.
+      footer={narrow ? undefined : footer}
     >
+      <DrawerBody footer={narrow ? footer : undefined}>
       {q ? (
         <SideNavSection title="Search results">
           {q.length < 2 ? (
@@ -192,7 +197,38 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </SideNavSection>
         </>
       )}
+      </DrawerBody>
     </SideNav>
+  );
+}
+
+/**
+ * In the phone drawer, the list scrolls inside Astryx's drawer body and its footer slot sits after the
+ * list, so it scrolls away. Here the footer sticks to the bottom of that scroll area instead (and sits
+ * at the bottom when the list is short).
+ */
+function DrawerBody({ footer, children }: { footer?: React.ReactNode; children: React.ReactNode }) {
+  if (!footer) return <>{children}</>;
+  return (
+    <VStack style={{ minHeight: "100%" }}>
+      <StackItem size="fill">{children}</StackItem>
+      <VStack
+        paddingBlockStart={2}
+        style={{
+          // Clear of the home indicator in the installed app.
+          paddingBlockEnd: "calc(var(--spacing-2) + env(safe-area-inset-bottom))",
+          position: "sticky",
+          // Down over the drawer body's own bottom padding, flush with the edge.
+          bottom: "calc(-1 * var(--spacing-2))",
+          marginBlockEnd: "calc(-1 * var(--spacing-2))",
+          background: "var(--color-background-surface)",
+          borderBlockStart: "var(--border-width) solid var(--color-border)",
+          zIndex: 1,
+        }}
+      >
+        {footer}
+      </VStack>
+    </VStack>
   );
 }
 
@@ -510,6 +546,8 @@ function SessionRow({ s }: { s: SessionSummary }) {
   const [removing, setRemoving] = useState(false);
   // The trash button shows on hover or focus; touch screens (no hover) always show it.
   const { getContainerProps, getContentRevealProps } = useContainerReveal();
+  // Not on a row that just slid under a still mouse after a removal (see trashGuard.ts).
+  const held = useTrashHeld();
   if (editing) return <RenameInput session={s} onDone={() => setEditing(false)} />;
   const remove = s.archived ? null : (
     <IconButton
@@ -522,13 +560,15 @@ function SessionRow({ s }: { s: SessionSummary }) {
       icon={<Icon icon={TrashIcon} />}
       onClick={(e) => {
         e.stopPropagation();
+        if (!allowTrashClick(s.id, { x: e.clientX, y: e.clientY })) return;
+        holdTrashUntilMove();
         setRemoving(true);
         removeSession(s).finally(() => setRemoving(false));
       }}
     />
   );
   return (
-    <VStack {...getContainerProps({ forceState: removing ? "active" : undefined })}>
+    <VStack {...getContainerProps({ forceState: removing ? "active" : held ? "inactive" : undefined })}>
     <SideNavItem
       label={s.title}
       size="sm"
