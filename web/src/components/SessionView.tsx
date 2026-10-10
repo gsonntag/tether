@@ -26,6 +26,7 @@ import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { ArrowUturnLeftIcon, EllipsisVerticalIcon } from "@heroicons/react/24/outline";
+import { effortLabel } from "../models";
 import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
@@ -230,9 +231,10 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   if (!levels.length) return null;
   return (
     <PickMenu
-      label={harness === "claude-code" || harness === "codex" ? "effort" : "thinking"}
+      label={harness === "claude-code" || harness === "codex" ? "Effort" : "Thinking"}
       value={state.thinking ?? "default"}
       options={levels}
+      format={effortLabel}
       onPick={(level) => act("setThinking", { sessionId, level })}
     />
   );

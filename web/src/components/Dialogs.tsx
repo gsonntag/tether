@@ -24,6 +24,8 @@ import { act, refreshProjects, rpc, selectSession, toggleProject, useStore } fro
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
 import { useModels } from "./ModelMenu";
+import { chainLabel, modelDisplay } from "../models";
+import { modelIcon } from "./ModelName";
 
 /** Modal host; the Dialog handles Escape and backdrop clicks. */
 export function Dialogs() {
@@ -85,7 +87,7 @@ function loadLast(harness: HarnessId): Last | undefined {
   return { choice, guard: (localStorage.getItem("tether.guard") as GuardMode) || undefined };
 }
 
-const choiceLabel = (c: string) => (c.startsWith("profile:") ? c.slice(8) : c || "default");
+const choiceLabel = (c: string) => (c.startsWith("profile:") ? c.slice(8) : modelDisplay(c || undefined).name);
 
 /** Selector values can't be empty; the harness default ("") travels as this sentinel. */
 const DEFAULT_CHOICE = "__default__";
@@ -149,12 +151,15 @@ function NewSession({ close }: { close: () => void }) {
     { value: "last", label: `Use last${last ? ` (${choiceLabel(last.choice)}${last.guard ? ` · ${guardLabel(last.guard)}` : ""})` : ""}` },
     { value: DEFAULT_CHOICE, label: "Default" },
     ...(profiles.length > 0
-      ? [{ type: "section" as const, title: "Fallback profiles", options: profiles.map((p) => ({ value: `profile:${p.name}`, label: `${p.name}: ${p.chain.join(" → ")}` })) }]
+      ? [{ type: "section" as const, title: "Fallback profiles", options: profiles.map((p) => ({ value: `profile:${p.name}`, label: `${p.name}: ${chainLabel(p.chain, harness)}` })) }]
       : []),
     {
       type: "section",
       title: "Models",
-      options: (models[harness] ?? []).map((m) => ({ value: m.id, label: m.label && m.label !== m.id ? `${m.id} (${m.label})` : m.id })),
+      options: (models[harness] ?? []).map((m) => {
+        const d = modelDisplay(m.id, harness);
+        return { value: m.id, label: d.name, description: m.id, icon: modelIcon(d) };
+      }),
     },
   ];
 
