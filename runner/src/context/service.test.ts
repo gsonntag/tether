@@ -285,15 +285,17 @@ describe("progress and turning off", () => {
     const mid = snapshot();
     await s.sync({ forceExport: true });
     expect(snapshot()).toEqual(mid);
+    // A skill switched off before the feature is: its replaced copy must come back as well.
+    await s.setSkillEnabled("codex-only", false);
+    expect(existsSync(join(harness.codexSkills(), "codex-only"))).toBe(false);
 
     await s.disable();
     expect(s.status().enabled).toBe(false);
+    // Every file the user had is back byte for byte, replaced skills are real copies again, and
+    // nothing is left behind (not even the ~/.agents/skills dir made for install links).
     const after = snapshot();
-    // Every file the user had is back byte for byte; replaced skills are real copies again.
-    for (const [p, v] of Object.entries(before)) expect([p, after[p]]).toEqual([p, v]);
-    // Nothing left behind but empty dirs Tether made for install links.
-    const extra = Object.keys(after).filter((p) => !(p in before));
-    expect(extra.filter((p) => after[p] !== "dir")).toEqual([]);
+    if (!("/.config" in before)) delete after["/.config"]; // parent of the store (TETHER_CONFIG_DIR) in this test home
+    expect(after).toEqual(before);
     // The store and the backups survive.
     expect(existsSync(join(s.store.dir, "backup"))).toBe(true);
     expect(s.listSkills().map((x) => x.name)).toContain("grill");

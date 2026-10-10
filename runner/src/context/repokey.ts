@@ -35,9 +35,6 @@ export function normalizeRemote(url: string): string {
 
 const cache = new Map<string, string>();
 
-/** Whether `a` is `b` or one of its ancestors. */
-const isAncestorOrSelf = (a: string, b: string) => a === b || b.startsWith(a.endsWith("/") ? a : a + "/");
-
 export async function repoKey(path: string): Promise<string> {
   const abs = resolve(path);
   const hit = cache.get(abs);
@@ -47,7 +44,8 @@ export async function repoKey(path: string): Promise<string> {
     const common = await git(abs, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     const root = common ? (common.endsWith("/.git") ? dirname(common) : common) : undefined;
     // A dotfiles repo in $HOME (or above it) isn't the project's repo: key by the path.
-    if (root && !(isAncestorOrSelf(root, resolve(home())) && abs !== resolve(home()))) {
+    const dotfiles = root === resolve(home()) || root === "/";
+    if (root && !(dotfiles && abs !== resolve(home()))) {
       const remotes = (await git(abs, ["remote"]))?.split("\n").filter(Boolean) ?? [];
       const remote = remotes.includes("origin") ? "origin" : remotes[0];
       const url = remote ? await git(abs, ["remote", "get-url", remote]) : undefined;

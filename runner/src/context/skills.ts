@@ -24,6 +24,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -328,7 +329,7 @@ export function applySkillPlan(registry: string, plan: SkillPlan, meta: SkillMet
           const occ = occupant(l.path, registry);
           if (occ === "user") continue; // appeared meanwhile: theirs
           if (occ === "ours") unlinkSync(l.path);
-          mkdirSync(dirname(l.path), { recursive: true });
+          mkdirRecorded(registry, dirname(l.path));
           symlinkSync(l.target, l.path, "dir");
           recordLink(meta, s.name, l.path, !!b);
         } catch (e: any) {
@@ -394,8 +395,56 @@ export function unlinkAll(registry: string, meta: SkillMeta): { restored: string
       }
     }
   }
+  // Skills disabled earlier have no link any more, but if they had replaced the user's own copy,
+  // that copy has to come back too.
+  for (const [name, m] of Object.entries(meta)) {
+    for (const l of m.links ?? []) {
+      const p = untildePath(l.path);
+      const src = join(registry, name);
+      if (!l.replaced || existsSync(p) || isLink(p) || !isSkill(src)) continue;
+      try {
+        const tmp = `${p}.tether-tmp-${process.pid}`;
+        rmSync(tmp, { recursive: true, force: true });
+        mkdirSync(dirname(p), { recursive: true });
+        cpSync(src, tmp, { recursive: true, dereference: true });
+        renameSync(tmp, p);
+        out.restored.push(p);
+      } catch (e: any) {
+        out.errors.push(`${tilde(p)}: ${e?.code ?? e?.message ?? e}`);
+      }
+    }
+  }
   for (const m of Object.values(meta)) delete m.links;
+  // Skill dirs that only exist because of our links (e.g. ~/.agents/skills): gone if now empty.
+  const created = readCreatedDirs(registry);
+  for (const d of [...created].sort((a, b) => b.length - a.length)) {
+    try {
+      if (!readdirSync(d).length) rmdirSync(d);
+    } catch {}
+  }
+  rmSync(createdDirsFile(registry), { force: true });
   return out;
+}
+
+const createdDirsFile = (registry: string) => join(dirname(registry), "skill-dirs.json");
+
+function readCreatedDirs(registry: string): string[] {
+  try {
+    return JSON.parse(readFileSync(createdDirsFile(registry), "utf8")).map(untildePath);
+  } catch {
+    return [];
+  }
+}
+
+/** mkdir -p that records each directory it had to create (for unlinkAll). */
+function mkdirRecorded(registry: string, dir: string) {
+  const made: string[] = [];
+  for (let d = dir; !existsSync(d) && d !== dirname(d); d = dirname(d)) made.push(d);
+  if (!made.length) return;
+  mkdirSync(dir, { recursive: true });
+  const all = new Set(readCreatedDirs(registry).map(tilde));
+  for (const d of made) all.add(tilde(d));
+  writeAtomic(createdDirsFile(registry), JSON.stringify([...all], null, 1));
 }
 
 /** skills.json in the store: provenance, drift, link locations and the enable switch per skill. */

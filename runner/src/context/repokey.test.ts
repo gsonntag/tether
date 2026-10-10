@@ -1,6 +1,6 @@
 import { HOME } from "./testenv";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDirCwd, claudeDirName, claudeProjectScope, decodeDirName, isHome, keyDir, normalizeRemote, repoKey } from "./repokey";
 
@@ -99,6 +99,18 @@ describe("repo keys", () => {
       expect(claudeDirName("/home/first.last")).toBe("-home-first-last");
     } finally {
       process.env.HOME = saved;
+    }
+  });
+
+  test("a dotfiles repo in $HOME doesn't swallow plain dirs under it", async () => {
+    const sub = join(HOME, "notes-dir");
+    mkdirSync(sub, { recursive: true });
+    await sh(HOME, "git", "init", "-q", "-b", "main");
+    try {
+      await sh(HOME, "git", "remote", "add", "origin", "git@github.com:me/dotfiles.git");
+      expect(await repoKey(sub)).toBe(sub);
+    } finally {
+      rmSync(join(HOME, ".git"), { recursive: true, force: true });
     }
   });
 
