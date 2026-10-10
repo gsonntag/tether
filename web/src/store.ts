@@ -199,6 +199,12 @@ function onEvent(sessionId: string, seq: number, event: SessionEvent) {
     return;
   }
   const next: OpenSession = { ...cur, messages: [...cur.messages], state: { ...cur.state }, seq };
+  // applyEvent patches parts in place; give the touched message new objects so memoized rows re-render.
+  if (event.type === "tool" || event.type === "delta") {
+    let i = next.messages.length - 1;
+    while (i >= 0 && next.messages[i]!.id !== event.msgId) i--;
+    if (i >= 0) next.messages[i] = { ...next.messages[i]!, parts: next.messages[i]!.parts.map((p) => ({ ...p })) };
+  }
   applyEvent(next, event);
   if (event.type === "state" && event.state.status) next.session = { ...next.session, status: event.state.status };
   set((s) => ({ open: { ...s.open, [sessionId]: next } }));

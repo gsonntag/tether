@@ -51,6 +51,8 @@ const errorText: CSSProperties = {
   paddingInlineStart: "var(--spacing-2)",
 };
 const minZero: CSSProperties = { minWidth: 0 };
+/** A fill item that never widens its row: long args truncate instead of pushing the badges out. */
+const fillShrink: CSSProperties = { minWidth: 0, width: 0 };
 const addText: CSSProperties = { color: "var(--color-success)", whiteSpace: "nowrap" };
 const delText: CSSProperties = { color: "var(--color-error)", whiteSpace: "nowrap" };
 const noWrap: CSSProperties = { whiteSpace: "nowrap" };
@@ -430,7 +432,7 @@ function Tool({ t }: { t: ToolPart }) {
           {name}
         </Text>
       </StackItem>
-      <StackItem as="span" size="fill" style={minZero}>
+      <StackItem as="span" size="fill" style={fillShrink}>
         <Text type="code" color="secondary" maxLines={1}>
           {arg}
         </Text>
@@ -454,6 +456,13 @@ function Tool({ t }: { t: ToolPart }) {
           </Text>
         </StackItem>
       ) : null}
+      {t.judging && !t.guard && (
+        <StackItem as="span" size="static">
+          <Tooltip content="The safety judge is checking this call" hasHoverIndication={false}>
+            <Token size="sm" label="checking…" color="gray" />
+          </Tooltip>
+        </StackItem>
+      )}
       {guard && (
         <StackItem as="span" size="static">
           <Tooltip content={guard.reason} isEnabled={!!guard.reason} hasHoverIndication={false}>
