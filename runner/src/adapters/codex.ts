@@ -641,13 +641,14 @@ class CodexSession extends LiveSession {
 
   // ---- turns ----
 
-  private async startTurn(text: string) {
+  /** `skills`: a `/name` paragraph for a skill Codex has goes as a skill item (not for briefs). */
+  private async startTurn(text: string, skills = true) {
     this.finishMsg();
     this.setState({ status: "running" });
     try {
       const r: any = await this.p.call("turn/start", {
         threadId: this.nativeId,
-        input: codexInput(text, this.skillPaths),
+        input: skills ? codexInput(text, this.skillPaths) : [{ type: "text", text, text_elements: [] }],
         approvalsReviewer: "user",
         ...this.policy(),
         ...(this.model ? { model: this.model } : {}),
@@ -681,6 +682,14 @@ class CodexSession extends LiveSession {
   /** name → SKILL.md of the skills Codex found for this project (from the last skills/list). */
   private skillPaths = new Map<string, string>();
 
+  /** codexInput turns a `/name` paragraph anywhere in the message into a skill item. */
+  protected nativeAnywhere = true;
+
+  /** Without a path from skills/list there's no skill item to send: expanded instead. */
+  protected nativeSkillText(name: string, args: string) {
+    return this.skillPaths.has(name) ? super.nativeSkillText(name, args) : undefined;
+  }
+
   /** Codex runs a skill from a `skill` input item (see codexInput); skills/list says which it has. */
   protected async nativeSkills() {
     const r: any = await this.p.call("skills/list", { cwds: [this.projectPath] });
@@ -691,7 +700,7 @@ class CodexSession extends LiveSession {
 
   async continueTurn(text = "Continue where you left off.") {
     this.addUserMessage(text.length > 300 ? text.slice(0, 300) + "…" : text);
-    await this.startTurn(text);
+    await this.startTurn(text, false);
   }
 
   async abort() {

@@ -22,6 +22,9 @@ export function parseInvocation(text: string): Invocation | undefined {
   return { name: m[1]!, args: (m[2] ?? "").trim() };
 }
 
+/** A name `/name` can invoke. Anything else (quotes, spaces, `<`, …) is never offered or expanded. */
+export const isSkillName = (name: string) => name.length <= 128 && /^[A-Za-z0-9][\w.:-]*$/.test(name);
+
 export const invocationText = (name: string, args: string) => (args ? `/${name} ${args}` : `/${name}`);
 
 export interface SkillBlockInput {
@@ -37,19 +40,31 @@ export interface SkillBlockInput {
 
 const REQUEST = "User request: ";
 
+/** An attribute value that can't end the opening tag or its line (`"`, `<`, `>`, control chars → %xx). */
+const attr = (v: string) => v.replace(/[\u0000-\u001f"<>%]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+/** Undoes attr() for display. */
+const unattr = (v: string) => v.replace(/%([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+
+/**
+ * SKILL.md (or a file path) inside the block: a `</skill>` that would close it early, or a
+ * `<skill …>` the transcript would show as a separate skill, is defused with a backslash.
+ */
+const inert = (v: string) => v.replace(/<(\/?)skill(?=[\s>])/gi, "<$1\\skill");
+const oneLine = (v: string) => inert(v.replace(/[\r\n]+/g, " "));
+
 /** The text an agent gets for a skill its harness can't run natively. */
 export function skillBlock(s: SkillBlockInput): string {
   const dir = s.location.replace(/\/[^/]*$/, "");
   const lines = [
-    `<skill name="${s.name}" location="${s.location}">`,
+    `<skill name="${attr(s.name)}" location="${attr(s.location)}">`,
     `The user invoked the "${s.name}" skill. Follow its instructions below${s.args ? " for the request after this block" : ""}.`,
-    `References are relative to ${dir}.`,
+    `References are relative to ${oneLine(dir)}.`,
   ];
   if (s.files.length) {
     lines.push("Supporting files (read them with your tools when the instructions refer to them):");
-    for (const f of s.files) lines.push(`- ${f}`);
+    for (const f of s.files) lines.push(`- ${oneLine(f)}`);
   }
-  lines.push("", s.body.trim(), "</skill>");
+  lines.push("", inert(s.body.trim()), "</skill>");
   const block = lines.join("\n");
   return s.args ? `${block}\n\n${REQUEST}${s.args}` : block;
 }
@@ -62,7 +77,8 @@ export interface SkillSegment {
   content: string;
 }
 
-const BLOCK = /<skill name="([^"\n]+)" location="([^"\n]+)">\n[\s\S]*?\n<\/skill>/g;
+// Closed by `</skill>` on its own line, followed by a blank line or the end (as pi parses its own).
+const BLOCK = /<skill name="([^"\n]+)" location="([^"\n]+)">\n[\s\S]*?\n<\/skill>(?=\n\n|\s*$)/g;
 
 /** Splits a user message into text and skill blocks, in order. */
 export function splitSkills(text: string): (string | SkillSegment)[] {
@@ -71,7 +87,7 @@ export function splitSkills(text: string): (string | SkillSegment)[] {
   for (const m of text.matchAll(BLOCK)) {
     const before = text.slice(last, m.index);
     if (before.trim()) out.push(before);
-    out.push({ name: m[1]!, location: m[2]!, content: m[0] });
+    out.push({ name: unattr(m[1]!), location: unattr(m[2]!), content: m[0] });
     last = m.index! + m[0].length;
     // The request that came with it reads as the user's own words.
     const rest = text.slice(last);

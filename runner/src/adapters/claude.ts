@@ -26,6 +26,7 @@ import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
 import { LiveSession, newId } from "../session";
+import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -673,6 +674,7 @@ class ClaudeSession extends LiveSession {
     if (!this.q) return undefined;
     const cmds = await this.q.supportedCommands();
     const builtin = new Set(cmds.filter((c) => c.builtin).map((c) => c.name));
+    rememberClaudeBuiltins(builtin); // for when a session can't answer in time (skillcmd decide())
     return cmds.filter((c) => !c.builtin && !builtin.has(c.name)).map((c) => ({ name: c.name, description: c.description }));
   }
 
