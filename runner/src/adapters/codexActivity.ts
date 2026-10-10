@@ -48,6 +48,7 @@ export class CodexActivity extends ActivityBook {
     if (method === "thread/started") this.onThread(p.thread, mainThread);
     else if (p?.threadId && p.threadId !== mainThread) this.onChild(method, p);
     else if (method === "item/started" || method === "item/completed") this.onMainItem(p.item, method === "item/completed");
+    else if (method === "turn/completed") this.promoteOpen();
     else if (method === "item/commandExecution/terminalInteraction") this.touchProcess(p.processId);
     return this.take();
   }
@@ -103,6 +104,10 @@ export class CodexActivity extends ActivityBook {
         const pid = item.processId;
         if (!pid) return;
         const id = `proc:${pid}`;
+        if (item.source !== "unifiedExecInteraction") {
+          if (!completed) this.open.set(item.id, { ...item, startedAtMs: this.now() });
+          else this.open.delete(item.id);
+        }
         const output = item.aggregatedOutput ? tail(item.aggregatedOutput) : undefined;
         if (item.source === "unifiedExecInteraction") {
           if (!this.get(id)) return;
@@ -128,10 +133,37 @@ export class CodexActivity extends ActivityBook {
       }
       case "sleep":
         if (!completed)
-          this.put({ id: `sleep:${item.id}`, kind: "schedule", title: "Waiting", status: "waiting", startedAt: this.now(), nextAt: this.now() + (item.durationMs ?? 0), toolId: item.id });
+          this.put({ id: `sleep:${item.id}`, kind: "schedule", title: "Waiting", status: "waiting", startedAt: this.now(), nextAt: this.now() + (item.durationMs ?? 0), toolId: item.id, background: false });
         else this.end(`sleep:${item.id}`, "done");
         return;
     }
+  }
+
+  /** main-thread commands started and not completed yet, by item id */
+  private open = new Map<string, any>();
+
+  /**
+   * The main turn ended with commands still open: they keep running in the background (code mode's
+   * exec_command returns at its yield time, but the item completes only when the process exits).
+   */
+  private promoteOpen() {
+    for (const item of this.open.values()) {
+      const id = `proc:${item.processId}`;
+      if (this.get(id)) continue;
+      const command = shellCommand(item.command);
+      this.put({
+        id,
+        kind: "shell",
+        title: firstLine(command || "command", 120),
+        command,
+        output: item.aggregatedOutput ? tail(item.aggregatedOutput) : undefined,
+        status: "running",
+        startedAt: item.startedAtMs,
+        toolId: item.id,
+        background: true,
+      });
+    }
+    this.open.clear();
   }
 
   private touchProcess(pid: string | undefined) {
