@@ -187,7 +187,7 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
     <HStack gap={1} vAlign="center" wrap="wrap" paddingInline={1}>
       <HarnessBadge harness={sess.harness} />
       <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />
-      {!narrow && <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />}
+      <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} compact={narrow} />
       <ModeMenu sessionId={sessionId} state={st} />
       <PickMenu
         label=""
@@ -235,7 +235,8 @@ function ModeMenu({ sessionId, state }: { sessionId: string; state: LiveState })
   );
 }
 
-function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harness: string; state: LiveState }) {
+/** `compact` (phones): no label in front, the value says what it is ("High effort"). */
+function ThinkingMenu({ sessionId, harness, state, compact }: { sessionId: string; harness: string; state: LiveState; compact?: boolean }) {
   const [fetched, setLevels] = useState<string[]>([]);
   // A deep link shows the saved copy before the runner is connected; ask again once it is.
   const online = useStore((s) => s.connected && !!s.runnerId);
@@ -247,12 +248,13 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   }, [harness, sessionId, state.model, state.thinkingLevels, online]);
   const levels = state.thinkingLevels ?? fetched;
   if (!levels.length) return null;
+  const label = harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "Effort" : "Thinking";
   return (
     <PickMenu
-      label={harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "Effort" : "Thinking"}
+      label={compact ? "" : label}
       value={state.thinking ?? "default"}
       options={levels}
-      format={effortLabel}
+      format={compact ? (l) => `${effortLabel(l)} ${label.toLowerCase()}` : effortLabel}
       onPick={(level) => act("setThinking", { sessionId, level })}
     />
   );
