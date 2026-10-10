@@ -30,6 +30,8 @@ import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import type { ChainEntry } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
+import { ContextService } from "./context";
+import { sessionForKey } from "./bridge";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -44,6 +46,12 @@ const adapters: Record<HarnessId, Adapter> = {
   antigravity: antigravityAdapter,
 };
 const live = new Map<string, LiveSession>();
+// Master context: inert until the first import is run from the UI (contextImport).
+const context = new ContextService({
+  emit: (event) => send({ t: "context", event }),
+  sessionForKey: (key) => sessionForKey(key)?.id,
+  projects: () => config().projects,
+});
 
 // ---------------- connection ----------------
 
@@ -520,6 +528,8 @@ const ops: Handlers = {
     if (install) installAgyHook();
     if (judgeModel || defaultMode) {
       cfg.guard = { ...cfg.guard, ...(judgeModel ? { judgeModel } : {}), ...(defaultMode ? { defaultMode } : {}) };
+      // The judge runs on the shared background model; a Claude judge model sets it.
+      if (judgeModel && judgeModel !== "off") cfg.backgroundModel = judgeModel.includes(":") ? judgeModel : `claude-code:${judgeModel}`;
       saveConfig();
     }
     return { antigravityHook: agyHookInstalled(), judgeModel: cfg.guard?.judgeModel ?? "haiku", defaultMode: cfg.guard?.defaultMode ?? "auto" };
@@ -588,6 +598,51 @@ const ops: Handlers = {
   async listCommands({ sessionId }) {
     return requireLive(sessionId).listCommands();
   },
+
+  // ---- master context (runner/src/context) ----
+
+  async contextStatus() {
+    return context.status();
+  },
+  async listMemories({ scope, query }) {
+    return context.listMemories(scope && /^[~/]/.test(scope) ? expand(scope) : scope, query);
+  },
+  async getMemory({ id }) {
+    return context.getMemory(id);
+  },
+  async editMemory({ id, ...change }) {
+    return context.editMemory(id, change);
+  },
+  async memoryHistory({ id }) {
+    return context.history(id);
+  },
+  async contextActivity({ limit, before }) {
+    return context.activity(limit, before);
+  },
+  async listConflicts({ status }) {
+    return context.conflicts(status);
+  },
+  async resolveConflict({ id, action }) {
+    return context.resolveConflict(id, action);
+  },
+  async listSkills() {
+    return context.listSkills();
+  },
+  async setSkillEnabled({ name, enabled }) {
+    return context.setSkillEnabled(name, enabled);
+  },
+  async contextImportPreview() {
+    return context.preview();
+  },
+  async contextImport() {
+    return context.runImport();
+  },
+  async getBackgroundModel() {
+    return context.backgroundModel();
+  },
+  async setBackgroundModel({ model }) {
+    return context.setBackgroundModel(model);
+  },
 };
 
 // ---------------- main ----------------
@@ -643,5 +698,6 @@ async function resumeActive() {
 console.log(`Tether runner ${VERSION} (${config().runnerId}) → ${URL_BASE}`);
 connect();
 scanProjects();
+context.start();
 // A second runner on the same machine (tests, dev) must never take over live sessions.
 if (!process.env.TETHER_NO_RESUME) resumeActive();

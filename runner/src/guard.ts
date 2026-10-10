@@ -9,10 +9,10 @@
 // Rules are deliberately conservative: hard-deny the catastrophic, auto-allow reads, in-project
 // edits and ordinary dev commands, and send everything else to the judge.
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { homedir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import { config } from "./config";
+import { parseJsonReply, runBackground } from "./context/background";
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
@@ -202,7 +202,18 @@ function classifyShell(cmd: string, cwd: string): Verdict | undefined {
 
 // ---------------- rules ----------------
 
+/**
+ * Tether's own MCP server (runner/src/context/mcp.ts) only reads and writes the context store.
+ * Harnesses name its tools differently: `mcp__tether-context__x` (Claude, Codex cards),
+ * `tether-context_x` (opencode), `tether_context_x` or `mcp({ tool })` (pi-mcp-adapter).
+ */
+export function isContextTool(tool: string, input: any): boolean {
+  if (/^(mcp__tether-context__|tether[-_]context[_./])\w+$/i.test(tool)) return true;
+  return tool === "mcp" && (input?.server === "tether-context" || /^tether[-_]context[_.]/.test(String(input?.tool ?? "")));
+}
+
 export function rules(call: ToolCall): Verdict | undefined {
+  if (isContextTool(call.tool, call.input)) return { decision: "allow", by: "rule", reason: "Tether memory and skills." };
   const kind = kindOf(call.tool);
   const cwd = call.cwd;
   switch (kind) {
@@ -257,31 +268,15 @@ const cache = new Map<string, Verdict>();
 
 export async function judge(call: ToolCall, goal: string): Promise<Verdict> {
   const g = config().guard ?? {};
-  const model = g.judgeModel ?? "haiku";
-  if (model === "off") return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
+  if (g.judgeModel === "off") return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
   const key = JSON.stringify([call.cwd, call.tool, call.input]);
   const hit = cache.get(key);
   if (hit) return hit;
   const prompt = `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\n\nTool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
   try {
-    const q = query({
-      prompt,
-      options: {
-        model,
-        systemPrompt: JUDGE_SYSTEM,
-        maxTurns: 1,
-        tools: [],
-        settingSources: [],
-        persistSession: false,
-        cwd: call.cwd,
-        pathToClaudeCodeExecutable: process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined,
-      },
-    });
-    let text = "";
-    const timer = setTimeout(() => q.close(), 60_000);
-    for await (const m of q) if (m.type === "result" && (m as any).result) text = (m as any).result;
-    clearTimeout(timer);
-    const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    // The shared background model (Settings → Background model), Haiku via Claude by default.
+    const text = await runBackground({ system: JUDGE_SYSTEM, prompt, cwd: call.cwd, timeoutMs: 60_000 });
+    const json = parseJsonReply(text);
     const v: Verdict = { decision: json.decision === "allow" ? "allow" : "deny", by: "judge", reason: String(json.reason ?? "").slice(0, 400) };
     if (cache.size > 2000) cache.clear();
     cache.set(key, v);

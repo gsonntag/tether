@@ -16,6 +16,7 @@ import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../context";
 import type { Classified } from "../fallback";
 import { LiveSession, newId } from "../session";
+import { sessionContext } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
@@ -341,12 +342,20 @@ class CodexSession extends LiveSession {
     });
     [this.sandboxed] = await Promise.all([sandboxWorks(), this.p.init()]);
     const { approvalPolicy, sandboxPolicy } = this.policy();
+    // Master context: shared memory as developer instructions, and the tether-context MCP server.
+    const ctx = await sessionContext(this.projectPath, { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY });
     const params = {
       cwd: this.projectPath,
       approvalPolicy,
       approvalsReviewer: "user",
       sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : "workspace-write",
       ...(this.model ? { model: this.model } : {}),
+      ...(ctx
+        ? {
+            developerInstructions: ctx.prompt,
+            config: { "mcp_servers.tether-context": { command: ctx.mcp.command, args: ctx.mcp.args, env: ctx.mcp.env, default_tools_approval_mode: "approve" } },
+          }
+        : {}),
     };
     let r: any;
     if (this.opts.resume) {
