@@ -33,7 +33,8 @@ type Spot = Omit<Comment, "id" | "text">;
 
 const HIGHLIGHT = "tether-plan-comment";
 const HIGHLIGHT_ACTIVE = "tether-plan-active";
-const BLOCKS = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th";
+// Astryx's Markdown renders paragraphs as <div role="paragraph">, not <p>.
+const BLOCKS = "p, [role='paragraph'], li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th";
 
 const previewBox: CSSProperties = { maxHeight: "40vh" };
 const docPane: CSSProperties = { minWidth: 0, cursor: "text" };
