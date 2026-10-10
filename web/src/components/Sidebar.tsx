@@ -11,6 +11,7 @@ import { MoreMenu } from "@astryxdesign/core/MoreMenu";
 import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { StackItem } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -128,14 +129,16 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </VStack>
       }
       footer={
-        <HStack gap={2} vAlign="center">
+        <HStack gap={2} vAlign="center" width="100%">
           <Avatar name={user?.name || user?.email || "?"} size="sm" />
-          <Text type="supporting" maxLines={1}>
-            {user?.name || user?.email}
-          </Text>
+          <StackItem size="fill">
+            <Text type="supporting" maxLines={1}>
+              {user?.name || user?.email}
+            </Text>
+          </StackItem>
+          <IconButton label="Settings" tooltip="Settings" variant="ghost" size="sm" icon={<Icon icon={Cog6ToothIcon} />} onClick={() => useStore.setState({ dialog: "settings" })} />
         </HStack>
       }
-      footerIcons={<IconButton label="Settings" tooltip="Settings" variant="ghost" icon={<Icon icon={Cog6ToothIcon} />} onClick={() => useStore.setState({ dialog: "settings" })} />}
     >
       {q ? (
         <SideNavSection title="Search results">

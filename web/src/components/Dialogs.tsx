@@ -1,21 +1,23 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { Children, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
-import { Code } from "@astryxdesign/core/Code";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Divider } from "@astryxdesign/core/Divider";
 import { Field } from "@astryxdesign/core/Field";
 import { HStack } from "@astryxdesign/core/HStack";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector, type SelectorOptionType } from "@astryxdesign/core/Selector";
-import { StackItem } from "@astryxdesign/core/Stack";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Stack, StackItem } from "@astryxdesign/core/Stack";
+import { Switch } from "@astryxdesign/core/Switch";
+import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
+import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import { GUARD_MODES, HARNESSES, NOTIFY_KINDS, type GuardMode, type HarnessId, type ModelProfile, type NotifyKind } from "../shared/protocol";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
@@ -39,11 +41,11 @@ export function Dialogs() {
   );
 }
 
-/** Header / scrolling body / end-aligned action row, shared by every dialog. */
+/** Header / scrolling body / end-aligned action row, shared by every dialog. `fill` caps the layout at the dialog's max height so the body scrolls instead of being clipped. */
 function Frame({ title, subtitle, close, actions, children }: { title: string; subtitle?: ReactNode; close: () => void; actions: ReactNode; children?: ReactNode }) {
   return (
     <Layout
-      height="auto"
+      height="fill"
       header={<DialogHeader title={title} subtitle={subtitle} onOpenChange={(o) => !o && close()} />}
       content={
         children ? (
@@ -293,6 +295,64 @@ function NotifyPrompt({ close }: { close: () => void }) {
   );
 }
 
+const NARROW = "(max-width: 640px)";
+/** Width of a row's control when it sits beside the row's text. */
+const CONTROL_WIDTH = "calc(var(--spacing-12) * 4)";
+
+/** A titled, muted card of settings rows separated by hairlines. */
+function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
+  const rows = Children.toArray(children);
+  return (
+    <VStack gap={1.5}>
+      <Text type="supporting" weight="semibold" color="secondary">
+        {title}
+      </Text>
+      <Card padding={0} width="100%" variant="muted">
+        <VStack as="ul" role="list" gap={0}>
+          {rows.map((row, i) => (
+            <VStack key={i} as="li" gap={0}>
+              {i > 0 && <Divider variant="subtle" />}
+              {row}
+            </VStack>
+          ))}
+        </VStack>
+      </Card>
+    </VStack>
+  );
+}
+
+/**
+ * One setting: name and a one-line explanation, with its control beside it. On a phone a wide control
+ * (a selector) drops below the text; compact ones (switches, buttons) stay beside it. Pass the control `isLabelHidden`.
+ */
+function SettingsRow({ title, description, control, isControlWide, children }: { title: string; description?: ReactNode; control?: ReactNode; isControlWide?: boolean; children?: ReactNode }) {
+  const narrow = useMediaQuery(NARROW) && !!isControlWide;
+  return (
+    <VStack padding={4} gap={3}>
+      <Stack direction={narrow ? "vertical" : "horizontal"} gap={narrow ? 2 : 3} align={narrow ? "stretch" : "center"}>
+        <StackItem size="fill">
+          <VStack gap={0.5}>
+            <Text type="label">{title}</Text>
+            {description != null && (
+              <Text type="supporting" color="secondary">
+                {description}
+              </Text>
+            )}
+          </VStack>
+        </StackItem>
+        {control != null && <StackItem size="static">{control}</StackItem>}
+      </Stack>
+      {children}
+    </VStack>
+  );
+}
+
+const NOTIFY_DESCRIPTIONS: Record<NotifyKind, string> = {
+  question: "An agent asks you something or needs an approval.",
+  finished: "An agent finishes what it was doing.",
+  blocked: "An agent is stuck: an action was blocked, every model hit its usage limit, it went quiet, or it failed.",
+};
+
 /** This device's push notifications from the selected runner. */
 function NotificationSettings() {
   const [st, setSt] = useState<{ kinds?: NotifyKind[]; permission: NotificationPermission }>();
@@ -314,151 +374,185 @@ function NotificationSettings() {
     }
   };
   const on = st?.kinds;
+  const supported = pushSupported();
+  const blocked = st?.permission === "denied" && !on;
+  const status = !supported
+    ? needsHomeScreen()
+      ? "On iPhone and iPad, add Tether to the Home Screen (Share → Add to Home Screen) and open it from there first."
+      : "This browser can't receive notifications."
+    : blocked
+      ? "Notifications are blocked for this site. Allow them in your browser's site settings."
+      : !st && !err
+        ? "Checking…"
+        : "Get an alert when an agent needs you, even with Tether closed.";
 
   return (
-    <VStack gap={3}>
-      <Heading level={3}>Notifications</Heading>
-      <Text type="supporting">The runner pushes them to this device when an agent has a question, finishes or gets blocked, even with Tether closed.</Text>
-      {!pushSupported() ? (
-        <Text type="supporting">
-          {needsHomeScreen() ? "On iPhone and iPad, add Tether to the Home Screen (Share → Add to Home Screen) and open it from there to get notifications." : "This browser can't receive push notifications."}
-        </Text>
-      ) : !st ? (
-        <Text type="supporting">{err ?? "Checking…"}</Text>
-      ) : (
-        <>
-          {on && (
-            <Group label="Notify this device about">
-              <ToggleButtonGroup
-                label="Notify this device about"
-                type="multiple"
-                isDisabled={busy}
-                value={on}
-                onChange={(v) => run(() => enablePush((v as NotifyKind[]) ?? []))}
-              >
-                {NOTIFY_KINDS.map((k) => (
-                  <ToggleButton key={k.id} value={k.id} label={k.label} tooltip={k.hint} />
-                ))}
-              </ToggleButtonGroup>
-            </Group>
-          )}
-          <HStack gap={2} wrap="wrap">
-            {on ? (
-              <>
-                <Button label="Send a test" isDisabled={busy} onClick={() => run(testPush)} />
-                <Button label="Turn off on this device" isDisabled={busy} onClick={() => run(disablePush)} />
-              </>
-            ) : (
-              <Button label="Turn on for this device" variant="primary" isDisabled={busy} onClick={() => run(() => enablePush(NOTIFY_KINDS.map((k) => k.id)))} />
-            )}
-          </HStack>
-          {st.permission === "denied" && <Text type="supporting">Notifications are blocked for this site; allow them in the browser's site settings.</Text>}
-          {err && <Banner status="error" title={err} collapsible={false} />}
-        </>
-      )}
+    <VStack gap={2}>
+      <SettingsCard title="Notifications">
+        <SettingsRow
+          title="Notify this device"
+          description={status}
+          control={
+            <Switch
+              label="Notify this device"
+              isLabelHidden
+              value={!!on}
+              isLoading={busy}
+              isDisabled={!supported || !st || blocked || busy}
+              onChange={(v) => run(() => (v ? enablePush(NOTIFY_KINDS.map((k) => k.id)) : disablePush()))}
+            />
+          }
+        />
+        {on &&
+          NOTIFY_KINDS.map((k) => (
+            <SettingsRow
+              key={k.id}
+              title={k.label}
+              description={NOTIFY_DESCRIPTIONS[k.id] ?? k.hint}
+              control={
+                <Switch
+                  label={`Notify about ${k.label.toLowerCase()}`}
+                  isLabelHidden
+                  value={on.includes(k.id)}
+                  isDisabled={busy}
+                  onChange={(v) => run(() => enablePush(v ? [...on, k.id] : on.filter((x) => x !== k.id)))}
+                />
+              }
+            />
+          ))}
+        {on && (
+          <SettingsRow
+            title="Test notification"
+            description="Check that notifications reach this device."
+            control={<Button label="Send test" size="sm" isDisabled={busy} onClick={() => run(testPush)} />}
+          />
+        )}
+      </SettingsCard>
+      {err && <Banner status="error" title={err} collapsible={false} />}
     </VStack>
   );
 }
 
+const JUDGE_OPTIONS: SelectorOptionType[] = [
+  { value: "haiku", label: "Claude Haiku (faster)" },
+  { value: "sonnet", label: "Claude Sonnet (more careful)" },
+  { value: "off", label: "Off: block instead" },
+];
+
 function Settings({ close }: { close: () => void }) {
+  const narrow = useMediaQuery(NARROW);
+  const runnerId = useStore((s) => s.runnerId);
+  const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
+  const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
+  const [saved, setSaved] = useState<ModelProfile[]>([]);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; defaultMode: GuardMode }>();
   useEffect(() => {
-    rpc("getProfiles", {}).then(setProfiles).catch(() => {});
+    rpc("getProfiles", {})
+      .then((p) => {
+        setProfiles(p);
+        setSaved(p);
+      })
+      .catch(() => {});
     rpc("guardSetup", {}).then(setGuardInfo).catch(() => {});
   }, []);
   const updateGuard = async (args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode }) => {
     const r = await act("guardSetup", args);
     if (r) setGuardInfo(r);
   };
-  const save = async () => {
-    const r = await act("setProfiles", { profiles });
-    if (r) {
-      setProfiles(r);
-      close();
-    }
+  const dirty = JSON.stringify(profiles) !== JSON.stringify(saved);
+  // Everything else applies as you change it; profile edits are saved here.
+  const done = async () => {
+    if (dirty && !(await act("setProfiles", { profiles }))) return;
+    close();
   };
+  const controlWidth = narrow ? "100%" : CONTROL_WIDTH;
+  const setProfile = (i: number, p: Partial<ModelProfile>) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, ...p } : x)));
+
   return (
     <Frame
       title="Settings"
+      subtitle={manyRunners && runnerId ? `For runner ${runnerId}` : undefined}
       close={close}
-      actions={
-        <>
-          <Button label="Cancel" onClick={close} />
-          <Button label="Save" variant="primary" clickAction={save} />
-        </>
-      }
+      actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" clickAction={done} />}
     >
       <NotificationSettings />
-      <Divider />
-      <VStack gap={3}>
-        <Heading level={3}>Guard</Heading>
-        {guard && (
-          <>
-            <Group label="Safety judge" description="Decides what the rules don't cover, in Auto.">
-              <SegmentedControl label="Safety judge" value={guard.judgeModel} onChange={(m) => updateGuard({ judgeModel: m })}>
-                {["haiku", "sonnet", "off"].map((m) => (
-                  <SegmentedControlItem key={m} value={m} label={m === "off" ? "Off (deny instead)" : `Claude ${m}`} />
-                ))}
-              </SegmentedControl>
-            </Group>
-            <Group label="Default for new sessions">
-              <SegmentedControl label="Default for new sessions" value={guard.defaultMode} onChange={(g) => updateGuard({ defaultMode: g as GuardMode })}>
-                {GUARD_MODES.map((g) => (
-                  <SegmentedControlItem key={g.id} value={g.id} label={g.label} />
-                ))}
-              </SegmentedControl>
-            </Group>
-            {guard.antigravityHook ? (
-              <Group label="Antigravity hook">
-                <Text type="supporting">
-                  Installed in <Code>~/.gemini/config/hooks.json</Code>.
-                </Text>
-              </Group>
-            ) : (
-              <Group
-                label="Antigravity hook"
-                description={`Antigravity only lets the guard see its tool calls through a PreToolUse hook. This adds a "tether-guard" entry to ~/.gemini/config/hooks.json; it does nothing for Antigravity runs that Tether didn't start.`}
-              >
-                <HStack>
-                  <Button label="Install hook" clickAction={() => updateGuard({ install: true })} />
-                </HStack>
-              </Group>
+      <SettingsCard title="New sessions">
+        <SettingsRow
+          title="Default approvals"
+          description="How much an agent may do before asking you. You can change it for each session."
+          isControlWide
+          control={
+            <Selector
+              label="Default approvals"
+              isLabelHidden
+              size="sm"
+              width={controlWidth}
+              isDisabled={!guard}
+              value={guard?.defaultMode}
+              options={GUARD_MODES.map((g) => ({ value: g.id, label: g.label }))}
+              onChange={(g) => updateGuard({ defaultMode: g as GuardMode })}
+            />
+          }
+        />
+      </SettingsCard>
+      <Collapsible trigger={<Text type="label">Advanced</Text>} defaultIsOpen={dirty}>
+        <VStack gap={4} paddingBlockStart={2}>
+          <SettingsCard title="Safety checks">
+            <SettingsRow
+              title="Auto mode reviewer"
+              description="In Auto mode, this model decides on actions the built-in safety rules don't cover."
+              isControlWide
+              control={
+                <Selector
+                  label="Auto mode reviewer"
+                  isLabelHidden
+                  size="sm"
+                  width={controlWidth}
+                  isDisabled={!guard}
+                  value={guard?.judgeModel}
+                  options={JUDGE_OPTIONS}
+                  onChange={(m) => updateGuard({ judgeModel: m })}
+                />
+              }
+            />
+            {guard && (guard.antigravityHook || runner?.harnesses.includes("antigravity")) && (
+              <SettingsRow
+                title="Antigravity safety hook"
+                description="Lets Tether check Antigravity's actions. Adds a “tether-guard” entry to ~/.gemini/config/hooks.json."
+                control={
+                  guard.antigravityHook ? (
+                    <Token label="Installed" color="green" size="sm" />
+                  ) : (
+                    <Button label="Install" size="sm" clickAction={() => updateGuard({ install: true })} />
+                  )
+                }
+              />
             )}
-          </>
-        )}
-      </VStack>
-      <Divider />
-      <VStack gap={3}>
-        <Heading level={3}>Fallback profiles</Heading>
-        <Text type="supporting">
-          A profile is an ordered list of <Code>harness:model</Code> entries. When the current entry hits a usage limit the session moves down the list; a
-          different harness gets the conversation handed off in the same directory. Rate limits retry on the same entry. Sessions copy the profile and can
-          reorder their own copy.
-        </Text>
-        {profiles.map((p, i) => (
-          <Card key={i} padding={3}>
-            <VStack gap={2}>
-              <HStack gap={2} vAlign="center">
-                <StackItem size="fill">
-                  <TextInput
-                    label="Profile name"
-                    isLabelHidden
-                    value={p.name}
-                    placeholder="name"
-                    onChange={(v) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, name: v } : x)))}
-                  />
-                </StackItem>
-                <Button label="Remove" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
-              </HStack>
-              <ChainEditor chain={p.chain} onChange={(c) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, chain: c } : x)))} />
-            </VStack>
-          </Card>
-        ))}
-        <HStack>
-          <Button label="Add profile" onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />
-        </HStack>
-      </VStack>
+          </SettingsCard>
+          <VStack gap={1.5}>
+            <SettingsCard title="Fallback profiles">
+              <SettingsRow
+                title="Switch models at usage limits"
+                description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
+                control={<Button label="Add profile" size="sm" onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
+              />
+              {profiles.map((p, i) => (
+                <VStack key={i} padding={4} gap={2}>
+                  <HStack gap={2} vAlign="center">
+                    <StackItem size="fill">
+                      <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
+                    </StackItem>
+                    <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
+                  </HStack>
+                  <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
+                </VStack>
+              ))}
+            </SettingsCard>
+            {dirty && <Text type="supporting">Profile changes are saved when you press Save and close.</Text>}
+          </VStack>
+        </VStack>
+      </Collapsible>
     </Frame>
   );
 }
