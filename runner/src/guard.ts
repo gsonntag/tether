@@ -95,6 +95,22 @@ const SENSITIVE = [
 
 const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p));
 
+/**
+ * Agent configuration that runs commands of its own, outside the guard: Antigravity's hooks and
+ * plugins (a project `.agents/hooks.json` can override or disable the guard hook, which is the only
+ * gate agy has), and Claude Code's settings hooks. Writing it would let an agent switch the guard
+ * off, so edits are denied and commands that mention it go to the judge (or the person in ask mode).
+ */
+const AGENT_CONFIG = [
+  /(^|\/)hooks\.json$/,
+  /(^|\/)[._]agents?(\/(plugins|mcp_config)\.json|\/plugins(\/|$)|\/?$)/,
+  /(^|\/)\.gemini\/config(\/|$)/,
+  /(^|\/)\.claude\/settings(\.local)?\.json$/,
+];
+const AGENT_CONFIG_IN_COMMAND = /hooks\.json|(^|[\s/"'=])[._]agents?([\s/"';&|]|$)|\.gemini\/config|\.claude\/settings/;
+
+export const isAgentConfig = (p: string) => AGENT_CONFIG.some((re) => re.test(p));
+
 // ---------------- shell commands ----------------
 
 const HARD_DENY: [RegExp, string][] = [
@@ -146,6 +162,7 @@ function tokens(seg: string): string[] {
 
 function classifyShell(cmd: string, cwd: string): Verdict | undefined {
   for (const [re, why] of HARD_DENY) if (re.test(cmd)) return { decision: "deny", by: "rule", reason: `Blocked: ${why}.` };
+  if (AGENT_CONFIG_IN_COMMAND.test(cmd)) return undefined; // agent hooks/config: never routine
   if (/\$\(|`|<\(|>\(/.test(cmd)) return undefined; // substitutions can hide anything: judge
   if (/\$/.test(cmd)) return undefined; // $HOME/…, ${X}: the path checks below can't see where it points
   // Redirects must stay in the project (or /tmp, /dev/null).
@@ -231,6 +248,7 @@ export function rules(call: ToolCall): Verdict | undefined {
       if (!p) return undefined;
       const a = abs(p, cwd);
       if (isSensitive(a)) return { decision: "deny", by: "rule", reason: "Blocked: writes a credential or secrets file." };
+      if (isAgentConfig(a)) return { decision: "deny", by: "rule", reason: "Blocked: changes an agent's hooks or plugins, which run outside the guard." };
       if (inside(a, resolve(cwd, ".git"))) return undefined; // git internals (hooks run code later)
       if (inside(a, cwd) || inside(a, "/tmp")) return { decision: "allow", by: "rule", reason: "Edits inside the project." };
       return undefined;
