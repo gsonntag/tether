@@ -1,7 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
-import { Code } from "@astryxdesign/core/Code";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -10,11 +9,14 @@ import { Popover } from "@astryxdesign/core/Popover";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
-import { ArrowsRightLeftIcon, CubeTransparentIcon } from "@heroicons/react/24/outline";
+import { ArrowsRightLeftIcon } from "@heroicons/react/24/outline";
 import { formatEntry, type HarnessId, type LiveState, type ModelProfile, type ModelRef } from "../shared/protocol";
 import { act, rpc } from "../store";
+import { chainLabel, modelDisplay } from "../models";
 import { ChainEditor } from "./ChainEditor";
+import { modelIcon, modelTooltip } from "./ModelName";
 
 const modelList: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
 
@@ -34,17 +36,21 @@ export function PickMenu({
   options,
   onPick,
   describe,
+  format = (v) => v,
 }: {
   label: string;
   value: string;
   options: string[];
   onPick: (v: string) => void;
   describe?: Record<string, string>;
+  /** display text for a value (options and value stay raw) */
+  format?: (v: string) => string;
 }) {
+  const shown = format(value);
   return (
     <DropdownMenu
       button={{
-        label: label ? `${label}: ${value}` : value,
+        label: label ? `${label}: ${shown}` : shown,
         variant: "ghost",
         size: "sm",
         children: label ? (
@@ -52,7 +58,7 @@ export function PickMenu({
             <Text color="secondary" type="inherit">
               {label}
             </Text>{" "}
-            {value}
+            {shown}
           </>
         ) : undefined,
       }}
@@ -61,7 +67,7 @@ export function PickMenu({
       menuWidth={describe ? 300 : 220}
       items={options.map((o) => ({
         id: o,
-        label: o,
+        label: format(o),
         description: describe?.[o],
         endContent: o === value ? <Icon icon="check" size="sm" color="accent" /> : undefined,
         onClick: () => onPick(o),
@@ -98,8 +104,11 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
   const chain = state.chain ?? [];
   const cur = state.model ?? "default";
   const setChain = (c: string[], preferEarlier = state.preferEarlier) => act("setChain", { sessionId, chain: c, preferEarlier });
-  const list = (models[harness] ?? []).filter((m) => (m.id + " " + (m.label ?? "")).toLowerCase().includes(filter.toLowerCase()));
-  const label = state.profile ? `${state.profile} · ${cur}` : cur;
+  const list = (models[harness] ?? [])
+    .map((m) => ({ ...m, d: modelDisplay(m.id, harness) }))
+    .filter((m) => `${m.id} ${m.label ?? ""} ${m.d.name}`.toLowerCase().includes(filter.toLowerCase()));
+  const curD = modelDisplay(cur, harness);
+  const label = state.profile ? `${state.profile} · ${curD.name}` : curD.name;
 
   const content = (
     <VStack gap={3}>
@@ -125,7 +134,7 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
                 label={p.name}
                 size="sm"
                 variant={state.profile === p.name ? "primary" : "secondary"}
-                tooltip={p.chain.join(" → ")}
+                tooltip={chainLabel(p.chain, harness)}
                 onClick={() => act("setModel", { sessionId, profile: p.name })}
               />
             ))}
@@ -140,8 +149,13 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
             <Item
               key={m.id}
               density="compact"
-              label={<Code size="inherit">{m.id}</Code>}
-              description={m.label && m.label !== m.id ? m.label : undefined}
+              startContent={modelIcon(m.d)}
+              label={
+                <Tooltip content={modelTooltip(m.d)} hasHoverIndication={false}>
+                  {m.d.name}
+                </Tooltip>
+              }
+              description={m.d.via}
               labelLines={1}
               descriptionLines={1}
               endContent={
@@ -166,7 +180,8 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
         label={`Model: ${label}`}
         variant="ghost"
         size="sm"
-        icon={<Icon icon={chain.length ? ArrowsRightLeftIcon : CubeTransparentIcon} />}
+        tooltip={modelTooltip(curD)}
+        icon={chain.length ? <Icon icon={ArrowsRightLeftIcon} /> : modelIcon(curD)}
         endContent={<Icon icon="chevronDown" />}
       >
         {label}

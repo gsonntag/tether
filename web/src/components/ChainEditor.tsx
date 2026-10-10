@@ -1,6 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { Code } from "@astryxdesign/core/Code";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
@@ -14,7 +13,9 @@ import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import { formatEntry, HARNESSES, parseEntry, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
 import { useStore } from "../store";
+import { modelDisplay } from "../models";
 import { HarnessBadge } from "./HarnessBadge";
+import { modelIcon, ModelName } from "./ModelName";
 import { useModels } from "./ModelMenu";
 
 /** Groups a harness's models by provider prefix ("openai-codex/gpt-6-luna" → "openai-codex"). */
@@ -92,19 +93,18 @@ export function ChainEditor({
     const ms = models[eh];
     if (ms && em && em !== "default" && !ms.some((x) => x.id === em || x.label === em))
       return { warn: `Not in ${HARNESSES.find((x) => x.id === eh)?.label}'s model list (an alias may still work)` };
-    const label = ms?.find((x) => x.id === em)?.label;
     const prov = usageProvider(eh, em);
     const u = prov && usage?.providers.find((p) => p.provider === prov);
     const w5 = u?.windows.find((w) => w.label === "5h");
     const wk = u?.windows.find((w) => w.label === "Weekly");
-    return { label, usage: u && !u.error ? `${u.label}: 5h ${w5?.percent ?? "–"}% · wk ${wk?.percent ?? "–"}%` : undefined };
+    return { usage: u && !u.error ? `${u.label}: 5h ${w5?.percent ?? "–"}% · wk ${wk?.percent ?? "–"}%` : undefined };
   };
 
   const all = useMemo(() => {
     const f = filter.toLowerCase();
     return available.map((hid) => ({
       harness: hid,
-      models: (models[hid] ?? []).filter((x) => !f || `${hid}:${x.id} ${x.label ?? ""}`.toLowerCase().includes(f)),
+      models: (models[hid] ?? []).filter((x) => !f || `${hid}:${x.id} ${x.label ?? ""} ${modelDisplay(x.id, hid).name}`.toLowerCase().includes(f)),
     }));
   }, [available, models, filter]);
 
@@ -113,14 +113,12 @@ export function ChainEditor({
     label: available.includes(x.id) ? x.label : `${x.label} (not installed)`,
     disabled: !available.includes(x.id),
   }));
-  const optionLabel = (x: ModelRef, prefix: string) => {
-    const id = prefix ? x.id.slice(prefix.length + 1) : x.id;
-    return x.label && x.label !== x.id ? `${id} · ${x.label}` : id;
+  const option = (x: ModelRef) => {
+    const d = modelDisplay(x.id, harness);
+    return { value: x.id, label: d.name, description: x.id, icon: modelIcon(d) };
   };
   const modelOptions: SelectorOptionType[] = groups(list).flatMap(([g, ms]): SelectorOptionType[] =>
-    g
-      ? [{ type: "section", title: g, options: ms.map((x) => ({ value: x.id, label: optionLabel(x, g) })) }]
-      : ms.map((x) => ({ value: x.id, label: optionLabel(x, "") })),
+    g ? [{ type: "section", title: g, options: ms.map(option) }] : ms.map(option),
   );
   const notInstalled = HARNESSES.filter((x) => !available.includes(x.id));
 
@@ -133,7 +131,7 @@ export function ChainEditor({
             const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
             const c = check(raw);
             const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
-            const subs = [c.label && c.label !== em ? c.label : undefined, c.usage].filter(Boolean) as string[];
+            const subs = [c.usage].filter(Boolean) as string[];
             return (
               <Item
                 key={raw + i}
@@ -148,7 +146,7 @@ export function ChainEditor({
                 startContent={<HarnessBadge harness={eh} />}
                 label={
                   <HStack gap={1.5} vAlign="center">
-                    <Code size="inherit">{em || "default"}</Code>
+                    <ModelName id={em || undefined} harness={eh} />
                     {isCur && <Token size="sm" color="blue" label="current" />}
                   </HStack>
                 }
@@ -257,9 +255,7 @@ export function ChainEditor({
                 return (
                   <HStack key={x.id} gap={1.5} vAlign="center">
                     <StackItem size="fill">
-                      <Text maxLines={1} type="code">
-                        {entry}
-                      </Text>
+                      <ModelName id={x.id} harness={g.harness} />
                     </StackItem>
                     <Button label={chain.includes(entry) ? "added" : "+ add"} size="sm" variant="ghost" isDisabled={chain.includes(entry)} onClick={() => add(entry)} />
                   </HStack>
