@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { useContainerReveal } from "@astryxdesign/core/hooks";
@@ -16,7 +17,9 @@ import { StackItem } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import {
+  BoltIcon,
   ChevronDoubleLeftIcon,
   Cog6ToothIcon,
   MagnifyingGlassIcon,
@@ -24,7 +27,7 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
-import { act, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, openRunningPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -158,6 +161,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </SideNavSection>
       ) : (
         <>
+        <RunningItem />
         <NeedsYouSection />
         <SideNavSection
           title="Projects"
@@ -410,6 +414,31 @@ function RenameInput({ session, onDone }: { session: SessionSummary; onDone: () 
   );
 }
 
+/** The runner-wide Running page, with how much is running across every session. */
+function RunningItem() {
+  const page = useStore((s) => s.page);
+  const n = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].reduce((sum, x) => sum + (x.live && !x.archived ? (x.activeCount ?? 0) : 0), 0));
+  return (
+    <SideNavItem
+      label="Running"
+      icon={BoltIcon}
+      isSelected={page === "running"}
+      onClick={openRunningPage}
+      endContent={n > 0 ? <Badge label={n} variant="info" /> : undefined}
+    />
+  );
+}
+
+/** Subagents, shells and the like a live session has going, as a count. */
+function ActivityCount({ s }: { s: SessionSummary }) {
+  if (!s.live || !s.activeCount) return null;
+  return (
+    <Tooltip content={`${s.activeCount} running: subagents, shells, monitors or wakeups`}>
+      <Badge label={s.activeCount} />
+    </Tooltip>
+  );
+}
+
 function SessionIndicator({ s }: { s: SessionSummary }) {
   const kind = useStore((st) => attentionOf(st, s)?.kind);
   const read = useStore((st) => attentionOf(st, s)?.read);
@@ -464,6 +493,7 @@ function SessionRow({ s }: { s: SessionSummary }) {
       onClick={() => selectSession(s.id)}
       endContent={
         <HStack gap={1} vAlign="center">
+          <ActivityCount s={s} />
           <SessionIndicator s={s} />
           <HarnessBadge harness={s.harness} />
           {!s.live && <Text type="supporting">{ago(s.updatedAt)}</Text>}

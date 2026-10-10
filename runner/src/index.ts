@@ -28,7 +28,7 @@ import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./co
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import type { ChainEntry } from "../../web/src/shared/protocol";
+import { isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
 import { sessionForKey } from "./bridge";
@@ -521,6 +521,22 @@ const ops: Handlers = {
   async approveBlocked({ sessionId, toolId }) {
     await (await getLive(sessionId)).approveBlocked(toolId);
     return {};
+  },
+
+  async stopActivity({ sessionId, id }) {
+    await requireLive(sessionId).stopActivity(id);
+    return {};
+  },
+
+  async listActivity({ recentMs }) {
+    const since = Date.now() - (recentMs ?? 0);
+    const out: SessionActivity[] = [];
+    for (const s of live.values()) {
+      if (s.closed) continue;
+      const items = (s.t.state.activity ?? []).filter((a) => isActive(a) || (recentMs && (a.endedAt ?? 0) >= since));
+      if (items.length) out.push({ session: decorate(s.summary()), items });
+    }
+    return out.sort((a, b) => b.items.filter(isActive).length - a.items.filter(isActive).length || b.session.updatedAt - a.session.updatedAt);
   },
 
   async guardSetup({ install, judgeModel, defaultMode }) {

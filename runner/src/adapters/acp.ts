@@ -17,6 +17,7 @@ import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../we
 import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
 import { acpUsage } from "../contextWindow";
+import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -185,6 +186,8 @@ class AcpSession extends LiveSession {
   private commands: { name: string; description?: string }[] = [];
   private curMsg?: { id: string; role: "user" | "assistant"; messageId?: string | null };
   private loadingHistory = false;
+  /** `task` subagents (acpActivity.ts) */
+  private act = new AcpActivity();
   /** shared memory, sent ahead of the first prompt of a new session */
   private preamble?: string;
 
@@ -296,6 +299,7 @@ class AcpSession extends LiveSession {
 
   private onUpdate(n: SessionNotification) {
     const u: any = n.update;
+    if (!this.loadingHistory) this.upsertActivity(...this.act.onUpdate(u));
     switch (u.sessionUpdate) {
       case "user_message_chunk":
         // Our own prompts are added when sent; only history replay needs these.

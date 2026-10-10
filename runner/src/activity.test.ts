@@ -1,0 +1,171 @@
+// Session-level activity rules: "Finished" waits for the agent's background work, a quiet turn
+// with something still running isn't a stall, and the summary carries the running count.
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import webpush from "web-push";
+import type { ActivityItem, SessionSummary } from "../../web/src/shared/protocol";
+
+process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-activity-"));
+const { config } = await import("./config");
+const { subscribe } = await import("./notify");
+const { LiveSession } = await import("./session");
+
+const sent: any[] = [];
+(webpush as any).sendNotification = async (_sub: any, payload: string) => void sent.push(JSON.parse(payload));
+const summaries: SessionSummary[] = [];
+const sink = { emit: () => {}, summary: (s: SessionSummary) => void summaries.push(s), handoff: async () => {} };
+
+beforeEach(() => {
+  sent.length = summaries.length = 0;
+  config().push = { ...config().push!, subs: [], recent: [] };
+  subscribe({ endpoint: "https://push.example/a", keys: { p256dh: "x", auth: "y" }, kinds: ["question", "finished", "blocked"] });
+  LiveSession.SETTLE_MS = 0;
+});
+
+function fake() {
+  class Fake extends LiveSession {
+    stopped: string[] = [];
+    async start() {}
+    protected async send(text: string) {
+      this.addUserMessage(text);
+      this.setState({ status: "running" });
+    }
+    reply(text: string) {
+      this.emit({ type: "msg", msg: { id: crypto.randomUUID(), role: "assistant", parts: [{ type: "text", text }], ts: Date.now() } });
+      this.setState({ status: "idle" });
+    }
+    protected async stopActivityItem(item: ActivityItem) {
+      this.stopped.push(item.id);
+    }
+    async abort() {
+      this.setState({ status: "idle" });
+    }
+    async applyModel() {}
+    async setThinking() {}
+    async setPermissionMode() {}
+    async rename() {}
+    async listCommands() {
+      return [];
+    }
+    async continueTurn() {}
+    protected shutdown() {}
+  }
+  const s = new Fake("claude-code", { nativeId: crypto.randomUUID(), projectPath: "/home/u/proj", title: "Ship it" }, sink);
+  s.t.state.status = "idle";
+  return s;
+}
+
+const item = (id: string, p: Partial<ActivityItem> = {}): ActivityItem => ({ id, kind: "subagent", title: id, status: "running", startedAt: Date.now(), stoppable: true, ...p });
+const finished = () => sent.filter((p) => p.kind === "finished");
+
+describe("Finished waits until everything has settled", () => {
+  test("a turn that leaves subagents running doesn't notify; the last one ending does, once", async () => {
+    const s = fake();
+    await s.prompt("fan out");
+    s.upsertActivity(item("a1"), item("b1", { kind: "shell" }));
+    s.reply("Launched two agents.");
+    expect(finished()).toEqual([]);
+    s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+    await Bun.sleep(5);
+    expect(finished()).toEqual([]);
+    s.upsertActivity(item("b1", { kind: "shell", status: "done", endedAt: Date.now() }));
+    await Bun.sleep(5);
+    expect(finished().length).toBe(1);
+    expect(finished()[0].body).toContain("Launched two agents.");
+    s.close();
+  });
+
+  test("a turn the agent starts on its own about the results waits too, then notifies once", async () => {
+    LiveSession.SETTLE_MS = 30;
+    const s = fake();
+    await s.prompt("fan out");
+    s.upsertActivity(item("a1"), item("a2"));
+    s.reply("Started.");
+    s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+    // a1's report wakes the agent: that turn ends while a2 still runs.
+    s.setState({ status: "running" });
+    s.reply("a1 is done; waiting on a2.");
+    expect(finished()).toEqual([]);
+    // a2 ends, and the agent picks it up before the settle delay: only that turn's end notifies.
+    s.upsertActivity(item("a2", { status: "done", endedAt: Date.now() }));
+    s.setState({ status: "running" });
+    await Bun.sleep(50);
+    expect(finished()).toEqual([]);
+    s.reply("All done.");
+    expect(finished().map((p) => p.body)).toEqual(["proj: All done."]);
+    s.close();
+  });
+
+  test("armed wakeups and cron jobs don't hold it back", async () => {
+    const s = fake();
+    await s.prompt("check CI every hour");
+    s.upsertActivity(item("cron:1", { kind: "schedule", status: "waiting" }));
+    s.reply("Scheduled.");
+    expect(finished().length).toBe(1);
+    s.close();
+  });
+
+  test("Stop still isn't 'finished', even when the work settles later", async () => {
+    const s = fake();
+    await s.prompt("go");
+    s.upsertActivity(item("a1"));
+    await s.stop();
+    s.upsertActivity(item("a1", { status: "stopped", endedAt: Date.now() }));
+    await Bun.sleep(5);
+    expect(finished()).toEqual([]);
+    s.close();
+  });
+});
+
+describe("stall warning", () => {
+  const stalled = (s: any) => {
+    s.lastActivity = Date.now() - 16 * 60_000;
+    s.checkStall();
+    return sent.filter((p) => p.title.startsWith("No activity")).length;
+  };
+
+  test("not while a subagent or a tool call is still running", async () => {
+    const s = fake();
+    await s.prompt("build");
+    s.upsertActivity(item("a1"));
+    expect(stalled(s)).toBe(0);
+    s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+    s.emit({ type: "msg", msg: { id: "m1", role: "assistant", parts: [{ type: "tool", id: "t1", name: "Bash", input: { command: "make" }, status: "running" }], ts: 0 } });
+    expect(stalled(s)).toBe(0);
+    s.close();
+  });
+
+  test("when nothing runs and nothing streams for 15 minutes", async () => {
+    const s = fake();
+    await s.prompt("think");
+    expect(stalled(s)).toBe(1);
+    s.close();
+  });
+});
+
+describe("activity in the session", () => {
+  test("the summary carries the running count, and Stop reaches the adapter", async () => {
+    const s = fake();
+    s.upsertActivity(item("a1"), item("w", { kind: "schedule", status: "waiting" }));
+    expect(summaries.at(-1)!.activeCount).toBe(2);
+    await s.stopActivity("a1");
+    expect((s as any).stopped).toEqual(["a1"]);
+    s.upsertActivity(item("x", { stoppable: false }));
+    await expect(s.stopActivity("x")).rejects.toThrow("can't stop");
+    s.close();
+    // Closing the process ends what it ran.
+    expect(s.t.state.activity!.every((a) => a.status === "stopped")).toBe(true);
+    expect(summaries.at(-1)!.activeCount).toBeUndefined();
+  });
+
+  test("a restart is told which work it stopped", () => {
+    const s = fake();
+    s.loadPrefs();
+    s.upsertActivity(item("a1", { title: "Refactor auth", agentType: "general-purpose" }));
+    expect(s.busy).toBe(true);
+    expect(config().sessions[s.id]!.background).toEqual([{ id: "a1", description: "Refactor auth", type: "subagent: general-purpose" }]);
+    s.close();
+  });
+});

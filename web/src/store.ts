@@ -44,6 +44,10 @@ interface State {
   sidebarOpen: boolean;
   /** desktop: sidebar collapsed to focus on one session */
   sidebarHidden: boolean;
+  /** the session's Activity panel (side panel on desktop, sheet on phones) */
+  activityOpen: boolean;
+  /** a runner-wide page instead of a session */
+  page?: "running";
   dialog?: "new" | "addProject" | "settings" | "notify";
   newSessionProject?: string;
   usage?: UsageReport;
@@ -66,6 +70,8 @@ export const useStore = create<State>(() => ({
   toasts: [],
   sidebarOpen: false,
   sidebarHidden: loadJSON("tether.sidebarHidden", false),
+  // Phones start closed: there it's a sheet over the session.
+  activityOpen: !window.matchMedia("(max-width: 767px)").matches && loadJSON("tether.activityOpen", false),
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
@@ -360,7 +366,7 @@ export async function openLink(id: string) {
 }
 
 export function selectSession(sessionId: string | undefined) {
-  set({ selected: sessionId, sidebarOpen: false });
+  set({ selected: sessionId, sidebarOpen: false, page: undefined });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
     if (!get().open[sessionId]) loadSession(sessionId);
@@ -437,6 +443,17 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
       selectSession(id);
     };
   }
+}
+
+export function setActivityOpen(open: boolean) {
+  set({ activityOpen: open });
+  if (!isNarrow()) saveJSON("tether.activityOpen", open);
+}
+
+/** The runner-wide Running page. */
+export function openRunningPage() {
+  set({ page: "running", selected: undefined, sidebarOpen: false });
+  history.replaceState(null, "", "#/running");
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */

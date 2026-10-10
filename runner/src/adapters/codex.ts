@@ -11,7 +11,8 @@
 
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import type { ActivityItem, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { CodexActivity } from "./codexActivity";
 import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
@@ -308,6 +309,8 @@ class CodexSession extends LiveSession {
   private patches = new Map<string, any>();
   private rateLimits?: any;
   private retrying = false;
+  /** subagent threads, background terminals, sleeps (codexActivity.ts) */
+  private act = new CodexActivity();
 
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
@@ -371,7 +374,7 @@ class CodexSession extends LiveSession {
     this.models = await fetchModels(this.p).catch(() => []);
     modelCache = this.models;
     modelCacheAt = Date.now();
-    this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels() });
+    this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels(), activity: [] });
     // Codex reports token usage only as turns run; a resumed thread's last count is in its rollout.
     if (this.opts.resume && r.thread.path && !this.t.state.context)
       await Bun.file(r.thread.path)
@@ -444,7 +447,8 @@ class CodexSession extends LiveSession {
   }
 
   private onNotify(method: string, p: any) {
-    if (p.threadId && p.threadId !== this.nativeId) return; // subagent threads
+    this.upsertActivity(...this.act.onNotify(method, p, this.nativeId));
+    if (p.threadId && p.threadId !== this.nativeId) return; // subagent threads: their activity item shows them
     switch (method) {
       case "turn/started":
         this.turnId = p.turn.id;
@@ -661,6 +665,13 @@ class CodexSession extends LiveSession {
     if (this.cancelWait()) return;
     this.cancelAllUi();
     if (this.turnId) await this.p.call("turn/interrupt", { threadId: this.nativeId, turnId: this.turnId });
+  }
+
+  /** A subagent is a thread of its own: interrupt its running turn. */
+  protected async stopActivityItem(item: ActivityItem) {
+    const turnId = this.act.turns.get(item.id);
+    if (item.kind !== "subagent" || !turnId) throw new Error("Codex isn't running a turn for this agent right now.");
+    await this.p.call("turn/interrupt", { threadId: item.id, turnId });
   }
 
   /** Model and effort ride along on the next turn/start (Codex keeps them for later turns). */
