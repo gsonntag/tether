@@ -23,6 +23,8 @@ export const store = {
 /** Harness-owned locations. */
 export const harness = {
   claudeDir: () => join(home(), ".claude"),
+  /** Claude Code's own state file, user-scope MCP servers included ($CLAUDE_CONFIG_DIR moves it) */
+  claudeJson: () => (process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : join(home(), ".claude.json")),
   claudeMd: () => join(home(), ".claude", "CLAUDE.md"),
   claudeProjects: () => join(home(), ".claude", "projects"),
   claudeSkills: () => join(home(), ".claude", "skills"),
@@ -35,6 +37,9 @@ export const harness = {
   piAgentsMd: () => join(home(), ".pi", "agent", "AGENTS.md"),
   piSkills: () => join(home(), ".pi", "agent", "skills"),
   piMcp: () => join(home(), ".pi", "agent", "mcp.json"),
+  piMcpAdapter: () => join(home(), ".pi", "agent", "mcp-adapter.json"),
+  piSettings: () => join(home(), ".pi", "agent", "settings.json"),
+  opencodeDir: () => join(home(), ".config", "opencode"),
   opencodeAgentsMd: () => join(home(), ".config", "opencode", "AGENTS.md"),
   opencodeSkills: () => join(home(), ".config", "opencode", "skills"),
   kiroSteering: () => join(home(), ".kiro", "steering"),
@@ -43,7 +48,10 @@ export const harness = {
   geminiSkills: () => join(home(), ".gemini", "skills"),
   agyKnowledge: () => join(home(), ".gemini", "antigravity", "knowledge"),
   agySkills: () => join(home(), ".gemini", "antigravity", "skills"),
-  agyMcp: () => join(home(), ".gemini", "antigravity", "mcp_config.json"),
+  /** agy's global MCP config (it migrated here from ~/.gemini/antigravity/mcp_config.json) */
+  agyMcp: () => join(home(), ".gemini", "config", "mcp_config.json"),
+  agyMcpLegacy: () => join(home(), ".gemini", "antigravity", "mcp_config.json"),
+  agyDir: () => join(home(), ".gemini", "antigravity"),
   agentsSkills: () => join(home(), ".agents", "skills"),
 };
 

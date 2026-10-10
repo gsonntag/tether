@@ -44,7 +44,9 @@ function deviceLabel() {
 
 async function currentSub(runnerId: string) {
   const reg = await navigator.serviceWorker.getRegistration(scope(runnerId));
-  return reg?.pushManager.getSubscription() ?? null;
+  // getRegistration falls back to the closest enclosing scope: the app worker at "/" (app-sw.js).
+  if (reg?.scope !== scope(runnerId)) return null;
+  return reg.pushManager.getSubscription();
 }
 
 /** What this device gets from the selected runner (undefined kinds: notifications off). */

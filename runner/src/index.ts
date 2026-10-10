@@ -28,7 +28,8 @@ import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./co
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
 import { resolveForBrief, useContextSkills } from "./skillcmd";
@@ -138,7 +139,8 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
     pendingPrompt: prompt,
     memory: memory?.text,
   });
-  const next = a.create(from.projectPath, { model: to.model, permissionMode: from.t.state.permissionMode }, sink);
+  const mode = from.t.state.permissionMode;
+  const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
   next.t.state.guard = from.guardMode;
   try {
     await next.start();
@@ -260,9 +262,14 @@ async function getLive(sessionId: string, projectPath?: string): Promise<LiveSes
     }
   }
   if (!path) throw new Error(`session ${sessionId} not found`);
+  // Read before starting: a starting session saves its (default) model over these.
+  const saved = config().sessions[sessionId];
+  const choices = saved && { model: saved.model, thinking: saved.thinking, permissionMode: saved.permissionMode };
   const s = await adapters[harness].resume(nativeId, path, sink);
   await s.start();
-  return track(s);
+  track(s);
+  await s.reapplyChoices(choices);
+  return s;
 }
 
 function requireLive(sessionId: string): LiveSession {
@@ -466,7 +473,7 @@ const ops: Handlers = {
   async createSession({ projectPath, harness, model, profile, prompt, permissionMode, guard }) {
     const a = adapters[harness];
     if (!a) throw new Error(`unknown harness ${harness}`);
-    const s = a.create(expand(projectPath), { model: profile ? undefined : model, permissionMode }, sink);
+    const s = a.create(expand(projectPath), { model: profile ? undefined : model, permissionMode: permissionMode && !APPROVING_MODES.has(permissionMode) ? permissionMode : undefined }, sink);
     // Set before start() so harnesses that take it as a launch flag (Antigravity) see it.
     s.t.state.guard = guard ?? config().guard?.defaultMode ?? "auto";
     await s.start();
@@ -643,6 +650,8 @@ const ops: Handlers = {
   },
 
   async setPermissionMode({ sessionId, mode }) {
+    // The picker never offers these; refuse them here too so no client can skip the guard.
+    if (APPROVING_MODES.has(mode)) throw new Error(`${mode} approves tool calls without the guard; use the guard setting instead.`);
     await requireLive(sessionId).setPermissionMode(mode);
     return {};
   },
@@ -684,9 +693,11 @@ const ops: Handlers = {
   },
 
   async setProfiles({ profiles }) {
-    const clean = profiles
-      .map((p) => ({ name: p.name.trim(), chain: p.chain.map((c) => c.trim()).filter(Boolean) }))
-      .filter((p) => p.name && p.chain.length);
+    // Reject rather than silently drop a profile the UI let through (an older web app, say).
+    const problems = profileProblems(profiles);
+    const bad = problems.findIndex(Boolean);
+    if (bad >= 0) throw new Error(`Profile ${profiles[bad]!.name.trim() ? `“${profiles[bad]!.name.trim()}”` : bad + 1}: ${problems[bad]}. Nothing was saved.`);
+    const clean = cleanProfiles(profiles);
     config().profiles = clean;
     saveConfig();
     return clean;

@@ -6,7 +6,8 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
 import { Selector } from "@astryxdesign/core/Selector";
 import type { SelectorOptionType } from "@astryxdesign/core/Selector";
-import { StackItem } from "@astryxdesign/core/Stack";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
+import { Stack, StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
@@ -66,6 +67,7 @@ export function ChainEditor({
   current?: string;
 }) {
   const available = useAvailable();
+  const narrow = useMediaQuery("(max-width: 640px)");
   const models = useModels(available, sessionId);
   const usage = useStore((s) => s.usage);
   const [h, setH] = useState<HarnessId | "">("");
@@ -196,41 +198,46 @@ export function ChainEditor({
         </VStack>
       )}
 
-      <HStack gap={1.5} vAlign="center">
+      {/* Phones: the harness gets its own row, so the model name and Add aren't squeezed to "…". */}
+      <Stack direction={narrow ? "vertical" : "horizontal"} gap={1.5} vAlign={narrow ? undefined : "center"}>
         <Selector
           label="Harness"
           isLabelHidden
           size="sm"
-          width={140}
+          width={narrow ? "100%" : 140}
           presentation="adaptive"
           options={harnessOptions}
           value={harness}
           onChange={(v) => (setH(v as HarnessId), setM(""))}
         />
         <StackItem size="fill">
-          <Selector
-            label="Model"
-            isLabelHidden
-            size="sm"
-            width="100%"
-            presentation="adaptive"
-            hasSearch={list.length > 8}
-            searchPlaceholder="Filter models…"
-            options={modelOptions}
-            value={model || undefined}
-            placeholder={models[harness] ? "No models" : "Loading…"}
-            isLoading={!models[harness]}
-            isDisabled={!list.length}
-            onChange={setM}
-          />
+          <HStack gap={1.5} vAlign="center">
+            <StackItem size="fill">
+              <Selector
+                label="Model"
+                isLabelHidden
+                size="sm"
+                width="100%"
+                presentation="adaptive"
+                hasSearch={list.length > 8}
+                searchPlaceholder="Filter models…"
+                options={modelOptions}
+                value={model || undefined}
+                placeholder={models[harness] ? "No models" : "Loading…"}
+                isLoading={!models[harness]}
+                isDisabled={!list.length}
+                onChange={setM}
+              />
+            </StackItem>
+            <Button
+              label="Add"
+              size="sm"
+              isDisabled={!model || chain.includes(formatEntry({ harness, model }))}
+              onClick={() => add(formatEntry({ harness, model }))}
+            />
+          </HStack>
         </StackItem>
-        <Button
-          label="Add"
-          size="sm"
-          isDisabled={!model || chain.includes(formatEntry({ harness, model }))}
-          onClick={() => add(formatEntry({ harness, model }))}
-        />
-      </HStack>
+      </Stack>
 
       <HStack>
         <Button

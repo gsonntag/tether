@@ -33,7 +33,8 @@ type Spot = Omit<Comment, "id" | "text">;
 
 const HIGHLIGHT = "tether-plan-comment";
 const HIGHLIGHT_ACTIVE = "tether-plan-active";
-const BLOCKS = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th";
+// Astryx's Markdown renders paragraphs as <div role="paragraph">, not <p>.
+const BLOCKS = "p, [role='paragraph'], li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th";
 
 const previewBox: CSSProperties = { maxHeight: "40vh" };
 const docPane: CSSProperties = { minWidth: 0, cursor: "text" };
@@ -88,7 +89,39 @@ function usePlanRequest(sessionId: string, planId: string): UiRequest | undefine
   return useStore((s) => s.open[sessionId]?.state.pendingUi.find((r) => r.kind === "plan" && r.planId === planId));
 }
 
+/**
+ * Escape inside a comment box closes just that box. Astryx's layer stack listens on the document and
+ * skips a press that's already defaultPrevented; stopPropagation alone doesn't reach it, so the
+ * plan dialog (or, on phones, the dialog behind the comments sheet) closed too.
+ *
+ * The box then unmounts, which would drop focus to <body>; from there the stack's next Escape closes
+ * the comments sheet and the dialog behind it together. Focus goes to the layer's panel instead.
+ */
+const claimEscape = (e: { preventDefault(): void; stopPropagation(): void; currentTarget: Element }) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const panel = e.currentTarget.parentElement?.closest<HTMLElement>("[tabindex='-1']");
+  if (panel && e.currentTarget.closest("dialog")?.contains(panel)) panel.focus({ preventScroll: true });
+};
+
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** The draft as the message the agent gets: quoted comments in document order, then the general note. */
+const draftMessage = (d: Draft) => formatPlanFeedback([...d.comments].sort((a, b) => a.offset - b.offset), d.general);
+
+/**
+ * Approves a waiting plan. Draft comments are never left behind: they follow the approval as notes
+ * for the work, and the draft is cleared. The dock's Approve and the dialog's both come here.
+ * False when something failed (reported as a toast); if only the notes failed to send, the plan is
+ * approved but the draft is kept, so they can be sent from the plan as comments.
+ */
+async function approvePlan(sessionId: string, requestId: string, key: string): Promise<boolean> {
+  const message = draftMessage(readDraft(key));
+  if (!(await act("uiRespond", { sessionId, response: { id: requestId, allow: true } }))) return false;
+  if (message && !(await act("prompt", { sessionId, text: message, mode: "steer" }))) return false;
+  writeDraft(key, EMPTY);
+  return true;
+}
 
 // ---------------- transcript card ----------------
 
@@ -126,8 +159,10 @@ export function PlanCard({ part }: { part: PlanPart }) {
 
 /** The approval prompt in the dock under the transcript. */
 export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequest }) {
-  const draft = useDraft(draftKey(sessionId, r.planId ?? ""));
+  const key = draftKey(sessionId, r.planId ?? "");
+  const draft = useDraft(key);
   const n = draft.comments.length;
+  const notes = !!draftMessage(draft);
   return (
     <Card width="100%" padding={3} variant="blue">
       <VStack gap={2}>
@@ -140,7 +175,11 @@ export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequ
         </Text>
         <HStack gap={2} wrap="wrap">
           <Button label="Open plan" variant="primary" onClick={() => r.planId && openPlan(r.planId)} />
-          <Button label="Approve" onClick={() => act("uiRespond", { sessionId, response: { id: r.id, allow: true } })} />
+          <Button
+            label={notes ? "Approve with notes" : "Approve"}
+            tooltip={notes ? "Approve the plan; your draft comments follow as notes for the work" : undefined}
+            clickAction={async () => void (await approvePlan(sessionId, r.id, key))}
+          />
         </HStack>
       </VStack>
     </Card>
@@ -325,10 +364,10 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     setBusy(true);
     try {
       if (request) {
-        const ok = await act("uiRespond", { sessionId, response: approve ? { id: request.id, allow: true } : { id: request.id, allow: false, value: message } });
+        const ok = approve
+          ? await approvePlan(sessionId, request.id, key)
+          : await act("uiRespond", { sessionId, response: { id: request.id, allow: false, value: message } });
         if (!ok) return;
-        // Approving with comments: they follow the approval as notes for the work.
-        if (approve && message) await act("prompt", { sessionId, text: message, mode: "steer" });
       } else {
         const ok = await act("prompt", { sessionId, text: message, mode: running ? "steer" : undefined });
         if (!ok) return;
@@ -359,7 +398,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           value={composing}
           onChange={(v) => setComposing(v)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") (e.stopPropagation(), setSpot(undefined), setComposing(""));
+            if (e.key === "Escape") (claimEscape(e), setSpot(undefined), setComposing(""));
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) (e.preventDefault(), addComment());
           }}
           width="100%"
@@ -391,7 +430,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
               onChange={(v) => updateComment(c.id, v)}
               onBlur={() => setEditing(undefined)}
               onKeyDown={(e) => {
-                if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) (e.stopPropagation(), setEditing(undefined));
+                if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) (claimEscape(e), setEditing(undefined));
               }}
               width="100%"
             />
@@ -469,6 +508,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
       <style>{highlightCss}</style>
       <Layout
         height={narrow ? "fill" : "auto"}
+        contentWidth="100%"
         header={
           <DialogHeader
             title={part.checklist ? "Plan checklist" : "Plan"}

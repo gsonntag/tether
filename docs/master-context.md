@@ -137,6 +137,17 @@ socket). Registered for Tether sessions per adapter (Claude SDK `mcpServers`, AC
 codex config override, pi via `pi-mcp-adapter`) and globally in each harness's MCP config for native
 CLI use.
 
+`~/.claude.json` and opencode's `opencode.json(c)` are registered only by the user's Import (never by
+a background re-export) and are edited in place with jsonc-parser: only the `tether-context` key
+changes, comments and formatting stay. `~/.claude.json` is rewritten constantly by every running
+Claude Code process, so the edit (runner/src/context/globalMcp.ts) takes Claude's own lock
+(`~/.claude.json.lock`, proper-lockfile style, stale after 10s), re-reads and compares the file right
+before the atomic rename, reads it back afterwards, and redoes the edit on the new text if anything
+moved. Residual risk: a writer that ignores the lock and lands in the microseconds between the final
+compare and the rename loses that one write (nothing can detect it afterwards). This happens once,
+on Import or Turn off, never in the background. Turning off removes the entry in place (never a
+snapshot restore, which would roll back Claude's own state).
+
 Tools: `memory_search(query, scope?)`, `memory_get(slug)`, `memory_write(text, type?, scope?)`,
 `skill_list()`, `skill_get(name)`. All `mcp__tether-context__*` calls auto-allow in the guard
 (read/write limited to the context store).

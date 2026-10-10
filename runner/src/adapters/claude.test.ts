@@ -5,7 +5,12 @@ import { join } from "node:path";
 
 // (the preloaded src/testenv.ts already points it at the shared scratch dir)
 if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-claude-"));
-const { keepsGuard } = await import("./claude");
+const { keepsGuard, PERMISSION_MODES } = await import("./claude");
+
+test("the mode picker offers Claude's plan mode, and only modes the guard still governs", () => {
+  expect(PERMISSION_MODES).toEqual(["default", "plan"]);
+  for (const m of PERMISSION_MODES) expect(keepsGuard(m)).toBe(true);
+});
 
 test("only modes that still ask canUseTool survive a handoff or a guard change", () => {
   // plan mode is kept (a guard change must not drop the person out of planning)

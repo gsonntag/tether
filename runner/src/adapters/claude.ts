@@ -28,10 +28,12 @@ import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow 
 import { LiveSession, newId } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
+import { LimitStatus, toMs } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
-const PERMISSION_MODES = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+/** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
+export const PERMISSION_MODES = ["default", "plan"];
 
 /** Claude permission modes that still ask canUseTool (so the guard) before acting. */
 export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
@@ -262,6 +264,8 @@ class ClaudeSession extends LiveSession {
   /** API message id -> transcript message id, for streaming + final blocks */
   private current?: { apiId: string; msgId: string; finalCount: number };
   private rejected?: { resetAt?: number };
+  private limits = new LimitStatus();
+  private limitTimer?: ReturnType<typeof setTimeout>;
   private lastError?: { text?: string; status?: number | null; kind?: string };
   /** subagents, shells, monitors, cron jobs, wakeups (claudeActivity.ts) */
   private act = new ClaudeActivity();
@@ -389,10 +393,8 @@ class ClaudeSession extends LiveSession {
         const info = (m as any).rate_limit_info;
         if (info?.status === "rejected") {
           const r = info.resetsAt;
-          this.rejected = { resetAt: r ? (r < 1e12 ? r * 1000 : r) : undefined };
-        } else if (info?.status === "allowed_warning" && info.utilization) {
-          this.setState({ statuses: { ...this.t.state.statuses, limit: `${Math.round(info.utilization * 100)}% of ${info.rateLimitType ?? "limit"}` } });
-        }
+          this.rejected = { resetAt: r ? toMs(r) : undefined };
+        } else if (this.limits.update(info)) this.showLimit();
         break;
       }
     }
@@ -662,6 +664,7 @@ class ClaudeSession extends LiveSession {
   }
 
   async setPermissionMode(mode: string) {
+    if (!keepsGuard(mode)) throw new Error(`Claude Code runs in ${PERMISSION_MODES.join(" or ")} mode here; the guard setting decides approvals.`);
     await this.q?.setPermissionMode(mode as any);
     this.setState({ permissionMode: mode });
   }
@@ -704,7 +707,21 @@ class ClaudeSession extends LiveSession {
     this.setState({ status: "running" });
   }
 
+  /** statuses.limit from the rate-limit windows; re-checked when the earliest window resets. */
+  private showLimit() {
+    clearTimeout(this.limitTimer);
+    this.limits.expire();
+    const text = this.limits.text();
+    if (text !== this.t.state.statuses?.limit) {
+      const { limit: _, ...rest } = this.t.state.statuses ?? {};
+      this.setState({ statuses: text ? { ...rest, limit: text } : rest });
+    }
+    const next = this.limits.nextReset();
+    if (next !== undefined && !this.closed) this.limitTimer = setTimeout(() => this.showLimit(), Math.min(Math.max(next - Date.now(), 0) + 1000, 2 ** 31 - 1));
+  }
+
   protected shutdown() {
+    clearTimeout(this.limitTimer);
     clearInterval(this.pollTimer);
     this.input.end();
     try {
