@@ -20,6 +20,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import { GUARD_MODES, HARNESSES, NOTIFY_KINDS, type GuardMode, type HarnessId, type ModelProfile, type NotifyKind } from "../shared/protocol";
+import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
 import { act, refreshProjects, rpc, selectSession, toggleProject, useStore } from "../store";
@@ -466,8 +467,11 @@ function Settings({ close }: { close: () => void }) {
     if (r) setGuardInfo(r);
   };
   const dirty = JSON.stringify(profiles) !== JSON.stringify(saved);
+  const problems = profileProblems(profiles);
+  const invalid = dirty && problems.some(Boolean);
   // Everything else applies as you change it; profile edits are saved here.
   const done = async () => {
+    if (invalid) return;
     if (dirty && !(await act("setProfiles", { profiles }))) return;
     close();
   };
@@ -479,7 +483,7 @@ function Settings({ close }: { close: () => void }) {
       title="Settings"
       subtitle={manyRunners && runnerId ? `For runner ${runnerId}` : undefined}
       close={close}
-      actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" clickAction={done} />}
+      actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" isDisabled={invalid} clickAction={done} />}
     >
       <NotificationSettings />
       <SettingsCard title="New sessions">
@@ -550,11 +554,20 @@ function Settings({ close }: { close: () => void }) {
                     </StackItem>
                     <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
                   </HStack>
+                  {problems[i] && (
+                    <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
+                      {problems[i]}
+                    </Text>
+                  )}
                   <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
                 </VStack>
               ))}
             </SettingsCard>
-            {dirty && <Text type="supporting">Profile changes are saved when you press Save and close.</Text>}
+            {dirty && (
+              <Text type="supporting">
+                {invalid ? "Fix the profiles marked in red to save, or close to discard the changes." : "Profile changes are saved when you press Save and close."}
+              </Text>
+            )}
           </VStack>
         </VStack>
       </Collapsible>
