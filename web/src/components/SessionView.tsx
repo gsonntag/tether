@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import {
@@ -24,7 +24,10 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
-import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
+import { CameraIcon, EllipsisVerticalIcon, PaperClipIcon } from "@heroicons/react/24/outline";
+import { addFiles, clearDrafts, takeBack, useDrafts } from "../attachments";
+import { splitAttachments, withAttachments } from "../shared/attachments";
+import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
 import { GUARD_MODES, type LiveState, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
@@ -97,6 +100,35 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
+  // Files dragged anywhere onto the session attach to the message being written. (Reordering
+  // queued messages is a drag too, but carries no files.)
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
+  const dropHandlers = {
+    onDragEnter: (e: DragEvent<HTMLDivElement>) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current++;
+      setDropping(true);
+    },
+    onDragOver: (e: DragEvent<HTMLDivElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: DragEvent<HTMLDivElement>) => {
+      if (!hasFiles(e)) return;
+      if (--dragDepth.current <= 0) (dragDepth.current = 0), setDropping(false);
+    },
+    onDrop: (e: DragEvent<HTMLDivElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDropping(false);
+      if (e.dataTransfer.files.length) addFiles(sessionId, e.dataTransfer.files);
+    },
+  };
+
   if (!o || o.loading || !o.session)
     return (
       <VStack style={fill} vAlign="center" hAlign="center">
@@ -107,8 +139,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const st = o.state;
   setProjectRoot(o.session.projectPath, sessionId);
   const chat = (
-    <VStack style={chatColumn}>
-      {o.syncing && <Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
+    <VStack style={chatColumn} {...dropHandlers}>
+      {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
+      {o.syncing &&<Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
       <ChatLayout
         ref={scroller}
         density="spacious"
@@ -230,17 +263,24 @@ type EditPending = (id: string, change: Omit<Ops["editPending"]["args"], "sessio
 /** A waiting message's text; click to edit it until it goes out. */
 function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending; clamp?: boolean }) {
   const [draft, setDraft] = useState<string>();
+  // Only the words are edited; the attached files stay with the message.
+  const { text: body, files } = useMemo(() => splitAttachments(p.text), [p.text]);
   const save = () => {
-    if (draft !== undefined && draft !== p.text) edit(p.id, { text: draft });
+    if (draft !== undefined && draft !== body) edit(p.id, { text: withAttachments(draft, files) });
     setDraft(undefined);
   };
   if (draft === undefined)
     return (
-      <Tooltip content="Click to edit" hasHoverIndication={false}>
-        <Text display="block" maxLines={clamp ? 3 : 0} hasTruncateTooltip={false} style={preWrap} onClick={() => setDraft(p.text)}>
-          {p.text.split("\n\n<bash-input>")[0]}
-        </Text>
-      </Tooltip>
+      <VStack gap={1}>
+        {body.trim() && (
+          <Tooltip content="Click to edit" hasHoverIndication={false}>
+            <Text display="block" maxLines={clamp ? 3 : 0} hasTruncateTooltip={false} style={preWrap} onClick={() => setDraft(body)}>
+              {body.split("\n\n<bash-input>")[0]}
+            </Text>
+          </Tooltip>
+        )}
+        <AttachmentChips files={files} />
+      </VStack>
     );
   return (
     <TextArea
@@ -387,6 +427,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   const [menuClosed, setMenuClosed] = useState(false);
   const input = useRef<ChatComposerInputHandle>(null);
   const narrow = useNarrow();
+  const touch = useMediaQuery("(pointer: coarse)");
   const running = state.status === "running";
 
   useEffect(() => {
@@ -414,12 +455,37 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   // Open with nothing to show: say so (loading, or no match) rather than hide the menu.
   const menuNote = open && !menuClosed && !matches.length ? (cmds === null ? "Loading skills and commands…" : slash ? `No skill or command matches “/${slash}”` : "No skills or commands here") : undefined;
 
+  const drafts = useDrafts(sessionId);
+  const ready = drafts.filter((d) => d.attachment && !d.error);
+  const uploading = drafts.some((d) => !d.attachment && !d.error);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const shell = text.startsWith("!");
+  const canSend = (!!text.trim() || (ready.length > 0 && !shell)) && !uploading && !(shell && ready.length > 0);
+
   const send = async (mode?: "steer" | "followUp") => {
     const t = text.trim();
-    if (!t) return;
+    if (!canSend) return;
+    const files = ready.map((d) => d.attachment!);
     setText("");
-    const r = await act("prompt", { sessionId, text: t, mode: running ? (mode ?? "steer") : undefined });
+    const r = await act("prompt", { sessionId, text: t, mode: running ? (mode ?? "steer") : undefined, ...(files.length ? { attachments: files } : {}) });
     if (r === undefined) setText(t);
+    else if (files.length) clearDrafts(sessionId);
+  };
+
+  // A pasted screenshot or copied file is attached; rich content (a spreadsheet's cells, a web
+  // page) pastes as text even when the clipboard also carries a picture of it.
+  const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    const files = [...e.clipboardData.files];
+    if (!files.length || e.clipboardData.types.includes("text/html")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    addFiles(sessionId, files);
+  };
+
+  const picked = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) addFiles(sessionId, e.target.files);
+    e.target.value = "";
   };
 
   const pick = (name: string) => {
@@ -443,7 +509,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
       e.preventDefault();
       rpc("takePending", { sessionId })
-        .then((r) => r.text && setText(r.text))
+        .then((r) => r.text && setText(takeBack(sessionId, r.text)))
         .catch(() => {});
       return;
     }
@@ -459,9 +525,8 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
     }
   };
 
-  const shell = text.startsWith("!");
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
-  const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued;
+  const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued || drafts.length > 0;
   const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for skills and commands)";
 
   const drawer = hasDrawer ? (
@@ -499,6 +564,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
           </HStack>
         )}
         {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
+        {drafts.length > 0 && <DraftChips sessionId={sessionId} drafts={drafts} />}
         {legacyQueued && (
           <HStack gap={1.5} wrap="wrap">
             {state.queued.map((q, i) => (
@@ -510,8 +576,18 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
     </ChatComposerDrawer>
   ) : undefined;
 
+  const attach = (
+    <HStack gap={0.5} vAlign="center">
+      <IconButton label="Attach files or images" tooltip="Attach files or images (or paste, or drop them here)" variant="ghost" size="sm" icon={<Icon icon={PaperClipIcon} size="sm" />} onClick={() => fileInput.current?.click()} />
+      {touch && <IconButton label="Take a photo" tooltip="Take a photo" variant="ghost" size="sm" icon={<Icon icon={CameraIcon} size="sm" />} onClick={() => cameraInput.current?.click()} />}
+      {/* The native pickers: any file (on phones this also offers the photo library and camera), or the camera directly. */}
+      <input ref={fileInput} type="file" multiple hidden onChange={picked} />
+      <input ref={cameraInput} type="file" accept="image/*" capture="environment" hidden onChange={picked} />
+    </HStack>
+  );
+
   return (
-    <VStack gap={2} style={composerDock}>
+    <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
       {state.status === "waiting" && (
         <Banner
           status="warning"
@@ -543,17 +619,37 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
           />
         }
         footerActions={
-          narrow ? undefined : (
-            <Text type="supporting">{shell ? "Enter to run · output goes to the agent with your next message" : "Shift+Enter for a new line · ! for bash mode"}</Text>
-          )
+          <HStack gap={1} vAlign="center">
+            {!shell && attach}
+            {!narrow && (
+              <Text type="supporting">
+                {shell
+                  ? ready.length
+                    ? "Bash mode can't take attachments"
+                    : "Enter to run · output goes to the agent with your next message"
+                  : uploading
+                    ? "Uploading…"
+                    : "Shift+Enter for a new line · ! for bash mode"}
+              </Text>
+            )}
+          </HStack>
         }
         sendActions={
           <>
             {running && <Button label="Stop" variant="destructive" size="sm" icon={<Icon icon="stop" />} onClick={() => act("abort", { sessionId })} />}
-            {running && !shell && <Button label="Queue" size="sm" isDisabled={!text.trim()} onClick={() => send("followUp")} />}
+            {running && !shell && <Button label="Queue" size="sm" isDisabled={!canSend} onClick={() => send("followUp")} />}
           </>
         }
-        sendButton={<Button label={shell ? "Run ↵" : running ? "Steer ↵" : "Send ↵"} variant="primary" size="sm" isDisabled={!text.trim()} onClick={() => send("steer")} />}
+        sendButton={
+          <Button
+            label={shell ? "Run ↵" : running ? "Steer ↵" : "Send ↵"}
+            variant="primary"
+            size="sm"
+            isDisabled={!canSend}
+            tooltip={uploading ? "Waiting for attachments to upload" : undefined}
+            onClick={() => send("steer")}
+          />
+        }
       />
       <SettingsBar sessionId={sessionId} state={state} />
     </VStack>

@@ -21,7 +21,7 @@ import { usageChanged } from "./usage";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
-import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
+import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
@@ -972,7 +972,7 @@ export abstract class LiveSession {
     let v: Verdict;
     let always = false;
     if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
-    else if (this.guardMode === "full") v = { decision: "allow", by: "mode", reason: "Full access." };
+    else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
       const askEdit = this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit";

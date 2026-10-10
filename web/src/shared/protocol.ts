@@ -23,6 +23,8 @@ export type Part =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | { type: "image"; mimeType: string; data: string }
+  /** A file attached to a user message, stored on the runner (web/src/shared/attachments.ts). */
+  | { type: "file"; path: string; name: string; mimeType: string; size: number }
   | {
       type: "tool";
       id: string;
@@ -145,6 +147,9 @@ export interface Msg {
   error?: string;
   streaming?: boolean;
 }
+
+import type { Attachment } from "./attachments";
+export type { Attachment } from "./attachments";
 
 // ---------- live state ----------
 
@@ -685,7 +690,20 @@ export interface Ops {
   archiveSession: { args: { sessionId: string; archived: boolean }; result: {} };
   /** Stops the agent process (aborting a running turn, dropping unsent messages) and archives the session. Nothing on disk is deleted. */
   removeSession: { args: { sessionId: string }; result: {} };
-  prompt: { args: { sessionId: string; text: string; mode?: "steer" | "followUp" }; result: {} };
+  /** attachments: files uploaded with uploadAttachment, listed at the end of the message */
+  prompt: { args: { sessionId: string; text: string; mode?: "steer" | "followUp"; attachments?: Attachment[] }; result: {} };
+  /**
+   * One chunk of a file attached to a message (base64 `data` at byte `offset`). Chunks may arrive
+   * in any order; the one that completes the file returns it.
+   */
+  uploadAttachment: {
+    args: { sessionId: string; uploadId: string; name: string; mimeType: string; size: number; offset: number; data: string };
+    result: { attachment?: Attachment };
+  };
+  /** Drops an upload removed from the composer before it was sent (by path once done, else by upload id). */
+  discardAttachment: { args: { sessionId: string; path?: string; uploadId?: string }; result: {} };
+  /** Reads part of an attachment (any session's) for the transcript: thumbnails and downloads. */
+  readAttachment: { args: { path: string; offset?: number; length?: number }; result: { data: string; size: number; mimeType: string } };
   abort: { args: { sessionId: string }; result: {} };
   setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };
   setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };

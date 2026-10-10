@@ -10,6 +10,8 @@
 //
 //   User request: ARGS
 
+import { splitAttachments } from "./attachments";
+
 /** `/name args` → the skill to run; `\/name` → the text without the backslash, never a skill. */
 export type Invocation = { name: string; args: string } | { literal: string };
 
@@ -101,6 +103,12 @@ export function splitSkills(text: string): (string | SkillSegment)[] {
 
 /** The message as the person typed it (`/name args`), for titles and the guard's judge. */
 export function displayText(text: string): string {
+  // Attached files read as their names (a title, a checkpoint label), not their storage paths.
+  const att = splitAttachments(text);
+  if (att.files.length) {
+    const names = att.files.map((f) => f.name).join(", ");
+    return att.text ? `${displayText(att.text)} [${names}]` : names;
+  }
   // pi's own syntax for a skill Tether passed to it natively
   if (text.startsWith("/skill:")) return "/" + text.slice(7);
   if (!text.includes("<skill name=")) return text;

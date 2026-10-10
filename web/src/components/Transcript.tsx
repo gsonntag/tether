@@ -29,10 +29,13 @@ import { diffLines } from "diff";
 import { memo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { act, selectSession } from "../store";
+import { AttachmentChips } from "./Attachments";
 import { PlanCard } from "./PlanReview";
 
 type ToolPart = Extract<Part, { type: "tool" }>;
 type SkillPart = Extract<Part, { type: "skill" }>;
+type FilePart = Extract<Part, { type: "file" }>;
+type ImagePart = Extract<Part, { type: "image" }>;
 
 const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 
@@ -137,7 +140,7 @@ function SkillChip({ p }: { p: SkillPart }) {
   );
 }
 
-function AmendableUser({ m, text, chips, typed = text }: { m: Msg; text: string; chips?: ReactNode; typed?: string }) {
+function AmendableUser({ m, text, chips, attached, typed = text }: { m: Msg; text: string; chips?: ReactNode; attached?: ReactNode; typed?: string }) {
   const [draft, setDraft] = useState<string>();
   const save = async () => {
     if (draft !== undefined && draft.trim() && draft.trim() !== typed.trim()) await act("amendSteer", { sessionId, msgId: m.id, text: draft });
@@ -162,7 +165,8 @@ function AmendableUser({ m, text, chips, typed = text }: { m: Msg; text: string;
         >
           <VStack gap={1.5}>
             {chips}
-            <Text style={preWrap}>{text}</Text>
+            {text.trim() && <Text style={preWrap}>{text}</Text>}
+            {attached}
           </VStack>
         </ChatMessageBubble>
       </ChatMessage>
@@ -204,7 +208,10 @@ const EVENT_ICONS = {
 
 const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: boolean; amendable?: boolean }) {
   if (m.role === "user") {
-    const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+    const text = m.parts
+      .flatMap((p) => (p.type === "text" ? [p.text] : []))
+      .join("\n")
+      .trimEnd();
     if (text.startsWith(BRIEF_PREFIX))
       return (
         <Card width="100%" padding={3} variant="transparent">
@@ -219,17 +226,28 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
       );
     const tools = m.parts.filter((p): p is ToolPart => p.type === "tool");
     const skills = m.parts.filter((p): p is SkillPart => p.type === "skill");
+    const files = m.parts.filter((p): p is FilePart => p.type === "file");
+    // A harness that stores images natively (Claude, pi) has them next to the attachment list
+    // they came from: the attachment's thumbnail shows them once.
+    const images = files.some((f) => f.mimeType.startsWith("image/")) ? [] : m.parts.filter((p): p is ImagePart => p.type === "image");
     const chips = skills.map((p, i) => <SkillChip key={i} p={p} />);
+    const attached = files.length > 0 ? <AttachmentChips files={files} /> : undefined;
+    const visible = text.trim() || skills.length > 0 || files.length > 0 || images.length > 0;
     return (
       <>
-        {(text.trim() || skills.length > 0) && amendable && <AmendableUser m={m} text={text} chips={chips} typed={[...skills.map((s) => `/${s.name}`), text.trim()].filter(Boolean).join(" ")} />}
-        {(text.trim() || skills.length > 0) && !amendable && (
+        {visible && amendable && (
+          <AmendableUser m={m} text={text} chips={chips} attached={attached} typed={[...skills.map((s) => `/${s.name}`), text.trim()].filter(Boolean).join(" ")} />
+        )}
+        {visible && !amendable && (
           <ChatMessage sender="user">
             <ChatMessageBubble>
               <VStack gap={1.5}>
                 {chips}
                 {text.trim() && <Text style={preWrap}>{text}</Text>}
-                {m.parts.map((p, i) => (p.type === "image" ? <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} /> : null))}
+                {attached}
+                {images.map((p, i) => (
+                  <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} />
+                ))}
               </VStack>
             </ChatMessageBubble>
           </ChatMessage>

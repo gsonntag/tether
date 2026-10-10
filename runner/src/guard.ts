@@ -11,6 +11,7 @@
 
 import { homedir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
+import { attachmentsDir, isAttachmentPath } from "./attachments";
 import { config } from "./config";
 import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
 
@@ -95,6 +96,8 @@ const SENSITIVE = [
 
 const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p));
 
+const ATTACHMENTS_READ_ONLY = "Blocked: files attached to messages are read-only. Copy one into the project to change it.";
+
 /**
  * Agent configuration that runs commands of its own, outside the guard: Antigravity's hooks and
  * plugins (a project `.agents/hooks.json` can override or disable the guard hook, which is the only
@@ -160,6 +163,52 @@ function tokens(seg: string): string[] {
   return out;
 }
 
+/**
+ * Tools that read an attached PDF or archive: allowed when they read attachments (or project
+ * files) and write nowhere but stdout, the project or /tmp. Undefined: not such a call.
+ */
+function attachmentReader(head: string, args: string[], cwd: string): "allow" | Verdict | undefined {
+  // `-` (stdout) counts as an argument.
+  const pos = args.filter((a) => a === "-" || !a.startsWith("-"));
+  const paths = pos.map((a) => abs(a, cwd));
+  if (!paths.some(isAttachmentPath)) return undefined;
+  const ours = (p: string) => isAttachmentPath(p) || ((inside(p, cwd) || inside(p, "/tmp")) && !isSensitive(p));
+  const writable = (p: string) => (inside(p, cwd) || inside(p, "/tmp")) && !isSensitive(p) && !isAttachmentPath(p);
+  switch (head) {
+    case "pdftotext":
+    case "pdftohtml": {
+      // With no output file it writes next to the PDF, into the attachments folder.
+      if (pos.length < 2) return { decision: "deny", by: "rule", reason: `Blocked: ${head} would write next to the attached file. Use \`${head} <file> -\` to print it, or give an output path in the project.` };
+      return ours(paths[0]!) && (pos[1] === "-" || writable(paths[1]!)) && pos.length === 2 ? "allow" : undefined;
+    }
+    case "pdfinfo":
+    case "pdffonts":
+    case "pdfimages":
+      if (head === "pdfimages" && !(args.includes("-list") && pos.length === 1)) return undefined;
+      return paths.every(ours) ? "allow" : undefined;
+    case "zipinfo":
+    case "identify":
+      return paths.every(ours) ? "allow" : undefined;
+    case "unzip": {
+      // Listing or printing, or extracting into the project (unzip refuses `../` names).
+      const d = args.indexOf("-d");
+      const dest = d >= 0 ? args[d + 1] : undefined;
+      if (dest !== undefined && !writable(abs(dest, cwd))) return undefined;
+      return isAttachmentPath(paths[0]!) ? "allow" : undefined;
+    }
+    case "tar": {
+      const mode = args[0] ?? "";
+      // Creating or appending to an archive that is an attachment writes it.
+      if (/^-?[a-zA-Z]*[cru][a-zA-Z]*f$/.test(mode) && isAttachmentPath(paths[0]!)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      if (!/^-?[a-zA-Z]+$/.test(mode) || /[cru]/.test(mode.replace(/^-/, "")) || !/[tx]/.test(mode)) return undefined;
+      const c = args.findIndex((a) => a === "-C" || a === "--directory");
+      if (c >= 0 && !writable(abs(args[c + 1] ?? "", cwd))) return undefined;
+      return paths.filter((p) => p !== (c >= 0 ? abs(args[c + 1]!, cwd) : "")).every(ours) ? "allow" : undefined;
+    }
+  }
+  return undefined;
+}
+
 function classifyShell(cmd: string, cwd: string): Verdict | undefined {
   for (const [re, why] of HARD_DENY) if (re.test(cmd)) return { decision: "deny", by: "rule", reason: `Blocked: ${why}.` };
   if (AGENT_CONFIG_IN_COMMAND.test(cmd)) return undefined; // agent hooks/config: never routine
@@ -170,6 +219,7 @@ function classifyShell(cmd: string, cwd: string): Verdict | undefined {
     const target = m[1]!;
     if (target.startsWith("&")) continue;
     const p = abs(target, cwd);
+    if (isAttachmentPath(p)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
     if (!(inside(p, cwd) || inside(p, "/tmp") || p === "/dev/null") || isSensitive(p)) return undefined;
   }
   for (const seg of splitSegments(cmd)) {
@@ -202,17 +252,27 @@ function classifyShell(cmd: string, cwd: string): Verdict | undefined {
       return undefined;
     }
     if (head === "find" && args.some((a) => ["-delete", "-exec", "-execdir", "-ok"].includes(a))) return undefined;
-    if (head === "sed" && args.some((a) => a.startsWith("-i")) && args.some((a) => !a.startsWith("-") && isAbsolute(a) && !inside(a, cwd))) return undefined;
+    if (head === "sed" && args.some((a) => a.startsWith("-i"))) {
+      if (args.some((a) => !a.startsWith("-") && isAttachmentPath(abs(a, cwd)))) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      if (args.some((a) => !a.startsWith("-") && isAbsolute(a) && !inside(a, cwd))) return undefined;
+    }
     if (head === "rm" || head === "mv" || head === "cp" || head === "ln" || head === "touch" || head === "mkdir") {
-      const paths = args.filter((a) => !a.startsWith("-")).map((a) => abs(a, cwd));
+      let paths = args.filter((a) => !a.startsWith("-")).map((a) => abs(a, cwd));
+      // Attached files are read-only: copying one out is fine, anything that changes them isn't.
+      const changed = head === "cp" ? paths.slice(-1) : paths;
+      if (changed.some(isAttachmentPath)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      if (head === "cp") paths = [...paths.slice(0, -1).filter((p) => !isAttachmentPath(p)), ...paths.slice(-1)];
       const touchesGitDir = paths.some((p) => inside(p, resolve(cwd, ".git")));
       if (paths.some((p) => !(inside(p, cwd) || inside(p, "/tmp")) || isSensitive(p)) || touchesGitDir) return undefined;
       if (head === "rm" && paths.some((p) => p === cwd)) return undefined;
       continue;
     }
-    if (["cat", "head", "tail", "less", "grep", "rg"].includes(head) && args.some((a) => isSensitive(abs(a, cwd)))) {
+    if (["cat", "head", "tail", "less", "grep", "rg"].includes(head) && args.some((a) => isSensitive(abs(a, cwd)) && !isAttachmentPath(abs(a, cwd)))) {
       return { decision: "deny", by: "rule", reason: "Blocked: reads a credential or secrets file." };
     }
+    const reader = attachmentReader(head, args, cwd);
+    if (reader === "allow") continue;
+    if (reader) return reader;
     if (SAFE_HEADS.has(head)) continue;
     return undefined; // unknown program: judge
   }
@@ -231,6 +291,14 @@ export function isContextTool(tool: string, input: any): boolean {
   return tool === "mcp" && (input?.server === "tether-context" || /^tether[-_]context[_.]/.test(String(input?.tool ?? "")));
 }
 
+/** A write to an attached file: denied even with full access (the transcript and other sessions show those files). */
+export function attachmentWrite(call: ToolCall): Verdict | undefined {
+  const kind = kindOf(call.tool);
+  if (kind !== "edit" && kind !== "shell") return undefined;
+  const v = rules(call);
+  return v?.decision === "deny" && v.reason === ATTACHMENTS_READ_ONLY ? v : undefined;
+}
+
 export function rules(call: ToolCall): Verdict | undefined {
   if (isContextTool(call.tool, call.input)) return { decision: "allow", by: "rule", reason: "Tether memory and skills." };
   const kind = kindOf(call.tool);
@@ -240,6 +308,8 @@ export function rules(call: ToolCall): Verdict | undefined {
       return { decision: "allow", by: "rule", reason: "Planning / bookkeeping tool." };
     case "read": {
       const p = pathOf(call.input);
+      // Files attached to a message live in the runner's config folder, which is otherwise off limits.
+      if (p && isAttachmentPath(abs(p, cwd))) return { decision: "allow", by: "rule", reason: "Reads a file attached to a message." };
       if (p && isSensitive(abs(p, cwd))) return { decision: "deny", by: "rule", reason: "Blocked: reads a credential or secrets file." };
       return { decision: "allow", by: "rule", reason: "Read-only." };
     }
@@ -247,6 +317,7 @@ export function rules(call: ToolCall): Verdict | undefined {
       const p = pathOf(call.input);
       if (!p) return undefined;
       const a = abs(p, cwd);
+      if (isAttachmentPath(a)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
       if (isSensitive(a)) return { decision: "deny", by: "rule", reason: "Blocked: writes a credential or secrets file." };
       if (isAgentConfig(a)) return { decision: "deny", by: "rule", reason: "Blocked: changes an agent's hooks or plugins, which run outside the guard." };
       if (inside(a, resolve(cwd, ".git"))) return undefined; // git internals (hooks run code later)
@@ -291,7 +362,7 @@ export async function judge(call: ToolCall, goal: string): Promise<Verdict> {
   const key = JSON.stringify([call.cwd, call.tool, call.input]);
   const hit = cache.get(key);
   if (hit) return hit;
-  const prompt = `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\n\nTool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
+  const prompt = `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\nFiles the user attached to their messages: ${attachmentsDir()} (reading them serves the user's task; they are read-only)\n\nTool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
   try {
     // The shared background model (Settings → Background model), Haiku via Claude by default.
     const text = await runBackground({ system: JUDGE_SYSTEM, prompt, cwd: call.cwd, timeoutMs: 60_000 });

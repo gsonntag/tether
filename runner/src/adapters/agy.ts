@@ -12,6 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionEvent } from "../../../web/src/shared/protocol";
+import { userParts } from "../../../web/src/shared/bash";
 
 // ---------------- models and effort ----------------
 
@@ -69,6 +70,8 @@ export interface SpawnOpts {
   /** directory whose .agents/hooks.json holds the guard hook */
   hookDir?: string;
   sandbox?: boolean;
+  /** folders outside the project the agent may need to read (attachments) */
+  readDirs?: string[];
 }
 
 /**
@@ -83,6 +86,8 @@ export function spawnArgs(o: SpawnOpts): string[] {
   else if (o.effort) args.push("--effort", o.effort);
   if (o.plan) args.push("--mode", "plan");
   if (o.hookDir) args.push("--dangerously-skip-permissions", "--add-dir", o.hookDir);
+  // Attached files live outside the project; the guard denies writes there.
+  for (const d of o.readDirs ?? []) args.push("--add-dir", d);
   if (o.sandbox) args.push("--sandbox");
   return args;
 }
@@ -203,7 +208,9 @@ export function transcriptToMessages(entries: any[], model?: string): { messages
       case "USER_INPUT": {
         cur = undefined;
         const text = cleanUserText(e.content);
-        if (text && e.source !== "SYSTEM") messages.push({ id: `agy-u${step}`, role: "user", parts: [{ type: "text", text }], ts: ts(e) });
+        // Attached files become their chips; the rest stays as typed.
+        const parts: Part[] = text.includes("Attached files (") ? userParts(text, `agy-u${step}`) : [{ type: "text", text }];
+        if (text && e.source !== "SYSTEM") messages.push({ id: `agy-u${step}`, role: "user", parts, ts: ts(e) });
         break;
       }
       case "PLANNER_RESPONSE": {

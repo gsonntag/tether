@@ -19,6 +19,7 @@ import { findPlan } from "../../../web/src/shared/reducer";
 import { CONFIG_DIR, config, saveConfigSoon } from "../config";
 import { agyUsage, knownWindow } from "../contextWindow";
 import { kindOf } from "../guard";
+import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
 import { sessionContext, withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
@@ -229,7 +230,8 @@ class AgySession extends LiveSession {
   }
 
   private spawn() {
-    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX });
+    mkdirSync(attachmentsDir(), { recursive: true, mode: 0o700 });
+    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX, readDirs: [attachmentsDir()] });
     const proc = Bun.spawn([AGY_BIN, ...args], {
       cwd: this.projectPath,
       stdin: "pipe",

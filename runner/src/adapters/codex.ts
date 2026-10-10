@@ -21,6 +21,7 @@ import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";
+import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
@@ -271,7 +272,12 @@ function userText(item: any): string {
   const skills = new Set(content.filter((c) => c.type === "skill").map((c) => c.name));
   // A skill Tether passed to Codex natively reads as typed: `$name args` → `/name args`.
   const typed = (t: string) => t.replace(/^\$([\w.:-]+)/, (m, n) => (skills.has(n) ? `/${n}` : m));
-  return content.map((c) => (c.type === "text" ? typed(c.text) : c.type === "image" || c.type === "localImage" ? "[image]" : "")).filter(Boolean).join("\n");
+  // Images Tether attached are listed in the text already (they show as the attachment's chip).
+  const listed = content.some((c) => c.type === "text" && String(c.text).includes("Attached files ("));
+  return content
+    .map((c) => (c.type === "text" ? typed(c.text) : (c.type === "image" || c.type === "localImage") && !listed ? "[image]" : ""))
+    .filter(Boolean)
+    .join("\n");
 }
 
 /**
@@ -286,7 +292,12 @@ export function codexInput(text: string, skills: Map<string, string>): any[] {
     if (!items.some((i) => i.name === name)) items.push({ type: "skill", name, path });
     return `${lead}$${name}`;
   });
-  return [{ type: "text", text: out, text_elements: [] }, ...items];
+  return [{ type: "text", text: out, text_elements: [] }, ...items, ...imageItems(text)];
+}
+
+/** The images a message lists as attachments, as Codex's own image input (it reads the files). */
+export function imageItems(text: string): any[] {
+  return nativeImagePaths(text).map((a) => ({ type: "localImage", path: a.path }));
 }
 
 /** A resumed thread's turns as a transcript. */
@@ -687,7 +698,7 @@ class CodexSession extends LiveSession {
     try {
       const r: any = await this.p.call("turn/start", {
         threadId: this.nativeId,
-        input: skills ? codexInput(text, this.skillPaths) : [{ type: "text", text, text_elements: [] }],
+        input: skills ? codexInput(text, this.skillPaths) : [{ type: "text", text, text_elements: [] }, ...imageItems(text)],
         approvalsReviewer: "user",
         ...this.policy(),
         ...(this.model ? { model: this.model } : {}),

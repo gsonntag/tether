@@ -3,7 +3,8 @@
 // we render the harness-neutral transcript plus the repository state. Files are shared: the
 // new agent works in the same directory.
 
-import type { Msg } from "../../web/src/shared/protocol";
+import { withAttachments } from "../../web/src/shared/attachments";
+import type { Msg, Part } from "../../web/src/shared/protocol";
 
 const MAX_CHARS = 60_000;
 const ASSISTANT_TEXT_MAX = 4_000;
@@ -26,8 +27,15 @@ export function renderTranscript(messages: Msg[]): string {
   const blocks: string[] = [];
   for (const m of messages) {
     if (m.role === "user") {
-      const text = m.parts.map((p) => (p.type === "text" ? p.text : p.type === "image" ? "[image]" : p.type === "skill" ? `[ran the /${p.name} skill]` : "")).join("\n").trim();
-      if (text) blocks.push(`### User\n${text}`);
+      // Attached files keep their paths (the new agent can open them, and the target harness gets
+      // the images natively when it can); a stored image that came with them is the same file.
+      const files = m.parts.filter((p): p is Extract<Part, { type: "file" }> => p.type === "file");
+      const text = m.parts
+        .map((p) => (p.type === "text" ? p.text : p.type === "image" ? (files.length ? "" : "[image]") : p.type === "skill" ? `[ran the /${p.name} skill]` : ""))
+        .join("\n")
+        .trim();
+      const all = withAttachments(text, files.map(({ type: _, ...f }) => f));
+      if (all) blocks.push(`### User\n${all}`);
     } else if (m.role === "assistant") {
       const lines: string[] = [];
       for (const p of m.parts) {
