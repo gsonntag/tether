@@ -604,19 +604,6 @@ function Settings({ close }: { close: () => void }) {
                 />
               }
             />
-            {guard && (guard.antigravityHook || runner?.harnesses.includes("antigravity")) && (
-              <SettingsRow
-                title="Antigravity safety hook"
-                description="Lets Tether check Antigravity's actions. Adds a “tether-guard” entry to ~/.gemini/config/hooks.json."
-                control={
-                  guard.antigravityHook ? (
-                    <Token label="Installed" color="green" size="sm" />
-                  ) : (
-                    <Button label="Install" size="sm" clickAction={() => updateGuard({ install: true })} />
-                  )
-                }
-              />
-            )}
           </SettingsCard>
           <VStack gap={1.5}>
             <SettingsCard title="Fallback profiles">

@@ -85,3 +85,44 @@ describe("sent to the judge", () => {
   test("mcp", () => expect(rules({ tool: "mcp__github__create_issue", input: {}, cwd })).toBeUndefined());
   test("cwd outside project", () => expect(rules({ tool: "run_command", input: { CommandLine: "ls", Cwd: "/etc" }, cwd })).toBeUndefined());
 });
+
+// Antigravity runs with --dangerously-skip-permissions and only its hook gates tool calls; a
+// project .agents/hooks.json can override or disable that hook. Claude Code's settings hooks run
+// commands too. Agents must not be able to rewrite them without the judge or a person seeing it.
+describe("agent hooks and plugins", () => {
+  const agyEdit = (TargetFile: string) => rules({ tool: "write_to_file", input: { TargetFile }, cwd })?.decision ?? "judge";
+  test.each([
+    "/home/u/proj/.agents/hooks.json",
+    "/home/u/proj/sub/.agent/hooks.json",
+    "/home/u/proj/_agents/plugins.json",
+    "/home/u/proj/.agents/plugins/x/plugin.json",
+    "/home/u/proj/.agents/mcp_config.json",
+    "/tmp/x/.agents/hooks.json",
+    "/home/u/.gemini/config/hooks.json",
+    "/home/u/proj/.claude/settings.json",
+    "/home/u/proj/.claude/settings.local.json",
+  ])("edit %s is denied", (p) => {
+    expect(edit(p)).toBe("deny");
+    expect(agyEdit(p)).toBe("deny");
+  });
+  test("skills and rules stay editable", () => {
+    expect(edit("/home/u/proj/.agents/skills/x/SKILL.md")).toBe("allow");
+    expect(edit("/home/u/proj/.agents/rules/style.md")).toBe("allow");
+  });
+  test.each([
+    "echo '{}' > .agents/hooks.json",
+    "mkdir -p .agents && cp /tmp/h.json .agents/hooks.json",
+    "cp /tmp/h.json .agent/",
+    "mv /tmp/x _agents",
+    "cat > hooks.json",
+    "rm -rf .agents",
+    "touch .claude/settings.local.json",
+  ])("%s goes to the judge", (c) => {
+    expect(sh(c)).toBe("judge");
+    expect(agy(c)).toBe("judge");
+  });
+  test("ordinary commands that merely contain 'agents' stay routine", () => {
+    expect(sh("ls src/agents")).toBe("allow");
+    expect(sh("cat agents.md")).toBe("allow");
+  });
+});

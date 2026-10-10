@@ -18,8 +18,14 @@ const server = Bun.serve({
     const body: any = await req.json().catch(() => ({}));
     const s = sessions.get(String(body.key ?? ""));
     if (!s || s.closed) return Response.json({ allow: false, reason: "Tether: unknown session" });
+    const meta = body.meta && typeof body.meta === "object" ? body.meta : undefined;
+    // A lifecycle ping from a gate (the Antigravity hook before each model request), not a tool call.
+    if (body.event !== undefined) {
+      s.gateEvent(String(body.event), meta ?? {});
+      return Response.json({});
+    }
     try {
-      return Response.json(await s.checkTool(String(body.tool ?? "unknown"), body.input ?? {}, body.toolId ? String(body.toolId) : undefined));
+      return Response.json(await s.checkTool(String(body.tool ?? "unknown"), body.input ?? {}, body.toolId ? String(body.toolId) : undefined, meta));
     } catch (e: any) {
       return Response.json({ allow: false, reason: `Tether guard error: ${e?.message ?? e}` });
     }

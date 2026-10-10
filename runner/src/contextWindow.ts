@@ -165,10 +165,16 @@ export function acpUsage(u: any, model?: string): ContextUsage | undefined {
 
 // ---------- Antigravity ----------
 
-/** A step's `usage` ({input_tokens, cache_read_tokens, …}): what that model request read. */
+/**
+ * A step's `usage` ({input_tokens, cache_read_tokens, …}): what that model request read. agy's
+ * input_tokens leaves out cache reads (measured on 1.3.3: a 57.5k-token request was followed by
+ * input 2,580 + cache_read 55,459), so the two add up. A `result` event's usage is the running
+ * total of the whole process, not the context, so it isn't used here.
+ */
 export function agyUsage(u: any, model?: string): ContextUsage | undefined {
   const input = num(u?.input_tokens);
   if (input === undefined) return undefined;
-  const cacheRead = num(u.cache_read_tokens) || undefined;
+  // 0 is kept: a report leaves out what it doesn't set (mergeContext), so an earlier cache read would linger.
+  const cacheRead = num(u.cache_read_tokens);
   return { used: sum(input, cacheRead), input, cacheRead, ...(model ? { model } : {}) };
 }

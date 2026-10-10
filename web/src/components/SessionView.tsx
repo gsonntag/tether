@@ -191,7 +191,7 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   if (!levels.length) return null;
   return (
     <PickMenu
-      label={harness === "claude-code" || harness === "codex" ? "Effort" : "Thinking"}
+      label={harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "Effort" : "Thinking"}
       value={state.thinking ?? "default"}
       options={levels}
       format={effortLabel}

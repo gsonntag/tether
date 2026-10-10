@@ -632,6 +632,7 @@ export interface Ops {
   listActivity: { args: { recentMs?: number }; result: SessionActivity[] };
   guardSetup: {
     /** judgeModel is legacy: "off" turns the judge off, anything else turns it on (setJudgeEnabled) */
+    /** `install` is ignored: runners pass the Antigravity hook to each agy process themselves */
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };
     /** judgeModel: the background model when the judge is on, else "off" */
     result: { antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode };
