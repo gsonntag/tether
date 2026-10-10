@@ -23,13 +23,15 @@ import {
   BookOpenIcon,
   ChevronDoubleLeftIcon,
   Cog6ToothIcon,
+  HomeIcon,
   MagnifyingGlassIcon,
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
-import { act, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { ago } from "../util";
+import { runningCount } from "../dashboard";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
 
@@ -102,6 +104,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
           heading="Tether"
           headerEndContent={
             <HStack gap={0.5} vAlign="center">
+              <IconButton label="Home" tooltip="Home: everything running and waiting on you" variant="ghost" size="sm" icon={<Icon icon={HomeIcon} />} onClick={goHome} />
               <NoticeBell />
               {!narrow && (
                 <IconButton label="Hide sidebar" tooltip="Hide sidebar (⌘B)" variant="ghost" size="sm" icon={<Icon icon={ChevronDoubleLeftIcon} />} onClick={toggleSidebar} />
@@ -454,10 +457,10 @@ function RenameInput({ session, onDone }: { session: SessionSummary; onDone: () 
   );
 }
 
-/** The runner-wide Running page, with how much is running across every session. */
+/** Home's Running section, with its count: sessions doing something now on every runner. */
 function RunningItem() {
   const page = useStore((s) => s.page);
-  const n = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].reduce((sum, x) => sum + (x.live && !x.archived ? (x.activeCount ?? 0) : 0), 0));
+  const n = useStore((s) => runningCount(s.pulses));
   return (
     <SideNavItem
       label="Running"

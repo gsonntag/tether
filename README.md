@@ -63,8 +63,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   their model, tool calls, tokens, latest action and report), background shells and monitors
   (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
   Open it from the **2 agents · 1 shell** button under the message box (a side panel on
-  desktop, a sheet on phones). **Running** in the sidebar lists it for every live session, and
-  each session row shows how many are running. Stop works per item where the harness allows:
+  desktop, a sheet on phones). Home's **Running** section sums it up for every live session, and
+  each session row in the sidebar shows how many are running. Stop works per item where the harness allows:
 
   | Harness | Observed | Stop |
   |---|---|---|
@@ -73,6 +73,23 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   | pi | pi-subagents' foreground agents and async runs, when that package is installed | no |
   | opencode, Kiro | `task` subagents (start, end, report; no steps over ACP) | no |
   | Antigravity | nothing beyond its tool cards | no |
+- **Home.** The landing screen (and the 🏠 in the sidebar header) shows every connected runner's
+  sessions at a glance, labeled by runner when there are several:
+  - **Needs you:** permission prompts (Approve / Deny right there), questions with a few choices
+    (one tap), plans to review, and memory conflicts (Keep new / Keep old). An answer goes to
+    that exact request, once; if it was already answered elsewhere or expired, Home says so and
+    nothing happens. A call too long to show in full (over 400 characters) is approved from the
+    session instead. Credentials in commands and the last line are redacted on Home.
+  - **Running:** each live session's status, current action, how long the turn has run, its
+    subagents and shells, its context use, and a Stop button. **Running** in the sidebar jumps
+    here; its count is the same, across every runner.
+  - **Recently finished:** the last sessions whose turn ended, with the agent's last line and
+    what the session changed (**+42 −3**).
+
+  Tap a row to open the session; hold it (or use ⋯) to stop it, remove it, or open its Activity.
+  Home is live without polling: each runner pushes a small summary of a session whenever it
+  changes, at most once a second per session, and skips unchanged ones. Recently finished
+  sessions are kept in the runner's memory, so the list starts empty after a runner restart.
 - **Notifications.** The runner sends push notifications to your devices, even with Tether
   closed. Turn them on per device in Settings, choosing which kinds you want:
   - **Questions:** a permission prompt or a question from the agent.

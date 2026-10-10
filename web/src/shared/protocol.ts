@@ -419,6 +419,33 @@ export interface SessionActivity {
   items: ActivityItem[];
 }
 
+/**
+ * A session at a glance, for the Home dashboard. The runner pushes one whenever a session changes
+ * (at most about once a second per session), so every browser sees every runner's sessions live
+ * without opening them. Kept small: no transcript, tool inputs clipped.
+ */
+export interface SessionPulse {
+  session: SessionSummary;
+  model?: string;
+  /** what it's doing now: "Running bun test", "Thinking", "Waiting for approval", a wait reason */
+  action?: string;
+  /** when the current turn started (status running) */
+  turnStartedAt?: number;
+  /** activity items running now, by kind */
+  activity?: Partial<Record<ActivityKind, number>>;
+  /** armed wakeups and cron jobs */
+  armed?: number;
+  context?: { used?: number; max?: number };
+  /** permission prompts and questions waiting on you (tool inputs clipped) */
+  pendingUi?: UiRequest[];
+  /** the last line the agent wrote */
+  lastText?: string;
+  /** what the whole session changed, as of its last turn end */
+  diffStat?: DiffStat;
+  /** when its last turn ended */
+  finishedAt?: number;
+}
+
 export interface SessionSearchResult {
   session: SessionSummary;
   /** Matching text from a message you sent, or the session title. */
@@ -630,6 +657,8 @@ export interface Ops {
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */
   listActivity: { args: { recentMs?: number }; result: SessionActivity[] };
+  /** the Home dashboard: every live session, plus sessions whose turn ended recently (newest first) */
+  listPulses: { args: {}; result: SessionPulse[] };
   guardSetup: {
     /** judgeModel is legacy: "off" turns the judge off, anything else turns it on (setJudgeEnabled) */
     /** `install` is ignored: runners pass the Antigravity hook to each agy process themselves */
@@ -655,7 +684,8 @@ export interface Ops {
   pushTest: { args: { endpoint: string }; result: {} };
   listNotifications: { args: {}; result: AgentNotice[] };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
-  uiRespond: { args: { sessionId: string; response: UiResponse }; result: {} };
+  /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
+  uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };
   getUsage: { args: { force?: boolean }; result: UsageReport };
   renameSession: { args: { sessionId: string; projectPath: string; title: string }; result: {} };
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };
@@ -712,6 +742,8 @@ export type RunnerToServer =
   | { t: "event"; sessionId: string; seq: number; event: SessionEvent }
   | { t: "sessions"; projectPath?: string; session?: SessionSummary }
   | { t: "context"; event: ContextEvent }
+  /** dashboard updates, throttled per session */
+  | { t: "pulse"; pulses: SessionPulse[] }
   | { t: "pong" };
 
 /** server -> runner */
@@ -728,4 +760,5 @@ export type ServerToBrowser =
   | { t: "event"; runnerId: string; sessionId: string; seq: number; event: SessionEvent }
   | { t: "sessions"; runnerId: string; projectPath?: string; session?: SessionSummary }
   | { t: "context"; runnerId: string; event: ContextEvent }
+  | { t: "pulse"; runnerId: string; pulses: SessionPulse[] }
   | { t: "pong" };

@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
-import { Button } from "@astryxdesign/core/Button";
-import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { VStack } from "@astryxdesign/core/Layout";
@@ -11,7 +9,7 @@ import { Bars3Icon } from "@heroicons/react/24/outline";
 import { Dialogs } from "./components/Dialogs";
 import { MemoryPage } from "./components/MemoryPage";
 import { SessionView } from "./components/SessionView";
-import { RunningPage } from "./components/RunningPage";
+import { Dashboard } from "./components/Dashboard";
 import { Sidebar } from "./components/Sidebar";
 import { listenForOpen, pushOnHere, pushSupported } from "./push";
 import { NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
@@ -121,12 +119,10 @@ function Shell() {
         )}
         {page === "memory" ? (
           <MemoryPage narrow={narrow} />
-        ) : page === "running" ? (
-          <RunningPage />
-        ) : selected ? (
+        ) : selected && page !== "running" ? (
           <SessionView key={selected} sessionId={selected} />
         ) : (
-          <Home />
+          <Dashboard focus={page === "running" ? "running" : undefined} />
         )}
       </VStack>
       <Dialogs />
@@ -147,16 +143,4 @@ function ToastBridge() {
     }
   }, [toasts, show]);
   return null;
-}
-
-function Home() {
-  return (
-    <VStack height="100%" vAlign="center" hAlign="center" padding={6}>
-      <EmptyState
-        title="Pick a session or start a new one"
-        description="Agents keep running on your runner when you close this page."
-        actions={<Button label="New session" variant="primary" onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })} />}
-      />
-    </VStack>
-  );
 }

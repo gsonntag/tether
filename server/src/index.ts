@@ -21,9 +21,10 @@ let rpcSeq = 0;
 
 const RPC_TIMEOUT_MS = 120_000;
 
+/** Every session's events and pulses: owners only (the upgrade already refuses anyone else; this is the backstop). */
 function toBrowsers(m: ServerToBrowser) {
   const s = JSON.stringify(m);
-  for (const b of browsers) b.send(s);
+  for (const b of browsers) if (isOwner(b.data.viewer)) b.send(s);
 }
 
 function runnerList(): RunnerInfo[] {
@@ -59,6 +60,9 @@ function onRunnerMessage(ws: ServerWebSocket<Conn>, m: RunnerToServer) {
       break;
     case "context":
       if (conn.runnerId) toBrowsers({ t: "context", runnerId: conn.runnerId, event: m.event });
+      break;
+    case "pulse":
+      if (conn.runnerId) toBrowsers({ t: "pulse", runnerId: conn.runnerId, pulses: m.pulses });
       break;
   }
 }
