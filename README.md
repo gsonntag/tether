@@ -55,14 +55,34 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   The UI follows the link automatically.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.
-  - A watchdog warns when a running session has been silent for 15 minutes.
-  - Idle agent processes close after 30 minutes and reopen from disk on demand.
+  - A watchdog warns when a running session has been silent for 15 minutes with nothing
+    running: a shell command, tool call or subagent that's still going isn't a stall.
+  - Idle agent processes close after 30 minutes and reopen from disk on demand, unless they
+    still have subagents, shells or scheduled wakeups going.
+- **Activity.** Everything a session has going on besides the transcript: subagents (with
+  their model, tool calls, tokens, latest action and report), background shells and monitors
+  (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
+  Open it from the **2 agents · 1 shell** button under the message box (a side panel on
+  desktop, a sheet on phones). **Running** in the sidebar lists it for every live session, and
+  each session row shows how many are running. Stop works per item where the harness allows:
+
+  | Harness | Observed | Stop |
+  |---|---|---|
+  | Claude Code | subagents (and their internals), background shells, Monitor, workflows, MCP tasks, cron jobs, wakeups, long tool calls | every task (`stopTask`) |
+  | Codex | subagent threads (steps, tokens, report), background terminals, sleeps | subagents (`turn/interrupt` on their thread) |
+  | pi | pi-subagents' foreground agents and async runs, when that package is installed | no |
+  | opencode, Kiro | `task` subagents (start, end, report; no steps over ACP) | no |
+  | Antigravity | nothing beyond its tool cards | no |
 - **Notifications.** The runner sends push notifications to your devices, even with Tether
   closed. Turn them on per device in Settings, choosing which kinds you want:
   - **Questions:** a permission prompt or a question from the agent.
-  - **Finished:** a turn ended (not when you pressed Stop).
-  - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes, or it
-    failed. (A call the guard denies isn't a notification; the verdict shows on its tool card.)
+  - **Finished:** the agent is truly done: a turn ended and none of its subagents, shells,
+    monitors or workflows are still running (armed wakeups and cron jobs don't count). If they
+    are, it comes once the last one ends and the agent has nothing more to say about it. Not
+    when you pressed Stop or the turn failed.
+  - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes with
+    nothing running, or it failed. (A call the guard denies isn't a notification; the verdict
+    shows on its tool card.)
 
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone
