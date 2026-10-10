@@ -524,7 +524,7 @@ function Settings({ close }: { close: () => void }) {
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [saved, setSaved] = useState<ModelProfile[]>([]);
-  const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; defaultMode: GuardMode }>();
+  const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
   useEffect(() => {
     rpc("getProfiles", {})
       .then((p) => {
@@ -586,7 +586,7 @@ function Settings({ close }: { close: () => void }) {
             <SettingsRow
               title="Auto mode reviewer"
               description={
-                guard?.judgeModel === "off"
+                guard && !guard.judgeEnabled
                   ? "Off: in Auto mode, actions the built-in safety rules don't cover are blocked."
                   : "In Auto mode, the background model decides on actions the built-in safety rules don't cover."
               }
@@ -595,11 +595,11 @@ function Settings({ close }: { close: () => void }) {
                   label="Auto mode reviewer"
                   isLabelHidden
                   isDisabled={!guard}
-                  value={!!guard && guard.judgeModel !== "off"}
+                  value={!!guard?.judgeEnabled}
                   onChange={async (on) => {
-                    // Back on: the reviewer follows the background model again.
-                    const model = on ? (await rpc("getBackgroundModel", {}).catch(() => undefined))?.model : "off";
-                    if (model) updateGuard({ judgeModel: model });
+                    // The reviewer always runs on the background model; this only turns it on or off.
+                    const r = await act("setJudgeEnabled", { enabled: on });
+                    if (r && guard) setGuardInfo({ ...guard, judgeEnabled: r.judge, judgeModel: r.judge ? r.model : "off" });
                   }}
                 />
               }

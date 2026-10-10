@@ -12,6 +12,7 @@ import type {
   ContextActivity,
   ContextEvent,
   ContextImportPreview,
+  ContextProgress,
   ContextSkill,
   ContextStatus,
   ConflictStatus,
@@ -21,15 +22,16 @@ import type {
   MemoryType,
 } from "../../../web/src/shared/protocol";
 import { parseEntry } from "../../../web/src/shared/protocol";
-import { config, saveConfig } from "../config";
-import { BACKGROUND_HARNESSES, backgroundModel } from "./background";
-import { exportAll, isOwnWrite } from "./export";
+import { config, normalizeModelEntry, saveConfig } from "../config";
+import { BACKGROUND_HARNESSES, backgroundModel, judgeEnabled, setJudgeEnabled } from "./background";
+import { exportAll, isOwnWrite, unexportAll } from "./export";
+import { Mutex } from "./git";
 import { asType, slugify, type Memory } from "./format";
 import { setInjectionEnabled } from "./inject";
 import { Merger, modelDecider, type Decider } from "./merge";
 import { contextDir, tilde } from "./paths";
 import { repoKey } from "./repokey";
-import { applySkillPlan, disabledSet, listSkills, planSkills, readMeta, unlinkSkill, writeMeta } from "./skills";
+import { applySkillPlan, disabledSet, listSkills, planSkills, readMeta, unlinkAll, unlinkSkill, writeMeta } from "./skills";
 import { scanSources, watchTargets } from "./sources";
 import { Store } from "./store";
 import { Watcher } from "./watch";
@@ -51,8 +53,13 @@ export class ContextService {
   private watcher?: Watcher;
   private busy = false;
   private again = false;
+  private importing = false;
   private exportTimer?: ReturnType<typeof setTimeout>;
   private emit: (e: ContextEvent) => void;
+  /** Everything that writes into harness dirs (skills, exports, disable) runs one at a time. */
+  private harnessLock = new Mutex();
+  private progress?: ContextProgress;
+  private progressAt = 0;
 
   constructor(private opts: ContextOptions = {}) {
     this.store = new Store(contextDir());
@@ -97,8 +104,20 @@ export class ContextService {
       memories: this.store.exists() ? this.store.list().length : 0,
       skills: this.store.exists() ? listSkills(this.store.skillsDir, this.meta()).length : 0,
       openConflicts: this.store.conflicts().filter((c) => c.status === "open").length,
-      busy: this.busy,
+      busy: this.busy || this.importing,
+      progress: this.progress,
     };
+  }
+
+  /** Progress for the wizard: phase changes and the last item are sent at once, the rest throttled. */
+  private setProgress(p: ContextProgress | undefined) {
+    const phaseChanged = p?.phase !== this.progress?.phase;
+    this.progress = p;
+    const now = Date.now();
+    if (!p || phaseChanged || p.done >= p.total || now - this.progressAt > 250) {
+      this.progressAt = now;
+      this.emit({ type: "status", status: this.status() });
+    }
   }
 
   private meta() {
@@ -115,8 +134,10 @@ export class ContextService {
   /** The first-run wizard's dry run: reads everything, writes nothing. */
   async preview(): Promise<ContextImportPreview> {
     const scan = await scanSources(this.store.exists() ? this.store : undefined, { changedOnly: true });
-    const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(this.meta()));
+    const meta = this.meta();
+    const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta), meta);
     const exp = await exportAll(this.store, { dryRun: true });
+    scan.warnings.push(...(plan.warnings ?? []));
     return {
       memories: scan.entries.map((e) => ({ harness: e.harness, path: tilde(e.path), title: e.title, scope: e.scope ?? "decided on import" })),
       skills: plan.skills.map((s) => ({ name: s.name, from: s.from ? tilde(s.from.path) : "library", drift: s.drift, exposedAs: s.exposedAs })),
@@ -130,22 +151,36 @@ export class ContextService {
 
   /** The "Import" button. Returns at once; progress arrives as activity and status events. */
   async runImport(): Promise<ContextStatus> {
+    if (this.importing) return this.status(); // a second click while the first import runs
     await this.store.init();
     const cfg = config();
     cfg.context = { ...cfg.context, enabled: true, importedAt: Date.now() };
     saveConfig();
     setInjectionEnabled(true);
+    this.importing = true;
     this.act({ kind: "import", text: "Import started" });
     void (async () => {
-      await this.syncSkills();
-      await this.sync();
-      this.watch();
+      try {
+        await this.syncSkills();
+        await this.sync({ forceExport: true });
+        if (this.enabled) this.watch();
+        this.act({ kind: "import", text: "Import finished" });
+      } finally {
+        this.importing = false;
+        this.setProgress(undefined);
+      }
     })().catch((e) => this.act({ kind: "error", text: `Import failed: ${e?.message ?? e}` }));
-    return { ...this.status(), busy: true };
+    return this.status();
+  }
+
+  /** Resolves when the import started by runImport() (if any) and any sync pass are done. */
+  async idle(): Promise<void> {
+    while (this.importing || this.busy) await Bun.sleep(50);
+    await this.harnessLock.run(async () => {});
   }
 
   /** One pass: changed sources → merge → export. Overlapping calls fold into one more pass. */
-  async sync(): Promise<void> {
+  async sync(opts: { forceExport?: boolean } = {}): Promise<void> {
     if (!this.enabled) return;
     if (this.busy) {
       this.again = true;
@@ -154,44 +189,91 @@ export class ContextService {
     this.busy = true;
     this.emit({ type: "status", status: this.status() });
     try {
+      let force = !!opts.forceExport;
       do {
         this.again = false;
+        this.setProgress({ phase: "scan", done: 0, total: 0 });
         const { entries, warnings } = await scanSources(this.store, { changedOnly: true });
         for (const w of warnings) console.error(`context: ${w}`);
         for (const e of entries) if (!e.sessionId && e.sessionKey) e.sessionId = this.opts.sessionForKey?.(e.sessionKey);
-        const out = await this.merger.mergeAll(entries);
+        const out = await this.merger.mergeAll(entries, (done, total) => this.setProgress({ phase: "merge", done, total }));
         const changed = out.some((o) => o.commit);
-        if (changed || entries.some((e) => e.consume)) await this.exportNow();
+        if (!this.enabled) break; // turned off mid-pass: export nothing
+        if (force || changed || entries.some((e) => e.consume)) await this.exportNow();
+        force = false;
         this.watcher?.add(watchTargets());
       } while (this.again);
     } finally {
       this.busy = false;
+      if (!this.importing) this.progress = undefined;
       this.emit({ type: "status", status: this.status() });
     }
   }
 
   /** Imports skills found in harness dirs (backing up what they replace) and installs symlinks. */
   async syncSkills(): Promise<void> {
+    await this.harnessLock.run(() => this.syncSkillsLocked());
+  }
+
+  private async syncSkillsLocked(): Promise<void> {
+    if (!this.enabled) return;
     const meta = this.meta();
-    const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta));
+    const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta), meta);
+    for (const w of plan.warnings ?? []) console.error(`context: skill ${w}`);
     if (!plan.backups.length && !plan.symlinks.length && !plan.skills.some((s) => s.from)) return;
-    const { changed, log } = applySkillPlan(this.store.skillsDir, plan, meta);
+    this.setProgress({ phase: "skills", done: 0, total: plan.skills.length });
+    const { changed, log, errors } = applySkillPlan(this.store.skillsDir, plan, meta);
     writeMeta(join(this.store.dir, "skills.json"), meta);
     const commit = await this.store.commitPaths([...changed, join(this.store.dir, "skills.json")], `skills: import ${changed.length} skill(s)`);
+    this.setProgress({ phase: "skills", done: plan.skills.length, total: plan.skills.length });
     for (const l of log.slice(0, 200)) this.act({ kind: "skill", text: l, commit });
+    for (const e of errors.slice(0, 50)) this.act({ kind: "error", text: `Skill not synced (left as it was): ${e}` });
     for (const s of plan.skills) if (s.drift.length) this.act({ kind: "drift", text: `Skill ${s.name}: kept the newest copy; ${s.drift.join(", ")} differed (originals are in the backup)` });
   }
 
   private async exportNow() {
-    await this.syncSkills();
-    const r = await exportAll(this.store);
-    for (const w of r.warnings) console.error(`context: ${w}`);
-    if (r.written.length) this.act({ kind: "export", text: `Updated ${r.written.map(tilde).join(", ")}` });
+    await this.harnessLock.run(async () => {
+      if (!this.enabled) return;
+      await this.syncSkillsLocked();
+      this.setProgress({ phase: "export", done: 0, total: 1 });
+      const r = await exportAll(this.store);
+      this.setProgress({ phase: "export", done: 1, total: 1 });
+      for (const w of r.warnings) console.error(`context: ${w}`);
+      if (r.written.length) this.act({ kind: "export", text: `Updated ${r.written.map(tilde).join(", ")}` });
+    });
   }
 
   private exportSoon() {
     clearTimeout(this.exportTimer);
     this.exportTimer = setTimeout(() => this.exportNow().catch((e) => this.act({ kind: "error", text: `Export failed: ${e?.message ?? e}` })), 2_000);
+  }
+
+  /**
+   * Turns the feature off and undoes every export: managed blocks, MCP registrations, Tether's
+   * own files and index lines, skill symlinks (a link that replaced the user's copy becomes a real
+   * copy of the current version). The store, its history and the backups are kept.
+   */
+  async disable(): Promise<ContextStatus> {
+    const cfg = config();
+    cfg.context = { ...cfg.context, enabled: false };
+    saveConfig();
+    setInjectionEnabled(false);
+    this.stop();
+    await this.harnessLock.run(async () => {
+      this.setProgress({ phase: "disable", done: 0, total: 2 });
+      const r = await unexportAll(this.store);
+      this.setProgress({ phase: "disable", done: 1, total: 2 });
+      const meta = this.meta();
+      const s = unlinkAll(this.store.skillsDir, meta);
+      if (this.store.exists()) writeMeta(join(this.store.dir, "skills.json"), meta);
+      for (const w of [...r.warnings, ...s.errors]) this.act({ kind: "error", text: `Turning off: ${w}` });
+      this.act({
+        kind: "export",
+        text: `Master context turned off: cleaned ${r.changed.length} file(s), removed ${s.removed.length} skill link(s), put back ${s.restored.length} skill copies`,
+      });
+      this.setProgress(undefined);
+    });
+    return this.status();
   }
 
   // ---------------- memory ops ----------------
@@ -287,31 +369,38 @@ export class ContextService {
 
   async setSkillEnabled(name: string, enabled: boolean): Promise<ContextSkill[]> {
     this.requireEnabled();
-    const meta = this.meta();
-    if (!meta[name] && !this.listSkills().some((s) => s.name === name && !s.repo)) throw new Error("No such skill");
-    meta[name] = { ...meta[name], sources: meta[name]?.sources ?? [], disabled: !enabled };
-    writeMeta(join(this.store.dir, "skills.json"), meta);
-    if (!enabled) unlinkSkill(this.store.skillsDir, name);
-    await this.store.commitPaths([join(this.store.dir, "skills.json")], `skills: ${enabled ? "enable" : "disable"} ${name}`);
-    if (enabled) await this.syncSkills();
+    await this.harnessLock.run(async () => {
+      const meta = this.meta();
+      if (!meta[name] && !this.listSkills().some((s) => s.name === name && !s.repo)) throw new Error("No such skill");
+      meta[name] = { ...meta[name], sources: meta[name]?.sources ?? [], disabled: !enabled };
+      writeMeta(join(this.store.dir, "skills.json"), meta);
+      // Disabling only removes our links (their places stay recorded, so enabling puts them back).
+      if (!enabled) unlinkSkill(this.store.skillsDir, name);
+      await this.store.commitPaths([join(this.store.dir, "skills.json")], `skills: ${enabled ? "enable" : "disable"} ${name}`);
+      if (enabled) await this.syncSkillsLocked();
+    });
     return this.listSkills();
   }
 
   // ---------------- background model ----------------
 
   backgroundModel(): BackgroundModelSetting {
-    return { model: backgroundModel(), harnesses: BACKGROUND_HARNESSES };
+    return { model: backgroundModel(), judge: judgeEnabled(), harnesses: BACKGROUND_HARNESSES };
   }
 
+  /** Sets the shared model only; whether the judge runs is setJudgeEnabled's business. */
   setBackgroundModel(model: string): BackgroundModelSetting {
-    const e = parseEntry(model.trim(), "claude-code");
+    const norm = normalizeModelEntry(model);
+    if (!norm) throw new Error("Pick a model");
+    const e = parseEntry(norm, "claude-code");
     if (!BACKGROUND_HARNESSES.includes(e.harness)) throw new Error(`${e.harness} can't run background work`);
-    if (!e.model) throw new Error("Pick a model");
-    const cfg = config();
-    cfg.backgroundModel = `${e.harness}:${e.model}`;
-    // Keep the guard's older setting in step (Settings → Guard shows it).
-    if (e.harness === "claude-code" && cfg.guard?.judgeModel !== "off") cfg.guard = { ...cfg.guard, judgeModel: e.model };
+    config().backgroundModel = norm;
     saveConfig();
+    return this.backgroundModel();
+  }
+
+  setJudgeEnabled(on: boolean): BackgroundModelSetting {
+    setJudgeEnabled(on);
     return this.backgroundModel();
   }
 

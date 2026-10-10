@@ -4,7 +4,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import type {
   HarnessId,
@@ -31,6 +31,7 @@ import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, 
 import type { ChainEntry } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
+import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 
 const VERSION = "0.1.0";
@@ -240,7 +241,7 @@ async function allProjects(): Promise<ProjectInfo[]> {
 }
 
 function expand(path: string) {
-  return resolve(path.replace(/^~(?=$|\/)/, homedir()));
+  return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
 }
 
 async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
@@ -526,13 +527,15 @@ const ops: Handlers = {
   async guardSetup({ install, judgeModel, defaultMode }) {
     const cfg = config();
     if (install) installAgyHook();
-    if (judgeModel || defaultMode) {
-      cfg.guard = { ...cfg.guard, ...(judgeModel ? { judgeModel } : {}), ...(defaultMode ? { defaultMode } : {}) };
-      // The judge runs on the shared background model; a Claude judge model sets it.
-      if (judgeModel && judgeModel !== "off") cfg.backgroundModel = judgeModel.includes(":") ? judgeModel : `claude-code:${judgeModel}`;
+    if (defaultMode) {
+      cfg.guard = { ...cfg.guard, defaultMode };
       saveConfig();
     }
-    return { antigravityHook: agyHookInstalled(), judgeModel: cfg.guard?.judgeModel ?? "haiku", defaultMode: cfg.guard?.defaultMode ?? "auto" };
+    // Legacy clients: "off" turns the judge off, any model turns it on. The model itself is the
+    // shared background model (setBackgroundModel); it is not changed here.
+    if (judgeModel) context.setJudgeEnabled(judgeModel !== "off");
+    const bg = context.backgroundModel();
+    return { antigravityHook: agyHookInstalled(), judgeModel: bg.judge ? bg.model : "off", judgeEnabled: bg.judge, defaultMode: cfg.guard?.defaultMode ?? "auto" };
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
@@ -642,6 +645,12 @@ const ops: Handlers = {
   },
   async setBackgroundModel({ model }) {
     return context.setBackgroundModel(model);
+  },
+  async setJudgeEnabled({ enabled }) {
+    return context.setJudgeEnabled(enabled);
+  },
+  async contextDisable() {
+    return context.disable();
   },
 };
 

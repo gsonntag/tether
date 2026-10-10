@@ -2,11 +2,11 @@
 
 import "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextEvent } from "../../../web/src/shared/protocol";
-import { CONFIG_DIR, config } from "../config";
+import { CONFIG_DIR, config, migrateJudge, normalizeModelEntry } from "../config";
 import { isContextTool, rules } from "../guard";
 import { put, seedHome } from "./fixtures";
 import { ContextService } from "./index";
@@ -113,14 +113,49 @@ describe("context service", () => {
     s.stop();
   });
 
-  test("background model setting is shared with the guard's judge", () => {
+  test("background model: one normalized 'harness:model'; the judge is a separate on/off", () => {
+    config().guard = undefined;
     const s = service();
-    expect(s.backgroundModel().model).toBe("claude-code:haiku");
+    expect(s.backgroundModel()).toMatchObject({ model: "claude-code:haiku", judge: true });
     s.setBackgroundModel("codex:gpt-5-mini");
     expect(s.backgroundModel().model).toBe("codex:gpt-5-mini");
-    s.setBackgroundModel("claude-code:sonnet");
-    expect(config().guard?.judgeModel).toBe("sonnet");
+    s.setBackgroundModel("sonnet"); // bare: a Claude model
+    expect(config().backgroundModel).toBe("claude-code:sonnet");
+    expect(config().guard?.judgeModel).toBeUndefined(); // no second copy of the model any more
     expect(() => s.setBackgroundModel("kiro:x")).toThrow();
+    expect(() => s.setBackgroundModel("off")).toThrow();
+    s.setJudgeEnabled(false);
+    expect(s.backgroundModel()).toMatchObject({ model: "claude-code:sonnet", judge: false });
+    expect(config().guard).toMatchObject({ judge: false, judgeModel: "off" }); // older runners see "off"
+    s.setJudgeEnabled(true);
+    expect(s.backgroundModel().judge).toBe(true);
+    expect(config().guard?.judgeModel).toBeUndefined();
+  });
+
+  test("old judge settings migrate; doubled prefixes are repaired", () => {
+    expect(normalizeModelEntry("haiku")).toBe("claude-code:haiku");
+    expect(normalizeModelEntry("claude-code:codex:gpt-5-mini")).toBe("codex:gpt-5-mini");
+    expect(normalizeModelEntry("claude-code:claude-code:opus")).toBe("claude-code:opus");
+    expect(normalizeModelEntry("pi:openai-codex/gpt-6-luna")).toBe("pi:openai-codex/gpt-6-luna");
+    expect(normalizeModelEntry("off")).toBeUndefined();
+    const cases: [any, any, string | undefined, boolean][] = [
+      // guard, backgroundModel → expected backgroundModel, judge on
+      [{ judgeModel: "sonnet" }, undefined, "claude-code:sonnet", true],
+      [{ judgeModel: "codex:gpt-5-mini" }, undefined, "codex:gpt-5-mini", true],
+      [{ judgeModel: "haiku" }, "pi:x/y", "pi:x/y", true], // an explicit background model wins
+      [{ judgeModel: "off" }, "claude-code:codex:gpt-5-mini", "codex:gpt-5-mini", false],
+      [undefined, "claude-code:codex:m", "codex:m", true],
+    ];
+    for (const [guard, bg, want, judge] of cases) {
+      const cfg: any = { guard: guard && { ...guard }, backgroundModel: bg };
+      migrateJudge(cfg);
+      expect(cfg.backgroundModel).toBe(want);
+      expect(cfg.guard?.judge !== false).toBe(judge);
+      expect(cfg.guard?.judgeModel === undefined || cfg.guard.judgeModel === "off").toBe(true);
+      const again = JSON.stringify(cfg);
+      expect(migrateJudge(cfg)).toBe(false); // idempotent
+      expect(JSON.stringify(cfg)).toBe(again);
+    }
   });
 });
 
@@ -175,5 +210,108 @@ describe("MCP server", () => {
     const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.id)).toEqual([1, 2]);
     expect(lines[1].result.tools.length).toBe(5);
+  });
+});
+
+/** Everything under HOME except the store/config: path → content, link target or "dir". */
+function snapshot(root = process.env.HOME!): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (d: string) => {
+    for (const n of readdirSync(d).sort()) {
+      const p = join(d, n);
+      if (p === join(root, ".config", "tether")) continue;
+      const st = lstatSync(p);
+      const rel = p.slice(root.length);
+      if (st.isSymbolicLink()) out[rel] = `link:${readlinkSync(p)}`;
+      else if (st.isDirectory()) {
+        out[rel] = "dir";
+        walk(p);
+      } else out[rel] = readFileSync(p, "utf8");
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function seedSkillsAndConfigs() {
+  const skill = (dir: string, name: string, body: string) => put(join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n${body}\n`);
+  skill(harness.claudeSkills(), "grill", "claude copy");
+  skill(harness.codexSkills(), "grill", "claude copy");
+  skill(harness.codexSkills(), "codex-only", "only in codex");
+  put(join(harness.claudeSkills(), "synced", "abc", "SKILL.md"), "claude.ai owned");
+  skill(join(harness.codexSkills(), ".system"), "skill-creator", "builtin");
+  put(harness.codexConfig(), 'model = "gpt"\n\n[profiles.x]\nmodel = "y"\n');
+  put(harness.agyMcp(), ""); // exists, empty (as on the real machine)
+  put(harness.piAgentsMd(), "# pi rules\n\nbe brief"); // no final newline
+}
+
+describe("progress and turning off", () => {
+  test("import reports progress: phases with done/total, merge counts every entry", async () => {
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const progress = events.flatMap((e) => (e.type === "status" && e.status.progress ? [e.status.progress] : []));
+    const merge = progress.filter((p) => p.phase === "merge");
+    expect(merge.length).toBeGreaterThan(0);
+    expect(merge[merge.length - 1]!.done).toBe(merge[merge.length - 1]!.total);
+    expect(merge[merge.length - 1]!.total).toBeGreaterThan(1);
+    expect(progress.some((p) => p.phase === "export")).toBe(true);
+    expect(s.status().progress).toBeUndefined(); // cleared when done
+    expect(s.status().busy).toBe(false);
+    s.stop();
+  });
+
+  test("a second Import click while one runs doesn't start another", async () => {
+    const s = service();
+    await s.runImport();
+    await s.runImport();
+    await s.idle();
+    expect(s.activity().filter((a) => a.text === "Import started").length).toBe(1);
+    s.stop();
+  });
+
+  test("turning the feature off restores every harness file and skill dir", async () => {
+    seedSkillsAndConfigs();
+    const before = snapshot();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    // Imported and exported: links in place, blocks written.
+    expect(lstatSync(join(harness.claudeSkills(), "grill")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(harness.codexSkills(), "codex-only")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(harness.piAgentsMd(), "utf8")).toContain("tether:begin");
+    expect(readFileSync(harness.codexConfig(), "utf8")).toContain("tether-context");
+    // Idempotent: another pass changes nothing in the home.
+    const mid = snapshot();
+    await s.sync({ forceExport: true });
+    expect(snapshot()).toEqual(mid);
+
+    await s.disable();
+    expect(s.status().enabled).toBe(false);
+    const after = snapshot();
+    // Every file the user had is back byte for byte; replaced skills are real copies again.
+    for (const [p, v] of Object.entries(before)) expect([p, after[p]]).toEqual([p, v]);
+    // Nothing left behind but empty dirs Tether made for install links.
+    const extra = Object.keys(after).filter((p) => !(p in before));
+    expect(extra.filter((p) => after[p] !== "dir")).toEqual([]);
+    // The store and the backups survive.
+    expect(existsSync(join(s.store.dir, "backup"))).toBe(true);
+    expect(s.listSkills().map((x) => x.name)).toContain("grill");
+    s.stop();
+  });
+
+  test("disabling then enabling a skill puts back links in dirs that only had a copy (codex)", async () => {
+    seedSkillsAndConfigs();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const codexLink = join(harness.codexSkills(), "codex-only");
+    expect(lstatSync(codexLink).isSymbolicLink()).toBe(true);
+    await s.setSkillEnabled("codex-only", false);
+    expect(existsSync(codexLink)).toBe(false);
+    await s.setSkillEnabled("codex-only", true);
+    expect(lstatSync(codexLink).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(codexLink, "SKILL.md"), "utf8")).toContain("only in codex");
+    s.stop();
   });
 });

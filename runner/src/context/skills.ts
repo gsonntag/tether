@@ -4,6 +4,14 @@
 // one and record the drift. Harness-owned dirs (~/.claude/skills/synced, ~/.codex/skills/.system,
 // dot dirs) are never touched, and a registry skill named like a Codex builtin is exposed as
 // `<name>-tether`.
+//
+// Data safety:
+//  - Each skill is applied on its own: registry copy (via a temp dir), then for each harness copy
+//    move-to-backup immediately followed by the symlink. A failure rolls that copy back and leaves
+//    the other skills alone.
+//  - Only symlinks that resolve into the registry are ever removed or replaced.
+//  - Every link location is recorded in skills.json, so a crash, a disable/enable or a lost link is
+//    repaired on the next pass, and the whole thing can be undone (unlinkAll).
 
 import { createHash } from "node:crypto";
 import {
@@ -21,10 +29,10 @@ import {
   symlinkSync,
   unlinkSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import type { ContextSkill } from "../../../web/src/shared/protocol";
 import { splitFrontMatter } from "./format";
-import { harness, tilde } from "./paths";
+import { harness, tilde, untilde } from "./paths";
 import { writeAtomic } from "./store";
 
 export interface SkillDir {
@@ -66,13 +74,35 @@ export interface SkillCopy {
   hash: string;
 }
 
-function walkFiles(dir: string, base = dir, out: string[] = []): string[] {
-  for (const n of readdirSync(dir).sort()) {
+const MAX_FILES = 5000;
+
+/**
+ * Files under a skill dir, for hashing. Symlinks are never followed into directories (a link to
+ * `.` or a parent would loop); a linked file counts by its content, a linked dir by its target.
+ */
+function walk(dir: string, base = dir, out: { rel: string; link?: string }[] = [], depth = 0) {
+  if (depth > 20 || out.length > MAX_FILES) return out;
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return out;
+  }
+  for (const n of names) {
     if (n === ".git" || n === "node_modules") continue;
     const p = join(dir, n);
-    const st = statSync(p, { throwIfNoEntry: false });
-    if (st?.isDirectory()) walkFiles(p, base, out);
-    else if (st?.isFile()) out.push(relative(base, p));
+    let st;
+    try {
+      st = lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) {
+      const t = statSync(p, { throwIfNoEntry: false });
+      if (t?.isFile()) out.push({ rel: relative(base, p) });
+      else out.push({ rel: relative(base, p), link: readlinkSync(p) });
+    } else if (st.isDirectory()) walk(p, base, out, depth + 1);
+    else if (st.isFile()) out.push({ rel: relative(base, p) });
   }
   return out;
 }
@@ -80,18 +110,32 @@ function walkFiles(dir: string, base = dir, out: string[] = []): string[] {
 export function dirStamp(dir: string): { hash: string; mtime: number } {
   const h = createHash("sha256");
   let mtime = 0;
-  for (const f of walkFiles(dir)) {
-    const p = join(dir, f);
-    h.update(f + "\0");
-    h.update(readFileSync(p));
-    mtime = Math.max(mtime, statSync(p).mtimeMs);
+  for (const f of walk(dir)) {
+    const p = join(dir, f.rel);
+    h.update(f.rel + "\0");
+    if (f.link !== undefined) {
+      h.update("link:" + f.link);
+      continue;
+    }
+    try {
+      h.update(readFileSync(p));
+      mtime = Math.max(mtime, statSync(p).mtimeMs);
+    } catch {}
   }
   return { hash: h.digest("hex").slice(0, 16), mtime };
 }
 
 const isSkill = (p: string) => existsSync(join(p, "SKILL.md"));
 
-/** Whether `p` is a symlink into the registry (one of ours). */
+const isLink = (p: string) => {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
+
+/** Whether `p` is a symlink into the registry (one of ours), dangling or not. */
 export function isOurLink(p: string, registry: string): boolean {
   try {
     if (!lstatSync(p).isSymbolicLink()) return false;
@@ -103,8 +147,9 @@ export function isOurLink(p: string, registry: string): boolean {
 }
 
 /** Skills currently in harness dirs (not counting our own symlinks). */
-export function findCopies(registry: string): Map<string, SkillCopy[]> {
+export function findCopies(registry: string, warnings: string[] = []): Map<string, SkillCopy[]> {
   const out = new Map<string, SkillCopy[]>();
+  const seen = new Set<string>(); // the same entry reached through two harness dirs (a linked dir)
   for (const sd of skillDirs()) {
     let names: string[] = [];
     try {
@@ -116,18 +161,22 @@ export function findCopies(registry: string): Map<string, SkillCopy[]> {
       if (n.startsWith(".") || sd.skip.includes(n)) continue;
       const p = join(sd.dir, n);
       if (isOurLink(p, registry)) continue;
-      let real: string;
       try {
-        real = realpathSync(p);
-      } catch {
-        continue; // dangling link
+        const real = realpathSync(p); // throws for dangling links: left alone
+        if (!statSync(real).isDirectory() || !isSkill(real)) continue;
+        const entryKey = join(realpathSync(sd.dir), n);
+        if (seen.has(entryKey)) continue;
+        seen.add(entryKey);
+        // The registry itself (someone linked a harness dir to it) is not a copy.
+        if (real === registry || real.startsWith(registry + "/")) continue;
+        const name = n.replace(/-tether$/, "");
+        const { hash, mtime } = dirStamp(real);
+        const list = out.get(name) ?? [];
+        list.push({ harness: sd.harness, path: p, real, mtime, hash });
+        out.set(name, list);
+      } catch (e: any) {
+        warnings.push(`${tilde(p)}: ${e?.code ?? e?.message ?? e}`);
       }
-      if (!statSync(real).isDirectory() || !isSkill(real)) continue;
-      const name = n.replace(/-tether$/, "");
-      const { hash, mtime } = dirStamp(real);
-      const list = out.get(name) ?? [];
-      list.push({ harness: sd.harness, path: p, real, mtime, hash });
-      out.set(name, list);
     }
   }
   return out;
@@ -136,23 +185,31 @@ export function findCopies(registry: string): Map<string, SkillCopy[]> {
 export interface SkillPlan {
   skills: { name: string; exposedAs?: string; from?: SkillCopy; copies: SkillCopy[]; drift: string[] }[];
   backups: { path: string; skill: string; to: string }[];
-  symlinks: { path: string; target: string }[];
+  symlinks: { path: string; target: string; skill?: string }[];
+  warnings?: string[];
 }
 
 const label = (dir: string) => tilde(dir).replace(/^~\/?/, "").replace(/[/]+/g, "-") || "home";
+
+/** What occupies a link location: nothing, our link, or something of the user's. */
+function occupant(p: string, registry: string): "free" | "ours" | "user" {
+  if (isOurLink(p, registry)) return "ours";
+  return existsSync(p) || isLink(p) ? "user" : "free";
+}
 
 /**
  * What syncing skills would do now: which copy wins per skill, which dirs move to the backup,
  * which symlinks appear. Pure: reads the filesystem, changes nothing.
  */
-export function planSkills(registry: string, backupRoot: string, disabled: Set<string> = new Set()): SkillPlan {
-  const copies = findCopies(registry);
+export function planSkills(registry: string, backupRoot: string, disabled: Set<string> = new Set(), meta: SkillMeta = {}): SkillPlan {
+  const warnings: string[] = [];
+  const copies = findCopies(registry, warnings);
   const builtins = builtinNames();
   const names = new Set<string>(copies.keys());
   try {
     for (const n of readdirSync(registry)) if (!n.startsWith(".") && isSkill(join(registry, n))) names.add(n);
   } catch {}
-  const plan: SkillPlan = { skills: [], backups: [], symlinks: [] };
+  const plan: SkillPlan = { skills: [], backups: [], symlinks: [], warnings };
   for (const name of [...names].sort()) {
     const found = copies.get(name) ?? [];
     const reg = join(registry, name);
@@ -165,18 +222,30 @@ export function planSkills(registry: string, backupRoot: string, disabled: Set<s
     const exposedAs = builtins.has(name) ? `${name}-tether` : undefined;
     plan.skills.push({ name, exposedAs, from, copies: found, drift });
     if (disabled.has(name)) continue;
-    for (const c of found) plan.backups.push({ path: c.path, skill: name, to: join(backupRoot, label(dirname(c.path)), c.path.split("/").pop()!) });
+    const links = new Set<string>();
+    for (const c of found) {
+      plan.backups.push({ path: c.path, skill: name, to: join(backupRoot, label(dirname(c.path)), basename(c.path)) });
+      links.add(c.path);
+    }
     for (const sd of skillDirs()) {
-      const replacing = found.some((c) => dirname(c.path) === sd.dir);
-      if (!sd.install && !replacing) continue;
-      if (!replacing && [name, exposedAs].some((n) => n && isOurLink(join(sd.dir, n), registry))) continue;
-      const link = join(sd.dir, replacing ? found.find((c) => dirname(c.path) === sd.dir)!.path.split("/").pop()! : (exposedAs ?? name));
-      if (isOurLink(link, registry)) continue;
-      plan.symlinks.push({ path: link, target: reg });
+      if (!sd.install) continue;
+      const here = [name, exposedAs].filter(Boolean).map((n) => join(sd.dir, n!));
+      if (here.some((p) => links.has(p) || isOurLink(p, registry))) continue;
+      links.add(join(sd.dir, exposedAs ?? name));
+    }
+    // Places we linked before (replaced copies in codex/pi/opencode too): put back what's missing.
+    for (const l of meta[name]?.links ?? []) links.add(untildePath(l.path));
+    for (const path of [...links].sort()) {
+      const occ = occupant(path, registry);
+      const isBackedUp = found.some((c) => c.path === path);
+      if (occ === "ours" || (occ === "user" && !isBackedUp)) continue;
+      plan.symlinks.push({ path, target: reg, skill: name });
     }
   }
   return plan;
 }
+
+const untildePath = untilde;
 
 function move(from: string, to: string) {
   mkdirSync(dirname(to), { recursive: true });
@@ -189,55 +258,97 @@ function move(from: string, to: string) {
   }
 }
 
+/** A free name next to `to` (`to`, `to-2`, …): a backup never overwrites an earlier one. */
+function freeName(to: string): string {
+  let out = to;
+  for (let i = 2; existsSync(out) || isLink(out); i++) out = `${to}-${i}`;
+  return out;
+}
+
+/** Copies a skill dir into the registry through a temp dir, so a failed copy leaves the old one. */
+function installCopy(src: string, dest: string) {
+  const tmp = `${dest}.tether-tmp-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  try {
+    cpSync(src, tmp, { recursive: true, dereference: true });
+    const old = `${dest}.tether-old-${process.pid}`;
+    if (existsSync(dest)) renameSync(dest, old);
+    renameSync(tmp, dest);
+    rmSync(old, { recursive: true, force: true });
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
+}
+
+function recordLink(meta: SkillMeta, name: string, path: string, replaced: boolean) {
+  const m = (meta[name] ??= { sources: [] });
+  const links = (m.links ??= []);
+  const t = tilde(path);
+  const cur = links.find((l) => l.path === t);
+  if (cur) cur.replaced ||= replaced;
+  else links.push({ path: t, replaced });
+}
+
 /**
- * Applies a plan: winning copies into the registry, originals to the backup, symlinks in place.
- * Returns the registry paths that changed (for the commit) and what was done, for the feed.
+ * Applies a plan, one skill at a time: the winning copy into the registry, then each original to
+ * the backup with its symlink right behind it. Returns the registry paths that changed (for the
+ * commit) and what was done, for the feed. A skill that fails is rolled back and reported; the
+ * others still go through.
  */
-export function applySkillPlan(registry: string, plan: SkillPlan, meta: SkillMeta): { changed: string[]; log: string[] } {
+export function applySkillPlan(registry: string, plan: SkillPlan, meta: SkillMeta): { changed: string[]; log: string[]; errors: string[] } {
   const changed: string[] = [];
   const log: string[] = [];
+  const errors: string[] = [];
   mkdirSync(registry, { recursive: true });
-  for (const s of plan.skills) {
-    if (!s.from) continue;
-    const reg = join(registry, s.name);
-    rmSync(reg, { recursive: true, force: true });
-    cpSync(s.from.real, reg, { recursive: true, dereference: true });
-    changed.push(reg);
-    log.push(`Imported skill ${s.name} from ${tilde(s.from.path)}`);
-  }
   for (const s of plan.skills) {
     const m = (meta[s.name] ??= { sources: [] });
     for (const c of s.copies) if (!m.sources.some((x) => x.path === tilde(c.path))) m.sources.push({ harness: c.harness, path: tilde(c.path) });
     if (s.drift.length) m.drift = [...new Set([...(m.drift ?? []), ...s.drift])];
   }
-  for (const b of plan.backups) {
-    if (!existsSync(b.path) && !isLink(b.path)) continue;
-    let to = b.to;
-    for (let i = 2; existsSync(to) || isLink(to); i++) to = `${b.to}-${i}`;
-    move(b.path, to);
-    log.push(`Backed up ${tilde(b.path)} to ${tilde(to)}`);
-  }
-  for (const l of plan.symlinks) {
-    if (existsSync(l.path) || isLink(l.path)) {
-      // Only ever replace our own (stale) links; anything else was in the plan's backups.
-      if (!isLink(l.path)) continue;
-      unlinkSync(l.path);
+  for (const s of plan.skills) {
+    const reg = join(registry, s.name);
+    try {
+      if (s.from) {
+        installCopy(s.from.real, reg);
+        changed.push(reg);
+        log.push(`Imported skill ${s.name} from ${tilde(s.from.path)}`);
+      }
+      if (!isSkill(reg)) continue; // nothing to link to
+      const backups = new Map(plan.backups.filter((b) => b.skill === s.name).map((b) => [b.path, b]));
+      for (const l of plan.symlinks.filter((x) => (x.skill ?? basename(x.target)) === s.name)) {
+        const b = backups.get(l.path);
+        let movedTo: string | undefined;
+        try {
+          if (b && (existsSync(b.path) || isLink(b.path))) {
+            movedTo = freeName(b.to);
+            move(b.path, movedTo);
+            log.push(`Backed up ${tilde(b.path)} to ${tilde(movedTo)}`);
+          }
+          const occ = occupant(l.path, registry);
+          if (occ === "user") continue; // appeared meanwhile: theirs
+          if (occ === "ours") unlinkSync(l.path);
+          mkdirSync(dirname(l.path), { recursive: true });
+          symlinkSync(l.target, l.path, "dir");
+          recordLink(meta, s.name, l.path, !!b);
+        } catch (e: any) {
+          // Put the original back where it was, if we had moved it.
+          if (movedTo && !existsSync(l.path) && !isLink(l.path)) {
+            try {
+              move(movedTo, l.path);
+            } catch {}
+          }
+          errors.push(`${s.name}: ${tilde(l.path)}: ${e?.code ?? e?.message ?? e}`);
+        }
+      }
+    } catch (e: any) {
+      errors.push(`${s.name}: ${e?.code ?? e?.message ?? e}`);
     }
-    mkdirSync(dirname(l.path), { recursive: true });
-    symlinkSync(l.target, l.path, "dir");
   }
-  return { changed, log };
+  return { changed, log, errors };
 }
 
-const isLink = (p: string) => {
-  try {
-    return lstatSync(p).isSymbolicLink();
-  } catch {
-    return false;
-  }
-};
-
-/** Removes our symlinks for a skill (disabling it). */
+/** Removes our symlinks for a skill (disabling it). Locations stay recorded for re-enabling. */
 export function unlinkSkill(registry: string, name: string) {
   for (const sd of skillDirs()) {
     for (const n of [name, `${name}-tether`]) {
@@ -247,8 +358,57 @@ export function unlinkSkill(registry: string, name: string) {
   }
 }
 
-/** skills.json in the store: provenance, drift and the enable switch per skill. */
-export type SkillMeta = Record<string, { sources: { harness: string; path: string }[]; drift?: string[]; disabled?: boolean }>;
+/**
+ * Undoes the skill sync (turning the master context off): every symlink of ours goes away. Where
+ * it had replaced the user's own copy, a real copy of the current registry version is put back,
+ * so each harness keeps the skills it had; the backups stay where they are.
+ */
+export function unlinkAll(registry: string, meta: SkillMeta): { restored: string[]; removed: string[]; errors: string[] } {
+  const replaced = new Set(Object.values(meta).flatMap((m) => (m.links ?? []).filter((l) => l.replaced).map((l) => untildePath(l.path))));
+  const out = { restored: [] as string[], removed: [] as string[], errors: [] as string[] };
+  for (const sd of skillDirs()) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(sd.dir);
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      const p = join(sd.dir, n);
+      if (!isOurLink(p, registry)) continue;
+      try {
+        const target = resolve(dirname(p), readlinkSync(p));
+        if (replaced.has(p) && isSkill(target)) {
+          const tmp = `${p}.tether-tmp-${process.pid}`;
+          rmSync(tmp, { recursive: true, force: true });
+          cpSync(target, tmp, { recursive: true, dereference: true });
+          unlinkSync(p);
+          renameSync(tmp, p);
+          out.restored.push(p);
+        } else {
+          unlinkSync(p);
+          out.removed.push(p);
+        }
+      } catch (e: any) {
+        out.errors.push(`${tilde(p)}: ${e?.code ?? e?.message ?? e}`);
+      }
+    }
+  }
+  for (const m of Object.values(meta)) delete m.links;
+  return out;
+}
+
+/** skills.json in the store: provenance, drift, link locations and the enable switch per skill. */
+export type SkillMeta = Record<
+  string,
+  {
+    sources: { harness: string; path: string }[];
+    drift?: string[];
+    disabled?: boolean;
+    /** symlinks we made (`~/…`); `replaced`: it took the place of the user's own copy */
+    links?: { path: string; replaced: boolean }[];
+  }
+>;
 
 export const disabledSet = (meta: SkillMeta) => new Set(Object.entries(meta).filter(([, m]) => m.disabled).map(([n]) => n));
 
@@ -280,7 +440,7 @@ export function listSkills(registry: string, meta: SkillMeta, repos: string[] = 
   const out: ContextSkill[] = [];
   let names: string[] = [];
   try {
-    names = readdirSync(registry).filter((n) => !n.startsWith(".") && isSkill(join(registry, n)));
+    names = readdirSync(registry).filter((n) => !n.startsWith(".") && !n.includes(".tether-") && isSkill(join(registry, n)));
   } catch {}
   for (const name of names.sort()) {
     const m = meta[name];
@@ -317,4 +477,3 @@ export function skillFile(registry: string, name: string): string | undefined {
   const p = join(registry, name.replace(/-tether$/, ""), "SKILL.md");
   return /^[\w.-]+$/.test(name) && existsSync(p) ? p : undefined;
 }
-

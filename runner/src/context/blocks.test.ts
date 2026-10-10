@@ -59,4 +59,30 @@ describe("managed blocks", () => {
     expect(twice).toContain('command = "bun2"');
     expect(twice.startsWith(cfg)).toBe(true);
   });
+
+  test("a begin marker without an end marker never swallows the user's text", () => {
+    const text = `intro\n\n${BEGIN}\nold digest\n\n## My own section\nprecious notes\n`;
+    const out = upsertBlock(text, "new");
+    expect(out).toContain("## My own section\nprecious notes\n");
+    expect(out).toContain(`${BEGIN}\nnew\n${END}`);
+    expect(outsideBlock(text)).toContain("precious notes");
+    expect(upsertBlock(text, undefined)).toContain("precious notes");
+  });
+
+  test("the user's trailing whitespace is kept while the block is there, and removal is exact", () => {
+    for (const user of ["a\n", "a\n\n\n", "# T\n\nbody\n", ""]) {
+      const withBlock = upsertBlock(user, "digest");
+      expect(withBlock.startsWith(user)).toBe(true);
+      expect(upsertBlock(withBlock, undefined)).toBe(user);
+      expect(outsideBlock(withBlock)).toBe(user);
+    }
+  });
+
+  test("TOML: missing end marker keeps the rest of the config; removal restores it", () => {
+    const cfg = 'model = "gpt"\n\n[profiles.x]\nmodel = "y"\n';
+    const broken = `${cfg}\n# tether:begin (managed)\n[mcp_servers.tether-context]\ncommand = "bun"\n\n[user.table]\nkeep = true\n`;
+    const out = upsertTomlBlock(broken, '[mcp_servers.tether-context]\ncommand = "bun2"');
+    expect(out).toContain("[user.table]\nkeep = true");
+    expect(upsertTomlBlock(upsertTomlBlock(cfg, "x = 1"), undefined)).toBe(cfg);
+  });
 });

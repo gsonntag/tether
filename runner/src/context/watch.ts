@@ -15,8 +15,27 @@ export class Watcher {
 
   constructor(
     private onChange: () => void,
-    private opts: { debounceMs?: number; pollMs?: number; isOwn?: (path: string) => boolean } = {},
+    private opts: {
+      debounceMs?: number;
+      pollMs?: number;
+      isOwn?: (path: string) => boolean;
+      /** false: no OS watchers, only event() calls (tests drive it deterministically) */
+      fsWatch?: boolean;
+    } = {},
   ) {}
+
+  /** A change is waiting for its debounce to run onChange. */
+  get pending(): boolean {
+    return this.timer !== undefined;
+  }
+
+  /** Runs a pending change now (tests, shutdown). */
+  flush() {
+    if (!this.timer) return;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.onChange();
+  }
 
   /** Watches these paths (dirs or files) in addition to what is already watched. */
   add(targets: string[]) {
@@ -26,7 +45,7 @@ export class Watcher {
       if (isDir) this.filters.set(dir, undefined);
       else if (this.filters.has(dir)) this.filters.get(dir)?.add(basename(t));
       else this.filters.set(dir, new Set([basename(t)]));
-      if (this.watchers.has(dir)) continue;
+      if (this.watchers.has(dir) || this.opts.fsWatch === false) continue;
       try {
         const w = watch(dir, { persistent: false }, (_ev, name) => this.event(dir, name ? String(name) : undefined));
         w.on("error", () => {
@@ -51,7 +70,10 @@ export class Watcher {
 
   schedule() {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.onChange(), this.opts.debounceMs ?? 5_000);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.onChange();
+    }, this.opts.debounceMs ?? 5_000);
   }
 
   get watching(): string[] {
@@ -60,6 +82,7 @@ export class Watcher {
 
   stop() {
     clearTimeout(this.timer);
+    this.timer = undefined;
     clearInterval(this.poller);
     this.poller = undefined;
     for (const w of this.watchers.values()) w.close();
