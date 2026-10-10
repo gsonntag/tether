@@ -61,8 +61,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   closed. Turn them on per device in Settings, choosing which kinds you want:
   - **Questions:** a permission prompt or a question from the agent.
   - **Finished:** a turn ended (not when you pressed Stop).
-  - **Blocked:** the guard blocked a call, every model is at its usage limit, the agent went
-    quiet for 15 minutes, or it failed.
+  - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes, or it
+    failed. (A call the guard denies isn't a notification; the verdict shows on its tool card.)
 
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone
