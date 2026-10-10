@@ -68,12 +68,25 @@ const diffLine: Record<"add" | "del" | "ctx", CSSProperties> = {
   ctx: { ...diffLineBase, color: "var(--color-text-secondary)" },
 };
 
-export const Transcript = memo(function Transcript({ messages, running, amendable }: { messages: Msg[]; running: boolean; amendable?: string[] }) {
+export const Transcript = memo(function Transcript({
+  messages,
+  running,
+  amendable,
+  after,
+}: {
+  messages: Msg[];
+  running: boolean;
+  amendable?: string[];
+  /** extra rows after a message, by message id (e.g. the end of a turn that changed files) */
+  after?: Map<string, ReactNode>;
+}) {
   return (
     <ChatMessageList align="top" isStreaming={running} style={listStyle}>
-      {messages.map((m, i) => (
-        <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} />
-      ))}
+      {messages.flatMap((m, i) => {
+        const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} />;
+        const extra = after?.get(m.id);
+        return extra ? [row, extra] : [row];
+      })}
     </ChatMessageList>
   );
 });

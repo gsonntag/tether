@@ -14,13 +14,13 @@ import {
 import { userParts } from "../../web/src/shared/bash";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
-import { restore as restoreTree, snapshot } from "./checkpoint";
+import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
-import type { Checkpoint, GuardVerdict, Part, PendingMessage } from "../../web/src/shared/protocol";
+import type { Checkpoint, GuardVerdict, Part, PendingMessage, SessionDiff } from "../../web/src/shared/protocol";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -116,6 +116,7 @@ export abstract class LiveSession {
       if (s.status === "idle") usageChanged();
       if (s.status === "running" && before !== "running") this.turnTrouble = this.userStopped = false;
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
+      if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
       if (s.status !== undefined || s.pendingUi !== undefined) {
         this.sink.summary(this.summary());
@@ -398,6 +399,7 @@ export abstract class LiveSession {
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
+    if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
   }
 
   /** Whether the agent is doing anything a restart would interrupt. */
@@ -690,24 +692,61 @@ export abstract class LiveSession {
 
   // ---- checkpoints ----
 
+  /**
+   * Snapshots the working tree before a turn. Every turn gets an entry, even when nothing changed
+   * (it then shares the previous commit), so each turn's changes line up with the transcript.
+   */
   async checkpoint(label: string) {
     try {
       const list = this.t.state.checkpoints ?? [];
-      const n = list.length;
-      const ref = `refs/tether/checkpoints/${this.harness}-${this.nativeId.replace(/[^\w.-]/g, "_")}/${n}`;
-      const prev = list[n - 1]?.sha;
-      const sha = await snapshot(this.projectPath, ref, label, prev);
+      const id = newId("c");
+      // Named by id, not position: positions repeat once the list is capped.
+      const ref = `refs/tether/checkpoints/${this.harness}-${this.nativeId.replace(/[^\w.-]/g, "_")}/${id}`;
+      const prev = list[list.length - 1];
+      const sha = await snapshot(this.projectPath, ref, label, prev?.sha);
       if (!sha) return;
       if (!this.diffBaseSha) {
         this.diffBaseSha = list[0]?.sha ?? sha;
         this.savePrefs();
       }
-      if (sha === prev) return;
-      const cp: Checkpoint = { id: newId("c"), sha, ts: Date.now(), label: label.replace(/\s+/g, " ").slice(0, 120) };
-      this.setState({ checkpoints: [...list, cp].slice(-50) });
+      // The previous turn is over: its changes are now fixed.
+      const stat = prev && (sha === prev.sha ? { files: 0, additions: 0, deletions: 0 } : await diffStat(this.projectPath, prev.sha, sha).catch(() => undefined));
+      const cp: Checkpoint = { id, sha, ts: Date.now(), label: label.replace(/\s+/g, " ").slice(0, 120) };
+      const now = (this.t.state.checkpoints ?? []).map((c) => (c.id === prev?.id && stat ? { ...c, stat } : c));
+      this.setState({ checkpoints: [...now, cp].slice(-50) });
     } catch (e: any) {
       console.error(`checkpoint failed for ${this.id}: ${e?.message ?? e}`);
     }
+  }
+
+  /**
+   * After a turn: what the whole session and the turn that just ended changed, for the session
+   * header and the transcript. Both are measured against the working tree as it is now.
+   */
+  async refreshDiffStats() {
+    const list = this.t.state.checkpoints ?? [];
+    const last = list[list.length - 1];
+    const base = this.diffBaseSha ?? list[0]?.sha;
+    if (!base) return;
+    try {
+      const [total, turn] = await workingTreeStats(this.projectPath, last ? [base, last.sha] : [base]);
+      const now = this.t.state.checkpoints ?? [];
+      const update: Partial<LiveState> = {};
+      if (total) update.diffStat = total;
+      if (last && turn && now[now.length - 1]?.id === last.id) update.checkpoints = now.map((c) => (c.id === last.id ? { ...c, stat: turn } : c));
+      if (Object.keys(update).length && !this.closed) this.setState(update);
+    } catch (e: any) {
+      console.error(`diff stats failed for ${this.id}: ${e?.message ?? e}`);
+    }
+  }
+
+  /** The whole session's changes, or with a checkpoint id the changes of the turn that started there. */
+  async diff(checkpointId?: string): Promise<SessionDiff> {
+    const list = this.t.state.checkpoints ?? [];
+    if (!checkpointId) return computeDiff(this.projectPath, this.diffBaseSha ?? list[0]?.sha);
+    const i = list.findIndex((c) => c.id === checkpointId);
+    if (i < 0) throw new Error("That turn's checkpoint is no longer kept.");
+    return computeDiff(this.projectPath, list[i]!.sha, list[i + 1]?.sha);
   }
 
   get diffBase() {
@@ -718,15 +757,6 @@ export abstract class LiveSession {
     if (!sha || this.diffBaseSha) return;
     this.diffBaseSha = sha;
     this.savePrefs();
-  }
-
-  async restoreCheckpoint(id: string) {
-    if (this.t.state.status !== "idle") throw new Error("Stop the agent before restoring a checkpoint.");
-    const cp = this.t.state.checkpoints?.find((c) => c.id === id);
-    if (!cp) throw new Error("Checkpoint not found");
-    await this.checkpoint(`before restoring "${cp.label}"`);
-    const r = await restoreTree(this.projectPath, cp.sha);
-    this.notice(`Restored the files to how they were before "${cp.label}" (${r.removed} new files removed). The state just before the restore was saved as a checkpoint too.`, "warning");
   }
 
   // ---- housekeeping ----

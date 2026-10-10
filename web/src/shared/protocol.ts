@@ -57,6 +57,14 @@ export interface Checkpoint {
   ts: number;
   /** the prompt that followed this checkpoint */
   label: string;
+  /** what the turn that started here changed: up to the next checkpoint, or the working tree at its end */
+  stat?: DiffStat;
+}
+
+export interface DiffStat {
+  files: number;
+  additions: number;
+  deletions: number;
 }
 
 export interface SessionFileDiff {
@@ -64,14 +72,25 @@ export interface SessionFileDiff {
   status: "added" | "modified" | "deleted" | "typechanged" | "unknown";
   additions: number;
   deletions: number;
+  /** unified diff hunks (from the first "@@"), empty when not shown */
   patch: string;
+  /** the patch was cut short */
   truncated?: boolean;
+  /** binary file: no patch */
+  binary?: boolean;
+  /** why the patch was left out (too large) */
+  skipped?: string;
 }
 
 export interface SessionDiff {
   /** The first Tether checkpoint for this session, or HEAD/empty for older or new sessions. */
   base: "session" | "HEAD" | "empty";
   files: SessionFileDiff[];
+  /** totals over every changed file, including any past the file cap */
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  /** some files or patches were left out or cut short */
   truncated: boolean;
 }
 
@@ -175,6 +194,8 @@ export interface LiveState {
   guard?: GuardMode;
   /** git snapshots of the working tree taken before each turn */
   checkpoints?: Checkpoint[];
+  /** what the whole session changed (first checkpoint to the working tree), as of the last turn end */
+  diffStat?: DiffStat;
   /** modes the harness offers (Claude Code permission modes, ACP session modes) */
   modes?: string[];
   /** thinking/effort levels, when the harness reports them per session */
@@ -339,8 +360,8 @@ export interface Ops {
   abort: { args: { sessionId: string }; result: {} };
   setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };
   setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };
-  restoreCheckpoint: { args: { sessionId: string; id: string }; result: {} };
-  getSessionDiff: { args: { sessionId: string }; result: SessionDiff };
+  /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
+  getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   guardSetup: {
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };

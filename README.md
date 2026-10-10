@@ -67,9 +67,16 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone
   and iPad, add Tether to the Home Screen first.
-- **Session diff.** The Changes view compares tracked and non-ignored files with the first Tether
-  checkpoint, including staged, unstaged, and non-ignored untracked changes. The baseline follows
-  cross-harness handoffs.
+- **Changes view.** See what the agent changed: the changed files with +/− counts and a unified
+  diff for each. Open it from the **+120 −30** button under the message box (the whole session),
+  or from **N files changed** at the end of any turn that changed files (just that turn); a picker
+  switches between the two.
+  - The whole session runs from the first Tether checkpoint to the working tree now. The baseline
+    follows cross-harness handoffs.
+  - A turn runs from its checkpoint to the next one, or to the working tree for the latest turn.
+  - Staged, unstaged and non-ignored untracked files all count. The runner computes the diffs
+    with git in the project folder. Binary files get a note instead of a diff, and very large
+    files or diffs are cut short.
 
 ## Guard: autonomous but safe
 
@@ -94,8 +101,8 @@ Each harness feeds the same guard:
 - **Antigravity:** a `PreToolUse` hook (`runner/hooks/agy-guard.ts`), installed from Settings → Guard. In Auto, Antigravity also runs in its own `--sandbox`: the project is read-write, secrets are hidden, and commands get no network.
 
 **Checkpoints.** Before every turn the runner snapshots the working tree into
-`refs/tether/checkpoints/…`. This never touches your index, branch or stash. ⟲ in the
-session header restores any of them, and the state just before a restore is saved first.
+`refs/tether/checkpoints/…`. This never touches your index, branch or stash. The Changes view
+reads its diffs from these checkpoints.
 
 ## Local development
 

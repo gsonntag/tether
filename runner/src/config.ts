@@ -33,7 +33,7 @@ export interface SessionPrefs {
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
   guard?: import("./guard").GuardMode;
-  checkpoints?: { id: string; sha: string; ts: number; label: string }[];
+  checkpoints?: import("../../web/src/shared/protocol").Checkpoint[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */
   diffBaseSha?: string;
   /** a turn was in progress (running or waiting): resume it after a runner restart */
