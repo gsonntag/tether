@@ -19,6 +19,7 @@ import { findPlan } from "../../../web/src/shared/reducer";
 import { CONFIG_DIR, config, saveConfigSoon } from "../config";
 import { agyUsage, knownWindow } from "../contextWindow";
 import { kindOf } from "../guard";
+import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
 import { sessionContext, withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
@@ -160,7 +161,7 @@ class AgySession extends LiveSession {
   /** verdicts by `conversation:step`: a second hook (an old global install) asks again for the same call */
   private verdicts = new Map<string, Promise<{ allow: boolean; reason?: string; always?: boolean; overwrite?: Record<string, unknown> }>>();
 
-  constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number }, sink: Sink, opts: CreateOpts = {}) {
+  constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number }, sink: Sink, opts: CreateOpts = {}) {
     super("antigravity", init, sink);
     const r = records().find((x) => x.id === init.nativeId);
     this.convId = r?.convId;
@@ -228,8 +229,15 @@ class AgySession extends LiveSession {
     if (!this.convId) this.preamble = (await sessionContext(this.projectPath))?.prompt;
   }
 
-  private spawn() {
-    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX });
+  /** The attachment folders the running process was given (--add-dir). */
+  private readFolders: string[] = [];
+
+  private spawn(text = "") {
+    // Only this session's attachments (and those of a session handed off to it), not every session's.
+    this.readFolders = this.attachmentFolders([text]);
+    const readDirs = this.readFolders.map((f) => join(attachmentsDir(), f));
+    for (const d of readDirs) mkdirSync(d, { recursive: true, mode: 0o700 });
+    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX, readDirs });
     const proc = Bun.spawn([AGY_BIN, ...args], {
       cwd: this.projectPath,
       stdin: "pipe",
@@ -383,9 +391,11 @@ class AgySession extends LiveSession {
     if (show) this.addUserMessage(text);
     this.planReview = undefined;
     this.planTurn = /^\/plan(\s|$)/.test(text.trimStart());
+    // Files from a folder the process wasn't given (another session's, listed by hand) need a restart.
+    if (this.proc && this.attachmentFolders([text]).some((f) => !this.readFolders.includes(f)) && this.t.state.status !== "running") this.stale = true;
     if (this.proc && this.stale) this.stopProcess(true);
     await this.exiting;
-    if (!this.proc) this.spawn();
+    if (!this.proc) this.spawn(text);
     const sink = this.proc!.stdin as import("bun").FileSink;
     const content = withPreamble(this.preamble, text);
     this.preamble = undefined;
@@ -651,7 +661,7 @@ export const antigravityAdapter: Adapter = {
 
   async resume(nativeId, projectPath, sink) {
     const r = records().find((x) => x.id === nativeId);
-    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt }, sink);
+    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt, updatedAt: r?.updatedAt }, sink);
   },
 
   async listModels(live) {

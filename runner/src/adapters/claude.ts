@@ -28,6 +28,7 @@ import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow 
 import { LiveSession, newId } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
+import { nativeAttachments } from "../attachments";
 import { LimitStatus, toMs } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -130,6 +131,20 @@ function assistantParts(content: any[]): Part[] {
       return { type: "tool", id: b.id, name: b.name, input: b.input, status: "running" };
     return { type: "text", text: "" };
   });
+}
+
+/**
+ * A user message for the SDK: the text, plus the images and (small) PDFs it lists as attachments
+ * as image and document blocks. Just the text when it has none.
+ */
+export async function claudeContent(text: string): Promise<string | any[]> {
+  const { images, documents } = await nativeAttachments(text, { images: true, pdf: true });
+  if (!images.length && !documents.length) return text;
+  return [
+    { type: "text", text },
+    ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mimeType, data: i.data } })),
+    ...documents.map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data }, title: d.name })),
+  ];
 }
 
 /** Applies tool_result blocks of a user message; returns the visible user message, if any. */
@@ -272,7 +287,7 @@ class ClaudeSession extends LiveSession {
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
     private opts: CreateOpts & { resume?: boolean } = {},
   ) {
@@ -636,13 +651,13 @@ class ClaudeSession extends LiveSession {
     if (await this.preferBest(text)) return;
     this.autoTitle(text);
     this.addUserMessage(text);
-    this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as SDKUserMessage);
+    this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
   }
 
   /** Priority "next": Claude Code folds it in at its next step. */
   protected async steer(text: string) {
-    this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, priority: "next" } as SDKUserMessage);
+    this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null, priority: "next" } as SDKUserMessage);
     return true;
   }
 
@@ -703,7 +718,7 @@ class ClaudeSession extends LiveSession {
   }
 
   async continueTurn(text = "Continue where you left off.") {
-    this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as SDKUserMessage);
+    this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
   }
 
@@ -781,7 +796,7 @@ export const claudeAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const s = (await listSessions({ dir: projectPath, includeWorktrees: false })).find((x) => x.sessionId === nativeId);
     return new ClaudeSession(
-      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt },
+      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s?.lastModified },
       sink,
       { resume: true },
     );

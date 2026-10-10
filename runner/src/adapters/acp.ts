@@ -21,6 +21,8 @@ import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
+import { nativeAttachments } from "../attachments";
+import { userParts } from "../../../web/src/shared/bash";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
@@ -178,6 +180,15 @@ function errText(e: any): string {
   return [e?.message, e?.data?.message ?? (typeof e?.data === "string" ? e.data : e?.data ? JSON.stringify(e.data) : "")].filter(Boolean).join(": ");
 }
 
+/**
+ * The images a message lists as attachments, as ACP image blocks, when the agent says it takes
+ * them (promptCapabilities.image); otherwise none, and the agent opens them by path.
+ */
+export async function acpImages(text: string, caps: any): Promise<{ type: "image"; data: string; mimeType: string }[]> {
+  const { images } = await nativeAttachments(text, { images: !!caps?.promptCapabilities?.image });
+  return images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
+}
+
 function contentText(c: any): string {
   if (!c) return "";
   if (c.type === "text") return c.text;
@@ -268,7 +279,7 @@ class AcpSession extends LiveSession {
 
   constructor(
     private spec: AcpSpec,
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
     private opts: CreateOpts & { resume?: boolean } = {},
   ) {
@@ -299,6 +310,11 @@ class AcpSession extends LiveSession {
       this.loadingHistory = false;
       this.finishStreaming();
       for (const m of this.t.messages) for (const part of m.parts) if (part.type === "tool" && part.status === "running") part.status = "error";
+      // Replayed prompts arrive as plain text: attached files (and `!` runs, skills) become their chips.
+      const parsed = this.t.messages.map((m) =>
+        m.role === "user" && m.parts.some((p) => p.type === "text") ? { ...m, parts: m.parts.flatMap((p, i) => (p.type === "text" ? userParts(p.text, `${m.id}:${i}`) : [p])) } : m,
+      );
+      if (parsed.some((m, i) => m !== this.t.messages[i])) this.emit({ type: "reset", messages: parsed });
     } else {
       res = await this.p.conn.newSession({ cwd: this.projectPath, mcpServers });
       this.nativeId = res.sessionId;
@@ -378,7 +394,11 @@ class AcpSession extends LiveSession {
     switch (u.sessionUpdate) {
       case "user_message_chunk":
         // Our own prompts are added when sent; only history replay needs these.
-        if (this.loadingHistory) this.appendText("user", "text", contentText(u.content), u.messageId);
+        if (!this.loadingHistory) break;
+        if (u.content?.type === "image" && typeof u.content.data === "string") {
+          const m = this.current("user", u.messageId);
+          this.emit({ type: "msg", msg: { ...m, parts: [...m.parts, { type: "image", mimeType: u.content.mimeType ?? "image/png", data: u.content.data }] } });
+        } else this.appendText("user", "text", contentText(u.content), u.messageId);
         break;
       case "agent_message_chunk":
         this.appendText("assistant", "text", contentText(u.content), u.messageId);
@@ -489,7 +509,7 @@ class AcpSession extends LiveSession {
       const note = denied.length ? `Earlier tool calls were blocked:\n${denied.map((d) => `- ${d}`).join("\n")}` : undefined;
       const first = withPreamble(this.preamble, withPreamble(note, text));
       this.preamble = undefined;
-      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }] });
+      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }, ...(await acpImages(text, this.p.caps))] });
       this.finishStreaming();
       if (r.stopReason === "refusal") this.notice("The agent refused this request.", "warning");
       this.turnSucceeded();
@@ -653,7 +673,7 @@ export function acpAdapter(spec: AcpSpec): Adapter {
 
     async resume(nativeId, projectPath, sink) {
       const s = (await catalog()).find((x) => x.sessionId === nativeId);
-      return new AcpSession(spec, { nativeId, projectPath, title: s?.title ?? undefined }, sink, { resume: true });
+      return new AcpSession(spec, { nativeId, projectPath, title: s?.title ?? undefined, updatedAt: s?.updatedAt ? Date.parse(s.updatedAt) : undefined }, sink, { resume: true });
     },
 
     async listModels(live) {

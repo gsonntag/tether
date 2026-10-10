@@ -1,4 +1,5 @@
 import type { Part } from "./protocol";
+import { splitAttachments } from "./attachments";
 import { splitSkills } from "./skill";
 
 const BASH = /<bash-input>([\s\S]*?)<\/bash-input>\s*(?:<bash-stdout>([\s\S]*?)<\/bash-stdout>)?\s*(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?(?:\s*<bash-exit-code>[\s\S]*?<\/bash-exit-code>)?/g;
@@ -9,6 +10,16 @@ const BASH = /<bash-input>([\s\S]*?)<\/bash-input>\s*(?:<bash-stdout>([\s\S]*?)<
  * guard, so they carry a "you" verdict.
  */
 export function userParts(text: string, msgId: string): Part[] {
+  // Attached files (listed at the end of the message by the runner) show as chips and thumbnails.
+  const att = splitAttachments(text);
+  if (att.files.length) {
+    const files: Part[] = att.files.map((f) => ({ type: "file", ...f }));
+    return att.text ? [...textParts(att.text, msgId), ...files] : files;
+  }
+  return textParts(text, msgId);
+}
+
+function textParts(text: string, msgId: string): Part[] {
   // Skills sent inline (`/name` on a harness that can't run it, or pi's own `/skill:name`) show as
   // a chip; the request that came with them stays text.
   if (text.includes("<skill name=")) {

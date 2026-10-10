@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { piMcpConfig, sessionContext } from "../context/inject";
+import { nativeAttachments } from "../attachments";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -122,6 +123,12 @@ function convertAssistant(m: any, id: string): Msg {
   });
   const error = m.stopReason === "error" ? (m.errorMessage ?? "error") : m.stopReason === "aborted" ? "aborted" : undefined;
   return { id, role: "assistant", parts, ts: m.timestamp ?? Date.now(), model: m.provider ? `${m.provider}/${m.model}` : m.model, error };
+}
+
+/** The images a message lists as attachments, as pi's prompt `images` (ImageContent). */
+export async function piImages(text: string): Promise<{ images?: { type: "image"; data: string; mimeType: string }[] }> {
+  const { images } = await nativeAttachments(text, { images: true });
+  return images.length ? { images: images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })) } : {};
 }
 
 function resultText(content: any): string {
@@ -282,7 +289,7 @@ class PiSession extends LiveSession {
   private act = new PiActivity();
 
   constructor(
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; sessionFile?: string },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number; sessionFile?: string },
     sink: Sink,
     private opts: CreateOpts = {},
   ) {
@@ -514,12 +521,12 @@ class PiSession extends LiveSession {
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
     this.autoTitle(text);
-    await this.rpc.call("prompt", { message: text });
+    await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
   }
 
   protected async steer(text: string) {
     try {
-      await this.rpc.call("prompt", { message: text, streamingBehavior: "steer" });
+      await this.rpc.call("prompt", { message: text, streamingBehavior: "steer", ...(await piImages(text)) });
       return true;
     } catch {
       return false;
@@ -581,7 +588,7 @@ class PiSession extends LiveSession {
   }
 
   async continueTurn(text = "Continue where you left off.") {
-    await this.rpc.call("prompt", { message: text });
+    await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
   }
 
   protected shutdown() {
@@ -651,7 +658,7 @@ export const piAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const f = (await scanFiles()).find((x) => x.id === nativeId);
     if (!f) throw new Error(`pi session ${nativeId} not found`);
-    return new PiSession({ nativeId, projectPath: f.cwd, title: await titleOf(f), createdAt: f.createdAt, sessionFile: f.path }, sink);
+    return new PiSession({ nativeId, projectPath: f.cwd, title: await titleOf(f), createdAt: f.createdAt, updatedAt: f.mtime, sessionFile: f.path }, sink);
   },
 
   async listModels(live) {

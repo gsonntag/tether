@@ -12,6 +12,8 @@ import {
   type UiResponse,
 } from "../../web/src/shared/protocol";
 import { userParts } from "../../web/src/shared/bash";
+import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
+import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
@@ -21,7 +23,7 @@ import { usageChanged } from "./usage";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
-import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
+import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
@@ -48,13 +50,34 @@ const STALL_WARN_MS = 15 * 60_000;
  * through emit(), which applies it locally and forwards it to the server with a sequence number,
  * so any number of browsers can join at any time (snapshot + following events).
  */
+/** The conversation time after `event`: a replayed history keeps its own timestamps. */
+export function movedAt(event: SessionEvent, updatedAt: number): number {
+  switch (event.type) {
+    case "reset": {
+      const last = event.messages.reduce((t, m) => Math.max(t, m.ts ?? 0), 0);
+      return last || updatedAt;
+    }
+    case "msg":
+      return Math.max(updatedAt, event.msg.ts ?? Date.now());
+    case "delta":
+      return Date.now();
+    default:
+      return updatedAt;
+  }
+}
+
 export abstract class LiveSession {
   readonly harness: HarnessId;
   nativeId: string;
   projectPath: string;
   title: string;
   createdAt: number;
-  updatedAt = Date.now();
+  /**
+   * When the conversation last moved: what the session lists sort by. Only messages and streamed
+   * text move it, never state, activity or a history replay, so resuming sessions after a runner
+   * restart doesn't shuffle them all to the top.
+   */
+  updatedAt: number;
   t: Transcript = { messages: [], state: emptyState() };
   seq = 0;
   closed = false;
@@ -72,7 +95,7 @@ export abstract class LiveSession {
 
   constructor(
     harness: HarnessId,
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     protected sink: SessionSink,
   ) {
     this.harness = harness;
@@ -80,6 +103,7 @@ export abstract class LiveSession {
     this.projectPath = init.projectPath;
     this.title = init.title ?? "New session";
     this.createdAt = init.createdAt ?? Date.now();
+    this.updatedAt = init.updatedAt ?? this.createdAt;
     this.t.state.preferEarlier = true;
     this.watchdog = setInterval(() => this.checkStall(), 60_000);
     this.guardKey = registerGuard(this);
@@ -115,7 +139,8 @@ export abstract class LiveSession {
     const beforeModel = this.t.state.model;
     applyEvent(this.t, event);
     this.seq++;
-    this.updatedAt = this.lastActivity = Date.now();
+    this.lastActivity = Date.now();
+    this.updatedAt = movedAt(event, this.updatedAt);
     this.stallWarned = false;
     this.sink.emit(this.id, this.seq, event);
     if (event.type === "state") {
@@ -650,8 +675,13 @@ export abstract class LiveSession {
   amendSteer(msgId: string, text: string) {
     const before = this.steered.get(msgId);
     if (before === undefined) throw new Error("That message can't be changed any more: the turn it went into has ended.");
-    if (text.trim() === before.trim()) return;
-    this.pend(`I changed my earlier message. It said:\n\n${quote(before)}\n\nIt now says:\n\n${quote(text)}\n\nFollow the new version.`, "steer");
+    // The browser edits only the words; the files attached to the message stay as they were (and
+    // aren't sent again).
+    const was = splitAttachments(before);
+    const now = splitAttachments(text).text;
+    if (now.trim() === was.text.trim()) return;
+    const files = was.files.length ? ` The files attached to it (${was.files.map((f) => f.name).join(", ")}) still apply.` : "";
+    this.pend(`I changed my earlier message. It said:\n\n${quote(was.text)}\n\nIt now says:\n\n${quote(now)}\n\nFollow the new version.${files}`, "steer");
   }
 
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
@@ -935,6 +965,30 @@ export abstract class LiveSession {
     return pick.map((t) => t.slice(0, 1500)).join("\n---\n");
   }
 
+  /** Every message text this session has (or will) send, attachment blocks included. */
+  sentTexts(): string[] {
+    const texts: string[] = [];
+    for (const m of this.t.messages)
+      if (m.role === "user")
+        for (const p of m.parts) {
+          if (p.type === "text") texts.push(p.text);
+          else if (p.type === "file") texts.push(attachmentBlock([p]));
+        }
+    for (const p of this.t.state.pending ?? []) texts.push(p.text);
+    return texts;
+  }
+
+  /**
+   * The attachment folders (names under attachmentsDir()) this session's agent may read: its own,
+   * and any its messages list files from (a handoff brings the earlier session's files along).
+   */
+  attachmentFolders(extra: string[] = []): string[] {
+    return [...new Set([sessionKey(this.id), ...this.inheritedAttachments, ...referencedFolders([...this.sentTexts(), ...extra])])];
+  }
+
+  /** Attachment folders of the session this one took over from (its brief lists their files). */
+  inheritedAttachments: string[] = [];
+
   /** A lifecycle ping from an out-of-process gate (see bridge.ts). Adapters that use one override it. */
   gateEvent(_event: string, _meta: Record<string, unknown>) {}
 
@@ -944,12 +998,12 @@ export abstract class LiveSession {
    * harness's own allow/deny. `_meta` is harness-specific context from an out-of-process gate.
    */
   async checkTool(tool: string, input: unknown, toolId?: string, _meta?: Record<string, unknown>): Promise<{ allow: boolean; reason?: string; always?: boolean }> {
-    const call = { tool, input, cwd: this.projectPath };
+    const call = { tool, input, cwd: this.projectPath, attachments: this.attachmentFolders() };
     const key = JSON.stringify([tool, input]);
     let v: Verdict;
     let always = false;
     if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
-    else if (this.guardMode === "full") v = { decision: "allow", by: "mode", reason: "Full access." };
+    else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
       const askEdit = this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit";

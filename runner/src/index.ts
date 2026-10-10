@@ -38,6 +38,8 @@ import { carriedNotice } from "./context/handoff";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
+import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
+import { withAttachments } from "../../web/src/shared/attachments";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -149,6 +151,8 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   }
   track(next);
   next.inheritDiffBase(from.diffBase);
+  // The brief lists the earlier session's attachments: the new agent may read them too.
+  next.inheritedAttachments = from.attachmentFolders();
   next.setTitle(from.title);
   next.setState({
     chain: from.t.state.chain,
@@ -531,8 +535,21 @@ const ops: Handlers = {
     return {};
   },
 
-  async prompt({ sessionId, text, mode }) {
+  async prompt({ sessionId, text, mode, attachments }) {
+    // Checked before anything happens: every file must be a stored attachment.
+    const files = checkAttachments(attachments);
+    if (files.length) {
+      if (text.startsWith("!")) throw new Error("Bash mode can't take attachments.");
+      text = withAttachments(text, files);
+    }
     const s = await getLive(sessionId);
+    // Talking to a session marked done brings it back to the lists.
+    const cfg = config();
+    if (cfg.archived.includes(sessionId)) {
+      cfg.archived = cfg.archived.filter((id) => id !== sessionId);
+      saveConfig();
+      sink.summary(s.summary());
+    }
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -540,6 +557,19 @@ const ops: Handlers = {
     }
     await s.prompt(s.withShellContext(text), mode);
     return {};
+  },
+
+  async uploadAttachment(args) {
+    return receiveChunk(args);
+  },
+
+  async discardAttachment({ sessionId, path, uploadId }) {
+    await discard(sessionId, { path, uploadId }).catch(() => {});
+    return {};
+  },
+
+  async readAttachment({ path, offset, length }) {
+    return readChunk(path, offset ?? 0, length);
   },
 
   async abort({ sessionId }) {
@@ -815,3 +845,18 @@ scanProjects();
 context.start();
 // A second runner on the same machine (tests, dev) must never take over live sessions.
 if (!process.env.TETHER_NO_RESUME) resumeActive();
+
+// Attachments of sessions removed or marked done a while ago, and abandoned uploads.
+function sweep() {
+  try {
+    sweepUploads();
+    const referenced = [...live.values()].flatMap((s) => s.attachmentFolders());
+    const removed = sweepAttachments({ archived: config().archived, live: [...live.keys()], referenced });
+    if (removed.length) console.log(`removed attachments of ${removed.length} old session(s)`);
+  } catch (e: any) {
+    console.error(`attachment cleanup failed: ${e?.message ?? e}`);
+  }
+}
+setTimeout(sweep, 60_000);
+setInterval(sweep, 6 * 60 * 60_000);
+setInterval(() => sweepUploads(), 5 * 60_000);
