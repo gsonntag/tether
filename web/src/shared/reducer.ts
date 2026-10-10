@@ -26,7 +26,7 @@ export function applyEvent(t: Transcript, e: SessionEvent): void {
         p = { type: e.kind, text: "" };
         m.parts[e.part] = p;
       }
-      if (p.type === "text" || p.type === "thinking") p.text += e.text;
+      if (p.type === "text" || p.type === "thinking" || p.type === "plan") p.text += e.text;
       break;
     }
     case "tool": {
@@ -60,6 +60,15 @@ export function findTool(messages: Msg[], toolId: string): { msg: Msg; part: Ext
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]!;
     for (const part of msg.parts) if (part.type === "tool" && part.id === toolId) return { msg, part };
+  }
+  return undefined;
+}
+
+/** Finds the plan part with this id anywhere in the transcript. */
+export function findPlan(messages: Msg[], planId: string): { msg: Msg; part: Extract<Part, { type: "plan" }> } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    for (const part of msg.parts) if (part.type === "plan" && part.id === planId) return { msg, part };
   }
   return undefined;
 }

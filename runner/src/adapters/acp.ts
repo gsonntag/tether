@@ -14,6 +14,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -324,10 +325,10 @@ class AcpSession extends LiveSession {
         break;
       }
       case "plan": {
-        const todos = (u.entries ?? []).map((e: any) => ({ content: e.content, status: e.status }));
+        // ACP's only plan is this checklist; it shows (and can be reviewed) as a plan.
         const m = this.current("assistant");
-        const idx = m.parts.findIndex((p) => p.type === "tool" && p.name === "TodoWrite");
-        const part: Part = { type: "tool", id: idx >= 0 ? (m.parts[idx] as any).id : newId("plan"), name: "TodoWrite", input: { todos }, status: "done" };
+        const idx = m.parts.findIndex((p) => p.type === "plan");
+        const part: Part = { type: "plan", id: idx >= 0 ? (m.parts[idx] as any).id : newId("plan"), text: checklistMarkdown(u.entries ?? []), checklist: true };
         const parts = [...m.parts];
         if (idx >= 0) parts[idx] = part;
         else parts.push(part);
