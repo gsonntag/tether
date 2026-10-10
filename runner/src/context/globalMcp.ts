@@ -7,7 +7,7 @@
 //
 // Called only from the user's import (register) and from turning the context off (unregister).
 
-import { copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { applyEdits, modify, parse, type FormattingOptions, type ParseError } from "jsonc-parser";
 import { mcpLaunch, MCP_SCRIPT } from "./launch";
 import { harness, tilde } from "./paths";
@@ -42,25 +42,96 @@ export function editJson(text: string, path: string[], value: unknown): string {
   return text.trim() || value !== undefined ? out : text;
 }
 
-/** Atomic replace that keeps the file's permissions; the previous text goes to `<path>.tether-backup`. */
-export function writeConfigAtomic(path: string, text: string) {
+const readOr = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");
+
+/** The file a (possibly symlinked, e.g. dotfile-managed) config really lives in. */
+function target(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Claude Code serializes its own ~/.claude.json writes with a proper-lockfile lock: a `<file>.lock`
+ * directory, considered stale after 10s. Tether takes the same lock around its read-modify-write
+ * (harmless for files nobody else locks). Returns the release function, or undefined when the
+ * lock stayed busy.
+ */
+export function lockConfig(path: string, waitMs = 1_000): (() => void) | undefined {
+  const lock = `${path}.lock`;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      return () => rmSync(lock, { recursive: true, force: true });
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") return () => {}; // can't lock here (read-only dir...): the compare below still guards
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > 10_000) {
+          rmSync(lock, { recursive: true, force: true }); // stale, as proper-lockfile would decide
+          continue;
+        }
+      } catch {
+        continue; // released meanwhile
+      }
+      if (Date.now() > deadline) return undefined;
+      Bun.sleepSync(25);
+    }
+  }
+}
+
+/**
+ * Atomic replace that keeps the file's permissions; the previous text (`prev`, what the edit was
+ * based on) goes to `<path>.tether-backup`. `unchanged` is checked last, right before the rename,
+ * so a concurrent writer's change is never overwritten: returns false and nothing is replaced.
+ */
+export function writeConfigAtomic(path: string, text: string, prev?: string, unchanged: () => boolean = () => true): boolean {
   let mode = 0o600;
   if (existsSync(path)) {
     mode = statSync(path).mode & 0o777;
-    copyFileSync(path, `${path}.tether-backup`);
+    writeFileSync(`${path}.tether-backup`, prev ?? readFileSync(path, "utf8"), { mode });
   }
-  const tmp = `${path}.tether-tmp`;
+  const tmp = `${path}.tether-tmp-${process.pid}`;
   writeFileSync(tmp, text, { mode });
-  renameSync(tmp, path);
+  try {
+    const fd = openSync(tmp, "r");
+    fsyncSync(fd);
+    closeSync(fd);
+    if (!unchanged()) {
+      rmSync(tmp, { force: true });
+      return false;
+    }
+    renameSync(tmp, path);
+    return true;
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
-/** Read-modify-write, retried if the harness rewrote the file meanwhile (Claude writes ~/.claude.json often). */
+/**
+ * Read-modify-write of a config the harness itself writes (Claude rewrites ~/.claude.json all the
+ * time, from every running process). Lost updates are kept out in three layers:
+ *  1. Claude's own lock (`<file>.lock`, lockConfig) is held for the whole edit, so writers that
+ *     take it (Claude Code does for ~/.claude.json) wait for us and we for them;
+ *  2. the file is re-read and compared just before the rename (writeConfigAtomic), so a writer
+ *     that skips the lock and lands between our read and our write makes us redo the edit on its
+ *     text instead of being overwritten (a window of microseconds remains between that compare and
+ *     the rename);
+ *  3. after the rename, the result is read back: if another writer replaced it with a copy that
+ *     lacks our change (a stale in-memory config written whole), the edit is retried.
+ * The text outside our key is never re-serialized, so retries can't reformat anything.
+ */
 function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => string | undefined, out: GlobalMcpResult): boolean {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const real = target(path);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt) Bun.sleepSync(50 * attempt);
+    const text = readOr(real);
     const { value, ok } = parseConfig(text, jsonc);
     if (!ok) {
-      out.warnings.push(`${tilde(path)} couldn't be parsed; register tether-context there by hand.`);
+      out.warnings.push(`${tilde(path)} couldn't be parsed; change tether-context there by hand.`);
       return false;
     }
     const next = edit(text, value);
@@ -69,13 +140,23 @@ function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => 
       out.written.push(path);
       return true;
     }
-    const again = existsSync(path) ? readFileSync(path, "utf8") : "";
-    if (again !== text) continue; // changed under us: redo the edit on the new text
-    writeConfigAtomic(path, next);
+    const release = lockConfig(real);
+    if (!release) continue;
+    let wrote: boolean;
+    try {
+      // Re-read under the lock: anything written before we got it is in `text` or forces a redo.
+      wrote = readOr(real) === text && writeConfigAtomic(real, next, text, () => readOr(real) === text);
+    } finally {
+      release();
+    }
+    if (!wrote) continue;
+    // Our change survived (a stale whole-file write by another process would have dropped it).
+    const after = readOr(real);
+    if (after !== next && edit(after, parseConfig(after, jsonc).value) !== undefined) continue;
     out.written.push(path);
     return true;
   }
-  out.warnings.push(`${tilde(path)} kept changing; tether-context wasn't registered there.`);
+  out.warnings.push(`${tilde(path)} kept changing; tether-context there wasn't updated. Try again in a moment.`);
   return false;
 }
 

@@ -3,14 +3,14 @@
 
 import "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse } from "jsonc-parser";
 import { CONFIG_DIR, config } from "../config";
 import { put, seedHome } from "./fixtures";
 import { exportAll } from "./export";
-import { editJson, registerGlobalMcp, unregisterGlobalMcp } from "./globalMcp";
+import { editJson, lockConfig, registerGlobalMcp, unregisterGlobalMcp, writeConfigAtomic } from "./globalMcp";
 import { ContextService } from "./index";
 import { piMcpConfig, sessionContext, setInjectionEnabled } from "./inject";
 import { MCP_SCRIPT } from "./launch";
@@ -114,6 +114,63 @@ describe("~/.claude.json", () => {
     Bun.spawnSync(["rm", "-rf", harness.claudeDir()]);
     registerGlobalMcp();
     expect(existsSync(harness.claudeJson())).toBe(false);
+  });
+
+  test("a write that lands between our read and our rename is never overwritten", () => {
+    writeFileSync(harness.claudeJson(), CLAUDE_JSON, { mode: 0o600 });
+    const claudes = CLAUDE_JSON.replace(`"numStartups": 412`, `"numStartups": 413`);
+    let raced = false;
+    const ok = writeConfigAtomic(harness.claudeJson(), "{}", CLAUDE_JSON, () => {
+      // Claude writes its own change just before our rename.
+      if (!raced) writeFileSync(harness.claudeJson(), claudes);
+      raced = true;
+      return readFileSync(harness.claudeJson(), "utf8") === CLAUDE_JSON;
+    });
+    expect(ok).toBe(false);
+    expect(readFileSync(harness.claudeJson(), "utf8")).toBe(claudes);
+    expect(readdirSync(dirname(harness.claudeJson())).filter((f) => f.includes("tether-tmp"))).toEqual([]);
+    // The whole update redoes the edit on Claude's text: both changes end up in the file.
+    registerGlobalMcp();
+    const cfg = JSON.parse(readFileSync(harness.claudeJson(), "utf8"));
+    expect(cfg.numStartups).toBe(413);
+    expect(cfg.mcpServers["tether-context"]).toBeDefined();
+  });
+
+  test("waits for Claude's own lock; a busy lock means no write and a warning", () => {
+    writeFileSync(harness.claudeJson(), CLAUDE_JSON);
+    const lock = `${harness.claudeJson()}.lock`;
+    mkdirSync(lock);
+    try {
+      const r = registerGlobalMcp();
+      expect(r.written).toEqual([]);
+      expect(r.warnings[0]).toContain("kept changing");
+      expect(readFileSync(harness.claudeJson(), "utf8")).toBe(CLAUDE_JSON);
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+    // A stale lock (a crashed writer, >10s old) is taken over, as proper-lockfile does.
+    mkdirSync(lock);
+    utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    expect(registerGlobalMcp().written).toEqual([harness.claudeJson()]);
+    expect(existsSync(lock)).toBe(false);
+    // Released after our write.
+    const release = lockConfig(harness.claudeJson())!;
+    expect(existsSync(lock)).toBe(true);
+    release();
+    expect(existsSync(lock)).toBe(false);
+  }, 30_000);
+
+  test("a symlinked ~/.claude.json stays a symlink; the real file is edited", () => {
+    const real = join(process.env.HOME!, "dotfiles-claude.json");
+    writeFileSync(real, CLAUDE_JSON);
+    rmSync(harness.claudeJson(), { force: true });
+    symlinkSync(real, harness.claudeJson());
+    registerGlobalMcp();
+    expect(lstatSync(harness.claudeJson()).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, "utf8")).toContain("tether-context");
+    unregisterGlobalMcp();
+    expect(readFileSync(real, "utf8")).toBe(CLAUDE_JSON);
+    rmSync(harness.claudeJson(), { force: true });
   });
 
   test("CLAUDE_CONFIG_DIR moves the file", () => {
