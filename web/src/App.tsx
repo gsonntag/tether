@@ -13,6 +13,7 @@ import { SessionView } from "./components/SessionView";
 import { Sidebar } from "./components/Sidebar";
 import { listenForOpen, pushOnHere, pushSupported } from "./push";
 import { NARROW_QUERY, openLink, switchRunner, toggleSidebar, useStore } from "./store";
+import { useDrawerSwipe } from "./swipe";
 
 listenForOpen();
 
@@ -36,6 +37,9 @@ export function App() {
   );
 }
 
+const swipeIsOpen = () => useStore.getState().sidebarOpen;
+const swipeSetOpen = (open: boolean) => useStore.setState({ sidebarOpen: open });
+
 function Shell() {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const sidebarHidden = useStore((s) => s.sidebarHidden);
@@ -43,6 +47,7 @@ function Shell() {
   const connected = useStore((s) => s.connected);
   const runnerId = useStore((s) => s.runnerId);
   const narrow = useNarrow();
+  useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
   // Deep links: #/s/<id>, and #/r/<runnerId>/s/<sessionId> from notifications
   useEffect(() => {
