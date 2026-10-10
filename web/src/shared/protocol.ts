@@ -34,6 +34,18 @@ export type Part =
       parentToolId?: string;
       /** The guard's verdict on this call */
       guard?: GuardVerdict;
+    }
+  | {
+      /**
+       * A plan the agent proposes (Claude Code ExitPlanMode, a Codex plan-mode plan) or, for
+       * harnesses whose only plan is a checklist (ACP), that checklist as markdown.
+       */
+      type: "plan";
+      id: string;
+      text: string;
+      checklist?: boolean;
+      /** how the person answered it, when the harness asked for approval */
+      outcome?: "approved" | "feedback";
     };
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
@@ -131,7 +143,7 @@ export const formatEntry = (e: ChainEntry) => `${e.harness}:${e.model}`;
 
 export interface UiRequest {
   id: string;
-  kind: "confirm" | "select" | "input" | "permission" | "question";
+  kind: "confirm" | "select" | "input" | "permission" | "question" | "plan";
   title: string;
   message?: string;
   options?: string[];
@@ -140,6 +152,8 @@ export interface UiRequest {
   tool?: { name: string; input: unknown };
   /** question (AskUserQuestion): one or more questions */
   questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[];
+  /** plan: the agent waits for approval of this plan part; deny (allow: false) with `value` as feedback */
+  planId?: string;
 }
 
 export interface UiResponse {

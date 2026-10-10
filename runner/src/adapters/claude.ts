@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
-import { findTool } from "../../../web/src/shared/reducer";
+import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -112,6 +112,7 @@ function assistantParts(content: any[]): Part[] {
     if (b.type === "text") return { type: "text", text: b.text };
     if (b.type === "thinking") return { type: "thinking", text: b.thinking ?? "" };
     if (b.type === "redacted_thinking") return { type: "thinking", text: "(redacted)" };
+    if (b.type === "tool_use" && b.name === "ExitPlanMode") return { type: "plan", id: b.id, text: typeof b.input?.plan === "string" ? b.input.plan : "" };
     if (b.type === "tool_use" || b.type === "server_tool_use" || b.type === "mcp_tool_use")
       return { type: "tool", id: b.id, name: b.name, input: b.input, status: "running" };
     return { type: "text", text: "" };
@@ -137,6 +138,15 @@ function applyUser(content: unknown, messages: Msg[], id: string, ts: number, fl
       if (hit) {
         hit.part.status = b.is_error ? "error" : "done";
         hit.part.output = blockText(b.content);
+      }
+      const plan = !hit && findPlan(messages, b.tool_use_id);
+      if (plan) {
+        // Declined: the result is the person's feedback. Approved: it repeats the plan as approved.
+        const result = blockText(b.content);
+        plan.part.outcome = b.is_error ? "feedback" : "approved";
+        const approved = result.split("## Approved Plan:\n")[1];
+        if (approved) plan.part.text = approved.trim();
+        if (b.is_error && result.trim()) parts.push(...userParts(result, `${id}:${parts.length}`));
       }
     } else if (b.type === "text") {
       const text = cleanUserText(b.text);
@@ -429,7 +439,12 @@ class ClaudeSession extends LiveSession {
     for (const p of assistantParts(msg.content)) {
       const i = cur.finalCount++;
       const old = parts[i];
-      parts[i] = p.type === "tool" && old?.type === "tool" && old.id === p.id ? { ...p, status: old.status, output: old.output } : p;
+      parts[i] =
+        p.type === "tool" && old?.type === "tool" && old.id === p.id
+          ? { ...p, status: old.status, output: old.output }
+          : p.type === "plan" && old?.type === "plan" && old.id === p.id
+            ? { ...p, outcome: old.outcome }
+            : p;
     }
     this.emit({ type: "msg", msg: { ...existing, parts, model: msg.model ?? existing.model, streaming: msg.stop_reason == null } });
   }
@@ -481,9 +496,43 @@ class ClaudeSession extends LiveSession {
         return { behavior: "deny", message: "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue." };
       return { behavior: "allow", updatedInput: { ...input, answers: res.answers } };
     }
+    if (toolName === "ExitPlanMode") return this.reviewPlan(input, signal, toolUseID);
     const v = await this.checkTool(toolName, input, toolUseID);
     if (!v.allow) return { behavior: "deny", message: v.reason || "Blocked by the Tether guard." };
     return { behavior: "allow", updatedInput: input, ...(v.always && suggestions?.length ? { updatedPermissions: suggestions } : {}) };
+  }
+
+  /**
+   * Plan mode: Claude waits on ExitPlanMode until the person approves the plan or sends feedback,
+   * whatever the guard mode (they chose plan mode to review it). Feedback denies the call with the
+   * comments as the message, so Claude stays in plan mode and revises.
+   */
+  private async reviewPlan(input: Record<string, unknown>, signal: AbortSignal, toolUseID?: string): Promise<PermissionResult> {
+    const planId = toolUseID ?? newId("plan");
+    // Claude Code fills `plan` from its plan file; the streamed tool input can be an older draft.
+    const text = typeof input.plan === "string" ? input.plan : "";
+    if (findPlan(this.t.messages, planId)) {
+      if (text) this.setPlan(planId, { text });
+    } else {
+      this.emit({ type: "msg", msg: { id: newId("a"), role: "assistant", parts: [{ type: "plan", id: planId, text }], ts: Date.now(), model: this.t.state.model } });
+    }
+    const id = newId("plan-review");
+    signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
+    const res = await this.askUi({ id, kind: "plan", title: "Claude's plan is ready for review", planId });
+    if (res.cancelled) return { behavior: "deny", message: "The plan review was cancelled." };
+    if (res.allow) {
+      this.setPlan(planId, { outcome: "approved" });
+      return { behavior: "allow", updatedInput: input };
+    }
+    const feedback = res.value?.trim() || "Please revise the plan.";
+    this.setPlan(planId, { outcome: "feedback" });
+    this.addUserMessage(feedback);
+    return { behavior: "deny", message: feedback };
+  }
+
+  private setPlan(planId: string, patch: { text?: string; outcome?: "approved" | "feedback" }) {
+    const hit = findPlan(this.t.messages, planId);
+    if (hit) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, ...patch } : p)) } });
   }
 
   protected async send(text: string) {

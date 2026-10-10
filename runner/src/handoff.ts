@@ -33,6 +33,7 @@ export function renderTranscript(messages: Msg[]): string {
       for (const p of m.parts) {
         if (p.type === "text" && p.text.trim()) lines.push(clip(p.text, ASSISTANT_TEXT_MAX));
         else if (p.type === "tool") lines.push(toolLine(p.name, p.input, p.status, p.output));
+        else if (p.type === "plan" && p.text.trim()) lines.push(`Plan${p.outcome === "approved" ? " (approved)" : ""}:\n${clip(p.text, ASSISTANT_TEXT_MAX)}`);
       }
       if (m.error) lines.push(`(this turn ended with an error: ${clip(m.error, 300)})`);
       if (lines.length) blocks.push(`### Agent${m.model ? ` (${m.model})` : ""}\n${lines.join("\n")}`);

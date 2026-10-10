@@ -224,8 +224,9 @@ function mcpText(r: any): string | undefined {
 function itemPart(item: any, cwd: string): Part | undefined {
   switch (item.type) {
     case "agentMessage":
-    case "plan":
       return { type: "text", text: item.text ?? "" };
+    case "plan": // plan mode's proposed plan
+      return { type: "plan", id: item.id, text: item.text ?? "" };
     case "reasoning": {
       const text = (item.summary?.length ? item.summary : (item.content ?? [])).join("\n\n");
       return { type: "thinking", text };
@@ -280,7 +281,7 @@ function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
         continue;
       }
       const part = itemPart(item, cwd);
-      if (!part || ((part.type === "text" || part.type === "thinking") && !part.text)) continue;
+      if (!part || ((part.type === "text" || part.type === "thinking" || part.type === "plan") && !part.text)) continue;
       if (part.type === "tool" && part.status === "running") part.status = "error";
       if (!a) out.push((a = { id: `a-${item.id}`, role: "assistant", parts: [], ts, model }));
       a.parts.push(part);
@@ -470,7 +471,7 @@ class CodexSession extends LiveSession {
         this.patches.delete(item.id);
         const part = itemPart(item, this.projectPath);
         if (!part) break;
-        if ((part.type === "text" || part.type === "thinking") && !part.text && !this.parts.has(item.id)) break;
+        if ((part.type === "text" || part.type === "thinking" || part.type === "plan") && !part.text && !this.parts.has(item.id)) break;
         this.replacePart(item.id, part);
         break;
       }

@@ -9,6 +9,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useState, type CSSProperties } from "react";
 import type { UiRequest } from "../shared/protocol";
 import { act } from "../store";
+import { PlanRequestCard } from "./PlanReview";
 
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
 
@@ -53,6 +54,8 @@ function RequestCard({ sessionId, r }: { sessionId: string; r: UiRequest }) {
       {r.title}
     </Text>
   );
+
+  if (r.kind === "plan") return <PlanRequestCard sessionId={sessionId} r={r} />;
 
   if (r.kind === "permission")
     return (

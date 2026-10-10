@@ -27,6 +27,7 @@ import { diffLines } from "diff";
 import { memo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { act, selectSession } from "../store";
+import { PlanCard } from "./PlanReview";
 
 type ToolPart = Extract<Part, { type: "tool" }>;
 
@@ -229,6 +230,8 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
               return p.text.trim() ? <Thinking key={i} text={p.text} live={!!tail} /> : null;
             case "tool":
               return <Tool key={p.id ?? i} t={p} />;
+            case "plan":
+              return <PlanCard key={p.id} part={p} />;
             case "image":
               return <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} />;
           }
