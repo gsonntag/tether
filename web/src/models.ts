@@ -242,12 +242,13 @@ function finish(id: string, name: string, provider: ModelProvider | undefined, v
 
 /** "claude-code:opus → codex:gpt-6-luna" → "Opus → GPT-6 Luna". */
 export function chainLabel(chain: string[], fallback: HarnessId = "claude-code"): string {
-  return chain
-    .map((e) => {
-      const { harness, model } = parseEntry(e, fallback);
-      return modelDisplay(model || undefined, harness).name;
-    })
-    .join(" → ");
+  const ds = chain.map((e) => {
+    const { harness, model } = parseEntry(e, fallback);
+    return modelDisplay(model || undefined, harness);
+  });
+  // The same model through two routes ("openai-codex/gpt-6-luna", "azure/gpt-6-luna") names its route.
+  const twice = (name: string) => ds.filter((d) => d.name === name).length > 1;
+  return ds.map((d) => (d.via && twice(d.name) ? `${d.name} (${d.via})` : d.name)).join(" → ");
 }
 
 const EFFORT_LABELS: Record<string, string> = { xhigh: "XHigh", "x-high": "XHigh", max: "Max", off: "Off", none: "None", minimal: "Minimal" };
