@@ -25,7 +25,6 @@ import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./config";
-import { workingTreeDiff } from "./checkpoint";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
@@ -489,14 +488,8 @@ const ops: Handlers = {
     return {};
   },
 
-  async restoreCheckpoint({ sessionId, id }) {
-    await (await getLive(sessionId)).restoreCheckpoint(id);
-    return {};
-  },
-
-  async getSessionDiff({ sessionId }) {
-    const session = await getLive(sessionId);
-    return workingTreeDiff(session.projectPath, session.diffBase);
+  async getSessionDiff({ sessionId, checkpoint }) {
+    return (await getLive(sessionId)).diff(checkpoint);
   },
 
   async approveBlocked({ sessionId, toolId }) {

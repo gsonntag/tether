@@ -16,7 +16,6 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
-import { Popover } from "@astryxdesign/core/Popover";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
@@ -25,12 +24,13 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
-import { ArrowUturnLeftIcon, EllipsisVerticalIcon } from "@heroicons/react/24/outline";
+import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
 import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
+import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { HarnessBadge } from "./HarnessBadge";
-import { MenuTitle, ModelMenu, PickMenu } from "./ModelMenu";
+import { ModelMenu, PickMenu } from "./ModelMenu";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
@@ -112,12 +112,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
           <LinkBanner from={st.handoffFrom} />
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
-          <Transcript messages={o.messages} running={st.status === "running"} amendable={st.amendable} />
+          <Transcript
+            messages={o.messages}
+            running={st.status === "running"}
+            amendable={st.amendable}
+            after={turnChangeMarkers(sessionId, o.messages, st)}
+          />
           <PendingSteers sessionId={sessionId} state={st} />
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
         </VStack>
       </ChatLayout>
+      <ChangesDialog sessionId={sessionId} state={st} />
     </>
   );
 }
@@ -139,7 +145,7 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
         options={GUARD_MODES.map((g) => g.label)}
         onPick={(label) => act("setGuard", { sessionId, mode: GUARD_MODES.find((g) => g.label === label)!.id })}
       />
-      {!narrow && st.checkpoints && st.checkpoints.length > 0 && <Checkpoints sessionId={sessionId} state={st} />}
+      <ChangesButton sessionId={sessionId} state={st} />
       <StackItem size="fill" />
       {!narrow &&
         Object.entries(st.statuses).map(([k, v]) => (
@@ -166,55 +172,6 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
       )}
       <UsagePill harness={sess.harness} model={st.model} />
     </HStack>
-  );
-}
-
-function Checkpoints({ sessionId, state }: { sessionId: string; state: LiveState }) {
-  const [open, setOpen] = useState(false);
-  const cps = [...(state.checkpoints ?? [])].reverse();
-  const idle = state.status === "idle";
-  const content = (
-    <VStack gap={1.5}>
-      <MenuTitle>Restore files to before…</MenuTitle>
-      <VStack style={pendingScroll}>
-        {cps.map((c) => (
-          <Item
-            key={c.id}
-            density="compact"
-            label={c.label}
-            labelLines={1}
-            description={fmtClock(c.ts)}
-            endContent={
-              <Button
-                label="Restore"
-                size="sm"
-                isDisabled={!idle}
-                onClick={() => {
-                  if (confirm(`Restore the project files to how they were before "${c.label}"? The current state is saved as a checkpoint first.`)) {
-                    act("restoreCheckpoint", { sessionId, id: c.id });
-                    setOpen(false);
-                  }
-                }}
-              />
-            }
-          />
-        ))}
-      </VStack>
-      {!idle && <Text type="supporting">Stop the agent to restore.</Text>}
-    </VStack>
-  );
-  return (
-    <Popover label="Checkpoints" content={content} isOpen={open} onOpenChange={setOpen} placement="above" width={340}>
-      <Button
-        label={`${cps.length} checkpoints`}
-        variant="ghost"
-        size="sm"
-        tooltip="Undo: restore files to before a turn"
-        icon={<Icon icon={ArrowUturnLeftIcon} />}
-      >
-        {String(cps.length)}
-      </Button>
-    </Popover>
   );
 }
 
