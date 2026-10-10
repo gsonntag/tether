@@ -508,6 +508,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
       <style>{highlightCss}</style>
       <Layout
         height={narrow ? "fill" : "auto"}
+        contentWidth="100%"
         header={
           <DialogHeader
             title={part.checklist ? "Plan checklist" : "Plan"}
