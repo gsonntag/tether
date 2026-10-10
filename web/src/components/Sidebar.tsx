@@ -153,7 +153,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </SideNavSection>
       ) : (
         <>
-        <LiveSection />
+        <NeedsYouSection />
         <SideNavSection
           title="Projects"
           endContent={<IconButton label="Add project" tooltip="Add project" variant="ghost" size="sm" icon={<Icon icon={PlusIcon} />} onClick={() => useStore.setState({ dialog: "addProject" })} />}
@@ -205,19 +205,76 @@ function SearchHit({ result }: { result: SessionSearchResult }) {
   );
 }
 
-/** Every session with a running agent process, across projects, newest first. */
-function LiveSection() {
+/** Every session we know a summary for. Loaded summaries are pushed live by the runner, so they win over the listProjects snapshot. */
+function knownSessions(projects: ProjectInfo[], sessions: Record<string, SessionSummary[]>) {
+  const by = new Map(projects.flatMap((p) => p.live.map((s) => [s.id, s] as const)));
+  for (const s of Object.values(sessions).flat()) by.set(s.id, s);
+  return by;
+}
+
+type Attention = { kind: "finished" | "blocked"; read: boolean };
+
+/** Whether a session is waiting on you: finished (green) or blocked (red), and whether you've looked since. */
+type NoticeState = Pick<ReturnType<typeof useStore.getState>, "notices" | "noticesSeen" | "noticesRead">;
+function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined {
+  const notice = st.notices.find((n) => n.sessionId === s.id);
+  const read = !!notice && (notice.ts <= st.noticesSeen || st.noticesRead.includes(notice.id));
+  if (s.needsInput) return { kind: "blocked", read: notice?.kind !== "finished" && read };
+  // A running agent has moved past whatever its last notice said.
+  if (!notice || s.status === "running" || s.status === "waiting") return undefined;
+  return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
+}
+
+/**
+ * Sessions that need you, grouped by project. Unread ones leave once you've opened them and moved on;
+ * blocked ones stay until the agent is unblocked.
+ */
+function NeedsYouSection() {
   const projects = useStore((s) => s.projects);
   const sessions = useStore((s) => s.sessions);
-  // Loaded summaries are pushed live by the runner, so they win over the listProjects snapshot.
-  const by = new Map(projects.flatMap((p) => p.live.map((s) => [s.id, s] as const)));
-  for (const s of Object.values(sessions).flat()) if (s.live || by.has(s.id)) by.set(s.id, s);
-  const rows = [...by.values()].filter((s) => s.live).sort((a, b) => b.updatedAt - a.updatedAt);
+  const notices = useStore((s) => s.notices);
+  const selected = useStore((s) => s.selected);
+  const noticesRead = useStore((s) => s.noticesRead);
+  const noticesSeen = useStore((s) => s.noticesSeen);
+  const shown = useRef(new Set<string>());
+
+  const by = knownSessions(projects, sessions);
+  // A notice for a session we have no summary for yet (its project is collapsed): enough to show and open it.
+  for (const n of notices)
+    if (!by.has(n.sessionId))
+      by.set(n.sessionId, {
+        id: n.sessionId,
+        harness: n.sessionId.split(":")[0] as SessionSummary["harness"],
+        nativeId: n.sessionId.split(":").slice(1).join(":"),
+        projectPath: n.projectPath,
+        title: n.title.split(" · ").slice(1).join(" · ") || n.title,
+        createdAt: n.ts,
+        updatedAt: n.ts,
+        live: false,
+        status: "idle",
+      });
+
+  const st = { notices, noticesRead, noticesSeen };
+  const rows = [...by.values()].filter((s) => {
+    if (s.archived) return false;
+    const a = attentionOf(st, s);
+    if (a && (a.kind === "blocked" || !a.read)) return true;
+    // Stay put while you're looking at it, so the list doesn't jump under you.
+    return !!a && s.id === selected && shown.current.has(s.id);
+  });
+  shown.current = new Set(rows.map((s) => s.id));
   if (!rows.length) return null;
+
+  const groups = new Map<string, SessionSummary[]>();
+  for (const s of rows.sort((a, b) => b.updatedAt - a.updatedAt)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
   return (
-    <SideNavSection title="Live">
-      {rows.map((s) => (
-        <SessionRow key={s.id} s={s} />
+    <SideNavSection title="Needs you">
+      {[...groups].map(([path, list]) => (
+        <SideNavItem key={path} label={projects.find((p) => p.path === path)?.name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path} size="sm">
+          {list.map((s) => (
+            <SessionRow key={s.id} s={s} />
+          ))}
+        </SideNavItem>
       ))}
     </SideNavSection>
   );
@@ -225,6 +282,7 @@ function LiveSection() {
 
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
+  const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
   const [all, setAll] = useState(false);
   const archiveProject = async (archived: boolean) => {
     if (archived && p.live.some((s) => s.status !== "idle") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
@@ -250,7 +308,12 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
       label={p.name}
       collapsible={{ isCollapsed: !open, onCollapsedChange: (collapsed) => toggleProject(p.path, !collapsed) }}
       onClick={() => toggleProject(p.path)}
-      endContent={p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : undefined}
+      endContent={
+        <HStack gap={1} vAlign="center">
+          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} running`} />}
+          {p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : null}
+        </HStack>
+      }
       actions={
         <>
           {!p.archived && (
@@ -317,21 +380,22 @@ function RenameInput({ session, onDone }: { session: SessionSummary; onDone: () 
   );
 }
 
-const noticeLabel = (kind: string) => (kind === "finished" ? "Completed" : kind === "question" ? "Question" : "Blocked");
-
 function SessionIndicator({ s }: { s: SessionSummary }) {
-  const notice = useStore((st) => st.notices.find((n) => n.sessionId === s.id));
-  const read = useStore((st) => (notice ? notice.ts <= st.noticesSeen || st.noticesRead.includes(notice.id) : false));
-  if (notice)
+  const kind = useStore((st) => attentionOf(st, s)?.kind);
+  const read = useStore((st) => attentionOf(st, s)?.read);
+  if (kind) {
+    const what = kind === "finished" ? "Finished" : "Needs your input";
+    const color = kind === "finished" ? "success" : "error";
     return (
       <StatusDot
-        variant={notice.kind === "finished" ? "success" : "error"}
-        isPulsing={!read}
-        label={`${noticeLabel(notice.kind)}, ${read ? "viewed" : "ready to view"}`}
-        tooltip={`${noticeLabel(notice.kind)} · ${read ? "Viewed" : "Ready to view"}`}
+        variant={color}
+        label={`${what}, ${read ? "viewed" : "not viewed yet"}`}
+        tooltip={`${what} · ${read ? "Viewed" : "Not viewed yet"}`}
+        // Viewed: a ring instead of a filled dot.
+        style={read ? { background: "transparent", boxShadow: `inset 0 0 0 calc(var(--border-width) * 2) var(--color-${color})` } : undefined}
       />
     );
-  if (s.needsInput) return <StatusDot variant="warning" isPulsing label="Needs your input" tooltip="Needs your input" />;
+  }
   if (s.status === "running") return <Spinner size="sm" aria-label="Running" />;
   if (s.status === "waiting") return <StatusDot variant="warning" label="Waiting" tooltip="Waiting (usage limit or retry)" />;
   if (s.live) return <StatusDot variant="accent" label="Live" tooltip="Live" />;
