@@ -52,6 +52,12 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
     of the request in a `<skill name=… location=…>` block (Antigravity always, Claude Code for
     `.agents/skills`, …). The transcript shows a `/name` chip that opens to what the agent got.
   - `\/name` sends the text without running a skill.
+  - A handoff to another harness carries the message as typed and resolves it there. Only the
+    first of several waiting messages sent together can use the harness's own `/name`; the rest
+    are expanded.
+  - Expansion reads a repo skill's SKILL.md only if it (symlinks resolved) stays inside the repo,
+    up to 256 KB, never a binary file; other files are listed, not read. Skills the master
+    context disabled are never offered or expanded.
 - **Fallback chains for usage limits.** A profile is an ordered list of `harness:model`
   entries, e.g. `codex:gpt-6.1-sol → codex:gpt-6-sol → codex:gpt-6-luna`. The built-in
   `codex-current` profile follows the current Codex lineup; the model picker itself is populated

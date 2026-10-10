@@ -45,6 +45,9 @@ const NARROW = "(max-width: 760px)";
 const useNarrow = () => useMediaQuery(NARROW);
 
 const fill: CSSProperties = { flex: 1, minHeight: 0 };
+/** The chat column in the Layout content slot (which scrolls): exactly its height, so the transcript
+ *  scrolls and a tall composer drawer (the `/` menu, waiting messages) never pushes the composer out. */
+const chatColumn: CSSProperties = { ...fill, height: "100%" };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
 const statusText: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 4)" };
 const composerDock: CSSProperties ={ paddingBlockEnd: "env(safe-area-inset-bottom)" };
@@ -103,7 +106,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const st = o.state;
   setProjectRoot(o.session.projectPath, sessionId);
   const chat = (
-    <VStack style={fill}>
+    <VStack style={chatColumn}>
       {o.syncing && <Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
       <ChatLayout
         ref={scroller}
@@ -285,7 +288,9 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
           <StackItem size="fill">
             <Text type="supporting">Stopped. Waiting messages hold until you send them.</Text>
           </StackItem>
-          <Button label="Send" variant="primary" size="sm" onClick={() => edit(list[0]!.id, { now: true })} />
+          <StackItem>
+            <Button label="Send" variant="primary" size="sm" onClick={() => edit(list[0]!.id, { now: true })} />
+          </StackItem>
         </HStack>
       )}
       {queued.map(({ p, i }) => (
@@ -385,6 +390,10 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   }, [open, sessionId]);
   const groups = useMemo(() => slashGroups(cmds ?? [], slash ?? ""), [cmds, slash]);
   const matches = open && !menuClosed ? groups.flat : [];
+  // A new query starts at its best match.
+  useEffect(() => setCmdIdx(0), [slash]);
+  // Open with nothing to show: say so (loading, or no match) rather than hide the menu.
+  const menuNote = open && !menuClosed && !matches.length ? (cmds === null ? "Loading skills and commands…" : slash ? `No skill or command matches “/${slash}”` : "No skills or commands here") : undefined;
 
   const send = async (mode?: "steer" | "followUp") => {
     const t = text.trim();
@@ -433,7 +442,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   const shell = text.startsWith("!");
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
-  const hasDrawer = matches.length > 0 || !!state.pending?.length || legacyQueued;
+  const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued;
   const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for skills and commands)";
 
   const drawer = hasDrawer ? (
@@ -461,6 +470,14 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
                 ),
             )}
           </VStack>
+        )}
+        {menuNote && (
+          <HStack paddingInline={2} gap={2} vAlign="center">
+            {cmds === null && <Spinner size="sm" />}
+            <Text type="supporting" color="secondary">
+              {menuNote}
+            </Text>
+          </HStack>
         )}
         {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
         {legacyQueued && (

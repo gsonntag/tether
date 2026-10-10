@@ -15,6 +15,7 @@ import type { ActivityItem, ModelRef, Msg, Part, SessionSummary } from "../../..
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { CodexActivity } from "./codexActivity";
+import { sessionSkills } from "../skillcmd";
 import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
@@ -771,7 +772,15 @@ async function threads(): Promise<any[]> {
   return all;
 }
 
-const titleOf = (t: any) => t.name || displayText(t.preview ?? "").replace(/\s+/g, " ").slice(0, 120) || "Untitled";
+/**
+ * A thread's title. Its preview is the first message as Codex got it: a skill Tether passed
+ * natively starts `$name`, which reads as typed (`/name`) when `skills` (this project's) has it.
+ */
+const titleOf = (t: any, skills?: Set<string>) => {
+  const preview = (t.preview ?? "").replace(/^\$([\w.:-]+)/, (m: string, n: string) => (skills?.has(n) ? `/${n}` : m));
+  return t.name || displayText(preview).replace(/\s+/g, " ").slice(0, 120) || "Untitled";
+};
+const skillNames = (projectPath: string) => new Set(sessionSkills("codex", projectPath).map((s) => s.name));
 
 export const codexAdapter: Adapter = {
   id: "codex",
@@ -794,14 +803,14 @@ export const codexAdapter: Adapter = {
 
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
     if (!Bun.which(CODEX_BIN)) return [];
-    return (await threads())
-      .filter((t) => t.cwd === projectPath)
-      .map((t) => ({
+    const list = (await threads()).filter((t) => t.cwd === projectPath);
+    const skills = list.some((t) => !t.name && t.preview?.startsWith("$")) ? skillNames(projectPath) : undefined;
+    return list.map((t) => ({
         id: `codex:${t.id}`,
         harness: "codex" as const,
         nativeId: t.id,
         projectPath,
-        title: titleOf(t),
+        title: titleOf(t, skills),
         createdAt: t.createdAt * 1000,
         updatedAt: t.updatedAt * 1000,
         live: false,
@@ -826,7 +835,7 @@ export const codexAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const t = (await threads()).find((x) => x.id === nativeId);
     return new CodexSession(
-      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t) : undefined, createdAt: t ? t.createdAt * 1000 : undefined },
+      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined },
       sink,
       { resume: true },
     );
