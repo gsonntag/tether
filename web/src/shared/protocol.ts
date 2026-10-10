@@ -317,6 +317,138 @@ export type SessionEvent =
   | { type: "reset"; messages: Msg[] } // compaction, fork: replace transcript
   | { type: "toast"; level: "info" | "warning" | "error"; text: string };
 
+// ---------- master context (shared memory and skills, docs/master-context.md) ----------
+
+export type MemoryType = "user" | "feedback" | "project" | "reference";
+
+export interface MemoryEntry {
+  /** path inside the store's memory/ folder without ".md": "global/<slug>" or "repos/<dir>/<slug>" */
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  type: MemoryType;
+  /** "global" or "repo:<repo-key>" */
+  scope: string;
+  /** provenance, e.g. "claude:~/.claude/projects/-home-ubuntu-x/memory/y.md", "mcp:claude-code:<id>" */
+  sources: string[];
+  /** ISO timestamp */
+  updated: string;
+  body: string;
+}
+
+export interface MemoryCommit {
+  sha: string;
+  ts: number;
+  message: string;
+  /** unified diff of this entry in that commit */
+  patch?: string;
+}
+
+export type ContextActivityKind =
+  | "new"
+  | "duplicate"
+  | "update"
+  | "contradicts"
+  | "edit"
+  | "delete"
+  | "resolve"
+  | "import"
+  | "export"
+  | "skill"
+  | "drift"
+  | "error";
+
+export interface ContextActivity {
+  id: string;
+  ts: number;
+  kind: ContextActivityKind;
+  text: string;
+  memoryId?: string;
+  /** where the change came from (a source path, "mcp", "you") */
+  source?: string;
+  commit?: string;
+  /** the Tether session that produced it, when known */
+  sessionId?: string;
+}
+
+export type ConflictStatus = "open" | "kept-new" | "kept-old" | "dismissed";
+
+/** A new memory contradicted an existing one. Newest wins until you say otherwise. */
+export interface MemoryConflict {
+  id: string;
+  memoryId: string;
+  name: string;
+  scope: string;
+  oldBody: string;
+  newBody: string;
+  /** the two claims, one sentence each */
+  oldClaim?: string;
+  newClaim?: string;
+  source: string;
+  /** the Tether session that produced the new claim, for the inline card */
+  sessionId?: string;
+  /** the commit that applied the new version ("Keep old" restores the file from before it) */
+  commit?: string;
+  ts: number;
+  status: ConflictStatus;
+}
+
+export interface ContextSkill {
+  name: string;
+  /** name in harness skill dirs when a builtin already uses `name` (`<name>-tether`) */
+  exposedAs?: string;
+  description?: string;
+  /** where copies were found ("claude", "codex", …) with their paths */
+  sources: { harness: string; path: string }[];
+  /** copies that differed from the one kept (the newest) */
+  drift?: string[];
+  enabled: boolean;
+  /** repo-scoped skills (repo .claude/skills, .agents/skills) are listed but left in place */
+  repo?: string;
+}
+
+/** What "Import" will do, shown by the first-run wizard before anything is touched. */
+export interface ContextImportPreview {
+  memories: { harness: string; path: string; title: string; scope: string }[];
+  skills: { name: string; from: string; drift: string[]; exposedAs?: string }[];
+  /** real directories that will be moved to the backup folder and replaced by symlinks */
+  backups: { path: string; skill: string; to: string }[];
+  /** symlinks that will be created */
+  symlinks: { path: string; target: string }[];
+  /** files where Tether will add or update its managed block / own file */
+  managedFiles: string[];
+  /** MCP configs where `tether-context` will be registered */
+  mcpConfigs: string[];
+  /** sources that couldn't be read (shown, not fatal) */
+  warnings: string[];
+}
+
+export interface ContextStatus {
+  /** import has run: watchers, merge, export and session injection are on */
+  enabled: boolean;
+  importedAt?: number;
+  dir: string;
+  memories: number;
+  skills: number;
+  openConflicts: number;
+  /** a merge pass is running */
+  busy: boolean;
+}
+
+/** Background model shared by the safety judge and the memory merge: "harness:model". */
+export interface BackgroundModelSetting {
+  model: string;
+  /** harnesses that can run background work on this runner */
+  harnesses: HarnessId[];
+}
+
+/** runner -> browsers, not tied to one session */
+export type ContextEvent =
+  | { type: "activity"; activity: ContextActivity }
+  | { type: "conflict"; conflict: MemoryConflict }
+  | { type: "status"; status: ContextStatus };
+
 // ---------- RPC ops (browser -> server -> runner) ----------
 
 export interface Ops {
@@ -371,6 +503,28 @@ export interface Ops {
   getProfiles: { args: {}; result: ModelProfile[] };
   setProfiles: { args: { profiles: ModelProfile[] }; result: ModelProfile[] };
   listCommands: { args: { sessionId: string }; result: { name: string; description?: string }[] };
+  // master context
+  contextStatus: { args: {}; result: ContextStatus };
+  /** scope: "global", "repo:<key>", or a project path (resolved to its repo key); query searches */
+  listMemories: { args: { scope?: string; query?: string }; result: MemoryEntry[] };
+  getMemory: { args: { id: string }; result: MemoryEntry };
+  /** edits are commits; remove deletes the entry */
+  editMemory: {
+    args: { id: string; name?: string; description?: string; type?: MemoryType; body?: string; remove?: boolean };
+    result: MemoryEntry | {};
+  };
+  memoryHistory: { args: { id: string }; result: MemoryCommit[] };
+  contextActivity: { args: { limit?: number; before?: number }; result: ContextActivity[] };
+  listConflicts: { args: { status?: ConflictStatus | "all" }; result: MemoryConflict[] };
+  resolveConflict: { args: { id: string; action: "keep-new" | "keep-old" | "dismiss" }; result: MemoryConflict };
+  listSkills: { args: {}; result: ContextSkill[] };
+  setSkillEnabled: { args: { name: string; enabled: boolean }; result: ContextSkill[] };
+  /** dry run of the first import: reads sources, touches nothing */
+  contextImportPreview: { args: {}; result: ContextImportPreview };
+  /** the first-run "Import" button: imports, backs up and symlinks skills, exports, then keeps syncing */
+  contextImport: { args: {}; result: ContextStatus };
+  getBackgroundModel: { args: {}; result: BackgroundModelSetting };
+  setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
 }
 
 export type OpName = keyof Ops;
@@ -391,6 +545,7 @@ export type RunnerToServer =
   | { t: "result"; id: string; ok: boolean; data?: unknown; error?: string }
   | { t: "event"; sessionId: string; seq: number; event: SessionEvent }
   | { t: "sessions"; projectPath?: string; session?: SessionSummary }
+  | { t: "context"; event: ContextEvent }
   | { t: "pong" };
 
 /** server -> runner */
@@ -406,4 +561,5 @@ export type ServerToBrowser =
   | { t: "result"; id: string; ok: boolean; data?: unknown; error?: string }
   | { t: "event"; runnerId: string; sessionId: string; seq: number; event: SessionEvent }
   | { t: "sessions"; runnerId: string; projectPath?: string; session?: SessionSummary }
+  | { t: "context"; runnerId: string; event: ContextEvent }
   | { t: "pong" };

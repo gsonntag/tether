@@ -22,6 +22,10 @@ export interface RunnerConfig {
   /** per-session settings that must survive runner restarts */
   sessions: Record<string, SessionPrefs>;
   guard?: { judgeModel?: string; defaultMode?: import("./guard").GuardMode };
+  /** "harness:model" for the judge and the memory merge (runner/src/context/background.ts) */
+  backgroundModel?: string;
+  /** master context: off until the first import is run from the UI */
+  context?: { enabled?: boolean; importedAt?: number };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }

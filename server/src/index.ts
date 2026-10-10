@@ -57,6 +57,9 @@ function onRunnerMessage(ws: ServerWebSocket<Conn>, m: RunnerToServer) {
     case "sessions":
       if (conn.runnerId) toBrowsers({ t: "sessions", runnerId: conn.runnerId, projectPath: m.projectPath, session: m.session });
       break;
+    case "context":
+      if (conn.runnerId) toBrowsers({ t: "context", runnerId: conn.runnerId, event: m.event });
+      break;
   }
 }
 

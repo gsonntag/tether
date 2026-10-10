@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
 import { LiveSession, newId } from "../session";
+import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
@@ -143,6 +144,8 @@ class AcpSession extends LiveSession {
   private commands: { name: string; description?: string }[] = [];
   private curMsg?: { id: string; role: "user" | "assistant"; messageId?: string | null };
   private loadingHistory = false;
+  /** shared memory, sent ahead of the first prompt of a new session */
+  private preamble?: string;
 
   constructor(
     private spec: AcpSpec,
@@ -164,17 +167,21 @@ class AcpSession extends LiveSession {
     });
     this.p.permission = (r) => this.onPermission(r);
     await this.p.init();
+    // Master context: the tether-context MCP server, and shared memory as a first-message preamble.
+    const ctx = await sessionContext(this.projectPath, { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY });
+    const mcpServers = acpMcpServers(ctx);
+    if (!this.opts.resume) this.preamble = ctx?.prompt;
     let res: any;
     if (this.opts.resume) {
       this.p.handlers.set(this.nativeId, (n) => this.onUpdate(n));
       this.loadingHistory = true;
       this.emit({ type: "reset", messages: [] });
-      res = await this.p.conn.loadSession({ sessionId: this.nativeId, cwd: this.projectPath, mcpServers: [] });
+      res = await this.p.conn.loadSession({ sessionId: this.nativeId, cwd: this.projectPath, mcpServers });
       this.loadingHistory = false;
       this.finishStreaming();
       for (const m of this.t.messages) for (const part of m.parts) if (part.type === "tool" && part.status === "running") part.status = "error";
     } else {
-      res = await this.p.conn.newSession({ cwd: this.projectPath, mcpServers: [] });
+      res = await this.p.conn.newSession({ cwd: this.projectPath, mcpServers });
       this.nativeId = res.sessionId;
       this.p.handlers.set(this.nativeId, (n) => this.onUpdate(n));
     }
@@ -330,7 +337,9 @@ class AcpSession extends LiveSession {
     this.curMsg = undefined;
     this.setState({ status: "running" });
     try {
-      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text }] });
+      const first = withPreamble(this.preamble, text);
+      this.preamble = undefined;
+      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }] });
       this.finishStreaming();
       if (r.stopReason === "refusal") this.notice("The agent refused this request.", "warning");
       this.turnSucceeded();

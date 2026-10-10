@@ -14,6 +14,7 @@ import type { ModelRef, Msg, SessionSummary } from "../../../web/src/shared/prot
 import { findTool } from "../../../web/src/shared/reducer";
 import { config, saveConfigSoon } from "../config";
 import { LiveSession, newId } from "../session";
+import { sessionContext, withPreamble } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const AGY_BIN = process.env.AGY_BIN ?? "agy";
@@ -54,6 +55,8 @@ class AgySession extends LiveSession {
   private msgId?: string;
   private stepPart = new Map<number, number>(); // step_index -> part index
   private convId?: string;
+  /** shared memory, sent ahead of the first message of a new conversation */
+  private preamble?: string;
 
   constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number }, sink: Sink, opts: CreateOpts & { resume?: boolean } = {}) {
     super("antigravity", init, sink);
@@ -132,6 +135,8 @@ class AgySession extends LiveSession {
       thinkingLevels: EFFORT,
     });
     if (!records().some((r) => r.id === this.nativeId)) this.save();
+    // Master context: shared memory goes ahead of the first message of a new conversation.
+    if (!this.convId) this.preamble = (await sessionContext(this.projectPath))?.prompt;
     if (this.convId) this.notice("Antigravity has no history API: earlier turns of this conversation are not shown, but the agent remembers them.");
   }
 
@@ -221,7 +226,9 @@ class AgySession extends LiveSession {
     if (show) this.addUserMessage(text);
     if (!this.proc) this.spawn();
     const sink = this.proc!.stdin as import("bun").FileSink;
-    sink.write(JSON.stringify({ event: "user", message: { content: text } }) + "\n");
+    const content = withPreamble(this.preamble, text);
+    this.preamble = undefined;
+    sink.write(JSON.stringify({ event: "user", message: { content } }) + "\n");
     sink.flush();
     this.setState({ status: "running" });
   }

@@ -44,3 +44,8 @@ export function guardEnv(key: string): Record<string, string> {
     TETHER_GUARD_KEY: key,
   };
 }
+
+/** The live session a guard key belongs to (ties MCP memory writes to their session). */
+export function sessionForKey(key: string): LiveSession | undefined {
+  return sessions.get(key);
+}

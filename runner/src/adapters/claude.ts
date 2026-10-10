@@ -22,6 +22,7 @@ import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/share
 import { userParts } from "../../../web/src/shared/bash";
 import { findTool } from "../../../web/src/shared/reducer";
 import { LiveSession, newId } from "../session";
+import { sessionContext } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
@@ -262,6 +263,8 @@ class ClaudeSession extends LiveSession {
     const model = this.opts.model && this.opts.model !== "default" ? this.opts.model : undefined;
     const permissionMode = this.opts.permissionMode || undefined;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
+    // Master context: shared memory in the system prompt, and the tether-context MCP server.
+    const ctx = await sessionContext(this.projectPath, { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY });
     this.q = query({
       prompt: this.input,
       options: {
@@ -271,7 +274,8 @@ class ClaudeSession extends LiveSession {
         ...(permissionMode ? { permissionMode: permissionMode as any } : {}),
         includePartialMessages: true,
         settingSources: ["user", "project", "local"],
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: { type: "preset", preset: "claude_code", ...(ctx ? { append: ctx.prompt } : {}) },
+        ...(ctx ? { mcpServers: { "tether-context": { type: "stdio" as const, ...ctx.mcp } } } : {}),
         canUseTool,
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),
