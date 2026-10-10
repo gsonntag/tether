@@ -78,7 +78,8 @@ const port = Number(process.env.PORT ?? 8787);
 
 const server = Bun.serve<Conn>({
   port,
-  hostname: process.env.PORT ? "0.0.0.0" : "127.0.0.1",
+  // Dev mode treats every browser as the owner, so it never listens beyond loopback.
+  hostname: process.env.PORT && !DEV ? "0.0.0.0" : "127.0.0.1",
   idleTimeout: 120,
   async fetch(req, srv) {
     const url = new URL(req.url);

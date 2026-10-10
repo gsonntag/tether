@@ -243,7 +243,7 @@ export async function refreshProjects() {
   if (!projects) return;
   set({ projects, projectsLoaded: true });
   const exp = get().expanded;
-  const sel = get().open[get().selected ?? ""]?.session.projectPath;
+  const sel = get().open[get().selected ?? ""]?.session?.projectPath;
   for (const p of projects) if (exp[p.path] || p.path === sel) refreshSessions(p.path);
 }
 
