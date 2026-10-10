@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { useContainerReveal } from "@astryxdesign/core/hooks";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
@@ -19,6 +20,7 @@ import {
   Cog6ToothIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
 import { act, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
@@ -284,6 +286,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
   const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
   const [all, setAll] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const archiveProject = async (archived: boolean) => {
     if (archived && p.live.some((s) => s.status !== "idle") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
       return;
@@ -295,12 +298,20 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   let more: React.ReactNode = null;
   if (!open) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
   else if (loaded) {
-    // Live sessions first, archived last, most recent first within each.
-    const rank = (s: SessionSummary) => (s.live ? 0 : s.archived ? 2 : 1);
-    const sorted = [...loaded].sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
+    // Live sessions first, then most recent; archived (and removed) ones only behind their own toggle.
+    const sorted = loaded.filter((s) => !s.archived).sort((a, b) => Number(b.live) - Number(a.live) || b.updatedAt - a.updatedAt);
+    const archived = loaded.filter((s) => s.archived).sort((a, b) => b.updatedAt - a.updatedAt);
     rows = all ? sorted : sorted.slice(0, SHOW);
-    if (sorted.length > SHOW) more = <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />;
-    if (!sorted.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
+    if (showArchived) rows = [...rows, ...archived];
+    more = (
+      <>
+        {sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />}
+        {archived.length > 0 && (
+          <SideNavItem size="sm" label={showArchived ? "Hide archived" : `Archived (${archived.length})`} onClick={() => setShowArchived(!showArchived)} />
+        )}
+      </>
+    );
+    if (!loaded.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
   } else more = <SideNavItem size="sm" label="Loading…" isDisabled />;
 
   return (
@@ -349,6 +360,22 @@ export async function archive(s: SessionSummary, archived: boolean) {
     sessions: { ...st.sessions, [s.projectPath]: (st.sessions[s.projectPath] ?? []).map((x) => (x.id === s.id ? { ...x, archived } : x)) },
   }));
   if (archived && useStore.getState().selected === s.id) selectSession(undefined);
+}
+
+/** The row's trash button: stops the agent process and archives the session in one go, no confirm. */
+export async function removeSession(s: SessionSummary) {
+  if ((await act("removeSession", { sessionId: s.id })) === undefined) return;
+  useStore.setState((st) => {
+    const list = st.sessions[s.projectPath] ?? [];
+    const gone = { ...(list.find((x) => x.id === s.id) ?? s), archived: true, live: false, status: "idle" as const, needsInput: false };
+    return {
+      sessions: { ...st.sessions, [s.projectPath]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? gone : x)) : [...list, gone] },
+      projects: st.projects.map((p) => (p.path === s.projectPath ? { ...p, live: p.live.filter((x) => x.id !== s.id) } : p)),
+      // The runner forgets them too, so a removed session never comes back as needing you.
+      notices: st.notices.filter((n) => n.sessionId !== s.id),
+    };
+  });
+  if (useStore.getState().selected === s.id) selectSession(undefined);
 }
 
 /** Inline title editor: Enter or leaving the field saves, Escape cancels, empty restores the harness title. */
@@ -405,8 +432,28 @@ function SessionIndicator({ s }: { s: SessionSummary }) {
 function SessionRow({ s }: { s: SessionSummary }) {
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
+  const [removing, setRemoving] = useState(false);
+  // The trash button shows on hover or focus; touch screens (no hover) always show it.
+  const { getContainerProps, getContentRevealProps } = useContainerReveal();
   if (editing) return <RenameInput session={s} onDone={() => setEditing(false)} />;
+  const remove = s.archived ? null : (
+    <IconButton
+      {...getContentRevealProps({ forceVisibility: removing ? "shown" : undefined })}
+      label={s.live ? "Stop and remove session" : "Remove session"}
+      tooltip={s.live ? "Stop the agent and remove" : "Remove"}
+      variant="ghost"
+      size="sm"
+      isLoading={removing}
+      icon={<Icon icon={TrashIcon} />}
+      onClick={(e) => {
+        e.stopPropagation();
+        setRemoving(true);
+        removeSession(s).finally(() => setRemoving(false));
+      }}
+    />
+  );
   return (
+    <VStack {...getContainerProps({ forceState: removing ? "active" : undefined })}>
     <SideNavItem
       label={s.title}
       size="sm"
@@ -420,17 +467,21 @@ function SessionRow({ s }: { s: SessionSummary }) {
         </HStack>
       }
       actions={
-        <MoreMenu
-          label="Session options"
-          size="sm"
-          alignment="end"
-          items={[
-            { label: "Rename", onClick: () => setEditing(true) },
-            ...(s.status === "idle" ? [{ label: s.archived ? "Unarchive" : "Archive", onClick: () => archive(s, !s.archived) }] : []),
-            ...(s.live && s.status === "idle" ? [{ label: "Stop the agent process", onClick: () => act("closeSession", { sessionId: s.id }) }] : []),
-          ]}
-        />
+        <>
+          {remove}
+          <MoreMenu
+            label="Session options"
+            size="sm"
+            alignment="end"
+            items={[
+              { label: "Rename", onClick: () => setEditing(true) },
+              ...(s.status === "idle" ? [{ label: s.archived ? "Unarchive" : "Archive", onClick: () => archive(s, !s.archived) }] : []),
+              ...(s.live && s.status === "idle" ? [{ label: "Stop the agent process", onClick: () => act("closeSession", { sessionId: s.id }) }] : []),
+            ]}
+          />
+        </>
       }
     />
+    </VStack>
   );
 }

@@ -57,6 +57,12 @@ export function recent(): AgentNotice[] {
   return store().recent;
 }
 
+/** Drops a removed session's notices, so it doesn't come back as needing you. */
+export function forgetSession(sessionId: string) {
+  const st = store();
+  st.recent = st.recent.filter((n) => n.sessionId !== sessionId);
+}
+
 const last = new Map<string, number>();
 
 /** Records a notice and pushes it to the devices that want this kind. */
