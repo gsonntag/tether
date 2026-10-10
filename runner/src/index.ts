@@ -4,7 +4,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import type {
   HarnessId,
@@ -28,10 +28,12 @@ import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./co
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import type { ChainEntry } from "../../web/src/shared/protocol";
+import { isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
 import { useContextSkills } from "./skillcmd";
+import { carriedNotice } from "./context/handoff";
+import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 
 const VERSION = "0.1.0";
@@ -87,16 +89,29 @@ const sink: Sink = {
  */
 async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) {
   const a = adapters[to.harness];
+  // Master context on: carry the relevant memories and capture what this session learned first.
+  const memory = await context.handoffMemory({
+    sessionId: from.id,
+    projectPath: from.projectPath,
+    messages: from.t.messages,
+    target: to.harness,
+    pendingPrompt,
+  });
   const brief = await buildBrief({
     messages: from.t.messages,
     cwd: from.projectPath,
     fromLabel: `${from.harness}, ${from.t.state.model ?? "default model"}`,
     reason,
     pendingPrompt,
+    memory: memory?.text,
   });
   const next = a.create(from.projectPath, { model: to.model, permissionMode: from.t.state.permissionMode }, sink);
   next.t.state.guard = from.guardMode;
-  await next.start();
+  try {
+    await next.start();
+  } finally {
+    memory?.settle?.(); // captured facts go to the merge pass only now: next's injection is fixed
+  }
   track(next);
   next.inheritDiffBase(from.diffBase);
   next.setTitle(from.title);
@@ -110,7 +125,15 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   from.notice(`${reason}. Continued in ${to.harness} · ${to.model}.`, "warning");
-  next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
+  const carried = (memory?.carried.length ?? 0) + (memory?.captured.length ?? 0);
+  if (memory && (carried || memory.native)) {
+    const what = carried ? `${carried} ${carried === 1 ? "memory" : "memories"}` : "the shared memory";
+    next.notice(
+      `The agent was given the conversation, the repository state and ${what}.\n\n${carriedNotice(memory, to.harness)}`,
+      "info",
+      { title: `Continued from a ${from.harness} session: ${reason}. Carried ${what}.`, collapsed: true, source: "memory" },
+    );
+  } else next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
   if (pendingPrompt) next.addUserMessage(pendingPrompt);
   // Messages still waiting on the old session move over and wait on the new one.
   const carry = from.t.state.pending ?? [];
@@ -243,7 +266,7 @@ async function allProjects(): Promise<ProjectInfo[]> {
 }
 
 function expand(path: string) {
-  return resolve(path.replace(/^~(?=$|\/)/, homedir()));
+  return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
 }
 
 async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
@@ -526,16 +549,34 @@ const ops: Handlers = {
     return {};
   },
 
+  async stopActivity({ sessionId, id }) {
+    await requireLive(sessionId).stopActivity(id);
+    return {};
+  },
+
+  async listActivity({ recentMs }) {
+    const since = Date.now() - (recentMs ?? 0);
+    const out: SessionActivity[] = [];
+    for (const s of live.values()) {
+      if (s.closed) continue;
+      const items = (s.t.state.activity ?? []).filter((a) => isActive(a) || (recentMs && (a.endedAt ?? 0) >= since));
+      if (items.length) out.push({ session: decorate(s.summary()), items });
+    }
+    return out.sort((a, b) => b.items.filter(isActive).length - a.items.filter(isActive).length || b.session.updatedAt - a.session.updatedAt);
+  },
+
   async guardSetup({ install, judgeModel, defaultMode }) {
     const cfg = config();
     if (install) installAgyHook();
-    if (judgeModel || defaultMode) {
-      cfg.guard = { ...cfg.guard, ...(judgeModel ? { judgeModel } : {}), ...(defaultMode ? { defaultMode } : {}) };
-      // The judge runs on the shared background model; a Claude judge model sets it.
-      if (judgeModel && judgeModel !== "off") cfg.backgroundModel = judgeModel.includes(":") ? judgeModel : `claude-code:${judgeModel}`;
+    if (defaultMode) {
+      cfg.guard = { ...cfg.guard, defaultMode };
       saveConfig();
     }
-    return { antigravityHook: agyHookInstalled(), judgeModel: cfg.guard?.judgeModel ?? "haiku", defaultMode: cfg.guard?.defaultMode ?? "auto" };
+    // Legacy clients: "off" turns the judge off, any model turns it on. The model itself is the
+    // shared background model (setBackgroundModel); it is not changed here.
+    if (judgeModel) context.setJudgeEnabled(judgeModel !== "off");
+    const bg = context.backgroundModel();
+    return { antigravityHook: agyHookInstalled(), judgeModel: bg.judge ? bg.model : "off", judgeEnabled: bg.judge, defaultMode: cfg.guard?.defaultMode ?? "auto" };
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
@@ -645,6 +686,12 @@ const ops: Handlers = {
   },
   async setBackgroundModel({ model }) {
     return context.setBackgroundModel(model);
+  },
+  async setJudgeEnabled({ enabled }) {
+    return context.setJudgeEnabled(enabled);
+  },
+  async contextDisable() {
+    return context.disable();
   },
 };
 

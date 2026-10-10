@@ -85,18 +85,25 @@ export async function repoState(cwd: string): Promise<string> {
     .join("\n\n");
 }
 
+/** How every brief starts. Some harnesses show the brief (or its start) as a user message. */
+export const BRIEF_PREFIX = "You are taking over an in-progress coding session";
+export const isBrief = (m: Msg) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text.trimStart().startsWith(BRIEF_PREFIX));
+
 export async function buildBrief(opts: {
   messages: Msg[];
   cwd: string;
   fromLabel: string;
   reason: string;
   pendingPrompt?: string;
+  /** the master context's memory section (context/handoff.ts); absent when the context is off */
+  memory?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
-  return `You are taking over an in-progress coding session from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
+  const memory = opts.memory?.trim() ? `\n## Memory\n${opts.memory.trim()}\n` : "";
+  return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
 You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
-
+${memory}
 ## Conversation so far
 ${transcript || "(empty)"}
 

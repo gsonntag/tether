@@ -1,4 +1,4 @@
-import type { LiveState, Msg, Part, SessionEvent } from "./protocol";
+import { ACTIVITY_KEEP_FINISHED, isActive, type ActivityItem, type LiveState, type Msg, type Part, type SessionEvent } from "./protocol";
 
 export interface Transcript {
   messages: Msg[];
@@ -42,12 +42,28 @@ export function applyEvent(t: Transcript, e: SessionEvent): void {
     case "state":
       Object.assign(t.state, e.state);
       break;
+    case "activity":
+      t.state.activity = upsertActivity(t.state.activity, e.items);
+      break;
     case "reset":
       t.messages = e.messages;
       break;
     case "toast":
       break;
   }
+}
+
+/**
+ * Inserts or replaces items by id (a new array; items are replaced, not patched). Everything still
+ * running stays; of the finished ones only the newest ACTIVITY_KEEP_FINISHED do.
+ */
+export function upsertActivity(list: ActivityItem[] | undefined, items: ActivityItem[]): ActivityItem[] {
+  const by = new Map((list ?? []).map((a) => [a.id, a] as const));
+  for (const a of items) by.set(a.id, a);
+  const all = [...by.values()];
+  const done = all.filter((a) => !isActive(a)).sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt));
+  const drop = new Set(done.slice(ACTIVITY_KEEP_FINISHED).map((a) => a.id));
+  return all.filter((a) => !drop.has(a.id)).sort((a, b) => a.startedAt - b.startedAt);
 }
 
 function findMsg(t: Transcript, id: string): Msg | undefined {

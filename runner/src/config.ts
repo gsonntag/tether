@@ -1,9 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import type { ModelProfile } from "../../web/src/shared/protocol";
+import { formatEntry, HARNESSES, parseEntry, type ModelProfile } from "../../web/src/shared/protocol";
 
-export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(homedir(), ".config", "tether");
+// $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
+// back to the account's real home through the password database.
+export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(process.env.HOME || homedir(), ".config", "tether");
 const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
 
 export interface RunnerConfig {
@@ -21,11 +23,22 @@ export interface RunnerConfig {
   exhausted: Record<string, number>;
   /** per-session settings that must survive runner restarts */
   sessions: Record<string, SessionPrefs>;
-  guard?: { judgeModel?: string; defaultMode?: import("./guard").GuardMode };
+  guard?: {
+    /** the Auto-mode judge; on unless false. It runs on `backgroundModel`. */
+    judge?: boolean;
+    /**
+     * Legacy: older versions kept the judge's Claude model here ("haiku", sometimes "harness:model",
+     * or "off"). Migrated into `backgroundModel` / `judge` on load; only "off" is still written, so
+     * an older runner reading this config keeps the judge off.
+     */
+    judgeModel?: string;
+    defaultMode?: import("./guard").GuardMode;
+  };
   /** "harness:model" for the judge and the memory merge (runner/src/context/background.ts) */
   backgroundModel?: string;
-  /** master context: off until the first import is run from the UI */
-  context?: { enabled?: boolean; importedAt?: number };
+  /** master context: off until the first import is run from the UI. `handoffCapture: false` skips
+   *  the fact capture before a cross-harness handoff (memory is still carried). */
+  context?: { enabled?: boolean; importedAt?: number; handoffCapture?: boolean };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
@@ -88,7 +101,42 @@ export function config(): RunnerConfig {
   } catch {
     cached = defaults();
   }
+  migrateJudge(cached!);
   return cached!;
+}
+
+/**
+ * A model setting as exactly "harness:model". Accepts what older configs and callers stored: a
+ * bare Claude model ("haiku"), or a doubled prefix ("claude-code:codex:gpt-5-mini", from an old
+ * fallback that prefixed a value that already had a harness). Undefined for empty / "off".
+ */
+export function normalizeModelEntry(v: string | undefined): string | undefined {
+  const s = v?.trim();
+  if (!s || s === "off") return undefined;
+  let e = parseEntry(s, "claude-code");
+  for (let i = 0; i < 4; i++) {
+    const inner = HARNESSES.find((h) => e.model.startsWith(h.id + ":"));
+    if (!inner) break;
+    e = parseEntry(e.model, inner.id);
+  }
+  return e.model ? formatEntry(e) : undefined;
+}
+
+/** guard.judgeModel (legacy) → backgroundModel + guard.judge. Idempotent. */
+export function migrateJudge(cfg: RunnerConfig): boolean {
+  const before = JSON.stringify([cfg.guard, cfg.backgroundModel]);
+  const g = cfg.guard;
+  const legacy = g?.judgeModel?.trim();
+  if (g && legacy === "off") g.judge = false;
+  else if (g && legacy) {
+    cfg.backgroundModel ??= normalizeModelEntry(legacy);
+    delete g.judgeModel;
+  }
+  if (g && g.judge === false) g.judgeModel = "off"; // keeps an older runner's judge off too
+  const bg = normalizeModelEntry(cfg.backgroundModel);
+  if (bg) cfg.backgroundModel = bg;
+  else delete cfg.backgroundModel;
+  return JSON.stringify([cfg.guard, cfg.backgroundModel]) !== before;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;

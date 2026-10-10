@@ -18,7 +18,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import type { ActivityItem, ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { tail } from "./activity";
+import { ClaudeActivity } from "./claudeActivity";
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
@@ -29,6 +31,11 @@ import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 const PERMISSION_MODES = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+
+/** Claude permission modes that still ask canUseTool (so the guard) before acting. */
+export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
+  return mode === "default" || mode === "plan";
+}
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_MODELS: ModelRef[] = [
   { id: "default", label: "Default" },
@@ -255,6 +262,9 @@ class ClaudeSession extends LiveSession {
   private current?: { apiId: string; msgId: string; finalCount: number };
   private rejected?: { resetAt?: number };
   private lastError?: { text?: string; status?: number | null; kind?: string };
+  /** subagents, shells, monitors, cron jobs, wakeups (claudeActivity.ts) */
+  private act = new ClaudeActivity();
+  private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
@@ -277,8 +287,10 @@ class ClaudeSession extends LiveSession {
     const model = this.opts.model && this.opts.model !== "default" ? this.opts.model : undefined;
     // The guard decides approvals, so Claude's own approving modes (acceptEdits, auto, bypass…) from
     // settings must not apply: they'd answer before canUseTool is ever asked. Plan mode is safe to keep.
+    // The same goes for a mode carried over by a handoff (the previous session's mode, or another
+    // harness's like opencode's "build").
     const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
-    const permissionMode = this.opts.permissionMode || settingsMode;
+    const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Master context: shared memory in the system prompt, and the tether-context MCP server.
     const ctx = await sessionContext(this.projectPath, { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY });
@@ -290,6 +302,8 @@ class ClaudeSession extends LiveSession {
         ...(model ? { model } : {}),
         permissionMode: permissionMode as any,
         includePartialMessages: true,
+        // A one-line "what it's doing" for running subagents, every ~30 s (forks reuse their cache).
+        agentProgressSummaries: true,
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code", ...(ctx ? { append: ctx.prompt } : {}) },
         ...(ctx ? { mcpServers: { "tether-context": { type: "stdio" as const, ...ctx.mcp } } } : {}),
@@ -304,6 +318,8 @@ class ClaudeSession extends LiveSession {
       permissionMode,
       thinking: eff.effortLevel,
       modes: PERMISSION_MODES,
+      // A new process has no tasks yet; they arrive as it starts them.
+      activity: [],
     });
     this.pump();
     this.refreshContext();
@@ -330,7 +346,10 @@ class ClaudeSession extends LiveSession {
   }
 
   private onMessage(m: SDKMessage) {
-    if ((m as any).parent_tool_use_id) return; // subagent internals; the Task tool card shows the result
+    this.upsertActivity(...this.act.onMessage(m));
+    this.pollOutputs();
+    // Subagent internals feed its activity item (steps, latest action); the Agent tool card shows the result.
+    if ((m as any).parent_tool_use_id) return;
     switch (m.type) {
       case "system":
         this.onSystem(m as any);
@@ -378,6 +397,46 @@ class ClaudeSession extends LiveSession {
     }
   }
 
+  /**
+   * While background shells or monitors run, read the end of their output every few seconds (the
+   * same tail the CLI's /tasks view shows), and once more when they end. Wakeups due fire too.
+   */
+  private pollOutputs() {
+    const busy = this.act.readable().length > 0 || this.act.list().some((a) => a.id.startsWith("wakeup:") && a.status === "waiting");
+    if (busy && !this.pollTimer) this.pollTimer = setInterval(() => this.readOutputs(), 3_000);
+    if (!busy && this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+      this.readOutputs();
+    }
+  }
+
+  private finalRead = new Set<string>();
+  private async readOutputs() {
+    this.upsertActivity(...this.act.tick());
+    const q: any = this.q;
+    if (!q?.getTaskOutput || this.closed) return;
+    // Running ones, and each one that ended once more for its last lines.
+    const ended = this.act.list().filter((a) => (a.kind === "shell" || a.kind === "monitor") && a.stoppable && a.endedAt && !this.finalRead.has(a.id));
+    for (const a of [...this.act.readable(), ...ended]) {
+      if (a.endedAt) this.finalRead.add(a.id);
+      try {
+        const r = await q.getTaskOutput(a.id);
+        const output = tail(r?.output ?? "");
+        if (output && output !== this.act.get(a.id)?.output) {
+          this.act.patch(a.id, { output });
+          this.upsertActivity(...this.act.take());
+        }
+      } catch {}
+    }
+    this.pollOutputs();
+  }
+
+  protected async stopActivityItem(item: ActivityItem) {
+    if (!this.q) throw new Error("Claude Code isn't running.");
+    await this.q.stopTask(item.id);
+  }
+
   private onSystem(m: any) {
     switch (m.subtype) {
       case "init":
@@ -403,13 +462,6 @@ class ClaudeSession extends LiveSession {
           status: "waiting",
           waitingReason: `API retry ${m.attempt}/${m.max_retries} (${m.error_status ?? m.error})`,
           waitingUntil: Date.now() + (m.retry_delay_ms ?? 0),
-        });
-        break;
-      case "background_tasks_changed":
-        this.setState({
-          background: (m.tasks ?? [])
-            .filter((t: any) => !t.ambient)
-            .map((t: any) => ({ id: t.task_id, description: t.description, type: t.subagent_type ?? t.task_type })),
         });
         break;
       case "notification":
@@ -598,8 +650,9 @@ class ClaudeSession extends LiveSession {
   }
 
   // The guard decides approvals; a mode from Claude's settings (acceptEdits, …) would skip it.
+  // Plan mode approves nothing on its own (see start()), so a guard change keeps it.
   protected onGuardChanged = () => {
-    if (this.t.state.permissionMode !== "default") this.setPermissionMode("default").catch(() => {});
+    if (!keepsGuard(this.t.state.permissionMode)) this.setPermissionMode("default").catch(() => {});
   };
 
   async rename(title: string) {
@@ -634,6 +687,7 @@ class ClaudeSession extends LiveSession {
   }
 
   protected shutdown() {
+    clearInterval(this.pollTimer);
     this.input.end();
     try {
       this.q?.close();

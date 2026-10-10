@@ -134,7 +134,7 @@ export interface Msg {
   title?: string;
   collapsed?: boolean;
   /** notice: what produced it (agent report, background task, compaction…) */
-  source?: "agent" | "task" | "compaction" | "command" | "channel";
+  source?: "agent" | "task" | "compaction" | "command" | "channel" | "memory";
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
@@ -229,8 +229,10 @@ export interface LiveState {
   thinkingLevels?: string[];
   /** harness-reported queue (kept for older runners; the UI prefers `pending`) */
   queued: string[];
-  /** work the agent keeps running between turns (Claude Code background agents, shells, …) */
+  /** older runners: work the agent keeps running between turns (newer ones send `activity`) */
   background?: BackgroundTask[];
+  /** subagents, shells, monitors, wakeups… running now, plus the last few that finished */
+  activity?: ActivityItem[];
   /** messages you sent that the agent has not taken yet; they enter the transcript once it does */
   pending?: PendingMessage[];
   /** after Stop: pending messages wait until you send them */
@@ -291,12 +293,85 @@ export function usageProvider(harness: string | undefined, model?: string): Prov
   return undefined;
 }
 
+/** Older runners' flat list (newer ones send `activity`); also what a restart reports as stopped. */
 export interface BackgroundTask {
   id: string;
   description: string;
   /** "local_agent", "local_bash", … */
   type?: string;
 }
+
+// ---------- activity: everything a session has going on besides the transcript ----------
+
+export type ActivityKind = "subagent" | "shell" | "monitor" | "schedule" | "workflow" | "tool" | "other";
+/** running: working now; waiting: armed for later (a wakeup, a cron job) */
+export type ActivityStatus = "running" | "waiting" | "done" | "failed" | "stopped";
+
+export const ACTIVITY_KINDS: { id: ActivityKind; label: string; plural: string }[] = [
+  { id: "subagent", label: "agent", plural: "agents" },
+  { id: "shell", label: "shell", plural: "shells" },
+  { id: "monitor", label: "monitor", plural: "monitors" },
+  { id: "workflow", label: "workflow", plural: "workflows" },
+  { id: "schedule", label: "scheduled", plural: "scheduled" },
+  { id: "tool", label: "tool call", plural: "tool calls" },
+  { id: "other", label: "task", plural: "tasks" },
+];
+
+/** One tool call inside a subagent: its mini-transcript. */
+export interface ActivityStep {
+  id: string;
+  tool: string;
+  /** "Editing Sidebar.tsx", "Running bun test" */
+  label: string;
+  status: ToolStatus;
+  ts: number;
+}
+
+export interface ActivityItem {
+  id: string;
+  kind: ActivityKind;
+  title: string;
+  /** the subagent's prompt, the cron job's prompt, … */
+  description?: string;
+  status: ActivityStatus;
+  startedAt: number;
+  endedAt?: number;
+  /** the transcript tool call that started it */
+  toolId?: string;
+  /** the subagent that started it (a subagent's own shells and agents) */
+  parentId?: string;
+  /** runs on its own while the turn goes on (false: the turn waits for it) */
+  background?: boolean;
+  /** Stop works on it */
+  stoppable?: boolean;
+  // subagent
+  agentType?: string;
+  model?: string;
+  toolUses?: number;
+  tokens?: number;
+  /** what it's doing now ("Editing Sidebar.tsx"), or the harness's own progress line */
+  latest?: string;
+  /** its recent tool calls, oldest first */
+  steps?: ActivityStep[];
+  worktree?: { path?: string; branch?: string };
+  /** the final report, or why it failed */
+  summary?: string;
+  // shell, monitor
+  command?: string;
+  /** the last lines of output */
+  output?: string;
+  // monitor, schedule
+  /** what's watched or what will run ("check the build") */
+  watching?: string;
+  /** when it fires next */
+  nextAt?: number;
+  /** "every 30 minutes" */
+  schedule?: string;
+}
+
+export const ACTIVITY_KEEP_FINISHED = 20;
+export const ACTIVITY_MAX_STEPS = 40;
+export const isActive = (a: ActivityItem) => a.status === "running" || a.status === "waiting";
 
 // ---------- notifications ----------
 
@@ -345,6 +420,14 @@ export interface SessionSummary {
   needsInput?: boolean;
   /** archived or removed: listed only behind the project's "Archived (n)" toggle */
   archived?: boolean;
+  /** activity items running or armed right now (subagents, shells, …) */
+  activeCount?: number;
+}
+
+/** A live session's activity, for the runner-wide Running page. */
+export interface SessionActivity {
+  session: SessionSummary;
+  items: ActivityItem[];
 }
 
 export interface SessionSearchResult {
@@ -380,6 +463,8 @@ export type SessionEvent =
   | { type: "delta"; msgId: string; part: number; kind: "text" | "thinking"; text: string }
   | { type: "tool"; msgId: string; toolId: string; patch: Partial<Extract<Part, { type: "tool" }>> }
   | { type: "state"; state: Partial<LiveState> }
+  /** insert or replace activity items by id (see upsertActivity) */
+  | { type: "activity"; items: ActivityItem[] }
   | { type: "reset"; messages: Msg[] } // compaction, fork: replace transcript
   | { type: "toast"; level: "info" | "warning" | "error"; text: string };
 
@@ -500,11 +585,21 @@ export interface ContextStatus {
   openConflicts: number;
   /** a merge pass is running */
   busy: boolean;
+  /** what the running import / sync pass is doing, with counts when known */
+  progress?: ContextProgress;
+}
+
+export interface ContextProgress {
+  phase: "skills" | "scan" | "merge" | "export" | "disable";
+  done: number;
+  total: number;
 }
 
 /** Background model shared by the safety judge and the memory merge: "harness:model". */
 export interface BackgroundModelSetting {
   model: string;
+  /** the Auto-mode safety judge runs on this model; false: turned off */
+  judge: boolean;
   /** harnesses that can run background work on this runner */
   harnesses: HarnessId[];
 }
@@ -554,9 +649,15 @@ export interface Ops {
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /** stops one activity item (a subagent, shell, monitor…) where the harness can */
+  stopActivity: { args: { sessionId: string; id: string }; result: {} };
+  /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */
+  listActivity: { args: { recentMs?: number }; result: SessionActivity[] };
   guardSetup: {
+    /** judgeModel is legacy: "off" turns the judge off, anything else turns it on (setJudgeEnabled) */
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };
-    result: { antigravityHook: boolean; judgeModel: string; defaultMode: GuardMode };
+    /** judgeModel: the background model when the judge is on, else "off" */
+    result: { antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode };
   };
   setChain: { args: { sessionId: string; chain: string[]; preferEarlier?: boolean }; result: {} };
   setThinking: { args: { sessionId: string; level: string }; result: {} };
@@ -604,8 +705,15 @@ export interface Ops {
   contextImportPreview: { args: {}; result: ContextImportPreview };
   /** the first-run "Import" button: imports, backs up and symlinks skills, exports, then keeps syncing */
   contextImport: { args: {}; result: ContextStatus };
+  /**
+   * Turns the master context off: stops watching, removes every export (managed blocks, MCP
+   * registrations, Tether's own files, skill symlinks — replaced copies are put back as real
+   * copies). The store and its backups are kept; importing again turns it back on.
+   */
+  contextDisable: { args: {}; result: ContextStatus };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
+  setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };
 }
 
 export type OpName = keyof Ops;

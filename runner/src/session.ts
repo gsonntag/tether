@@ -22,7 +22,7 @@ import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
-import type { Checkpoint, ContextUsage, GuardVerdict, Part, PendingMessage, SessionDiff, SlashCommand } from "../../web/src/shared/protocol";
+import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText } from "../../web/src/shared/skill";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -101,6 +101,7 @@ export abstract class LiveSession {
       // A closed session has no process, so nothing can be running.
       status: this.closed ? "idle" : this.t.state.status,
       needsInput: this.t.state.pendingUi.length > 0,
+      ...(this.activeCount ? { activeCount: this.activeCount } : {}),
     };
   }
 
@@ -119,7 +120,11 @@ export abstract class LiveSession {
     if (event.type === "state") {
       const s = event.state;
       if (s.status === "idle") usageChanged();
-      if (s.status === "running" && before !== "running") this.turnTrouble = this.userStopped = false;
+      if (s.status === "running" && before !== "running") {
+        this.turnTrouble = this.userStopped = false;
+        this.finishDeferred = false;
+        clearTimeout(this.settleTimer);
+      }
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
@@ -129,11 +134,13 @@ export abstract class LiveSession {
       }
       if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context"].some((k) => k in s))
         this.savePrefs();
+      if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
         const context = switchModel(this.t.state.context, s.model);
         if (context !== this.t.state.context) this.setState({ context });
       }
     }
+    if (event.type === "activity") this.activityChanged();
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
     if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
       for (const p of event.msg.parts)
@@ -176,8 +183,8 @@ export abstract class LiveSession {
     this.sink.summary(this.summary());
   }
 
-  notice(text: string, level: Msg["level"] = "info") {
-    this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level } });
+  notice(text: string, level: Msg["level"] = "info", extra?: Pick<Msg, "title" | "collapsed" | "source">) {
+    this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level, ...extra } });
     if (level === "error") {
       this.turnTrouble = true;
       this.alert("blocked", "Failed", text);
@@ -201,11 +208,83 @@ export abstract class LiveSession {
     });
   }
 
+  /** the turn ended while subagents or shells still ran: "Finished" waits until they settle */
+  private finishDeferred = false;
+  private settleTimer?: ReturnType<typeof setTimeout>;
+  /** How long the last item's end waits for a turn the agent starts on its own to report it. */
+  static SETTLE_MS = 5_000;
+
   private turnOver() {
     if (this.userStopped || this.turnTrouble || this.closed) return;
+    // Only when truly done: nothing the agent started is still working (armed wakeups and cron
+    // jobs don't count). The last one to finish sends it (activityChanged).
+    if (this.workingCount) {
+      this.finishDeferred = true;
+      return;
+    }
     const last = [...this.t.messages].reverse().find((m) => m.role === "assistant");
     const text = last?.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" ") ?? "";
     this.alert("finished", "Finished", text.slice(-300) || "The agent is waiting for your next message.");
+  }
+
+  // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
+
+  private lastActiveCount = 0;
+
+  /** Items running or armed (waiting) right now. */
+  get activeCount(): number {
+    return (this.t.state.activity ?? []).filter(isActive).length;
+  }
+
+  /** Items doing work right now: not an armed wakeup or cron job waiting for its time. */
+  get workingCount(): number {
+    return (this.t.state.activity ?? []).filter((a) => a.status === "running").length;
+  }
+
+  activity(id: string): ActivityItem | undefined {
+    return this.t.state.activity?.find((a) => a.id === id);
+  }
+
+  /** Inserts or replaces activity items (by id). */
+  upsertActivity(...items: ActivityItem[]) {
+    if (items.length) this.emit({ type: "activity", items });
+  }
+
+  private activityChanged() {
+    const n = this.activeCount;
+    if (n !== this.lastActiveCount) {
+      this.lastActiveCount = n;
+      this.sink.summary(this.summary());
+      this.savePrefs();
+      this.armIdle();
+    }
+    // The last working item ended while the session sat idle: the deferred "Finished" goes out,
+    // unless the agent starts a turn about it first (that turn's end decides instead).
+    if (this.finishDeferred && !this.workingCount && this.t.state.status === "idle") {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => {
+        if (!this.finishDeferred || this.workingCount || this.t.state.status !== "idle") return;
+        this.finishDeferred = false;
+        this.turnOver();
+      }, LiveSession.SETTLE_MS);
+    }
+  }
+
+  /** The Stop button on one activity item. */
+  async stopActivity(id: string) {
+    const item = this.activity(id);
+    if (!item) throw new Error("That item is no longer listed.");
+    if (!isActive(item)) return;
+    if (!item.stoppable || !this.stopActivityItem) throw new Error(`${this.harness} can't stop this from Tether.`);
+    await this.stopActivityItem(item);
+  }
+  /** Adapters that can stop an item (Claude Code stopTask, …). */
+  protected stopActivityItem?(item: ActivityItem): Promise<void>;
+
+  /** The agent process is gone: nothing it ran is still going. */
+  private endActivity() {
+    const now = Date.now();
+    this.upsertActivity(...(this.t.state.activity ?? []).filter(isActive).map((a) => ({ ...a, status: "stopped" as const, endedAt: now })));
   }
 
   addUserMessage(text: string, id = newId("u")) {
@@ -485,12 +564,19 @@ export abstract class LiveSession {
 
   /** Whether the agent is doing anything a restart would interrupt. */
   get busy(): boolean {
-    return this.t.state.status !== "idle" || !!this.t.state.background?.length;
+    return this.t.state.status !== "idle" || this.workingCount > 0 || (!this.t.state.activity && !!this.t.state.background?.length);
+  }
+
+  /** What a restart would stop, as the agent is told after one. */
+  private backgroundWork(): BackgroundTask[] {
+    if (!this.t.state.activity) return this.t.state.background ?? [];
+    return this.t.state.activity.filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
   }
 
   savePrefs() {
     if (!this.prefsLoaded || this.nativeId.startsWith("pending-")) return;
     const s = this.t.state;
+    const bg = this.backgroundWork();
     Object.assign(prefs(this.id), {
       chain: s.chain,
       profile: s.profile,
@@ -502,7 +588,7 @@ export abstract class LiveSession {
       context: s.context,
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
-      background: s.background?.length ? s.background : undefined,
+      background: bg.length ? bg : undefined,
       active: this.busy,
       projectPath: this.projectPath,
     });
@@ -875,6 +961,9 @@ export abstract class LiveSession {
   private checkStall() {
     const s = this.t.state;
     if (s.status !== "running" || s.pendingUi.length || this.stallWarned) return;
+    // A shell command, tool call or subagent that's still running isn't a stall: long builds and
+    // test runs are quiet. Only a turn with nothing running and nothing streaming is.
+    if (this.workingCount || this.toolRunning()) return;
     if (Date.now() - this.lastActivity > STALL_WARN_MS) {
       this.stallWarned = true;
       this.notice(`No activity for ${Math.round(STALL_WARN_MS / 60_000)} minutes. A tool may be stuck; Stop and send "continue" if it doesn't recover.`, "warning");
@@ -882,12 +971,18 @@ export abstract class LiveSession {
     }
   }
 
+  /** A tool call in the latest messages hasn't returned yet. */
+  private toolRunning(): boolean {
+    for (const m of this.t.messages.slice(-5)) for (const p of m.parts) if (p.type === "tool" && p.status === "running") return true;
+    return false;
+  }
+
   private armIdle() {
     clearTimeout(this.idleTimer);
-    if (this.t.state.status !== "idle" || this.t.state.pendingUi.length) return;
-    this.idleTimer = setTimeout(() => {
-      if (this.t.state.status === "idle" && this.t.state.pendingUi.length === 0) this.close();
-    }, IDLE_CLOSE_MS);
+    // Closing the process would also end its subagents, shells and armed wakeups.
+    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0;
+    if (!idle()) return;
+    this.idleTimer = setTimeout(() => idle() && this.close(), IDLE_CLOSE_MS);
   }
 
   close() {
@@ -897,10 +992,12 @@ export abstract class LiveSession {
     clearTimeout(this.steerTimer);
     clearTimeout(this.idleTimer);
     clearInterval(this.watchdog);
+    clearTimeout(this.settleTimer);
     unregisterGuard(this.guardKey);
     this.clearJudging();
     this.cancelAllUi();
     this.shutdown();
+    this.endActivity();
     this.sink.summary(this.summary());
     this.onClose?.();
   }

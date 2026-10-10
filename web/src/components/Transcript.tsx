@@ -20,6 +20,7 @@ import {
   ChevronRightIcon,
   Cog6ToothIcon,
   EnvelopeIcon,
+  LightBulbIcon,
   NoSymbolIcon,
   PencilSquareIcon,
   SparklesIcon,
@@ -198,6 +199,7 @@ const EVENT_ICONS = {
   task: Cog6ToothIcon,
   compaction: ArrowsPointingInIcon,
   channel: EnvelopeIcon,
+  memory: LightBulbIcon,
 } as const;
 
 const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: boolean; amendable?: boolean }) {

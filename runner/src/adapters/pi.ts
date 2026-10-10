@@ -8,6 +8,7 @@ import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/share
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findTool } from "../../../web/src/shared/reducer";
+import { PiActivity } from "./piActivity";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
@@ -278,6 +279,7 @@ class PiSession extends LiveSession {
   private rpc!: PiRpc;
   private sessionFile?: string;
   private streamingId?: string;
+  private act = new PiActivity();
 
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; sessionFile?: string },
@@ -333,6 +335,8 @@ class PiSession extends LiveSession {
   }
 
   private onRecord(r: any) {
+    // pi-subagents' agents (foreground progress, async snapshot widget), when that package is installed
+    this.upsertActivity(...this.act.onRecord(r));
     switch (r.type) {
       case "agent_start":
         this.setState({ status: "running" });
@@ -363,7 +367,8 @@ class PiSession extends LiveSession {
             msg.parts = msg.parts.map((p) => {
               if (p.type !== "tool") return p;
               const old = prev.parts.find((q) => q.type === "tool" && q.id === p.id);
-              return old && old.type === "tool" ? { ...p, status: old.status, output: old.output } : p;
+              // ...and the guard's verdict, or its "checking…" while the judge decides
+              return old && old.type === "tool" ? { ...p, status: old.status, output: old.output, guard: old.guard, judging: old.status === "running" ? old.judging : undefined } : p;
             });
           this.emit({ type: "msg", msg });
           if (!msg.error) this.turnSucceeded();
