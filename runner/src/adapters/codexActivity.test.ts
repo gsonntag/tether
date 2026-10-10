@@ -62,4 +62,22 @@ describe("Codex activity", () => {
     expect(s).toMatchObject({ kind: "schedule", status: "waiting", nextAt: 60_010 });
     expect(act.onNotify("item/completed", { threadId: "m", item: { type: "sleep", id: "s1" } }, "m")[0]!.status).toBe("done");
   });
+
+  test("code mode: a command still open when the turn ends is a background terminal until it exits", () => {
+    // Seen live: exec_command inside a code-mode `exec` call returns at its yield time, but the
+    // commandExecution item only completes when the process exits, after the turn is over.
+    let t = 1_000;
+    const act = new CodexActivity(() => t);
+    const cmd = { type: "commandExecution", id: "exec-1", command: "/bin/bash -lc 'sleep 45; echo bgdone'", processId: "92793", source: "unifiedExecStartup" };
+    act.onNotify("item/started", { threadId: "m", item: { ...cmd, status: "inProgress" } }, "m");
+    // A quick one that completes in the turn isn't listed.
+    act.onNotify("item/started", { threadId: "m", item: { ...cmd, id: "exec-2", command: "ls", processId: "1", status: "inProgress" } }, "m");
+    act.onNotify("item/completed", { threadId: "m", item: { ...cmd, id: "exec-2", command: "ls", processId: "1", status: "completed", exitCode: 0 } }, "m");
+    t = 5_000;
+    const [bg] = act.onNotify("turn/completed", { threadId: "m", turn: { id: "t1", status: "completed" } }, "m");
+    expect(act.list().length).toBe(1);
+    expect(bg).toMatchObject({ id: "proc:92793", kind: "shell", command: "sleep 45; echo bgdone", status: "running", startedAt: 1_000, background: true });
+    const [end] = act.onNotify("item/completed", { threadId: "m", item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "bgdone\n" } }, "m");
+    expect(end).toMatchObject({ status: "done", output: "bgdone" });
+  });
 });

@@ -404,10 +404,27 @@ class ClaudeSession extends LiveSession {
   }
 
   private finalRead = new Set<string>();
+  /** a pass is reading (another one asked for meanwhile runs right after it) */
+  private reading?: { again: boolean };
   private async readOutputs() {
     this.upsertActivity(...this.act.tick());
     const q: any = this.q;
     if (!q?.getTaskOutput || this.closed) return;
+    // One pass at a time: a slow getTaskOutput mustn't stack up passes every 3 s.
+    if (this.reading) return void (this.reading.again = true);
+    this.reading = { again: false };
+    try {
+      do {
+        this.reading.again = false;
+        await this.readOutputsOnce(q);
+      } while (this.reading.again && !this.closed);
+    } finally {
+      this.reading = undefined;
+    }
+    this.pollOutputs();
+  }
+
+  private async readOutputsOnce(q: any) {
     // Running ones, and each one that ended once more for its last lines.
     const ended = this.act.list().filter((a) => (a.kind === "shell" || a.kind === "monitor") && a.stoppable && a.endedAt && !this.finalRead.has(a.id));
     for (const a of [...this.act.readable(), ...ended]) {
@@ -421,7 +438,6 @@ class ClaudeSession extends LiveSession {
         }
       } catch {}
     }
-    this.pollOutputs();
   }
 
   protected async stopActivityItem(item: ActivityItem) {

@@ -146,3 +146,24 @@ describe("activity helpers", () => {
     expect(list.some((a) => a.id === "d29")).toBe(true);
   });
 });
+
+describe("the book stays bounded in long sessions", () => {
+  test("finished items past what the session keeps are forgotten; running ones stay", () => {
+    let t = 0;
+    const act = new ClaudeActivity(() => ++t);
+    act.onMessage({ type: "system", subtype: "task_started", task_id: "keep", task_type: "local_bash", description: "server" });
+    for (let i = 0; i < 200; i++) {
+      act.onMessage({ type: "system", subtype: "task_started", task_id: `t${i}`, task_type: "local_bash", description: `job ${i}` });
+      act.onMessage({ type: "system", subtype: "task_notification", task_id: `t${i}`, status: "completed" });
+      // Every main-thread call's input is kept to match its result; old ones are dropped.
+      act.onMessage({ type: "assistant", message: { content: [{ type: "tool_use", id: `u${i}`, name: "Write", input: { content: "x".repeat(1000) } }] } });
+    }
+    expect(act.list().length).toBeLessThanOrEqual(41);
+    expect(act.get("keep")?.status).toBe("running");
+    expect(act.get("t199")?.status).toBe("done");
+    expect((act as any).calls.size).toBeLessThanOrEqual(200);
+    // A stale level signal can't bring a forgotten one back.
+    const changed = act.onMessage({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "keep" }, { task_id: "t0" }] });
+    expect(changed.some((a) => a.id === "t0")).toBe(false);
+  });
+});

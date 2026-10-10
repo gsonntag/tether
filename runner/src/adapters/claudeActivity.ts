@@ -12,7 +12,7 @@
 //  - A main-thread tool that reports tool_progress for a while is a long tool call.
 
 import type { ActivityItem, ActivityKind } from "../../../web/src/shared/protocol";
-import { ActivityBook, describeTool } from "./activity";
+import { ActivityBook, BoundedMap, describeTool } from "./activity";
 
 /** A main-thread tool call shows as activity once it has run this long. */
 export const LONG_TOOL_S = 15;
@@ -48,11 +48,19 @@ const taskStatus = (s: string | undefined): ActivityItem["status"] | undefined =
 
 export class ClaudeActivity extends ActivityBook {
   /** main-thread tool calls by tool_use id */
-  private calls = new Map<string, { name: string; input: any }>();
+  private calls = new BoundedMap<string, { name: string; input: any }>(200);
   /** spawning tool_use id -> item id */
   private byTool = new Map<string, string>();
   /** items task_progress reports counts for */
   private counted = new Set<string>();
+  /** finished items pruned from the book: a stale level signal can't bring them back */
+  private gone = new BoundedMap<string, true>(500);
+
+  protected forget(id: string) {
+    this.counted.delete(id);
+    this.gone.set(id, true);
+    for (const [tool, item] of this.byTool) if (item === id) this.byTool.delete(tool);
+  }
   /** task ids in the last background_tasks_changed */
   private level = new Set<string>();
 
@@ -264,7 +272,7 @@ export class ClaudeActivity extends ActivityBook {
         for (const t of m.tasks ?? []) {
           if (t.ambient) continue;
           now.add(t.task_id);
-          if (!this.get(t.task_id))
+          if (!this.get(t.task_id) && !this.gone.has(t.task_id))
             this.put({
               id: t.task_id,
               kind: kindOf(t.task_type, undefined),

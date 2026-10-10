@@ -107,6 +107,59 @@ describe("Finished waits until everything has settled", () => {
     s.close();
   });
 
+  test("a foreground item the harness never closed ends with its turn, so Finished still comes", async () => {
+    const s = fake();
+    s.loadPrefs();
+    await s.prompt("run the build");
+    // A long tool call (background: false) whose result the interrupt swallowed.
+    s.upsertActivity(item("tool:t1", { kind: "tool", background: false }));
+    s.reply("Done.");
+    expect(s.activity("tool:t1")!.status).toBe("stopped");
+    expect(s.busy).toBe(false);
+    expect(config().sessions[s.id]!.active).toBe(false);
+    expect(finished().length).toBe(1);
+    // A late frame from the adapter can't bring it back.
+    s.upsertActivity(item("tool:t1", { kind: "tool", background: false, latest: "late" }));
+    expect(s.activity("tool:t1")!.status).toBe("stopped");
+    expect(s.activeCount).toBe(0);
+    s.close();
+  });
+
+  test("a shell that runs for good (a dev server) holds Finished back only so long, then says it's still running", async () => {
+    LiveSession.SHELL_WAIT_MS = 20;
+    try {
+      const s = fake();
+      await s.prompt("start the dev server");
+      s.upsertActivity(item("sh1", { kind: "shell", command: "npm run dev" }), item("a1"));
+      s.reply("Server is up.");
+      // An agent still working: no cap.
+      await Bun.sleep(50);
+      expect(finished()).toEqual([]);
+      s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+      await Bun.sleep(50);
+      expect(finished().map((p) => p.body)).toEqual(["proj: Server is up. (still running: npm run dev)"]);
+      // The server stopping later doesn't send another.
+      s.upsertActivity(item("sh1", { kind: "shell", status: "stopped", endedAt: Date.now() }));
+      await Bun.sleep(20);
+      expect(finished().length).toBe(1);
+      s.close();
+    } finally {
+      LiveSession.SHELL_WAIT_MS = 3 * 60_000;
+    }
+  });
+
+  test("stopping the last running item yourself doesn't send Finished", async () => {
+    const s = fake();
+    await s.prompt("start a server");
+    s.upsertActivity(item("sh1", { kind: "shell" }));
+    s.reply("Started it.");
+    await s.stopActivity("sh1");
+    s.upsertActivity(item("sh1", { kind: "shell", status: "stopped", endedAt: Date.now() }));
+    await Bun.sleep(5);
+    expect(finished()).toEqual([]);
+    s.close();
+  });
+
   test("Stop still isn't 'finished', even when the work settles later", async () => {
     const s = fake();
     await s.prompt("go");
@@ -158,6 +211,25 @@ describe("activity in the session", () => {
     // Closing the process ends what it ran.
     expect(s.t.state.activity!.every((a) => a.status === "stopped")).toBe(true);
     expect(summaries.at(-1)!.activeCount).toBeUndefined();
+  });
+
+  test("progress on a running item is batched; new items and status changes go out at once", async () => {
+    const events: any[] = [];
+    const s = fake();
+    (s as any).sink = { ...sink, emit: (_id: string, _seq: number, e: any) => e.type === "activity" && events.push(e) };
+    s.upsertActivity(item("a1"));
+    expect(events.length).toBe(1);
+    for (let i = 0; i < 5; i++) s.upsertActivity(item("a1", { latest: `step ${i}` }));
+    expect(events.length).toBe(1);
+    await Bun.sleep(LiveSession.ACTIVITY_BATCH_MS + 50);
+    expect(events.length).toBe(2);
+    expect(events[1].items).toEqual([expect.objectContaining({ id: "a1", latest: "step 4" })]);
+    // A queued progress update rides along with the status change, which isn't delayed.
+    s.upsertActivity(item("a1", { latest: "step 5" }));
+    s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+    expect(events.length).toBe(3);
+    expect(s.activity("a1")!.status).toBe("done");
+    s.close();
   });
 
   test("a restart is told which work it stopped", () => {
