@@ -17,10 +17,11 @@ import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
+import { mergeContext, switchModel } from "./context";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
-import type { Checkpoint, GuardVerdict, Part, PendingMessage, SessionDiff } from "../../web/src/shared/protocol";
+import type { Checkpoint, ContextUsage, GuardVerdict, Part, PendingMessage, SessionDiff } from "../../web/src/shared/protocol";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -107,6 +108,7 @@ export abstract class LiveSession {
 
   emit(event: SessionEvent): void {
     const before = this.t.state.status;
+    const beforeModel = this.t.state.model;
     applyEvent(this.t, event);
     this.seq++;
     this.updatedAt = this.lastActivity = Date.now();
@@ -123,8 +125,12 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context"].some((k) => k in s))
         this.savePrefs();
+      if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
+        const context = switchModel(this.t.state.context, s.model);
+        if (context !== this.t.state.context) this.setState({ context });
+      }
     }
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
     if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
@@ -139,6 +145,20 @@ export abstract class LiveSession {
 
   setState(state: Partial<LiveState>) {
     this.emit({ type: "state", state });
+  }
+
+  /**
+   * Updates how full the context window is. Fields left out keep their value, unless the report
+   * is for another model (its window differs); a missing window is guessed from the model name.
+   */
+  setContext(c: ContextUsage | undefined) {
+    if (c) this.setState({ context: mergeContext(this.t.state.context, c) });
+  }
+
+  /** After compaction: `used` is unknown (or the harness's post-compaction count) until the next request. */
+  contextCompacted(used?: number) {
+    const prev = this.t.state.context;
+    if (prev) this.setState({ context: { ...prev, used, input: undefined, cacheRead: undefined, cacheWrite: undefined } });
   }
 
   setTitle(title: string) {
@@ -400,6 +420,7 @@ export abstract class LiveSession {
     if (p.handoffTo) restore.handoffTo = p.handoffTo;
     if (p.guard) restore.guard = p.guard;
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
+    if (p.context && !this.t.state.context) restore.context = p.context;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
@@ -421,6 +442,7 @@ export abstract class LiveSession {
       handoffTo: s.handoffTo,
       guard: s.guard,
       checkpoints: s.checkpoints,
+      context: s.context,
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
       background: s.background?.length ? s.background : undefined,

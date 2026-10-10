@@ -16,7 +16,6 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
-import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
@@ -30,6 +29,7 @@ import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../s
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
+import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
@@ -42,7 +42,6 @@ const useNarrow = () => useMediaQuery(NARROW);
 
 const fill: CSSProperties = { flex: 1, minHeight: 0 };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
-const ctxBar: CSSProperties = { width: "var(--spacing-12)" };
 const composerDock: CSSProperties = { paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
 const queuedRow = (dragging: boolean): CSSProperties => ({
@@ -134,7 +133,6 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
   const sess = useStore((s) => s.open[sessionId]?.session);
   const narrow = useNarrow();
   if (!sess) return null;
-  const ctx = st.contextPercent;
   return (
     <HStack gap={1} vAlign="center" wrap="wrap" paddingInline={1}>
       <HarnessBadge harness={sess.harness} />
@@ -156,16 +154,7 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
             </Text>
           </Tooltip>
         ))}
-      {ctx != null && (
-        <Tooltip content="Context window used">
-          <HStack gap={1} vAlign="center" paddingInline={1}>
-            <Text type="supporting" hasTabularNumbers>
-              ctx {Math.round(ctx)}%
-            </Text>
-            <ProgressBar label="Context window used" isLabelHidden value={Math.min(100, ctx)} style={ctxBar} />
-          </HStack>
-        </Tooltip>
-      )}
+      <ContextMeter state={st} />
       {!narrow && st.cost != null && st.cost > 0 && (
         <Text type="supporting" hasTabularNumbers>
           ${st.cost.toFixed(2)}

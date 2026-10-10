@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
 import { fileURLToPath } from "node:url";
+import { piStats } from "../context";
 import { LiveSession, newId } from "../session";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
@@ -307,6 +308,19 @@ class PiSession extends LiveSession {
       model: st.model ? `${st.model.provider}/${st.model.id}` : undefined,
       thinking: st.thinkingLevel,
     });
+    this.refreshContext();
+  }
+
+  /** pi's own context estimate (the one its footer shows); its tokens are null right after compaction. */
+  private refreshContext() {
+    this.rpc
+      .call("get_session_stats")
+      .then((stats) => {
+        const c = piStats(stats, this.t.state.model);
+        this.setContext(c);
+        if (c && c.used === undefined) this.contextCompacted();
+      })
+      .catch(() => {});
   }
 
   private onRecord(r: any) {
@@ -344,6 +358,7 @@ class PiSession extends LiveSession {
             });
           this.emit({ type: "msg", msg });
           if (!msg.error) this.turnSucceeded();
+          this.refreshContext();
         } else if (m?.role === "toolResult") {
           const hit = findTool(this.t.messages, m.toolCallId);
           if (hit)
@@ -379,6 +394,7 @@ class PiSession extends LiveSession {
         break;
       case "compaction_end":
         this.rpc.call("get_messages").then((d) => this.emit({ type: "reset", messages: convertAll(d.messages ?? []) }));
+        this.refreshContext();
         break;
       case "auto_retry_start":
         this.setState({ status: "waiting", waitingReason: `Retrying (${r.attempt}/${r.maxAttempts}): ${r.errorMessage ?? ""}`, waitingUntil: Date.now() + (r.delayMs ?? 0) });
@@ -503,6 +519,7 @@ class PiSession extends LiveSession {
     if (i < 0) throw new Error(`pi models are "provider/id", got "${model}"`);
     await this.rpc.call("set_model", { provider: model.slice(0, i), modelId: model.slice(i + 1) });
     this.setState({ model });
+    this.refreshContext();
   }
 
   async setThinking(level: string) {

@@ -43,6 +43,8 @@ export interface SessionPrefs {
   background?: { id: string; description: string; type?: string }[];
   /** messages sent but not yet taken by the agent; resent after a runner restart */
   pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number }[];
+  /** last known context-window fill, for harnesses that can't report it again on resume */
+  context?: import("../../web/src/shared/protocol").ContextUsage;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

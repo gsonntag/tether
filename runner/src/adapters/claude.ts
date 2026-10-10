@@ -18,9 +18,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import type { ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
+import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../context";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -186,8 +187,10 @@ async function entryFlags(sessionId: string, dir: string): Promise<Map<string, E
   return out;
 }
 
-export async function loadHistory(sessionId: string, dir: string): Promise<Msg[]> {
+/** `onContext`: the context as of the last stored reply (a resumed process reports nothing until prompted). */
+export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void): Promise<Msg[]> {
   const [list, flags] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entryFlags(sessionId, dir)]);
+  onContext?.(claudeHistoryContext(list));
   const out: Msg[] = [];
   const byApiId = new Map<string, Msg>();
   for (const m of list) {
@@ -262,7 +265,7 @@ class ClaudeSession extends LiveSession {
 
   async start() {
     if (this.resumeId) {
-      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath) });
+      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath, (c) => this.setContext(c)) });
     }
     // Your own settings (user, project, local) decide model, effort and permission mode unless
     // this session explicitly chose something else.
@@ -298,6 +301,15 @@ class ClaudeSession extends LiveSession {
       modes: PERMISSION_MODES,
     });
     this.pump();
+    this.refreshContext();
+  }
+
+  /** Claude Code's own /context estimate: the window, and (resumed) how full it was. */
+  private refreshContext() {
+    this.q
+      ?.getContextUsage({ detail: "summary" })
+      .then((r) => this.setContext(claudeContextUsage(r)))
+      .catch(() => {});
   }
 
   private async pump() {
@@ -375,6 +387,7 @@ class ClaudeSession extends LiveSession {
         if (m.status === "compacting") this.emit({ type: "toast", level: "info", text: "Compacting context…" });
         break;
       case "compact_boundary":
+        this.contextCompacted(m.compact_metadata?.post_tokens);
         loadHistory(this.nativeId, this.projectPath)
           .then((messages) => this.emit({ type: "reset", messages }))
           .catch(() => {});
@@ -406,6 +419,8 @@ class ClaudeSession extends LiveSession {
         const msgId = newId("a");
         this.current = { apiId: e.message.id, msgId, finalCount: 0 };
         this.emit({ type: "msg", msg: { id: msgId, role: "assistant", parts: [], ts: Date.now(), model: e.message.model, streaming: true } });
+        // Each request's usage is what the model read: the context as of this step.
+        this.setContext(anthropicUsage(e.message.usage, e.message.model));
         if (this.t.state.status !== "running") this.setState({ status: "running", waitingReason: undefined, waitingUntil: undefined });
         break;
       }
@@ -459,6 +474,9 @@ class ClaudeSession extends LiveSession {
       this.current = undefined;
     }
     this.setState({ cost: r.total_cost_usd });
+    const model = this.t.state.context?.model;
+    const window = claudeWindow(r.modelUsage, model);
+    if (window) this.setContext({ max: window, model });
     const isErr = r.is_error || (r.subtype && r.subtype !== "success");
     if (isErr) {
       const text = [r.result, this.lastError?.text, this.lastError?.kind].filter(Boolean).join(" ");
@@ -561,6 +579,7 @@ class ClaudeSession extends LiveSession {
   async applyModel(model: string) {
     await this.q?.setModel(model === "default" ? undefined : model);
     this.setState({ model });
+    this.refreshContext();
   }
 
   async setThinking(level: string) {

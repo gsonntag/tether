@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
+import { acpUsage } from "../context";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -345,7 +346,8 @@ class AcpSession extends LiveSession {
         if (u.title) this.setTitle(u.title);
         break;
       case "usage_update":
-        this.setState({ contextPercent: u.size ? (u.used / u.size) * 100 : undefined, ...(u.cost?.amount != null ? { cost: u.cost.amount } : {}) });
+        this.setContext(acpUsage(u, this.t.state.model));
+        if (u.cost?.amount != null) this.setState({ cost: u.cost.amount });
         break;
       case "available_commands_update":
         this.commands = (u.availableCommands ?? []).map((c: any) => ({ name: c.name, description: c.description }));

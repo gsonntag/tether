@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { ModelRef, Msg, SessionSummary } from "../../../web/src/shared/protocol";
 import { findTool } from "../../../web/src/shared/reducer";
 import { config, saveConfigSoon } from "../config";
+import { agyUsage } from "../context";
 import { LiveSession, newId } from "../session";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -148,6 +149,7 @@ class AgySession extends LiveSession {
         if (e.step_type === "user_input" || e.step_type === "checkpoint") break;
         const msg = this.ensureMsg();
         const idx = this.stepPart.get(e.step_index);
+        if (e.usage) this.setContext(agyUsage(e.usage, this.t.state.model));
         if (e.step_type === "agent_response") {
           if (idx === undefined) {
             this.stepPart.set(e.step_index, msg.parts.length);
