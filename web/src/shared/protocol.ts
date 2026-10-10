@@ -580,6 +580,8 @@ export interface Ops {
   contextImportPreview: { args: {}; result: ContextImportPreview };
   /** the first-run "Import" button: imports, backs up and symlinks skills, exports, then keeps syncing */
   contextImport: { args: {}; result: ContextStatus };
+  /** turns the context off and removes every tether-context MCP registration Tether made; keeps the store */
+  contextDisable: { args: {}; result: ContextStatus };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
 }

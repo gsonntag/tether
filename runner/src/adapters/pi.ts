@@ -9,7 +9,7 @@ import { findTool } from "../../../web/src/shared/reducer";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
-import { sessionContext } from "../context/inject";
+import { piMcpConfig, sessionContext } from "../context/inject";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -289,9 +289,12 @@ class PiSession extends LiveSession {
     if (this.opts.model) args.push("--model", this.opts.model);
     // Every tool call goes through the Tether guard (pi has no permission system of its own).
     args.push("-e", PI_GUARD_EXT);
-    // Master context: shared memory in the system prompt (its MCP server is registered in pi's global mcp.json by the export).
+    // Master context: shared memory in the system prompt, and this session's own tether-context
+    // MCP server through pi-mcp-adapter's --mcp-config (else the global mcp.json registration).
     const ctx = await sessionContext(this.projectPath, { key: this.guardEnv.TETHER_GUARD_KEY });
     if (ctx) args.push("--append-system-prompt", ctx.prompt);
+    const mcpConfig = piMcpConfig(ctx, this.guardEnv.TETHER_GUARD_KEY);
+    if (mcpConfig) args.push("--mcp-config", mcpConfig);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);
     this.rpc.onRecord = (r) => this.onRecord(r);
     this.rpc.onExit = (code, stderr) => {

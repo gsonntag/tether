@@ -23,7 +23,8 @@ import type {
 import { parseEntry } from "../../../web/src/shared/protocol";
 import { config, saveConfig } from "../config";
 import { BACKGROUND_HARNESSES, backgroundModel } from "./background";
-import { exportAll, isOwnWrite } from "./export";
+import { exportAll, isOwnWrite, unexportMcp } from "./export";
+import { registerGlobalMcp } from "./globalMcp";
 import { asType, slugify, type Memory } from "./format";
 import { setInjectionEnabled } from "./inject";
 import { Merger, modelDecider, type Decider } from "./merge";
@@ -116,7 +117,7 @@ export class ContextService {
   async preview(): Promise<ContextImportPreview> {
     const scan = await scanSources(this.store.exists() ? this.store : undefined, { changedOnly: true });
     const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(this.meta()));
-    const exp = await exportAll(this.store, { dryRun: true });
+    const exp = await exportAll(this.store, { dryRun: true, globalMcp: true });
     return {
       memories: scan.entries.map((e) => ({ harness: e.harness, path: tilde(e.path), title: e.title, scope: e.scope ?? "decided on import" })),
       skills: plan.skills.map((s) => ({ name: s.name, from: s.from ? tilde(s.from.path) : "library", drift: s.drift, exposedAs: s.exposedAs })),
@@ -139,9 +140,30 @@ export class ContextService {
     void (async () => {
       await this.syncSkills();
       await this.sync();
+      // Native Claude Code / opencode sessions get the MCP server too; only ever on this explicit import.
+      const g = registerGlobalMcp();
+      for (const w of g.warnings) this.act({ kind: "error", text: w });
+      if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
       this.watch();
     })().catch((e) => this.act({ kind: "error", text: `Import failed: ${e?.message ?? e}` }));
     return { ...this.status(), busy: true };
+  }
+
+  /**
+   * Turns the context off: no more watching, merging or session injection, and every
+   * `tether-context` MCP registration Tether made (Claude, opencode, Codex, pi, Kiro, Antigravity)
+   * is removed. The store itself is kept, so a later import picks up where this left off.
+   */
+  async disable(): Promise<ContextStatus> {
+    this.stop();
+    const cfg = config();
+    cfg.context = { ...cfg.context, enabled: false };
+    saveConfig();
+    setInjectionEnabled(false);
+    const r = unexportMcp();
+    for (const w of r.warnings) console.error(`context: ${w}`);
+    if (this.store.exists()) this.act({ kind: "export", text: r.written.length ? `Turned off; removed tether-context from ${r.written.map(tilde).join(", ")}` : "Turned off" });
+    return this.status();
   }
 
   /** One pass: changed sources → merge → export. Overlapping calls fold into one more pass. */

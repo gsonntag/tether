@@ -637,6 +637,9 @@ const ops: Handlers = {
   async contextImport() {
     return context.runImport();
   },
+  async contextDisable() {
+    return context.disable();
+  },
   async getBackgroundModel() {
     return context.backgroundModel();
   },

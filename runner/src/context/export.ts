@@ -4,15 +4,17 @@
 //   Gemini/agy  managed block with an @import in ~/.gemini/GEMINI.md
 //   Codex, pi, opencode  managed block in their global AGENTS.md, digest inlined
 //   Kiro        ~/.kiro/steering/tether.md (Tether's own file, inclusion: always)
-//   MCP         `tether-context` registered in Codex, pi, Kiro and Antigravity MCP configs
+//   MCP         `tether-context` registered in Codex, pi, Kiro and Antigravity MCP configs; on the
+//               user's import also in ~/.claude.json and opencode's config (globalMcp.ts)
 // Only harnesses that are installed (their dir exists) are written. Every write is recorded in
 // `ownWrites`, so the watcher can tell Tether's writes from the user's.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { MemoryEntry } from "../../../web/src/shared/protocol";
-import { upsertBlock, upsertTomlBlock } from "./blocks";
+import { TOML_BEGIN, upsertBlock, upsertTomlBlock } from "./blocks";
 import { contentHash } from "./format";
+import { register, registerGlobalMcp, stdioEntry, unregisterGlobalMcp } from "./globalMcp";
 import { mcpLaunch } from "./launch";
 import { harness, tilde } from "./paths";
 import { claudeDirCwd, isHome, repoKey } from "./repokey";
@@ -135,30 +137,11 @@ function setBlock(path: string, content: string, out: ExportResult) {
   writeOwned(path, upsertBlock(cur, content), out);
 }
 
-/** JSON MCP configs (`{"mcpServers": {...}}`). Unparseable files are left alone. */
-function registerJsonMcp(path: string, out: ExportResult) {
-  if (!existsSync(dirname(path))) return;
-  const raw = readText(path);
-  let cfg: any = {};
-  if (raw.trim()) {
-    try {
-      cfg = JSON.parse(raw);
-    } catch {
-      out.warnings.push(`${tilde(path)} isn't plain JSON; register tether-context there by hand.`);
-      return;
-    }
-  }
-  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return;
-  const launch = mcpLaunch();
-  const want = { command: launch.command, args: launch.args, env: launch.env };
-  cfg.mcpServers ??= {};
-  if (JSON.stringify(cfg.mcpServers["tether-context"]) === JSON.stringify(want)) {
-    out.mcpConfigs.push(path);
-    return;
-  }
-  cfg.mcpServers["tether-context"] = want;
-  writeOwned(path, JSON.stringify(cfg, null, 2) + "\n", out);
-  out.mcpConfigs.push(path);
+/** JSON MCP configs (`{"mcpServers": {...}}`), edited in place. `installed`: the harness's own dir. */
+function registerJsonMcp(path: string, installed: string, out: ExportResult) {
+  if (!existsSync(installed)) return;
+  if (!out.dryRun) mkdirSync(dirname(path), { recursive: true });
+  register(path, "mcpServers", stdioEntry(), true, out);
 }
 
 function registerCodexMcp(out: ExportResult) {
@@ -219,7 +202,7 @@ async function claudeRepoFiles(store: Store, out: ExportResult) {
 }
 
 /** Writes every export. With `dryRun`, lists the files it would change instead. */
-export async function exportAll(store: Store, opts: { dryRun?: boolean } = {}): Promise<ExportResult> {
+export async function exportAll(store: Store, opts: { dryRun?: boolean; globalMcp?: boolean } = {}): Promise<ExportResult> {
   const out: ExportResult = { dryRun: opts.dryRun, written: [], mcpConfigs: [], warnings: [] };
   const text = globalDigest(store);
   const globalFile = join(store.dir, "exports", "global.md");
@@ -234,6 +217,32 @@ export async function exportAll(store: Store, opts: { dryRun?: boolean } = {}): 
   }
   await claudeRepoFiles(store, out);
   registerCodexMcp(out);
-  for (const p of [harness.piMcp(), harness.kiroMcp(), harness.agyMcp()]) registerJsonMcp(p, out);
+  registerJsonMcp(harness.piMcp(), dirname(harness.piMcp()), out);
+  registerJsonMcp(harness.kiroMcp(), dirname(harness.kiroMcp()), out);
+  registerJsonMcp(harness.agyMcp(), harness.agyDir(), out);
+  // Native Claude Code and opencode: their configs are shared with the harness, so only the
+  // user's own import writes them (never a background re-export). Undone by unregisterGlobalMcp.
+  if (opts.globalMcp) {
+    const g = registerGlobalMcp({ dryRun: opts.dryRun });
+    out.written.push(...g.written);
+    out.mcpConfigs.push(...g.mcpConfigs);
+    out.warnings.push(...g.warnings);
+  }
+  return out;
+}
+
+/** Turning the context off: every `tether-context` registration Tether made comes back out. */
+export function unexportMcp(): ExportResult {
+  const out: ExportResult = { written: [], mcpConfigs: [], warnings: [] };
+  const codex = harness.codexConfig();
+  const cur = readText(codex);
+  if (cur.includes(TOML_BEGIN.slice(0, 15))) {
+    // The block went in after a blank line at the end; take that back out with it.
+    const next = upsertTomlBlock(cur, undefined).replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+    if (next !== cur) writeOwned(codex, next.trim() ? next : "", out);
+  }
+  const g = unregisterGlobalMcp();
+  out.written.push(...g.written);
+  out.warnings.push(...g.warnings);
   return out;
 }
