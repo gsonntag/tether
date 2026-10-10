@@ -97,6 +97,21 @@ const claimEscape = (e: { preventDefault(): void; stopPropagation(): void }) => 
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
+/** The draft as the message the agent gets: quoted comments in document order, then the general note. */
+const draftMessage = (d: Draft) => formatPlanFeedback([...d.comments].sort((a, b) => a.offset - b.offset), d.general);
+
+/**
+ * Approves a waiting plan. Draft comments are never left behind: they follow the approval as notes
+ * for the work, and the draft is cleared. The dock's Approve and the dialog's both come here.
+ */
+async function approvePlan(sessionId: string, requestId: string, key: string): Promise<boolean> {
+  const message = draftMessage(readDraft(key));
+  if (!(await act("uiRespond", { sessionId, response: { id: requestId, allow: true } }))) return false;
+  if (message) await act("prompt", { sessionId, text: message, mode: "steer" });
+  writeDraft(key, EMPTY);
+  return true;
+}
+
 // ---------------- transcript card ----------------
 
 export function PlanCard({ part }: { part: PlanPart }) {
@@ -133,8 +148,10 @@ export function PlanCard({ part }: { part: PlanPart }) {
 
 /** The approval prompt in the dock under the transcript. */
 export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequest }) {
-  const draft = useDraft(draftKey(sessionId, r.planId ?? ""));
+  const key = draftKey(sessionId, r.planId ?? "");
+  const draft = useDraft(key);
   const n = draft.comments.length;
+  const notes = !!draftMessage(draft);
   return (
     <Card width="100%" padding={3} variant="blue">
       <VStack gap={2}>
@@ -147,7 +164,11 @@ export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequ
         </Text>
         <HStack gap={2} wrap="wrap">
           <Button label="Open plan" variant="primary" onClick={() => r.planId && openPlan(r.planId)} />
-          <Button label="Approve" onClick={() => act("uiRespond", { sessionId, response: { id: r.id, allow: true } })} />
+          <Button
+            label={notes ? "Approve with notes" : "Approve"}
+            tooltip={notes ? "Approve the plan; your draft comments follow as notes for the work" : undefined}
+            clickAction={async () => void (await approvePlan(sessionId, r.id, key))}
+          />
         </HStack>
       </VStack>
     </Card>
@@ -332,10 +353,10 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     setBusy(true);
     try {
       if (request) {
-        const ok = await act("uiRespond", { sessionId, response: approve ? { id: request.id, allow: true } : { id: request.id, allow: false, value: message } });
+        const ok = approve
+          ? await approvePlan(sessionId, request.id, key)
+          : await act("uiRespond", { sessionId, response: { id: request.id, allow: false, value: message } });
         if (!ok) return;
-        // Approving with comments: they follow the approval as notes for the work.
-        if (approve && message) await act("prompt", { sessionId, text: message, mode: "steer" });
       } else {
         const ok = await act("prompt", { sessionId, text: message, mode: running ? "steer" : undefined });
         if (!ok) return;
