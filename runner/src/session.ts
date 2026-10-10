@@ -50,6 +50,9 @@ const STALL_WARN_MS = 15 * 60_000;
  * through emit(), which applies it locally and forwards it to the server with a sequence number,
  * so any number of browsers can join at any time (snapshot + following events).
  */
+/** How often a moving conversation re-sends its summary, so session lists stay in order. */
+const SUMMARY_EVERY_MS = 10_000;
+
 /** The conversation time after `event`: a replayed history keeps its own timestamps. */
 export function movedAt(event: SessionEvent, updatedAt: number): number {
   switch (event.type) {
@@ -78,6 +81,8 @@ export abstract class LiveSession {
    * restart doesn't shuffle them all to the top.
    */
   updatedAt: number;
+  /** when a summary last went out because updatedAt moved (see emit) */
+  private movedSentAt = 0;
   t: Transcript = { messages: [], state: emptyState() };
   seq = 0;
   closed = false;
@@ -140,9 +145,18 @@ export abstract class LiveSession {
     applyEvent(this.t, event);
     this.seq++;
     this.lastActivity = Date.now();
-    this.updatedAt = movedAt(event, this.updatedAt);
+    const moved = movedAt(event, this.updatedAt);
     this.stallWarned = false;
     this.sink.emit(this.id, this.seq, event);
+    if (moved !== this.updatedAt) {
+      this.updatedAt = moved;
+      // Browsers sort session lists by this; they only hear it through summaries, which otherwise
+      // go out on title and status changes. A long turn would keep its start time and sink.
+      if (Date.now() - this.movedSentAt > SUMMARY_EVERY_MS) {
+        this.movedSentAt = Date.now();
+        this.sink.summary(this.summary());
+      }
+    }
     if (event.type === "state") {
       const s = event.state;
       if (s.status === "idle") usageChanged();
