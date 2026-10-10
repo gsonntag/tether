@@ -29,6 +29,48 @@ export interface AcpSpec {
   bin: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * opencode: ACP's permission answer has no room for a reason, so a guard denial reaches the
+   * model as a bare "rejected" (and ends its turn). `opencode acp` also serves opencode's HTTP API;
+   * on a port we pick, Tether answers a denied request there with the reason as feedback, which
+   * opencode hands the model as the tool error and keeps going.
+   */
+  httpPermissionReply?: boolean;
+}
+
+/** A free loopback port (for `opencode acp --port`). */
+export function freePort(): number {
+  const s = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const port = s.port;
+  s.stop(true);
+  return port;
+}
+
+/** What the agent is told when the guard blocks a call. */
+export function denialFeedback(reason: string | undefined): string {
+  return `[Tether guard] ${reason?.trim() || "Not allowed."} Don't retry it as is; find another way or explain what you need.`;
+}
+
+/**
+ * Rejects a pending opencode permission request with feedback, over opencode's own HTTP API.
+ * The request is found by the ACP tool call id (opencode's `tool.callID`, else the request id).
+ */
+export async function opencodeRejectWithFeedback(base: string, directory: string, toolCallId: string, message: string, fetcher: typeof fetch = fetch): Promise<boolean> {
+  const pw = process.env.OPENCODE_SERVER_PASSWORD;
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...(pw ? { Authorization: `Basic ${btoa(`${process.env.OPENCODE_SERVER_USERNAME ?? "opencode"}:${pw}`)}` } : {}) };
+  const q = `directory=${encodeURIComponent(directory)}`;
+  const list = await fetcher(`${base}/permission?${q}`, { headers, signal: AbortSignal.timeout(5_000) });
+  if (!list.ok) return false;
+  const pending: any[] = await list.json();
+  const req = (Array.isArray(pending) ? pending : []).find((p) => (p?.tool?.callID ?? p?.id) === toolCallId);
+  if (!req) return false;
+  const r = await fetcher(`${base}/permission/${encodeURIComponent(req.id)}/reply?${q}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ reply: "reject", message }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  return r.ok;
 }
 
 // ---------------- connection ----------------
@@ -41,9 +83,17 @@ class AcpProcess {
   caps: any = {};
   handlers = new Map<string, (n: SessionNotification) => void>();
   permission?: (r: RequestPermissionRequest) => Promise<RequestPermissionResponse>;
+  /** the agent's own HTTP API (spec.httpPermissionReply) */
+  httpBase?: string;
 
-  constructor(spec: AcpSpec, cwd: string) {
-    const proc = Bun.spawn([spec.bin, ...spec.args], {
+  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean } = {}) {
+    const args = [...spec.args];
+    if (opts.http && spec.httpPermissionReply) {
+      const port = freePort();
+      args.push("--port", String(port), "--hostname", "127.0.0.1");
+      this.httpBase = `http://127.0.0.1:${port}`;
+    }
+    const proc = Bun.spawn([spec.bin, ...args], {
       cwd,
       stdin: "pipe",
       stdout: "pipe",
@@ -201,7 +251,7 @@ class AcpSession extends LiveSession {
   }
 
   async start() {
-    this.p = new AcpProcess(this.spec, this.projectPath);
+    this.p = new AcpProcess(this.spec, this.projectPath, { http: true });
     this.p.exited.then((code) => {
       if (!this.closed) {
         this.notice(`${this.spec.id} exited (code ${code}). ${this.p.stderr.trim().split("\n").slice(-3).join("\n")}`, "error");
@@ -376,9 +426,24 @@ class AcpSession extends LiveSession {
     const card = tc?.toolCallId ? findTool(this.t.messages, tc.toolCallId)?.part : undefined;
     const { name, input } = permissionCall(tc, card);
     const v = await this.checkTool(name, input, tc?.toolCallId);
+    if (!v.allow) await this.explainDenial(tc?.toolCallId, v.reason);
     const want = v.allow ? (v.always ? ["allow_always", "allow_once"] : ["allow_once", "allow_always"]) : ["reject_once", "reject_always"];
     const opt = want.map((k) => r.options.find((o) => o.kind === k)).find(Boolean);
     return opt ? { outcome: { outcome: "selected", optionId: opt.optionId } } : { outcome: { outcome: "cancelled" } };
+  }
+
+  /** reasons for denials that couldn't reach the agent, told with the next prompt */
+  private untoldDenials: string[] = [];
+
+  /**
+   * ACP's reject carries no reason, so the agent only learns "rejected". Where the agent's own API
+   * can take feedback (opencode), the request is answered there with the guard's reason first (the
+   * ACP reject that follows finds it settled); otherwise the reason goes ahead of the next prompt.
+   */
+  private async explainDenial(toolCallId: string | undefined, reason: string | undefined) {
+    const text = denialFeedback(reason);
+    if (toolCallId && this.p.httpBase && (await opencodeRejectWithFeedback(this.p.httpBase, this.projectPath, toolCallId, text).catch(() => false))) return;
+    this.untoldDenials.push(text);
   }
 
   // ---- turns ----
@@ -395,7 +460,9 @@ class AcpSession extends LiveSession {
     this.curMsg = undefined;
     this.setState({ status: "running" });
     try {
-      const first = withPreamble(this.preamble, text);
+      const denied = this.untoldDenials.splice(0);
+      const note = denied.length ? `Earlier tool calls were blocked:\n${denied.map((d) => `- ${d}`).join("\n")}` : undefined;
+      const first = withPreamble(this.preamble, withPreamble(note, text));
       this.preamble = undefined;
       const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }] });
       this.finishStreaming();
@@ -604,6 +671,7 @@ export const opencodeAdapter = acpAdapter({
   bin: process.env.OPENCODE_BIN ?? "opencode",
   args: ["acp"],
   env: OPENCODE_ENV,
+  httpPermissionReply: true,
 });
 
 // Kiro CLI V3 engine: model/effort through session config options, CLI-side auth.

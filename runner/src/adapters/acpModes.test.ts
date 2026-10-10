@@ -38,3 +38,28 @@ test.skipIf(!live)("opencode build/plan show in the mode picker and switch", asy
   await session.setPermissionMode("build");
   expect(session.t.state.permissionMode).toBe("build");
 }, 120_000);
+
+// Needs a model that answers (OPENCODE_LIVE_PROMPT=1; opencode's free models work without a login).
+test.skipIf(!live || !process.env.OPENCODE_LIVE_PROMPT)("a guard denial's reason reaches the opencode agent, which keeps going", async () => {
+  const proj = join(root, "proj2");
+  mkdirSync(proj, { recursive: true });
+  const s: any = opencodeAdapter.create(proj, {}, sink as any);
+  try {
+    await s.start();
+    const asked: string[] = [];
+    s.checkTool = async (name: string) => {
+      asked.push(name);
+      return { allow: false, reason: "Shell commands are off today; the code word is PELICAN-7." };
+    };
+    await s.prompt("Use the bash tool to run `echo hi`. If it is blocked, tell me exactly what the block message said, then stop.");
+    const end = Date.now() + 150_000;
+    while (Date.now() < end && (s.t.state.status !== "idle" || !asked.length)) await Bun.sleep(500);
+    const text = JSON.stringify(s.t.messages);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(text).toContain("PELICAN-7"); // in the tool's error and/or the agent's reply
+    const last = s.t.messages.filter((m: any) => m.role === "assistant").at(-1);
+    console.log("agent said:", JSON.stringify(last?.parts?.filter((p: any) => p.type === "text")).slice(0, 400));
+  } finally {
+    s.close();
+  }
+}, 180_000);
