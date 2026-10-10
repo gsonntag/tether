@@ -533,6 +533,13 @@ const ops: Handlers = {
 
   async prompt({ sessionId, text, mode }) {
     const s = await getLive(sessionId);
+    // Talking to a session marked done brings it back to the lists.
+    const cfg = config();
+    if (cfg.archived.includes(sessionId)) {
+      cfg.archived = cfg.archived.filter((id) => id !== sessionId);
+      saveConfig();
+      sink.summary(s.summary());
+    }
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));

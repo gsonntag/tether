@@ -365,7 +365,7 @@ class CodexSession extends LiveSession {
   private act = new CodexActivity();
 
   constructor(
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
     private opts: CreateOpts & { resume?: boolean } = {},
   ) {
@@ -887,7 +887,7 @@ export const codexAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const t = (await threads()).find((x) => x.id === nativeId);
     return new CodexSession(
-      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined },
+      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined, updatedAt: t ? t.updatedAt * 1000 : undefined },
       sink,
       { resume: true },
     );

@@ -268,7 +268,7 @@ class AcpSession extends LiveSession {
 
   constructor(
     private spec: AcpSpec,
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
     private opts: CreateOpts & { resume?: boolean } = {},
   ) {
@@ -653,7 +653,7 @@ export function acpAdapter(spec: AcpSpec): Adapter {
 
     async resume(nativeId, projectPath, sink) {
       const s = (await catalog()).find((x) => x.sessionId === nativeId);
-      return new AcpSession(spec, { nativeId, projectPath, title: s?.title ?? undefined }, sink, { resume: true });
+      return new AcpSession(spec, { nativeId, projectPath, title: s?.title ?? undefined, updatedAt: s?.updatedAt ? Date.parse(s.updatedAt) : undefined }, sink, { resume: true });
     },
 
     async listModels(live) {

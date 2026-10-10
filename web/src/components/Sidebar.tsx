@@ -372,7 +372,6 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
   const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
   const [all, setAll] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const archiveProject = async (archived: boolean) => {
     if (archived && p.live.some((s) => s.status !== "idle") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
       return;
@@ -384,20 +383,12 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   let more: React.ReactNode = null;
   if (!open) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
   else if (loaded) {
-    // Live sessions first, then most recent; archived (and removed) ones only behind their own toggle.
+    // Live sessions first, then most recent. Sessions marked done never show here; search finds
+    // them, and sending one a message brings it back.
     const sorted = loaded.filter((s) => !s.archived).sort((a, b) => Number(b.live) - Number(a.live) || b.updatedAt - a.updatedAt);
-    const archived = loaded.filter((s) => s.archived).sort((a, b) => b.updatedAt - a.updatedAt);
     rows = all ? sorted : sorted.slice(0, SHOW);
-    if (showArchived) rows = [...rows, ...archived];
-    more = (
-      <>
-        {sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />}
-        {archived.length > 0 && (
-          <SideNavItem size="sm" label={showArchived ? "Hide archived" : `Archived (${archived.length})`} onClick={() => setShowArchived(!showArchived)} />
-        )}
-      </>
-    );
-    if (!loaded.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
+    more = sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />;
+    if (!sorted.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
   } else more = <SideNavItem size="sm" label="Loading…" isDisabled />;
 
   return (
@@ -552,8 +543,8 @@ function SessionRow({ s }: { s: SessionSummary }) {
   const remove = s.archived ? null : (
     <IconButton
       {...getContentRevealProps({ forceVisibility: removing ? "shown" : undefined })}
-      label={s.live ? "Stop and remove session" : "Remove session"}
-      tooltip={s.live ? "Stop the agent and remove" : "Remove"}
+      label={s.live ? "Done: stop and hide session" : "Done: hide session"}
+      tooltip={s.live ? "Done: stop the agent and hide (search finds it)" : "Done: hide (search finds it)"}
       variant="ghost"
       size="sm"
       isLoading={removing}
@@ -591,7 +582,7 @@ function SessionRow({ s }: { s: SessionSummary }) {
             alignment="end"
             items={[
               { label: "Rename", onClick: () => setEditing(true) },
-              ...(s.status === "idle" ? [{ label: s.archived ? "Unarchive" : "Archive", onClick: () => archive(s, !s.archived) }] : []),
+              ...(s.status === "idle" ? [{ label: s.archived ? "Bring back" : "Mark done", onClick: () => archive(s, !s.archived) }] : []),
               ...(s.live && s.status === "idle" ? [{ label: "Stop the agent process", onClick: () => act("closeSession", { sessionId: s.id }) }] : []),
             ]}
           />

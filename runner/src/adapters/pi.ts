@@ -282,7 +282,7 @@ class PiSession extends LiveSession {
   private act = new PiActivity();
 
   constructor(
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; sessionFile?: string },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number; sessionFile?: string },
     sink: Sink,
     private opts: CreateOpts = {},
   ) {
@@ -651,7 +651,7 @@ export const piAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const f = (await scanFiles()).find((x) => x.id === nativeId);
     if (!f) throw new Error(`pi session ${nativeId} not found`);
-    return new PiSession({ nativeId, projectPath: f.cwd, title: await titleOf(f), createdAt: f.createdAt, sessionFile: f.path }, sink);
+    return new PiSession({ nativeId, projectPath: f.cwd, title: await titleOf(f), createdAt: f.createdAt, updatedAt: f.mtime, sessionFile: f.path }, sink);
   },
 
   async listModels(live) {

@@ -48,13 +48,34 @@ const STALL_WARN_MS = 15 * 60_000;
  * through emit(), which applies it locally and forwards it to the server with a sequence number,
  * so any number of browsers can join at any time (snapshot + following events).
  */
+/** The conversation time after `event`: a replayed history keeps its own timestamps. */
+export function movedAt(event: SessionEvent, updatedAt: number): number {
+  switch (event.type) {
+    case "reset": {
+      const last = event.messages.reduce((t, m) => Math.max(t, m.ts ?? 0), 0);
+      return last || updatedAt;
+    }
+    case "msg":
+      return Math.max(updatedAt, event.msg.ts ?? Date.now());
+    case "delta":
+      return Date.now();
+    default:
+      return updatedAt;
+  }
+}
+
 export abstract class LiveSession {
   readonly harness: HarnessId;
   nativeId: string;
   projectPath: string;
   title: string;
   createdAt: number;
-  updatedAt = Date.now();
+  /**
+   * When the conversation last moved: what the session lists sort by. Only messages and streamed
+   * text move it, never state, activity or a history replay, so resuming sessions after a runner
+   * restart doesn't shuffle them all to the top.
+   */
+  updatedAt: number;
   t: Transcript = { messages: [], state: emptyState() };
   seq = 0;
   closed = false;
@@ -72,7 +93,7 @@ export abstract class LiveSession {
 
   constructor(
     harness: HarnessId,
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     protected sink: SessionSink,
   ) {
     this.harness = harness;
@@ -80,6 +101,7 @@ export abstract class LiveSession {
     this.projectPath = init.projectPath;
     this.title = init.title ?? "New session";
     this.createdAt = init.createdAt ?? Date.now();
+    this.updatedAt = init.updatedAt ?? this.createdAt;
     this.t.state.preferEarlier = true;
     this.watchdog = setInterval(() => this.checkStall(), 60_000);
     this.guardKey = registerGuard(this);
@@ -115,7 +137,8 @@ export abstract class LiveSession {
     const beforeModel = this.t.state.model;
     applyEvent(this.t, event);
     this.seq++;
-    this.updatedAt = this.lastActivity = Date.now();
+    this.lastActivity = Date.now();
+    this.updatedAt = movedAt(event, this.updatedAt);
     this.stallWarned = false;
     this.sink.emit(this.id, this.seq, event);
     if (event.type === "state") {

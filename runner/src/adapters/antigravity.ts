@@ -160,7 +160,7 @@ class AgySession extends LiveSession {
   /** verdicts by `conversation:step`: a second hook (an old global install) asks again for the same call */
   private verdicts = new Map<string, Promise<{ allow: boolean; reason?: string; always?: boolean; overwrite?: Record<string, unknown> }>>();
 
-  constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number }, sink: Sink, opts: CreateOpts = {}) {
+  constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number }, sink: Sink, opts: CreateOpts = {}) {
     super("antigravity", init, sink);
     const r = records().find((x) => x.id === init.nativeId);
     this.convId = r?.convId;
@@ -651,7 +651,7 @@ export const antigravityAdapter: Adapter = {
 
   async resume(nativeId, projectPath, sink) {
     const r = records().find((x) => x.id === nativeId);
-    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt }, sink);
+    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt, updatedAt: r?.updatedAt }, sink);
   },
 
   async listModels(live) {

@@ -272,7 +272,7 @@ class ClaudeSession extends LiveSession {
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
-    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number },
+    init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
     private opts: CreateOpts & { resume?: boolean } = {},
   ) {
@@ -781,7 +781,7 @@ export const claudeAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const s = (await listSessions({ dir: projectPath, includeWorktrees: false })).find((x) => x.sessionId === nativeId);
     return new ClaudeSession(
-      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt },
+      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s?.lastModified },
       sink,
       { resume: true },
     );
