@@ -20,8 +20,8 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { BellAlertIcon, BoltIcon, CheckCircleIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
-import type { MemoryConflict, SessionPulse, UiRequest } from "../shared/protocol";
-import { activityLine, contextPercent, diffLabel, elapsed, groupDashboard, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
+import type { MemoryConflict, SessionPulse, UiRequest, UiResponse } from "../shared/protocol";
+import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, groupDashboard, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
 import { openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
@@ -83,12 +83,17 @@ async function call<T>(p: Promise<T>): Promise<T | undefined> {
   }
 }
 
-/** Approve / deny / answer from Home: the row leaves at once; the runner's next pulse confirms. */
-async function respond(row: NeedRow, response: Omit<Parameters<typeof rpcTo<"uiRespond">>[2]["response"], "id">) {
-  const { runnerId, pulse, request } = row;
-  const sessionId = pulse.session.id;
-  if ((await call(rpcTo(runnerId, "uiRespond", { sessionId, response: { id: request.id, ...response } }))) === undefined) return;
-  patchPulse(runnerId, sessionId, (p) => ({ ...p, pendingUi: p.pendingUi?.filter((r) => r.id !== request.id) }));
+/**
+ * Approve / deny / answer from Home: exactly this request (runner, session and request id), once;
+ * the row leaves when the runner took it or says it's no longer waiting.
+ */
+async function respond(row: NeedRow, response: Omit<UiResponse, "id">) {
+  const r = await call(answerRequest(row, response, (runnerId, args) => rpcTo(runnerId, "uiRespond", args)));
+  if (r === "stale") toast("info", "That request was already answered or has expired.");
+  if (r === "ok" || r === "stale") {
+    const { runnerId, pulse, request } = row;
+    patchPulse(runnerId, pulse.session.id, (p) => ({ ...p, pendingUi: p.pendingUi?.filter((x) => x.id !== request.id) }));
+  }
 }
 
 async function stop(row: PulseRow) {
@@ -450,28 +455,36 @@ function NeedItem({ row, ctx }: { row: NeedRow; ctx: RowCtx }) {
   const [busy, setBusy] = useState("");
   const size = ctx.phone ? "lg" : "md";
   const run = (key: string, response: Parameters<typeof respond>[1]) => {
+    if (busy) return;
     setBusy(key);
     respond(row, response).finally(() => setBusy(""));
   };
+  // While one answer is in flight the others can't be sent (answerRequest also drops repeats).
+  const state = (key: string) => ({ isLoading: busy === key, isDisabled: !!busy && busy !== key });
   const open = () => openOnRunner(row.runnerId, p.session);
   const q = oneTapQuestion(r);
   let actions: ReactNode;
   if (r.kind === "permission")
     actions = (
       <>
-        <Button label="Approve" variant="primary" size={size} isLoading={busy === "allow"} onClick={() => run("allow", { allow: true })} />
-        <Button label="Deny" variant="secondary" size={size} isLoading={busy === "deny"} onClick={() => run("deny", { allow: false })} />
+        {/* A call too long to show here is approved from the session, where it's shown in full. */}
+        {(r.tool?.input as { truncated?: boolean } | undefined)?.truncated ? (
+          <Button label="Review" variant="primary" size={size} isDisabled={!!busy} onClick={open} />
+        ) : (
+          <Button label="Approve" variant="primary" size={size} {...state("allow")} onClick={() => run("allow", { allow: true })} />
+        )}
+        <Button label="Deny" variant="secondary" size={size} {...state("deny")} onClick={() => run("deny", { allow: false })} />
       </>
     );
   else if (q)
     actions = q.options.map((o) => (
-      <Button key={o.label} label={o.label} variant="secondary" size={size} isLoading={busy === o.label} onClick={() => run(o.label, { answers: { [q.question]: o.label } })} />
+      <Button key={o.label} label={o.label} variant="secondary" size={size} {...state(o.label)} onClick={() => run(o.label, { answers: { [q.question]: o.label } })} />
     ));
   else if (r.kind === "confirm")
     actions = (
       <>
-        <Button label="Yes" variant="primary" size={size} isLoading={busy === "yes"} onClick={() => run("yes", { confirmed: true })} />
-        <Button label="No" variant="secondary" size={size} isLoading={busy === "no"} onClick={() => run("no", { confirmed: false })} />
+        <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => run("yes", { confirmed: true })} />
+        <Button label="No" variant="secondary" size={size} {...state("no")} onClick={() => run("no", { confirmed: false })} />
       </>
     );
   else actions = <Button label={r.kind === "plan" ? "Review plan" : "Answer"} variant="primary" size={size} onClick={open} />;

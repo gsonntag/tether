@@ -1,7 +1,7 @@
 // The Home dashboard's data: session pulses from every connected runner, grouped into what needs
 // you, what's running and what finished recently. Pure, so it's unit tested (dashboard.test.ts).
 
-import { ACTIVITY_KINDS, type SessionPulse, type UiRequest } from "./shared/protocol";
+import { ACTIVITY_KINDS, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
 
 /** runnerId -> sessionId -> latest pulse */
 export type PulseMap = Record<string, Record<string, SessionPulse>>;
@@ -88,6 +88,38 @@ export function diffLabel(p: SessionPulse): string | undefined {
 export function contextPercent(p: SessionPulse): number | undefined {
   const c = p.context;
   return c?.used !== undefined && c.max ? Math.min(100, (c.used / c.max) * 100) : undefined;
+}
+
+/** Sessions doing something now on every runner: Home's Running count, and the sidebar's. */
+export function runningCount(map: PulseMap): number {
+  let n = 0;
+  for (const byId of Object.values(map)) for (const p of Object.values(byId)) if (!p.session.archived && isRunning(p)) n++;
+  return n;
+}
+
+/** Requests being answered from this tab, by runner, session and request id. */
+const answering = new Set<string>();
+
+/**
+ * Answers one waiting request from Home: the response carries the request's own id to the runner
+ * and session it came from, so it can only ever settle that request. A second tap (or another
+ * button) while the first is in flight sends nothing ("busy"); "stale" when the runner had nothing
+ * waiting with that id (answered on another device, expired, cancelled). Rejects on rpc errors.
+ */
+export async function answerRequest(
+  row: NeedRow,
+  response: Omit<UiResponse, "id">,
+  rpc: (runnerId: string, args: { sessionId: string; response: UiResponse }) => Promise<{ stale?: boolean }>,
+): Promise<"ok" | "stale" | "busy"> {
+  const key = `${row.runnerId}\n${row.pulse.session.id}\n${row.request.id}`;
+  if (answering.has(key)) return "busy";
+  answering.add(key);
+  try {
+    const r = await rpc(row.runnerId, { sessionId: row.pulse.session.id, response: { ...response, id: row.request.id } });
+    return r?.stale ? "stale" : "ok";
+  } finally {
+    answering.delete(key);
+  }
 }
 
 /** A question answerable with one tap: a single, single-choice question with a few options. */

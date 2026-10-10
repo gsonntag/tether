@@ -77,7 +77,12 @@ function decorate(s: SessionSummary): SessionSummary {
 // ---------------- dashboard pulses ----------------
 
 const turns = new TurnClock();
-const closedPulses = new ClosedPulses();
+// Per-session pulse state lives as long as the session is live or among the recently finished.
+const closedPulses = new ClosedPulses(20, (id) => {
+  if (live.has(id)) return;
+  turns.forget(id);
+  pulses.forget(id);
+});
 
 function pulseOf(id: string) {
   const s = live.get(id);
@@ -498,6 +503,13 @@ const ops: Handlers = {
       if (s.busy) await Promise.race([s.stop().catch(() => {}), new Promise((r) => setTimeout(r, 3_000))]);
       s.close();
     }
+    // Every browser's Home drops it now, including one that only had it under Recently finished
+    // (whose stored pulse predates the archive), and a later listPulses doesn't bring it back.
+    const last = pulseOf(sessionId);
+    closedPulses.delete(sessionId);
+    pulses.forget(sessionId);
+    turns.forget(sessionId);
+    if (last && connected) send({ t: "pulse", pulses: [{ session: { ...last.session, archived: true } }] });
     // Nothing to resume or resend after a runner restart.
     const p = cfg.sessions[sessionId];
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
@@ -631,8 +643,8 @@ const ops: Handlers = {
   },
 
   async uiRespond({ sessionId, response }) {
-    requireLive(sessionId).uiRespond(response);
-    return {};
+    // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop)
+    return requireLive(sessionId).uiRespond(response) ? {} : { stale: true };
   },
 
   async getUsage({ force }) {

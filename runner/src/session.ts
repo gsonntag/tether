@@ -561,8 +561,16 @@ export abstract class LiveSession {
     });
   }
 
-  uiRespond(r: UiResponse) {
-    this.uiWaiters.get(r.id)?.(r);
+  /**
+   * Answers the waiting request with this id; false when none is waiting (answered from another
+   * device, a second tap, timed out, cancelled). Ids are unique, so an answer never lands on a
+   * different request that has since taken the first one's place.
+   */
+  uiRespond(r: UiResponse): boolean {
+    const done = this.uiWaiters.get(r.id);
+    if (!done) return false;
+    done(r);
+    return true;
   }
 
   cancelAllUi() {

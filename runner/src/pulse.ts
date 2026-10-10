@@ -4,9 +4,17 @@
 
 import { isActive, type ActivityKind, type LiveState, type Msg, type SessionPulse, type SessionSummary, type UiRequest } from "../../web/src/shared/protocol";
 import { describeTool } from "./adapters/activity";
+import { redactSecrets } from "./context/handoff";
 
+/**
+ * One line of at most `n` chars, credentials redacted: pulses reach every browser, and Home is the
+ * page a phone opens on. Redacted before clipping, so a clipped key can't leak its first characters;
+ * only a bounded prefix is scanned.
+ */
 const clip = (s: string, n: number) => {
-  const line = s.replace(/\s+/g, " ").trim();
+  const line = redactSecrets(s.slice(0, Math.max(4 * n, 2_000)))
+    .replace(/\s+/g, " ")
+    .trim();
   return line.length > n ? line.slice(0, n - 1) + "…" : line;
 };
 
@@ -61,17 +69,22 @@ export function currentAction(state: LiveState, messages: Msg[]): string | undef
 /** Permission prompts and questions without large payloads (a Write's whole file, a long plan). */
 export function compactUi(r: UiRequest): UiRequest {
   const out: UiRequest = { ...r };
-  if (r.message) out.message = r.message.length > 400 ? r.message.slice(0, 399) + "…" : r.message;
+  if (r.message) out.message = clip(r.message, 400);
   if (r.tool) {
     const i = r.tool.input as any;
+    // `truncated`: the dashboard doesn't offer one-tap approval of a call you can't read in full.
+    const cut = (s: string, key: "command" | "summary") => {
+      const v = clip(s, 400);
+      return { [key]: v, ...(s.replace(/\s+/g, " ").trim().length > 400 ? { truncated: true } : {}) };
+    };
     const summary =
       i && typeof i === "object"
         ? typeof i.command === "string"
-          ? { command: clip(i.command, 400) }
+          ? cut(i.command, "command")
           : i.file_path || i.path
-            ? { file_path: i.file_path ?? i.path }
-            : { summary: clip(JSON.stringify(i), 400) }
-        : { summary: clip(String(i ?? ""), 400) };
+            ? { file_path: clip(String(i.file_path ?? i.path), 400) }
+            : cut(JSON.stringify(i), "summary")
+        : cut(String(i ?? ""), "summary");
     out.tool = { name: r.tool.name, input: summary };
   }
   return out;
@@ -88,10 +101,11 @@ export function buildPulse(p: { session: SessionSummary; state: LiveState; messa
   }
   const c = state.context;
   const live = session.live;
+  const action = live ? currentAction(state, messages) : undefined;
   return {
     session,
     ...(state.model ? { model: state.model } : {}),
-    ...(live ? { action: currentAction(state, messages) } : {}),
+    ...(live ? { action: action && clip(action, 200) } : {}),
     ...(live && session.status !== "idle" && p.turnStartedAt ? { turnStartedAt: p.turnStartedAt } : {}),
     ...(live && Object.keys(counts).length ? { activity: counts } : {}),
     ...(live && armed ? { armed } : {}),
@@ -239,11 +253,19 @@ export class PulseThrottle {
 /** Sessions whose agent process closed: their last pulse, so "Recently finished" still lists them. */
 export class ClosedPulses {
   private map = new Map<string, SessionPulse>();
-  constructor(private max = 20) {}
+  /** `onEvict`: a session pushed out by newer ones (forget its other per-session state too) */
+  constructor(
+    private max = 20,
+    private onEvict?: (id: string) => void,
+  ) {}
   put(p: SessionPulse) {
     this.map.delete(p.session.id);
     this.map.set(p.session.id, p);
-    while (this.map.size > this.max) this.map.delete(this.map.keys().next().value!);
+    while (this.map.size > this.max) {
+      const id = this.map.keys().next().value!;
+      this.map.delete(id);
+      this.onEvict?.(id);
+    }
   }
   get(id: string) {
     return this.map.get(id);

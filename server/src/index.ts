@@ -21,9 +21,10 @@ let rpcSeq = 0;
 
 const RPC_TIMEOUT_MS = 120_000;
 
+/** Every session's events and pulses: owners only (the upgrade already refuses anyone else; this is the backstop). */
 function toBrowsers(m: ServerToBrowser) {
   const s = JSON.stringify(m);
-  for (const b of browsers) b.send(s);
+  for (const b of browsers) if (isOwner(b.data.viewer)) b.send(s);
 }
 
 function runnerList(): RunnerInfo[] {

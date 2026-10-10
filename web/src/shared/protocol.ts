@@ -683,7 +683,8 @@ export interface Ops {
   pushTest: { args: { endpoint: string }; result: {} };
   listNotifications: { args: {}; result: AgentNotice[] };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
-  uiRespond: { args: { sessionId: string; response: UiResponse }; result: {} };
+  /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
+  uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };
   getUsage: { args: { force?: boolean }; result: UsageReport };
   renameSession: { args: { sessionId: string; projectPath: string; title: string }; result: {} };
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };

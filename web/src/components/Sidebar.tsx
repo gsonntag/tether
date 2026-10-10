@@ -31,6 +31,7 @@ import {
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { ago } from "../util";
+import { runningCount } from "../dashboard";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
 
@@ -456,10 +457,10 @@ function RenameInput({ session, onDone }: { session: SessionSummary; onDone: () 
   );
 }
 
-/** Home's Running section (every runner), with how much is running across this runner's sessions. */
+/** Home's Running section, with its count: sessions doing something now on every runner. */
 function RunningItem() {
   const page = useStore((s) => s.page);
-  const n = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].reduce((sum, x) => sum + (x.live && !x.archived ? (x.activeCount ?? 0) : 0), 0));
+  const n = useStore((s) => runningCount(s.pulses));
   return (
     <SideNavItem
       label="Running"

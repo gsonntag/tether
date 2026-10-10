@@ -245,6 +245,45 @@ test("pulseKey ignores updatedAt only", () => {
   expect(pulseKey(pulse("a"))).not.toBe(pulseKey(pulse("a", { action: "x" })));
 });
 
+describe("secrets and long calls on the dashboard", () => {
+  const key = "sk-ant-api03-" + "Ab3".repeat(12);
+  test("credentials are redacted from commands, summaries, messages, the action and the last line", () => {
+    const perm = compactUi({ id: "1", kind: "permission", title: "t", message: `uses ${key}`, tool: { name: "Bash", input: { command: `curl -H "Authorization: Bearer ${key}" https://api` } } });
+    const mcp = compactUi({ id: "2", kind: "permission", title: "t", tool: { name: "mcp__x", input: { api_key: "hunter2hunter2hunter2" } } });
+    const all = JSON.stringify([perm, mcp]);
+    expect(all).not.toContain("Ab3Ab3");
+    expect(all).not.toContain("hunter2");
+    expect(all).toContain("[redacted]");
+    const state: LiveState = { ...emptyState(), status: "running" };
+    const p = buildPulse({
+      session: summary("a"),
+      state,
+      messages: [msg("assistant", [{ type: "text", text: `Set OPENAI_KEY=${key}` }, { type: "tool", id: "t", name: "Bash", input: { command: `export TOKEN=${key}` }, status: "running" }])],
+    });
+    expect(JSON.stringify(p)).not.toContain("Ab3Ab3");
+  });
+
+  test("a secret straddling the clip point doesn't leak its start", () => {
+    const r = compactUi({ id: "1", kind: "permission", title: "t", tool: { name: "Bash", input: { command: "x".repeat(390) + " " + key } } });
+    expect((r.tool!.input as any).command).not.toContain("sk-ant");
+  });
+
+  test("a call too long to show is marked truncated (Home sends you to the session to approve it)", () => {
+    const short = compactUi({ id: "1", kind: "permission", title: "t", tool: { name: "Bash", input: { command: "ls -la" } } });
+    const long = compactUi({ id: "2", kind: "permission", title: "t", tool: { name: "Bash", input: { command: "echo ok; " + "a".repeat(500) + " && rm -rf ~" } } });
+    expect((short.tool!.input as any).truncated).toBeUndefined();
+    expect((long.tool!.input as any).truncated).toBe(true);
+  });
+});
+
+test("ClosedPulses tells when it evicts, so per-session state is forgotten", () => {
+  const gone: string[] = [];
+  const c = new ClosedPulses(2, (id) => gone.push(id));
+  for (const id of ["a", "b", "a", "c", "d"]) c.put(pulse(id));
+  expect(gone).toEqual(["b", "a"]);
+  expect(c.list().map((p) => p.session.id)).toEqual(["c", "d"]);
+});
+
 test("ClosedPulses keeps the newest N", () => {
   const c = new ClosedPulses(2);
   c.put(pulse("a"));
