@@ -297,6 +297,22 @@ function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
 
 // ---------------- live session ----------------
 
+/**
+ * The extra sandbox permissions a command approval asks for (experimental `additionalPermissions`:
+ * network, file-system entries/read/write roots), or undefined when it asks for none.
+ */
+export function additionalPermissions(p: any): Record<string, unknown> | undefined {
+  const a = p?.additionalPermissions;
+  if (!a || typeof a !== "object") return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === "object" && !Array.isArray(v) && Object.values(v).every((x) => x === null || x === undefined || (Array.isArray(x) && !x.length))) continue;
+    out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Codex collaboration modes, offered as the session's modes: "plan" plans before it acts. */
 export const CODEX_MODES = ["default", "plan"];
 
@@ -588,7 +604,13 @@ class CodexSession extends LiveSession {
     switch (method) {
       case "item/commandExecution/requestApproval": {
         const input = { command: unwrapShell(p.command ?? "") };
-        const v = await this.checkTool("bash", input, p.itemId);
+        // With experimentalApi a command can ask for more sandbox room (network, extra write roots),
+        // granted by accepting it: that is a permission request, not a plain command, so no
+        // read-only-command rule may wave it through.
+        const extra = additionalPermissions(p);
+        const v = extra
+          ? await this.checkTool("request_permissions", { ...input, reason: p.reason, permissions: extra, cwd: p.cwd }, p.itemId)
+          : await this.checkTool("bash", input, p.itemId);
         if (!v.allow) this.explainDenial(`\`${input.command}\``, v.reason);
         return { decision: v.allow ? (v.always ? "acceptForSession" : "accept") : "decline" };
       }

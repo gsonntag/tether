@@ -2,7 +2,24 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODEX_MODES, CodexProcess, collaborationMode, diffPairs, unwrapShell } from "./codex";
+import { rules } from "../guard";
+import { additionalPermissions, CODEX_MODES, CodexProcess, collaborationMode, diffPairs, unwrapShell } from "./codex";
+
+describe("command approvals that ask for more sandbox room (experimentalApi)", () => {
+  test("only real requests count", () => {
+    expect(additionalPermissions({ command: "ls" })).toBeUndefined();
+    expect(additionalPermissions({ additionalPermissions: null })).toBeUndefined();
+    expect(additionalPermissions({ additionalPermissions: { network: null, fileSystem: { read: null, write: [], entries: null } } })).toBeUndefined();
+    expect(additionalPermissions({ additionalPermissions: { network: { enabled: true }, fileSystem: null } })).toEqual({ network: { enabled: true } });
+    expect(additionalPermissions({ additionalPermissions: { fileSystem: { write: ["/etc"] } } })).toEqual({ fileSystem: { write: ["/etc"] } });
+  });
+
+  test("a read-only command carrying extra permissions is not waved through by the rules", () => {
+    const cwd = "/home/u/proj";
+    expect(rules({ tool: "bash", input: { command: "ls" }, cwd })?.decision).toBe("allow");
+    expect(rules({ tool: "request_permissions", input: { command: "ls", permissions: { network: { enabled: true } } }, cwd })).toBeUndefined();
+  });
+});
 
 describe("plan mode (collaboration mode)", () => {
   test("the app-server shape", () => {
