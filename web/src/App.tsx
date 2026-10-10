@@ -9,10 +9,13 @@ import { VStack } from "@astryxdesign/core/Layout";
 import { ToastViewport, useToast } from "@astryxdesign/core/Toast";
 import { Bars3Icon } from "@heroicons/react/24/outline";
 import { Dialogs } from "./components/Dialogs";
+import { MemoryPage } from "./components/MemoryPage";
 import { SessionView } from "./components/SessionView";
+import { RunningPage } from "./components/RunningPage";
 import { Sidebar } from "./components/Sidebar";
 import { listenForOpen, pushOnHere, pushSupported } from "./push";
-import { NARROW_QUERY, openLink, switchRunner, toggleSidebar, useStore } from "./store";
+import { NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
+import { useDrawerSwipe } from "./swipe";
 
 listenForOpen();
 
@@ -36,17 +39,24 @@ export function App() {
   );
 }
 
+const swipeIsOpen = () => useStore.getState().sidebarOpen;
+const swipeSetOpen = (open: boolean) => useStore.setState({ sidebarOpen: open });
+
 function Shell() {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const sidebarHidden = useStore((s) => s.sidebarHidden);
   const selected = useStore((s) => s.selected);
+  const page = useStore((s) => s.page);
   const connected = useStore((s) => s.connected);
   const runnerId = useStore((s) => s.runnerId);
   const narrow = useNarrow();
+  useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
-  // Deep links: #/s/<id>, and #/r/<runnerId>/s/<sessionId> from notifications
+  // Deep links: #/s/<id>, #/memory, #/running, and #/r/<runnerId>/s/<sessionId> from notifications
   useEffect(() => {
     const fromHash = () => {
+      if (location.hash === "#/memory") return openPage("memory");
+      if (location.hash === "#/running") return openPage("running");
       const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
       if (r) switchRunner(decodeURIComponent(r[1]!));
       const m = r ?? location.hash.match(/^#\/s\/(.+)$/);
@@ -109,7 +119,15 @@ function Shell() {
             style={{ position: "absolute", top: "var(--spacing-2)", insetInlineStart: "var(--spacing-2)", zIndex: 2 }}
           />
         )}
-        {selected ? <SessionView key={selected} sessionId={selected} /> : <Home />}
+        {page === "memory" ? (
+          <MemoryPage narrow={narrow} />
+        ) : page === "running" ? (
+          <RunningPage />
+        ) : selected ? (
+          <SessionView key={selected} sessionId={selected} />
+        ) : (
+          <Home />
+        )}
       </VStack>
       <Dialogs />
     </AppShell>

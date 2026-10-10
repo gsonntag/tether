@@ -16,6 +16,7 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
+import { Layout } from "@astryxdesign/core/Layout";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
@@ -28,10 +29,12 @@ import { effortLabel } from "../models";
 import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
+import { ActivityButton, ActivityPanel } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
+import { SessionConflicts } from "./MemoryConflicts";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
@@ -42,7 +45,8 @@ const useNarrow = () => useMediaQuery(NARROW);
 
 const fill: CSSProperties = { flex: 1, minHeight: 0 };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
-const composerDock: CSSProperties = { paddingBlockEnd: "env(safe-area-inset-bottom)" };
+const statusText: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 4)" };
+const composerDock: CSSProperties ={ paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
 const queuedRow = (dragging: boolean): CSSProperties => ({
   border: "var(--border-width) solid var(--color-border)",
@@ -95,8 +99,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
 
   const st = o.state;
   setProjectRoot(o.session.projectPath, sessionId);
-  return (
-    <>
+  const chat = (
+    <VStack style={fill}>
       {o.syncing && <Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
       <ChatLayout
         ref={scroller}
@@ -121,8 +125,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <PendingSteers sessionId={sessionId} state={st} />
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
+          <SessionConflicts sessionId={sessionId} />
         </VStack>
       </ChatLayout>
+    </VStack>
+  );
+  return (
+    <>
+      <Layout padding={0} content={chat} end={<ActivityPanel sessionId={sessionId} state={st} harness={o.session.harness} />} />
       <ChangesDialog sessionId={sessionId} state={st} />
     </>
   );
@@ -145,11 +155,13 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
         onPick={(label) => act("setGuard", { sessionId, mode: GUARD_MODES.find((g) => g.label === label)!.id })}
       />
       <ChangesButton sessionId={sessionId} state={st} />
+      <ActivityButton state={st} />
       <StackItem size="fill" />
       {!narrow &&
         Object.entries(st.statuses).map(([k, v]) => (
-          <Tooltip key={k} content={k}>
-            <Text type="code" color="secondary">
+          // Extension statuses can be long (pi's usage lines); one short line each keeps the bar on one row.
+          <Tooltip key={k} content={`${k}: ${v}`}>
+            <Text type="code" color="secondary" maxLines={1} style={statusText}>
               {v}
             </Text>
           </Tooltip>
@@ -167,12 +179,14 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
 
 function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harness: string; state: LiveState }) {
   const [fetched, setLevels] = useState<string[]>([]);
+  // A deep link shows the saved copy before the runner is connected; ask again once it is.
+  const online = useStore((s) => s.connected && !!s.runnerId);
   useEffect(() => {
-    if (state.thinkingLevels) return;
+    if (state.thinkingLevels || !online) return;
     rpc("listModels", { harness: harness as any, sessionId })
       .then((r) => setLevels(r.thinkingLevels))
       .catch(() => {});
-  }, [harness, sessionId, state.model, state.thinkingLevels]);
+  }, [harness, sessionId, state.model, state.thinkingLevels, online]);
   const levels = state.thinkingLevels ?? fetched;
   if (!levels.length) return null;
   return (
@@ -373,9 +387,8 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   };
 
   const shell = text.startsWith("!");
-  const bg = state.background ?? [];
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
-  const hasDrawer = matches.length > 0 || bg.length > 0 || !!state.pending?.length || legacyQueued;
+  const hasDrawer = matches.length > 0 || !!state.pending?.length || legacyQueued;
   const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for commands)";
 
   const drawer = hasDrawer ? (
@@ -395,18 +408,6 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
               />
             ))}
           </VStack>
-        )}
-        {bg.length > 0 && (
-          <Tooltip content="Work the agent keeps running between turns">
-            <HStack gap={2} vAlign="center">
-              <Spinner size="sm" />
-              <StackItem size="fill">
-                <Text type="supporting" maxLines={1}>
-                  {bg.length} background task{bg.length > 1 ? "s" : ""}: {bg.map((b) => b.description).join(" · ")}
-                </Text>
-              </StackItem>
-            </HStack>
-          </Tooltip>
         )}
         {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
         {legacyQueued && (

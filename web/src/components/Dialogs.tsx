@@ -19,7 +19,18 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import { GUARD_MODES, HARNESSES, NOTIFY_KINDS, type GuardMode, type HarnessId, type ModelProfile, type NotifyKind } from "../shared/protocol";
+import {
+  formatEntry,
+  GUARD_MODES,
+  HARNESSES,
+  NOTIFY_KINDS,
+  parseEntry,
+  type BackgroundModelSetting,
+  type GuardMode,
+  type HarnessId,
+  type ModelProfile,
+  type NotifyKind,
+} from "../shared/protocol";
 import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
@@ -439,11 +450,73 @@ function NotificationSettings() {
   );
 }
 
-const JUDGE_OPTIONS: SelectorOptionType[] = [
-  { value: "haiku", label: "Claude Haiku (faster)" },
-  { value: "sonnet", label: "Claude Sonnet (more careful)" },
-  { value: "off", label: "Off: block instead" },
-];
+/**
+ * The background model ("harness:model") runs Tether's own small jobs: the Auto mode reviewer and
+ * memory merges. Same harness + model choice as a session; it draws on that harness's login.
+ */
+function BackgroundModelPicker({ narrow }: { narrow: boolean }) {
+  const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
+  const [setting, setSetting] = useState<BackgroundModelSetting>();
+  const [harness, setHarness] = useState<HarnessId>();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    rpc("getBackgroundModel", {}).then(setSetting).catch(() => {});
+  }, []);
+  const cur = setting ? parseEntry(setting.model, "claude-code") : undefined;
+  const h = harness ?? cur?.harness ?? "claude-code";
+  const models = useModels(setting ? [h] : []);
+  const usable = (setting?.harnesses ?? []).filter((x) => !runner || runner.harnesses.includes(x));
+  const list = models[h] ?? [];
+  // The saved model may be an alias ("haiku") the harness doesn't list: keep it pickable.
+  const ids = [...(cur && cur.harness === h && !list.some((m) => m.id === cur.model) ? [cur.model] : []), ...list.map((m) => m.id)];
+  const pick = async (model: string) => {
+    setBusy(true);
+    const r = await act("setBackgroundModel", { model: formatEntry({ harness: h, model }) });
+    setBusy(false);
+    if (r) {
+      setSetting(r);
+      setHarness(undefined);
+    }
+  };
+  return (
+    <Stack direction={narrow ? "vertical" : "horizontal"} gap={2}>
+      <Selector
+        label="Background model harness"
+        isLabelHidden
+        size="sm"
+        width={narrow ? "100%" : 140}
+        isDisabled={!setting || busy}
+        value={h}
+        options={HARNESSES.filter((x) => setting?.harnesses.includes(x.id)).map((x) => ({
+          value: x.id,
+          label: usable.includes(x.id) ? x.label : `${x.label} (not installed)`,
+          disabled: !usable.includes(x.id),
+        }))}
+        onChange={(v) => setHarness(v as HarnessId)}
+      />
+      <StackItem size="fill">
+        <Selector
+          label="Background model"
+          isLabelHidden
+          size="sm"
+          width="100%"
+          presentation="adaptive"
+          hasSearch={ids.length > 8}
+          searchPlaceholder="Filter models…"
+          isLoading={!!setting && !models[h]}
+          isDisabled={!setting || busy}
+          placeholder={models[h] ? "Pick a model" : "Loading…"}
+          value={cur && cur.harness === h ? cur.model : undefined}
+          options={ids.map((id) => {
+            const d = modelDisplay(id, h);
+            return { value: id, label: d.name, description: id === d.name ? undefined : id, icon: modelIcon(d) };
+          })}
+          onChange={pick}
+        />
+      </StackItem>
+    </Stack>
+  );
+}
 
 function Settings({ close }: { close: () => void }) {
   const narrow = useMediaQuery(NARROW);
@@ -507,21 +580,31 @@ function Settings({ close }: { close: () => void }) {
       </SettingsCard>
       <Collapsible trigger={<Text type="label">Advanced</Text>} defaultIsOpen={dirty}>
         <VStack gap={4} paddingBlockStart={2}>
-          <SettingsCard title="Safety checks">
+          <SettingsCard title="Background model and safety">
+            <SettingsRow
+              title="Background model"
+              description="Runs Tether's own small jobs: reviewing actions in Auto mode and merging memories. It uses that harness's login and plan."
+            >
+              <BackgroundModelPicker narrow={narrow} />
+            </SettingsRow>
             <SettingsRow
               title="Auto mode reviewer"
-              description="In Auto mode, this model decides on actions the built-in safety rules don't cover."
-              isControlWide
+              description={
+                guard?.judgeModel === "off"
+                  ? "Off: in Auto mode, actions the built-in safety rules don't cover are blocked."
+                  : "In Auto mode, the background model decides on actions the built-in safety rules don't cover."
+              }
               control={
-                <Selector
+                <Switch
                   label="Auto mode reviewer"
                   isLabelHidden
-                  size="sm"
-                  width={controlWidth}
                   isDisabled={!guard}
-                  value={guard?.judgeModel}
-                  options={JUDGE_OPTIONS}
-                  onChange={(m) => updateGuard({ judgeModel: m })}
+                  value={!!guard && guard.judgeModel !== "off"}
+                  onChange={async (on) => {
+                    // Back on: the reviewer follows the background model again.
+                    const model = on ? (await rpc("getBackgroundModel", {}).catch(() => undefined))?.model : "off";
+                    if (model) updateGuard({ judgeModel: model });
+                  }}
                 />
               }
             />
