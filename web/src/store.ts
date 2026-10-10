@@ -11,10 +11,12 @@ import type {
   RunnerInfo,
   ServerToBrowser,
   SessionEvent,
+  SessionPulse,
   SessionSnapshot,
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
+import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
 
@@ -59,8 +61,10 @@ interface State {
   noticesSeen: number;
   /** individual notices opened on this device */
   noticesRead: string[];
-  /** a full page shown instead of a session */
+  /** a full page shown instead of a session ("running": Home, scrolled to its Running section) */
   page?: "memory" | "running";
+  /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
+  pulses: PulseMap;
   /** the Memory & Skills tab to switch to (set by links into the page) */
   memoryTab?: "memory" | "activity" | "conflicts" | "skills";
   /** master context (shared memory and skills) */
@@ -89,6 +93,7 @@ export const useStore = create<State>(() => ({
   noticesRead: loadJSON("tether.noticesRead", []),
   conflicts: [],
   contextLive: [],
+  pulses: {},
 }));
 
 const set = useStore.setState;
@@ -122,7 +127,11 @@ export function toast(level: Toast["level"], text: string) {
 }
 
 export function rpc<K extends OpName>(op: K, args: Ops[K]["args"]): Promise<Ops[K]["result"]> {
-  const runnerId = get().runnerId;
+  return rpcTo(get().runnerId, op, args);
+}
+
+/** rpc() to a given runner, not necessarily the one the sidebar shows (the Home dashboard spans them all). */
+export function rpcTo<K extends OpName>(runnerId: string | undefined, op: K, args: Ops[K]["args"]): Promise<Ops[K]["result"]> {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("Not connected"));
     if (!runnerId) return reject(new Error("No runner is connected"));
@@ -178,7 +187,8 @@ function onMessage(m: ServerToBrowser) {
       const prev = get().runnerId;
       const online = m.runners.filter((r) => r.connected);
       const keep = online.find((r) => r.id === prev) ?? online.find((r) => r.id === loadJSON("tether.runner", "")) ?? online[0];
-      set({ runners: m.runners, runnerId: keep?.id });
+      set((s) => ({ runners: m.runners, runnerId: keep?.id, pulses: Object.fromEntries(Object.entries(s.pulses).filter(([id]) => online.some((r) => r.id === id))) }));
+      for (const r of online) refreshPulses(r.id);
       if (keep) {
         saveJSON("tether.runner", keep.id);
         refreshProjects();
@@ -210,7 +220,52 @@ function onMessage(m: ServerToBrowser) {
     case "context":
       if (m.runnerId === get().runnerId) onContextEvent(m.event);
       break;
+    case "pulse":
+      set((s) => ({ pulses: mergePulses(s.pulses, m.runnerId, m.pulses) }));
+      break;
   }
+}
+
+// ---------------- Home dashboard ----------------
+
+/** The runner's full list (live sessions and recently finished ones); pushes keep it current after. */
+export async function refreshPulses(runnerId: string) {
+  try {
+    const list: SessionPulse[] = await rpcTo(runnerId, "listPulses", {});
+    set((s) => ({ pulses: { ...s.pulses, [runnerId]: mergePulses({}, runnerId, list)[runnerId] ?? {} } }));
+  } catch {
+    // An older runner has no pulses: its sessions just don't show on Home.
+  }
+}
+
+/** Drops a pulse here at once (an approval answered, a session removed) without waiting for the runner. */
+export function patchPulse(runnerId: string, sessionId: string, patch: (p: SessionPulse) => SessionPulse | undefined) {
+  set((s) => {
+    const cur = s.pulses[runnerId]?.[sessionId];
+    if (!cur) return {};
+    const next = patch(cur);
+    const forRunner = { ...s.pulses[runnerId] };
+    if (next) forRunner[sessionId] = next;
+    else delete forRunner[sessionId];
+    return { pulses: { ...s.pulses, [runnerId]: forRunner } };
+  });
+}
+
+/** Opens a session from Home, switching the sidebar to its runner first when needed. */
+export function openOnRunner(runnerId: string, session: SessionSummary, opts: { activity?: boolean } = {}) {
+  if (runnerId !== get().runnerId) switchRunner(runnerId);
+  // With its summary known, opening it doesn't have to search every project for it.
+  set((s) => ({
+    sessions: { ...s.sessions, [session.projectPath]: [...(s.sessions[session.projectPath] ?? []).filter((x) => x.id !== session.id), session] },
+  }));
+  selectSession(session.id);
+  if (opts.activity) setActivityOpen(true);
+}
+
+/** Home: the dashboard (no session, no page). */
+export function goHome() {
+  set({ selected: undefined, page: undefined, sidebarOpen: false });
+  history.replaceState(null, "", "#/");
 }
 
 function onEvent(sessionId: string, seq: number, event: SessionEvent) {

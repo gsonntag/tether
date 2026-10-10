@@ -32,6 +32,7 @@ import { isActive, type ChainEntry, type SessionActivity } from "../../web/src/s
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
 import { sessionForKey } from "./bridge";
+import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -71,9 +72,33 @@ function decorate(s: SessionSummary): SessionSummary {
   return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}) };
 }
 
+// ---------------- dashboard pulses ----------------
+
+const turns = new TurnClock();
+const closedPulses = new ClosedPulses();
+
+function pulseOf(id: string) {
+  const s = live.get(id);
+  if (!s) return closedPulses.get(id);
+  return buildPulse({ session: decorate(s.summary()), state: s.t.state, messages: s.t.messages, turnStartedAt: turns.turnStartedAt(id), finishedAt: turns.finishedAt(id) });
+}
+
+const pulses = new PulseThrottle({
+  build: pulseOf,
+  // Only while connected: after a reconnect browsers reload the list, and changes send afresh (resetSent).
+  send: (list) => connected && send({ t: "pulse", pulses: list }),
+});
+
 const sink: Sink = {
-  emit: (sessionId: string, seq: number, event: SessionEvent) => send({ t: "event", sessionId, seq, event }),
-  summary: (s: SessionSummary) => send({ t: "sessions", projectPath: s.projectPath, session: decorate(s) }),
+  emit: (sessionId: string, seq: number, event: SessionEvent) => {
+    send({ t: "event", sessionId, seq, event });
+    if (event.type === "state" && event.state.status) turns.update(sessionId, event.state.status);
+    pulses.touch(sessionId);
+  },
+  summary: (s: SessionSummary) => {
+    send({ t: "sessions", projectPath: s.projectPath, session: decorate(s) });
+    if (live.has(s.id)) pulses.touch(s.id);
+  },
   handoff: (from, to, reason, pendingPrompt) => handoff(from, to, reason, pendingPrompt),
 };
 
@@ -129,6 +154,7 @@ function connect(attempt = 0) {
     const harnesses = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available()) ? a.id : null)))).filter(Boolean) as HarnessId[];
     sock.send(JSON.stringify({ t: "hello", runner: { id: config().runnerId, hostname: hostname(), version: VERSION, harnesses } } satisfies RunnerToServer));
     while (outbox.length) sock.send(JSON.stringify(outbox.shift()));
+    pulses.resetSent();
     // Cloudflare closes idle WebSockets after ~100 s.
     pinger = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send(JSON.stringify({ t: "pong" })), 20_000);
   };
@@ -167,7 +193,14 @@ async function handle(id: string, op: OpName, args: any) {
 
 function track(s: LiveSession) {
   live.set(s.id, s);
-  s.onClose = () => live.delete(s.id);
+  closedPulses.delete(s.id);
+  s.onClose = () => {
+    // Its last pulse stays for "Recently finished" (a removed session is archived: browsers drop it).
+    const last = pulseOf(s.id);
+    if (live.get(s.id) === s) live.delete(s.id);
+    if (last) closedPulses.put(last);
+    pulses.touch(s.id);
+  };
   s.loadPrefs();
   return s;
 }
@@ -537,6 +570,12 @@ const ops: Handlers = {
       if (items.length) out.push({ session: decorate(s.summary()), items });
     }
     return out.sort((a, b) => b.items.filter(isActive).length - a.items.filter(isActive).length || b.session.updatedAt - a.session.updatedAt);
+  },
+
+  async listPulses() {
+    const out = [...live.values()].filter((s) => !s.closed).map((s) => pulseOf(s.id)!);
+    for (const p of closedPulses.list()) if (!live.has(p.session.id)) out.push(p);
+    return out.filter((p) => !p.session.archived);
   },
 
   async guardSetup({ install, judgeModel, defaultMode }) {
