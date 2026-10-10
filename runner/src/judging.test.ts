@@ -5,7 +5,8 @@ import { join } from "node:path";
 import type { Msg, Part, SessionEvent } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-judging-"));
+// (the preloaded src/testenv.ts already points it at the shared scratch dir)
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-judging-"));
 
 // The judge answers when the test says so.
 let answer: (v: { decision: "allow" | "deny"; by: "judge"; reason: string }) => void = () => {};

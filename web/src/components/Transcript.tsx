@@ -23,6 +23,7 @@ import {
   LightBulbIcon,
   NoSymbolIcon,
   PencilSquareIcon,
+  SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
 import { memo, useState, type CSSProperties, type ReactNode } from "react";
@@ -31,6 +32,7 @@ import { act, selectSession } from "../store";
 import { PlanCard } from "./PlanReview";
 
 type ToolPart = Extract<Part, { type: "tool" }>;
+type SkillPart = Extract<Part, { type: "skill" }>;
 
 const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 
@@ -114,10 +116,31 @@ function StreamCursor() {
 }
 
 /** A steer the agent already has: it can't be taken back, so an edit goes in as a correction. */
-function AmendableUser({ m, text }: { m: Msg; text: string }) {
+/**
+ * A skill that went with a user message (`/name`): a chip; open it to see what the agent got
+ * (SKILL.md and the list of the skill's files).
+ */
+function SkillChip({ p }: { p: SkillPart }) {
+  return (
+    <Collapsible
+      defaultIsOpen={false}
+      chevronPosition="start"
+      trigger={
+        <HStack as="span" gap={1.5} vAlign="center">
+          <Token size="sm" color="purple" icon={<Icon icon={SparklesIcon} size="sm" />} label={`/${p.name}`} />
+          <Text type="supporting">skill</Text>
+        </HStack>
+      }
+    >
+      <CodeBlock code={p.content} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
+    </Collapsible>
+  );
+}
+
+function AmendableUser({ m, text, chips, typed = text }: { m: Msg; text: string; chips?: ReactNode; typed?: string }) {
   const [draft, setDraft] = useState<string>();
   const save = async () => {
-    if (draft !== undefined && draft.trim() && draft.trim() !== text.trim()) await act("amendSteer", { sessionId, msgId: m.id, text: draft });
+    if (draft !== undefined && draft.trim() && draft.trim() !== typed.trim()) await act("amendSteer", { sessionId, msgId: m.id, text: draft });
     setDraft(undefined);
   };
   if (draft === undefined)
@@ -132,12 +155,15 @@ function AmendableUser({ m, text }: { m: Msg; text: string }) {
                 size="sm"
                 icon={<Icon icon={PencilSquareIcon} />}
                 tooltip="The agent already has this message. Editing sends the change as a correction."
-                onClick={() => setDraft(text)}
+                onClick={() => setDraft(typed)}
               />
             </HStack>
           }
         >
-          <Text style={preWrap}>{text}</Text>
+          <VStack gap={1.5}>
+            {chips}
+            <Text style={preWrap}>{text}</Text>
+          </VStack>
         </ChatMessageBubble>
       </ChatMessage>
     );
@@ -192,14 +218,17 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
         </Card>
       );
     const tools = m.parts.filter((p): p is ToolPart => p.type === "tool");
+    const skills = m.parts.filter((p): p is SkillPart => p.type === "skill");
+    const chips = skills.map((p, i) => <SkillChip key={i} p={p} />);
     return (
       <>
-        {text.trim() && amendable && <AmendableUser m={m} text={text} />}
-        {text.trim() && !amendable && (
+        {(text.trim() || skills.length > 0) && amendable && <AmendableUser m={m} text={text} chips={chips} typed={[...skills.map((s) => `/${s.name}`), text.trim()].filter(Boolean).join(" ")} />}
+        {(text.trim() || skills.length > 0) && !amendable && (
           <ChatMessage sender="user">
             <ChatMessageBubble>
               <VStack gap={1.5}>
-                <Text style={preWrap}>{text}</Text>
+                {chips}
+                {text.trim() && <Text style={preWrap}>{text}</Text>}
                 {m.parts.map((p, i) => (p.type === "image" ? <img key={i} src={`data:${p.mimeType};base64,${p.data}`} alt="" style={imgStyle} /> : null))}
               </VStack>
             </ChatMessageBubble>

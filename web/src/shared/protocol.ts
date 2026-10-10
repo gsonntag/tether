@@ -48,6 +48,17 @@ export type Part =
       checklist?: boolean;
       /** how the person answered it, when the harness asked for approval */
       outcome?: "approved" | "feedback";
+    }
+  | {
+      /**
+       * A skill sent inline with a user message (`/name args` on a harness that can't run that
+       * skill itself, or pi's own `/skill:name`): a chip that expands to what the agent got.
+       */
+      type: "skill";
+      name: string;
+      /** SKILL.md */
+      location?: string;
+      content: string;
     };
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
@@ -626,6 +637,18 @@ export type ContextEvent =
   | { type: "conflict"; conflict: MemoryConflict }
   | { type: "status"; status: ContextStatus };
 
+/** An entry in the composer's `/` menu. */
+export interface SlashCommand {
+  name: string;
+  description?: string;
+  /** absent: a harness command (older runners send only these) */
+  kind?: "command" | "skill";
+  /** skill: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
+  sources?: string[];
+  /** skill: the harness runs it itself; otherwise Tether sends SKILL.md along with the message */
+  native?: boolean;
+}
+
 // ---------- RPC ops (browser -> server -> runner) ----------
 
 export interface Ops {
@@ -691,7 +714,8 @@ export interface Ops {
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };
   getProfiles: { args: {}; result: ModelProfile[] };
   setProfiles: { args: { profiles: ModelProfile[] }; result: ModelProfile[] };
-  listCommands: { args: { sessionId: string }; result: { name: string; description?: string }[] };
+  /** the `/` menu: the harness's own commands and the skills this session can run */
+  listCommands: { args: { sessionId: string }; result: SlashCommand[] };
   // master context
   contextStatus: { args: {}; result: ContextStatus };
   /** scope: "global", "repo:<key>", or a project path (resolved to its repo key); query searches */

@@ -26,7 +26,7 @@ export function renderTranscript(messages: Msg[]): string {
   const blocks: string[] = [];
   for (const m of messages) {
     if (m.role === "user") {
-      const text = m.parts.map((p) => (p.type === "text" ? p.text : p.type === "image" ? "[image]" : "")).join("\n").trim();
+      const text = m.parts.map((p) => (p.type === "text" ? p.text : p.type === "image" ? "[image]" : p.type === "skill" ? `[ran the /${p.name} skill]` : "")).join("\n").trim();
       if (text) blocks.push(`### User\n${text}`);
     } else if (m.role === "assistant") {
       const lines: string[] = [];

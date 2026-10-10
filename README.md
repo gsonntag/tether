@@ -40,6 +40,24 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Stop keeps waiting messages, held until you send them.
   - A steer the agent already has can't be taken back. Editing it sends a correction.
   - opencode, Kiro and Antigravity can't steer, so their steers wait for the end of the turn.
+- **Skills from the message box, on every harness.** `/` opens a menu of skills (the master
+  context's registry once imported, else the harness's own skill dirs, plus the repo's
+  `.claude/skills` and `.agents/skills`) and the harness's own commands, fuzzy-filtered.
+  `/name args` is resolved as the message goes out (`runner/src/skillcmd.ts`), so it works for
+  steered and queued messages too:
+  - **Native** when the harness can run that skill itself: Claude Code `/name` (it's in its command
+    list), Codex a `skill` input item (from `skills/list`), pi `/skill:name`, ACP agents `/name` when
+    they list it as a command.
+  - **Otherwise expanded:** SKILL.md and the absolute paths of the skill's other files go in front
+    of the request in a `<skill name=… location=…>` block (Antigravity always, Claude Code for
+    `.agents/skills`, …). The transcript shows a `/name` chip that opens to what the agent got.
+  - `\/name` sends the text without running a skill.
+  - A handoff to another harness carries the message as typed and resolves it there. Only the
+    first of several waiting messages sent together can use the harness's own `/name`; the rest
+    are expanded.
+  - Expansion reads a repo skill's SKILL.md only if it (symlinks resolved) stays inside the repo,
+    up to 256 KB, never a binary file; other files are listed, not read. Skills the master
+    context disabled are never offered or expanded.
 - **Fallback chains for usage limits.** A profile is an ordered list of `harness:model`
   entries, e.g. `codex:gpt-6.1-sol → codex:gpt-6-sol → codex:gpt-6-luna`. The built-in
   `codex-current` profile follows the current Codex lineup; the model picker itself is populated

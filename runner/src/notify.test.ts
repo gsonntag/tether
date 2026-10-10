@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import webpush from "web-push";
 
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-notify-"));
+// (the preloaded src/testenv.ts already points it at the shared scratch dir)
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-notify-"));
 const { config } = await import("./config");
 const { notify, recent, subscribe, subscription, vapidPublicKey } = await import("./notify");
 const { LiveSession } = await import("./session");

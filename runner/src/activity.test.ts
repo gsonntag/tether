@@ -7,7 +7,8 @@ import { join } from "node:path";
 import webpush from "web-push";
 import type { ActivityItem, SessionSummary } from "../../web/src/shared/protocol";
 
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-activity-"));
+// (the preloaded src/testenv.ts already points it at the shared scratch dir)
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-activity-"));
 const { config } = await import("./config");
 const { subscribe } = await import("./notify");
 const { LiveSession } = await import("./session");

@@ -22,9 +22,11 @@ import type { ActivityItem, ContextUsage, ModelRef, Msg, Part, SessionSummary } 
 import { tail } from "./activity";
 import { ClaudeActivity } from "./claudeActivity";
 import { userParts } from "../../../web/src/shared/bash";
+import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
 import { LiveSession, newId } from "../session";
+import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
@@ -630,7 +632,7 @@ class ClaudeSession extends LiveSession {
 
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
-    if (this.title === "New session") this.setTitle(text.replace(/\s+/g, " ").slice(0, 120));
+    this.autoTitle(text);
     this.addUserMessage(text);
     this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
@@ -678,6 +680,18 @@ class ClaudeSession extends LiveSession {
   async listCommands() {
     const cmds = (await this.q?.supportedCommands()) ?? [];
     return cmds.map((c) => ({ name: c.name, description: c.description }));
+  }
+
+  /**
+   * Claude Code runs its skills as `/name` (they're in its command list). A built-in command with
+   * the same name would run instead, so those names don't count.
+   */
+  protected async nativeSkills() {
+    if (!this.q) return undefined;
+    const cmds = await this.q.supportedCommands();
+    const builtin = new Set(cmds.filter((c) => c.builtin).map((c) => c.name));
+    rememberClaudeBuiltins(builtin); // for when a session can't answer in time (skillcmd decide())
+    return cmds.filter((c) => !c.builtin && !builtin.has(c.name)).map((c) => ({ name: c.name, description: c.description }));
   }
 
   async models(): Promise<ModelRef[]> {
@@ -731,7 +745,7 @@ export const claudeAdapter: Adapter = {
         harness: "claude-code" as const,
         nativeId: s.sessionId,
         projectPath,
-        title: (s.customTitle || s.summary || cleanUserText(s.firstPrompt ?? "") || "Untitled").replace(/\s+/g, " ").slice(0, 120),
+        title: (s.customTitle || s.summary || displayText(cleanUserText(s.firstPrompt ?? "") ?? "") || "Untitled").replace(/\s+/g, " ").slice(0, 120),
         createdAt: s.createdAt ?? s.lastModified,
         updatedAt: s.lastModified,
         live: false,

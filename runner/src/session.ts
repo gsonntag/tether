@@ -21,7 +21,9 @@ import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
-import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff } from "../../web/src/shared/protocol";
+import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
+import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
+import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -170,8 +172,14 @@ export abstract class LiveSession {
     if (prev) this.setState({ context: { ...prev, used, input: undefined, cacheRead: undefined, cacheWrite: undefined } });
   }
 
+  /** A new session takes its title from the first message, as typed (`/skill args`, not SKILL.md). */
+  protected autoTitle(text: string) {
+    if (this.title === "New session") this.setTitle(displayText(text).replace(/\s+/g, " ").slice(0, 120));
+  }
+
   setTitle(title: string) {
-    title = config().titles[this.id] ?? title;
+    // A harness that names sessions after the first message (pi) would name it after SKILL.md.
+    title = config().titles[this.id] ?? displayText(title);
     if (!title || title === this.title) return;
     this.title = title;
     this.sink.summary(this.summary());
@@ -421,7 +429,7 @@ export abstract class LiveSession {
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
-      if (!this.t.state.pending?.length) return this.send(text);
+      if (!this.t.state.pending?.length) return this.sendTyped(text);
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
       // and the list goes out from the top as usual (one queued message per turn).
       this.pend(text, mode);
@@ -459,8 +467,12 @@ export abstract class LiveSession {
     while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now) n++;
     if (!n) return this.scheduleSteers();
     const batch = list.slice(0, n);
-    const text = joinPending(batch);
-    this.setState({ pending: list.slice(n) });
+    const text = await this.joinResolved(batch);
+    // Resolving can wait on the harness: if the turn ended or the list changed meanwhile, the
+    // batch is still at the top of the list and goes out from there.
+    const cur = this.t.state.pending ?? [];
+    if (this.closed || this.draining || this.t.state.status !== "running" || this.t.state.pendingHeld || !batch.every((b, i) => cur[i]?.id === b.id)) return this.scheduleSteers();
+    this.setState({ pending: cur.slice(n) });
     let ok = false;
     try {
       ok = await this.steer!(text);
@@ -469,7 +481,8 @@ export abstract class LiveSession {
       if (!this.echoesUserMessages) {
         const id = `u-${batch[0]!.id}`;
         this.addUserMessage(text, id);
-        this.steered.set(id, text);
+        // A correction quotes the message as typed, not the skill it was expanded into.
+        this.steered.set(id, joinPending(batch));
         this.setState({ amendable: [...this.steered.keys()] });
       }
     } else {
@@ -501,12 +514,93 @@ export abstract class LiveSession {
     this.draining = true;
     try {
       this.setPending(list.slice(n));
-      await this.send(joinPending(list.slice(0, n)));
+      await this.sendTyped(joinPending(list.slice(0, n)), list.slice(0, n));
     } finally {
       this.draining = false;
     }
     this.scheduleSteers();
     return true;
+  }
+
+  // ---- `/skill args` (runner/src/skillcmd.ts) ----
+  // Resolved for this harness only as a message goes out, so waiting messages keep reading (and
+  // editing) as typed, and a skill the harness can't run itself is sent along with the message.
+
+  /** Skills this harness can run itself, as it reports them now; undefined when it can't say. */
+  protected async nativeSkills(): Promise<NativeSkill[] | undefined> {
+    return undefined;
+  }
+
+  /** How this harness is told to run one of its own skills; undefined: it can't now (expand). */
+  protected nativeSkillText(name: string, args: string): string | undefined {
+    return invocationText(name, args);
+  }
+
+  /** the harness's last answer, and when */
+  private nativeCache?: { at: number; skills: NativeSkill[] };
+  static NATIVE_FRESH_MS = 30_000;
+  static NATIVE_TIMEOUT_MS = 5_000;
+
+  /**
+   * What the harness can run itself. A send reuses an answer from the last 30 s (the menu that was
+   * just open asked); otherwise it asks, waiting at most 5 s, and falls back to the last answer
+   * (then to the skill's location, see decide()) so a slow harness never holds a message long.
+   */
+  private async nativeNow(fresh = false): Promise<NativeSkill[] | undefined> {
+    const c = this.nativeCache;
+    if (!fresh && c && Date.now() - c.at < LiveSession.NATIVE_FRESH_MS) return c.skills;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), LiveSession.NATIVE_TIMEOUT_MS)));
+    try {
+      const skills = await Promise.race([this.nativeSkills().catch(() => undefined), timeout]);
+      if (skills) this.nativeCache = { at: Date.now(), skills };
+      return skills ?? c?.skills;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The message as typed, for the one `send()` is called with now (a handoff re-resolves it). */
+  private outgoing?: { sent: string; typed: string };
+
+  /** Resolves and sends; preferBest() can still see what was typed. */
+  private async sendTyped(typed: string, batch?: PendingMessage[]) {
+    const sent = batch ? await this.joinResolved(batch) : await this.resolveSkills(typed);
+    this.outgoing = { sent, typed };
+    try {
+      await this.send(sent);
+    } finally {
+      this.outgoing = undefined;
+    }
+  }
+
+  /** One message as it goes out: `/skill args` becomes this harness's own invocation, or the expanded skill. */
+  async resolveSkills(text: string, inner = false): Promise<string> {
+    if (!parseInvocation(text)) return text;
+    const native = await this.nativeNow();
+    return resolveMessage(text, {
+      harness: this.harness,
+      projectPath: this.projectPath,
+      skills: skillsFor(this.harness, this.projectPath, native),
+      // Not at the start of what's sent, a native `/name` would be plain text: expand instead.
+      native: inner ? new Set() : native && new Set(native.map((n) => n.name)),
+      nativeText: (name, args) => this.nativeSkillText(name, args),
+    });
+  }
+
+  /** Whether the harness runs a native skill invocation anywhere in a message (Codex's skill items), or only at its start. */
+  protected nativeAnywhere = false;
+
+  /** Waiting messages joined into one: only the first can use the harness's own `/name`. */
+  private async joinResolved(list: PendingMessage[]): Promise<string> {
+    return (await Promise.all(list.map((p, i) => this.resolveSkills(p.text, i > 0 && !this.nativeAnywhere)))).join("\n\n");
+  }
+
+  /** The composer's `/` menu: the skills this session can run, then the harness's own commands. */
+  async slashMenu(): Promise<SlashCommand[]> {
+    const [commands, native] = await Promise.all([this.listCommands().catch(() => []), this.nativeNow(true)]);
+    const skills = skillsFor(this.harness, this.projectPath, native);
+    return slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills());
   }
 
   private takeAllPending(): string | undefined {
@@ -694,7 +788,9 @@ export abstract class LiveSession {
       this.notice(`Back on ${pick.entry.model}: its usage limit has reset.`);
       return false;
     }
-    await this.sink.handoff(this, pick.entry, `${formatEntry(pick.entry)} is available again`, pendingPrompt);
+    // The new harness resolves `/skill` for itself: hand over the message as typed.
+    const typed = this.outgoing?.sent === pendingPrompt ? this.outgoing.typed : pendingPrompt;
+    await this.sink.handoff(this, pick.entry, `${formatEntry(pick.entry)} is available again`, typed);
     return true;
   }
 
@@ -811,7 +907,7 @@ export abstract class LiveSession {
   goal(): string {
     const asks = this.t.messages
       .filter((m) => m.role === "user")
-      .map((m) => m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim())
+      .map((m) => m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim())
       .filter((t) => t && !t.startsWith("You are taking over"));
     const pick = asks.length > 4 ? [asks[0]!, "…", ...asks.slice(-3)] : asks;
     return pick.map((t) => t.slice(0, 1500)).join("\n---\n");
@@ -945,7 +1041,7 @@ export abstract class LiveSession {
       }
       // The previous turn is over: its changes are now fixed.
       const stat = prev && (sha === prev.sha ? { files: 0, additions: 0, deletions: 0 } : await diffStat(this.projectPath, prev.sha, sha).catch(() => undefined));
-      const cp: Checkpoint = { id, sha, ts: Date.now(), label: label.replace(/\s+/g, " ").slice(0, 120) };
+      const cp: Checkpoint = { id, sha, ts: Date.now(), label: displayText(label).replace(/\s+/g, " ").slice(0, 120) };
       const now = (this.t.state.checkpoints ?? []).map((c) => (c.id === prev?.id && stat ? { ...c, stat } : c));
       this.setState({ checkpoints: [...now, cp].slice(-50) });
     } catch (e: any) {

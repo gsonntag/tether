@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-ckpt-cfg-"));
+// (the preloaded src/testenv.ts already points it at the shared scratch dir)
+if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-ckpt-cfg-"));
 const { computeDiff, diffStat, snapshot, workingTreeStats, DIFF_LIMITS } = await import("./checkpoint");
 const { LiveSession } = await import("./session");
 

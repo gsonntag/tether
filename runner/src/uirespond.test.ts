@@ -2,11 +2,7 @@
 // settles exactly the request it names, once, and a stale one does nothing.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-uirespond-"));
+// The scratch HOME and config dir come from the preload (src/testenv.ts, runner/bunfig.toml).
 const { LiveSession } = await import("./session");
 
 const sessions: InstanceType<typeof LiveSession>[] = [];

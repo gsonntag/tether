@@ -31,6 +31,8 @@ import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, 
 import { isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
+import { resolveForBrief, useContextSkills } from "./skillcmd";
+import { displayText } from "../../web/src/shared/skill";
 import { carriedNotice } from "./context/handoff";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
@@ -55,6 +57,8 @@ const context = new ContextService({
   sessionForKey: (key) => sessionForKey(key)?.id,
   projects: () => config().projects,
 });
+// `/skill` in the message box: the registry's skills once the master context has been imported.
+useContextSkills(() => ({ enabled: context.enabled, registry: context.store.skillsDir, skills: () => context.listSkills() }));
 
 // ---------------- connection ----------------
 
@@ -116,20 +120,22 @@ const sink: Sink = {
  */
 async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) {
   const a = adapters[to.harness];
+  // The prompt comes as typed: `/skill args` is resolved for the new harness, not the old one.
+  const prompt = pendingPrompt === undefined ? undefined : resolveForBrief(to.harness, from.projectPath, pendingPrompt);
   // Master context on: carry the relevant memories and capture what this session learned first.
   const memory = await context.handoffMemory({
     sessionId: from.id,
     projectPath: from.projectPath,
     messages: from.t.messages,
     target: to.harness,
-    pendingPrompt,
+    pendingPrompt: pendingPrompt && displayText(pendingPrompt),
   });
   const brief = await buildBrief({
     messages: from.t.messages,
     cwd: from.projectPath,
     fromLabel: `${from.harness}, ${from.t.state.model ?? "default model"}`,
     reason,
-    pendingPrompt,
+    pendingPrompt: prompt,
     memory: memory?.text,
   });
   const next = a.create(from.projectPath, { model: to.model, permissionMode: from.t.state.permissionMode }, sink);
@@ -161,7 +167,7 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
       { title: `Continued from a ${from.harness} session: ${reason}. Carried ${what}.`, collapsed: true, source: "memory" },
     );
   } else next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
-  if (pendingPrompt) next.addUserMessage(pendingPrompt);
+  if (prompt) next.addUserMessage(prompt);
   // Messages still waiting on the old session move over and wait on the new one.
   const carry = from.t.state.pending ?? [];
   if (carry.length) from.setState({ pending: [], pendingHeld: undefined });
@@ -687,7 +693,7 @@ const ops: Handlers = {
   },
 
   async listCommands({ sessionId }) {
-    return requireLive(sessionId).listCommands();
+    return requireLive(sessionId).slashMenu();
   },
 
   // ---- master context (runner/src/context) ----
