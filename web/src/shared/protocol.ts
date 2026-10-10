@@ -52,6 +52,12 @@ export type Part =
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 /** Who approves tool calls, strictest first. "ask" also asks before edits inside the project. */
+/**
+ * Harness modes that approve tool calls on their own, before the guard is asked. The mode picker
+ * never offers them and a resume never restores them: the guard setting decides approvals.
+ */
+export const APPROVING_MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "dontAsk", "accept-edits", "yolo"]);
+
 export const GUARD_MODES: { id: GuardMode; label: string }[] = [
   { id: "ask", label: "Ask permission" },
   { id: "edits", label: "Accept edits" },

@@ -47,6 +47,10 @@ export interface SessionPrefs {
   background?: { id: string; description: string; type?: string }[];
   /** messages sent but not yet taken by the agent; resent after a runner restart */
   pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number }[];
+  /** the model, effort and mode it last ran with, re-applied on resume (session.reapplyChoices) */
+  model?: string;
+  thinking?: string;
+  permissionMode?: string;
   /** last known context-window fill, for harnesses that can't report it again on resume */
   context?: import("../../web/src/shared/protocol").ContextUsage;
 }

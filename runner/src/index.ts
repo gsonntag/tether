@@ -193,9 +193,14 @@ async function getLive(sessionId: string, projectPath?: string): Promise<LiveSes
     }
   }
   if (!path) throw new Error(`session ${sessionId} not found`);
+  // Read before starting: a starting session saves its (default) model over these.
+  const saved = config().sessions[sessionId];
+  const choices = saved && { model: saved.model, thinking: saved.thinking, permissionMode: saved.permissionMode };
   const s = await adapters[harness].resume(nativeId, path, sink);
   await s.start();
-  return track(s);
+  track(s);
+  await s.reapplyChoices(choices);
+  return s;
 }
 
 function requireLive(sessionId: string): LiveSession {
