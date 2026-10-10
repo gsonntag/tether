@@ -32,6 +32,7 @@ import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
+import { SessionConflicts } from "./MemoryConflicts";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
@@ -121,6 +122,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <PendingSteers sessionId={sessionId} state={st} />
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
+          <SessionConflicts sessionId={sessionId} />
         </VStack>
       </ChatLayout>
       <ChangesDialog sessionId={sessionId} state={st} />
