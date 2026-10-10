@@ -21,6 +21,7 @@ const LOGOS: Partial<Record<HarnessId, { src: string; mask?: boolean }>> = {
   "claude-code": { src: "/logos/anthropic.svg", mask: true },
   codex: { src: "/logos/openai.svg", mask: true },
   pi: { src: "/logos/pi.svg" },
+  opencode: { src: "/logos/opencode.svg", mask: true },
 };
 
 function logoIcon(src: string, mask?: boolean) {

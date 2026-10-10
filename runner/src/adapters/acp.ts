@@ -108,19 +108,58 @@ function contentText(c: any): string {
   return "";
 }
 
-/** The model / thinking option among ACP config options (by category, else by id). */
-function configOption(opts: any[] | undefined, kind: "model" | "thought"): any {
-  const re = kind === "model" ? /^model$/i : /effort|thought|reason|think/i;
-  return (opts ?? []).find((o) => o.type === "select" && (o.category === (kind === "model" ? "model" : "thought_level") || re.test(o.id)));
+const OPTION_KINDS = {
+  model: { category: "model", re: /^model$/i },
+  thought: { category: "thought_level", re: /effort|thought|reason|think/i },
+  mode: { category: "mode", re: /^mode$/i },
+};
+
+/** The model / thinking / mode option among ACP config options (by category, else by id). */
+export function configOption(opts: any[] | undefined, kind: keyof typeof OPTION_KINDS): any {
+  const k = OPTION_KINDS[kind];
+  return (opts ?? []).find((o) => o.type === "select" && (o.category === k.category || k.re.test(o.id)));
 }
 
-function selectValues(o: any): { value: string; name: string }[] {
+/** Session modes: the legacy `modes` field, or (opencode) a "mode" config option. */
+export function sessionModes(res: any): { ids: string[]; current?: string } | undefined {
+  if (res?.modes) return { ids: res.modes.availableModes.map((m: any) => m.id), current: res.modes.currentModeId };
+  const o = configOption(res?.configOptions, "mode");
+  return o ? { ids: selectValues(o).map((v) => v.value), current: o.currentValue } : undefined;
+}
+
+/**
+ * Our name for an ACP tool call. ACP has no tool name field, only a kind and a title; opencode
+ * puts its tool id ("bash", "write", "glob") in the first title and the command or path later.
+ */
+export function toolName(u: any): string {
+  if (u?.name) return u.name;
+  // A shell title is the command itself ("ls"), never a tool id.
+  if (u?.kind !== "execute" && typeof u?.title === "string" && /^[a-z][a-z0-9_]*$/.test(u.title)) return u.title;
+  // Replayed calls carry a path title; a whole-file write still needs its own name for its card.
+  const i = u?.rawInput;
+  if (u?.kind === "edit" && typeof i?.content === "string" && i.oldString === undefined) return "write";
+  return KIND_NAMES[u?.kind] || u?.title || "tool";
+}
+
+export function selectValues(o: any): { value: string; name: string }[] {
   const out: { value: string; name: string }[] = [];
   for (const x of o?.options ?? []) {
     if (Array.isArray(x.options)) out.push(...x.options);
     else out.push(x);
   }
   return out;
+}
+
+/** The tool name and input the guard judges for a permission request (see onPermission). */
+export function permissionCall(tc: any, card?: { name: string; input: unknown }): { name: string; input: any } {
+  const known: any = card?.input;
+  const name = card?.name ?? toolName(tc);
+  if (known && typeof known === "object" && Object.keys(known).some((k) => k !== "cwd" && k !== "description")) return { name, input: known };
+  const input: any = { ...(known && typeof known === "object" ? known : {}), ...(tc?.rawInput ?? {}) };
+  if (typeof input.filepath === "string" && input.filePath === undefined) input.filePath = input.filepath;
+  const loc = tc?.locations?.[0]?.path;
+  if (loc && input.filePath === undefined && input.path === undefined && input.file_path === undefined) input.path = loc;
+  return { name, input };
 }
 
 const KIND_NAMES: Record<string, string> = {
@@ -179,9 +218,10 @@ class AcpSession extends LiveSession {
       this.p.handlers.set(this.nativeId, (n) => this.onUpdate(n));
     }
     this.applyConfig(res?.configOptions);
-    if (res?.modes) {
-      this.modeIds = res.modes.availableModes.map((m: any) => m.id);
-      this.setState({ modes: this.modeIds, permissionMode: res.modes.currentModeId });
+    const modes = sessionModes(res);
+    if (modes) {
+      this.modeIds = modes.ids;
+      this.setState({ modes: this.modeIds, permissionMode: modes.current });
     }
     this.setState({ status: "idle" });
     if (this.opts.model) await this.applyModel(this.opts.model).catch((e) => this.notice(`Could not set model: ${e.message}`, "warning"));
@@ -193,10 +233,12 @@ class AcpSession extends LiveSession {
     this.configOptions = opts;
     const model = configOption(opts, "model");
     const thought = configOption(opts, "thought");
+    const mode = configOption(opts, "mode");
     this.setState({
       model: model?.currentValue,
       thinking: thought?.currentValue,
       thinkingLevels: thought ? selectValues(thought).map((v) => v.value) : undefined,
+      ...(mode ? { permissionMode: mode.currentValue } : {}),
     });
   }
 
@@ -254,14 +296,20 @@ class AcpSession extends LiveSession {
         this.appendText("assistant", "text", contentText(u.content), u.messageId);
         break;
       case "agent_thought_chunk":
-        this.appendText("assistant", "thinking", contentText(u.content), u.messageId);
+        // No messageId: opencode sends a fresh part id per reasoning block, which would split the reply.
+        this.appendText("assistant", "thinking", contentText(u.content));
         break;
       case "tool_call": {
+        const known = findTool(this.t.messages, u.toolCallId);
+        if (known) {
+          this.emit({ type: "tool", msgId: known.msg.id, toolId: u.toolCallId, patch: this.toolPatch(u) });
+          break;
+        }
         const m = this.current("assistant");
         const tool: Part = {
           type: "tool",
           id: u.toolCallId,
-          name: u.name || KIND_NAMES[u.kind] || u.title || "tool",
+          name: toolName(u),
           input: u.rawInput ?? { description: u.title },
           status: "running",
           ...this.toolPatch(u),
@@ -309,8 +357,11 @@ class AcpSession extends LiveSession {
 
   private async onPermission(r: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const tc: any = r.toolCall;
-    const name = tc?.name || KIND_NAMES[tc?.kind] || tc?.title || "tool";
-    const v = await this.checkTool(name, tc?.rawInput ?? {}, tc?.toolCallId);
+    // The request's own input can be partial (opencode sends `{}` for reads, `filepath` + a diff
+    // for edits); the card already has the full input from tool_call_update, and the guard needs it.
+    const card = tc?.toolCallId ? findTool(this.t.messages, tc.toolCallId)?.part : undefined;
+    const { name, input } = permissionCall(tc, card);
+    const v = await this.checkTool(name, input, tc?.toolCallId);
     const want = v.allow ? (v.always ? ["allow_always", "allow_once"] : ["allow_once", "allow_always"]) : ["reject_once", "reject_always"];
     const opt = want.map((k) => r.options.find((o) => o.kind === k)).find(Boolean);
     return opt ? { outcome: { outcome: "selected", optionId: opt.optionId } } : { outcome: { outcome: "cancelled" } };
@@ -371,7 +422,11 @@ class AcpSession extends LiveSession {
   }
 
   async setPermissionMode(mode: string) {
-    await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
+    const opt = configOption(this.configOptions, "mode");
+    if (opt) {
+      const r: any = await this.p.conn.setSessionConfigOption({ sessionId: this.nativeId, configId: opt.id, value: mode } as any);
+      this.applyConfig(r?.configOptions);
+    } else await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
     this.setState({ permissionMode: mode });
   }
 
@@ -504,7 +559,7 @@ export function acpAdapter(spec: AcpSpec): Adapter {
           modelCache = {
             models: selectValues(m).map((v) => ({ id: v.value, label: v.name })),
             thinkingLevels: t ? selectValues(t).map((v) => v.value) : [],
-            modes: (r.modes?.availableModes ?? []).map((x: any) => x.id),
+            modes: sessionModes(r)?.ids ?? [],
           };
         } catch {
           modelCache = { models: [], thinkingLevels: [], modes: [] };
@@ -517,10 +572,22 @@ export function acpAdapter(spec: AcpSpec): Adapter {
   };
 }
 
+// opencode allows most tools without asking by default; make it ask for everything so every call
+// reaches the guard (which decides per session mode). This overrides `permission` in opencode.json.
+// A blanket "ask" would also override plan mode's edit ban (last rule wins), so the plan agent gets
+// it back after ours: no edits except its plan files.
+export const OPENCODE_ENV: Record<string, string> = {
+  OPENCODE_PERMISSION: JSON.stringify({ "*": "ask" }),
+  ...(process.env.OPENCODE_CONFIG_CONTENT
+    ? {}
+    : { OPENCODE_CONFIG_CONTENT: JSON.stringify({ agent: { plan: { permission: { edit: { "*": "deny", "*plans/*.md": "ask" } } } } }) }),
+};
+
 export const opencodeAdapter = acpAdapter({
   id: "opencode",
   bin: process.env.OPENCODE_BIN ?? "opencode",
   args: ["acp"],
+  env: OPENCODE_ENV,
 });
 
 // Kiro CLI V3 engine: model/effort through session config options, CLI-side auth.
