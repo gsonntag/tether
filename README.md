@@ -141,7 +141,7 @@ owner, and runners authenticate with `Authorization: Bearer dev`
 | Claude Code | your Claude login (`claude`) | Permission modes, AskUserQuestion, effort levels, usage-limit events |
 | Codex | `codex` logged in (`CODEX_BIN` to override) | Threads, models and effort levels from app-server; steering; usage-limit fallback. Your `approvals_reviewer` setting is overridden so approvals reach the guard. Resumed history leaves out shell commands, because Codex doesn't return them |
 | pi | `pi` on PATH, its own auth | Uses your pi settings, extensions and models; extension dialogs show in the UI |
-| opencode | `opencode` (`npm i -g opencode-ai`) | ACP: models, modes, permissions, session list and replay |
+| opencode | `opencode` (`npm i -g opencode-ai`, `OPENCODE_BIN` to override); `opencode auth login` for your providers (its free Zen models work without) | ACP: models, effort (models with variants), build/plan modes, session list and replay. Every tool call asks, so it reaches the guard (`OPENCODE_PERMISSION` overrides your opencode.json `permission`). A guard denial reaches the agent without its reason |
 | Kiro | `kiro-cli` logged in | ACP with the V3 engine (`KIRO_ACP_ARGS` to change it). Untested here: not installed |
 | Antigravity | `agy`, authenticated once interactively | Headless mode can't ask for permission (tools are skipped unless pre-approved or the session runs in `bypassPermissions`). No history API, so a resumed session shows only new turns. Untested here: not installed |
 

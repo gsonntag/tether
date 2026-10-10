@@ -36,10 +36,10 @@ const HOME = homedir();
 type Kind = "read" | "edit" | "shell" | "web" | "meta" | "mcp" | "browser" | "other";
 
 const KINDS: [RegExp, Kind][] = [
-  [/^(read|view_file|view_file_outline|view_code_item|glob|grep|grep_search|find_by_name|list_dir|ls|search|codebase_search|notebookread|lsp)$/i, "read"],
+  [/^(read|view_file|view_file_outline|view_code_item|glob|grep|grep_search|find_by_name|list_dir|list|ls|search|codebase_search|notebookread|lsp)$/i, "read"],
   [/^(edit|multiedit|write|notebookedit|write_to_file|replace_file_content|multi_replace_file_content|str_replace_based_edit_tool|apply_patch|delete|move)$/i, "edit"],
   [/^(bash|shell|exec|execute|run_command|run_terminal_cmd|bashoutput|killshell|send_command_input|command_status)$/i, "shell"],
-  [/^(webfetch|websearch|fetch|read_url_content|search_web|web_search|web_fetch)$/i, "web"],
+  [/^(webfetch|websearch|codesearch|fetch|read_url_content|search_web|web_search|web_fetch)$/i, "web"],
   [/^(task|agent|todowrite|todoread|think|exitplanmode|enterplanmode|skill|slashcommand|toolsearch|plan|update_plan)$/i, "meta"],
   [/^mcp__/i, "mcp"],
   [/^browser_/i, "browser"],
