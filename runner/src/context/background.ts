@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseEntry, type HarnessId } from "../../../web/src/shared/protocol";
-import { config } from "../config";
+import { config, normalizeModelEntry, saveConfig } from "../config";
 
 export interface BackgroundRequest {
   system: string;
@@ -23,12 +23,22 @@ type Runner = (model: string, req: BackgroundRequest) => Promise<string>;
 
 export const DEFAULT_BACKGROUND_MODEL = "claude-code:haiku";
 
-/** The configured background model. Older configs only had the judge's Claude model. */
+/** The configured background model, always "harness:model" (older values are migrated on load). */
 export function backgroundModel(): string {
+  return normalizeModelEntry(config().backgroundModel) ?? DEFAULT_BACKGROUND_MODEL;
+}
+
+/** Whether the Auto-mode judge runs (on unless turned off in Settings). */
+export const judgeEnabled = () => config().guard?.judge !== false;
+
+/** Turns the judge on or off; the legacy judgeModel field mirrors "off" for older runners. */
+export function setJudgeEnabled(on: boolean) {
   const cfg = config();
-  if (cfg.backgroundModel) return cfg.backgroundModel;
-  const judge = cfg.guard?.judgeModel;
-  return judge && judge !== "off" ? `claude-code:${judge}` : DEFAULT_BACKGROUND_MODEL;
+  const g = { ...cfg.guard, judge: on };
+  if (on) delete g.judgeModel;
+  else g.judgeModel = "off";
+  cfg.guard = g;
+  saveConfig();
 }
 
 const claude: Runner = async (model, req) => {

@@ -127,10 +127,14 @@ export class Merger {
   /** Set when the model failed during this pass: the rest of the pass doesn't retry it. */
   private modelDown?: string;
 
-  async mergeAll(entries: SourceEntry[]): Promise<MergeOutcome[]> {
+  async mergeAll(entries: SourceEntry[], onProgress?: (done: number, total: number) => void): Promise<MergeOutcome[]> {
     const out: MergeOutcome[] = [];
     this.modelDown = undefined;
-    for (const e of entries) out.push(await this.mergeOne(e));
+    onProgress?.(0, entries.length);
+    for (const e of entries) {
+      out.push(await this.mergeOne(e));
+      onProgress?.(out.length, entries.length);
+    }
     return out;
   }
 
@@ -157,7 +161,8 @@ export class Merger {
     const cands = candidates(this.store, e, all);
     if (!cands.length) return { action: "new" };
     // The source edited what it gave us before, and nothing else overlaps: just update it.
-    const own = cands[0]!.sources.includes(e.provenance) ? cands[0] : undefined;
+    // Only for sources that can be edited (a file, a section): a one-shot write (MCP) is a new fact.
+    const own = !e.oneShot && cands[0]!.sources.includes(e.provenance) ? cands[0] : undefined;
     if (own && cands.length === 1) return { action: "update", id: own.id, body, description: e.memory?.description };
     // No verdict (model down, out of quota): keep the entry rather than lose it.
     const fallback: Decision = own ? { action: "update", id: own.id, body, description: e.memory?.description } : { action: "new" };

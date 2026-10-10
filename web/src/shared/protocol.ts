@@ -123,7 +123,7 @@ export interface Msg {
   title?: string;
   collapsed?: boolean;
   /** notice: what produced it (agent report, background task, compaction…) */
-  source?: "agent" | "task" | "compaction" | "command" | "channel";
+  source?: "agent" | "task" | "compaction" | "command" | "channel" | "memory";
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
@@ -601,11 +601,21 @@ export interface ContextStatus {
   openConflicts: number;
   /** a merge pass is running */
   busy: boolean;
+  /** what the running import / sync pass is doing, with counts when known */
+  progress?: ContextProgress;
+}
+
+export interface ContextProgress {
+  phase: "skills" | "scan" | "merge" | "export" | "disable";
+  done: number;
+  total: number;
 }
 
 /** Background model shared by the safety judge and the memory merge: "harness:model". */
 export interface BackgroundModelSetting {
   model: string;
+  /** the Auto-mode safety judge runs on this model; false: turned off */
+  judge: boolean;
   /** harnesses that can run background work on this runner */
   harnesses: HarnessId[];
 }
@@ -650,8 +660,10 @@ export interface Ops {
   /** the Home dashboard: every live session, plus sessions whose turn ended recently (newest first) */
   listPulses: { args: {}; result: SessionPulse[] };
   guardSetup: {
+    /** judgeModel is legacy: "off" turns the judge off, anything else turns it on (setJudgeEnabled) */
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };
-    result: { antigravityHook: boolean; judgeModel: string; defaultMode: GuardMode };
+    /** judgeModel: the background model when the judge is on, else "off" */
+    result: { antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode };
   };
   setChain: { args: { sessionId: string; chain: string[]; preferEarlier?: boolean }; result: {} };
   setThinking: { args: { sessionId: string; level: string }; result: {} };
@@ -698,8 +710,15 @@ export interface Ops {
   contextImportPreview: { args: {}; result: ContextImportPreview };
   /** the first-run "Import" button: imports, backs up and symlinks skills, exports, then keeps syncing */
   contextImport: { args: {}; result: ContextStatus };
+  /**
+   * Turns the master context off: stops watching, removes every export (managed blocks, MCP
+   * registrations, Tether's own files, skill symlinks — replaced copies are put back as real
+   * copies). The store and its backups are kept; importing again turns it back on.
+   */
+  contextDisable: { args: {}; result: ContextStatus };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
+  setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };
 }
 
 export type OpName = keyof Ops;
