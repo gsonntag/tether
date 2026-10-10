@@ -36,11 +36,13 @@ const HOME = homedir();
 type Kind = "read" | "edit" | "shell" | "web" | "meta" | "mcp" | "browser" | "other";
 
 const KINDS: [RegExp, Kind][] = [
-  [/^(read|view_file|view_file_outline|view_code_item|glob|grep|grep_search|find_by_name|list_dir|list|ls|search|codebase_search|notebookread|lsp)$/i, "read"],
-  [/^(edit|multiedit|write|notebookedit|write_to_file|replace_file_content|multi_replace_file_content|str_replace_based_edit_tool|apply_patch|delete|move)$/i, "edit"],
+  [/^(read|view_file|view_file_outline|view_code_item|glob|grep|grep_search|find_by_name|list_dir|list|ls|search|codebase_search|notebookread|lsp|list_resources|read_resource)$/i, "read"],
+  [/^(edit|multiedit|write|notebookedit|notebook_edit|write_to_file|replace_file_content|multi_replace_file_content|sed_file|str_replace_based_edit_tool|apply_patch|delete|move)$/i, "edit"],
   [/^(bash|shell|exec|execute|run_command|run_terminal_cmd|bashoutput|killshell|send_command_input|command_status)$/i, "shell"],
   [/^(webfetch|websearch|codesearch|fetch|read_url_content|search_web|web_search|web_fetch)$/i, "web"],
   [/^(task|agent|todowrite|todoread|think|exitplanmode|enterplanmode|skill|slashcommand|toolsearch|plan|update_plan)$/i, "meta"],
+  // Antigravity's bookkeeping: questions, waiting, its task list, subagents (their own calls are checked too)
+  [/^(ask_question|ask_permission|ask_custom_permission|list_permissions|finish|wait|wait_5_seconds|manage_task|define_subagent|invoke_subagent|manage_subagents)$/i, "meta"],
   [/^mcp__/i, "mcp"],
   [/^browser_/i, "browser"],
 ];

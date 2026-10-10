@@ -19,7 +19,7 @@ import type {
   SessionSummary,
 } from "../../web/src/shared/protocol";
 import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
-import { agyHookInstalled, antigravityAdapter, installAgyHook } from "./adapters/antigravity";
+import { agyHookInstalled, antigravityAdapter } from "./adapters/antigravity";
 import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
@@ -523,9 +523,8 @@ const ops: Handlers = {
     return {};
   },
 
-  async guardSetup({ install, judgeModel, defaultMode }) {
+  async guardSetup({ judgeModel, defaultMode }) {
     const cfg = config();
-    if (install) installAgyHook();
     if (judgeModel || defaultMode) {
       cfg.guard = { ...cfg.guard, ...(judgeModel ? { judgeModel } : {}), ...(defaultMode ? { defaultMode } : {}) };
       // The judge runs on the shared background model; a Claude judge model sets it.

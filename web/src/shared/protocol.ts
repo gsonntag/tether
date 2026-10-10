@@ -532,6 +532,7 @@ export interface Ops {
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   guardSetup: {
+    /** `install` is ignored: runners pass the Antigravity hook to each agy process themselves */
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };
     result: { antigravityHook: boolean; judgeModel: string; defaultMode: GuardMode };
   };

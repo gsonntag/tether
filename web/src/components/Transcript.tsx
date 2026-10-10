@@ -341,11 +341,16 @@ function relPath(p: unknown): string {
   return s.replace(/^\/home\/[^/]+/, "~");
 }
 
-/** Normalizes the edit inputs of Claude Code (old_string/new_string) and pi (edits[]). */
+/** Normalizes the edit inputs of Claude Code (old_string/new_string), pi (edits[]) and Antigravity. */
 function edits(input: any): { oldText: string; newText: string }[] {
   if (Array.isArray(input?.edits)) return input.edits.map((e: any) => ({ oldText: e.oldText ?? e.old_string ?? "", newText: e.newText ?? e.new_string ?? "" }));
   if (input?.old_string !== undefined || input?.new_string !== undefined) return [{ oldText: input.old_string ?? "", newText: input.new_string ?? "" }];
   if (input?.oldText !== undefined) return [{ oldText: input.oldText, newText: input.newText ?? "" }];
+  // Antigravity: replace_file_content, multi_replace_file_content (ReplacementChunks), write_to_file
+  const agy = (c: any) => ({ oldText: str(c?.TargetContent), newText: str(c?.ReplacementContent) });
+  if (Array.isArray(input?.ReplacementChunks)) return input.ReplacementChunks.map(agy);
+  if (input?.TargetContent !== undefined || input?.ReplacementContent !== undefined) return [agy(input)];
+  if (typeof input?.CodeContent === "string" && !input.ArtifactMetadata) return [{ oldText: "", newText: input.CodeContent }];
   return [];
 }
 

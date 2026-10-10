@@ -643,9 +643,9 @@ export abstract class LiveSession {
   /**
    * Decides one tool call. Adapters call this from their permission hook (Claude Code canUseTool,
    * ACP request_permission, the Antigravity PreToolUse bridge) and turn the answer into the
-   * harness's own allow/deny.
+   * harness's own allow/deny. `_meta` is harness-specific context from an out-of-process gate.
    */
-  async checkTool(tool: string, input: unknown, toolId?: string): Promise<{ allow: boolean; reason?: string; always?: boolean }> {
+  async checkTool(tool: string, input: unknown, toolId?: string, _meta?: Record<string, unknown>): Promise<{ allow: boolean; reason?: string; always?: boolean }> {
     const call = { tool, input, cwd: this.projectPath };
     const key = JSON.stringify([tool, input]);
     let v: Verdict;

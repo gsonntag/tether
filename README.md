@@ -98,7 +98,7 @@ Each harness feeds the same guard:
 - **Codex:** app-server approval requests. Codex runs with `untrusted` approvals, so it still runs its own list of safe read-only commands (`cat`, `ls`, `rg`, …) without asking. Its sandbox is used when it works on the machine; it confines the commands Codex runs on its own, while a command the guard approves can run outside it. Codex's decline carries no reason, so the guard's reason is steered into the turn.
 - **opencode and Kiro:** ACP `request_permission`.
 - **pi:** a bundled extension (`runner/hooks/pi-guard.ts`) that blocks through `tool_call`.
-- **Antigravity:** a `PreToolUse` hook (`runner/hooks/agy-guard.ts`), installed from Settings → Guard. In Auto, Antigravity also runs in its own `--sandbox`: the project is read-write, secrets are hidden, and commands get no network.
+- **Antigravity:** a `PreToolUse` hook (`runner/hooks/agy-guard.ts`). Headless `agy` can't ask, so the runner starts it with `--dangerously-skip-permissions` and always with the hook, which then decides every call. The hook is passed per process (`--add-dir` of a runner-owned folder, `antigravity-hook/` in the runner's config dir, holding `.agents/hooks.json`); nothing is installed into `~/.gemini`. Antigravity's own approving modes (accept-edits, bypass) are refused. Its `--sandbox` is off unless `AGY_SANDBOX=1`, because where its sandbox server can't start, every command fails once and is retried outside it.
 
 **Checkpoints.** Before every turn the runner snapshots the working tree into
 `refs/tether/checkpoints/…`. This never touches your index, branch or stash. The Changes view
@@ -143,7 +143,7 @@ owner, and runners authenticate with `Authorization: Bearer dev`
 | pi | `pi` on PATH, its own auth | Uses your pi settings, extensions and models; extension dialogs show in the UI |
 | opencode | `opencode` (`npm i -g opencode-ai`, `OPENCODE_BIN` to override); `opencode auth login` for your providers (its free Zen models work without) | ACP: models, effort (models with variants), build/plan modes, session list and replay. Every tool call asks, so it reaches the guard (`OPENCODE_PERMISSION` overrides your opencode.json `permission`). A guard denial reaches the agent without its reason |
 | Kiro | `kiro-cli` logged in | ACP with the V3 engine (`KIRO_ACP_ARGS` to change it). Untested here: not installed |
-| Antigravity | `agy`, authenticated once interactively | Headless mode can't ask for permission (tools are skipped unless pre-approved or the session runs in `bypassPermissions`). No history API, so a resumed session shows only new turns. Untested here: not installed |
+| Antigravity | `agy` (1.3), signed in once interactively (`agy models` lists your models) | Headless stream-json, one process per session. Models come from `agy models`; effort switches between a model's `-low`/`-medium`/`-high` variants (single-variant models have none). Thinking, full tool results and edit diffs come from agy's transcript, which also replays history when a session is reopened. `/plan` (or plan mode) shows the plan and holds the first change until you approve it. Can't steer; Stop interrupts the turn. Its question tool is answered "skipped" by headless agy. Only sessions started from Tether are listed |
 
 Runner state lives in `~/.config/tether/runner.json`: added projects, profiles, quota
 resets, and per-session chains and links.

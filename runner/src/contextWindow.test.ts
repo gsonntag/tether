@@ -193,5 +193,14 @@ describe("Antigravity", () => {
       cacheRead: 4000,
       model: "gemini-3.1-pro-high",
     }));
-  test("no cache read", () => expect(agyUsage({ input_tokens: 10, cache_read_tokens: 0 })).toEqual({ used: 10, input: 10, cacheRead: undefined }));
+  test("no cache read", () => expect(agyUsage({ input_tokens: 10, cache_read_tokens: 0 })).toEqual({ used: 10, input: 10, cacheRead: 0 }));
+  test("input leaves out cache reads (agy 1.3.3, consecutive requests of one turn)", () => {
+    expect(agyUsage({ input_tokens: 57512, output_tokens: 314, thinking_tokens: 242, cache_read_tokens: 0, total_tokens: 57826 })!.used).toBe(57512);
+    expect(agyUsage({ input_tokens: 2580, output_tokens: 636, thinking_tokens: 485, cache_read_tokens: 55459, total_tokens: 3216 })!.used).toBe(58039);
+  });
+  test("a request without cache reads clears the last one's", () =>
+    expect(mergeContext(agyUsage({ input_tokens: 2249, cache_read_tokens: 14972 }, "gemini"), agyUsage({ input_tokens: 17434, cache_read_tokens: 0 }, "gemini")!)).toMatchObject({
+      used: 17434,
+      cacheRead: 0,
+    }));
 });

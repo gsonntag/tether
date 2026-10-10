@@ -19,7 +19,8 @@ const server = Bun.serve({
     const s = sessions.get(String(body.key ?? ""));
     if (!s || s.closed) return Response.json({ allow: false, reason: "Tether: unknown session" });
     try {
-      return Response.json(await s.checkTool(String(body.tool ?? "unknown"), body.input ?? {}, body.toolId ? String(body.toolId) : undefined));
+      const meta = body.meta && typeof body.meta === "object" ? body.meta : undefined;
+      return Response.json(await s.checkTool(String(body.tool ?? "unknown"), body.input ?? {}, body.toolId ? String(body.toolId) : undefined, meta));
     } catch (e: any) {
       return Response.json({ allow: false, reason: `Tether guard error: ${e?.message ?? e}` });
     }
