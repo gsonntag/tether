@@ -26,6 +26,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
 import { effortLabel } from "../models";
+import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
 import { GUARD_MODES, type LiveState, type Ops, type PendingMessage } from "../shared/protocol";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
@@ -148,6 +149,7 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
       <HarnessBadge harness={sess.harness} />
       <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />
       {!narrow && <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />}
+      <ModeMenu sessionId={sessionId} state={st} />
       <PickMenu
         label=""
         value={GUARD_MODES.find((g) => g.id === (st.guard ?? "auto"))?.label ?? st.guard!}
@@ -174,6 +176,23 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
       )}
       <UsagePill harness={sess.harness} model={st.model} />
     </HStack>
+  );
+}
+
+/** Plan mode and the harness's other modes (src/modes.ts); approvals stay with the guard picker. */
+function ModeMenu({ sessionId, state }: { sessionId: string; state: LiveState }) {
+  const options = pickerModes(state);
+  if (!options.length) return null;
+  const value = state.permissionMode ?? options[0]!;
+  return (
+    <PickMenu
+      label=""
+      value={value}
+      options={options}
+      format={modeLabel}
+      describe={Object.fromEntries(options.flatMap((m) => (MODE_DESCRIPTIONS[m] ? [[m, MODE_DESCRIPTIONS[m]!]] : [])))}
+      onPick={(mode) => mode !== value && act("setPermissionMode", { sessionId, mode })}
+    />
   );
 }
 

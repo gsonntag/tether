@@ -30,7 +30,8 @@ import { LimitStatus, toMs } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
-const PERMISSION_MODES = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+/** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
+export const PERMISSION_MODES = ["default", "plan"];
 
 /** Claude permission modes that still ask canUseTool (so the guard) before acting. */
 export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
@@ -645,6 +646,7 @@ class ClaudeSession extends LiveSession {
   }
 
   async setPermissionMode(mode: string) {
+    if (!keepsGuard(mode)) throw new Error(`Claude Code runs in ${PERMISSION_MODES.join(" or ")} mode here; the guard setting decides approvals.`);
     await this.q?.setPermissionMode(mode as any);
     this.setState({ permissionMode: mode });
   }
