@@ -229,6 +229,7 @@ export class ContextService {
         captured = cap.facts;
         if (cap.skipped === "timeout") captureNote = "the background model is still extracting facts; they'll be merged when it finishes";
         else if (cap.skipped === "failed") captureNote = "the background model couldn't extract facts this time";
+        else if (cap.skipped === "cooling down") captureNote = "skipped, the background model failed or was slow in the last few minutes";
         cap.late.then((filed) => (filed ? this.sync() : undefined)).catch(() => {});
         settle = () => {
           if (cap.file()) void this.sync();

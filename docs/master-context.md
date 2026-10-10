@@ -117,6 +117,13 @@ When a fallback chain moves a conversation to another harness, and the context i
   (`via: handoff`, provenance `handoff:<session>#<hash>`) for the normal merge pass, filed only
   after the new session has started so its injection can't already contain them.
   `context.handoffCapture: false` in runner.json turns this off.
+  Runner-wide, one extraction runs at a time and a failure or timeout pauses capturing for 5 min, so
+  a usage-limit storm costs at most one background call (and one 8 s wait). An earlier handoff's
+  brief (shown as a user message by some harnesses) is never sent again or used for relevance.
+  Credentials: the transcript is redacted before it's sent (keys, tokens, `NAME=secret`, URLs with
+  passwords, private keys), the prompt forbids them and any fact that still matches is dropped. The
+  transcript goes in a `<transcript>` data block the prompt says not to take instructions from, and
+  only user/feedback facts can be global.
 - **Carry**: the brief gets a `## Memory` section: captured facts, memories relevant to the last user
   messages and the pending prompt, global user/feedback entries, then this repo's entries, within
   ~1500 tokens (overflow becomes index lines). Anything the new harness's native injection already
