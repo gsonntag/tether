@@ -48,14 +48,19 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
     files up to 25 MB, 10 per message.
   - **Transport:** files go to the runner in 256 KB chunks over the usual RPC channel, so nothing
     new passes the relay. The runner keeps them in `TETHER_CONFIG_DIR/attachments/<session>/`,
-    never in the repository. A session's files are deleted a week after it's removed or marked
-    done, and any folder untouched for 90 days.
+    never in the repository, read-only on disk, up to 2 GB per session (and never the disk's last
+    1 GB). A session's files are deleted a week after it's removed or marked done (unless a live
+    session handed off from it still lists them), and any folder untouched for 90 days.
   - **Delivery:** the message ends with an `Attached files` list of absolute paths, sizes and types,
     so every agent can open them. Images also go natively to Claude Code, Codex, pi and ACP agents
-    that accept images, and PDFs up to 4 MB go to Claude Code as documents. Antigravity reads
-    everything by path.
-  - **Guard:** reads under the attachments folder are always allowed, including `pdftotext`, `unzip -l`
-    and `tar -t`. Writes there are always denied, even with full access.
+    that accept images, and PDFs up to 4 MB and 20 pages go to Claude Code as documents. Native
+    files are typed by their content and kept to what model APIs accept (images up to 3.75 MB and
+    8000 px, 12 MB per message); anything else is read by path. Antigravity reads everything by
+    path (`--add-dir` of the session's own folder).
+  - **Guard:** an agent may always read its own session's attachments (and those of a session
+    handed off to it), including `pdftotext`, `unzip -l`/`-p` and `tar -t`; other sessions'
+    attachments are denied. Extracting an archive goes to the judge. Writes there are always
+    denied, even with full access.
   - The transcript shows thumbnails (tap to enlarge) and file chips (click to download). Handoffs
     carry the paths, and the new harness gets the images natively again.
 - **Skills from the message box, on every harness.** `/` opens a menu of skills (the master
