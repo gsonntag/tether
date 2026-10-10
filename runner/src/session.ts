@@ -680,9 +680,9 @@ export abstract class LiveSession {
         if (toolId) this.judging.delete(toolId);
       }
     }
+    // A denied call isn't a notification: the agent sees the reason and carries on, and the verdict
+    // shows on the tool card.
     const verdict: GuardVerdict = { decision: v.decision === "allow" ? "allow" : "deny", by: v.by, reason: v.reason };
-    if (verdict.decision === "deny" && verdict.by !== "user")
-      this.alert("blocked", "Guard blocked a call", `${commandOf(input) ?? tool}: ${(v.reason ?? "").replace(/^Blocked:\s*/, "")} (Approve & retry in the session)`);
     this.annotate(tool, toolId, verdict);
     return { allow: verdict.decision === "allow", reason: v.reason, always };
   }
