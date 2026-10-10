@@ -640,6 +640,9 @@ export abstract class LiveSession {
     return pick.map((t) => t.slice(0, 1500)).join("\n---\n");
   }
 
+  /** A lifecycle ping from an out-of-process gate (see bridge.ts). Adapters that use one override it. */
+  gateEvent(_event: string, _meta: Record<string, unknown>) {}
+
   /**
    * Decides one tool call. Adapters call this from their permission hook (Claude Code canUseTool,
    * ACP request_permission, the Antigravity PreToolUse bridge) and turn the answer into the

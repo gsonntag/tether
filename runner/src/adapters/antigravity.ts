@@ -10,8 +10,9 @@
 // agy has no session list API, so the runner records the conversations it starts; their history
 // comes from agy's transcript file (thinking, tool calls and results included).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModelRef, Msg, SessionSummary } from "../../../web/src/shared/protocol";
 import { findPlan } from "../../../web/src/shared/reducer";
@@ -20,7 +21,7 @@ import { agyUsage, knownWindow } from "../contextWindow";
 import { kindOf } from "../guard";
 import { LiveSession, newId } from "../session";
 import { sessionContext, withPreamble } from "../context/inject";
-import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
+import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 
 const AGY_BIN = process.env.AGY_BIN ?? "agy";
@@ -62,22 +63,30 @@ function remember(r: AgyRecord) {
 const HOOK_SCRIPT = fileURLToPath(new URL("../../hooks/agy-guard.ts", import.meta.url));
 /** Runner-owned folder agy is pointed at with --add-dir; it only holds the hook config. */
 export const HOOK_DIR = join(CONFIG_DIR, "antigravity-hook");
-const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+/** Unguessable, so a hook in the project's own .agents/hooks.json can't override this one by name. */
+const HOOK_NAME = `tether-guard-${randomBytes(8).toString("hex")}`;
 
-function writeIfChanged(path: string, text: string) {
+/** Writes a read-only file in a read-only folder: agy has the hook folder in its workspace. */
+function writeLocked(path: string, text: string) {
+  const dir = dirname(path);
   try {
     if (readFileSync(path, "utf8") === text) return;
   } catch {}
-  mkdirSync(join(path, ".."), { recursive: true });
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o755);
+  try {
+    chmodSync(path, 0o644);
+  } catch {}
   writeFileSync(path, text);
+  chmodSync(path, 0o444);
+  chmodSync(dir, 0o555);
 }
 
-/** Writes the hook folder (idempotent). The timeout is long because "ask" waits for a person. */
+/** Writes the hook folder before each process starts (idempotent; repairs it if it was changed). */
 export function ensureHookDir(): string {
-  const hooks = { "tether-guard": { PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${sh(process.execPath)} ${sh(HOOK_SCRIPT)}`, timeout: 86_400 }] }] } };
-  writeIfChanged(join(HOOK_DIR, ".agents", "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
+  writeLocked(join(HOOK_DIR, ".agents", "hooks.json"), JSON.stringify(hookConfig(HOOK_NAME, process.execPath, HOOK_SCRIPT), null, 2) + "\n");
   // agy lists it as a second workspace folder; tell the agent it isn't the project.
-  writeIfChanged(
+  writeLocked(
     join(HOOK_DIR, "AGENTS.md"),
     "This folder only holds Tether's tool-approval hook. It is not the user's project: don't read, change or run commands in it. Work in the other workspace folder.\n",
   );
@@ -146,6 +155,10 @@ class AgySession extends LiveSession {
   private reviewing?: Promise<{ allow: boolean; reason?: string }>;
   /** this turn started with agy's `/plan` command: plan mode for one turn */
   private planTurn = false;
+  /** proof that the current process runs the guard hook (see HookWatch) */
+  private watch = new HookWatch();
+  /** verdicts by `conversation:step`: a second hook (an old global install) asks again for the same call */
+  private verdicts = new Map<string, Promise<{ allow: boolean; reason?: string; always?: boolean; overwrite?: Record<string, unknown> }>>();
 
   constructor(init: { nativeId: string; projectPath: string; title?: string; createdAt?: number }, sink: Sink, opts: CreateOpts = {}) {
     super("antigravity", init, sink);
@@ -226,6 +239,7 @@ class AgySession extends LiveSession {
     });
     this.proc = proc;
     this.stale = false;
+    this.watch = new HookWatch();
     (async () => {
       const dec = new TextDecoder();
       let buf = "";
@@ -264,10 +278,28 @@ class AgySession extends LiveSession {
     });
   }
 
-  private async onEvent(proc: unknown, raw: any) {
+  private async onEvent(proc: ReturnType<typeof Bun.spawn>, raw: any) {
+    const unguarded = this.watch.event(raw);
+    if (unguarded) return this.unguarded(proc, unguarded);
     const r = this.stream.event(raw);
     if (r.conversationId && r.conversationId !== this.convId) this.adopt(r.conversationId);
     if (r.result && this.proc === proc) await this.onResult(r.error);
+  }
+
+  /** agy is running without the guard: kill it before it does anything else. */
+  private unguarded(proc: ReturnType<typeof Bun.spawn>, why: string) {
+    if (this.proc !== proc) return;
+    this.proc = undefined;
+    proc.kill("SIGKILL");
+    this.stopTail();
+    this.planReview = undefined;
+    this.stream.finish("Stopped: Antigravity was running without Tether's guard.", "Stopped: Antigravity was running without Tether's guard.");
+    this.notice(
+      `Stopped Antigravity: ${why}. Its tool calls weren't being checked, so the session was stopped. Check the project for an .agents/hooks.json (or plugins) that changes hooks, then send a message to start it again.`,
+      "error",
+    );
+    this.alert("blocked", "Antigravity ran without the guard", why);
+    this.setState({ status: "idle" });
   }
 
   private adopt(convId: string) {
@@ -456,9 +488,35 @@ class AgySession extends LiveSession {
 
   // ---- guard: every call comes through the PreToolUse hook ----
 
+  gateEvent(event: string, meta: Record<string, unknown>) {
+    if (event === "invocation") this.watch.invocation(meta.conversationId);
+  }
+
   async checkTool(tool: string, input: unknown, id?: string, meta?: Record<string, unknown>): Promise<{ allow: boolean; reason?: string; always?: boolean; overwrite?: Record<string, unknown> }> {
+    let step = typeof meta?.step === "number" ? meta.step : id?.startsWith("agy-") ? Number(id.slice(4)) : undefined;
+    const conv = typeof meta?.conversationId === "string" ? meta.conversationId : undefined;
+    if (step !== undefined && Number.isFinite(step)) this.watch.checkedCall(conv, step);
+    else step = undefined;
+    const key = step !== undefined ? `${conv ?? ""}:${step}:${tool}` : undefined;
+    const known = key ? this.verdicts.get(key) : undefined;
+    if (known) return known;
+    const v = this.decide(tool, input, id, meta, step, conv);
+    if (key) {
+      this.verdicts.set(key, v);
+      if (this.verdicts.size > 200) this.verdicts.delete(this.verdicts.keys().next().value!);
+    }
+    return v;
+  }
+
+  private async decide(tool: string, input: unknown, id: string | undefined, meta: Record<string, unknown> | undefined, step: number | undefined, conv: string | undefined) {
     const args = cleanArgs(input);
-    const step = typeof meta?.step === "number" ? meta.step : id?.startsWith("agy-") ? Number(id.slice(4)) : undefined;
+    // A subagent's calls come through the same hook with its own conversation and step numbers:
+    // they are guarded alike, but its steps, transcript and notes folder aren't this conversation's.
+    if (conv && this.convId && conv !== this.convId) {
+      step = undefined;
+      id = `agy-sub-${conv.slice(0, 8)}-${meta?.step}`;
+      meta = undefined;
+    }
     if (typeof meta?.artifactDirectoryPath === "string") this.artifactDir = meta.artifactDirectoryPath;
     if (typeof meta?.modelName === "string") this.resolvedModel = meta.modelName;
     if (typeof meta?.transcriptPath === "string" && !this.transcriptFile) this.transcriptFile = meta.transcriptPath;

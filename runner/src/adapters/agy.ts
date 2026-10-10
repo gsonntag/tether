@@ -87,6 +87,64 @@ export function spawnArgs(o: SpawnOpts): string[] {
   return args;
 }
 
+// ---------------- the guard hook ----------------
+
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The hooks.json that puts the guard in front of every tool call. `name` should be unguessable: a
+ * same-named hook in the project's own `.agents/hooks.json` would override this one. The PreToolUse
+ * command fails closed on top of agy's own handling (which denies on a crash, a timeout or bad
+ * JSON, but runs the tool when a hook prints nothing): no output is a deny. PreInvocation tells the
+ * runner the hook is loaded (see HookWatch). The timeout is long because "ask" waits for a person.
+ */
+export function hookConfig(name: string, runtime: string, script: string) {
+  const run = `${shq(runtime)} ${shq(script)}`;
+  const deny = shq(JSON.stringify({ decision: "deny", reason: "Tether's guard hook failed; blocked to be safe." }));
+  return {
+    [name]: {
+      PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: `o=$(${run}) && [ -n "$o" ] && printf '%s\\n' "$o" || printf '%s\\n' ${deny}`, timeout: 86_400 }] }],
+      PreInvocation: [{ type: "command", command: run, timeout: 60 }],
+    },
+  };
+}
+
+/**
+ * Proof that agy is running the guard hook. With --dangerously-skip-permissions nothing else stops
+ * a tool call, and agy quietly runs without a hook it doesn't load (a missing or invalid hooks.json,
+ * a project hook overriding it by name). So for each process: before the model answers, the hook
+ * must have pinged (PreInvocation), and every tool step that ran must have been seen by the guard.
+ * `event` returns why the process is unguarded; the session then kills it.
+ */
+export class HookWatch {
+  private invoked = new Set<string>();
+  private checked = new Set<string>();
+
+  /** the PreInvocation ping */
+  invocation(conversationId: unknown) {
+    this.invoked.add(String(conversationId ?? ""));
+  }
+
+  /** the guard got this tool call (called before deciding it) */
+  checkedCall(conversationId: unknown, step: number) {
+    this.checked.add(`${conversationId ?? ""}:${step}`);
+  }
+
+  event(raw: any): string | undefined {
+    if ((raw?.event ?? raw?.type) !== "step_update") return undefined;
+    const e = raw.step_update ?? raw;
+    const conv = String(e.conversation_id ?? "");
+    const modelOutput = e.step_type === "agent_response" || e.step_type === "tool";
+    if (modelOutput && !this.invoked.has(conv) && !this.invoked.has("")) return "the model answered, but the guard hook never ran before the request";
+    if (e.step_type !== "tool" || (e.state !== "DONE" && e.state !== "ERROR")) return undefined;
+    if (this.checked.has(`${conv}:${Number(e.step_index)}`) || this.checked.has(`:${Number(e.step_index)}`)) return undefined;
+    // A failing hook is a denial: the call didn't run.
+    const err = String(e.tool_info?.error?.message ?? "");
+    if (e.state === "ERROR" && /\bhook\b/i.test(err)) return undefined;
+    return `${e.tool_name ?? "a tool"} ran without the guard seeing it`;
+  }
+}
+
 // ---------------- tool calls ----------------
 
 /** Per-call chatter agy adds to every tool's arguments; left out so cards and retries compare equal. */

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import type { Part, SessionEvent } from "../../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../../web/src/shared/reducer";
 import { agyUsage } from "../contextWindow";
-import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, cleanUserText, effortOf, parseModels, planArtifact, sessionMode, spawnArgs, toolResultText, transcriptToMessages } from "./agy";
+import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, cleanUserText, effortOf, hookConfig, HookWatch, parseModels, planArtifact, sessionMode, spawnArgs, toolResultText, transcriptToMessages } from "./agy";
 
 // Captured from agy 1.3.3 (`-p "" --input-format stream-json --output-format stream-json`) in
 // throwaway repositories; long file contents are cut short.
@@ -247,5 +247,71 @@ describe("helpers", () => {
     expect(planArtifact("write_to_file", { ArtifactMetadata: { RequestFeedback: true }, CodeContent: "# P" })).toBe("# P");
     expect(planArtifact("write_to_file", { ArtifactMetadata: { RequestFeedback: false }, CodeContent: "# P" })).toBeUndefined();
     expect(planArtifact("write_to_file", { CodeContent: "x" })).toBeUndefined();
+  });
+});
+
+// agy runs with --dangerously-skip-permissions: the hook is the only gate, so it must fail closed.
+// Measured on agy 1.3.3: a hook that crashes, times out, prints non-JSON, `{}` or an unknown
+// decision blocks the call, but one that prints nothing (or "ask") lets it run, and a hooks.json
+// agy can't load runs every call unguarded.
+describe("guard hook", () => {
+  const preToolUse = (runtime: string, script: string) => hookConfig("tg", runtime, script).tg.PreToolUse[0]!.hooks[0]!.command;
+  const run = (command: string) => {
+    const p = Bun.spawnSync(["sh", "-c", command], { stdin: new TextEncoder().encode("{}") });
+    return { code: p.exitCode, out: JSON.parse(p.stdout.toString()) };
+  };
+
+  test("the hook's own answer passes through", () => {
+    expect(run(preToolUse("printf", '{"decision":"allow"}')).out).toEqual({ decision: "allow" });
+  });
+  test.each([
+    ["prints nothing", "true", "x"],
+    ["exits non-zero", "false", "x"],
+    ["is missing", "/nonexistent/bun", "/nonexistent/hook.ts"],
+  ])("a hook that %s denies", (_, runtime, script) => {
+    const r = run(preToolUse(runtime, script));
+    expect(r.code).toBe(0);
+    expect(r.out.decision).toBe("deny");
+  });
+  test("paths with spaces and quotes are quoted", () => {
+    expect(preToolUse("/opt/my bun/bun", "/x/it's/agy-guard.ts")).toStartWith(`o=$('/opt/my bun/bun' '/x/it'\\''s/agy-guard.ts')`);
+  });
+  test("PreInvocation pings the runner", () => {
+    expect(hookConfig("tg", "/bun", "/hook.ts").tg.PreInvocation[0]!.command).toBe("'/bun' '/hook.ts'");
+  });
+
+  const step = (o: object) => ({ event: "step_update", step_update: { conversation_id: "c1", ...o } });
+  test("a guarded process passes", () => {
+    const w = new HookWatch();
+    expect(w.event(step({ step_type: "user_input", step_index: 0, state: "DONE" }))).toBeUndefined();
+    w.invocation("c1");
+    expect(w.event(step({ step_type: "agent_response", step_index: 1, state: "ACTIVE" }))).toBeUndefined();
+    w.checkedCall("c1", 2);
+    expect(w.event(step({ step_type: "tool", step_index: 2, state: "ACTIVE", tool_name: "run_command" }))).toBeUndefined();
+    expect(w.event(step({ step_type: "tool", step_index: 2, state: "DONE", tool_name: "run_command" }))).toBeUndefined();
+  });
+  test("the model answers without the hook's ping: unguarded", () => {
+    const w = new HookWatch();
+    expect(w.event(step({ step_type: "agent_response", step_index: 1, state: "ACTIVE" }))).toContain("never ran");
+    expect(new HookWatch().event(step({ step_type: "tool", step_index: 1, state: "ACTIVE" }))).toContain("never ran");
+  });
+  test("a tool step that ran without the guard: unguarded", () => {
+    const w = new HookWatch();
+    w.invocation("c1");
+    expect(w.event(step({ step_type: "tool", step_index: 2, state: "ACTIVE", tool_name: "run_command" }))).toBeUndefined(); // the hook may still be starting
+    expect(w.event(step({ step_type: "tool", step_index: 2, state: "DONE", tool_name: "run_command" }))).toContain("run_command ran without the guard");
+    expect(w.event(step({ step_type: "tool", step_index: 4, state: "ERROR", tool_info: { error: { message: "exit status 1" } } }))).toBeDefined();
+  });
+  test("a call the failing hook blocked is fine", () => {
+    const w = new HookWatch();
+    w.invocation("c1");
+    const denied = lines("stream-hook-denied.jsonl").find((e) => e.step_update?.state === "ERROR")!;
+    expect(w.event({ ...denied, step_update: { ...denied.step_update, conversation_id: "c1" } })).toBeUndefined();
+  });
+  test("another conversation's steps (a subagent) don't count as checked", () => {
+    const w = new HookWatch();
+    w.invocation("c1");
+    w.checkedCall("sub", 2);
+    expect(w.event(step({ step_type: "tool", step_index: 2, state: "DONE" }))).toBeDefined();
   });
 });
