@@ -270,7 +270,9 @@ export function useAttachmentUrl(path: string, mimeType: string, enabled = true)
 
 /** Saves a stored attachment through the browser's download. */
 export async function download(a: { path: string; name: string; mimeType: string }) {
-  const blob = await fetchAttachment(a.path, a.mimeType);
+  // Always as a download, never rendered: an attached .html or .svg must not open as a page on
+  // this origin (the type in a message's list is only text anyone could have typed).
+  const blob = new Blob([await fetchAttachment(a.path, a.mimeType)], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

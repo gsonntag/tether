@@ -151,6 +151,8 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   }
   track(next);
   next.inheritDiffBase(from.diffBase);
+  // The brief lists the earlier session's attachments: the new agent may read them too.
+  next.inheritedAttachments = from.attachmentFolders();
   next.setTitle(from.title);
   next.setState({
     chain: from.t.state.chain,
@@ -848,7 +850,8 @@ if (!process.env.TETHER_NO_RESUME) resumeActive();
 function sweep() {
   try {
     sweepUploads();
-    const removed = sweepAttachments({ archived: config().archived, live: [...live.keys()] });
+    const referenced = [...live.values()].flatMap((s) => s.attachmentFolders());
+    const removed = sweepAttachments({ archived: config().archived, live: [...live.keys()], referenced });
     if (removed.length) console.log(`removed attachments of ${removed.length} old session(s)`);
   } catch (e: any) {
     console.error(`attachment cleanup failed: ${e?.message ?? e}`);

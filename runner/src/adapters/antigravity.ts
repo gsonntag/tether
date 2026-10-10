@@ -229,9 +229,15 @@ class AgySession extends LiveSession {
     if (!this.convId) this.preamble = (await sessionContext(this.projectPath))?.prompt;
   }
 
-  private spawn() {
-    mkdirSync(attachmentsDir(), { recursive: true, mode: 0o700 });
-    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX, readDirs: [attachmentsDir()] });
+  /** The attachment folders the running process was given (--add-dir). */
+  private readFolders: string[] = [];
+
+  private spawn(text = "") {
+    // Only this session's attachments (and those of a session handed off to it), not every session's.
+    this.readFolders = this.attachmentFolders([text]);
+    const readDirs = this.readFolders.map((f) => join(attachmentsDir(), f));
+    for (const d of readDirs) mkdirSync(d, { recursive: true, mode: 0o700 });
+    const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX, readDirs });
     const proc = Bun.spawn([AGY_BIN, ...args], {
       cwd: this.projectPath,
       stdin: "pipe",
@@ -385,9 +391,11 @@ class AgySession extends LiveSession {
     if (show) this.addUserMessage(text);
     this.planReview = undefined;
     this.planTurn = /^\/plan(\s|$)/.test(text.trimStart());
+    // Files from a folder the process wasn't given (another session's, listed by hand) need a restart.
+    if (this.proc && this.attachmentFolders([text]).some((f) => !this.readFolders.includes(f)) && this.t.state.status !== "running") this.stale = true;
     if (this.proc && this.stale) this.stopProcess(true);
     await this.exiting;
-    if (!this.proc) this.spawn();
+    if (!this.proc) this.spawn(text);
     const sink = this.proc!.stdin as import("bun").FileSink;
     const content = withPreamble(this.preamble, text);
     this.preamble = undefined;

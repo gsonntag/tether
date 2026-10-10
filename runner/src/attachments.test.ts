@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CHUNK_BYTES, withAttachments, type Attachment } from "../../web/src/shared/attachments";
 import { acpImages } from "./adapters/acp";
@@ -10,8 +10,11 @@ import {
   attachmentsDir,
   checkAttachments,
   discard,
+  imageInfo,
   isAttachmentPath,
+  pdfPages,
   planDelivery,
+  referencedFolders,
   readChunk,
   receiveChunk,
   resolveStored,
@@ -177,6 +180,80 @@ describe("path safety", () => {
 
 const img = (name: string, mimeType = "image/png", size = 1000): Attachment => ({ path: `/x/${name}`, name, mimeType, size });
 
+/** The start of a PNG of this size (signature and IHDR): enough for imageInfo. */
+function pngOf(width: number, height: number): Buffer {
+  const b = Buffer.alloc(33);
+  Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(b);
+  b.writeUInt32BE(width, 16);
+  b.writeUInt32BE(height, 20);
+  return b;
+}
+
+describe("content checks", () => {
+  test("imageInfo reads PNG, GIF, JPEG and WebP sizes", () => {
+    expect(imageInfo(pngOf(640, 480))).toEqual({ mimeType: "image/png", width: 640, height: 480 });
+    const gif = Buffer.from("GIF89a\x20\x03\x58\x02", "latin1");
+    expect(imageInfo(gif)).toEqual({ mimeType: "image/gif", width: 800, height: 600 });
+    // SOI, an APP0 segment, then SOF0 (height 300, width 400)
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 1, 0x2c, 1, 0x90, 3, 0, 0, 0, 0]);
+    expect(imageInfo(jpeg)).toEqual({ mimeType: "image/jpeg", width: 400, height: 300 });
+    const webp = Buffer.alloc(30);
+    webp.write("RIFF", 0, "latin1");
+    webp.write("WEBPVP8X", 8, "latin1");
+    webp.writeUIntLE(1023, 24, 3);
+    webp.writeUIntLE(767, 27, 3);
+    expect(imageInfo(webp)).toEqual({ mimeType: "image/webp", width: 1024, height: 768 });
+    expect(imageInfo(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"))).toBeUndefined();
+    expect(imageInfo(Buffer.from("hello"))).toBeUndefined();
+  });
+
+  test("pdfPages counts page objects", () => {
+    expect(pdfPages(Buffer.from("%PDF-1.4\n<< /Type /Pages /Count 2 >>\n<< /Type /Page >>\n<</Type/Page>>"))).toBe(2);
+    expect(pdfPages(Buffer.from("%PDF-1.5\n(compressed object streams)"))).toBeUndefined();
+    expect(pdfPages(Buffer.from("not a pdf /Type /Page"))).toBeUndefined();
+  });
+
+  test("a file named or listed as an image that isn't one never goes natively", async () => {
+    const [t] = await put(Buffer.from("just text, not a picture"), { name: "fake.png", mimeType: "image/png" });
+    const text = withAttachments("look", [t!.attachment!]);
+    expect(await claudeContent(text)).toBe(text);
+    expect(imageItems(text)).toEqual([]);
+    // a text file listed by hand as image/png
+    const [u] = await put(Buffer.from("hello"), { name: "notes.txt", mimeType: "text/plain" });
+    const typed = withAttachments("look", [{ ...u!.attachment!, mimeType: "image/png" }]);
+    expect(await claudeContent(typed)).toBe(typed);
+  });
+
+  test("images models would refuse go by path only: over 8000 px, over 3.75 MB", async () => {
+    const [huge] = await put(pngOf(9000, 100), { name: "wide.png", mimeType: "image/png" });
+    const big = Buffer.concat([pngOf(100, 100), Buffer.alloc(4 * 1024 * 1024)]);
+    const heavy = (await put(big, { name: "heavy.png", mimeType: "image/png" })).at(-1);
+    const text = withAttachments("look", [huge!.attachment!, heavy!.attachment!]);
+    expect(await claudeContent(text)).toBe(text);
+    expect(imageItems(text)).toEqual([]);
+  });
+
+  test("PDFs go natively only with a known, small page count", async () => {
+    const pages = (n: number) => Buffer.from("%PDF-1.4\n" + "<< /Type /Page >>\n".repeat(n));
+    const [short] = await put(pages(3), { name: "short.pdf", mimeType: "application/pdf" });
+    const [long] = await put(pages(150), { name: "long.pdf", mimeType: "application/pdf" });
+    const [opaque] = await put(Buffer.from("%PDF-1.7\nobject streams only"), { name: "opaque.pdf", mimeType: "application/pdf" });
+    const c = await claudeContent(withAttachments("read", [short!.attachment!, long!.attachment!, opaque!.attachment!]));
+    expect((c as any[]).filter((b) => b.type === "document").map((b) => b.title)).toEqual(["short.pdf"]);
+  });
+
+  test("the whole message stays within the native budget, newest first", () => {
+    const mb = 1024 * 1024;
+    const p = planDelivery([img("1.png", "image/png", 3.5 * mb), img("2.png", "image/png", 3.5 * mb), img("3.png", "image/png", 3.5 * mb), img("4.png", "image/png", 3.5 * mb)], { images: true });
+    expect(p.images.map((f) => f.name)).toEqual(["2.png", "3.png", "4.png"]);
+  });
+
+  test("stored files are read-only on disk", async () => {
+    const [a] = await put(bytes(10));
+    expect(statSync(a!.attachment!.path).mode & 0o777).toBe(0o400);
+  });
+});
+
 describe("planDelivery", () => {
   const files = [img("a.png"), img("b.heic", "image/heic"), img("c.pdf", "application/pdf"), img("d.txt", "text/plain"), img("e.jpg", "image/jpeg", 11 * 1024 * 1024)];
   test("no image input: nothing native", () => expect(planDelivery(files, { images: false })).toEqual({ images: [], documents: [] }));
@@ -191,9 +268,9 @@ describe("planDelivery", () => {
 
 describe("per-harness delivery", () => {
   async function message() {
-    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const png = pngOf(64, 48);
     const [i] = await put(png, { name: "shot.png", mimeType: "image/png" });
-    const [d] = await put(Buffer.from("%PDF-1.4\n%%EOF"), { name: "doc.pdf", mimeType: "application/pdf" });
+    const [d] = await put(Buffer.from("%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n%%EOF"), { name: "doc.pdf", mimeType: "application/pdf" });
     const [t] = await put(Buffer.from("hello"), { name: "notes.txt", mimeType: "text/plain" });
     const files = [i!.attachment!, d!.attachment!, t!.attachment!];
     return { text: withAttachments("Describe these", files), files, png };
@@ -242,7 +319,7 @@ describe("per-harness delivery", () => {
 
 describe("handoff", () => {
   test("the brief lists a message's attachments by path, and the stored image isn't also [image]", async () => {
-    const [i] = await put(Buffer.from("png"), { name: "shot.png", mimeType: "image/png" });
+    const [i] = await put(pngOf(10, 10), { name: "shot.png", mimeType: "image/png" });
     const text = withAttachments("what is this", [i!.attachment!]);
     const parts = [...userParts(text, "u1"), { type: "image" as const, mimeType: "image/png", data: "cG5n" }];
     const brief = renderTranscript([{ id: "u1", role: "user", parts, ts: 1 }]);
@@ -287,9 +364,15 @@ describe("guard: attachments are readable, never writable", () => {
     expect(decide("Bash", { command: `pdftotext ${pdf} /home/u/.bashrc` })).toBe("judge");
     expect(decide("Bash", { command: `pdfinfo ${pdf}` })).toBe("allow");
     expect(decide("Bash", { command: `unzip -l ${zip}` })).toBe("allow");
-    expect(decide("Bash", { command: `unzip ${zip} -d vendor/src` })).toBe("allow");
+    expect(decide("Bash", { command: `unzip -p ${zip} README.md` })).toBe("allow");
+    // extracting writes whatever the archive holds (agent config, git hooks): the judge decides
+    expect(decide("Bash", { command: `unzip ${zip} -d vendor/src` })).toBe("judge");
+    expect(decide("Bash", { command: `unzip ${zip}` })).toBe("judge");
+    expect(decide("Bash", { command: `unzip -l ${zip} -d vendor` })).toBe("judge");
     expect(decide("Bash", { command: `unzip ${zip} -d /home/u/elsewhere` })).toBe("judge");
     expect(decide("Bash", { command: `tar -tzf ${zip}` })).toBe("allow");
+    expect(decide("Bash", { command: `tar -xzf ${zip}` })).toBe("judge");
+    expect(decide("Bash", { command: `tar -xzf ${zip} -C vendor` })).toBe("judge");
     expect(decide("Bash", { command: `tar -czf ${zip} src` })).toBe("deny"); // writes the attachment
     expect(decide("Bash", { command: `pdftotext /home/u/other.pdf -` })).toBe("judge"); // not an attachment: unchanged
   });
@@ -308,6 +391,31 @@ describe("guard: attachments are readable, never writable", () => {
     expect(decide("Bash", { command: `echo hi > ${file}` })).toBe("deny");
     expect(decide("Bash", { command: `sed -i s/a/b/ ${file}` })).toBe("deny");
     expect(decide("Bash", { command: `touch ${file}` })).toBe("deny");
+    expect(decide("Bash", { command: `cp -t ${join(attachmentsDir(), "codex_t1")} evil.png` })).toBe("deny");
+    expect(decide("Bash", { command: `cp --target-directory=${join(attachmentsDir(), "codex_t1")} evil.png` })).toBe("deny");
+    expect(decide("Bash", { command: `cp -t ./assets ${file}` })).toBe("allow");
+  });
+
+  test("an agent reads its own session's attachments, not another session's", () => {
+    const own = (tool: string, input: any) => rules({ tool, input, cwd, attachments: ["codex_t1"] })?.decision ?? "judge";
+    const other = join(attachmentsDir(), "claude-code_x", "0a1b2c3d-secret.pdf");
+    expect(own("Read", { file_path: file })).toBe("allow");
+    expect(own("Bash", { command: `cat ${file}` })).toBe("allow");
+    expect(own("Read", { file_path: other })).toBe("deny");
+    expect(own("Bash", { command: `cat ${other}` })).toBe("deny");
+    expect(own("Bash", { command: `pdftotext ${other} -` })).toBe("deny");
+    expect(own("Bash", { command: `cp ${other} ./x.pdf` })).toBe("deny");
+    // the folder itself lists every session's files
+    expect(own("Bash", { command: `ls ${attachmentsDir()}` })).toBe("deny");
+    expect(own("Bash", { command: `grep -r key ${attachmentsDir()}` })).toBe("deny");
+    expect(own("Glob", { pattern: `${attachmentsDir()}/**/*` })).toBe("deny");
+    expect(own("Grep", { pattern: "key", path: attachmentsDir() })).toBe("deny");
+    expect(own("Read", { file_path: join(attachmentsDir(), "claude-code_x", "..", "codex_t1", "0a1b2c3d-shot.png") })).toBe("allow");
+  });
+
+  test("a handoff's brief lists the earlier session's files: they count as the session's own", () => {
+    const listed = withAttachments("hi", [{ path: join(attachmentsDir(), "claude-code_x", "0a1b2c3d-a.png"), name: "a.png", mimeType: "image/png", size: 1 }]);
+    expect([...referencedFolders([listed, "no files", withAttachments("x", [{ path: "/etc/passwd", name: "passwd", mimeType: "text/plain", size: 1 }])])]).toEqual(["claude-code_x"]);
   });
 
   test("even with full access", () => {
@@ -346,6 +454,13 @@ describe("sweepAttachments", () => {
     const removed = sweepAttachments({ archived: ["claude-code:done-old", "claude-code:done-new"], live: ["pi:live"] });
     expect(removed.sort()).toEqual([ancient, doneOld].sort());
     expect(existsSync(doneNew) && existsSync(active) && existsSync(liveAncient)).toBe(true);
+  });
+
+  test("a done session's files stay while a live session (handed off from it) lists them", () => {
+    const old = dir("claude-code:handed", 30);
+    expect(sweepAttachments({ archived: ["claude-code:handed"], live: ["codex:next"], referenced: [sessionKey("claude-code:handed")] })).toEqual([]);
+    expect(existsSync(old)).toBe(true);
+    expect(sweepAttachments({ archived: ["claude-code:handed"], live: ["codex:next"] })).toEqual([old]);
   });
 
   test("stale partial uploads go after a day", () => {
