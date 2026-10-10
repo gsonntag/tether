@@ -24,8 +24,9 @@ export interface RunnerConfig {
   guard?: { judgeModel?: string; defaultMode?: import("./guard").GuardMode };
   /** "harness:model" for the judge and the memory merge (runner/src/context/background.ts) */
   backgroundModel?: string;
-  /** master context: off until the first import is run from the UI */
-  context?: { enabled?: boolean; importedAt?: number };
+  /** master context: off until the first import is run from the UI. `handoffCapture: false` skips
+   *  the fact capture before a cross-harness handoff (memory is still carried). */
+  context?: { enabled?: boolean; importedAt?: number; handoffCapture?: boolean };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }

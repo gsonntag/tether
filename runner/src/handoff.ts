@@ -91,12 +91,15 @@ export async function buildBrief(opts: {
   fromLabel: string;
   reason: string;
   pendingPrompt?: string;
+  /** the master context's memory section (context/handoff.ts); absent when the context is off */
+  memory?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
+  const memory = opts.memory?.trim() ? `\n## Memory\n${opts.memory.trim()}\n` : "";
   return `You are taking over an in-progress coding session from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
 You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
-
+${memory}
 ## Conversation so far
 ${transcript || "(empty)"}
 

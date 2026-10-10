@@ -31,6 +31,7 @@ import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, 
 import type { ChainEntry } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
+import { carriedNotice } from "./context/handoff";
 import { sessionForKey } from "./bridge";
 
 const VERSION = "0.1.0";
@@ -84,16 +85,29 @@ const sink: Sink = {
  */
 async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) {
   const a = adapters[to.harness];
+  // Master context on: carry the relevant memories and capture what this session learned first.
+  const memory = await context.handoffMemory({
+    sessionId: from.id,
+    projectPath: from.projectPath,
+    messages: from.t.messages,
+    target: to.harness,
+    pendingPrompt,
+  });
   const brief = await buildBrief({
     messages: from.t.messages,
     cwd: from.projectPath,
     fromLabel: `${from.harness}, ${from.t.state.model ?? "default model"}`,
     reason,
     pendingPrompt,
+    memory: memory?.text,
   });
   const next = a.create(from.projectPath, { model: to.model, permissionMode: from.t.state.permissionMode }, sink);
   next.t.state.guard = from.guardMode;
-  await next.start();
+  try {
+    await next.start();
+  } finally {
+    memory?.settle?.(); // captured facts go to the merge pass only now: next's injection is fixed
+  }
   track(next);
   next.inheritDiffBase(from.diffBase);
   next.setTitle(from.title);
@@ -107,7 +121,15 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   from.notice(`${reason}. Continued in ${to.harness} · ${to.model}.`, "warning");
-  next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
+  const carried = (memory?.carried.length ?? 0) + (memory?.captured.length ?? 0);
+  if (memory && (carried || memory.native)) {
+    const what = carried ? `${carried} ${carried === 1 ? "memory" : "memories"}` : "the shared memory";
+    next.notice(
+      `The agent was given the conversation, the repository state and ${what}.\n\n${carriedNotice(memory, to.harness)}`,
+      "info",
+      { title: `Continued from a ${from.harness} session: ${reason}. Carried ${what}.`, collapsed: true, source: "memory" },
+    );
+  } else next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
   if (pendingPrompt) next.addUserMessage(pendingPrompt);
   // Messages still waiting on the old session move over and wait on the new one.
   const carry = from.t.state.pending ?? [];

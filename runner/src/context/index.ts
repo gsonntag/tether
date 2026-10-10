@@ -9,6 +9,8 @@
 import { join } from "node:path";
 import type {
   BackgroundModelSetting,
+  HarnessId,
+  Msg,
   ContextActivity,
   ContextEvent,
   ContextImportPreview,
@@ -25,6 +27,7 @@ import { config, saveConfig } from "../config";
 import { BACKGROUND_HARNESSES, backgroundModel } from "./background";
 import { exportAll, isOwnWrite } from "./export";
 import { asType, slugify, type Memory } from "./format";
+import { assembleHandoffMemory, captureLearnings, nativeIds, type CapturedFact, type Extractor, type HandoffMemory } from "./handoff";
 import { setInjectionEnabled } from "./inject";
 import { Merger, modelDecider, type Decider } from "./merge";
 import { contextDir, tilde } from "./paths";
@@ -41,6 +44,8 @@ export interface ContextOptions {
   sessionForKey?: (key: string) => string | undefined;
   /** project paths, for repo-scoped skills */
   projects?: () => string[];
+  /** the fact extractor run before a handoff (default: the background model) */
+  extractor?: Extractor;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -192,6 +197,59 @@ export class ContextService {
   private exportSoon() {
     clearTimeout(this.exportTimer);
     this.exportTimer = setTimeout(() => this.exportNow().catch((e) => this.act({ kind: "error", text: `Export failed: ${e?.message ?? e}` })), 2_000);
+  }
+
+  // ---------------- handoff ----------------
+
+  /**
+   * Memory for a cross-harness handoff (runner/src/context/handoff.ts): captures what the outgoing
+   * session learned (bounded by `timeoutMs`; a late answer is still merged), then assembles the
+   * brief's memory section for `target`. Call `settle()` once the new session has started: it
+   * files the captured facts for merging (earlier, the new session's own injection could pick
+   * them up and repeat what the brief already says). Undefined when the master context is off, or on any
+   * error: the handoff then goes ahead exactly as without memory.
+   */
+  async handoffMemory(o: {
+    sessionId: string;
+    projectPath: string;
+    messages: Msg[];
+    target: HarnessId;
+    pendingPrompt?: string;
+    budgetTokens?: number;
+    timeoutMs?: number;
+  }): Promise<HandoffMemory | undefined> {
+    if (!this.enabled || !this.store.exists()) return undefined;
+    try {
+      const key = await repoKey(o.projectPath);
+      let captured: CapturedFact[] = [];
+      let captureNote: string | undefined;
+      let settle: (() => void) | undefined;
+      if (config().context?.handoffCapture !== false) {
+        const cap = await captureLearnings(this.store, { sessionId: o.sessionId, repoKey: key, messages: o.messages, extractor: this.opts.extractor, timeoutMs: o.timeoutMs });
+        captured = cap.facts;
+        if (cap.skipped === "timeout") captureNote = "the background model is still extracting facts; they'll be merged when it finishes";
+        else if (cap.skipped === "failed") captureNote = "the background model couldn't extract facts this time";
+        cap.late.then((filed) => (filed ? this.sync() : undefined)).catch(() => {});
+        settle = () => {
+          if (cap.file()) void this.sync();
+        };
+      }
+      const all = this.store.list();
+      const mem = assembleHandoffMemory({
+        entries: all,
+        repoKey: key,
+        messages: o.messages,
+        pendingPrompt: o.pendingPrompt,
+        native: nativeIds(this.store, key, o.target, all),
+        budgetTokens: o.budgetTokens,
+        captured,
+        captureNote,
+      });
+      return { ...mem, settle };
+    } catch (e: any) {
+      console.error(`context: no handoff memory for ${o.sessionId}: ${e?.message ?? e}`);
+      return undefined;
+    }
   }
 
   // ---------------- memory ops ----------------

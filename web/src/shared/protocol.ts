@@ -123,7 +123,7 @@ export interface Msg {
   title?: string;
   collapsed?: boolean;
   /** notice: what produced it (agent report, background task, compaction…) */
-  source?: "agent" | "task" | "compaction" | "command" | "channel";
+  source?: "agent" | "task" | "compaction" | "command" | "channel" | "memory";
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;

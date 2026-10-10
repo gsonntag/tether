@@ -216,7 +216,9 @@ export function inboxEntries(inboxDir = storePaths.inbox()): SourceEntry[] {
         key: `inbox:${f}`,
         harness: "mcp",
         path: p,
-        provenance: w.sessionId ? `mcp:${w.sessionId}` : "mcp",
+        // A handoff capture (context/handoff.ts) files several facts per session: each gets its own
+        // provenance, or the merge pass would take the second for an edit of the first.
+        provenance: w.via === "handoff" ? `handoff:${w.sessionId ?? "?"}#${contentHash(text).slice(0, 8)}` : w.sessionId ? `mcp:${w.sessionId}` : "mcp",
         title: text.split("\n")[0]!.slice(0, 120),
         text,
         memory: { type: w.type, name: w.name },

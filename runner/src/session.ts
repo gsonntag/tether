@@ -168,8 +168,8 @@ export abstract class LiveSession {
     this.sink.summary(this.summary());
   }
 
-  notice(text: string, level: Msg["level"] = "info") {
-    this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level } });
+  notice(text: string, level: Msg["level"] = "info", extra?: Pick<Msg, "title" | "collapsed" | "source">) {
+    this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level, ...extra } });
     if (level === "error") {
       this.turnTrouble = true;
       this.alert("blocked", "Failed", text);

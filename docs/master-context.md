@@ -108,6 +108,21 @@ Skills: canonical copy in `context/skills/`; symlinked into `~/.claude/skills/`,
 (covers Codex, pi, opencode), `~/.gemini/antigravity/skills/`, `~/.gemini/skills/`. Name collisions with
 harness builtins: the builtin wins, and the registry copy is exposed as `<name>-tether`.
 
+## Handoffs (runner/src/context/handoff.ts)
+
+When a fallback chain moves a conversation to another harness, and the context is enabled:
+- **Capture**: the background model extracts 0-3 durable facts from the outgoing transcript since
+  the last capture (watermark `handoff-capture:<session>` in `sources.json`, debounced 2 min). The
+  handoff waits at most 8 s; a late answer is still filed. Facts become inbox notes
+  (`via: handoff`, provenance `handoff:<session>#<hash>`) for the normal merge pass, filed only
+  after the new session has started so its injection can't already contain them.
+  `context.handoffCapture: false` in runner.json turns this off.
+- **Carry**: the brief gets a `## Memory` section: captured facts, memories relevant to the last user
+  messages and the pending prompt, global user/feedback entries, then this repo's entries, within
+  ~1500 tokens (overflow becomes index lines). Anything the new harness's native injection already
+  shows in full is left out.
+- The new session's handoff notice lists what was carried (collapsed).
+
 ## MCP server `tether-context`
 
 Served by the runner (stdio launcher script so any harness can spawn it, talking to the runner's local

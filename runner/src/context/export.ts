@@ -53,11 +53,18 @@ function writeOwned(path: string, text: string, out: ExportResult) {
 
 const line = (m: MemoryEntry) => `- **${m.name}**: ${m.description}`;
 
+/** What a digest rendered: the text, the entries shown in full and those listed as index lines. */
+export interface DigestLayout {
+  text: string;
+  full: MemoryEntry[];
+  index: MemoryEntry[];
+}
+
 /**
  * A compact digest: user and feedback entries in full, project and reference entries as a one-line
  * index. Full entries collapse to index lines (oldest first) until it fits `budget` bytes.
  */
-export function digest(entries: MemoryEntry[], title: string, budget: number, footer?: string): string {
+export function digestLayout(entries: MemoryEntry[], title: string, budget: number, footer?: string): DigestLayout {
   const full = entries.filter((m) => m.type === "user" || m.type === "feedback");
   const index = entries.filter((m) => m.type !== "user" && m.type !== "feedback");
   const render = (fullList: MemoryEntry[], indexList: MemoryEntry[], more = 0) => {
@@ -80,38 +87,52 @@ export function digest(entries: MemoryEntry[], title: string, budget: number, fo
     i = i.slice(0, -1);
     text = render(f, i, ++more);
   }
-  return text;
+  return { text, full: f, index: i };
+}
+
+export function digest(entries: MemoryEntry[], title: string, budget: number, footer?: string): string {
+  return digestLayout(entries, title, budget, footer).text;
 }
 
 const MCP_HINT = "More memory, per-repo facts and the skill library: the `tether-context` MCP tools (memory_search, memory_get, memory_write, skill_list, skill_get).";
 
-export function globalDigest(store: Store): string {
-  return digest(
-    store.list().filter((m) => m.scope === "global"),
+export function globalDigestLayout(store: Store, all = store.list()): DigestLayout {
+  return digestLayout(
+    all.filter((m) => m.scope === "global"),
     "Shared memory (Tether)",
     GLOBAL_BUDGET,
     MCP_HINT,
   );
 }
 
-export function repoDigest(store: Store, key: string): string | undefined {
-  const list = store.list().filter((m) => m.scope === `repo:${key}`);
+export function globalDigest(store: Store): string {
+  return globalDigestLayout(store).text;
+}
+
+export function repoDigestLayout(store: Store, key: string, all = store.list()): DigestLayout | undefined {
+  const list = all.filter((m) => m.scope === `repo:${key}`);
   if (!list.length) return undefined;
   // In a repo every entry matters: full bodies, newest first, until the budget.
   const sorted = [...list].sort((a, b) => b.updated.localeCompare(a.updated));
   const parts = [`# Repository memory (Tether): ${key}`];
   let size = parts[0]!.length;
+  const full: MemoryEntry[] = [];
   const rest: MemoryEntry[] = [];
   for (const m of sorted) {
     const block = `## ${m.name}\n${m.body.trim()}`;
     if (size + block.length > REPO_BUDGET) rest.push(m);
     else {
       parts.push(block);
+      full.push(m);
       size += block.length + 2;
     }
   }
   if (rest.length) parts.push(`## More\n${rest.map(line).join("\n")}`);
-  return parts.join("\n\n") + "\n";
+  return { text: parts.join("\n\n") + "\n", full, index: rest };
+}
+
+export function repoDigest(store: Store, key: string): string | undefined {
+  return repoDigestLayout(store, key)?.text;
 }
 
 export interface ExportResult {
