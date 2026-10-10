@@ -1,5 +1,39 @@
 import { describe, expect, test } from "bun:test";
-import { diffPairs, unwrapShell } from "./codex";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CODEX_MODES, CodexProcess, collaborationMode, diffPairs, unwrapShell } from "./codex";
+
+describe("plan mode (collaboration mode)", () => {
+  test("the app-server shape", () => {
+    expect(CODEX_MODES).toEqual(["default", "plan"]);
+    expect(collaborationMode("plan", "gpt-5.5", "high")).toEqual({ mode: "plan", settings: { model: "gpt-5.5", reasoning_effort: "high", developer_instructions: null } });
+    expect(collaborationMode("default", "gpt-5.5").settings.reasoning_effort).toBeNull();
+    expect(collaborationMode("weird", "m").mode).toBe("default");
+  });
+
+  // Against the real `codex app-server` (CODEX_LIVE_TEST=1), in a scratch CODEX_HOME; no turn runs.
+  test.skipIf(!process.env.CODEX_LIVE_TEST || !Bun.which("codex"))("codex app-server accepts plan mode on a thread", async () => {
+    const home = mkdtempSync(join(tmpdir(), "tether-codex-home-"));
+    const cwd = join(home, "proj");
+    mkdirSync(cwd);
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    const p = new CodexProcess(cwd);
+    try {
+      await p.init();
+      const r: any = await p.call("thread/start", { cwd, approvalPolicy: "untrusted", sandbox: "workspace-write", model: "gpt-5.5" });
+      expect(r.collaborationMode?.mode ?? "default").toBe("default");
+      await p.call("thread/settings/update", { threadId: r.thread.id, collaborationMode: collaborationMode("plan", r.model) });
+      const back: any = await p.call("thread/settings/update", { threadId: r.thread.id, collaborationMode: collaborationMode("default", r.model) });
+      expect(back).toBeDefined();
+    } finally {
+      p.kill();
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
+  }, 60_000);
+});
 
 describe("unwrapShell", () => {
   test("bash -lc", () => expect(unwrapShell("/bin/bash -lc 'cat hello.txt'")).toBe("cat hello.txt"));

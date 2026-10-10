@@ -59,7 +59,7 @@ export function unwrapShell(cmd: string): string {
 
 // ---------------- connection ----------------
 
-class CodexProcess {
+export class CodexProcess {
   proc: ReturnType<typeof Bun.spawn>;
   stderr = "";
   exited: Promise<number>;
@@ -139,8 +139,9 @@ class CodexProcess {
     });
   }
 
+  /** experimentalApi: collaboration (plan) mode is still an experimental app-server field. */
   async init() {
-    await this.call("initialize", { clientInfo: { name: "tether", title: "Tether", version: "0.1.0" }, capabilities: { experimentalApi: false, requestAttestation: false } }, 30_000);
+    await this.call("initialize", { clientInfo: { name: "tether", title: "Tether", version: "0.1.0" }, capabilities: { experimentalApi: true, requestAttestation: false } }, 30_000);
     this.write({ method: "initialized" });
   }
 
@@ -296,6 +297,17 @@ function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
 
 // ---------------- live session ----------------
 
+/** Codex collaboration modes, offered as the session's modes: "plan" plans before it acts. */
+export const CODEX_MODES = ["default", "plan"];
+
+/**
+ * The app-server's (experimental) CollaborationMode for turn/start and thread/settings/update.
+ * developer_instructions null: Codex's built-in instructions for that mode.
+ */
+export function collaborationMode(mode: string, model: string, effort?: string) {
+  return { mode: mode === "plan" ? "plan" : "default", settings: { model, reasoning_effort: effort ?? null, developer_instructions: null } };
+}
+
 class CodexSession extends LiveSession {
   private p!: CodexProcess;
   private turnId?: string;
@@ -309,6 +321,8 @@ class CodexSession extends LiveSession {
   private patches = new Map<string, any>();
   private rateLimits?: any;
   private retrying = false;
+  /** collaboration mode picked in Tether; undefined until set (Codex keeps the thread's own) */
+  private collab?: string;
   /** subagent threads, background terminals, sleeps (codexActivity.ts) */
   private act = new CodexActivity();
 
@@ -319,6 +333,7 @@ class CodexSession extends LiveSession {
   ) {
     super("codex", init, sink);
     this.model = opts.model && opts.model !== "default" ? opts.model : undefined;
+    if (opts.permissionMode && CODEX_MODES.includes(opts.permissionMode)) this.collab = opts.permissionMode;
   }
 
   private sandboxed = false;
@@ -374,7 +389,8 @@ class CodexSession extends LiveSession {
     this.models = await fetchModels(this.p).catch(() => []);
     modelCache = this.models;
     modelCacheAt = Date.now();
-    this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels(), activity: [] });
+    this.collab ??= r.collaborationMode?.mode === "plan" ? "plan" : undefined;
+    this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels(), activity: [], modes: CODEX_MODES, permissionMode: this.collab ?? "default" });
     // Codex reports token usage only as turns run; a resumed thread's last count is in its rollout.
     if (this.opts.resume && r.thread.path && !this.t.state.context)
       await Bun.file(r.thread.path)
@@ -631,6 +647,7 @@ class CodexSession extends LiveSession {
         ...this.policy(),
         ...(this.model ? { model: this.model } : {}),
         ...(this.effort ? { effort: this.effort } : {}),
+        ...this.collabParam(),
       });
       this.turnId ??= r.turn?.id;
     } catch (e: any) {
@@ -688,8 +705,21 @@ class CodexSession extends LiveSession {
     this.setState({ thinking: level });
   }
 
-  async setPermissionMode() {
-    throw new Error("Codex has no permission modes here; the guard setting decides approvals and sandboxing.");
+  private collabParam() {
+    const model = this.model ?? this.t.state.model;
+    return this.collab && model && model !== "default" ? { collaborationMode: collaborationMode(this.collab, model, this.effort) } : {};
+  }
+
+  /**
+   * Plan mode on or off (Codex's collaboration mode; approvals stay with the guard). It applies
+   * from the next turn: set on the thread now, and sent again with every turn/start.
+   */
+  async setPermissionMode(mode: string) {
+    if (!CODEX_MODES.includes(mode)) throw new Error(`Codex modes are ${CODEX_MODES.join(" and ")}; the guard setting decides approvals.`);
+    this.collab = mode;
+    const p = this.collabParam();
+    if (p.collaborationMode) await this.p.call("thread/settings/update", { threadId: this.nativeId, ...p }).catch(() => {});
+    this.setState({ permissionMode: mode });
   }
 
   async rename(title: string) {
@@ -802,7 +832,7 @@ export const codexAdapter: Adapter = {
     return {
       models: [{ id: "default" }, ...models.map((x): ModelRef => ({ id: x.id, label: x.displayName }))],
       thinkingLevels: (m?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort),
-      permissionModes: [],
+      permissionModes: CODEX_MODES,
     };
   },
 };
