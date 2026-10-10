@@ -298,7 +298,7 @@ export interface SessionSummary {
   status: RunStatus;
   /** waiting on a permission prompt or question */
   needsInput?: boolean;
-  /** hidden from a collapsed project; shown (dimmed) when it is expanded */
+  /** archived or removed: listed only behind the project's "Archived (n)" toggle */
   archived?: boolean;
 }
 
@@ -356,6 +356,8 @@ export interface Ops {
   openSession: { args: { sessionId: string; projectPath?: string }; result: SessionSnapshot };
   closeSession: { args: { sessionId: string }; result: {} };
   archiveSession: { args: { sessionId: string; archived: boolean }; result: {} };
+  /** Stops the agent process (aborting a running turn, dropping unsent messages) and archives the session. Nothing on disk is deleted. */
+  removeSession: { args: { sessionId: string }; result: {} };
   prompt: { args: { sessionId: string; text: string; mode?: "steer" | "followUp" }; result: {} };
   abort: { args: { sessionId: string }; result: {} };
   setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };

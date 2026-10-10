@@ -27,7 +27,7 @@ import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./config";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
-import { recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import type { ChainEntry } from "../../web/src/shared/protocol";
 import type { LiveSession } from "./session";
 
@@ -420,6 +420,24 @@ const ops: Handlers = {
       const s = live.get(sessionId);
       if (s && s.t.state.status === "idle") s.close();
     }
+    saveConfig();
+    return {};
+  },
+
+  async removeSession({ sessionId }) {
+    const cfg = config();
+    // Archived first, so the closing summary already carries it.
+    if (!cfg.archived.includes(sessionId)) cfg.archived.push(sessionId);
+    const s = live.get(sessionId);
+    if (s && !s.closed) {
+      // Abort a running turn cleanly, but never let a stuck harness keep the process alive.
+      if (s.busy) await Promise.race([s.stop().catch(() => {}), new Promise((r) => setTimeout(r, 3_000))]);
+      s.close();
+    }
+    // Nothing to resume or resend after a runner restart.
+    const p = cfg.sessions[sessionId];
+    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
+    forgetSession(sessionId);
     saveConfig();
     return {};
   },

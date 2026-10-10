@@ -95,7 +95,8 @@ export abstract class LiveSession {
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
       live: !this.closed,
-      status: this.t.state.status,
+      // A closed session has no process, so nothing can be running.
+      status: this.closed ? "idle" : this.t.state.status,
       needsInput: this.t.state.pendingUi.length > 0,
     };
   }
