@@ -429,7 +429,7 @@ class ClaudeSession extends LiveSession {
     for (const p of assistantParts(msg.content)) {
       const i = cur.finalCount++;
       const old = parts[i];
-      parts[i] = p.type === "tool" && old?.type === "tool" && old.id === p.id ? { ...p, status: old.status, output: old.output } : p;
+      parts[i] = p.type === "tool" && old?.type === "tool" && old.id === p.id ? { ...old, ...p, status: old.status, output: old.output } : p;
     }
     this.emit({ type: "msg", msg: { ...existing, parts, model: msg.model ?? existing.model, streaming: msg.stop_reason == null } });
   }

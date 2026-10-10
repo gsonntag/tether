@@ -32,7 +32,11 @@ export function applyEvent(t: Transcript, e: SessionEvent): void {
     case "tool": {
       const m = findMsg(t, e.msgId);
       const p = m?.parts.find((x): x is Extract<Part, { type: "tool" }> => x.type === "tool" && x.id === e.toolId);
-      if (p) Object.assign(p, e.patch);
+      if (p) {
+        Object.assign(p, e.patch);
+        // A verdict, or the call ending, settles a pending judgment.
+        if (!p.judging || p.guard || p.status !== "running") delete p.judging;
+      }
       break;
     }
     case "state":

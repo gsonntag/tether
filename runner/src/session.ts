@@ -125,13 +125,14 @@ export abstract class LiveSession {
         this.savePrefs();
     }
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
-    if (event.type === "msg" && this.pendingVerdicts.size)
+    if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
       for (const p of event.msg.parts)
         if (p.type === "tool" && this.pendingVerdicts.has(p.id)) {
           const guard = this.pendingVerdicts.get(p.id)!;
           this.pendingVerdicts.delete(p.id);
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { guard } });
-        }
+        } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
+          this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
   }
 
   setState(state: Partial<LiveState>) {
@@ -379,6 +380,7 @@ export abstract class LiveSession {
     this.userStopped = true;
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
+    this.clearJudging();
     await this.abort();
   }
 
@@ -641,11 +643,16 @@ export abstract class LiveSession {
         always = !!res.always;
       } else if (r?.decision === "deny") v = r;
       else {
-        this.setState({ statuses: { ...this.t.state.statuses, guard: `judging ${tool}…` } });
-        v = await judge(call, this.goal());
-        const statuses = { ...this.t.state.statuses };
-        delete statuses.guard;
-        this.setState({ statuses });
+        // The card shows "checking…" while the judge thinks; the verdict below replaces it.
+        toolId = this.findCall(tool, toolId)?.part.id ?? toolId;
+        if (toolId) this.setJudging(toolId, true);
+        try {
+          v = await judge(call, this.goal());
+        } catch (e) {
+          if (toolId) this.setJudging(toolId, false);
+          throw e;
+        }
+        if (toolId) this.judging.delete(toolId);
       }
     }
     const verdict: GuardVerdict = { decision: v.decision === "allow" ? "allow" : "deny", by: v.by, reason: v.reason };
@@ -655,13 +662,37 @@ export abstract class LiveSession {
     return { allow: verdict.decision === "allow", reason: v.reason, always };
   }
 
-  private annotate(tool: string, toolId: string | undefined, guard: GuardVerdict) {
+  /** The card for this call: by id, or else the newest running one of that tool still undecided. */
+  private findCall(tool: string, toolId?: string) {
     for (let i = this.t.messages.length - 1; i >= 0; i--) {
       const m = this.t.messages[i]!;
-      const p = m.parts.find((x): x is Extract<Part, { type: "tool" }> => x.type === "tool" && (toolId ? x.id === toolId : x.name === tool && x.status === "running" && !x.guard));
-      if (p) return this.emit({ type: "tool", msgId: m.id, toolId: p.id, patch: { guard } });
+      const p = m.parts.find((x): x is Extract<Part, { type: "tool" }> => x.type === "tool" && (toolId ? x.id === toolId : x.name === tool && x.status === "running" && !x.guard && !x.judging));
+      if (p) return { msg: m, part: p };
     }
+  }
+
+  private annotate(tool: string, toolId: string | undefined, guard: GuardVerdict) {
+    const hit = this.findCall(tool, toolId);
+    // The verdict also clears `judging` (see the reducer).
+    if (hit) return this.emit({ type: "tool", msgId: hit.msg.id, toolId: hit.part.id, patch: { guard } });
     if (toolId) this.pendingVerdicts.set(toolId, guard);
+  }
+
+  /** Calls the judge is deciding right now (the card may not exist yet, see emit). */
+  private judging = new Set<string>();
+
+  private setJudging(toolId: string, on: boolean) {
+    if (on) this.judging.add(toolId);
+    else this.judging.delete(toolId);
+    const hit = this.findCall("", toolId);
+    if (hit && !!hit.part.judging !== on) this.emit({ type: "tool", msgId: hit.msg.id, toolId, patch: { judging: on } });
+  }
+
+  /** Stop or close: no card should keep saying "checking…" (a late verdict still lands). */
+  private clearJudging() {
+    for (const id of [...this.judging]) this.setJudging(id, false);
+    for (const m of this.t.messages)
+      for (const p of m.parts) if (p.type === "tool" && p.judging) this.emit({ type: "tool", msgId: m.id, toolId: p.id, patch: { judging: false } });
   }
 
   /** "Approve & retry" on a blocked call: allow that exact call from now on and tell the agent. */
@@ -757,6 +788,7 @@ export abstract class LiveSession {
     clearTimeout(this.idleTimer);
     clearInterval(this.watchdog);
     unregisterGuard(this.guardKey);
+    this.clearJudging();
     this.cancelAllUi();
     this.shutdown();
     this.sink.summary(this.summary());

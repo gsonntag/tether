@@ -34,6 +34,8 @@ export type Part =
       parentToolId?: string;
       /** The guard's verdict on this call */
       guard?: GuardVerdict;
+      /** The guard's judge model is deciding this call; cleared by the verdict or the call ending. */
+      judging?: boolean;
     };
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
