@@ -358,7 +358,8 @@ export function parsePatch(patch: string): Row[] {
   return rows;
 }
 
-function Patch({ patch }: { patch: string }) {
+/** A unified diff, line by line with word-level emphasis. */
+export function Patch({ patch }: { patch: string }) {
   const rows = parsePatch(patch);
   const width = String(rows.reduce((m, r) => Math.max(m, r.old ?? 0, r.new ?? 0), 0)).length;
   const num = (v?: number) => (v === undefined ? "" : String(v)).padStart(width);

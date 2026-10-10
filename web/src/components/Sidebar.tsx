@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { useContainerReveal } from "@astryxdesign/core/hooks";
@@ -17,6 +18,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import {
+  BookOpenIcon,
   ChevronDoubleLeftIcon,
   Cog6ToothIcon,
   MagnifyingGlassIcon,
@@ -24,7 +26,7 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
-import { act, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -158,6 +160,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </SideNavSection>
       ) : (
         <>
+        <MemoryNavItem />
         <NeedsYouSection />
         <SideNavSection
           title="Projects"
@@ -230,6 +233,39 @@ function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined 
   return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
 }
 
+/** The Memory & Skills page; the count is open memory conflicts. */
+function MemoryNavItem() {
+  const on = useStore((s) => s.page === "memory");
+  const open = useStore((s) => s.conflicts.length);
+  return (
+    <SideNavItem
+      label="Memory & Skills"
+      icon={BookOpenIcon}
+      isSelected={on}
+      onClick={() => openPage("memory")}
+      endContent={open ? <Badge variant="warning" label={String(open)} /> : undefined}
+    />
+  );
+}
+
+/** Open memory conflicts: open the session that produced one (its card is inline there), else the page. */
+function ConflictRows() {
+  const conflicts = useStore((s) => s.conflicts);
+  return (
+    <>
+      {conflicts.map((c) => (
+        <SideNavItem
+          key={c.id}
+          size="sm"
+          label={`Merged memory: ${c.name}`}
+          endContent={<StatusDot variant="warning" label="Conflicting memory" tooltip="A new memory contradicted an old one. The new one is in use." />}
+          onClick={() => (c.sessionId ? selectSession(c.sessionId) : openPage("memory", "conflicts"))}
+        />
+      ))}
+    </>
+  );
+}
+
 /**
  * Sessions that need you, grouped by project. Unread ones leave once you've opened them and moved on;
  * blocked ones stay until the agent is unblocked.
@@ -241,6 +277,7 @@ function NeedsYouSection() {
   const selected = useStore((s) => s.selected);
   const noticesRead = useStore((s) => s.noticesRead);
   const noticesSeen = useStore((s) => s.noticesSeen);
+  const conflicts = useStore((s) => s.conflicts.length);
   const shown = useRef(new Set<string>());
 
   const by = knownSessions(projects, sessions);
@@ -268,12 +305,13 @@ function NeedsYouSection() {
     return !!a && s.id === selected && shown.current.has(s.id);
   });
   shown.current = new Set(rows.map((s) => s.id));
-  if (!rows.length) return null;
+  if (!rows.length && !conflicts) return null;
 
   const groups = new Map<string, SessionSummary[]>();
   for (const s of rows.sort((a, b) => b.updatedAt - a.updatedAt)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
   return (
     <SideNavSection title="Needs you">
+      <ConflictRows />
       {[...groups].map(([path, list]) => (
         <SideNavItem key={path} label={projects.find((p) => p.path === path)?.name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path} size="sm">
           {list.map((s) => (
