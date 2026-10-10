@@ -140,14 +140,20 @@ export function connect(attempt = 0) {
     markSyncing();
     for (const w of waits.values()) w.reject(new Error("Connection lost"));
     waits.clear();
-    setTimeout(() => connect(attempt + 1), Math.min(15_000, 500 * 2 ** attempt));
+    retry = setTimeout(() => connect(attempt + 1), Math.min(15_000, 500 * 2 ** attempt));
   };
 }
+let retry: ReturnType<typeof setTimeout> | undefined;
 
-// Reconnect immediately when a phone wakes the tab.
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && ws && ws.readyState > WebSocket.OPEN) connect();
-});
+// Reconnect immediately when a phone wakes the tab, or the device comes back online (instead of
+// waiting out the backoff). Drops the pending retry so it doesn't open a second socket.
+const reconnectNow = () => {
+  if (!ws || ws.readyState <= WebSocket.OPEN) return;
+  clearTimeout(retry);
+  connect();
+};
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && reconnectNow());
+window.addEventListener("online", reconnectNow);
 
 function onMessage(m: ServerToBrowser) {
   switch (m.t) {
