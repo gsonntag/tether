@@ -11,6 +11,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { HStack, Layout, LayoutContent, LayoutHeader, LayoutPanel, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { LayerDepthProvider, useLayerDismissal } from "@astryxdesign/core/Layer";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -44,15 +45,16 @@ let nonce = 0;
  * Where the chat should stay put while the panel opens and the transcript reflows: the clicked
  * reference, at its place on screen (SessionView keeps it there).
  */
-export let scrollAnchor: { node: Element; top: number } | undefined;
+let scrollAnchor: { node: Element; top: number; at: number } | undefined;
+/** Only right after the click: with the panel already open the chat doesn't resize, and a later resize has its own anchor. */
 export const takeScrollAnchor = () => {
   const a = scrollAnchor;
   scrollAnchor = undefined;
-  return a;
+  return a && performance.now() - a.at < 1000 ? a : undefined;
 };
 
 export function openFile(sessionId: string, ref: { path: string; line?: number; endLine?: number }, opts: { changed?: boolean; exists?: boolean; anchor?: Element } = {}) {
-  if (opts.anchor) scrollAnchor = { node: opts.anchor, top: opts.anchor.getBoundingClientRect().top };
+  if (opts.anchor) scrollAnchor = { node: opts.anchor, top: opts.anchor.getBoundingClientRect().top, at: performance.now() };
   usePanel.setState({ target: { sessionId, ...ref, changed: opts.changed, exists: opts.exists, nonce: ++nonce } });
 }
 export const closeFile = () => usePanel.setState({ target: undefined });
@@ -80,32 +82,54 @@ const LANGS: Record<string, string> = {
 };
 const languageOf = (path: string) => LANGS[basename(path).split(".").pop()?.toLowerCase() ?? ""] ?? "plaintext";
 
-/** Desktop: the panel at the session's end edge, resizable. Escape closes it (unless something else wants that Escape). */
+/** Typing somewhere (the composer, a message being edited): that field's Escape, not the panel's. */
+const typing = () => !!(document.activeElement as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+
+/**
+ * Desktop: the panel at the session's end edge, resizable. Escape closes it, through Astryx's layer
+ * stack: a menu or dialog opened over it (the scope picker, Changes) takes its Escape first.
+ */
 export function FilePanel({ target, state }: { target: FileTarget; state: LiveState }) {
   const panel = useResizable({ defaultSize: 600, minSize: 360, maxSize: 1200, autoSaveId: "tether.filePanel" });
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
-      const t = e.target as HTMLElement | null;
-      if (t?.closest("input, textarea, select, [contenteditable='true'], [role='dialog'], dialog")) return;
-      if (document.querySelector("dialog[open]")) return;
-      closeFile();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  useLayerDismissal({ isActive: true, onDismiss: closeFile, isPresent: () => !typing() });
   return (
     <>
       <ResizeHandle resizable={panel.props} isReversed isAlwaysVisible={false} />
       <LayoutPanel hasDivider resizable={panel.props} padding={0} role="complementary" label={`File ${target.path}`}>
-        <FileView key={`${target.path}#${target.nonce}`} target={target} state={state} narrow={false} />
+        <LayerDepthProvider>
+          <FileView key={`${target.path}#${target.nonce}`} target={target} state={state} narrow={false} />
+        </LayerDepthProvider>
       </LayoutPanel>
     </>
   );
 }
 
-/** Phones: the same view full screen, with a back button. */
+/**
+ * While the sheet is open on a phone, the browser's back (button or swipe) closes it instead of
+ * leaving Tether: opening adds a history entry, back pops it. Closed any other way, the entry is
+ * dropped again.
+ */
+function useBackCloses(open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    const mark = `${Date.now()}.${Math.random()}`;
+    history.pushState({ ...(history.state ?? {}), tetherFileSheet: mark }, "", location.href);
+    let popped = false;
+    const onPop = () => {
+      popped = true;
+      closeFile();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (!popped && history.state?.tetherFileSheet === mark) history.back();
+    };
+  }, [open]);
+}
+
+/** Phones: the same view full screen, with a back button (the browser's back closes it too). */
 export function FileSheet({ target, state }: { target?: FileTarget; state: LiveState }) {
+  useBackCloses(!!target);
   return (
     <Dialog isOpen={!!target} onOpenChange={(o) => !o && closeFile()} purpose="info" variant="fullscreen">
       {target && <FileView key={`${target.path}#${target.nonce}`} target={target} state={state} narrow />}
@@ -125,6 +149,8 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
   const [diffError, setDiffError] = useState<string>();
   const [file, setFile] = useState<FileContents>();
   const [fileError, setFileError] = useState<string>();
+  // A secrets file's contents only once the user asks (the runner holds them back until then).
+  const [reveal, setReveal] = useState(false);
 
   // Fetch again when the scope changes and when a turn ends (the file may have changed).
   const cps = state.checkpoints ?? [];
@@ -132,7 +158,7 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
   useEffect(() => {
     let live = true;
     setDiffError(undefined);
-    rpc("fileDiff", { sessionId, path, ...(scope !== SESSION ? { checkpoint: scope } : {}) })
+    rpc("fileDiff", { sessionId, path, ...(scope !== SESSION ? { checkpoint: scope } : {}), ...(reveal ? { reveal } : {}) })
       .then((d) => {
         if (!live) return;
         setDiff(d);
@@ -145,17 +171,17 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
         setTab((t) => t ?? "file");
       });
     return () => void (live = false);
-  }, [sessionId, path, scope, stamp]);
+  }, [sessionId, path, scope, stamp, reveal]);
 
   useEffect(() => {
     if (tab !== "file") return;
     let live = true;
     setFileError(undefined);
-    rpc("readFile", { sessionId, path, maxBytes: FILE_VIEW_LIMITS.bytes })
+    rpc("readFile", { sessionId, path, maxBytes: FILE_VIEW_LIMITS.bytes, ...(reveal ? { reveal } : {}) })
       .then((f) => live && setFile(f))
       .catch((e) => live && (setFileError(e?.message ?? String(e)), setFile(undefined)));
     return () => void (live = false);
-  }, [sessionId, path, tab, stamp]);
+  }, [sessionId, path, tab, stamp, reveal]);
 
   const f = diff?.file;
   const turns = diff?.turns ?? [];
@@ -261,8 +287,10 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
           <VStack gap={3}>
             {toolbar}
             {!tab && <EmptyState title="Opening…" icon={<Spinner />} isCompact />}
-            {tab === "diff" && <DiffTab diff={diff} error={diffError} scope={scope} range={range} exists={diff?.exists ?? target.exists} onShowFile={() => setTab("file")} />}
-            {tab === "file" && <FileTab file={file} error={fileError} path={path} range={range} deleted={diff ? !diff.exists : target.exists === false} />}
+            {tab === "diff" && (
+              <DiffTab diff={diff} error={diffError} scope={scope} range={range} exists={diff?.exists ?? target.exists} onShowFile={() => setTab("file")} onReveal={() => setReveal(true)} />
+            )}
+            {tab === "file" && <FileTab file={file} error={fileError} path={path} range={range} deleted={diff ? !diff.exists : target.exists === false} onReveal={() => setReveal(true)} />}
           </VStack>
         </LayoutContent>
       }
@@ -305,6 +333,7 @@ function DiffTab({
   range,
   exists,
   onShowFile,
+  onReveal,
 }: {
   diff?: FileDiffResult;
   error?: string;
@@ -312,6 +341,7 @@ function DiffTab({
   range?: [number, number];
   exists?: boolean;
   onShowFile: () => void;
+  onReveal: () => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const f = diff?.file;
@@ -330,6 +360,7 @@ function DiffTab({
 
   if (error) return <Banner status="error" title="Couldn't load the diff" description={error} />;
   if (!diff) return <EmptyState title="Reading the diff…" icon={<Spinner />} isCompact />;
+  if (diff.withheld) return <SecretsNotice onReveal={onReveal} />;
   if (!f)
     return (
       <EmptyState
@@ -355,7 +386,21 @@ function DiffTab({
   );
 }
 
-function FileTab({ file, error, path, range, deleted }: { file?: FileContents; error?: string; path: string; range?: [number, number]; deleted: boolean }) {
+function FileTab({
+  file,
+  error,
+  path,
+  range,
+  deleted,
+  onReveal,
+}: {
+  file?: FileContents;
+  error?: string;
+  path: string;
+  range?: [number, number];
+  deleted: boolean;
+  onReveal: () => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => (range ? Array.from({ length: Math.min(range[1] - range[0] + 1, 500) }, (_, i) => range[0] + i) : undefined), [range]);
   const count = useMemo(() => (file?.content ? file.content.split("\n").length : 0), [file?.content]);
@@ -366,6 +411,7 @@ function FileTab({ file, error, path, range, deleted }: { file?: FileContents; e
   if (deleted) return <EmptyState isCompact title="This file was deleted" description="The session removed it; the Diff tab shows what it had." />;
   if (error) return <Banner status="error" title="Couldn't read the file" description={error} />;
   if (!file) return <EmptyState title="Reading the file…" icon={<Spinner />} isCompact />;
+  if (file.withheld) return <SecretsNotice onReveal={onReveal} />;
   if (file.binary) return <EmptyState isCompact title="Binary file" description={`${fmtSize(file.size)}, not shown.`} />;
   return (
     <VStack gap={2} ref={box}>
@@ -383,6 +429,21 @@ function FileTab({ file, error, path, range, deleted }: { file?: FileContents; e
         <Text type="supporting">Empty file</Text>
       )}
     </VStack>
+  );
+}
+
+/**
+ * A credentials or secrets file (.env, a key, a token file: what the guard keeps agents away from).
+ * The panel shows one only when asked, so clicking a reference doesn't put secrets on screen.
+ */
+function SecretsNotice({ onReveal }: { onReveal: () => void }) {
+  return (
+    <EmptyState
+      isCompact
+      title="This file may hold secrets"
+      description="It looks like a credentials or secrets file, so its contents stay hidden until you show them."
+      actions={<Button label="Show contents" size="sm" onClick={onReveal} />}
+    />
   );
 }
 

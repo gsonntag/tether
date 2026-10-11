@@ -54,6 +54,22 @@ describe("findRefs", () => {
     expect(texts("a.ts:12abc")).toEqual(["a.ts"]);
   });
 
+  test("Windows paths, URL-ish and GitHub links don't produce stray pieces", () => {
+    expect(texts("C:\\Users\\me\\proj\\a.ts")).toEqual([]);
+    expect(texts("https://github.com/o/r/blob/main/src/a.ts#L42")).toEqual([]);
+    expect(texts("**src/a.ts** and __init__.py")).toEqual(["src/a.ts", "__init__.py"]);
+  });
+
+  test("long and pathological input stays fast", () => {
+    for (const s of ["a".repeat(200_000), "a.".repeat(100_000), "/a".repeat(100_000), "a/".repeat(100_000), "a.ts:1".repeat(30_000), "-.".repeat(100_000), "a@".repeat(100_000)]) {
+      const t = performance.now();
+      findRefs(s);
+      expect(performance.now() - t).toBeLessThan(500);
+    }
+    // a path longer than 1 KB isn't asked about
+    expect(texts("x/".repeat(600) + "a.ts")).toEqual([]);
+  });
+
   test("ambiguous prose stays a candidate only (the runner decides)", () => {
     // These are asked about but only link if the project really has such a file.
     expect(texts("and/or, Node.js, e.g.")).toEqual(["and/or", "Node.js", "e.g"]);

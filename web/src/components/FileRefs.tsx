@@ -55,16 +55,19 @@ function flush() {
       const gen = useChecks.getState().gen[sessionId] ?? 0;
       batch.forEach((p) => busy.add(p));
       rpc("checkPaths", { sessionId, paths: batch })
-        .then((res) =>
-          useChecks.setState((s) => {
-            const mine = { ...s.checks[sessionId] };
-            for (const p of batch) mine[p] = { check: res[p] ?? null, gen };
-            return { checks: { ...s.checks, [sessionId]: mine } };
-          }),
-        )
-        // Not connected, or an older runner without checkPaths: stay plain text; asked again on the next change.
-        .catch(() => {})
-        .finally(() => batch.forEach((p) => busy.delete(p)));
+        .then(
+          (res) => {
+            // No longer in flight before anyone re-renders: an answer that's already stale is asked again.
+            batch.forEach((p) => busy.delete(p));
+            useChecks.setState((s) => {
+              const mine = { ...s.checks[sessionId] };
+              for (const p of batch) mine[p] = { check: res[p] ?? null, gen };
+              return { checks: { ...s.checks, [sessionId]: mine } };
+            });
+          },
+          // Not connected, or an older runner without checkPaths: stay plain text; asked again on the next change.
+          () => batch.forEach((p) => busy.delete(p)),
+        );
     }
   }
 }
@@ -79,7 +82,9 @@ function useChecksFor(sessionId: string | undefined, paths: string[]): Record<st
   const mine = useChecks((s) => (sessionId ? s.checks[sessionId] : undefined));
   const gen = useChecks((s) => (sessionId ? (s.gen[sessionId] ?? 0) : 0));
   const stale = paths.filter((p) => !mine?.[p] || mine[p]!.gen < gen);
-  const key = stale.join("\0");
+  // Each stale path with the generation of its answer: an answer that arrives already stale (a turn
+  // ended while it was in flight) changes the key, so the path is asked again.
+  const key = `${gen}\0${stale.map((p) => `${mine?.[p]?.gen ?? -1}:${p}`).join("\0")}`;
   useEffect(() => {
     if (sessionId) for (const p of stale) want(sessionId, p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,9 +155,10 @@ function MarkdownLink({ href, children }: { href: string; children: ReactNode })
         {children}
       </Link>
     );
+  // As Markdown's own links: web links in a new tab, without an opener or the session's URL as referrer.
   const external = /^https?:\/\//i.test(href);
   return (
-    <Link href={href} {...(external ? { target: "_blank" } : {})}>
+    <Link href={href} {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
       {children}
     </Link>
   );

@@ -127,7 +127,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     const ro = new ResizeObserver(() => {
       if (el.clientWidth === width) return;
       width = el.clientWidth;
-      const a = takeScrollAnchor() ?? anchor;      if (stick.current) el.scrollTop = el.scrollHeight;
+      const a = takeScrollAnchor() ?? anchor;
+      if (stick.current) el.scrollTop = el.scrollHeight;
       else if (a?.node.isConnected) el.scrollTop += a.node.getBoundingClientRect().top - a.top;
       capture();
     });
