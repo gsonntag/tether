@@ -114,9 +114,12 @@ export async function computeDiff(cwd: string, from?: string, to?: string, opts:
   const target = to && (await isCommit(top, to)) ? to : await snapshotTree(top);
 
   const names = (await git(top, ["--literal-pathspecs", "diff", "--name-status", "-z", "--no-renames", base, target, "--", ...paths])).split("\0").filter(Boolean);
-  const entries: { code: string; path: string }[] = [];
-  for (let i = 0; i + 1 < names.length; i += 2) entries.push({ code: names[i]!, path: names[i + 1]! });
   const counts = await numstat(top, base, target, paths);
+  // Binary files (images, executables, archives) have no readable patch: the list of changes leaves
+  // them out entirely; a diff of named files still reports them, flagged binary.
+  const hideBinary = paths.length === 0;
+  const entries: { code: string; path: string }[] = [];
+  for (let i = 0; i + 1 < names.length; i += 2) if (!(hideBinary && counts.get(names[i + 1]!)?.binary)) entries.push({ code: names[i]!, path: names[i + 1]! });
 
   const files: SessionFileDiff[] = [];
   let remaining = limits.totalBytes;
@@ -200,10 +203,11 @@ export async function pathTurnStats(cwd: string, shas: string[], path: string): 
   );
 }
 
-/** Files and lines changed between two commits or trees. */
+/** Files and lines changed between two commits or trees (binary files left out, as in computeDiff). */
 export async function diffStat(cwd: string, from: string, to: string): Promise<DiffStat> {
   const stat: DiffStat = { files: 0, additions: 0, deletions: 0 };
   for (const c of (await numstat(cwd, from, to)).values()) {
+    if (c.binary) continue;
     stat.files++;
     stat.additions += c.additions;
     stat.deletions += c.deletions;
