@@ -306,7 +306,7 @@ export abstract class LiveSession {
   // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
 
   /** the activity part of the last summary sent: a change sends a new one */
-  private lastActivityKey = "[0,{}]";
+  private lastActivityKey = "[0,[]]";
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
@@ -382,7 +382,8 @@ export abstract class LiveSession {
   private activityChanged() {
     // Browsers tell "working in the background" from idle (and agents from shells) by these, so
     // the summary goes out when an item starts, ends, or a wakeup fires — not only on status changes.
-    const key = JSON.stringify([this.activeCount, this.runningKinds()]);
+    // Sorted, so the same counts in another item order don't send again.
+    const key = JSON.stringify([this.activeCount, Object.entries(this.runningKinds()).sort()]);
     if (key !== this.lastActivityKey) {
       this.lastActivityKey = key;
       this.sink.summary(this.summary());
