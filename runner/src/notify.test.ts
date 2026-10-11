@@ -234,3 +234,11 @@ describe("memory conflicts", () => {
     expect(recent()[0]!.id).toBe(n.id);
   });
 });
+
+test("Clear all empties the bell for every device", async () => {
+  const { clearRecent, notify, recent } = await import("./notify");
+  notify({ kind: "finished", title: "Finished · clear-all test", body: "", sessionId: "s-clear", projectPath: "/tmp/p" });
+  expect(recent().length).toBeGreaterThan(0);
+  clearRecent();
+  expect(recent()).toEqual([]);
+});

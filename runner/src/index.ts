@@ -27,7 +27,7 @@ import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
-import { ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
@@ -620,6 +620,11 @@ const ops: Handlers = {
 
   async listNotifications() {
     return recent();
+  },
+
+  async clearNotifications() {
+    clearRecent();
+    return {};
   },
 
   async amendSteer({ sessionId, msgId, text }) {

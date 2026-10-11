@@ -11,7 +11,7 @@ import { StackItem } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
-import { markNoticeRead, openPage, refreshNotices, selectSession, useStore } from "../store";
+import { clearNotices, markNoticeRead, openPage, refreshNotices, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
 
 /** The bell: what your agents asked, finished or got stuck on, newest first. */
@@ -34,6 +34,7 @@ export function NoticeBell() {
         <StackItem size="fill">
           <Text type="supporting">Notifications</Text>
         </StackItem>
+        {notices.length > 0 && <Button label="Clear all" variant="ghost" size="sm" onClick={() => void clearNotices()} />}
         <Button
           label="Settings"
           variant="ghost"

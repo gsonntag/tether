@@ -832,6 +832,8 @@ export interface Ops {
   pushUnsubscribe: { args: { endpoint: string }; result: {} };
   pushTest: { args: { endpoint: string }; result: {} };
   listNotifications: { args: {}; result: AgentNotice[] };
+  /** empties the runner's notification list (the bell and sidebar dots, on every device) */
+  clearNotifications: { args: {}; result: {} };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
   /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
   uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };

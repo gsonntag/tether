@@ -529,6 +529,19 @@ export function markNoticeRead(noticeId: string) {
   saveJSON("tether.noticesRead", next);
 }
 
+/** Clear all: empties the list on the runner (every device), and dismisses this device's notifications. */
+export async function clearNotices() {
+  if ((await act("clearNotifications", {})) === undefined) return;
+  const now = Date.now();
+  set({ notices: [], noticesSeen: now, noticesRead: [] });
+  saveJSON("tether.noticesSeen", now);
+  saveJSON("tether.noticesRead", []);
+  try {
+    for (const reg of await navigator.serviceWorker?.getRegistrations?.() ?? [])
+      for (const n of await reg.getNotifications()) n.close();
+  } catch {}
+}
+
 export function markSessionNoticeRead(sessionId: string) {
   const notice = get().notices.find((item) => item.sessionId === sessionId);
   if (notice) markNoticeRead(notice.id);
