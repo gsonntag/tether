@@ -441,6 +441,8 @@ export interface SessionSummary {
    * status, the session is still working in the background.
    */
   runningKinds?: Partial<Record<ActivityKind, number>>;
+  /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
+  workingCount?: number;
 }
 
 /**
@@ -450,6 +452,15 @@ export interface SessionSummary {
 export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<SessionSummary, "id" | "updatedAt">): number {
   return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
+
+/** Web app preferences kept in the runner's config (getUiPrefs / setUiPrefs). */
+export interface UiPrefs {
+  /** sidebar project lists show sessions whose latest message is this recent, in days; 0 = all */
+  sidebarDays: number;
+}
+/** The sidebar windows on offer, in days (0 = all). */
+export const SIDEBAR_DAYS = [1, 3, 7, 30, 0] as const;
+export const DEFAULT_SIDEBAR_DAYS = 3;
 
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {
@@ -795,6 +806,9 @@ export interface Ops {
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };
+  /** web app preferences kept on the runner, so every device shares them */
+  getUiPrefs: { args: {}; result: UiPrefs };
+  setUiPrefs: { args: Partial<UiPrefs>; result: UiPrefs };
 }
 
 export type OpName = keyof Ops;

@@ -204,6 +204,7 @@ describe("activity in the session", () => {
     const s = fake();
     s.upsertActivity(item("a1"), item("w", { kind: "schedule", status: "waiting" }));
     expect(summaries.at(-1)!.activeCount).toBe(2);
+    expect(summaries.at(-1)!.workingCount).toBe(1);
     await s.stopActivity("a1");
     expect((s as any).stopped).toEqual(["a1"]);
     s.upsertActivity(item("x", { stoppable: false }));
@@ -244,6 +245,13 @@ describe("activity in the session", () => {
     last = summaries.at(-1)!;
     expect(last.activeCount).toBe(1);
     expect(last.runningKinds).toEqual({});
+  });
+
+  test("an armed wakeup alone counts as active but not working", () => {
+    const s = fake();
+    s.upsertActivity(item("a1"), item("w", { kind: "schedule", status: "waiting" }));
+    s.upsertActivity(item("a1", { status: "done" }));
+    expect(summaries.at(-1)).toMatchObject({ activeCount: 1, workingCount: 0 });
     s.close();
   });
 

@@ -16,7 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent } from "./shared/protocol";
+import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -74,6 +74,8 @@ interface State {
   conflicts: MemoryConflict[];
   /** activity that arrived while this tab was open, newest first */
   contextLive: ContextActivity[];
+  /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
+  sidebarDays: number;
 }
 
 export const useStore = create<State>(() => ({
@@ -95,6 +97,7 @@ export const useStore = create<State>(() => ({
   conflicts: [],
   contextLive: [],
   pulses: {},
+  sidebarDays: cachedSidebarDays(loadJSON<string>("tether.runner", "")),
 }));
 
 const set = useStore.setState;
@@ -202,6 +205,7 @@ function onMessage(m: ServerToBrowser) {
         refreshUsage();
         refreshNotices();
         refreshContext();
+        refreshUiPrefs();
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -537,6 +541,43 @@ export function switchRunner(id: string) {
   refreshProjects();
   refreshNotices();
   refreshContext();
+  refreshUiPrefs();
+}
+
+// ---------------- preferences kept on the runner (shared by every device) ----------------
+
+// Each runner keeps its own; this device remembers the last value each one gave (by runner id), so
+// the list doesn't change size once the runner answers. (A function: the store's initial state uses it.)
+function cachedSidebarDays(runnerId: string | undefined): number {
+  const v = runnerId ? loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId] : undefined;
+  return typeof v === "number" ? v : DEFAULT_SIDEBAR_DAYS;
+}
+
+/** Applies a runner's answer, unless the sidebar has moved to another runner since it asked. */
+function applyUiPrefs(runnerId: string, p: { sidebarDays: number }) {
+  saveJSON("tether.sidebarDaysBy", { ...loadJSON<Record<string, number>>("tether.sidebarDaysBy", {}), [runnerId]: p.sidebarDays });
+  if (get().runnerId === runnerId) set({ sidebarDays: p.sidebarDays });
+}
+
+export function refreshUiPrefs() {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  set({ sidebarDays: cachedSidebarDays(runnerId) });
+  rpcTo(runnerId, "getUiPrefs", {})
+    .then((p) => applyUiPrefs(runnerId, p))
+    .catch((e) => {
+      // An older runner has no preferences: it gets the default. Other failures keep what we have.
+      if (/doesn't know/.test(e?.message ?? "")) applyUiPrefs(runnerId, { sidebarDays: DEFAULT_SIDEBAR_DAYS });
+    });
+}
+// Another device may have changed them.
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());
+
+export async function setSidebarDays(days: number) {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  const r = await act("setUiPrefs", { sidebarDays: days });
+  if (r) applyUiPrefs(runnerId, r);
 }
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner

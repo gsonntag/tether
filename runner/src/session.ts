@@ -149,9 +149,9 @@ export abstract class LiveSession {
       // A closed session has no process, so nothing can be running.
       status: this.closed ? "idle" : this.t.state.status,
       needsInput: this.t.state.pendingUi.length > 0,
-      // runningKinds goes with activeCount, {} when only wakeups are armed: browsers read its
-      // absence as an older runner that doesn't say.
-      ...(this.activeCount ? { activeCount: this.activeCount, runningKinds: this.runningKinds() } : {}),
+      // runningKinds and workingCount go with activeCount ({} / 0 when only wakeups are armed):
+      // browsers read their absence as an older runner that doesn't say.
+      ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
     };
   }
 
@@ -324,7 +324,7 @@ export abstract class LiveSession {
   // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
 
   /** the activity part of the last summary sent: a change sends a new one */
-  private lastActivityKey = "[0,[]]";
+  private lastActivityKey = "[0,0,[]]";
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
@@ -401,7 +401,7 @@ export abstract class LiveSession {
     // Browsers tell "working in the background" from idle (and agents from shells) by these, so
     // the summary goes out when an item starts, ends, or a wakeup fires — not only on status changes.
     // Sorted, so the same counts in another item order don't send again.
-    const key = JSON.stringify([this.activeCount, Object.entries(this.runningKinds()).sort()]);
+    const key = JSON.stringify([this.activeCount, this.workingCount, Object.entries(this.runningKinds()).sort()]);
     if (key !== this.lastActivityKey) {
       this.lastActivityKey = key;
       this.sink.summary(this.summary());
