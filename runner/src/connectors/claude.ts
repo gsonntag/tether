@@ -158,4 +158,5 @@ export const claudeConnector: Connector = {
   // Agent SDK 0.3.293: forkSession(sessionId, { upToMessageId }) copies the transcript up to any entry.
   fork: slot("native", "Its own fork (forkSession) at any message, into Claude Code; into another harness, a new session on a brief"),
   compact: slot("native", "Its own /compact, focus included"),
+  review: slot("emulated", "Tether's review session: without its edit tools (disallowedTools), Bash through the guard, findings through review_report"),
 };

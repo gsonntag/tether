@@ -41,6 +41,9 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
 export const PERMISSION_MODES = ["default", "plan"];
 
+/** Claude Code's tools that change files, left out of a review session (/review). */
+export const READ_ONLY_DISALLOWED = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
 /** Claude permission modes that still ask canUseTool (so the guard) before acting. */
 export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
   return mode === "default" || mode === "plan";
@@ -376,7 +379,7 @@ class ClaudeSession extends LiveSession {
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
-    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
+    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
     // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
     const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
     this.q = query({
@@ -393,6 +396,8 @@ class ClaudeSession extends LiveSession {
         systemPrompt: { type: "preset", preset: "claude_code" },
         ...launch.options,
         ...(mcp.full ? { mcpServers: mcp.launch } : {}),
+        // A review session (/review): its edit tools are gone; Bash and the rest still go through the guard.
+        ...(this.isReviewSession ? { disallowedTools: [...(launch.options.disallowedTools ?? []), ...READ_ONLY_DISALLOWED] } : {}),
         canUseTool,
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),
@@ -426,7 +431,7 @@ class ClaudeSession extends LiveSession {
   private async swapMcp() {
     if (this.closed || !this.q) return;
     try {
-      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
+      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
       await this.applyMcp(launch.options.mcpServers ?? {});
     } catch (e: any) {
       console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);

@@ -101,4 +101,7 @@ export const codexConnector: Connector = {
   // codex-cli 0.162 app-server: thread/fork keeps whole turns (lastTurnId); thread/compact/start takes no instructions.
   fork: slot("native", "Its own fork (thread/fork) where a turn ends, into Codex; at a message inside a turn, in the turn running now or into another harness, a new session on a brief"),
   compact: slot("native", "Its own compaction (thread/compact/start); it takes no focus, so /compact with a focus restarts the conversation on a brief"),
+  // codex-cli 0.162 review/start reviews uncommitted changes, a branch, a commit or custom
+  // instructions and returns its findings as text only (exitedReviewMode.review).
+  review: slot("emulated", "Tether's review session in its read-only sandbox, findings through review_report; its own review/start can't take the session's diff and returns its findings as text only"),
 };

@@ -30,6 +30,12 @@ const notice = (sessionId: string, ts: number, kind: AgentNotice["kind"] = "fini
 const ctx = (c: Partial<RecentContext> = {}): RecentContext => ({ now: NOW, days: 3, notices: [], noticesSeen: 0, noticesRead: [], ...c });
 
 describe("showInSidebar", () => {
+  test("a review session only while it's the one open, even running", () => {
+    const r = session("r", 0, { reviewOf: "a", status: "running" });
+    expect(showInSidebar(r, ctx())).toBe(false);
+    expect(showInSidebar(r, ctx({ selected: "r" }))).toBe(true);
+  });
+
   test("by the time of the latest message, inside the window", () => {
     expect(showInSidebar(session("a", 2 * DAY), ctx())).toBe(true);
     expect(showInSidebar(session("a", 3 * DAY), ctx())).toBe(true); // the edge counts

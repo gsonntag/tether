@@ -15,6 +15,7 @@ export const SLOT_LABEL: Record<SlotId, string> = {
   schedules: "Loops and schedules",
   fork: "Fork from a message",
   compact: "Compact (/compact)",
+  review: "Review (/review)",
   commands: "Custom commands",
   agents: "Subagents",
   hooks: "Hooks",

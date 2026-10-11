@@ -27,6 +27,7 @@ import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
+import { applyReview, runReview } from "./review";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
@@ -100,7 +101,9 @@ function send(m: RunnerToServer) {
 function decorate(s: SessionSummary): SessionSummary {
   const cfg = config();
   const title = cfg.titles[s.id];
-  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}) };
+  // A stored review session (/review) is listed under the session it reviews, not on its own.
+  const reviewOf = cfg.sessions[s.id]?.reviewOf?.sessionId;
+  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}), ...(reviewOf && !s.reviewOf ? { reviewOf } : {}) };
 }
 
 // ---------------- dashboard pulses ----------------
@@ -137,6 +140,8 @@ const sink: Sink = {
   },
   handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
   compact: async (from, focus) => void (await runCompact({ adapters, sink, context, track }, from, focus)),
+  review: async (from, req) => void (await runReview({ adapters, sink, track }, from, req)),
+  reviewResult: (sessionId, reviewId, patch) => applyReview((id) => live.get(id), sessionId, reviewId, patch),
 };
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
@@ -535,6 +540,8 @@ const ops: Handlers = {
     if (await s.scheduleCommand(text)) return {};
     // `/compact [focus]`: the harness's own compaction, or a restart on a brief (fork.ts, handoffRun.ts).
     if (await s.compactCommand(text)) return {};
+    // `/review …`: a read-only review session on another harness (review.ts).
+    if (await s.reviewCommand(text)) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -657,6 +664,12 @@ const ops: Handlers = {
     if (!adapters[harness]) throw new Error(`unknown harness ${harness}`);
     const next = await runFork({ adapters, sink, context, track }, await getLive(sessionId), { msgId, harness, model, prompt });
     return next.summary();
+  },
+
+  async sendReviewFindings({ sessionId, reviewId, indexes }) {
+    if (indexes !== undefined && !Array.isArray(indexes)) throw new Error("indexes must be a list");
+    await (await getLive(sessionId)).sendReviewFindings(reviewId, indexes);
+    return {};
   },
 
   async continueOn({ sessionId, msgId }) {

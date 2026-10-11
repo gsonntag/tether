@@ -31,9 +31,9 @@ export interface McpLaunch {
  * The stdio launcher. `sessionKey` (the session's guard key) lets the runner tie a memory_write
  * to the Tether session that made it, even before the harness has assigned a session id, and the
  * session tools (goal, plan, todos, ask_user) act on that session. `goalOnly`: the master context
- * is off, so only the session tools.
+ * is off, so only the session tools. `review`: a review session (/review), which reports with review_report.
  */
-export function mcpLaunch(session?: { id?: string; key?: string }, opts: { goalOnly?: boolean } = {}): McpLaunch {
+export function mcpLaunch(session?: { id?: string; key?: string; review?: boolean }, opts: { goalOnly?: boolean } = {}): McpLaunch {
   const env: Record<string, string> = { TETHER_CONTEXT_DIR: contextDir() };
   if (session?.id && !session.id.includes(":pending-")) env.TETHER_SESSION_ID = session.id;
   if (session?.key) {
@@ -41,5 +41,7 @@ export function mcpLaunch(session?: { id?: string; key?: string }, opts: { goalO
     env.TETHER_BRIDGE_FILE = bridgeFile();
   }
   if (opts.goalOnly) env.TETHER_CONTEXT_TOOLS = "goal";
+  // A review session (/review) also gets review_report.
+  if (session?.key && session.review) env.TETHER_CONTEXT_REVIEW = "1";
   return { command: process.execPath, args: [MCP_SCRIPT], env };
 }

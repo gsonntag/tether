@@ -9,7 +9,8 @@
 //
 // The session tools act on the calling session: goal_get / goal_update on its goal (/goal,
 // runner/src/goal.ts), plan_get / plan_set / todo_set on its plan (runner/src/plan.ts), and
-// ask_user puts a question card in front of the user and waits for the answer. They go to the
+// ask_user puts a question card in front of the user and waits for the answer; in a review
+// session (/review, TETHER_CONTEXT_REVIEW=1) review_report hands in the findings. They go to the
 // runner over its loopback bridge (bridge.ts), as the session whose key is in the environment.
 // With the master context off a session still gets this server, with only the session tools
 // (TETHER_CONTEXT_TOOLS=goal, the name from when they were only the goal tools).
@@ -135,14 +136,51 @@ export const ASK_TOOLS = [
   },
 ];
 
-const SESSION_HINT = "its goal (/goal) with goal_get and goal_update; its plan and todo list with plan_get, plan_set and todo_set; questions to the user with ask_user.";
+const severity = { type: "string", enum: ["critical", "high", "medium", "low"], description: "critical: data loss, security hole, crash on a main path; high: a real bug; medium: an edge case or a risk; low: minor" };
+
+/** Only in a review session (/review, TETHER_CONTEXT_REVIEW=1): how the reviewer hands in its findings. */
+export const REVIEW_TOOLS = [
+  {
+    name: "review_report",
+    description:
+      "Report your review's findings to the user, once, when you're done: every finding with its file, line, severity, issue and fix, and a one-line summary. An empty list is fine if the changes look right. The user sees them in the session you reviewed and can send each one to its agent to fix.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "Your verdict in one line" },
+        findings: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              file: { type: "string", description: "Path relative to the working directory" },
+              line: { type: "integer", description: "Line in the file as it is now" },
+              severity,
+              issue: { type: "string", description: "What's wrong and why it matters" },
+              fix: { type: "string", description: "What to change" },
+            },
+            required: ["file", "severity", "issue", "fix"],
+          },
+        },
+      },
+      required: ["findings"],
+    },
+  },
+];
+
+const reviewing = () => process.env.TETHER_CONTEXT_REVIEW === "1";
+const sessionHint = () =>
+  `its goal (/goal) with goal_get and goal_update; its plan and todo list with plan_get, plan_set and todo_set; questions to the user with ask_user${reviewing() ? "; your review's findings with review_report" : ""}.`;
 
 /** Tools that act on the calling session (through the runner), offered even while the master context is off. */
 export const SESSION_TOOLS = [...GOAL_TOOLS, ...PLAN_TOOLS, ...ASK_TOOLS];
-const SESSION_NAMES = new Set(SESSION_TOOLS.map((t) => t.name));
+const SESSION_NAMES = new Set([...SESSION_TOOLS, ...REVIEW_TOOLS].map((t) => t.name));
 
-/** The tools this server lists: only the session tools while the master context is off. */
-export const tools = () => (process.env.TETHER_CONTEXT_TOOLS === "goal" ? SESSION_TOOLS : [...TOOLS, ...SESSION_TOOLS]);
+/** The tools this server lists: only the session tools while the master context is off; review_report only in a review session. */
+export const tools = () => {
+  const session = reviewing() ? [...SESSION_TOOLS, ...REVIEW_TOOLS] : SESSION_TOOLS;
+  return process.env.TETHER_CONTEXT_TOOLS === "goal" ? session : [...TOOLS, ...session];
+};
 
 /** How often a waiting ask_user tells the client it's still alive (clients time out silent calls). */
 export const timing = { progressMs: 30_000 };
@@ -152,7 +190,7 @@ export const timing = { progressMs: 30_000 };
  * takes (or `signal` says the client gave up); the others answer at once.
  */
 async function sessionCall(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Result> {
-  const what = tool.startsWith("goal") ? "the goal" : tool === "ask_user" ? "the question" : "the plan";
+  const what = tool.startsWith("goal") ? "the goal" : tool === "ask_user" ? "the question" : tool === "review_report" ? "the review" : "the plan";
   const key = process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY;
   if (!key) return fail(tool.startsWith("goal") ? "Goals work only in sessions Tether started." : "This works only in sessions Tether started.");
   let bridge: { url: string; token: string };
@@ -275,8 +313,8 @@ export async function handle(msg: any, notify?: (m: object) => void): Promise<ob
         serverInfo: { name: "tether-context", version: "0.1.0" },
         instructions:
           process.env.TETHER_CONTEXT_TOOLS === "goal"
-            ? `This session in Tether: ${SESSION_HINT}`
-            : `The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back. This session: ${SESSION_HINT}`,
+            ? `This session in Tether: ${sessionHint()}`
+            : `The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back. This session: ${sessionHint()}`,
       });
     case "ping":
       return reply({});

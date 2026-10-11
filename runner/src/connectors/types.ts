@@ -19,8 +19,8 @@ export type { CapabilityLevel, SlotCapability, SlotId };
 /** What a session launch knows when it asks its connector. */
 export interface SessionCtx {
   projectPath: string;
-  /** Tether session id (once the harness has one) and guard key, for the `tether-context` env */
-  session?: { id?: string; key?: string };
+  /** Tether session id (once the harness has one) and guard key, for the `tether-context` env; `review`: a review session (/review) */
+  session?: { id?: string; key?: string; review?: boolean };
   /** resuming an existing native session (no first-message preamble) */
   resume?: boolean;
   /** the master context for this session; undefined while the feature is off */
@@ -161,6 +161,8 @@ export interface Connector {
   fork: Slot;
   /** /compact: the harness's own compaction, or a restart on a brief (handoffRun.ts runCompact) */
   compact: Slot;
+  /** /review (runner/src/review.ts): a read-only review session on this harness, findings through review_report */
+  review: Slot;
 }
 
-export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact"];
+export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact", "review"];

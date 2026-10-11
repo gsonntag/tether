@@ -53,4 +53,5 @@ export const antigravityConnector: Connector = {
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
   fork: slot("emulated", "A new session on a brief; agy has no fork Tether can drive"),
   compact: slot("emulated", "The conversation restarts as a new session on a brief; agy has no compaction Tether can trigger"),
+  review: slot("emulated", "Tether's review session, every change held back by the guard hook; findings from a JSON block in its reply (its global tether-context has no review_report)"),
 };

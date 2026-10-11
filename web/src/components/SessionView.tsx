@@ -45,6 +45,7 @@ import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
 import { SessionConflicts } from "./MemoryConflicts";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
+import { withReviews } from "./ReviewCard";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
 
@@ -199,14 +200,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
-          <LinkBanner from={st.handoffFrom} forked={st.forkedFrom} />
+          <LinkBanner from={st.handoffFrom} forked={st.forkedFrom} reviewOf={st.reviewOf} />
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
           <FileRefScope value={refScope}>
             <Transcript
               messages={o.messages}
               running={st.status === "running"}
               amendable={st.amendable}
-              after={turnChangeMarkers(sessionId, o.messages, st)}
+              after={withReviews(turnChangeMarkers(sessionId, o.messages, st), sessionId, o.messages, st.reviews)}
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />

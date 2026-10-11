@@ -2,6 +2,7 @@
 
 import type { HarnessId, Msg } from "./shared/protocol";
 import { BRIEF_PREFIX } from "./msgTime";
+import { REVIEW_PREFIX } from "./shared/review";
 
 /** What the fork dialog is about: one message of one session. */
 export interface ForkTarget {
@@ -22,7 +23,7 @@ const textOf = (m: Msg) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] 
 export function canFork(m: Msg): boolean {
   if (m.role === "assistant") return !m.streaming && m.parts.length > 0;
   if (m.role !== "user") return false;
-  if (textOf(m).trimStart().startsWith(BRIEF_PREFIX)) return false;
+  if (textOf(m).trimStart().startsWith(BRIEF_PREFIX) || textOf(m).trimStart().startsWith(REVIEW_PREFIX)) return false;
   return m.parts.some((p) => p.type === "text" || p.type === "skill" || p.type === "file" || p.type === "image");
 }
 

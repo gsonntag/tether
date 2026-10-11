@@ -342,8 +342,10 @@ class PiSession extends LiveSession {
     // Its connector: shared memory in the system prompt, and this session's own tether-context
     // MCP server and the MCP registry's servers through pi-mcp-adapter's --mcp-config (else the
     // global mcp.json registrations).
-    const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY } });
+    const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
     args.push(...launch.args);
+    // A review session (/review): pi's edit and write tools are off; bash still goes through the guard.
+    if (this.isReviewSession) args.push("--exclude-tools", "edit,write");
     // pi's own goal extension stays out: Tether's /goal drives goals here (connectors/pi.ts).
     args.push(...(await piGoalFilter(this.projectPath)).args);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);

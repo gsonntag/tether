@@ -457,6 +457,9 @@ export class CodexSession extends LiveSession {
   private sandboxed = false;
 
   private policy() {
+    // A review session (/review): Codex's read-only sandbox where it works, and it asks before anything else.
+    if (this.isReviewSession)
+      return { approvalPolicy: "untrusted", sandboxPolicy: this.sandboxed ? { type: "readOnly", networkAccess: false } : { type: "dangerFullAccess" } };
     if (this.guardMode === "full") return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
     return {
       approvalPolicy: "untrusted",
@@ -481,14 +484,14 @@ export class CodexSession extends LiveSession {
     // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("codex", {
       projectPath: this.projectPath,
-      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY },
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
       resume: this.opts.resume || !!this.opts.fork,
     });
     const params = {
       cwd: this.projectPath,
       approvalPolicy,
       approvalsReviewer: "user",
-      sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : "workspace-write",
+      sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write",
       ...(this.model ? { model: this.model } : {}),
       ...launch.options,
     };

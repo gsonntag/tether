@@ -343,6 +343,51 @@ export interface SessionPlan {
   updatedAt: number;
 }
 
+// ---------- review (/review, runner/src/review.ts) ----------
+
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+
+/** One finding a review reported (the tether-context tool review_report). */
+export interface ReviewFinding {
+  /** relative to the project directory */
+  file: string;
+  /** in the file as it is now */
+  line?: number;
+  severity: ReviewSeverity;
+  issue: string;
+  fix: string;
+}
+
+/**
+ * A review of the session's changes (/review), run by another harness or model in a read-only
+ * session of its own, shown as one card in the session it reviewed.
+ *   starting  the review session is being started
+ *   running   the reviewer is working
+ *   done      it reported (findings may be empty)
+ *   failed    it ended without a report, or couldn't start (`error`)
+ */
+export interface SessionReview {
+  id: string;
+  status: "starting" | "running" | "done" | "failed";
+  /** the review session, once it exists */
+  sessionId?: string;
+  harness: HarnessId;
+  model?: string;
+  focus?: string;
+  /** what was reviewed: the session's changes when the review started */
+  stat?: DiffStat;
+  findings: ReviewFinding[];
+  /** the reviewer's one-line verdict */
+  summary?: string;
+  error?: string;
+  /** findings already sent to the agent, by index */
+  sent: number[];
+  /** the card sits after this transcript message (the last one when the review started) */
+  afterMsgId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface UiResponse {
   id: string;
   cancelled?: boolean;
@@ -412,6 +457,10 @@ export interface LiveState {
   plan?: SessionPlan | null;
   /** Tether's loops and schedules (/loop, /schedule), soonest first; [] when none */
   schedules?: SessionSchedule[];
+  /** reviews of this session's changes (/review), oldest first */
+  reviews?: SessionReview[];
+  /** this session is a read-only review of another one (/review): the guard holds back every change */
+  reviewOf?: { sessionId: string; reviewId: string };
 }
 
 export interface ContextUsage {
@@ -616,6 +665,8 @@ export interface SessionSummary {
   runningKinds?: Partial<Record<ActivityKind, number>>;
   /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
   workingCount?: number;
+  /** a review session (/review): the session it reviews. Listed under that one, not in the sidebar */
+  reviewOf?: string;
 }
 
 /**
@@ -863,7 +914,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact" | "review";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";
@@ -1011,6 +1062,11 @@ export interface Ops {
    * message, on any other message).
    */
   forkSession: { args: { sessionId: string; msgId: string; harness: HarnessId; model?: string; prompt?: string }; result: SessionSummary };
+  /**
+   * A review card's "Send to agent" / "Send all": queues a message asking the agent to fix those
+   * findings (`indexes`; absent: every one not sent yet).
+   */
+  sendReviewFindings: { args: { sessionId: string; reviewId: string; indexes?: number[] }; result: {} };
   /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
   continueOn: { args: { sessionId: string; msgId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */

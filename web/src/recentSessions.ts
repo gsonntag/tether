@@ -34,9 +34,12 @@ export function isBusy(s: SessionSummary): boolean {
  * Whether a session belongs in its project's sidebar list: its latest message is inside the window,
  * or it's busy (running, background work, waiting on a limit or retry, a question for you), has an
  * unread notice, or is the one open. Done (archived) sessions never do; search still finds them.
+ * Review sessions only while open.
  */
 export function showInSidebar(s: SessionSummary, c: RecentContext): boolean {
   if (s.archived) return false;
+  // A review session (/review) is opened from its card in the session it reviews.
+  if (s.reviewOf) return s.id === c.selected;
   if (!c.days || s.id === c.selected || isBusy(s) || hasUnreadNotice(s, c)) return true;
   return s.updatedAt >= c.now - c.days * DAY;
 }

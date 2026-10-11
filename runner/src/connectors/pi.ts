@@ -214,4 +214,5 @@ export const piConnector: Connector = {
   // pi 1.0.4 RPC: `fork` branches only before a user message and moves the running process to the new session.
   fork: slot("emulated", "A new session on a brief; pi's own fork only branches before one of your messages, inside the running process"),
   compact: slot("native", "Its own compaction (compact RPC), focus as its instructions"),
+  review: slot("emulated", "Tether's review session without edit and write (--exclude-tools), bash through the guard; findings through review_report with pi-mcp-adapter, else from a JSON block in its reply"),
 };

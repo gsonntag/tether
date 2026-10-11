@@ -33,6 +33,7 @@ export const TETHER_COMMANDS: SlashCommand[] = [
   { name: "loop", kind: "tether", description: "Send a prompt now and on an interval: /loop 10m <prompt>; /loop list, /loop stop [n]" },
   { name: "schedule", kind: "tether", description: "Send a prompt later: /schedule <cron> <prompt>, /schedule at 15:00 <prompt>, /schedule in 2h <prompt>; /schedule list, /schedule delete <n>" },
   { name: "compact", kind: "tether", description: "Free up context: /compact [what to keep in focus]. On a harness that can't compact, the conversation goes on in a new session that gets a brief of it" },
+  { name: "review", kind: "tether", description: "Have another harness review this session's changes: /review [harness[:model]] [what to focus on]. Findings show here, each one ready to send to the agent" },
 ];
 
 export type GoalCommand =

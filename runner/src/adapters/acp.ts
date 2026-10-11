@@ -304,7 +304,7 @@ class AcpSession extends LiveSession {
     // the tether-context MCP server, and shared memory as a first-message preamble.
     const launch = await sessionLaunch(this.spec.id, {
       projectPath: this.projectPath,
-      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY },
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
       resume: this.opts.resume,
       mcpCapabilities: this.p.caps?.mcpCapabilities,
     });

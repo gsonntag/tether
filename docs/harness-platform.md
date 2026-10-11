@@ -2,7 +2,7 @@
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
 live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b), fork and
-`/compact` (unit p4c); the rest not started. What was built, emulated or left unsupported per harness is in
+`/compact` (unit p4c), `/review` (unit p4d); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -427,9 +427,70 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | Kiro | brief | Tether's restart, unless it lists /compact (unverified) |
 | Antigravity | brief | Tether's restart |
 
+**Phase 4d: /review.**
+- `/review [harness[:model]] [focus]` (a Tether command on every harness, `reviewCommand`; `/review
+  codex`, `/review codex:gpt-6-sol the auth changes`, `/review claude/opus`, `/review check the
+  migrations`; a first word naming a harness picks the reviewer, the rest is the focus). Refused
+  while the agent works, in a handed-off session and in a review session. Reviewer: the harness
+  asked for (its model, else the session chain's model for it), else the first other harness in the
+  session's chain that's installed, else the first other installed harness (HARNESSES order), else
+  the same harness in a fresh session.
+- `runner/src/review.ts runReview`: the diff since the session's first checkpoint (`diffBase`; HEAD
+  when there is none) through `computeDiff` capped at 120 KB for the prompt ("Nothing to review"
+  when it's empty, inline). A card goes into the session at once (`LiveState.reviews`, saved in
+  prefs, at most 10), then a new session on the reviewer in the same directory with `reviewOf`
+  (saved in prefs; `SessionSummary.reviewOf`), guard Auto, title "Review of …". Its prompt
+  (`REVIEW_PREFIX`, folded in its transcript like a brief): what the session was asked
+  (`goal()`), the focus, the base commit and `git diff <sha>`, what to look for, how to report, the
+  diff (credential and secrets files, `guard.ts isSensitive`, listed without their patch).
+- Read-only: in a review session `checkTool` denies everything `plan.ts mutates` says changes
+  something (edits, non-read-only shell, other MCP tools; builds and tests too), and every edit,
+  plan files included, whatever the guard mode, and allows the rest without the judge (the rules still deny secrets). On top of that, where
+  the harness can: Claude Code without Edit/MultiEdit/Write/NotebookEdit (`disallowedTools`),
+  Codex in its read-only sandbox (`sandbox: "read-only"`, turn `sandboxPolicy: readOnly`, approvals
+  "untrusted", even if the guard is switched to Dangerously skip), pi with `--exclude-tools
+  edit,write`. "Approve & retry" on a blocked call still lets you through.
+- Report: `review_report(summary, findings[{file, line, severity critical|high|medium|low, issue,
+  fix}])` in `tether-context`, listed only for a review session (`TETHER_CONTEXT_REVIEW=1` from
+  `mcpLaunch`, set when the launch's `session.review`). Other agents' field names and severities
+  (path, priority P0-P3, description, suggestion…) are taken. Without the tool, the last JSON block
+  of the first turn's reply counts; a first turn that ends with neither marks the card failed ("Open
+  the review session to read what it said"), Stop too. A later review_report (you asked it again)
+  still fills the card. The result reaches the session reviewed through `SessionSink.reviewResult`
+  (index.ts → `applyReview`): live, its card updates; closed, its stored card; handed off, every
+  session down the `handoffTo` links (a handoff copies the cards, `adoptReviews`). One push
+  ("Review finished: 3 findings (1 high)" / "Review failed") from the session reviewed; the review
+  session sends no "Finished" of its own. A review under way keeps the session reviewed from its
+  idle close (for at most 3 hours), and the 30 minutes count from the review's result. A review
+  session that hands off (a /compact without native compaction, a fallback) passes `reviewOf` on
+  (`inheritReview`, before the new session starts): the successor is read-only too and reports,
+  unless the review had reported already.
+- Card (`web/src/components/ReviewCard.tsx`): after the message that was last when the review
+  started (or after the last message when that one isn't there any more), with who reviews, the
+  changes reviewed, the focus, the verdict, the findings most severe first (severity token,
+  `file:line` with the open-file button, issue, fix) and per finding "Send to agent"; "Send all"
+  (or "Send the other n") sends the ones not sent. Both are the `sendReviewFindings` op: a queued
+  (followUp) message "A review by Codex (GPT-6 Sol) found these in your changes. Check each one,
+  and fix the ones that hold: …"; sent findings say "Sent". "Open review" opens the review session,
+  which says "Read-only review of … Its findings show there." at the top and is left out of the
+  sidebar unless it's the one open (`showInSidebar`); Home still lists it while it runs.
+- Codex's own review (`review/start`) is not used: its targets are uncommitted changes, a base
+  branch, one commit or custom instructions (not the session's diff, which may span commits and the
+  working tree), and it returns only rendered text (`exitedReviewMode.review: string`), so it can't
+  fill the structured card. Capability matrix: new `review` slot ("Review (/review)").
+
+| | /review as the reviewer |
+|---|---|
+| Claude Code | Tether's review session; Edit/Write tools removed natively, Bash through the guard; review_report |
+| Codex | Tether's review session in Codex's read-only sandbox; review_report (its own review/start returns text only) |
+| pi | Tether's review session, edit/write excluded natively; review_report with pi-mcp-adapter, else the reply's JSON |
+| opencode, Kiro | Tether's review session, every change held by the guard; review_report (unverified, not installed) |
+| Antigravity | Tether's review session, held by the guard hook; findings from the reply's JSON (its global tether-context has no review_report) |
+
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
 opencode let a per-session server override a same-named server in their own config, whether Codex
 rollouts or ACP agents persist session MCP headers, the OAuth redirect through the Foliation
-edge, Codex `thread/fork` with `lastTurnId` on a thread with turns, and a native Claude Code fork
-resumed and prompted by a live process.
+edge, Codex `thread/fork` with `lastTurnId` on a thread with turns, a native Claude Code fork
+resumed and prompted by a live process, and a whole /review on live harnesses (reviewer prompt,
+review_report through each harness's MCP client, the card in a browser).

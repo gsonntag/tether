@@ -10,7 +10,7 @@ describe("Harness support table", () => {
     const caps = { "claude-code": all("native"), codex: all("native"), pi: all("emulated"), opencode: all("native"), kiro: all("unsupported"), antigravity: all("emulated") } as HarnessCapabilities;
     const { harnesses, rows } = supportRows(caps, ["pi", "claude-code", "antigravity"]);
     expect(harnesses).toEqual(["claude-code", "pi", "antigravity"]);
-    expect(rows.map((r) => r.slot)).toEqual(["mcp", "skills", "memory", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact", "commands", "agents", "hooks", "env"]);
+    expect(rows.map((r) => r.slot)).toEqual(["mcp", "skills", "memory", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact", "review", "commands", "agents", "hooks", "env"]);
   });
 
   test("plain labels for each level", () => {

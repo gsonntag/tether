@@ -26,12 +26,12 @@ import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified, type UsageCheck } from "./fallback";
 import { modelDisplay } from "../../web/src/models";
-import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
+import { attachmentWrite, commandOf, isContextTool, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { connectorFor } from "./connectors";
 import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, newSchedule, ofKind, parseTimerCommand, scheduleChanged } from "./schedule";
 import { sessionTrust } from "./mcp/registry";
-import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
+import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
 import {
   budgetHit,
@@ -53,6 +53,7 @@ import {
   type GoalVerdict,
 } from "./goal";
 import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
+import { describeFindings, fixMessage, MAX_REVIEWS, mergeReview, parseReport, parseReviewCommand, reportFromReply, REVIEW_READ_ONLY_REASON, type ReviewRequest } from "./review";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -72,12 +73,18 @@ export interface SessionSink {
    * the same harness and model, seeded with a brief (handoffRun.ts runCompact). Absent: not offered.
    */
   compact?: (from: LiveSession, focus?: string) => Promise<void>;
+  /** `/review`: starts a read-only review session on another harness (review.ts runReview). Absent: not offered. */
+  review?: (from: LiveSession, req: ReviewRequest) => Promise<void>;
+  /** A review session's result, for the session it reviews (review.ts applyReview), live or not. */
+  reviewResult?: (sessionId: string, reviewId: string, patch: Partial<SessionReview>) => void;
 }
 
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
 const IDLE_CLOSE_MS = 30 * 60_000;
+/** How long a review under way keeps the session it reviews open past IDLE_CLOSE_MS. */
+const REVIEW_KEEP_OPEN_MS = 3 * 60 * 60_000;
 const STALL_WARN_MS = 15 * 60_000;
 /** how long "Continue on …" keeps this session off the entry it left, when the error gave no reset */
 const MANUAL_SKIP_MS = 60 * 60_000;
@@ -193,6 +200,7 @@ export abstract class LiveSession {
       // runningKinds and workingCount go with activeCount ({} / 0 when only wakeups are armed):
       // browsers read their absence as an older runner that doesn't say.
       ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
+      ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
     };
   }
 
@@ -245,6 +253,7 @@ export abstract class LiveSession {
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle") this.goalTurnOver();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.planTurnOver();
+      if (s.status === "idle" && before !== "idle") this.reviewTurnOver();
       // An approval or question the goal loop waited on was answered after the turn had ended.
       if (s.pendingUi && !s.pendingUi.length && this.goalHeld) {
         this.goalHeld = false;
@@ -257,8 +266,8 @@ export abstract class LiveSession {
       if (s.status !== undefined || s.pendingUi !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
-      }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules"].some((k) => k in s))
+      } else if (s.reviews !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules", "reviews", "reviewOf"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -393,6 +402,8 @@ export abstract class LiveSession {
     if (this.goalTurn || this.goalState?.status === "active") return;
     // A loop's runs (/loop) don't each send "Finished": a 10-minute loop would notify all day.
     if (loopTurn) return;
+    // A review session: the session it reviews says when the review is in.
+    if (this.t.state.reviewOf) return;
     // Only when truly done: nothing the agent started is still working (armed wakeups and cron
     // jobs don't count). The last one to finish sends it (activityChanged).
     if (this.workingCount) {
@@ -606,6 +617,7 @@ export abstract class LiveSession {
     if (await this.goalCommand(text)) return;
     if (await this.scheduleCommand(text)) return;
     if (await this.compactCommand(text)) return;
+    if (await this.reviewCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
     if (this.t.state.status !== "running") this.fallbackAttempt = 0;
@@ -896,6 +908,15 @@ export abstract class LiveSession {
     if (p.plan) restore.plan = p.plan.status === "review" ? { ...p.plan, status: "draft" } : p.plan;
     // Loops and schedules handed off went with the conversation.
     if (p.schedules?.length && !p.handoffTo) restore.schedules = p.schedules;
+    // A review still starting went with the runner; one running finishes when its session resumes.
+    if (p.reviews?.length)
+      restore.reviews = p.reviews.map((r) => (r.status === "starting" ? { ...r, status: "failed" as const, error: "The runner restarted before the review started." } : r));
+    // A review session opened again (not one just started): between turns its first report is in
+    // already (or it failed), so only a new review_report changes the card.
+    if (p.reviewOf && !this.t.state.reviewOf) {
+      restore.reviewOf = p.reviewOf;
+      this.reviewSettled = !p.active;
+    }
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     if (restore.schedules) scheduleChanged();
@@ -956,6 +977,8 @@ export abstract class LiveSession {
       goal: s.goal ?? undefined,
       plan: s.plan ?? undefined,
       schedules: s.schedules?.length ? s.schedules : undefined,
+      reviews: s.reviews?.length ? s.reviews : undefined,
+      reviewOf: s.reviewOf,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -1353,11 +1376,15 @@ export abstract class LiveSession {
     const key = JSON.stringify([tool, input]);
     let v: Verdict;
     let always = false;
-    // Plan mode (or a plan waiting for review) holds back changes, whatever the guard mode.
-    const held = this.planHold(tool, input);
+    // A review session, plan mode (or a plan waiting for review) hold back changes, whatever the guard mode.
+    const held = this.reviewHold(tool, input) ?? this.planHold(tool, input);
     if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
     else if (held) v = { decision: "deny", by: "mode", reason: held };
-    else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
+    // Reading in a review session needs no judge: only the rules (secrets, other sessions' files) apply.
+    else if (this.t.state.reviewOf) {
+      const r = rules(call);
+      v = r?.decision === "deny" ? r : { decision: "allow", by: "mode", reason: "Read-only review." };
+    } else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
       const askEdit = this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit";
@@ -2232,6 +2259,8 @@ export abstract class LiveSession {
         return this.todoSet(args.items);
       case "ask_user":
         return this.askUser(args, signal);
+      case "review_report":
+        return this.reviewReport(args);
     }
     return { ok: false, text: `Unknown tool "${tool}".` };
   }
@@ -2444,6 +2473,128 @@ export abstract class LiveSession {
     if (this.schedules.length) this.putSchedules([]);
   }
 
+  // ---- review (/review, runner/src/review.ts) ----
+  // The session reviewed keeps one card per review (`reviews`), which the review session's report
+  // fills in through the sink (reviewResult, also when this session is closed). The review session
+  // has `reviewOf`: the guard holds back every change in it, and review_report reports.
+
+  get reviews(): SessionReview[] {
+    return this.t.state.reviews ?? [];
+  }
+
+  /** A new review's card (the oldest go past MAX_REVIEWS). */
+  putReview(r: SessionReview) {
+    this.setState({ reviews: [...this.reviews.filter((x) => x.id !== r.id), r].slice(-MAX_REVIEWS) });
+  }
+
+  /** Review cards that came over in a handoff: shown at the end of this conversation. */
+  adoptReviews(list: SessionReview[]) {
+    const mine = new Set(this.reviews.map((r) => r.id));
+    const add = list.filter((r) => !mine.has(r.id)).map(({ afterMsgId: _, ...r }) => r);
+    if (add.length) this.setState({ reviews: [...this.reviews, ...add].slice(-MAX_REVIEWS) });
+  }
+
+  /** A review's card changes (its session reports, fails, or findings are sent). */
+  updateReview(id: string, patch: Partial<SessionReview>) {
+    const cur = this.reviews.find((r) => r.id === id);
+    if (!cur) return;
+    const next = mergeReview(cur, patch);
+    this.setState({ reviews: this.reviews.map((r) => (r.id === id ? next : r)) });
+    // One push, from the session the conversation goes on in.
+    if (this.t.state.handoffTo) return;
+    const by = HARNESSES.find((h) => h.id === next.harness)?.label ?? next.harness;
+    if (next.status === "done" && cur.status !== "done") this.alert("finished", "Review finished", `${by}: ${describeFindings(next.findings)}${next.summary ? `. ${next.summary}` : ""}`);
+    else if (next.status === "failed" && cur.status !== "failed") this.alert("blocked", "Review failed", next.error ?? `${by} didn't report.`);
+  }
+
+  /** `/review [harness[:model]] [focus]`: handled here on every harness, never sent as is. True when it was one. */
+  async reviewCommand(text: string): Promise<boolean> {
+    const req = parseReviewCommand(text);
+    if (!req) return false;
+    const st = this.t.state;
+    if (st.reviewOf) this.notice("This is a review session. Run /review in the session it reviews.", "warning");
+    else if (st.handoffTo) this.notice("This conversation continues in another session. Review it there.", "warning");
+    else if (st.status !== "idle") this.notice("The agent is still working. Review its changes once it's done, or stop it first.", "warning");
+    else if (!this.sink.review) this.notice("This runner can't run reviews.", "warning");
+    else {
+      try {
+        await this.sink.review(this, req);
+      } catch (e: any) {
+        this.notice(e?.message ?? String(e), "warning");
+      }
+    }
+    return true;
+  }
+
+  /** "Send to agent" / "Send all" on a review card: a queued message asking the agent to fix those findings. */
+  async sendReviewFindings(reviewId: string, indexes?: number[]) {
+    const r = this.reviews.find((x) => x.id === reviewId);
+    if (!r) throw new Error("That review is no longer kept.");
+    if (this.t.state.handoffTo) throw new Error("This conversation continues in another session.");
+    const pick = indexes ? [...new Set(indexes)].filter((i) => Number.isInteger(i) && r.findings[i]) : r.findings.map((_, i) => i).filter((i) => !r.sent.includes(i));
+    if (!pick.length) throw new Error(indexes ? "That finding is no longer there." : "Every finding was sent already.");
+    this.updateReview(r.id, { sent: [...new Set([...r.sent, ...pick])].sort((a, b) => a - b) });
+    await this.prompt(fixMessage(r, pick), "followUp");
+  }
+
+  /** Whether this is a review session, also before its prefs are loaded (a launch narrows its tools). */
+  get isReviewSession(): boolean {
+    return !!(this.t.state.reviewOf ?? config().sessions[this.id]?.reviewOf);
+  }
+
+  /** the review session's first result went out (a report, or its first turn ended without one) */
+  private reviewSettled = false;
+  /** where the review session's running turn starts in the transcript (its reply is read from there) */
+  private reviewTurnFrom = 0;
+
+  /** Why a review session holds this call back, if it does (checkTool). */
+  private reviewHold(tool: string, input: unknown): string | undefined {
+    // Every edit, plan files too (plan mode lets those through; a review has none to write).
+    if (!this.t.state.reviewOf) return undefined;
+    return (kindOf(tool) === "edit" && !isContextTool(tool, input)) || mutates(tool, input) ? REVIEW_READ_ONLY_REASON : undefined;
+  }
+
+  /** A review session handed off (a /compact without native compaction, a fallback): `from`'s review goes on here, read-only, and reports once. */
+  inheritReview(from: LiveSession) {
+    const of = from.t.state.reviewOf;
+    if (!of) return;
+    this.t.state.reviewOf = of;
+    this.reviewSettled = from.reviewSettled;
+  }
+
+  private reportReview(patch: Partial<SessionReview>) {
+    const of = this.t.state.reviewOf;
+    if (!of) return;
+    this.reviewSettled = true;
+    this.sink.reviewResult?.(of.sessionId, of.reviewId, patch);
+  }
+
+  /** review_report: the findings go to the card in the session reviewed. */
+  private reviewReport(args: Record<string, unknown>): { ok: boolean; text: string } {
+    if (!this.t.state.reviewOf) return { ok: false, text: "review_report works only in a review session (/review in Tether)." };
+    const r = parseReport(args);
+    if (typeof r === "string") return { ok: false, text: r };
+    this.reportReview({ status: "done", findings: r.findings, summary: r.summary, error: undefined });
+    const n = r.findings.length;
+    return { ok: true, text: `Reported ${n} ${n === 1 ? "finding" : "findings"}: the user sees them in the session you reviewed. You're done: end your turn with a short summary.` };
+  }
+
+  /** A review session's turn ended: its first one without review_report reports from the reply's JSON, or fails. */
+  private reviewTurnOver() {
+    const from = this.reviewTurnFrom;
+    this.reviewTurnFrom = this.t.messages.length;
+    if (!this.t.state.reviewOf || this.reviewSettled || this.t.state.handoffTo) return;
+    if (this.userStopped) return this.reportReview({ status: "failed", error: "Stopped before it reported." });
+    let reply = "";
+    for (const m of this.t.messages.slice(from)) if (m.role === "assistant") for (const p of m.parts) if (p.type === "text") reply += `${p.text}\n`;
+    const r = reportFromReply(reply);
+    if (r) return this.reportReview({ status: "done", findings: r.findings, summary: r.summary, error: undefined });
+    this.reportReview({
+      status: "failed",
+      error: this.turnTrouble ? "The reviewer ran into an error. Open the review session to see it." : "The reviewer finished without reporting findings. Open the review session to read what it said.",
+    });
+  }
+
   // ---- housekeeping ----
 
   // ---- fork and /compact (runner/src/fork.ts, handoffRun.ts runCompact) ----
@@ -2551,7 +2702,15 @@ export abstract class LiveSession {
     // Closing the process would also end its subagents, shells and armed wakeups.
     const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0;
     if (!idle()) return;
-    this.idleTimer = setTimeout(() => idle() && this.close(), IDLE_CLOSE_MS);
+    // A review still under way keeps it open, so its result lands on the card live and pushes (a
+    // review whose session went away without reporting holds it at most REVIEW_KEEP_OPEN_MS).
+    const reviewing = () => this.reviews.some((r) => (r.status === "starting" || r.status === "running") && Date.now() - r.updatedAt < REVIEW_KEEP_OPEN_MS);
+    const fire = () => {
+      if (!idle()) return;
+      if (reviewing()) this.idleTimer = setTimeout(fire, IDLE_CLOSE_MS);
+      else this.close();
+    };
+    this.idleTimer = setTimeout(fire, IDLE_CLOSE_MS);
   }
 
   close() {

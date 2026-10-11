@@ -66,6 +66,9 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   const mode = from.t.state.permissionMode;
   const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
   next.t.state.guard = from.guardMode;
+  // A review session stays one (before start: the launch narrows the harness's tools), never Dangerously skip.
+  next.inheritReview(from);
+  if (next.t.state.reviewOf) next.t.state.guard = "auto";
   try {
     await next.start();
   } finally {
@@ -81,7 +84,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     profile: from.t.state.profile,
     preferEarlier: from.t.state.preferEarlier,
     handoffFrom: { sessionId: from.id, reason },
-    guard: from.guardMode,
+    guard: next.t.state.reviewOf ? "auto" : from.guardMode,
+    ...(next.t.state.reviewOf ? { reviewOf: next.t.state.reviewOf } : {}),
   });
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   const goal = from.goalState;
@@ -96,6 +100,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     next.adoptSchedules(from.schedules);
     from.handOverSchedules();
   }
+  // Review cards come along (findings can be sent to the new agent); a running review's result reaches both.
+  if (from.reviews.length) next.adoptReviews(from.reviews);
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   const left = [
     cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",

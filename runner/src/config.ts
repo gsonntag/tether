@@ -79,6 +79,10 @@ export interface SessionPrefs {
   plan?: import("../../web/src/shared/protocol").SessionPlan;
   /** Tether's loops and schedules (/loop, /schedule, runner/src/schedule.ts) */
   schedules?: import("../../web/src/shared/protocol").SessionSchedule[];
+  /** reviews of this session's changes (/review, runner/src/review.ts) */
+  reviews?: import("../../web/src/shared/protocol").SessionReview[];
+  /** this session is a read-only review of another one */
+  reviewOf?: { sessionId: string; reviewId: string };
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

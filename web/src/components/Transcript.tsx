@@ -18,6 +18,7 @@ import {
   ArrowUpLeftIcon,
   ArrowUturnLeftIcon,
   ChevronRightIcon,
+  ClipboardDocumentCheckIcon,
   Cog6ToothIcon,
   EnvelopeIcon,
   LightBulbIcon,
@@ -34,6 +35,7 @@ import { act, selectSession, useStore } from "../store";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
+import { REVIEW_PREFIX } from "../shared/review";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
 import { MsgTime } from "./MsgTime";
@@ -245,13 +247,17 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
       .flatMap((p) => (p.type === "text" ? [p.text] : []))
       .join("\n")
       .trimEnd();
-    if (text.startsWith(BRIEF_PREFIX))
+    if (text.startsWith(BRIEF_PREFIX) || text.startsWith(REVIEW_PREFIX))
       return (
         <Card width="100%" padding={3} variant="transparent">
           <Collapsible
             defaultIsOpen={false}
             chevronPosition="start"
-            trigger={<Text type="supporting">Brief given to this agent (conversation + repository state)</Text>}
+            trigger={
+              <Text type="supporting">
+                {text.startsWith(REVIEW_PREFIX) ? "What this reviewer was asked (instructions + the session's changes)" : "Brief given to this agent (conversation + repository state)"}
+              </Text>
+            }
           >
             <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
           </Collapsible>
@@ -645,9 +651,19 @@ function Tool({ t }: { t: ToolPart }) {
 
 type Link = { sessionId: string; reason: string };
 
-export function LinkBanner({ from, to, forked }: { from?: Link; to?: Link; forked?: Link }) {
+export function LinkBanner({ from, to, forked, reviewOf }: { from?: Link; to?: Link; forked?: Link; reviewOf?: { sessionId: string } }) {
   return (
     <>
+      {reviewOf && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={ClipboardDocumentCheckIcon} color="secondary" size="sm" />
+            <Text type="supporting">Read-only review of</Text>
+            <Button label={`${reviewOf.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(reviewOf.sessionId)} />
+            <Text type="supporting">Its findings show there.</Text>
+          </HStack>
+        </Card>
+      )}
       {forked && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">
