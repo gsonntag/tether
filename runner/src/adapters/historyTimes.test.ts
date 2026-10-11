@@ -11,7 +11,7 @@ const { entryMeta, historyMessages } = await import("./claude");
 const { historyMsgs } = await import("./codex");
 const { convertAll, piMeta } = await import("./pi");
 const { transcriptToMessages } = await import("./agy");
-const { lastLineTime, claudePick, codexPick, agyPick } = await import("./lastActivity");
+const { lastLineTime, claudePick, codexPick, agyPick, TAIL_BUDGET } = await import("./lastActivity");
 
 const T = Date.parse("2026-10-09T15:42:05.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -143,6 +143,32 @@ describe("lastLineTime", () => {
     writeFileSync(f, JSON.stringify({ type: "user", timestamp: iso(T + 7) }) + "\n");
     utimesSync(f, new Date(T), new Date(T + 1_000_000));
     expect(await lastLineTime(f, claudePick)).toBe(T + 7);
+  });
+
+  test("Claude Code's own meta entries (command caveats, skill bodies) aren't messages", async () => {
+    const f = join(dir, "meta.jsonl");
+    writeFileSync(f, [JSON.stringify({ type: "assistant", timestamp: iso(T) }), JSON.stringify({ type: "user", isMeta: true, timestamp: iso(T + 9_000) }), ""].join("\n"));
+    expect(await lastLineTime(f, claudePick)).toBe(T);
+  });
+
+  test("reads at most TAIL_BUDGET from the end; a message line split across chunks is whole", async () => {
+    // A message line straddling the first chunk boundary, behind a long tail of non-message lines.
+    const f = join(dir, "straddle.jsonl");
+    const big = JSON.stringify({ type: "assistant", timestamp: iso(T + 1), message: { content: "é".repeat(50_000) } });
+    const tail = Array.from({ length: 400 }, () => JSON.stringify({ type: "progress", data: "y".repeat(100) })).join("\n");
+    writeFileSync(f, [JSON.stringify({ type: "user", timestamp: iso(T) }), big, tail, ""].join("\n"));
+    expect(await lastLineTime(f, claudePick)).toBe(T + 1);
+    // the only message is further back than the budget: undefined (the caller falls back to the mtime)
+    const g = join(dir, "far.jsonl");
+    const noise = JSON.stringify({ type: "progress", data: "z".repeat(1000) });
+    writeFileSync(g, [JSON.stringify({ type: "user", timestamp: iso(T) }), ...Array.from({ length: Math.ceil(TAIL_BUDGET / 1000) + 10 }, () => noise), ""].join("\n"));
+    expect(await lastLineTime(g, claudePick)).toBeUndefined();
+  });
+
+  test("the first line of a file read whole counts", async () => {
+    const f = join(dir, "one.jsonl");
+    writeFileSync(f, JSON.stringify({ type: "user", timestamp: iso(T + 3) }));
+    expect(await lastLineTime(f, claudePick)).toBe(T + 3);
   });
 
   test("Codex rollout and Antigravity transcript lines; none found or no file: undefined", async () => {
