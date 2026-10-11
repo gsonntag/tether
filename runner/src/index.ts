@@ -629,6 +629,19 @@ const ops: Handlers = {
     return (await getLive(sessionId)).diff(checkpoint);
   },
 
+  async checkPaths({ sessionId, paths }) {
+    if (!Array.isArray(paths)) throw new Error("paths must be a list");
+    return (await getLive(sessionId)).checkPaths(paths);
+  },
+
+  async fileDiff({ sessionId, path, checkpoint }) {
+    return (await getLive(sessionId)).fileDiff(String(path ?? ""), checkpoint);
+  },
+
+  async readFile({ sessionId, path, maxBytes }) {
+    return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes);
+  },
+
   async approveBlocked({ sessionId, toolId }) {
     await (await getLive(sessionId)).approveBlocked(toolId);
     return {};

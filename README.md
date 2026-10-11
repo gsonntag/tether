@@ -157,6 +157,17 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Staged, unstaged and non-ignored untracked files all count. The runner computes the diffs
     with git in the project folder. Binary files get a note instead of a diff, and very large
     files or diffs are cut short.
+- **File references.** Paths in the agent's replies, plans and tool cards (`web/src/App.tsx`,
+  `src/a.ts:42`, `src/a.ts:42-50`, `src/a.ts#L42`, absolute paths in the project, links to local
+  files, `src/foo.ts:12:3` in shell output) open that file in a panel beside the chat (full
+  screen on phones; Esc closes it).
+  - **Diff** (first when the session changed the file): its whole-session diff, or one turn's,
+    scrolled to the referenced line. **File**: the file as it is now, up to 1 MB and 20,000 lines;
+    binary files get a note. **Open in Changes** shows it among all the changes.
+  - Only real files link: the runner checks each candidate (`checkPaths`), so "and/or", URLs or
+    version numbers stay text. It reads only inside the project: paths are resolved against the
+    project folder, symlinks must stay inside it, and nothing under `.git` is served
+    (`runner/src/files.ts`).
 
 ## Guard: autonomous but safe
 

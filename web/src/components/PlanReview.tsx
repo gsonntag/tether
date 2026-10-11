@@ -20,6 +20,7 @@ import { create } from "zustand";
 import { formatPlanFeedback, type PlanComment } from "../shared/plan";
 import type { Part, UiRequest } from "../shared/protocol";
 import { act, NARROW_QUERY, useStore } from "../store";
+import { FileRefScope, fileRefMarkdown } from "./FileRefs";
 
 type PlanPart = Extract<Part, { type: "plan" }>;
 /** A comment in the browser: `anchor` is the raw text its offset points at, to find it again. */
@@ -147,7 +148,7 @@ export function PlanCard({ part }: { part: PlanPart }) {
           <Button label="Open plan" size="sm" variant={request ? "primary" : "secondary"} onClick={() => openPlan(part.id)} />
         </HStack>
         <VStack isScrollable style={previewBox}>
-          <Markdown density="compact" contentWidth="100%">
+          <Markdown density="compact" contentWidth="100%" {...fileRefMarkdown}>
             {part.text || "_(empty plan)_"}
           </Markdown>
         </VStack>
@@ -446,9 +447,16 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     );
   };
 
+  // A file reference in the plan opens the file panel, which sits under this dialog: close it first
+  // (the draft comments are kept).
+  const refScope = useMemo(() => ({ sessionId, beforeOpen: closePlan }), [sessionId]);
   const doc = (
     <VStack ref={docRef} style={docPane} onMouseUp={(e) => pick(e.target)}>
-      <Markdown contentWidth="100%">{part.text || "_(empty plan)_"}</Markdown>
+      <FileRefScope value={refScope}>
+        <Markdown contentWidth="100%" {...fileRefMarkdown}>
+          {part.text || "_(empty plan)_"}
+        </Markdown>
+      </FileRefScope>
     </VStack>
   );
 

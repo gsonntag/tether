@@ -24,7 +24,7 @@ async function gitInput(cwd: string, args: string[], input: string): Promise<str
   return out.trim();
 }
 
-async function root(cwd: string): Promise<string | undefined> {
+export async function root(cwd: string): Promise<string | undefined> {
   try {
     return await git(cwd, ["rev-parse", "--show-toplevel"]);
   } catch {
@@ -63,9 +63,9 @@ export const DIFF_LIMITS = { files: 300, fileBytes: 64_000, fileLines: 4_000, to
 
 type Counts = { additions: number; deletions: number; binary: boolean };
 
-/** Per-file line counts between two trees; `binary` when git can't count lines. */
-async function numstat(top: string, from: string, to: string): Promise<Map<string, Counts>> {
-  const out = await git(top, ["diff", "--numstat", "-z", "--no-renames", from, to, "--"]);
+/** Per-file line counts between two trees; `binary` when git can't count lines. `paths` limits it to those (repo-relative) files. */
+async function numstat(top: string, from: string, to: string, paths: string[] = []): Promise<Map<string, Counts>> {
+  const out = await git(top, ["--literal-pathspecs", "diff", "--numstat", "-z", "--no-renames", from, to, "--", ...paths]);
   const map = new Map<string, Counts>();
   for (const rec of out.split("\0")) {
     const m = rec.match(/^(-|\d+)\t(-|\d+)\t([\s\S]+)$/);
@@ -76,42 +76,50 @@ async function numstat(top: string, from: string, to: string): Promise<Map<strin
   return map;
 }
 
+/** The commit a diff starts from: `from` when it still exists, else HEAD, else the empty tree. */
+async function resolveBase(top: string, from?: string): Promise<{ base: string; kind: SessionDiff["base"] }> {
+  if (from && (await isCommit(top, from))) return { base: from, kind: "session" };
+  const head = await git(top, ["rev-parse", "--verify", "-q", "HEAD"]).catch(() => "");
+  if (head) return { base: head, kind: "HEAD" };
+  return { base: await gitInput(top, ["mktree"], ""), kind: "empty" };
+}
+
+export interface DiffOptions {
+  /** only these files (paths relative to the repository root, taken literally) */
+  paths?: string[];
+  /** other caps, e.g. looser ones for a single file */
+  limits?: Partial<typeof DIFF_LIMITS>;
+}
+
 /**
  * Changes between two snapshots of a repository. `from` is a checkpoint (or any commit); when it
  * is missing or gone, HEAD (or the empty tree) stands in. `to` is a later checkpoint, or the
  * working tree as it is now when left out. The working tree is read through a temporary index,
  * so this never changes the user's real index, and untracked non-ignored files count as added.
  */
-export async function computeDiff(cwd: string, from?: string, to?: string): Promise<SessionDiff> {
+export async function computeDiff(cwd: string, from?: string, to?: string, opts: DiffOptions = {}): Promise<SessionDiff> {
   const top = await root(cwd);
   if (!top) throw new Error("This project is not a Git repository.");
+  const limits = { ...DIFF_LIMITS, ...opts.limits };
+  const paths = opts.paths ?? [];
 
-  let base = "";
-  let kind: SessionDiff["base"] = "empty";
-  if (from && (await isCommit(top, from))) {
-    base = from;
-    kind = "session";
-  } else {
-    base = await git(top, ["rev-parse", "--verify", "-q", "HEAD"]).catch(() => "");
-    if (base) kind = "HEAD";
-    else base = await gitInput(top, ["mktree"], "");
-  }
+  const { base, kind } = await resolveBase(top, from);
   const target = to && (await isCommit(top, to)) ? to : await snapshotTree(top);
 
-  const names = (await git(top, ["diff", "--name-status", "-z", "--no-renames", base, target, "--"])).split("\0").filter(Boolean);
+  const names = (await git(top, ["--literal-pathspecs", "diff", "--name-status", "-z", "--no-renames", base, target, "--", ...paths])).split("\0").filter(Boolean);
   const entries: { code: string; path: string }[] = [];
   for (let i = 0; i + 1 < names.length; i += 2) entries.push({ code: names[i]!, path: names[i + 1]! });
-  const counts = await numstat(top, base, target);
+  const counts = await numstat(top, base, target, paths);
 
   const files: SessionFileDiff[] = [];
-  let remaining = DIFF_LIMITS.totalBytes;
+  let remaining = limits.totalBytes;
   let additions = 0;
   let deletions = 0;
   for (const entry of entries) {
     const c = counts.get(entry.path) ?? { additions: 0, deletions: 0, binary: false };
     additions += c.additions;
     deletions += c.deletions;
-    if (files.length >= DIFF_LIMITS.files) continue;
+    if (files.length >= limits.files) continue;
     const status = entry.code === "A" ? "added" : entry.code === "D" ? "deleted" : entry.code === "T" ? "typechanged" : entry.code === "M" ? "modified" : "unknown";
     const file: SessionFileDiff = { path: entry.path, status, additions: c.additions, deletions: c.deletions, patch: "" };
     files.push(file);
@@ -119,7 +127,7 @@ export async function computeDiff(cwd: string, from?: string, to?: string): Prom
       file.binary = true;
       continue;
     }
-    if (c.additions + c.deletions > DIFF_LIMITS.fileLines) {
+    if (c.additions + c.deletions > limits.fileLines) {
       file.skipped = `${c.additions + c.deletions} changed lines, too many to show`;
       continue;
     }
@@ -131,7 +139,7 @@ export async function computeDiff(cwd: string, from?: string, to?: string): Prom
     // Hunks only: the header lines repeat what the file entry already says.
     const at = full.search(/^@@/m);
     let patch = at < 0 ? "" : full.slice(at);
-    const cap = Math.min(DIFF_LIMITS.fileBytes, remaining);
+    const cap = Math.min(limits.fileBytes, remaining);
     if (patch.length > cap) {
       patch = patch.slice(0, patch.lastIndexOf("\n", cap) + 1 || cap);
       file.truncated = true;
@@ -147,6 +155,42 @@ export async function computeDiff(cwd: string, from?: string, to?: string): Prom
     deletions,
     truncated: files.length < entries.length || files.some((f) => f.truncated || f.skipped),
   };
+}
+
+/**
+ * The files (repository-relative) that differ between `from` (as in computeDiff) and the working
+ * tree now, with the repository's top-level directory. Undefined outside a git repository.
+ */
+export async function changedPaths(cwd: string, from?: string): Promise<{ top: string; paths: Set<string> } | undefined> {
+  const top = await root(cwd);
+  if (!top) return undefined;
+  const { base } = await resolveBase(top, from);
+  const tree = await snapshotTree(top);
+  const out = await git(top, ["diff", "--name-only", "-z", "--no-renames", base, tree, "--"]);
+  return { top, paths: new Set(out.split("\0").filter(Boolean)) };
+}
+
+/**
+ * Line counts of one file (repository-relative) for each turn: from `shas[i]` to `shas[i + 1]`,
+ * the last one to the working tree now. Undefined where a checkpoint is gone; zero where the file
+ * didn't change.
+ */
+export async function pathTurnStats(cwd: string, shas: string[], path: string): Promise<(Counts | undefined)[]> {
+  const top = await root(cwd);
+  if (!top || !shas.length) return shas.map(() => undefined);
+  const tree = await snapshotTree(top);
+  const zero: Counts = { additions: 0, deletions: 0, binary: false };
+  return Promise.all(
+    shas.map(async (from, i) => {
+      const to = shas[i + 1] ?? tree;
+      if (from === to) return zero;
+      try {
+        return (await numstat(top, from, to, [path])).get(path) ?? zero;
+      } catch {
+        return undefined;
+      }
+    }),
+  );
 }
 
 /** Files and lines changed between two commits or trees. */

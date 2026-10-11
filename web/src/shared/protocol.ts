@@ -127,6 +127,54 @@ export interface SessionDiff {
   truncated: boolean;
 }
 
+/** A file reference in the transcript, checked by the runner (checkPaths). */
+export interface PathCheck {
+  /** relative to the project directory, normalized */
+  path: string;
+  /** a regular file there now */
+  exists: boolean;
+  /** differs from the session's first checkpoint (deleted files too) */
+  changed: boolean;
+}
+
+/** How one turn changed one file (fileDiff). */
+export interface FileTurnStat {
+  checkpoint: string;
+  /** 0-based position among the session's kept checkpoints ("Turn index + 1") */
+  index: number;
+  label: string;
+  ts: number;
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}
+
+/** One file's changes, for the file panel. */
+export interface FileDiffResult {
+  /** relative to the project directory */
+  path: string;
+  exists: boolean;
+  base: SessionDiff["base"];
+  /** absent: the file didn't change in that scope */
+  file?: SessionFileDiff;
+  /** the turns that changed this file, oldest first */
+  turns: FileTurnStat[];
+}
+
+/** A project file as it is now (readFile). */
+export interface FileContents {
+  path: string;
+  size: number;
+  /** UTF-8 text; absent for binary files */
+  content?: string;
+  binary?: boolean;
+  /** cut short: past the byte cap, or past the line cap */
+  truncated?: "bytes" | "lines";
+}
+
+/** Caps for the file panel's File tab. */
+export const FILE_VIEW_LIMITS = { bytes: 1024 * 1024, lines: 20_000 };
+
 export type Role = "user" | "assistant" | "notice";
 
 export interface Msg {
@@ -709,6 +757,15 @@ export interface Ops {
   setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
+  /**
+   * File references from the transcript (relative to the project or absolute): those that are a
+   * file in the project or changed in this session, keyed by the path as asked. Others are left out.
+   */
+  checkPaths: { args: { sessionId: string; paths: string[] }; result: Record<string, PathCheck> };
+  /** one file's changes over the whole session, or with `checkpoint` in the turn that started there */
+  fileDiff: { args: { sessionId: string; path: string; checkpoint?: string }; result: FileDiffResult };
+  /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only) */
+  readFile: { args: { sessionId: string; path: string; maxBytes?: number }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };

@@ -18,6 +18,7 @@ import { APPROVING_MODES } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
+import { checkPaths, fileDiff, readProjectFile } from "./files";
 import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
 import { mergeContext, switchModel } from "./contextWindow";
@@ -1171,6 +1172,21 @@ export abstract class LiveSession {
 
   get diffBase() {
     return this.diffBaseSha;
+  }
+
+  // ---- file references (runner/src/files.ts): read-only, inside the project ----
+
+  checkPaths(paths: string[]) {
+    return checkPaths(this.projectPath, paths, this.diffBaseSha ?? this.t.state.checkpoints?.[0]?.sha);
+  }
+
+  fileDiff(path: string, checkpointId?: string) {
+    const list = this.t.state.checkpoints ?? [];
+    return fileDiff(this.projectPath, path, this.diffBaseSha ?? list[0]?.sha, list, checkpointId);
+  }
+
+  readFile(path: string, maxBytes?: number) {
+    return readProjectFile(this.projectPath, path, maxBytes);
   }
 
   inheritDiffBase(sha?: string) {

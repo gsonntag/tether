@@ -36,6 +36,8 @@ import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
 import { ActivityButton, ActivityPanel } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
+import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
+import { FileRefScope, refreshFileChecks } from "./FileRefs";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
@@ -100,6 +102,44 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
+  // File references in the transcript belong to this session; they're checked again when a turn ends.
+  const refScope = useMemo(() => ({ sessionId }), [sessionId]);
+  const ost = o?.state;
+  const filesStamp = `${ost?.diffStat?.additions}/${ost?.diffStat?.deletions}/${ost?.diffStat?.files}/${ost?.checkpoints?.length}/${ost?.status === "idle"}`;
+  useEffect(() => {
+    refreshFileChecks(sessionId);
+  }, [sessionId, filesStamp]);
+  const fileTarget = useFileTarget(sessionId);
+
+  // The file panel narrows the chat and the transcript reflows: keep what was on screen in place
+  // (the clicked reference, else the line at the top), or the bottom when following the end.
+  const loaded = !!o && !o.loading && !!o.session;
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let anchor: { node: Element; top: number } | undefined;
+    const capture = () => {
+      const r = el.getBoundingClientRect();
+      const node = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(48, r.height / 2));
+      anchor = node && node !== el && el.contains(node) ? { node, top: node.getBoundingClientRect().top } : undefined;
+    };
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      const a = takeScrollAnchor() ?? anchor;      if (stick.current) el.scrollTop = el.scrollHeight;
+      else if (a?.node.isConnected) el.scrollTop += a.node.getBoundingClientRect().top - a.top;
+      capture();
+    });
+    capture();
+    el.addEventListener("scroll", capture, { passive: true });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", capture);
+    };
+  }, [loaded, sessionId]);
+
   // Files dragged anywhere onto the session attach to the message being written. (Reordering
   // queued messages is a drag too, but carries no files.)
   const [dropping, setDropping] = useState(false);
@@ -155,12 +195,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
           <LinkBanner from={st.handoffFrom} />
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
-          <Transcript
-            messages={o.messages}
-            running={st.status === "running"}
-            amendable={st.amendable}
-            after={turnChangeMarkers(sessionId, o.messages, st)}
-          />
+          <FileRefScope value={refScope}>
+            <Transcript
+              messages={o.messages}
+              running={st.status === "running"}
+              amendable={st.amendable}
+              after={turnChangeMarkers(sessionId, o.messages, st)}
+            />
+          </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
@@ -171,7 +213,12 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   );
   return (
     <>
-      <Layout padding={0} content={chat} end={<ActivityPanel sessionId={sessionId} state={st} harness={o.session.harness} />} />
+      <Layout
+        padding={0}
+        content={chat}
+        end={fileTarget && !narrow ? <FilePanel target={fileTarget} state={st} /> : <ActivityPanel sessionId={sessionId} state={st} harness={o.session.harness} />}
+      />
+      {narrow && <FileSheet target={fileTarget} state={st} />}
       <ChangesDialog sessionId={sessionId} state={st} />
     </>
   );

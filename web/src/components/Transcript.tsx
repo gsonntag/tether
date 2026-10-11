@@ -30,6 +30,7 @@ import { memo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { act, selectSession } from "../store";
 import { AttachmentChips } from "./Attachments";
+import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
 import { PlanCard } from "./PlanReview";
 
 type ToolPart = Extract<Part, { type: "tool" }>;
@@ -38,6 +39,8 @@ type FilePart = Extract<Part, { type: "file" }>;
 type ImagePart = Extract<Part, { type: "image" }>;
 
 const BRIEF_PREFIX = "You are taking over an in-progress coding session";
+/** While text streams in, half-typed paths ("src/ma") would be checked one prefix at a time: link once it's done. */
+const noRefs = {};
 
 // Static style objects (tokens only) so memoized rows don't get fresh props each render.
 const listStyle: CSSProperties = { padding: "var(--spacing-0)" };
@@ -282,7 +285,7 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
             case "text":
               return p.text ? (
                 <VStack key={i} gap={1}>
-                  <Markdown density="compact" contentWidth="100%" isStreaming={!!tail}>
+                  <Markdown density="compact" contentWidth="100%" isStreaming={!!tail} {...(tail ? noRefs : fileRefMarkdown)}>
                     {p.text}
                   </Markdown>
                   {tail && <StreamCursor />}
@@ -326,7 +329,7 @@ function EventCard({ title, icon, text, agent, collapsed }: { title: string; ico
         }
       >
         <VStack isScrollable style={eventBody}>
-          <Markdown density="compact" contentWidth="100%">
+          <Markdown density="compact" contentWidth="100%" {...fileRefMarkdown}>
             {text}
           </Markdown>
         </VStack>
@@ -456,9 +459,14 @@ function Tool({ t }: { t: ToolPart }) {
   const [open, setOpen] = useState(isEdit || (isShell && t.status === "running") || isTodo);
 
   let arg = "";
+  /** the file this tool read or wrote, for the open-file button */
+  let filePath: string | undefined;
   if (isShell) arg = input.command ?? input.CommandLine ?? input.cmd ?? "";
-  else if (input.file_path || input.filePath || input.path || input.AbsolutePath || input.TargetFile)
-    arg = relPath(input.file_path ?? input.filePath ?? input.path ?? input.AbsolutePath ?? input.TargetFile);
+  else if (input.file_path || input.filePath || input.path || input.AbsolutePath || input.TargetFile) {
+    const p = input.file_path ?? input.filePath ?? input.path ?? input.AbsolutePath ?? input.TargetFile;
+    arg = relPath(p);
+    if (typeof p === "string" && !input.pattern) filePath = p;
+  }
   else if (input.pattern) arg = `${input.pattern}${input.path ? "  in " + relPath(input.path) : ""}`;
   else if (input.url) arg = input.url;
   else if (input.description) arg = input.description;
@@ -533,34 +541,37 @@ function Tool({ t }: { t: ToolPart }) {
   return (
     <Card width="100%" padding={0} variant={blocked ? "red" : "default"}>
       <VStack paddingInline={3} paddingBlock={1} gap={1}>
-        <Collapsible isOpen={open} onOpenChange={setOpen} trigger={header}>
-          {open && (
-            <VStack gap={2} paddingBlockEnd={1}>
-              {pairs.length > 0 && <Diff pairs={pairs} />}
-              {isTodo && (
-                <VStack gap={0.5}>
-                  {input.todos.map((td: any, i: number) => {
-                    const done = td.status === "completed";
-                    return (
-                      <HStack key={i} gap={2}>
-                        <Text color={done ? "secondary" : undefined}>{done ? "☑" : td.status === "in_progress" ? "◐" : "☐"}</Text>
-                        <Text color={done ? "secondary" : undefined} hasStrikethrough={done}>
-                          {td.content ?? td.activeForm}
-                        </Text>
-                      </HStack>
-                    );
-                  })}
+        <HStack gap={1} vAlign="start">
+          <StackItem size="fill" style={minZero}>
+            <Collapsible isOpen={open} onOpenChange={setOpen} trigger={header}>
+              {open && (
+                <VStack gap={2} paddingBlockEnd={1}>
+                  {pairs.length > 0 && <Diff pairs={pairs} />}
+                  {isTodo && (
+                    <VStack gap={0.5}>
+                      {input.todos.map((td: any, i: number) => {
+                        const done = td.status === "completed";
+                        return (
+                          <HStack key={i} gap={2}>
+                            <Text color={done ? "secondary" : undefined}>{done ? "☑" : td.status === "in_progress" ? "◐" : "☐"}</Text>
+                            <Text color={done ? "secondary" : undefined} hasStrikethrough={done}>
+                              {td.content ?? td.activeForm}
+                            </Text>
+                          </HStack>
+                        );
+                      })}
+                    </VStack>
+                  )}
+                  {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
+                    <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
+                  )}
+                  {t.output && (!pairs.length || t.status === "error") && <ToolOutput text={t.output} />}
                 </VStack>
               )}
-              {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
-                <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
-              )}
-              {t.output && (!pairs.length || t.status === "error") && (
-                <CodeBlock code={t.output.length > 20000 ? t.output.slice(0, 20000) + "\n…" : t.output} isWrapped width="100%" size="sm" maxHeight="50vh" />
-              )}
-            </VStack>
-          )}
-        </Collapsible>
+            </Collapsible>
+          </StackItem>
+          {filePath && <FileOpenButton path={filePath} line={Number(input.offset ?? input.line ?? input.StartLine) || undefined} />}
+        </HStack>
         {blocked && (
           <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
             <StackItem size="fill" style={minZero}>
