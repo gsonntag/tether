@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasUnreadNotice, isBusy, showInSidebar, sidebarDaysLabel, type RecentContext } from "./recentSessions";
+import { hasUnreadNotice, isBusy, projectIsQuiet, showInSidebar, sidebarDaysLabel, type RecentContext } from "./recentSessions";
 import type { AgentNotice, SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -90,4 +90,38 @@ describe("showInSidebar", () => {
 
 test("window labels", () => {
   expect([1, 3, 7, 30, 0].map(sidebarDaysLabel)).toEqual(["1 day", "3 days", "7 days", "30 days", "All"]);
+});
+
+describe("projectIsQuiet", () => {
+  const project = (updatedAgo: number, extra: Partial<{ sessionCount: number; live: SessionSummary[] }> = {}) => ({
+    path: "/p",
+    updatedAt: NOW - updatedAgo,
+    sessionCount: 3,
+    live: [] as SessionSummary[],
+    ...extra,
+  });
+
+  test("an open project goes by its fetched list", () => {
+    expect(projectIsQuiet(project(0), [session("a", 10 * DAY)], true, ctx())).toBe(true);
+    expect(projectIsQuiet(project(10 * DAY), [session("a", DAY)], true, ctx())).toBe(false);
+  });
+
+  test("a closed project with a running session is never dimmed", () => {
+    const run = session("a", 30 * DAY, { status: "running", live: true });
+    expect(projectIsQuiet(project(30 * DAY, { live: [run] }), undefined, false, ctx())).toBe(false);
+    expect(projectIsQuiet(project(30 * DAY), [run], false, ctx())).toBe(false);
+  });
+
+  test("a closed project that knows only an old session still goes by its latest activity", () => {
+    // e.g. an old session opened from search: the project's other sessions may be recent.
+    expect(projectIsQuiet(project(DAY), [session("old", 30 * DAY)], false, ctx())).toBe(false);
+    expect(projectIsQuiet(project(30 * DAY), [session("old", 30 * DAY)], false, ctx())).toBe(true);
+  });
+
+  test("closed: latest activity, unread notices, All", () => {
+    expect(projectIsQuiet(project(10 * DAY), undefined, false, ctx())).toBe(true);
+    expect(projectIsQuiet(project(10 * DAY), undefined, false, ctx({ notices: [notice("x", NOW)] }))).toBe(false);
+    expect(projectIsQuiet(project(400 * DAY), undefined, false, ctx({ days: 0 }))).toBe(false);
+    expect(projectIsQuiet(project(400 * DAY, { sessionCount: 0 }), undefined, false, ctx({ days: 0 }))).toBe(true);
+  });
 });

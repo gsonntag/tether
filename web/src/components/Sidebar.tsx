@@ -32,7 +32,7 @@ import { byRecent, type ProjectInfo, type SessionSearchResult, type SessionSumma
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
-import { hasUnreadNotice, showInSidebar } from "../recentSessions";
+import { projectIsQuiet, showInSidebar } from "../recentSessions";
 import { runningCount } from "../dashboard";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -370,13 +370,13 @@ function NeedsYouSection() {
 }
 
 // One minute clock for every project list, so sessions drop out of the window without a reload.
+// The snapshot reads the clock itself: a list mounted after a long while (the phone sidebar opened
+// again) must not start from the minute the last one saw.
 const minuteListeners = new Set<() => void>();
-let minute = Math.floor(Date.now() / 60_000);
 let minuteTimer: ReturnType<typeof setInterval> | undefined;
 function subscribeMinute(l: () => void) {
   minuteListeners.add(l);
   minuteTimer ??= setInterval(() => {
-    minute = Math.floor(Date.now() / 60_000);
     for (const f of minuteListeners) f();
   }, 60_000);
   return () => {
@@ -387,9 +387,7 @@ function subscribeMinute(l: () => void) {
     }
   };
 }
-const useMinute = () => useSyncExternalStore(subscribeMinute, () => minute);
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+const useMinute = () => useSyncExternalStore(subscribeMinute, () => Math.floor(Date.now() / 60_000));
 
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
@@ -413,13 +411,8 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   // a message makes it recent again.
   const ctx = { now, days, notices, noticesSeen, noticesRead, selected };
   const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byRecent);
-  // Nothing to list: dimmed, still there to start a session in. Unloaded, the project's own latest
-  // activity and unread notices stand in for its sessions.
-  const quiet =
-    !visible.length &&
-    (loaded
-      ? true
-      : (days ? p.updatedAt < now - days * DAY_MS : !p.sessionCount) && !notices.some((n) => n.projectPath === p.path && hasUnreadNotice({ id: n.sessionId }, ctx)));
+  // Nothing to list: dimmed, still there to start a session in.
+  const quiet = projectIsQuiet(p, loaded, open, ctx);
 
   let rows: SessionSummary[] = [];
   let more: React.ReactNode = null;
