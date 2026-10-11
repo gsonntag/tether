@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -32,6 +32,7 @@ import { byRecent, type ProjectInfo, type SessionSearchResult, type SessionSumma
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
+import { hasUnreadNotice, showInSidebar } from "../recentSessions";
 import { runningCount } from "../dashboard";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -368,8 +369,36 @@ function NeedsYouSection() {
   );
 }
 
+// One minute clock for every project list, so sessions drop out of the window without a reload.
+const minuteListeners = new Set<() => void>();
+let minute = Math.floor(Date.now() / 60_000);
+let minuteTimer: ReturnType<typeof setInterval> | undefined;
+function subscribeMinute(l: () => void) {
+  minuteListeners.add(l);
+  minuteTimer ??= setInterval(() => {
+    minute = Math.floor(Date.now() / 60_000);
+    for (const f of minuteListeners) f();
+  }, 60_000);
+  return () => {
+    minuteListeners.delete(l);
+    if (!minuteListeners.size) {
+      clearInterval(minuteTimer);
+      minuteTimer = undefined;
+    }
+  };
+}
+const useMinute = () => useSyncExternalStore(subscribeMinute, () => minute);
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
+  const days = useStore((s) => s.sidebarDays);
+  const notices = useStore((s) => s.notices);
+  const noticesSeen = useStore((s) => s.noticesSeen);
+  const noticesRead = useStore((s) => s.noticesRead);
+  const selected = useStore((s) => s.selected);
+  const now = useMinute() * 60_000;
   const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
   const [all, setAll] = useState(false);
   const archiveProject = async (archived: boolean) => {
@@ -379,21 +408,33 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
     useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
   };
 
+  // Only recent sessions (Settings → "Show sessions from the last"), plus any that are busy, have an
+  // unread notice or are open. Older and done ones aren't listed; search finds them, and sending one
+  // a message makes it recent again.
+  const ctx = { now, days, notices, noticesSeen, noticesRead, selected };
+  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byRecent);
+  // Nothing to list: dimmed, still there to start a session in. Unloaded, the project's own latest
+  // activity and unread notices stand in for its sessions.
+  const quiet =
+    !visible.length &&
+    (loaded
+      ? true
+      : (days ? p.updatedAt < now - days * DAY_MS : !p.sessionCount) && !notices.some((n) => n.projectPath === p.path && hasUnreadNotice({ id: n.sessionId }, ctx)));
+
   let rows: SessionSummary[] = [];
   let more: React.ReactNode = null;
-  if (!open) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
-  else if (loaded) {
-    // Most recent message first, live or not. Sessions marked done never show here; search finds
-    // them, and sending one a message brings it back.
-    const sorted = loaded.filter((s) => !s.archived).sort(byRecent);
-    rows = all ? sorted : sorted.slice(0, SHOW);
-    more = sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />;
-    if (!sorted.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
-  } else more = <SideNavItem size="sm" label="Loading…" isDisabled />;
+  if (!open || !loaded) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
+  else {
+    // Most recent message first, live or not.
+    rows = all ? visible : visible.slice(0, SHOW);
+    more = visible.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${visible.length}`} onClick={() => setAll(!all)} />;
+    if (!visible.length) more = <SideNavItem size="sm" label={loaded.some((s) => !s.archived) ? "No recent sessions" : "No sessions"} isDisabled />;
+  }
 
   return (
     <SideNavItem
       label={p.name}
+      style={quiet ? { color: "var(--color-text-secondary)" } : undefined}
       collapsible={{ isCollapsed: !open, onCollapsedChange: (collapsed) => toggleProject(p.path, !collapsed) }}
       onClick={() => toggleProject(p.path)}
       endContent={

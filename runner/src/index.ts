@@ -24,7 +24,7 @@ import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
-import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./config";
+import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
@@ -786,6 +786,12 @@ const ops: Handlers = {
   },
   async contextDisable() {
     return context.disable();
+  },
+  async getUiPrefs() {
+    return uiPrefs();
+  },
+  async setUiPrefs(prefs) {
+    return setUiPrefs(prefs ?? {});
   },
 };
 

@@ -16,7 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent } from "./shared/protocol";
+import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -74,6 +74,8 @@ interface State {
   conflicts: MemoryConflict[];
   /** activity that arrived while this tab was open, newest first */
   contextLive: ContextActivity[];
+  /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
+  sidebarDays: number;
 }
 
 export const useStore = create<State>(() => ({
@@ -95,6 +97,8 @@ export const useStore = create<State>(() => ({
   conflicts: [],
   contextLive: [],
   pulses: {},
+  // The last value the runner gave, so the list doesn't change size once it answers.
+  sidebarDays: loadJSON("tether.sidebarDays", DEFAULT_SIDEBAR_DAYS),
 }));
 
 const set = useStore.setState;
@@ -202,6 +206,7 @@ function onMessage(m: ServerToBrowser) {
         refreshUsage();
         refreshNotices();
         refreshContext();
+        refreshUiPrefs();
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -535,6 +540,27 @@ export function switchRunner(id: string) {
   refreshProjects();
   refreshNotices();
   refreshContext();
+  refreshUiPrefs();
+}
+
+// ---------------- preferences kept on the runner (shared by every device) ----------------
+
+function applyUiPrefs(p: { sidebarDays: number }) {
+  set({ sidebarDays: p.sidebarDays });
+  saveJSON("tether.sidebarDays", p.sidebarDays);
+}
+
+export function refreshUiPrefs() {
+  if (!get().runnerId) return;
+  // An older runner has no preferences: keep what we have.
+  rpc("getUiPrefs", {}).then(applyUiPrefs).catch(() => {});
+}
+// Another device may have changed them.
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());
+
+export async function setSidebarDays(days: number) {
+  const r = await act("setUiPrefs", { sidebarDays: days });
+  if (r) applyUiPrefs(r);
 }
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner

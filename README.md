@@ -28,7 +28,10 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
 - **Projects and sessions** are discovered from every harness's own session store, so sessions
   you started in a terminal show up too. Each project lists its sessions by their most recent
   message (yours or the agent's, live or not), and every message shows when it was written
-  (hover or tap for the full date and time).
+  (hover or tap for the full date and time). Only recent sessions are listed (last 3 days by
+  default; Settings → Sidebar, shared by every device), plus any that are running, working in the
+  background, waiting, need you or are open. Search finds the rest, and sending one a message
+  makes it recent again.
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
 - **Steer and queue.** Enter steers a running agent; Alt+Enter queues a message for after the
