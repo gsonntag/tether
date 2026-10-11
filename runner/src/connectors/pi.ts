@@ -55,7 +55,7 @@ export const piConnector: Connector = {
   id: "pi",
   memory: {
     capability: () => cap("native", "Appended to the system prompt; also ~/.pi/agent/AGENTS.md"),
-    forSession: ({ context }) => (context ? { args: ["--append-system-prompt", context.prompt] } : undefined),
+    forSession: ({ context }) => (context?.prompt ? { args: ["--append-system-prompt", context.prompt] } : undefined),
     globalBlock: (_globalFile, digest) => [harness.piAgentsMd(), digest],
   },
   mcp: {
@@ -96,4 +96,5 @@ export const piConnector: Connector = {
   agents: slot("unsupported", "No built-in subagents (the pi-subagents package adds them)"),
   hooks: slot("native", "Extensions (Tether's guard is one); not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
+  goal: slot("emulated", "Tether's goal loop (pi's goal extension isn't used); the goal tools need pi-mcp-adapter"),
 };

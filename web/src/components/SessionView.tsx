@@ -38,6 +38,7 @@ import { ActivityButton, ActivityPanel } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
+import { GoalLine } from "./GoalLine";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
@@ -79,6 +80,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const narrow = useNarrow();
+  const sidebarHidden = useStore((s) => s.sidebarHidden);
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -182,6 +184,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const chat = (
     <VStack style={chatColumn} {...dropHandlers}>
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
+      <GoalLine goal={st.goal} inset={narrow || sidebarHidden} />
       <ChatLayout
         ref={scroller}
         density="spacious"
@@ -435,7 +438,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
   );
 }
 
-/** One row of the `/` menu: a skill (with where it comes from) or one of the harness's commands. */
+/** One row of the `/` menu: a skill (with where it comes from), one of Tether's commands, or one of the harness's. */
 function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highlighted: boolean; narrow: boolean; onPick: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -453,6 +456,8 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
           </Tooltip>
         )}
       </HStack>
+    ) : c.kind === "tether" ? (
+      <Token size="sm" color="blue" label="Tether" />
     ) : undefined;
   return (
     <Item

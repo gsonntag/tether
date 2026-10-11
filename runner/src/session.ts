@@ -17,7 +17,7 @@ import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
-import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
+import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
 import { config, prefs, saveConfig, saveConfigSoon } from "./config";
 import { simulateUsage, usageChanged } from "./usage";
@@ -30,8 +30,25 @@ import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type 
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { connectorFor } from "./connectors";
 import { sessionTrust } from "./mcp/registry";
-import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
+import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
+import {
+  budgetHit,
+  checkGoal,
+  continuationPrompt,
+  describeGoal,
+  fmtBudget,
+  fromCodexStatus,
+  GOAL_STALL_TURNS,
+  isGoalPrompt,
+  kickoffPrompt,
+  newGoal,
+  parseGoalCommand,
+  STATUS_LABEL,
+  TETHER_COMMANDS,
+  transcriptTail,
+  withNote,
+} from "./goal";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -206,18 +223,25 @@ export abstract class LiveSession {
       if (s.status === "running" && (this.turnStarting || before === "idle")) {
         this.turnStarting = false;
         this.faultTurnStarted();
+        this.goalTurnStarted();
       }
       // The adapter showed the error on the message only (pi, Antigravity): the offer gets a notice.
       if (s.status === "idle" && before !== "idle" && this.continueOffer && !s.handoffTo) this.notice(this.continueOffer.text || "The turn ended with an error.", "error");
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
+      if (s.status === "idle" && before !== "idle") this.goalTurnOver();
+      // An approval or question the goal loop waited on was answered after the turn had ended.
+      if (s.pendingUi && !s.pendingUi.length && this.goalHeld) {
+        this.goalHeld = false;
+        this.continueGoal();
+      }
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
       if (s.status !== undefined || s.pendingUi !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -247,7 +271,11 @@ export abstract class LiveSession {
    * is for another model (its window differs); a missing window is guessed from the model name.
    */
   setContext(c: ContextUsage | undefined) {
-    if (c) this.setState({ context: mergeContext(this.t.state.context, c) });
+    if (!c) return;
+    // A goal's token budget: what each model request used, as the harness reports it (approximate).
+    if (this.goalTurn && c.used !== undefined && c.used !== this.lastUsed) this.goalTokens += c.used;
+    if (c.used !== undefined) this.lastUsed = c.used;
+    this.setState({ context: mergeContext(this.t.state.context, c) });
   }
 
   /** After compaction: `used` is unknown (or the harness's post-compaction count) until the next request. */
@@ -341,6 +369,8 @@ export abstract class LiveSession {
 
   private turnOver() {
     if (this.userStopped || this.turnTrouble || this.closed) return;
+    // Under a goal the loop goes on, and a stop sends its own notification (stopGoal).
+    if (this.goalTurn || this.goalState?.status === "active") return;
     // Only when truly done: nothing the agent started is still working (armed wakeups and cron
     // jobs don't count). The last one to finish sends it (activityChanged).
     if (this.workingCount) {
@@ -551,6 +581,7 @@ export abstract class LiveSession {
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
     if (this.devCommand(text)) return;
+    if (await this.goalCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
       if (!this.t.state.pending?.length) return this.sendTyped(text);
@@ -721,11 +752,14 @@ export abstract class LiveSession {
     return (await Promise.all(list.map((p, i) => this.resolveSkills(p.text, i > 0 && !this.nativeAnywhere)))).join("\n\n");
   }
 
-  /** The composer's `/` menu: the skills this session can run, then the harness's own commands. */
+  /** The composer's `/` menu: Tether's commands, the skills this session can run, then the harness's own commands. */
   async slashMenu(): Promise<SlashCommand[]> {
     const [commands, native] = await Promise.all([this.listCommands().catch(() => []), this.nativeNow(true)]);
     const skills = skillsFor(this.harness, this.projectPath, native);
-    return slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills());
+    const menu = slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills());
+    // Tether handles these before the harness sees the message, so its own of the same name never runs.
+    const own = new Set(TETHER_COMMANDS.map((c) => c.name));
+    return [...TETHER_COMMANDS, ...menu.filter((c) => !own.has(c.name))];
   }
 
   private takeAllPending(): string | undefined {
@@ -786,6 +820,13 @@ export abstract class LiveSession {
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
+    // Your Stop pauses the goal: the loop would otherwise start the next turn.
+    const g = this.goalState;
+    if (g?.status === "active") {
+      clearTimeout(this.goalTimer);
+      this.putGoal({ ...g, status: "paused", reason: "Paused when you stopped the session.", updatedAt: Date.now() });
+      this.notice("Goal paused. /goal resume picks it up again.");
+    }
     // Your Stop ends the turn as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
     clearTimeout(this.steerTimer);
@@ -809,9 +850,19 @@ export abstract class LiveSession {
     if (p.guard) restore.guard = p.guard;
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
     if (p.context && !this.t.state.context) restore.context = p.context;
+    // An active goal nothing will drive (the session wasn't running when it was saved, so no
+    // restart resumes it, or it was handed off): paused, so /goal resume picks it up.
+    let goal = p.goal;
+    if (goal?.status === "active" && (!p.active || p.handoffTo)) {
+      const reason = p.handoffTo ? "Continued in another session." : "Paused when the runner restarted.";
+      goal = { ...goal, status: "paused", reason, updatedAt: Date.now() };
+    }
+    if (goal) restore.goal = goal;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
+    // The harness's own goal follows Tether's again (it may still hold an older one).
+    if (goal && this.mirrorGoal) void this.mirrorGoal(goal).catch(() => {});
   }
 
   /**
@@ -862,7 +913,9 @@ export abstract class LiveSession {
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
-      active: this.busy,
+      goal: s.goal ?? undefined,
+      // An active goal keeps the session going between turns: a restart resumes it like a turn.
+      active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
       waitingUntil: this.waitTimer ? s.waitingUntil : undefined,
       waitingReason: this.waitTimer ? s.waitingReason : undefined,
@@ -1180,14 +1233,17 @@ export abstract class LiveSession {
     return this.t.state.guard ?? config().guard?.defaultMode ?? "auto";
   }
 
-  /** What the user asked for, for the judge: the first request and the latest ones. */
+  /** What the user asked for, for the judge: the goal when one is set, the first request and the latest ones. */
   goal(): string {
     const asks = this.t.messages
       .filter((m) => m.role === "user")
       .map((m) => m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim())
-      .filter((t) => t && !t.startsWith("You are taking over"));
+      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t));
     const pick = asks.length > 4 ? [asks[0]!, "…", ...asks.slice(-3)] : asks;
-    return pick.map((t) => t.slice(0, 1500)).join("\n---\n");
+    const text = pick.map((t) => t.slice(0, 1500)).join("\n---\n");
+    // A goal states the task outright; the latest asks still say what's happening now.
+    const g = this.goalState;
+    return g ? `Goal: ${g.objective.slice(0, 1500)}${text ? `\n---\n${text}` : ""}` : text;
   }
 
   /** Every message text this session has (or will) send, attachment blocks included. */
@@ -1499,6 +1555,332 @@ export abstract class LiveSession {
   /** Adapter: stops the running turn the harness's own way, for a simulated error (see takeFault). */
   protected faultInterrupt?(): void | Promise<void>;
 
+  // ---- goal (/goal, runner/src/goal.ts) ----
+  // While the goal is active, every turn that ends with nothing waiting on the user (no queued
+  // message, approval or question) is followed by a short continuation prompt. The loop stops when
+  // the goal is done (the agent says so and the background model agrees), blocked (by the agent,
+  // or GOAL_STALL_TURNS turns without progress), out of its budget, or paused (Stop, /goal pause,
+  // a failed turn). Each stop the user didn't make is a notification.
+
+  /** the turn running under an active goal: where its messages start, and whether goal_update was called */
+  private goalTurn?: { from: number; startedAt: number; updated: boolean };
+  /** turns in a row without a tool call, a change to the working tree or a goal_update */
+  private goalIdle = 0;
+  /** the working tree after the last goal turn (checkpoint.ts treeHash) */
+  private goalTree?: string;
+  /** tokens the harness reported during the running goal turn */
+  private goalTokens = 0;
+  private lastUsed?: number;
+  /** the agent said the goal is done (goal_update, or Codex marked it complete): checked when the turn ends */
+  private goalClaim?: string;
+  /** the turn ended on an approval or question: the loop goes on once it's answered */
+  private goalHeld = false;
+  private goalTimer?: ReturnType<typeof setTimeout>;
+  /** The harness continues a goal itself (Codex): Tether gives it this long before it continues instead. */
+  static GOAL_NATIVE_SETTLE_MS = 5_000;
+  /** set by adapters whose harness keeps its own copy of the goal and drives it (mirrorGoal worked) */
+  protected nativeGoal = false;
+  /** Adapters whose harness has goals of its own: mirror Tether's into it (null: cleared). */
+  protected mirrorGoal?(g: SessionGoal | null): Promise<void>;
+
+  get goalState(): SessionGoal | undefined {
+    return this.t.state.goal ?? undefined;
+  }
+
+  /** bumped when the goal is set, cleared or changes status: a check that outlived its goal is dropped */
+  private goalEpoch = 0;
+
+  /** Sets (or clears) the goal, mirrored into the harness's own goal where it has one. */
+  private putGoal(g: SessionGoal | null, mirror = true): Promise<void> {
+    const was = this.goalState;
+    if (!g || !was || g.createdAt !== was.createdAt || g.status !== was.status) this.goalEpoch++;
+    this.setState({ goal: g });
+    if (!mirror || !this.mirrorGoal) return Promise.resolve();
+    return this.mirrorGoal(g).catch((e) => console.error(`goal: could not mirror into ${this.harness} for ${this.id}: ${e?.message ?? e}`));
+  }
+
+  /** set by adoptGoal: the harness's own goal is set once the brief's turn runs */
+  private mirrorOnTurn = false;
+
+  /**
+   * A goal that came over in a handoff (Decision 6): it carries on here, loop and all. The
+   * harness's own copy waits for the brief's turn to start, so it can't start a turn of its own first.
+   */
+  async adoptGoal(g: SessionGoal) {
+    this.goalIdle = 0;
+    this.goalClaim = undefined;
+    this.goalTree = await treeHash(this.projectPath).catch(() => undefined);
+    this.mirrorOnTurn = !!this.mirrorGoal;
+    await this.putGoal({ ...g, native: undefined, updatedAt: Date.now() }, false);
+  }
+
+  /**
+   * The goal went over to `next` in a handoff: paused here, quietly (no notification), so this
+   * session's loop and the harness's own copy (Codex) don't work it alongside the new session.
+   * `where`: the new session's harness and model, as the handoff notice names it.
+   */
+  handOverGoal(where: string) {
+    const g = this.goalState;
+    if (g?.status !== "active") return;
+    clearTimeout(this.goalTimer);
+    this.goalHeld = false;
+    this.goalClaim = undefined;
+    void this.putGoal({ ...g, status: "paused", reason: `Continued on ${where}.`, updatedAt: Date.now() });
+  }
+
+  /** The loop stopped on its own: the goal's status and why, a notice, and a notification (a Needs-you item unless done). */
+  private stopGoal(status: Exclude<GoalStatus, "active">, reason: string, by: GoalNote["by"] = "tether") {
+    const g = this.goalState;
+    if (!g) return;
+    clearTimeout(this.goalTimer);
+    this.goalHeld = false;
+    void this.putGoal({ ...withNote(g, reason, by), status, reason, updatedAt: Date.now() });
+    const head = status === "done" ? "Goal done" : status === "budget" ? "Goal out of budget" : status === "paused" ? "Goal paused" : "Goal blocked";
+    this.notice(`${head}: ${reason}`, status === "done" ? "info" : "warning");
+    if (status === "done") this.alert("finished", "Goal done", `${g.objective.slice(0, 120)}: ${reason}`);
+    else this.alert("blocked", head, reason);
+  }
+
+  /** `/goal …`: handled here, never sent to the harness. True when it was one. */
+  async goalCommand(text: string): Promise<boolean> {
+    const c = parseGoalCommand(text);
+    if (!c) return false;
+    const g = this.goalState;
+    const idle = () => this.t.state.status === "idle" && !this.t.state.pending?.length && !this.t.state.handoffTo;
+    switch (c.cmd) {
+      case "error":
+        this.notice(c.text, "warning");
+        break;
+      case "status":
+        this.notice(g ? describeGoal(g) : "No goal is set. Set one with /goal <objective>; Tether keeps the agent working on it until it's done.");
+        break;
+      case "set": {
+        const goal = newGoal(c.objective, c.budget);
+        this.autoTitle(c.objective);
+        this.goalIdle = 0;
+        this.goalClaim = undefined;
+        this.goalHeld = false;
+        clearTimeout(this.goalTimer);
+        this.notice(`Goal set${goal.budget ? ` (budget: ${fmtBudget(goal.budget)})` : ""}. Tether keeps the agent working on it until it's done; /goal pause stops it.`);
+        this.goalTree = await treeHash(this.projectPath).catch(() => undefined);
+        await this.putGoal(goal);
+        // Running: the loop picks it up when this turn ends.
+        if (idle()) this.continueGoal({ kickoff: true });
+        break;
+      }
+      case "pause":
+        if (!g) this.notice("No goal is set.");
+        else if (g.status !== "active") this.notice(`The goal is ${STATUS_LABEL[g.status].toLowerCase()} already.`);
+        else {
+          clearTimeout(this.goalTimer);
+          await this.putGoal({ ...withNote(g, "Paused by you.", "user"), status: "paused", reason: "Paused by you.", updatedAt: Date.now() });
+          this.notice("Goal paused. /goal resume picks it up again.");
+        }
+        break;
+      case "resume":
+        if (!g) this.notice("No goal is set. Set one with /goal <objective>.");
+        else if (g.status === "active") {
+          // Idle with nothing driving it (it shouldn't happen, but if it does): continue it now.
+          if (idle() && !this.goalTurn && !this.turnStarting) {
+            this.notice("Goal resumed.");
+            this.continueGoal();
+          } else this.notice("The goal is active already.");
+        }
+        else if (budgetHit(g)) this.notice(`${budgetHit(g)} Set it again with a larger budget: /goal <objective> --turns <n>.`, "warning");
+        else {
+          this.goalIdle = 0;
+          this.goalClaim = undefined;
+          await this.putGoal({ ...withNote(g, "Resumed by you.", "user"), status: "active", reason: undefined, updatedAt: Date.now() });
+          this.notice("Goal resumed.");
+          if (idle()) this.continueGoal();
+        }
+        break;
+      case "clear":
+        if (!g) this.notice("No goal is set.");
+        else {
+          clearTimeout(this.goalTimer);
+          this.goalTurn = undefined;
+          this.goalHeld = false;
+          await this.putGoal(null);
+          this.notice("Goal cleared.");
+        }
+        break;
+    }
+    return true;
+  }
+
+  /**
+   * The `tether-context` goal tools (context/mcp.ts, through bridge.ts): `get` describes the goal,
+   * `update` records progress, a "done" claim (checked when the turn ends), or a stop.
+   */
+  goalTool(action: string, args: { status?: unknown; note?: unknown }): { ok: boolean; text: string } {
+    const g = this.goalState;
+    if (action === "get") return { ok: true, text: g ? describeGoal(g) : "No goal is set for this session. The user sets one with /goal in Tether." };
+    if (action !== "update") return { ok: false, text: `Unknown goal action "${action}".` };
+    if (!g) return { ok: false, text: "No goal is set for this session." };
+    const status = String(args.status ?? "active");
+    const note = String(args.note ?? "").trim();
+    if (!["active", "done", "blocked", "paused"].includes(status)) return { ok: false, text: 'status must be "active", "done", "blocked" or "paused".' };
+    if (g.status !== "active") return { ok: true, text: `The goal is ${STATUS_LABEL[g.status].toLowerCase()}${g.reason ? ` (${g.reason})` : ""}; nothing changes until the user resumes it.` };
+    if (this.goalTurn) this.goalTurn.updated = true;
+    else this.goalIdle = 0;
+    switch (status) {
+      case "done":
+        this.goalClaim = note || "The agent says the goal is done.";
+        void this.putGoal(withNote(g, note || "Says the goal is done.", "agent"), false);
+        // Outside a turn (a harness reporting between turns): checked now.
+        if (!this.goalTurn && this.t.state.status === "idle") void this.afterGoalTurn(undefined);
+        return { ok: true, text: "Noted. When this turn ends, Tether checks the goal against the conversation; if something is missing you'll be told what. End your turn now with a short summary." };
+      case "blocked":
+        this.stopGoal("blocked", note || "The agent can't go on without you.", "agent");
+        return { ok: true, text: "The goal is marked blocked and the user has been notified. End your turn saying what you need from them." };
+      case "paused":
+        this.stopGoal("paused", note ? `Paused by the agent: ${note}` : "Paused by the agent.", "agent");
+        return { ok: true, text: "The goal is paused. End your turn." };
+      default:
+        void this.putGoal(withNote(g, note || "Progress reported.", "agent"), false);
+        return { ok: true, text: "Noted. Keep going." };
+    }
+  }
+
+  /** Adapters with a native goal (Codex): its status changed there. Tether's copy stays the source of truth. */
+  protected nativeGoalChanged(nativeStatus: string, tokensUsed?: number) {
+    const g = this.goalState;
+    if (!g) return;
+    // Handed off: the goal runs in the new session; this harness's copy just follows Tether's.
+    if (this.t.state.handoffTo) {
+      if (fromCodexStatus(nativeStatus) !== g.status) void this.mirrorGoal?.(g).catch(() => {});
+      return;
+    }
+    if (tokensUsed !== undefined && tokensUsed > g.used.tokens) void this.putGoal({ ...g, used: { ...g.used, tokens: tokensUsed } }, false);
+    const s = fromCodexStatus(nativeStatus);
+    if (!s || s === g.status) return;
+    // Stopped in Tether: the harness's copy follows Tether's, not the other way round.
+    if (g.status !== "active") return void this.mirrorGoal?.(g).catch(() => {});
+    const harness = HARNESSES.find((h) => h.id === this.harness)?.label ?? this.harness;
+    if (this.goalTurn) this.goalTurn.updated = true;
+    if (s === "done") {
+      this.goalClaim = `${harness} marked the goal complete.`;
+      if (!this.goalTurn && this.t.state.status === "idle") void this.afterGoalTurn(undefined);
+    } else if (s === "blocked") this.stopGoal("blocked", `${harness} marked the goal blocked.`, "agent");
+    else if (s === "budget") this.stopGoal("budget", `${harness} says the goal used its token budget.`, "agent");
+    else if (s === "paused") this.stopGoal("paused", `Paused in ${harness}.`, "agent");
+  }
+
+  private goalTurnStarted() {
+    if (this.mirrorOnTurn) {
+      this.mirrorOnTurn = false;
+      if (this.goalState) void this.putGoal(this.goalState);
+    }
+    if (this.goalState?.status !== "active") return;
+    clearTimeout(this.goalTimer);
+    this.goalTurn = { from: this.t.messages.length, startedAt: Date.now(), updated: false };
+    this.goalTokens = 0;
+  }
+
+  /** A turn ended (status went idle): count it against the goal and decide what comes next. */
+  private goalTurnOver() {
+    const turn = this.goalTurn;
+    this.goalTurn = undefined;
+    const g = this.goalState;
+    if (!g || g.status !== "active" || this.closed || this.t.state.handoffTo) return;
+    if (turn) {
+      const used = { turns: g.used.turns + 1, tokens: g.used.tokens + this.goalTokens, ms: g.used.ms + (Date.now() - turn.startedAt) };
+      void this.putGoal({ ...g, used, updatedAt: Date.now() }, false);
+    }
+    this.goalTokens = 0;
+    // Stop paused it already; a failed turn (its error notice went out) pauses it here.
+    if (this.userStopped) return;
+    if (this.turnTrouble) {
+      void this.putGoal({ ...this.goalState!, status: "paused", reason: "Paused because the turn ended with an error.", updatedAt: Date.now() });
+      this.notice("Goal paused because the turn ended with an error. /goal resume picks it up again.");
+      return;
+    }
+    void this.afterGoalTurn(turn);
+  }
+
+  /** Progress, a "done" claim or a stall checked by the background model, the budget; then the next turn. */
+  private async afterGoalTurn(turn: { from: number; updated: boolean } | undefined) {
+    const tree = await treeHash(this.projectPath).catch(() => undefined);
+    const changed = tree !== this.goalTree;
+    this.goalTree = tree;
+    const g0 = this.goalState;
+    if (!g0 || g0.status !== "active" || this.closed) return;
+    const epoch = this.goalEpoch;
+    const tools = turn ? this.t.messages.slice(turn.from).reduce((n, m) => n + m.parts.filter((p) => p.type === "tool").length, 0) : 0;
+    // A turn Tether didn't see start (the goal was set mid-turn) isn't counted as idle.
+    const progress = !turn || turn.updated || tools > 0 || changed;
+    this.goalIdle = progress ? 0 : this.goalIdle + 1;
+    const claim = this.goalClaim;
+    this.goalClaim = undefined;
+    let check: string | undefined;
+    if (claim !== undefined || this.goalIdle >= GOAL_STALL_TURNS) {
+      const stalled = claim === undefined;
+      let verdict: { done: boolean; reason: string } | undefined;
+      let failure = "";
+      try {
+        verdict = await checkGoal({ goal: g0, transcript: transcriptTail(this.t.messages), claim: stalled ? "stalled" : "done", cwd: this.projectPath });
+      } catch (e: any) {
+        failure = e?.message ?? String(e);
+      }
+      // Paused, cleared, replaced or handed off while the check ran (a pause and resume too).
+      if (epoch !== this.goalEpoch || this.goalState?.status !== "active" || this.closed || this.t.state.handoffTo) return;
+      if (!verdict) {
+        // No check possible: the agent's word stands for "done"; a stall still stops.
+        if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row (Tether couldn't check whether it's done: ${failure}).`);
+        return this.stopGoal("done", `${claim} (Tether couldn't double-check it: ${failure})`);
+      }
+      if (verdict.done) return this.stopGoal("done", verdict.reason || claim || "The objective is achieved.");
+      if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row. ${verdict.reason}`.trim());
+      check = verdict.reason || "The conversation doesn't show the objective achieved yet.";
+      this.goalIdle = 0;
+      void this.putGoal(withNote(this.goalState!, `Not done yet: ${check}`, "tether"), false);
+    }
+    const over = budgetHit(this.goalState!);
+    if (over) return this.stopGoal("budget", over);
+    this.continueGoal({ check });
+  }
+
+  /**
+   * The next goal turn, once nothing waits on the user. A harness that drives its own goal gets a
+   * moment to continue by itself first; a rejected "done" goes out at once, with the reason.
+   */
+  private continueGoal(opts: { check?: string; kickoff?: boolean } = {}) {
+    clearTimeout(this.goalTimer);
+    const wait = this.nativeGoal && !opts.check ? LiveSession.GOAL_NATIVE_SETTLE_MS : 0;
+    this.goalTimer = setTimeout(() => void this.sendGoalTurn(opts), wait);
+  }
+
+  private async sendGoalTurn(opts: { check?: string; kickoff?: boolean }) {
+    const g = this.goalState;
+    if (!g || g.status !== "active" || this.closed || this.t.state.handoffTo) return;
+    // A message, fallback or the harness's own goal started a turn; queued messages go first.
+    if (this.t.state.status !== "idle" || this.t.state.pending?.length) return;
+    if (this.t.state.pendingUi.length) {
+      this.goalHeld = true;
+      return;
+    }
+    const over = budgetHit(g);
+    if (over) return this.stopGoal("budget", over);
+    const text = opts.kickoff ? kickoffPrompt(g) : continuationPrompt(g, opts.check);
+    await this.checkpoint(text);
+    if (this.t.state.status !== "idle" || this.goalState?.status !== "active") return;
+    this.turnStarting = true;
+    try {
+      await this.continueTurn(text);
+    } catch (e: any) {
+      this.turnStarting = false;
+      const why = e?.message ?? String(e);
+      // Paused, so /goal resume tries again (nothing else would drive it now).
+      if (this.goalState?.status === "active")
+        void this.putGoal({ ...this.goalState, status: "paused", reason: `Paused because Tether couldn't continue it: ${why}`, updatedAt: Date.now() });
+      this.notice(`Could not continue the goal: ${why}. /goal resume tries again.`, "error");
+      return;
+    }
+    // A rejected "done" left the harness's own copy complete: active again, now that the turn runs.
+    if (opts.check && this.goalState) void this.putGoal(this.goalState);
+  }
+
   // ---- housekeeping ----
 
   private checkStall() {
@@ -1534,6 +1916,7 @@ export abstract class LiveSession {
     clearTimeout(this.waitTimer);
     clearTimeout(this.steerTimer);
     clearTimeout(this.idleTimer);
+    clearTimeout(this.goalTimer);
     clearInterval(this.watchdog);
     clearTimeout(this.settleTimer);
     clearTimeout(this.shellWaitTimer);

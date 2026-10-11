@@ -112,7 +112,7 @@ export const claudeConnector: Connector = {
   id: "claude-code",
   memory: {
     capability: () => cap("native", "Appended to the system prompt; also in ~/.claude/CLAUDE.md and project memory"),
-    forSession: ({ context }) => (context ? { options: { systemPrompt: { type: "preset", preset: "claude_code", append: context.prompt } } } : undefined),
+    forSession: ({ context }) => (context?.prompt ? { options: { systemPrompt: { type: "preset", preset: "claude_code", append: context.prompt } } } : undefined),
     globalBlock: (globalFile) => [harness.claudeMd(), `@${tilde(globalFile)}`],
     exportRepos: claudeRepoFiles,
   },
@@ -137,4 +137,8 @@ export const claudeConnector: Connector = {
   agents: slot("native", "Subagents (SDK agents, ~/.claude/agents); not mapped yet"),
   hooks: slot("native", "Hooks in settings and the SDK; not mapped yet"),
   env: slot("native", "SDK env option; not mapped yet"),
+  // Checked with Agent SDK 0.3.293 / Claude Code 2.1.296: its /goal is a slash command whose own
+  // evaluator keeps the turn going; there is no call to pause it or read its status, so mirroring
+  // would run two loops against each other.
+  goal: slot("emulated", "Tether's goal loop and goal tools; Claude Code's own /goal (a slash command with no status or pause API) isn't used"),
 };

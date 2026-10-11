@@ -147,6 +147,8 @@ export interface Connector {
   agents: Slot;
   hooks: Slot;
   env: Slot;
+  /** /goal (runner/src/goal.ts): native when the harness's own goal mirrors Tether's, else Tether's loop */
+  goal: Slot;
 }
 
-export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env"];
+export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal"];

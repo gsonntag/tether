@@ -6,10 +6,16 @@
 // Reads come straight from the store. Writes don't touch memory files: memory_write drops the
 // note in the store's inbox, and the runner's merge pass (dedupe, update, conflicts, commit)
 // takes it from there, so every write goes through the same path as imported memory.
+//
+// goal_get / goal_update act on the calling session's goal (/goal, runner/src/goal.ts): they go to
+// the runner over its loopback bridge (bridge.ts), as the session whose key is in the environment.
+// With the master context off a session still gets this server, with only those two tools
+// (TETHER_CONTEXT_TOOLS=goal).
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_TYPES, sha } from "./format";
+import { bridgeFile } from "./launch";
 import { contextDir } from "./paths";
 import { repoKey } from "./repokey";
 import { sections } from "./sources";
@@ -57,6 +63,51 @@ const TOOLS = [
   },
 ];
 
+export const GOAL_TOOLS = [
+  {
+    name: "goal_get",
+    description: "Read this session's goal (set by the user with /goal in Tether): the objective, its status, the budget used and the latest progress notes.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "goal_update",
+    description:
+      "Report progress on this session's goal. status: \"active\" with a note to record progress and keep going; \"done\" only when the objective is fully achieved and verified (Tether double-checks the claim against the conversation); \"blocked\" when you can't go on without the user (say why in the note); \"paused\" only if the user asked you to pause.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["active", "done", "blocked", "paused"], description: "active (default): still working; done: achieved; blocked: needs the user; paused: the user asked" },
+        note: { type: "string", description: "What you did or found, or why you're blocked: one or two sentences" },
+      },
+      required: ["note"],
+    },
+  },
+];
+
+/** The tools this server lists: only the goal tools while the master context is off. */
+export const tools = () => (process.env.TETHER_CONTEXT_TOOLS === "goal" ? GOAL_TOOLS : [...TOOLS, ...GOAL_TOOLS]);
+
+/** Asks the runner about this session's goal, over its loopback bridge. */
+async function goalCall(action: "get" | "update", args: Record<string, unknown>): Promise<Result> {
+  const key = process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY;
+  if (!key) return fail("Goals work only in sessions Tether started.");
+  let bridge: { url: string; token: string };
+  try {
+    bridge = JSON.parse(readFileSync(process.env.TETHER_BRIDGE_FILE ?? bridgeFile(), "utf8"));
+  } catch {
+    return fail("Tether's runner isn't reachable from here, so the goal can't be read or updated.");
+  }
+  const res = await fetch(`${bridge.url}/goal`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ key, action, args }),
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => undefined);
+  if (!res?.ok) return fail("Tether's runner didn't answer; the goal is unchanged.");
+  const r: any = await res.json().catch(() => ({}));
+  return r.ok ? ok(String(r.text ?? "")) : fail(String(r.text ?? "Tether refused the goal call."));
+}
+
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
 const fail = (text: string): Result => ({ content: [{ type: "text", text }], isError: true });
@@ -77,6 +128,9 @@ function repoDocs(cwd: string, query: string): string[] {
 }
 
 export async function callTool(name: string, args: any, cwd = process.cwd()): Promise<Result> {
+  if (name === "goal_get") return goalCall("get", {});
+  if (name === "goal_update") return goalCall("update", { status: args?.status, note: args?.note });
+  if (!tools().some((t) => t.name === name)) return fail(`Unknown tool ${name}`);
   const store = new Store(contextDir());
   switch (name) {
     case "memory_search": {
@@ -147,12 +201,15 @@ export async function handle(msg: any): Promise<object | undefined> {
         protocolVersion: msg.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: {} },
         serverInfo: { name: "tether-context", version: "0.1.0" },
-        instructions: "The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back.",
+        instructions:
+          process.env.TETHER_CONTEXT_TOOLS === "goal"
+            ? "This session's goal in Tether (/goal): read it with goal_get, report progress with goal_update."
+            : "The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back. This session's goal (/goal): goal_get, goal_update.",
       });
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: TOOLS });
+      return reply({ tools: tools() });
     case "tools/call":
       try {
         return reply(await callTool(String(msg.params?.name), msg.params?.arguments ?? {}));

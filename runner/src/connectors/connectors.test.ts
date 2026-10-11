@@ -17,7 +17,7 @@ import { launchWith } from "./launch";
 import { mergeLaunch } from "./shared";
 import { SLOTS } from "./types";
 
-const ctx: SessionContext = { prompt: "<tether-memory>M</tether-memory>", mcp: { command: "/bun", args: ["/mcp.ts"], env: { TETHER_CONTEXT_DIR: "/ctx", TETHER_SESSION_KEY: "gk" } } };
+const ctx: SessionContext & { prompt: string } = { prompt: "<tether-memory>M</tether-memory>", mcp: { command: "/bun", args: ["/mcp.ts"], env: { TETHER_CONTEXT_DIR: "/ctx", TETHER_SESSION_KEY: "gk" } } };
 const at = (h: HarnessId, extra: { resume?: boolean; context?: SessionContext } = {}) =>
   launchWith(h, { projectPath: "/p", session: { key: "gk" }, context: "context" in extra ? extra.context : ctx, resume: extra.resume });
 

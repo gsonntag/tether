@@ -52,7 +52,7 @@ export const codexConnector: Connector = {
   id: "codex",
   memory: {
     capability: () => cap("native", "Developer instructions; also ~/.codex/AGENTS.md"),
-    forSession: ({ context }) => (context ? { options: { developerInstructions: context.prompt } } : undefined),
+    forSession: ({ context }) => (context?.prompt ? { options: { developerInstructions: context.prompt } } : undefined),
     globalBlock: (_globalFile, digest) => [harness.codexAgentsMd(), digest],
   },
   mcp: {
@@ -80,4 +80,5 @@ export const codexConnector: Connector = {
   agents: slot("native", "Subagents; not mapped yet"),
   hooks: slot("native", "Hooks in its config; not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
+  goal: slot("native", "Mirrored into Codex's thread goal (thread/goal/set), status synced back; Tether's loop continues when Codex doesn't"),
 };

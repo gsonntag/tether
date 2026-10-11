@@ -4,23 +4,27 @@
 
 import type { HarnessId } from "../../../web/src/shared/protocol";
 import { sessionContext } from "../context/inject";
+import { mcpLaunch } from "../context/launch";
 import { sessionMcp } from "../mcp/registry";
 import { connectorFor } from "./index";
 import { mergeLaunch } from "./shared";
 import { SLOTS, type SessionCtx, type SessionLaunch } from "./types";
 
 /**
- * Every slot's contribution for this session, in slot order. Empty while the master context is off
- * and the registry has nothing for it. `mcpAuth`: registry servers that still need an OAuth sign-in.
+ * Every slot's contribution for this session, in slot order. While the master context is off a
+ * session with a guard key still gets `tether-context`, serving only the goal tools (a goal can be
+ * set at any time, and a harness reads its MCP servers at launch). `mcpAuth`: registry servers
+ * that still need an OAuth sign-in.
  */
 export async function sessionLaunch(h: HarnessId, ctx: Omit<SessionCtx, "context" | "servers">): Promise<SessionLaunch> {
-  const [context, mcp] = await Promise.all([
+  const [found, mcp] = await Promise.all([
     sessionContext(ctx.projectPath, ctx.session),
     sessionMcp(h, ctx.projectPath).catch((e: any) => {
       console.error(`mcp: no registry servers for ${ctx.projectPath}: ${e?.message ?? e}`);
       return { servers: [], auth: [] };
     }),
   ]);
+  const context = found ?? (ctx.session?.key ? { mcp: mcpLaunch(ctx.session, { goalOnly: true }) } : undefined);
   const launch = launchWith(h, { ...ctx, context, servers: mcp.servers });
   return mcp.auth.length ? { ...launch, mcpAuth: mcp.auth } : launch;
 }

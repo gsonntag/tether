@@ -210,7 +210,7 @@ describe("MCP server", () => {
     expect(init.result.protocolVersion).toBe("2025-03-26");
     expect(await handle({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list: any = await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get"]);
+    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get", "goal_get", "goal_update"]);
     const call = async (name: string, args: object) => ((await handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } })) as any).result;
     const prev = process.cwd();
     process.chdir(repo);
@@ -240,7 +240,18 @@ describe("MCP server", () => {
     await sink.end();
     const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.id)).toEqual([1, 2]);
-    expect(lines[1].result.tools.length).toBe(5);
+    expect(lines[1].result.tools.length).toBe(7);
+  });
+
+  test("with the master context off it serves only the goal tools", async () => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "mcp.ts")], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, TETHER_CONTEXT_TOOLS: "goal" } });
+    const sink = p.stdin as import("bun").FileSink;
+    sink.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+    sink.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_search", arguments: { query: "x" } } }) + "\n");
+    await sink.end();
+    const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0].result.tools.map((t: any) => t.name)).toEqual(["goal_get", "goal_update"]);
+    expect(lines[1].result.isError).toBe(true);
   });
 });
 

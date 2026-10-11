@@ -260,6 +260,42 @@ export interface UiRequest {
   planId?: string;
 }
 
+// ---------- goal (/goal, runner/src/goal.ts) ----------
+
+/** active: Tether keeps the agent going; the others stop the loop until resumed. */
+export type GoalStatus = "active" | "paused" | "done" | "blocked" | "budget";
+
+/** An optional limit the user set; a goal without one runs until it's done. */
+export interface GoalBudget {
+  turns?: number;
+  tokens?: number;
+  /** wall time while active, in ms */
+  ms?: number;
+}
+
+export interface GoalNote {
+  ts: number;
+  text: string;
+  /** agent: goal_update; tether: the loop, the guard or the done check; user: a /goal command */
+  by: "agent" | "tether" | "user";
+}
+
+export interface SessionGoal {
+  objective: string;
+  status: GoalStatus;
+  budget?: GoalBudget;
+  /** what the goal has used so far (tokens: as the harness reports them, approximate) */
+  used: { turns: number; tokens: number; ms: number };
+  /** progress notes, oldest first (capped) */
+  notes: GoalNote[];
+  /** why it stopped, for paused / blocked / budget / done */
+  reason?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** the harness's own goal mirrors it (Codex thread goals) */
+  native?: boolean;
+}
+
 export interface UiResponse {
   id: string;
   cancelled?: boolean;
@@ -318,6 +354,9 @@ export interface LiveState {
   contextPercent?: number;
   /** how full the model's context window is, as of its last request */
   context?: ContextUsage;
+  /** the session's goal (/goal); Tether keeps the agent working while it is active. null: cleared
+   *  (an undefined field doesn't survive JSON, so browsers would keep the old goal) */
+  goal?: SessionGoal | null;
 }
 
 export interface ContextUsage {
@@ -758,7 +797,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";
@@ -840,8 +879,8 @@ export interface McpFindResult {
 export interface SlashCommand {
   name: string;
   description?: string;
-  /** absent: a harness command (older runners send only these) */
-  kind?: "command" | "skill";
+  /** absent: a harness command (older runners send only these); tether: Tether's own (/goal) */
+  kind?: "command" | "skill" | "tether";
   /** skill: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
   sources?: string[];
   /** skill: the harness runs it itself; otherwise Tether sends SKILL.md along with the message */

@@ -71,6 +71,8 @@ export interface SessionPrefs {
   permissionMode?: string;
   /** last known context-window fill, for harnesses that can't report it again on resume */
   context?: import("../../web/src/shared/protocol").ContextUsage;
+  /** the session's goal (/goal, runner/src/goal.ts) */
+  goal?: import("../../web/src/shared/protocol").SessionGoal;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

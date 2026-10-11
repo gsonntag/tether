@@ -14,7 +14,7 @@ export const antigravityConnector: Connector = {
   id: "antigravity",
   memory: {
     capability: () => cap("emulated", "First-message preamble; also ~/.gemini/GEMINI.md"),
-    forSession: ({ context, resume }) => (context && !resume ? { preamble: context.prompt } : undefined),
+    forSession: ({ context, resume }) => (context?.prompt && !resume ? { preamble: context.prompt } : undefined),
     globalBlock: (globalFile) => [harness.geminiMd(), `@${globalFile}`],
   },
   mcp: {
@@ -46,4 +46,5 @@ export const antigravityConnector: Connector = {
   agents: slot("native", "Agents (--agent); not mapped yet"),
   hooks: slot("native", "Hooks (Tether's guard is a PreToolUse hook); not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
+  goal: slot("emulated", "Tether's goal loop; the goal tools only where its global tether-context passes the session through"),
 };

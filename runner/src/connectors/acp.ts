@@ -42,7 +42,7 @@ const acpRoute = (t: SessionServer["transport"]): McpRoute =>
   t.type === "stdio" ? { how: "session", note: "Per session (ACP)" } : { how: "session", note: `Per session when the agent supports ${t.type.toUpperCase()} servers` };
 
 /** Shared memory ahead of a new session's first message (a resumed one already had it). */
-const preamble = ({ context, resume }: SessionCtx) => (context && !resume ? { preamble: context.prompt } : undefined);
+const preamble = ({ context, resume }: SessionCtx) => (context?.prompt && !resume ? { preamble: context.prompt } : undefined);
 
 /** mcpServers is always sent (an empty list without the context), as newSession requires it. */
 const acpMcp = ({ context, servers, mcpCapabilities }: SessionCtx) => ({ options: { mcpServers: acpMcpServers(context, servers, mcpCapabilities) } });
@@ -84,6 +84,7 @@ export const opencodeConnector: Connector = {
   agents: slot("native", "Agents in its config; not mapped yet"),
   hooks: slot("native", "Plugins; not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
+  goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
 };
 
 // ---------------- Kiro ----------------
@@ -136,4 +137,5 @@ export const kiroConnector: Connector = {
   agents: slot("native", "Custom agents in ~/.kiro/agents; not mapped yet"),
   hooks: slot("native", "Hooks in its agent config; not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
+  goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
 };

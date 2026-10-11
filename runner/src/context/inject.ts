@@ -22,7 +22,8 @@ export function setInjectionEnabled(on: boolean) {
 }
 
 export interface SessionContext {
-  prompt: string;
+  /** absent while the master context is off: `tether-context` then serves only the goal tools */
+  prompt?: string;
   mcp: McpLaunch;
 }
 

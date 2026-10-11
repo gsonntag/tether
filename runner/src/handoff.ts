@@ -132,6 +132,8 @@ export async function buildBrief(opts: {
   cancelled?: UiRequest[];
   /** the old session's background tasks; `stopped` false: Tether couldn't stop it */
   tasks?: { item: ActivityItem; stopped: boolean }[];
+  /** the session's active goal (goal.ts briefSection), which carries over */
+  goal?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
@@ -154,6 +156,7 @@ export async function buildBrief(opts: {
       `These background tasks of the previous agent could not be stopped and may still be running:\n${running.map((t) => `- ${describeTask(t.item)}`).join("\n")}\nCheck on them before starting the same work again.`,
     );
   const interrupted = open.length ? `\n## Interrupted work\n${open.join("\n\n")}\n` : "";
+  const goal = opts.goal?.trim() ? `\n## Goal\n${opts.goal.trim()}\n` : "";
   return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
 You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
 ${memory}
@@ -162,7 +165,7 @@ ${transcript || "(empty)"}
 
 ## Repository state now
 ${repo}
-${interrupted}
+${interrupted}${goal}
 ## What to do
 ${
   opts.pendingPrompt

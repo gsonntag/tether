@@ -12,7 +12,7 @@
 
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { ActivityItem, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import type { ActivityItem, ModelRef, Msg, Part, SessionGoal, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { CodexActivity } from "./codexActivity";
@@ -21,6 +21,7 @@ import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { codexFault } from "../faults";
+import { CODEX_STATUS } from "../goal";
 import { LiveSession, newId } from "../session";
 import { sessionLaunch } from "../connectors/launch";
 import { nativeImagePaths } from "../attachments";
@@ -649,6 +650,10 @@ export class CodexSession extends LiveSession {
       case "thread/name/updated":
         if (p.threadName) this.setTitle(p.threadName);
         break;
+      case "thread/goal/updated":
+        // Codex's own goal (mirrorGoal): what it decided, or our own change coming back.
+        if (p.goal && this.mirrored !== undefined && p.goal.objective === this.mirrored) this.nativeGoalChanged(p.goal.status, p.goal.tokensUsed);
+        break;
       case "model/rerouted":
         this.notice(`Codex moved this turn from ${p.fromModel} to ${p.toModel}.`);
         break;
@@ -860,6 +865,40 @@ export class CodexSession extends LiveSession {
   async continueTurn(text = "Continue where you left off.") {
     this.addUserMessage(text.length > 300 ? text.slice(0, 300) + "…" : text);
     await this.startTurn(text, false);
+  }
+
+  /** the objective Codex's thread goal was last given; undefined: not mirrored (yet) */
+  private mirrored?: string;
+
+  /**
+   * Codex thread goals (app-server thread/goal/*, the `goals` feature): Tether's goal mirrored in,
+   * so Codex's own goal tools and continuation work on it, and its status comes back through
+   * thread/goal/updated (nativeGoalChanged). Tether's copy stays the source of truth. A Codex
+   * without the API (or with goals off) leaves the loop to Tether alone.
+   */
+  protected async mirrorGoal(g: SessionGoal | null) {
+    if (!this.p || this.closed) return;
+    const threadId = this.nativeId;
+    try {
+      if (!g) {
+        this.mirrored = undefined;
+        this.nativeGoal = false;
+        await this.p.call("thread/goal/clear", { threadId, origin: "user" });
+        return;
+      }
+      // One goal per thread: a new objective replaces the old one (after a restart, ask Codex what it has).
+      const cur = this.mirrored ?? ((await this.p.call("thread/goal/get", { threadId })) as any)?.goal?.objective;
+      if (cur !== undefined && cur !== g.objective) await this.p.call("thread/goal/clear", { threadId, origin: "user" });
+      this.mirrored = g.objective;
+      await this.p.call("thread/goal/set", { threadId, origin: "user", objective: g.objective, status: CODEX_STATUS[g.status], tokenBudget: g.budget?.tokens ?? null });
+      this.nativeGoal = true;
+      const now = this.t.state.goal;
+      if (now && now.objective === g.objective && !now.native) this.setState({ goal: { ...now, native: true } });
+    } catch (e) {
+      this.mirrored = undefined;
+      this.nativeGoal = false;
+      throw e;
+    }
   }
 
   async abort() {

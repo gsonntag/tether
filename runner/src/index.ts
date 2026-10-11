@@ -510,6 +510,8 @@ const ops: Handlers = {
     }
     // `/tether …` (dev only) is the runner's own: no shell output rides along on it.
     if (s.devCommand(text)) return {};
+    // `/goal …` too (goal.ts): Tether's own command, on every harness.
+    if (await s.goalCommand(text)) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
