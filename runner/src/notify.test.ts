@@ -151,10 +151,14 @@ describe("memory conflicts", () => {
     const subs: PushSub[] = [
       { endpoint: "a", keys, kinds: ["question", "finished"], addedAt: 1 },
       { endpoint: "b", keys, kinds: ["blocked"], addedAt: 1 },
+      { endpoint: "c", keys, kinds: [], addedAt: 1 },
     ];
     expect(migrateSubs(subs)).toBe(true);
     expect(subs[0]!.kinds).toEqual(["question", "finished", "memory"]);
     expect(subs[1]!.kinds).toEqual(["blocked", "memory"]);
+    // Everything switched off: stays off, but it has now been offered.
+    expect(subs[2]!.kinds).toEqual([]);
+    expect(subs[2]!.offered).toContain("memory");
     expect(subs[0]!.offered).toEqual(["question", "finished", "blocked", "memory"]);
     // Turned off afterwards: stays off.
     subs[0]!.kinds = ["question"];

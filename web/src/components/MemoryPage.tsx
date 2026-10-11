@@ -5,7 +5,7 @@
 // Frame: Astryx's settings template (header + one scrolling column of sections), plus the
 // table-grouped template's resizable detail panel.
 
-import React, { useEffect, useMemo, useState, type CSSProperties } from "react";
+import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -32,7 +32,7 @@ import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { ArrowsRightLeftIcon, MagnifyingGlassIcon, PencilSquareIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import type { ContextImportPreview, ContextSkill, ContextStatus, ContextTurnedOff, MemoryCommit, MemoryConflict, MemoryEntry, MemoryType } from "../shared/protocol";
+import type { ContextActivity, ContextImportPreview, ContextSkill, ContextStatus, ContextTurnedOff, MemoryCommit, MemoryConflict, MemoryEntry, MemoryType } from "../shared/protocol";
 import { act, markNoticeRead, refreshContext, resolveConflict, rpc, useStore } from "../store";
 import { Patch } from "./Changes";
 import { HarnessBadge } from "./HarnessBadge";
@@ -77,6 +77,8 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
   const runnerId = useStore((s) => s.runnerId);
   const focus = useStore((s) => s.memoryFocus);
   const [importing, setImporting] = useState(false);
+  /** when the last "Turn on" started: errors the runner reported since then are shown */
+  const [importedSince, setImportedSince] = useState<number>();
   const [turnedOff, setTurnedOff] = useState<ContextTurnedOff>();
   const [highlight, setHighlight] = useState<string>();
   const [query, setQuery] = useState("");
@@ -137,7 +139,24 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
     setEntries((list) => (next ? list?.map((e) => (e.id === selected ? next : e)) : list?.filter((e) => e.id !== selected)));
     if (!next) setSelected(undefined);
   };
-  const detail = on && current && <MemoryDetail key={current.id} entry={current} onClose={() => setSelected(undefined)} onChanged={onChanged} />;
+  // Side panel (desktop): opening it moves focus into it, Escape closes it and focus goes back to
+  // where it was (the row). Phones get the full-screen Dialog, which does this itself.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const openId = !narrow && on ? current?.id : undefined;
+  useEffect(() => {
+    if (!openId) return;
+    if (!panelRef.current?.contains(document.activeElement)) returnFocus.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus({ preventScroll: true });
+  }, [openId]);
+  const closePanel = () => {
+    setSelected(undefined);
+    const el = returnFocus.current;
+    returnFocus.current = null;
+    if (el?.isConnected) requestAnimationFrame(() => el.focus({ preventScroll: true }));
+  };
+
+  const detail = on && current && <MemoryDetail key={current.id} entry={current} onClose={closePanel} onChanged={onChanged} />;
 
   return (
     <Layout
@@ -160,13 +179,17 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
                 status={status}
                 importing={importing}
                 turnedOff={turnedOff}
+                importErrors={importedSince ? live.filter((a) => a.kind === "error" && a.ts >= importedSince) : []}
+                onDismissErrors={() => setImportedSince(undefined)}
                 onImport={() => {
                   setTurnedOff(undefined);
                   setImporting(true);
+                  setImportedSince(Date.now() - 1000);
                 }}
                 onFailed={() => setImporting(false)}
                 onTurnedOff={(off) => {
                   setTurnedOff(off);
+                  setImportedSince(undefined);
                   setSelected(undefined);
                   setEntries(undefined);
                 }}
@@ -186,7 +209,7 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
             {on && <SkillsSection narrow={narrow} />}
           </VStack>
           {narrow && (
-            <Dialog isOpen={!!detail} onOpenChange={(o) => !o && setSelected(undefined)} purpose="info" variant="fullscreen" padding={4}>
+            <Dialog isOpen={!!detail} onOpenChange={(o) => !o && setSelected(undefined)} purpose="info" variant="fullscreen" padding={4} aria-label="Memory details">
               {detail}
             </Dialog>
           )}
@@ -197,7 +220,24 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
         detail && (
           <>
             <ResizeHandle resizable={panel.props} isReversed isAlwaysVisible={false} />
-            <LayoutPanel hasDivider resizable={panel.props} padding={4} role="complementary" label="Memory details">
+            <LayoutPanel
+              ref={panelRef}
+              tabIndex={-1}
+              onKeyDown={(e) => {
+                // Not from a field (an edit in progress) or an open menu: those handle Escape themselves.
+                const t = e.target as HTMLElement;
+                if (e.key === "Escape" && !e.defaultPrevented && !t.closest("input, textarea, select, [aria-expanded='true'], [role='listbox']")) {
+                  e.preventDefault();
+                  closePanel();
+                }
+              }}
+              style={{ outline: "none" }}
+              hasDivider
+              resizable={panel.props}
+              padding={4}
+              role="complementary"
+              label="Memory details"
+            >
               {detail}
             </LayoutPanel>
           </>
@@ -224,6 +264,8 @@ function StatusSection({
   status,
   importing,
   turnedOff,
+  importErrors,
+  onDismissErrors,
   onImport,
   onFailed,
   onTurnedOff,
@@ -231,11 +273,23 @@ function StatusSection({
   status: ContextStatus;
   importing: boolean;
   turnedOff?: ContextTurnedOff;
+  importErrors: ContextActivity[];
+  onDismissErrors: () => void;
   onImport: () => void;
   onFailed: () => void;
   onTurnedOff: (off?: ContextTurnedOff) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // What went wrong while turning on (the import keeps going past a source it can't read).
+  const errors = importErrors.length > 0 && (
+    <Banner status="warning" title="Some things couldn't be imported" collapsible={false} isDismissable onDismiss={onDismissErrors}>
+      <List density="compact">
+        {importErrors.slice(0, 20).map((a) => (
+          <ListItem key={a.id} label={a.text} />
+        ))}
+      </List>
+    </Banner>
+  );
 
   if (importing) {
     const p = status.progress;
@@ -243,7 +297,7 @@ function StatusSection({
     return (
       <VStack gap={2}>
         <HStack gap={2} vAlign="center">
-          <Spinner size="sm" label="Turning on" />
+          <Spinner size="sm" aria-label="Turning on" />
           <Text type="body" weight="semibold">
             Turning on shared memory
           </Text>
@@ -259,37 +313,41 @@ function StatusSection({
         <Text type="supporting" color="secondary">
           You can leave this page; it keeps going on the runner.
         </Text>
+        {errors}
       </VStack>
     );
   }
 
   if (status.enabled)
     return (
-      <HStack gap={3} vAlign="center" wrap="wrap">
-        <StackItem size="fill">
-          <HStack gap={2} vAlign="center">
-            <StatusDot variant="success" label="On" />
-            <Text type="body" weight="semibold">
-              {`Shared memory is on · ${plural(status.memories, "memory", "memories")} · ${plural(status.skills, "skill")}`}
-            </Text>
-          </HStack>
-        </StackItem>
-        <Button
-          label="Turn off"
-          size="sm"
-          isLoading={busy}
-          onClick={async () => {
-            if (!confirm(TURN_OFF_CONFIRM)) return;
-            setBusy(true);
-            const st = await act("contextDisable", {});
-            setBusy(false);
-            if (!st) return;
-            const { turnedOff: off, ...rest } = st;
-            onTurnedOff(off);
-            useStore.setState({ contextStatus: rest });
-          }}
-        />
-      </HStack>
+      <VStack gap={2}>
+        <HStack gap={3} vAlign="center" wrap="wrap">
+          <StackItem size="fill">
+            <HStack gap={2} vAlign="center">
+              <StatusDot variant="success" label="On" />
+              <Text type="body" weight="semibold">
+                {`Shared memory is on · ${plural(status.memories, "memory", "memories")} · ${plural(status.skills, "skill")}`}
+              </Text>
+            </HStack>
+          </StackItem>
+          <Button
+            label="Turn off"
+            size="sm"
+            isLoading={busy}
+            onClick={async () => {
+              if (!confirm(TURN_OFF_CONFIRM)) return;
+              setBusy(true);
+              const st = await act("contextDisable", {});
+              setBusy(false);
+              if (!st) return;
+              const { turnedOff: off, ...rest } = st;
+              onTurnedOff(off);
+              useStore.setState({ contextStatus: rest });
+            }}
+          />
+        </HStack>
+        {errors}
+      </VStack>
     );
 
   const turnOn = async () => {
@@ -413,7 +471,8 @@ function ImportPreview() {
         {shown.length > 0 && (
           <List density="compact" hasDividers>
             {shown.map((r) => (
-              <ListItem key={r.key} label={r.label} description={r.description} startContent={r.start} />
+              // The label wraps (a plain string is cut to one line): on a phone the path is the point.
+              <ListItem key={r.key} label={<Text style={preWrap}>{r.label}</Text>} description={r.description} startContent={r.start} />
             ))}
           </List>
         )}
@@ -624,7 +683,6 @@ function MemoryDetail({ entry, onClose, onChanged }: { entry: MemoryEntry; onClo
     }
   };
   const remove = async () => {
-    if (!confirm(`Delete “${entry.description || entry.name}” from every harness's memory? It stays in the git history.`)) return;
     setBusy(true);
     const r = await act("editMemory", { id: entry.id, remove: true });
     setBusy(false);

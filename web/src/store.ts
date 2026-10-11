@@ -476,7 +476,6 @@ export async function refreshContext() {
 
 function onContextEvent(e: ContextEvent) {
   if (e.type === "status") set({ contextStatus: e.status });
-  else if (e.type === "notice") set((s) => ({ notices: [e.notice, ...s.notices.filter((n) => n.id !== e.notice.id)] }));
   else if (e.type === "conflict") {
     const c = e.conflict;
     set((s) => ({ conflicts: [...(c.status === "open" ? [c] : []), ...s.conflicts.filter((x) => x.id !== c.id)] }));

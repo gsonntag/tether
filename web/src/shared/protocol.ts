@@ -659,9 +659,7 @@ export interface BackgroundModelSetting {
 export type ContextEvent =
   | { type: "activity"; activity: ContextActivity }
   | { type: "conflict"; conflict: MemoryConflict }
-  | { type: "status"; status: ContextStatus }
-  /** a memory-conflict notification was recorded (runner/src/notify.ts), for the bell */
-  | { type: "notice"; notice: AgentNotice };
+  | { type: "status"; status: ContextStatus };
 
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {

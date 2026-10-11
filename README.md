@@ -146,7 +146,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - **Memory conflicts:** a new memory contradicted an older one and the newest was kept. One
     merge pass sends at most one ("3 memory conflicts"), later ones within a minute wait and go
     out together, and a pass that ends back where it started sends nothing. Tapping it opens the
-    Memory page at that conflict. On by default, also for devices subscribed before it existed.
+    Memory page at that conflict. On by default, also for devices subscribed before it existed
+    (unless every kind was switched off there). Nothing waiting goes out once memory is turned off.
 
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone

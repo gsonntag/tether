@@ -64,10 +64,12 @@ const context = new ContextService({
 // A merge pass's contradictions go out as one push; within a minute of one, the next wait and batch.
 const conflictNotifier = new ConflictNotifier({
   windowMs: 60_000,
-  isOpen: (id) => context.store.conflicts().some((c) => c.id === id && c.status === "open"),
+  // Turned off while a batch waited: nothing goes out (the page it links to is off too).
+  isOpen: (id) => context.enabled && context.store.conflicts().some((c) => c.id === id && c.status === "open"),
   send: (list) => {
-    const notice = notifyConflicts(list);
-    if (notice) send({ t: "context", event: { type: "notice", notice } }); // straight into open bells
+    // Open bells refetch on a bare "sessions" message, which tabs from before this kind existed
+    // handle too (a new context event type would throw in their handler).
+    if (notifyConflicts(list)) send({ t: "sessions" });
   },
 });
 // `/skill` in the message box: the registry's skills once the master context has been imported.

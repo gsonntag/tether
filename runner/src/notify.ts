@@ -40,7 +40,8 @@ export function migrateSubs(subs: PushSub[]): boolean {
     const offered = s.offered ?? LEGACY_KINDS;
     const fresh = ALL_KINDS.filter((k) => !offered.includes(k));
     if (s.offered && !fresh.length) continue;
-    for (const k of fresh) if (DEFAULT_ON.includes(k) && !s.kinds.includes(k)) s.kinds.push(k);
+    // A device with every kind switched off stays that way.
+    if (s.kinds.length) for (const k of fresh) if (DEFAULT_ON.includes(k) && !s.kinds.includes(k)) s.kinds.push(k);
     s.offered = [...ALL_KINDS];
     changed = true;
   }

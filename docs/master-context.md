@@ -164,7 +164,9 @@ Tools: `memory_search(query, scope?)`, `memory_get(slug)`, `memory_write(text, t
   but isn't shown.
 - **Inline conflict card** in session transcript; **Needs-you** inbox item for conflicts.
 - **Push notification** (kind `memory`, runner/src/notify.ts) for the conflicts a sync pass leaves
-  open, batched per pass and throttled to one a minute; deep link `#/r/<runner>/memory?conflict=<id>`.
+  open, batched per pass and throttled to one a minute (a batch still waiting when it's turned off
+  is dropped); deep link `#/r/<runner>/memory?conflict=<id>`. Open bells pick it up from a bare
+  `sessions` message (no new event type, so tabs loaded before this release don't throw).
 - **Settings → Background model** (shared with the safety judge).
 
 ## Open risks
