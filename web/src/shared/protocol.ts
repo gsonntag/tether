@@ -433,6 +433,8 @@ export interface SessionSummary {
   archived?: boolean;
   /** activity items running or armed right now (subagents, shells, …) */
   activeCount?: number;
+  /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
+  workingCount?: number;
 }
 
 /**

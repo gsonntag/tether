@@ -55,6 +55,12 @@ describe("showInSidebar", () => {
     expect(showInSidebar(session("a", old, { activeCount: 2, live: true }), ctx())).toBe(true);
     expect(showInSidebar(session("a", old, { needsInput: true, live: true }), ctx())).toBe(true);
     expect(showInSidebar(session("a", old, { activeCount: 0, live: true }), ctx())).toBe(false);
+    // Only an armed wakeup or cron job: listed by age, like an idle session.
+    expect(showInSidebar(session("a", old, { activeCount: 1, workingCount: 0, live: true }), ctx())).toBe(false);
+    expect(showInSidebar(session("a", DAY, { activeCount: 1, workingCount: 0, live: true }), ctx())).toBe(true);
+    expect(showInSidebar(session("a", old, { activeCount: 2, workingCount: 1, live: true }), ctx())).toBe(true);
+    // An older runner doesn't say what's working: all of it counts.
+    expect(showInSidebar(session("a", old, { activeCount: 1, live: true }), ctx())).toBe(true);
     expect(isBusy(session("a", old))).toBe(false);
   });
 

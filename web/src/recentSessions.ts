@@ -20,9 +20,14 @@ export function hasUnreadNotice(s: Pick<SessionSummary, "id">, c: Pick<RecentCon
   return !!n && n.ts > c.noticesSeen && !c.noticesRead.includes(n.id);
 }
 
-/** A session that's doing something or waiting on you: listed whatever its age. */
+/**
+ * A session that's doing something or waiting on you: listed whatever its age. Background work
+ * counts only while it works: a session whose only activity is an armed wakeup or cron job is
+ * listed by its age like any other (an older runner sends no workingCount: then all of it counts).
+ */
 export function isBusy(s: SessionSummary): boolean {
-  return s.status !== "idle" || !!s.needsInput || (s.activeCount ?? 0) > 0;
+  const working = s.activeCount ? (s.workingCount ?? s.activeCount) : 0;
+  return s.status !== "idle" || !!s.needsInput || working > 0;
 }
 
 /**

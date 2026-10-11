@@ -146,7 +146,9 @@ export abstract class LiveSession {
       // A closed session has no process, so nothing can be running.
       status: this.closed ? "idle" : this.t.state.status,
       needsInput: this.t.state.pendingUi.length > 0,
-      ...(this.activeCount ? { activeCount: this.activeCount } : {}),
+      // workingCount always rides along, so 0 tells "only armed wakeups / cron jobs" apart from an
+      // older runner that never sent it.
+      ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount } : {}),
     };
   }
 
@@ -319,6 +321,7 @@ export abstract class LiveSession {
   // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
 
   private lastActiveCount = 0;
+  private lastWorkingCount = 0;
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
@@ -386,8 +389,10 @@ export abstract class LiveSession {
 
   private activityChanged() {
     const n = this.activeCount;
-    if (n !== this.lastActiveCount) {
+    const working = this.workingCount;
+    if (n !== this.lastActiveCount || working !== this.lastWorkingCount) {
       this.lastActiveCount = n;
+      this.lastWorkingCount = working;
       this.sink.summary(this.summary());
       this.savePrefs();
       this.armIdle();

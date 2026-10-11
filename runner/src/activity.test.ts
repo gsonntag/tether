@@ -204,6 +204,7 @@ describe("activity in the session", () => {
     const s = fake();
     s.upsertActivity(item("a1"), item("w", { kind: "schedule", status: "waiting" }));
     expect(summaries.at(-1)!.activeCount).toBe(2);
+    expect(summaries.at(-1)!.workingCount).toBe(1);
     await s.stopActivity("a1");
     expect((s as any).stopped).toEqual(["a1"]);
     s.upsertActivity(item("x", { stoppable: false }));
@@ -212,6 +213,14 @@ describe("activity in the session", () => {
     // Closing the process ends what it ran.
     expect(s.t.state.activity!.every((a) => a.status === "stopped")).toBe(true);
     expect(summaries.at(-1)!.activeCount).toBeUndefined();
+  });
+
+  test("an armed wakeup alone counts as active but not working", () => {
+    const s = fake();
+    s.upsertActivity(item("a1"), item("w", { kind: "schedule", status: "waiting" }));
+    s.upsertActivity(item("a1", { status: "done" }));
+    expect(summaries.at(-1)).toMatchObject({ activeCount: 1, workingCount: 0 });
+    s.close();
   });
 
   test("progress on a running item is batched; new items and status changes go out at once", async () => {
