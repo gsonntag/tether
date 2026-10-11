@@ -100,7 +100,7 @@ async function send(sub: PushSub, n: AgentNotice, throwErrors = false) {
   const payload = JSON.stringify({ ...n, runnerId: config().runnerId });
   try {
     await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, payload, {
-      vapidDetails: { subject: "mailto:tether@localhost", publicKey: st.vapid.publicKey, privateKey: st.vapid.privateKey },
+      vapidDetails: { subject: pushSubject(), publicKey: st.vapid.publicKey, privateKey: st.vapid.privateKey },
       TTL: 24 * 3600,
       urgency: n.kind === "finished" ? "normal" : "high",
       // A newer "finished"/"blocked" for a session replaces an undelivered one; questions all arrive.
@@ -112,6 +112,19 @@ async function send(sub: PushSub, n: AgentNotice, throwErrors = false) {
     else console.error(`push to ${new URL(sub.endpoint).host} failed: ${e?.statusCode ?? ""} ${e?.body ?? e?.message ?? e}`);
     if (throwErrors) throw new Error(`Push failed: ${e?.statusCode ?? ""} ${e?.body ?? e?.message ?? e}`.trim());
   }
+}
+
+/**
+ * The VAPID `sub` claim. Apple's push service rejects a `localhost` address (403 BadJwtToken)
+ * where others don't, so use the app's own https URL; TETHER_PUSH_SUBJECT overrides it.
+ */
+export function pushSubject(env: Record<string, string | undefined> = process.env): string {
+  if (env.TETHER_PUSH_SUBJECT) return env.TETHER_PUSH_SUBJECT;
+  try {
+    const u = new URL(env.TETHER_URL ?? "");
+    if (u.protocol === "https:" && u.hostname !== "localhost") return u.origin;
+  } catch {}
+  return "mailto:tether@example.com";
 }
 
 /** Push services replace an undelivered message with the same topic (≤32 url-safe chars). */

@@ -129,3 +129,11 @@ describe("session triggers", () => {
     s.close();
   });
 });
+
+test("the push subject is never a localhost address (Apple rejects it)", async () => {
+  const { pushSubject } = await import("./notify");
+  expect(pushSubject({ TETHER_URL: "https://tether--x.foliation.dev/" })).toBe("https://tether--x.foliation.dev");
+  expect(pushSubject({ TETHER_URL: "http://localhost:8787" })).toBe("mailto:tether@example.com");
+  expect(pushSubject({})).toBe("mailto:tether@example.com");
+  expect(pushSubject({ TETHER_PUSH_SUBJECT: "mailto:me@x.dev", TETHER_URL: "https://a.dev" })).toBe("mailto:me@x.dev");
+});
