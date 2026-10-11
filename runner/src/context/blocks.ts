@@ -62,11 +62,14 @@ export function upsertBlock(text: string, content: string | undefined): string {
 export const TOML_BEGIN = "# tether:begin (managed, edits here are overwritten)";
 export const TOML_END = "# tether:end";
 
-export function upsertTomlBlock(text: string, content: string | undefined): string {
+/** `name`: another block of Tether's in the same file (the MCP registry's `tether-mcp`). */
+export function upsertTomlBlock(text: string, content: string | undefined, name = "tether"): string {
   const lines = text.split("\n");
-  const b = lines.findIndex((l) => l.trim().startsWith("# tether:begin"));
-  const e = b >= 0 ? lines.findIndex((l, i) => i > b && l.trim() === TOML_END) : -1;
-  const block = content === undefined ? [] : [TOML_BEGIN, ...content.trim().split("\n"), TOML_END];
+  const begin = name === "tether" ? TOML_BEGIN : `# ${name}:begin (managed, edits here are overwritten)`;
+  const endMark = name === "tether" ? TOML_END : `# ${name}:end`;
+  const b = lines.findIndex((l) => l.trim().startsWith(`# ${name}:begin`));
+  const e = b >= 0 ? lines.findIndex((l, i) => i > b && l.trim() === endMark) : -1;
+  const block = content === undefined ? [] : [begin, ...content.trim().split("\n"), endMark];
   if (b >= 0) {
     // Without an end marker only the begin line is ours: never swallow the user's config.
     const end = e >= 0 ? e : b;

@@ -37,6 +37,7 @@ import { contextDir, tilde } from "./paths";
 import { repoKey } from "./repokey";
 import { applySkillPlan, awaitsSkillMd, disabledSet, isOwnSkillEvent, listSkills, planSkills, readMeta, skillWatchTargets, unlinkAll, unlinkSkill, writeMeta } from "./skills";
 import { scanSources, watchTargets } from "./sources";
+import { importServers as importMcpServers, previewImport as previewMcpImport } from "../mcp/registry";
 import { Store } from "./store";
 import { Watcher } from "./watch";
 
@@ -47,6 +48,8 @@ export interface ContextOptions {
   sessionForKey?: (key: string) => string | undefined;
   /** project paths, for repo-scoped skills */
   projects?: () => string[];
+  /** every project the runner knows (with sessions too), for the MCP import's .mcp.json files */
+  allProjects?: () => Promise<string[]>;
   /** the fact extractor run before a handoff (default: the background model) */
   extractor?: Extractor;
   /** a sync pass ended with new open conflicts (merge.ts conflictsToNotify): push notifications */
@@ -174,7 +177,8 @@ export class ContextService {
     const meta = this.meta();
     const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta), meta);
     const exp = await exportAll(this.store, { dryRun: true, globalMcp: true });
-    scan.warnings.push(...(plan.warnings ?? []));
+    const mcp = await previewMcpImport(await this.mcpProjects()).catch((e: any) => ({ names: [], warnings: [`MCP servers: ${e?.message ?? e}`] }));
+    scan.warnings.push(...(plan.warnings ?? []), ...mcp.warnings);
     return {
       memories: scan.entries.map((e) => ({ harness: e.harness, path: tilde(e.path), title: e.title, scope: e.scope ?? "decided on import" })),
       skills: plan.skills.map((s) => ({ name: s.name, from: s.from ? tilde(s.from.path) : "library", drift: s.drift, exposedAs: s.exposedAs })),
@@ -182,6 +186,7 @@ export class ContextService {
       symlinks: plan.symlinks.map((l) => ({ path: tilde(l.path), target: tilde(l.target) })),
       managedFiles: exp.written.map(tilde),
       mcpConfigs: exp.mcpConfigs.map(tilde),
+      mcpServers: mcp.names,
       warnings: [...scan.warnings, ...exp.warnings],
     };
   }
@@ -208,6 +213,7 @@ export class ContextService {
           for (const w of g.warnings) this.act({ kind: "error", text: w });
           if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
         });
+        await this.importMcpServers();
         if (this.enabled) this.watch();
         this.act({ kind: "import", text: "Import finished" });
       } finally {
@@ -216,6 +222,21 @@ export class ContextService {
       }
     })().catch((e) => this.act({ kind: "error", text: `Import failed: ${e?.message ?? e}` }));
     return this.status();
+  }
+
+  private async mcpProjects(): Promise<string[]> {
+    return (await this.opts.allProjects?.().catch(() => undefined)) ?? this.opts.projects?.() ?? [];
+  }
+
+  /** The user's own MCP servers, from every harness's config into Tether's MCP registry (runner/src/mcp/). */
+  private async importMcpServers() {
+    try {
+      const r = await importMcpServers(await this.mcpProjects());
+      for (const w of r.warnings) this.act({ kind: "error", text: w });
+      if (r.added.length) this.act({ kind: "import", text: `Added ${r.added.length === 1 ? "1 MCP server" : `${r.added.length} MCP servers`} to Tether: ${r.added.join(", ")}` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `MCP servers weren't imported: ${e?.message ?? e}` });
+    }
   }
 
   /** Resolves when the import started by runImport() (if any) and any sync pass are done. */

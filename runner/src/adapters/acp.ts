@@ -299,12 +299,13 @@ class AcpSession extends LiveSession {
     });
     this.p.permission = (r) => this.onPermission(r);
     await this.p.init();
-    // Master context (its connector): the tether-context MCP server, and shared memory as a
-    // first-message preamble.
+    // Its connector: the MCP registry's servers (HTTP/SSE ones only if the agent takes them) and
+    // the tether-context MCP server, and shared memory as a first-message preamble.
     const launch = await sessionLaunch(this.spec.id, {
       projectPath: this.projectPath,
       session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY },
       resume: this.opts.resume,
+      mcpCapabilities: this.p.caps?.mcpCapabilities,
     });
     const mcpServers = launch.options.mcpServers ?? [];
     if (!this.opts.resume) this.preamble = launch.preamble;

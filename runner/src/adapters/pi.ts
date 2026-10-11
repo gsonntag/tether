@@ -333,9 +333,9 @@ class PiSession extends LiveSession {
     if (this.opts.model) args.push("--model", this.opts.model);
     // Every tool call goes through the Tether guard (pi has no permission system of its own).
     args.push("-e", PI_GUARD_EXT);
-    // Master context (its connector): shared memory in the system prompt, and this session's own
-    // tether-context MCP server through pi-mcp-adapter's --mcp-config (else the global mcp.json
-    // registration).
+    // Its connector: shared memory in the system prompt, and this session's own tether-context
+    // MCP server and the MCP registry's servers through pi-mcp-adapter's --mcp-config (else the
+    // global mcp.json registrations).
     const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY } });
     args.push(...launch.args);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);

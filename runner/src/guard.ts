@@ -15,6 +15,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { attachmentsDir, isAttachmentPath } from "./attachments";
 import { config } from "./config";
 import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
+import { trustedServerFor, type McpTrust } from "./mcp/registry";
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
@@ -28,6 +29,8 @@ export interface ToolCall {
    * and those of sessions handed off to it. Undefined: any.
    */
   attachments?: string[];
+  /** the session's trusted MCP servers (mcp/registry.ts sessionTrust); none without it */
+  mcp?: McpTrust;
 }
 
 export interface Verdict {
@@ -348,6 +351,9 @@ export function attachmentWrite(call: ToolCall): Verdict | undefined {
 export function rules(call: ToolCall): Verdict | undefined {
   if (isContextTool(call.tool, call.input)) return { decision: "allow", by: "rule", reason: "Tether memory and skills." };
   const kind = kindOf(call.tool);
+  // MCP servers the user marked trusted in Tether's registry (runner/src/mcp/); others go to the judge.
+  const trusted = kind === "mcp" || kind === "other" ? trustedServerFor(call.tool, call.input, true, call.mcp) : undefined;
+  if (trusted) return { decision: "allow", by: "rule", reason: `Trusted MCP server ${trusted.name}.` };
   const cwd = call.cwd;
   switch (kind) {
     case "meta":

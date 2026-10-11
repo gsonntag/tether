@@ -8,7 +8,7 @@
 // Called only from the user's import (register) and from turning the context off (unregister).
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { applyEdits, modify, parse, type FormattingOptions, type ParseError } from "jsonc-parser";
+import { applyEdits, findNodeAtLocation, modify, parse, parseTree, type FormattingOptions, type ParseError } from "jsonc-parser";
 import { mcpLaunch, MCP_SCRIPT } from "./launch";
 import { harness, tilde } from "./paths";
 
@@ -42,10 +42,51 @@ export function editJson(text: string, path: string[], value: unknown): string {
   return text.trim() || value !== undefined ? out : text;
 }
 
+/** Leading whitespace of the line `offset` is on, when nothing but whitespace precedes it there. */
+function lineIndent(text: string, offset: number): string | undefined {
+  const start = text.lastIndexOf("\n", offset - 1) + 1;
+  const lead = text.slice(start, offset);
+  return /^[ \t]*$/.test(lead) ? lead : undefined;
+}
+
+/**
+ * editJson for one entry among the user's own (the MCP registry's export): jsonc-parser's formatter
+ * reformats whole lines around an edit, which would expand a sibling written on one line. Here an
+ * entry is added after the last sibling, replaced in place, or removed together with its separator
+ * only, so adding and then removing an entry gives back the same bytes. An empty object or entries
+ * sharing a line get the entry compact (jsonc-parser unformatted); a missing parent goes to editJson.
+ */
+export function editJsonEntry(text: string, path: string[], value: unknown): string {
+  const unformatted = () => applyEdits(text, modify(text, path, value, {}));
+  if (value === undefined) return unformatted();
+  const root = parseTree(text, [], { allowTrailingComma: true });
+  const f = formatting(text);
+  const unit = f.insertSpaces ? " ".repeat(f.tabSize ?? 2) : "\t";
+  const pretty = (indent: string) => JSON.stringify(value, null, unit).split("\n").join(f.eol + indent);
+  const cur = root && findNodeAtLocation(root, path);
+  const prop = cur?.parent;
+  const propIndent = prop ? lineIndent(text, prop.offset) : undefined;
+  if (cur) return propIndent !== undefined ? text.slice(0, cur.offset) + pretty(propIndent) + text.slice(cur.offset + cur.length) : unformatted();
+  const parent = root ? findNodeAtLocation(root, path.slice(0, -1)) : undefined;
+  const last = parent?.type === "object" ? parent.children?.at(-1) : undefined;
+  const indent = last ? lineIndent(text, last.offset) : undefined;
+  if (parent?.type !== "object") return editJson(text, path, value);
+  // An empty object, or entries sharing a line (minified JSON): compact, like the line it joins.
+  if (!last || indent === undefined) return unformatted();
+  const entry = `${JSON.stringify(path.at(-1))}: ${pretty(indent)}`;
+  let at = last.offset + last.length;
+  const comma = /^\s*,/.exec(text.slice(at, parent!.offset + parent!.length - 1)); // a trailing comma (JSONC)
+  if (comma) {
+    at += comma[0].length;
+    return text.slice(0, at) + f.eol + indent + entry + "," + text.slice(at);
+  }
+  return text.slice(0, at) + "," + f.eol + indent + entry + text.slice(at);
+}
+
 const readOr = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");
 
 /** The file a (possibly symlinked, e.g. dotfile-managed) config really lives in. */
-function target(path: string): string {
+export function target(path: string): string {
   try {
     return realpathSync(path);
   } catch {
@@ -118,16 +159,24 @@ export function writeConfigAtomic(path: string, text: string, unchanged: () => b
  *     the rename);
  *  3. after the rename, the result is read back: if another writer replaced it with a copy that
  *     lacks our change (a stale in-memory config written whole), the edit is retried.
- * The text outside our key is never re-serialized, so retries can't reformat anything.
+ * The text outside our key is never re-serialized, so retries can't reformat anything. `what`
+ * names the change in warnings (the MCP registry's export, runner/src/mcp/export.ts, uses this too).
  */
-function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => string | undefined, out: GlobalMcpResult, before?: (path: string) => void): boolean {
+export function updateConfig(
+  path: string,
+  jsonc: boolean,
+  edit: (text: string, cfg: any) => string | undefined,
+  out: GlobalMcpResult,
+  before?: (path: string) => void,
+  what = "tether-context",
+): boolean {
   const real = target(path);
   for (let attempt = 0; attempt < 5; attempt++) {
     if (attempt) Bun.sleepSync(50 * attempt);
     const text = readOr(real);
     const { value, ok } = parseConfig(text, jsonc);
     if (!ok) {
-      out.warnings.push(`${tilde(path)} couldn't be parsed; change tether-context there by hand.`);
+      out.warnings.push(`${tilde(path)} couldn't be parsed; change ${what} there by hand.`);
       return false;
     }
     const next = edit(text, value);
@@ -156,7 +205,7 @@ function update(path: string, jsonc: boolean, edit: (text: string, cfg: any) => 
     out.written.push(path);
     return true;
   }
-  out.warnings.push(`${tilde(path)} kept changing; tether-context there wasn't updated. Try again in a moment.`);
+  out.warnings.push(`${tilde(path)} kept changing; ${what} there wasn't updated. Try again in a moment.`);
   return false;
 }
 
@@ -182,7 +231,7 @@ function claudeEntry() {
   return { type: "stdio", command: l.command, args: l.args, env: l.env };
 }
 
-function claudeInstalled() {
+export function claudeInstalled() {
   return existsSync(harness.claudeJson()) || existsSync(harness.claudeDir());
 }
 
@@ -203,7 +252,7 @@ export function opencodeConfigPath(): string {
 // ---------------- register / unregister ----------------
 
 export function register(path: string, key: string, want: object, jsonc: boolean, out: GlobalMcpResult, before?: (path: string) => void) {
-  const done = update(
+  const done = updateConfig(
     path,
     jsonc,
     (text, cfg) => {
@@ -222,7 +271,7 @@ export function register(path: string, key: string, want: object, jsonc: boolean
 
 function unregister(path: string, key: string, jsonc: boolean, out: GlobalMcpResult) {
   if (!existsSync(path)) return;
-  update(
+  updateConfig(
     path,
     jsonc,
     (text, cfg) => {

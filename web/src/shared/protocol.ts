@@ -703,6 +703,8 @@ export interface ContextImportPreview {
   managedFiles: string[];
   /** MCP configs where `tether-context` will be registered */
   mcpConfigs: string[];
+  /** MCP servers in the harnesses' configs that the import adds to Tether's MCP registry (older runners: absent) */
+  mcpServers?: string[];
   /** sources that couldn't be read (shown, not fatal) */
   warnings: string[];
 }
@@ -766,6 +768,52 @@ export interface SlotCapability {
 
 /** The capability matrix: what each harness supports per slot. */
 export type HarnessCapabilities = Record<HarnessId, Record<SlotId, SlotCapability>>;
+
+// ---------- MCP registry (runner/src/mcp/) ----------
+
+/** How a registry MCP server is reached. */
+export type McpTransport =
+  | { type: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string }
+  | { type: "http" | "sse"; url: string; headers: Record<string, string> };
+
+/**
+ * How one harness gets a registry server:
+ *   session  injected into each Tether session at launch
+ *   global   written into the harness's own global config (no per-session path)
+ *   native   already in the harness's own config: left alone, not injected again
+ *   none     not delivered (turned off, out of scope, or the harness can't take it)
+ */
+export interface McpDelivery {
+  harness: HarnessId;
+  how: "session" | "global" | "native" | "none";
+  note: string;
+}
+
+/** A registry server as the web app sees it: env and header values stay on the runner. */
+export interface McpServerView {
+  id: string;
+  name: string;
+  /** "global" or "repo:<repo-key>" */
+  scope: string;
+  enabled: boolean;
+  /** its tools are allowed by the guard without the judge or a person */
+  trusted: boolean;
+  type: McpTransport["type"];
+  /** the command line or URL */
+  summary: string;
+  envKeys: string[];
+  headerKeys: string[];
+  /** provenance: "claude:~/.claude.json", "codex:~/.codex/config.toml", "you", … */
+  sources: string[];
+  delivery: McpDelivery[];
+}
+
+export interface McpFindResult {
+  servers: McpServerView[];
+  /** names of servers new to the registry */
+  added: string[];
+  warnings: string[];
+}
 
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {
@@ -900,6 +948,17 @@ export interface Ops {
    * copies). The store and its backups are kept; importing again turns it back on.
    */
   contextDisable: { args: {}; result: ContextStatus & { turnedOff?: ContextTurnedOff } };
+  // MCP registry
+  listMcpServers: { args: {}; result: McpServerView[] };
+  /**
+   * Adds servers from pasted text: a command line, a URL, or a JSON snippet (`{"mcpServers": …}`,
+   * `{"name": {…}}` or one server's object). `scope`: "global" or a project path (its repo).
+   */
+  addMcpServer: { args: { text: string; name?: string; scope?: string }; result: McpServerView[] };
+  /** turns a server on or off, marks it trusted, or removes it (and only Tether's copies in harness configs) */
+  setMcpServer: { args: { id: string; enabled?: boolean; trusted?: boolean; remove?: boolean }; result: McpServerView[] };
+  /** "Find servers": imports every harness's MCP config into the registry */
+  findMcpServers: { args: {}; result: McpFindResult };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };

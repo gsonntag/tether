@@ -6,11 +6,13 @@ import { existsSync, mkdirSync, readdirSync, readlinkSync, rmSync, statSync } fr
 import { join } from "node:path";
 import { invocationText } from "../../../web/src/shared/skill";
 import { isTetherOwned, OWNED_MARK } from "../context/blocks";
-import { registerClaudeMcp } from "../context/globalMcp";
+import { claudeInstalled, registerClaudeMcp } from "../context/globalMcp";
 import { harness, tilde } from "../context/paths";
 import { claudeProjectScope } from "../context/repokey";
+import { toEntry } from "../mcp/formats";
+import { claudeServers, claudeSessionServers } from "../mcp/sources";
 import { cap, repoDirs, slot } from "./shared";
-import type { Connector, ExportContext } from "./types";
+import type { Connector, ExportContext, SessionCtx } from "./types";
 
 export const INDEX_LINE = "- [Tether shared memory](tether.md) — repo facts shared by every agent (managed by Tether; edits are overwritten)";
 export const isIndexLine = (l: string) => l.trim() === INDEX_LINE || /^- \[Tether shared memory\]\(tether\.md\)/.test(l.trim());
@@ -79,6 +81,14 @@ async function claudeRepoFiles(x: ExportContext) {
   }
 }
 
+/** SDK `mcpServers`: the registry's servers for this session, and `tether-context`. */
+function claudeMcp({ context, servers }: SessionCtx) {
+  const mcpServers: Record<string, unknown> = {};
+  for (const s of servers ?? []) mcpServers[s.name] = toEntry(s.transport, "claude");
+  if (context) mcpServers["tether-context"] = { type: "stdio" as const, ...context.mcp };
+  return Object.keys(mcpServers).length ? { options: { mcpServers } } : undefined;
+}
+
 export const claudeConnector: Connector = {
   id: "claude-code",
   memory: {
@@ -89,9 +99,13 @@ export const claudeConnector: Connector = {
   },
   mcp: {
     capability: () => cap("native", "SDK MCP servers per session; ~/.claude.json on import"),
-    forSession: ({ context }) => (context ? { options: { mcpServers: { "tether-context": { type: "stdio" as const, ...context.mcp } } } } : undefined),
+    forSession: claudeMcp,
     sharedConfig: true,
     exportGlobal: (x) => registerClaudeMcp(x.out, (p) => x.remember(p)),
+    importGlobal: () => claudeServers({ projects: true }),
+    native: (projectPath) => claudeSessionServers(projectPath).found,
+    deliver: () => ({ how: "session", note: "Per session (SDK MCP servers)" }),
+    targets: () => [{ file: harness.claudeJson(), installed: claudeInstalled(), format: "json", key: "mcpServers", flavor: "claude" }],
   },
   skills: {
     capability: () => cap("native", "Runs skills as /name from ~/.claude/skills and .claude/skills"),

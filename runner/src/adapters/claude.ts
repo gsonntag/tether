@@ -336,7 +336,7 @@ class ClaudeSession extends LiveSession {
     const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
-    // Master context (its connector): shared memory in the system prompt, and the tether-context MCP server.
+    // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
     this.q = query({
       prompt: this.input,

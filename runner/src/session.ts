@@ -29,6 +29,7 @@ import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { connectorFor } from "./connectors";
+import { sessionTrust } from "./mcp/registry";
 import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
 
@@ -1203,7 +1204,10 @@ export abstract class LiveSession {
    * harness's own allow/deny. `_meta` is harness-specific context from an out-of-process gate.
    */
   async checkTool(tool: string, input: unknown, toolId?: string, _meta?: Record<string, unknown>): Promise<{ allow: boolean; reason?: string; always?: boolean }> {
-    const call = { tool, input, cwd: this.projectPath, attachments: this.attachmentFolders() };
+    const kind = kindOf(tool);
+    // The registry's trusted MCP servers, as they apply to this harness in this repo.
+    const mcp = kind === "mcp" || kind === "other" ? await sessionTrust(this.harness, this.projectPath).catch(() => undefined) : undefined;
+    const call = { tool, input, cwd: this.projectPath, attachments: this.attachmentFolders(), mcp };
     const key = JSON.stringify([tool, input]);
     let v: Verdict;
     let always = false;

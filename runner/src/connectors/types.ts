@@ -3,13 +3,16 @@
 // (runner/src/adapters/) runs turns; it asks the connector what to add to a launch instead of
 // wiring each feature itself. Every slot says how the harness supports it (capability), what a
 // session launch needs (forSession) and, where the harness has native config files, how Tether
-// writes them (exportGlobal; importGlobal is reserved for the MCP registry).
+// writes them (exportGlobal). The MCP slot also reads the harness's own servers (importGlobal,
+// native) and names the config files the MCP registry exports to (targets).
 
-import type { CapabilityLevel, HarnessId, SlotCapability, SlotId } from "../../../web/src/shared/protocol";
+import type { CapabilityLevel, HarnessId, McpTransport, SlotCapability, SlotId } from "../../../web/src/shared/protocol";
 import type { ExportResult } from "../context/export";
 import type { SessionContext } from "../context/inject";
 import type { SkillDir } from "../context/skills";
 import type { Store } from "../context/store";
+import type { Flavor } from "../mcp/formats";
+import type { Found, Scan } from "../mcp/sources";
 
 export type { CapabilityLevel, SlotCapability, SlotId };
 
@@ -22,6 +25,16 @@ export interface SessionCtx {
   resume?: boolean;
   /** the master context for this session; undefined while the feature is off */
   context?: SessionContext;
+  /** MCP registry servers for this session: on, in scope, and not already in the harness's own config */
+  servers?: SessionServer[];
+  /** ACP: the agent's `mcpCapabilities` from initialize (HTTP and SSE servers only when it has them) */
+  mcpCapabilities?: { http?: boolean; sse?: boolean };
+}
+
+/** A registry server as a launch gets it (credentials attached). */
+export interface SessionServer {
+  name: string;
+  transport: McpTransport;
 }
 
 /** One slot's (or the whole connector's) contribution to a launch. */
@@ -59,8 +72,6 @@ export interface Slot {
   capability(): SlotCapability;
   forSession?(ctx: SessionCtx): Partial<SessionLaunch> | undefined;
   exportGlobal?(x: ExportContext): void | Promise<void>;
-  /** Reads the harness's native config into Tether's registry. No slot implements it yet (MCP registry, Phase 2). */
-  importGlobal?(): Promise<unknown[]>;
 }
 
 export interface MemorySlot extends Slot {
@@ -76,6 +87,33 @@ export interface McpSlot extends Slot {
    * only the user's own import registers there, never a background re-export.
    */
   sharedConfig?: boolean;
+  /** the MCP servers in the harness's own global config (the registry's import) */
+  importGlobal?(): Scan;
+  /** the servers the harness loads by itself in a session in `projectPath` (Decision 2: never injected again) */
+  native?(projectPath: string): Found[];
+  /** how a registry server with this transport reaches the harness */
+  deliver(t: McpTransport): McpRoute;
+  /** the global config files the registry's export writes (installed or not) */
+  targets?(): McpTarget[];
+}
+
+export interface McpRoute {
+  /** session: per-session injection; global: only through its global config; none: can't */
+  how: "session" | "global" | "none";
+  note: string;
+}
+
+/** A harness config file the MCP registry exports global servers into. */
+export interface McpTarget {
+  file: string;
+  /** the harness is set up here (its dir exists) */
+  installed: boolean;
+  /** json: `{ <key>: { name: entry } }`, edited in place; toml: Codex's managed block */
+  format: "json" | "toml";
+  key?: string;
+  flavor: Flavor;
+  /** comments and trailing commas allowed */
+  jsonc?: boolean;
 }
 
 /** A harness skill dir as a session reads it (read only). */

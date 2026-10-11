@@ -34,6 +34,7 @@ import type { HandoffOpts, LiveSession } from "./session";
 import { ContextService } from "./context";
 import { useContextSkills } from "./skillcmd";
 import { capabilityMatrix } from "./connectors";
+import { addServers as addMcpServers, importServers as importMcpServers, setServer as setMcpServer, views as mcpViews } from "./mcp/registry";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -58,6 +59,7 @@ const context = new ContextService({
   emit: (event) => send({ t: "context", event }),
   sessionForKey: (key) => sessionForKey(key)?.id,
   projects: () => config().projects,
+  allProjects: async () => (await allProjects()).map((p) => p.path),
   onConflicts: (list) => conflictNotifier.add(list),
 });
 // A merge pass's contradictions go out as one push; within a minute of one, the next wait and batch.
@@ -763,6 +765,22 @@ const ops: Handlers = {
   },
   async harnessCapabilities() {
     return capabilityMatrix();
+  },
+
+  // ---- MCP registry (runner/src/mcp) ----
+
+  async listMcpServers() {
+    return mcpViews();
+  },
+  async addMcpServer({ text, name, scope }) {
+    return addMcpServers(text, { name, scope: scope && /^[~/]/.test(scope) ? expand(scope) : scope });
+  },
+  async setMcpServer({ id, ...change }) {
+    return setMcpServer(id, change);
+  },
+  async findMcpServers() {
+    const { export: _, ...r } = await importMcpServers((await allProjects()).map((p) => p.path));
+    return r;
   },
   async getUiPrefs() {
     return uiPrefs();

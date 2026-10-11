@@ -1,28 +1,51 @@
 // ACP harnesses (opencode, Kiro): memory as a first-message preamble (ACP has no system-prompt
-// hook) plus their global files; `tether-context` in newSession/loadSession `mcpServers`; skills
-// run as `/name` when the agent lists them as commands, else Tether expands them.
+// hook) plus their global files; `tether-context` and the MCP registry's servers in
+// newSession/loadSession `mcpServers` (HTTP and SSE ones only when the agent's mcpCapabilities say
+// so); skills run as `/name` when the agent lists them as commands, else Tether expands them.
 
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { invocationText } from "../../../web/src/shared/skill";
 import { isTetherOwned, OWNED_MARK } from "../context/blocks";
-import { registerOpencodeMcp } from "../context/globalMcp";
+import { opencodeConfigPath, registerOpencodeMcp } from "../context/globalMcp";
 import type { SessionContext } from "../context/inject";
 import { harness, tilde } from "../context/paths";
+import { cwdless } from "../mcp/formats";
+import { kiroServers, opencodeServers } from "../mcp/sources";
 import { cap, repoDirs, slot, upward } from "./shared";
-import type { Connector, ExportContext, MemorySlot, SessionCtx } from "./types";
+import type { Connector, ExportContext, McpRoute, MemorySlot, SessionCtx, SessionServer } from "./types";
 
-/** ACP's McpServerStdio shape. */
-export function acpMcpServers(ctx: SessionContext | undefined) {
-  if (!ctx) return [];
-  return [{ name: "tether-context", command: ctx.mcp.command, args: ctx.mcp.args, env: Object.entries(ctx.mcp.env).map(([name, value]) => ({ name, value })) }];
+const pairs = (m: Record<string, string>) => Object.entries(m).map(([name, value]) => ({ name, value }));
+
+/** ACP wants the executable's absolute path (McpServerStdio.command). */
+function absolute(command: string): string {
+  if (isAbsolute(command)) return command;
+  return Bun.which(command) ?? command;
 }
+
+/**
+ * ACP's McpServer list: the registry's servers (stdio always; http/sse when the agent advertises
+ * them) and `tether-context`.
+ */
+export function acpMcpServers(ctx: SessionContext | undefined, servers: SessionServer[] = [], caps: SessionCtx["mcpCapabilities"] = {}) {
+  const out: Record<string, unknown>[] = [];
+  for (const { name, transport } of servers) {
+    const t = cwdless(transport); // ACP v1's McpServerStdio has no cwd
+    if (t.type === "stdio") out.push({ name, command: absolute(t.command), args: t.args, env: pairs(t.env) });
+    else if (caps?.[t.type]) out.push({ type: t.type, name, url: t.url, headers: pairs(t.headers) });
+  }
+  if (ctx) out.push({ name: "tether-context", command: ctx.mcp.command, args: ctx.mcp.args, env: pairs(ctx.mcp.env) });
+  return out;
+}
+
+const acpRoute = (t: SessionServer["transport"]): McpRoute =>
+  t.type === "stdio" ? { how: "session", note: "Per session (ACP)" } : { how: "session", note: `Per session when the agent supports ${t.type.toUpperCase()} servers` };
 
 /** Shared memory ahead of a new session's first message (a resumed one already had it). */
 const preamble = ({ context, resume }: SessionCtx) => (context && !resume ? { preamble: context.prompt } : undefined);
 
 /** mcpServers is always sent (an empty list without the context), as newSession requires it. */
-const acpMcp = ({ context }: SessionCtx) => ({ options: { mcpServers: acpMcpServers(context) } });
+const acpMcp = ({ context, servers, mcpCapabilities }: SessionCtx) => ({ options: { mcpServers: acpMcpServers(context, servers, mcpCapabilities) } });
 
 const commandSkills = cap("native", "Runs the skills it lists as commands; others are expanded");
 
@@ -38,6 +61,10 @@ export const opencodeConnector: Connector = {
     forSession: acpMcp,
     sharedConfig: true,
     exportGlobal: (x) => registerOpencodeMcp(x.out, (p) => x.remember(p)),
+    importGlobal: () => opencodeServers(),
+    native: (projectPath) => opencodeServers(projectPath).found,
+    deliver: acpRoute,
+    targets: () => [{ file: opencodeConfigPath(), installed: existsSync(harness.opencodeDir()), format: "json", key: "mcp", flavor: "opencode", jsonc: true }],
   },
   skills: {
     capability: () => commandSkills,
@@ -89,6 +116,10 @@ export const kiroConnector: Connector = {
     capability: () => cap("native", "ACP session MCP servers; ~/.kiro/settings/mcp.json"),
     forSession: acpMcp,
     exportGlobal: (x) => x.registerJsonMcp(harness.kiroMcp(), dirname(harness.kiroMcp())),
+    importGlobal: () => kiroServers(),
+    native: (projectPath) => kiroServers(projectPath).found,
+    deliver: acpRoute,
+    targets: () => [{ file: harness.kiroMcp(), installed: existsSync(harness.kiroDir()), format: "json", key: "mcpServers", flavor: "plain" }],
   },
   skills: {
     capability: () => commandSkills,

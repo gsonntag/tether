@@ -1,7 +1,8 @@
 // The Memory & Skills page (docs/master-context.md, UI): one page for the memory and skill library
 // every harness shares. Top to bottom: whether shared memory is on (turning it on or off), open
 // conflicts (only when there are some), the memory list (global and per repo, searchable; a row
-// opens in a side panel, full screen on phones) and the skills with their on/off switches.
+// opens in a side panel, full screen on phones), the skills with their on/off switches, and the
+// MCP servers (McpServers.tsx; shown whether shared memory is on or not).
 // Frame: Astryx's settings template (header + one scrolling column of sections), plus the
 // table-grouped template's resizable detail panel.
 
@@ -36,6 +37,7 @@ import type { ContextActivity, ContextImportPreview, ContextSkill, ContextStatus
 import { act, markNoticeRead, refreshContext, resolveConflict, rpc, useStore } from "../store";
 import { Patch } from "./Changes";
 import { HarnessBadge } from "./HarnessBadge";
+import { McpSection } from "./McpServers";
 import { scopeLabel, sourceHarness, sourceLabel, ts } from "./MemoryConflicts";
 
 const capped: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 20)", width: "100%" };
@@ -207,6 +209,7 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
               />
             )}
             {on && <SkillsSection narrow={narrow} />}
+            {status && !importing && <McpSection narrow={narrow} />}
           </VStack>
           {narrow && (
             <Dialog isOpen={!!detail} onOpenChange={(o) => !o && setSelected(undefined)} purpose="info" variant="fullscreen" padding={4} aria-label="Memory details">
@@ -456,6 +459,12 @@ function ImportPreview() {
     // MCP configs are listed among the managed files too: those only get the server entry.
     for (const f of preview.managedFiles.filter((f) => !preview.mcpConfigs.includes(f))) out.push({ key: `f:${f}`, label: `Add a Tether section to ${f}` });
     for (const f of preview.mcpConfigs) out.push({ key: `c:${f}`, label: `Register the tether-context memory server in ${f}` });
+    if (preview.mcpServers?.length)
+      out.push({
+        key: "mcp",
+        label: `Add ${plural(preview.mcpServers.length, "MCP server")} to Tether and share them with every harness`,
+        description: preview.mcpServers.join(", "),
+      });
     for (const b of preview.backups) out.push({ key: `b:${b.path}`, label: `Back up ${b.path}, then link it to the shared copy`, description: `Backup: ${b.to}` });
     return out;
   }, [preview]);
