@@ -2,7 +2,7 @@
 
 import "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextEvent } from "../../../web/src/shared/protocol";
@@ -329,6 +329,71 @@ describe("progress and turning off", () => {
     // The store and the backups survive.
     expect(existsSync(join(s.store.dir, "backup"))).toBe(true);
     expect(s.listSkills().map((x) => x.name)).toContain("grill");
+    s.stop();
+  });
+
+  test("a skill added to a harness dir later is imported and linked without another Import", async () => {
+    seedSkillsAndConfigs();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    expect(w).toBeDefined();
+    // Our own links (made by the import) never schedule a pass.
+    w.event(harness.agentsSkills(), "grill");
+    expect(w.pending).toBe(false);
+    put(join(harness.claudeSkills(), "later", "SKILL.md"), "---\nname: later\ndescription: later\n---\nadded after import\n");
+    w.event(harness.claudeSkills(), "later");
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "later", "SKILL.md"), "utf8")).toContain("added after import");
+    expect(lstatSync(join(harness.claudeSkills(), "later")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(harness.agentsSkills(), "later")).isSymbolicLink()).toBe(true);
+    expect(s.listSkills().map((x) => x.name)).toContain("later");
+    s.stop();
+  });
+
+  test("a skill dir made before its SKILL.md is watched until the SKILL.md is written", async () => {
+    seedSkillsAndConfigs();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    const dir = join(harness.claudeSkills(), "slow");
+    mkdirSync(dir);
+    w.event(harness.claudeSkills(), "slow");
+    w.flush();
+    await s.idle();
+    expect(existsSync(join(s.store.skillsDir, "slow"))).toBe(false);
+    expect(w.has(dir)).toBe(true);
+    // The non-recursive skill dir watch never sees this write; the dir's own watch does.
+    put(join(dir, "SKILL.md"), "---\nname: slow\ndescription: slow\n---\nwritten later\n");
+    w.event(dir, "SKILL.md");
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "slow", "SKILL.md"), "utf8")).toContain("written later");
+    expect(lstatSync(dir).isSymbolicLink()).toBe(true);
+    expect(w.has(dir)).toBe(false);
+    s.stop();
+  });
+
+  test("a harness skill dir that appears later gets a pass for the skills already in it", async () => {
+    seedSkillsAndConfigs();
+    rmSync(harness.opencodeSkills(), { recursive: true, force: true });
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    expect(w.has(harness.opencodeSkills())).toBe(false);
+    put(join(harness.opencodeSkills(), "oc", "SKILL.md"), "---\nname: oc\ndescription: oc\n---\nfrom opencode\n");
+    await s.sync();
+    expect(w.has(harness.opencodeSkills())).toBe(true);
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "oc", "SKILL.md"), "utf8")).toContain("from opencode");
     s.stop();
   });
 

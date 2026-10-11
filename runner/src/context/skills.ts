@@ -1,7 +1,8 @@
 // The skill registry: one library in context/skills/, symlinked into every harness's skill dir.
 // Skills found in harness dirs are imported; the copies they replace are moved to
 // context/backup/<date>/… first ("back up, then symlink"). Copies that differ keep the newest
-// one and record the drift. Harness-owned dirs (~/.claude/skills/synced, ~/.codex/skills/.system,
+// one and record the drift. The harness dirs are watched (ContextService), so a new skill syncs
+// without another Import. Harness-owned dirs (~/.claude/skills/synced, ~/.codex/skills/.system,
 // dot dirs) are never touched, and a registry skill named like a Codex builtin is exposed as
 // `<name>-tether`.
 //
@@ -50,10 +51,40 @@ export function skillDirs(): SkillDir[] {
     { harness: "agents", dir: harness.agentsSkills(), install: true, skip: [] },
     { harness: "antigravity", dir: harness.agySkills(), install: true, skip: [] },
     { harness: "gemini", dir: harness.geminiSkills(), install: true, skip: [] },
+    // Kiro reads only its own dir; installed into once Kiro is set up (~/.kiro exists), like its steering export.
+    { harness: "kiro", dir: harness.kiroSkills(), install: existsSync(harness.kiroDir()), skip: [] },
     { harness: "codex", dir: harness.codexSkills(), install: false, skip: [] },
     { harness: "pi", dir: harness.piSkills(), install: false, skip: [] },
     { harness: "opencode", dir: harness.opencodeSkills(), install: false, skip: [] },
   ];
+}
+
+/** The harness skill dirs that exist, for the watcher (the rest are picked up once they appear). */
+export function skillWatchTargets(): string[] {
+  return [...new Set(skillDirs().map((sd) => sd.dir))].filter((d) => existsSync(d));
+}
+
+/**
+ * Whether a watcher event in a skill dir needs no sync: our own links (installs and the links that
+ * replace backed-up copies), our temp dirs, harness-owned and dot entries, and removals (a lost
+ * link is repaired on the next pass anyway, and unlinking is what disable and turn-off do).
+ */
+export function isOwnSkillEvent(path: string, registry: string): boolean {
+  const n = basename(path);
+  if (n.startsWith(".") || n.includes(".tether-")) return true;
+  const sd = skillDirs().find((d) => d.dir === dirname(path));
+  if (sd?.skip.includes(n)) return true;
+  if (!existsSync(path) && !isLink(path)) return true;
+  return isOurLink(path, registry);
+}
+
+/**
+ * A real dir in a skill dir that has no SKILL.md yet (mkdir then edit, a git clone mid-checkout).
+ * The skill dir watch is not recursive, so the watcher watches such a dir until SKILL.md appears.
+ */
+export function awaitsSkillMd(path: string): boolean {
+  if (isLink(path)) return false;
+  return !!statSync(path, { throwIfNoEntry: false })?.isDirectory() && !isSkill(path);
 }
 
 /** Codex's bundled skills: a registry skill with the same name would shadow or be shadowed. */

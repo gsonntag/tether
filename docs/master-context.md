@@ -1,6 +1,6 @@
 # Master context: shared memory and skills across harnesses
 
-Status: scoped with the user on 2026-10-10. Not built yet.
+Status: scoped with the user on 2026-10-10; built (runner/src/context/, the Memory & Skills page).
 
 ## Goal
 
@@ -102,11 +102,15 @@ Per-repo memory, out of repo:
   pi `--append-system-prompt`, codex `developerInstructions`, ACP/agy via first-message preamble), plus MCP.
 - Native Claude CLI: written into Claude's own per-project memory dir as a Tether-owned file
   (`~/.claude/projects/<dir>/memory/tether.md` + index line), which Claude loads automatically.
-- Other native CLIs: MCP only (registered globally in each harness's MCP config).
+- Other native CLIs: MCP only (`tether-context` registered globally, see below).
 
 Skills: canonical copy in `context/skills/`; symlinked into `~/.claude/skills/`, `~/.agents/skills/`
-(covers Codex, pi, opencode), `~/.gemini/antigravity/skills/`, `~/.gemini/skills/`. Name collisions with
-harness builtins: the builtin wins, and the registry copy is exposed as `<name>-tether`.
+(covers Codex, pi, opencode), `~/.gemini/antigravity/skills/`, `~/.gemini/skills/`, and
+`~/.kiro/skills/` once Kiro is set up (`~/.kiro` exists). Skills found in those dirs (and in
+`~/.codex/skills/`, `~/.pi/agent/skills/`, `~/.config/opencode/skills/`) are imported. The dirs are
+watched (debounced; Tether's own links, temp dirs and removals don't count), so a skill added later
+syncs without another Import. Name collisions with harness builtins: the builtin wins, and the
+registry copy is exposed as `<name>-tether`.
 
 ## Handoffs (runner/src/context/handoff.ts)
 
@@ -134,8 +138,11 @@ When a fallback chain moves a conversation to another harness, and the context i
 
 Served by the runner (stdio launcher script so any harness can spawn it, talking to the runner's local
 socket). Registered for Tether sessions per adapter (Claude SDK `mcpServers`, ACP `newSession.mcpServers`,
-codex config override, pi via `pi-mcp-adapter`) and globally in each harness's MCP config for native
-CLI use.
+codex config override, pi via `pi-mcp-adapter`) and globally for native CLI use:
+- Codex (`~/.codex/config.toml`, managed block), pi (`~/.pi/agent/mcp.json`), Kiro
+  (`~/.kiro/settings/mcp.json`) and Antigravity (`~/.gemini/config/mcp_config.json`) on every export,
+  when the harness is installed. A `tether-context` entry the user wrote themselves is left alone.
+- Claude Code (`~/.claude.json`) and opencode (`opencode.json(c)`) on Import only, as below.
 
 `~/.claude.json` and opencode's `opencode.json(c)` are registered only by the user's Import (never by
 a background re-export) and are edited in place with jsonc-parser: only the `tether-context` key

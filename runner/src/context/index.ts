@@ -35,7 +35,7 @@ import { setInjectionEnabled } from "./inject";
 import { conflictsToNotify, Merger, modelDecider, type Decider } from "./merge";
 import { contextDir, tilde } from "./paths";
 import { repoKey } from "./repokey";
-import { applySkillPlan, disabledSet, listSkills, planSkills, readMeta, unlinkAll, unlinkSkill, writeMeta } from "./skills";
+import { applySkillPlan, awaitsSkillMd, disabledSet, isOwnSkillEvent, listSkills, planSkills, readMeta, skillWatchTargets, unlinkAll, unlinkSkill, writeMeta } from "./skills";
 import { scanSources, watchTargets } from "./sources";
 import { Store } from "./store";
 import { Watcher } from "./watch";
@@ -59,6 +59,10 @@ export class ContextService {
   readonly store: Store;
   private merger: Merger;
   private watcher?: Watcher;
+  /** the harness skill dirs: a skill added there is imported and linked without another Import */
+  private skillWatcher?: Watcher;
+  /** skill dirs seen without a SKILL.md: watched themselves until it appears (or they go) */
+  private awaitingSkillMd = new Set<string>();
   private busy = false;
   private again = false;
   private importing = false;
@@ -95,12 +99,37 @@ export class ContextService {
   stop() {
     this.watcher?.stop();
     this.watcher = undefined;
+    this.skillWatcher?.stop();
+    this.skillWatcher = undefined;
+    this.awaitingSkillMd.clear();
     clearTimeout(this.exportTimer);
   }
 
   private watch() {
     this.watcher ??= new Watcher(() => this.sync(), { debounceMs: 5_000, pollMs: 10 * 60_000, isOwn: isOwnWrite });
     this.watcher.add([...watchTargets(), join(this.store.dir, "inbox")]);
+    this.skillWatcher ??= new Watcher(() => this.syncSkills().catch((e) => this.act({ kind: "error", text: `Skill sync failed: ${e?.message ?? e}` })), {
+      debounceMs: 5_000,
+      pollMs: 10 * 60_000, // backs up missed events (planSkills is cheap; an idle pass writes nothing)
+      isOwn: (p) => {
+        if (isOwnSkillEvent(p, this.store.skillsDir)) return true;
+        if (!this.awaitingSkillMd.has(p) && awaitsSkillMd(p)) {
+          this.awaitingSkillMd.add(p);
+          this.skillWatcher?.add([join(p, "SKILL.md")]);
+        }
+        return false;
+      },
+    });
+    this.addSkillDirs(!this.importing); // the import itself just synced them
+  }
+
+  /** Watches the harness skill dirs; ones that appeared since get a pass for the skills already in them. */
+  private addSkillDirs(catchUp = true) {
+    const w = this.skillWatcher;
+    if (!w) return;
+    const fresh = skillWatchTargets().filter((d) => !w.has(d));
+    w.add(fresh);
+    if (fresh.length && catchUp) w.schedule();
   }
 
   status(): ContextStatus {
@@ -220,6 +249,7 @@ export class ContextService {
         if (force || changed || entries.some((e) => e.consume)) await this.exportNow();
         force = false;
         this.watcher?.add(watchTargets());
+        this.addSkillDirs(); // skill dirs created since (the poll comes through here)
       } while (this.again);
     } finally {
       this.busy = false;
@@ -240,6 +270,12 @@ export class ContextService {
   /** Imports skills found in harness dirs (backing up what they replace) and installs symlinks. */
   async syncSkills(): Promise<void> {
     await this.harnessLock.run(() => this.syncSkillsLocked());
+    // Dirs that now have their SKILL.md (imported and linked) or are gone need no watch of their own.
+    for (const d of this.awaitingSkillMd) {
+      if (awaitsSkillMd(d)) continue;
+      this.awaitingSkillMd.delete(d);
+      this.skillWatcher?.remove(d);
+    }
   }
 
   private async syncSkillsLocked(): Promise<void> {

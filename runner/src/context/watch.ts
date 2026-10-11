@@ -76,6 +76,18 @@ export class Watcher {
     }, this.opts.debounceMs ?? 5_000);
   }
 
+  /** Whether this dir (or a file in it) was added. */
+  has(dir: string): boolean {
+    return this.filters.has(dir);
+  }
+
+  /** Stops watching a dir added before (its own watcher and filter). */
+  remove(dir: string) {
+    this.watchers.get(dir)?.close();
+    this.watchers.delete(dir);
+    this.filters.delete(dir);
+  }
+
   get watching(): string[] {
     return [...this.watchers.keys()];
   }

@@ -7,6 +7,7 @@
 // sandbox when that works on this machine; each request goes to the guard. approvalsReviewer is
 // forced to "user" (the client), so Codex's own auto-reviewer from config.toml doesn't answer
 // first. Codex's "decline" carries no reason, so the guard's reason is steered into the turn.
+// MCP tool calls are approved through an MCP elicitation (see onElicitation); they go to the guard too.
 // In full: no approvals, no sandbox.
 
 import { homedir } from "node:os";
@@ -24,6 +25,7 @@ import { sessionContext } from "../context/inject";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { codexPick, lastLineTime } from "./lastActivity";
+import { formContent, formRequest } from "./elicitation";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -386,6 +388,19 @@ export function additionalPermissions(p: any): Record<string, unknown> | undefin
 export const CODEX_MODES = ["default", "plan"];
 
 /**
+ * The guard's name for the MCP tool an approval elicitation is about (`mcp__server__tool`, as on
+ * the tool card). Codex's message reads `Allow <the X MCP server> to run tool "<name>"?`; the
+ * name in `_meta` wins when there is one.
+ */
+export function mcpApprovalTool(p: any): string {
+  const name = p?._meta?.tool_name ?? /run tool "(.+)"\?\s*$/.exec(p?.message ?? "")?.[1] ?? p?._meta?.tool_title ?? "tool";
+  return `mcp__${p?.serverName ?? "mcp"}__${name}`;
+}
+
+/** `_meta.persist` lists the remember options Codex offers (a string or an array). */
+const offers = (persist: unknown, v: string) => persist === v || (Array.isArray(persist) && persist.includes(v));
+
+/**
  * The app-server's (experimental) CollaborationMode for turn/start and thread/settings/update.
  * developer_instructions null: Codex's built-in instructions for that mode.
  */
@@ -393,7 +408,7 @@ export function collaborationMode(mode: string, model: string, effort?: string) 
   return { mode: mode === "plan" ? "plan" : "default", settings: { model, reasoning_effort: effort ?? null, developer_instructions: null } };
 }
 
-class CodexSession extends LiveSession {
+export class CodexSession extends LiveSession {
   private p!: CodexProcess;
   private turnId?: string;
   private msgId?: string;
@@ -712,10 +727,44 @@ class CodexSession extends LiveSession {
         return { answers };
       }
       case "mcpServer/elicitation/request":
-        return { action: "decline", content: null, _meta: null };
+        return this.onElicitation(p);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * An MCP server (or Codex on its behalf) wants something from the user. Codex asks before an MCP
+   * tool call as an elicitation tagged `_meta.codex_approval_kind: "mcp_tool_call"` with an empty
+   * form; that goes to the guard like any other approval, and "always" is passed back as Codex's
+   * session-scoped `persist` when it offers one. Forms become a question card, a URL a confirm.
+   */
+  private async onElicitation(p: any): Promise<{ action: "accept" | "decline" | "cancel"; content: unknown; _meta: unknown }> {
+    const meta = p._meta && typeof p._meta === "object" ? p._meta : {};
+    if (meta.codex_approval_kind === "mcp_tool_call") {
+      const tool = mcpApprovalTool(p);
+      const v = await this.checkTool(tool, meta.tool_params ?? {});
+      if (!v.allow) {
+        this.explainDenial(`call to ${tool}`, v.reason);
+        return { action: "decline", content: null, _meta: null };
+      }
+      const persist = v.always && offers(meta.persist, "session") ? { persist: "session" } : null;
+      return { action: "accept", content: null, _meta: persist };
+    }
+    const server = p.serverName ?? "An MCP server";
+    if (p.mode === "url") {
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} wants you to open a link`, message: `${p.message ?? ""}\n\n${p.url}`.trim() });
+      return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: null, _meta: null };
+    }
+    const req = formRequest(p.message || `${server} needs your input`, p.requestedSchema);
+    if (!req) {
+      // Nothing to fill in: a plain yes/no.
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} asks`, message: p.message });
+      return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: r.confirmed ? {} : null, _meta: null };
+    }
+    const r = await this.askUi(req);
+    if (r.cancelled) return { action: "cancel", content: null, _meta: null };
+    return { action: "accept", content: formContent(p.requestedSchema, r), _meta: null };
   }
 
   /** Codex's "decline" tells the model nothing; pass the guard's reason along. */

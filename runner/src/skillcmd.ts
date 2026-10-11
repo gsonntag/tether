@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ContextSkill, HarnessId, SlashCommand } from "../../web/src/shared/protocol";
 import { isSkillName, parseInvocation, skillBlock } from "../../web/src/shared/skill";
 import { splitFrontMatter } from "./context/format";
-import { harness as H, home, untilde } from "./context/paths";
+import { harness as H, untilde } from "./context/paths";
 
 export interface SkillInfo {
   /** the name typed after `/` */
@@ -143,7 +143,7 @@ export function harnessSkillDirs(harness: HarnessId, projectPath: string): Skill
     case "antigravity":
       return [{ dir: H.agySkills(), source: "antigravity" }, { dir: H.geminiSkills(), source: "gemini" }];
     case "kiro":
-      return [{ dir: join(projectPath, ".kiro/skills"), source: "repo", root: up[up.length - 1] }, { dir: join(home(), ".kiro", "skills"), source: "kiro" }];
+      return [{ dir: join(projectPath, ".kiro/skills"), source: "repo", root: up[up.length - 1] }, { dir: H.kiroSkills(), source: "kiro" }];
   }
 }
 
