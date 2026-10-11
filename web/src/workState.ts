@@ -41,6 +41,16 @@ export function summaryWork(s: SessionSummary): WorkInput {
   return { live: s.live, status: s.status, running, armed: Math.max(0, active - total(running)) };
 }
 
+/**
+ * Whether a "Finished" notice is an earlier turn's while this one's subagents or shells still
+ * run. The runner holds a turn's "Finished" until its work is done, except that shells and
+ * monitors alone (a dev server) hold it SHELL_WAIT_MS at most: that one is newer than the
+ * session's last message, so it stays.
+ */
+export function staleFinished(s: SessionSummary, noticeTs: number): boolean {
+  return workState(summaryWork(s)) === "background" && noticeTs < s.updatedAt;
+}
+
 /** From a Home pulse. */
 export function pulseWork(p: SessionPulse): WorkInput {
   return { live: p.session.live, status: p.session.status, running: p.activity, armed: p.armed };
@@ -61,7 +71,7 @@ export function workLabel(w: WorkInput): { state: WorkState; label: string; tool
   const state = workState(w);
   switch (state) {
     case "working":
-      return { state, label: "Working", tooltip: "Working" };
+      return { state, label: "Working", tooltip: "Main agent is working" };
     case "waiting":
       return { state, label: "Waiting", tooltip: "Waiting (usage limit or retry)" };
     case "background": {

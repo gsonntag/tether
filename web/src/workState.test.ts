@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionPulse, SessionSummary } from "./shared/protocol";
-import { pulseWork, runningLine, summaryWork, workLabel, workState } from "./workState";
+import { pulseWork, runningLine, staleFinished, summaryWork, workLabel, workState } from "./workState";
 
 const s = (over: Partial<SessionSummary> = {}): SessionSummary => ({
   id: "a",
@@ -55,6 +55,20 @@ describe("from a summary", () => {
     // one never does, read above as "running".
     const w = summaryWork(s({ activeCount: 1, runningKinds: {} }));
     expect(workState(w)).toBe("scheduled");
+  });
+});
+
+describe("staleFinished", () => {
+  const bg = s({ updatedAt: 1000, activeCount: 1, runningKinds: { subagent: 1 } });
+  test("an earlier turn's Finished hides while this turn's work runs", () => {
+    expect(staleFinished(bg, 500)).toBe(true);
+  });
+  test("a Finished sent after the turn (shells-only cap) stays, though a dev server still runs", () => {
+    expect(staleFinished(s({ updatedAt: 1000, activeCount: 1, runningKinds: { shell: 1 } }), 1000 + 180_000)).toBe(false);
+  });
+  test("nothing running in the background: never stale", () => {
+    expect(staleFinished(s({ updatedAt: 1000 }), 500)).toBe(false);
+    expect(staleFinished(s({ updatedAt: 1000, activeCount: 1, runningKinds: {} }), 500)).toBe(false);
   });
 });
 
