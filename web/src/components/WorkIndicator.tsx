@@ -14,7 +14,12 @@ export function WorkIndicator({ work }: { work: WorkInput }) {
   const { state, label, tooltip } = workLabel(work);
   switch (state) {
     case "working":
-      return <Spinner size="sm" aria-label="Working" />;
+      // Both spinners carry a tooltip and a label, so blue vs grey isn't the only difference.
+      return (
+        <Tooltip content={tooltip}>
+          <Spinner size="sm" aria-label={label} />
+        </Tooltip>
+      );
     case "background":
       return (
         <Tooltip content={tooltip}>

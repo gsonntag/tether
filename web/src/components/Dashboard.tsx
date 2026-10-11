@@ -287,6 +287,8 @@ function StatusOf({ p }: { p: SessionPulse }) {
 /** The Running row's status line: what it's doing now, or that only background work or a wakeup is left. */
 function statusLine(p: SessionPulse): string {
   const state = workState(pulseWork(p));
+  // A subagent asking for approval while the main agent is idle: the ask is what matters.
+  if (p.pendingUi?.length) return p.action ?? "Waiting for you";
   if (state === "background") return ["Background", p.action].filter(Boolean).join(" · ");
   if (state === "scheduled") return "Waiting for a scheduled wakeup";
   return p.action ?? (state === "idle" ? "" : "Working");
