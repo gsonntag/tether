@@ -233,6 +233,10 @@ Without `FOLIATION_ISSUER` the server runs in dev mode. Every browser is treated
 owner, and runners authenticate with `Authorization: Bearer dev`
 (`TETHER_DEV_RUNNER_TOKEN`).
 
+A runner started with `TETHER_DEV=1` also takes `/tether simulate-limit …` and
+`/tether simulate-usage …` in the message box, for testing fallback against real harnesses
+(`docs/fallback-testing.md`).
+
 ## Production (Foliation)
 
 1. Deploy the app: `fol deploy` from this directory (`foliation.json`; `runner/` and `docs/`

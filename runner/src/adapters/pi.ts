@@ -12,6 +12,7 @@ import { PiActivity } from "./piActivity";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
+import { piFault } from "../faults";
 import { piMcpConfig, sessionContext } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 
@@ -380,9 +381,13 @@ class PiSession extends LiveSession {
       case "agent_start":
         this.setState({ status: "running" });
         break;
-      case "agent_settled":
+      case "agent_settled": {
+        // A simulated limit (faults.ts): the turn's last reply ends with pi's own provider error.
+        const fault = this.takeFault();
+        if (fault) this.onRecord(piFault(fault, this.t.state.model));
         this.onSettled();
         break;
+      }
       case "message_start":
         if (r.message?.role === "assistant") {
           this.streamingId = newId("a");
@@ -564,6 +569,10 @@ class PiSession extends LiveSession {
 
   async abort() {
     if (this.cancelWait()) return;
+    await this.rpc.call("abort");
+  }
+
+  protected async faultInterrupt() {
     await this.rpc.call("abort");
   }
 

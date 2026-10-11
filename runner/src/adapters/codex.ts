@@ -20,6 +20,7 @@ import { sessionSkills } from "../skillcmd";
 import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
+import { codexFault } from "../faults";
 import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";
 import { nativeImagePaths } from "../attachments";
@@ -571,6 +572,7 @@ export class CodexSession extends LiveSession {
       case "turn/started":
         this.turnId = p.turn.id;
         if (this.t.state.status !== "running") this.setState({ status: "running" });
+        this.interruptForFault();
         break;
       case "item/started": {
         const item = p.item;
@@ -626,9 +628,14 @@ export class CodexSession extends LiveSession {
         this.emit({ type: "msg", msg: { ...m, parts } });
         break;
       }
-      case "turn/completed":
-        this.onTurnCompleted(p.turn);
+      case "turn/completed": {
+        // A simulated limit (faults.ts): the turn ends with Codex's own notifications for it instead.
+        const fault = this.takeFault();
+        this.faultStop = false;
+        if (fault) for (const [m, x] of codexFault(fault, this.nativeId, p.turn)) this.onNotify(m, x);
+        else this.onTurnCompleted(p.turn);
         break;
+      }
       case "error":
         if (p.willRetry) this.setRetrying(`retrying: ${p.error?.message ?? "error"}`);
         break;
@@ -777,6 +784,20 @@ export class CodexSession extends LiveSession {
 
   // ---- turns ----
 
+  /** a simulated limit wants the turn interrupted as soon as it has an id */
+  private faultStop = false;
+
+  protected faultInterrupt() {
+    this.faultStop = true;
+    this.interruptForFault();
+  }
+
+  private interruptForFault() {
+    if (!this.faultStop || !this.turnId) return;
+    this.faultStop = false;
+    this.p.call("turn/interrupt", { threadId: this.nativeId, turnId: this.turnId }).catch(() => {});
+  }
+
   /** `skills`: a `/name` paragraph for a skill Codex has goes as a skill item (not for briefs). */
   private async startTurn(text: string, skills = true) {
     this.finishMsg();
@@ -792,6 +813,7 @@ export class CodexSession extends LiveSession {
         ...this.collabParam(),
       });
       this.turnId ??= r.turn?.id;
+      this.interruptForFault();
     } catch (e: any) {
       if (await this.handleTurnError(e?.message)) return;
       this.notice(e?.message || "Could not start the turn.", "error");

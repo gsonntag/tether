@@ -30,6 +30,7 @@ import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { hardLimit, LimitStatus } from "../limitStatus";
+import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { claudePick, lastLineTime } from "./lastActivity";
 
@@ -388,7 +389,37 @@ class ClaudeSession extends LiveSession {
     }
   }
 
+  /** a simulated limit wants the turn stopped once Claude Code is working on it (see faultInterrupt) */
+  private faultStop?: "pending" | "sent";
+  /** Claude Code has sent something for the turn started last */
+  private turnSeen = false;
+
+  protected faultInterrupt() {
+    // Interrupting before Claude Code has taken the message could miss the turn: wait for its first sign.
+    this.faultStop = "pending";
+    if (this.turnSeen) this.interruptForFault();
+  }
+
+  private interruptForFault() {
+    if (this.faultStop !== "pending") return;
+    this.faultStop = "sent";
+    this.q?.interrupt().catch(() => {});
+  }
+
   private onMessage(m: SDKMessage) {
+    if (m.type !== "rate_limit_event") {
+      this.turnSeen = true;
+      if (this.faultStop === "pending") this.interruptForFault();
+    }
+    // A simulated limit (faults.ts): the turn ends with Claude's own messages for it instead.
+    if (m.type === "result" && !(m as any).parent_tool_use_id) {
+      const fault = this.takeFault();
+      this.faultStop = undefined;
+      if (fault) {
+        for (const x of claudeFault(fault, this.nativeId)) this.onMessage(x);
+        return;
+      }
+    }
     this.upsertActivity(...this.act.onMessage(m));
     this.pollOutputs();
     // Subagent internals feed its activity item (steps, latest action); the Agent tool card shows the result.
@@ -676,6 +707,7 @@ class ClaudeSession extends LiveSession {
   protected async send(text: string) {
     this.rejected = undefined;
     if (await this.preferBest(text)) return;
+    this.turnSeen = false;
     this.autoTitle(text);
     this.addUserMessage(text);
     this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
@@ -746,6 +778,7 @@ class ClaudeSession extends LiveSession {
 
   async continueTurn(text = "Continue where you left off.") {
     this.rejected = undefined;
+    this.turnSeen = false;
     this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
   }

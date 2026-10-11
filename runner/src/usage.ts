@@ -13,15 +13,36 @@ let cache: { at: number; report: UsageReport } | undefined;
 let inflight: Promise<UsageReport> | undefined;
 
 export function getUsage(force = false): Promise<UsageReport> {
-  if (!force && cache && Date.now() - cache.at < TTL) return Promise.resolve(cache.report);
-  inflight ??= Promise.all([claudeUsage(), codexUsage()])
+  if (!force && cache && Date.now() - cache.at < TTL) return Promise.resolve(withSimulated(cache.report));
+  // A simulated provider isn't fetched (Claude's check spawns a process).
+  inflight ??= Promise.all([simulated.claude ? undefined : claudeUsage(), simulated.codex ? undefined : codexUsage()])
     .then((providers) => {
       const report = { providers: providers.filter((p): p is ProviderUsage => !!p), fetchedAt: Date.now() };
       cache = { at: Date.now(), report };
       return report;
     })
     .finally(() => (inflight = undefined));
-  return inflight;
+  return inflight.then(withSimulated);
+}
+
+/** Dev fault injection (faults.ts, `/tether simulate-usage`): stand-in usage per provider, until cleared. */
+const simulated: Partial<Record<ProviderUsage["provider"], ProviderUsage>> = {};
+
+export function simulateUsage(provider: ProviderUsage["provider"], usage?: ProviderUsage) {
+  if (usage) simulated[provider] = usage;
+  else delete simulated[provider];
+  cache = undefined;
+}
+
+/** The stand-in for this account, if one is set (both ChatGPT logins share Codex's). */
+export function simulatedFor(account: UsageAccount): ProviderUsage | undefined {
+  return simulated[account === "claude" ? "claude" : "codex"];
+}
+
+function withSimulated(r: UsageReport): UsageReport {
+  const sim = Object.values(simulated);
+  if (!sim.length) return r;
+  return { ...r, providers: [...r.providers.filter((p) => !simulated[p.provider]), ...sim] };
 }
 
 /**
@@ -36,6 +57,8 @@ export type UsageAccount = "claude" | "chatgpt:codex" | "chatgpt:pi";
  */
 export async function accountUsage(account: UsageAccount): Promise<ProviderUsage | undefined> {
   usageChanged();
+  const sim = simulatedFor(account);
+  if (sim) return sim;
   if (account === "claude") return claudeUsage();
   const auth = account === "chatgpt:pi" ? piAuth() : codexCliAuth();
   return auth ? codexUsage(auth) : undefined;

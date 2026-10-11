@@ -22,6 +22,7 @@ import { kindOf } from "../guard";
 import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
 import { agyQuota } from "../fallback";
+import { agyFault, type Fault } from "../faults";
 import { sessionContext, withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -294,7 +295,11 @@ class AgySession extends LiveSession {
     if (unguarded) return this.unguarded(proc, unguarded);
     const r = this.stream.event(raw);
     if (r.conversationId && r.conversationId !== this.convId) this.adopt(r.conversationId);
-    if (r.result && this.proc === proc) await this.onResult(r.error);
+    if (r.result && this.proc === proc) {
+      // A turn that ended before its simulated limit fired ends with it anyway.
+      const fault = this.takeFault();
+      await this.onResult(fault ? this.faultError(fault) : r.error);
+    }
   }
 
   /** agy is running without the guard: kill it before it does anything else. */
@@ -427,6 +432,25 @@ class AgySession extends LiveSession {
       if (this.exiting === done) this.exiting = undefined;
     });
     this.exiting = done;
+  }
+
+  /**
+   * A simulated limit (faults.ts): agy is stopped like Stop does (its own "interrupted" result is
+   * ignored, see stopProcess), and the turn ends with agy's own error events instead.
+   */
+  protected async faultInterrupt() {
+    const fault = this.takeFault();
+    if (!fault) return;
+    this.stopTail();
+    this.stopProcess(false);
+    await this.onResult(this.faultError(fault));
+  }
+
+  /** agy's own events for the simulated error, through the stream parser; the error it yields. */
+  private faultError(fault: Fault): string | undefined {
+    let error: string | undefined;
+    for (const raw of agyFault(fault)) error = this.stream.event(raw).error ?? error;
+    return error;
   }
 
   // Headless agy has no steering: steers wait for the end of the turn like queued messages.

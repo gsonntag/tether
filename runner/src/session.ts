@@ -19,8 +19,9 @@ import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/re
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
-import { config, prefs, saveConfigSoon } from "./config";
-import { usageChanged } from "./usage";
+import { config, prefs, saveConfig, saveConfigSoon } from "./config";
+import { simulateUsage, usageChanged } from "./usage";
+import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
 import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified } from "./fallback";
@@ -171,6 +172,7 @@ export abstract class LiveSession {
     const before = this.t.state.status;
     const beforeModel = this.t.state.model;
     const moved = movedAt(event, this.updatedAt, this.t.messages);
+    const finished = this.fault?.state === "active" ? finishedTools(event, this.t.messages) : undefined;
     applyEvent(this.t, event);
     this.seq++;
     this.lastActivity = Date.now();
@@ -196,6 +198,13 @@ export abstract class LiveSession {
         clearTimeout(this.settleTimer);
         clearTimeout(this.shellWaitTimer);
       }
+      // A turn starts when Tether sends one (a queued message can start it without leaving
+      // "running"), or when the harness starts one itself from idle; a retry inside a turn
+      // (waiting → running) doesn't.
+      if (s.status === "running" && (this.turnStarting || before === "idle")) {
+        this.turnStarting = false;
+        this.faultTurnStarted();
+      }
       // The adapter showed the error on the message only (pi, Antigravity): the offer gets a notice.
       if (s.status === "idle" && before !== "idle" && this.continueOffer && !s.handoffTo) this.notice(this.continueOffer.text || "The turn ended with an error.", "error");
       if (s.status === "idle" && before !== "idle") this.endForeground();
@@ -215,6 +224,7 @@ export abstract class LiveSession {
       }
     }
     if (event.type === "activity") this.activityChanged();
+    if (finished?.length) this.faultToolsFinished(finished);
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
     if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
       for (const p of event.msg.parts)
@@ -519,6 +529,7 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+    if (this.devCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
       if (!this.t.state.pending?.length) return this.sendTyped(text);
@@ -659,6 +670,7 @@ export abstract class LiveSession {
   private async sendTyped(typed: string, batch?: PendingMessage[]) {
     const sent = batch ? await this.joinResolved(batch) : await this.resolveSkills(typed);
     this.outgoing = { sent, typed };
+    this.turnStarting = true;
     try {
       await this.send(sent);
     } finally {
@@ -753,6 +765,8 @@ export abstract class LiveSession {
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
+    // Your Stop ends the turn as a stop, not as the simulated error.
+    if (this.fault && this.fault.state !== "armed") this.fault = undefined;
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
@@ -1008,6 +1022,7 @@ export abstract class LiveSession {
     }
     await this.applyModel(pick.entry.model);
     this.notice(`Switched to ${entryLabel(pick.entry)}.`);
+    this.turnStarting = true;
     await this.continueTurn();
     return true;
   }
@@ -1063,6 +1078,7 @@ export abstract class LiveSession {
     if (to.harness !== this.harness) return this.sink.handoff(this, to, `You moved it on from ${entryLabel(from)} after an error`, undefined, { interrupted: true });
     await this.applyModel(to.model);
     this.notice(`Switched to ${entryLabel(to)}.`);
+    this.turnStarting = true;
     await this.continueTurn();
   }
 
@@ -1091,6 +1107,7 @@ export abstract class LiveSession {
         }
       }
       this.setState({ waitingReason: undefined, waitingUntil: undefined });
+      this.turnStarting = true;
       await this.continueTurn(text);
     }, Math.max(1_000, until - Date.now()));
     this.setState({ status: "waiting", waitingReason: reason, waitingUntil: until });
@@ -1270,7 +1287,10 @@ export abstract class LiveSession {
           const text = `The user approved your earlier blocked ${p.name} call (${what}). Run it now if it is still needed, then continue.`;
           if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
           else if (this.t.state.status === "running") this.pend(text, "followUp");
-          else await this.continueTurn(text);
+          else {
+            this.turnStarting = true;
+            await this.continueTurn(text);
+          }
           return;
         }
     throw new Error("Tool call not found");
@@ -1367,6 +1387,94 @@ export abstract class LiveSession {
     this.savePrefs();
   }
 
+  // ---- dev fault injection (runner/src/faults.ts, TETHER_DEV=1) ----
+  // armed: waits for a turn to start; active: this turn, counting finished tool calls; firing: the
+  // adapter was asked to stop the real turn, and its end is replaced by the harness's own error.
+
+  private fault?: { f: Fault; state: "armed" | "active" | "firing"; tools: Set<string> };
+  /** Tether is starting a turn: the next "running" begins it, even from "running" (see emit) */
+  private turnStarting = false;
+
+  /** `/tether …` (dev only): handled here, never sent to the harness. True when it was one. */
+  devCommand(text: string): boolean {
+    const c = parseDevCommand(text);
+    if (!c) return false;
+    switch (c.cmd) {
+      case "error":
+        this.notice(c.text, "warning");
+        break;
+      case "limit-off":
+        this.fault = undefined;
+        this.notice("Simulated limit cleared.");
+        break;
+      case "limit": {
+        this.fault = { f: c.fault, state: "armed", tools: new Set() };
+        const running = this.t.state.status === "running";
+        this.notice(describeFault(c.fault, running));
+        if (c.fault.now && running) this.faultTurnStarted();
+        break;
+      }
+      case "usage":
+        simulateUsage(c.provider, simulatedUsage(c.provider, c.percent, c.resetMs));
+        this.notice(`Simulated ${c.provider === "claude" ? "Claude" : "Codex"} usage: ${Math.round(c.percent)}%${c.resetMs ? `, resetting in ${fmtSpan(c.resetMs)}` : ""}. It stands in for the real usage until cleared.`);
+        break;
+      case "usage-clear":
+        simulateUsage("claude");
+        simulateUsage("codex");
+        this.notice("Simulated usage cleared.");
+        break;
+      case "exhausted": {
+        const e = parseEntry(c.entry, this.harness);
+        markExhausted(providerOf(e.model, e.harness), Date.now() + c.ms);
+        this.notice(`${entryLabel(e, this.harness)} counts as at its usage limit for ${fmtSpan(c.ms)}.`);
+        break;
+      }
+      case "exhausted-clear":
+        for (const k of Object.keys(config().exhausted)) delete config().exhausted[k];
+        saveConfig();
+        this.notice("No model counts as at its usage limit now.");
+        break;
+    }
+    return true;
+  }
+
+  private faultTurnStarted() {
+    const fault = this.fault;
+    if (fault?.state !== "armed") return;
+    fault.state = "active";
+    fault.tools.clear();
+    if (fault.f.afterTools === 0) this.fireFault();
+  }
+
+  private faultToolsFinished(ids: string[]) {
+    const fault = this.fault;
+    if (fault?.state !== "active") return;
+    for (const id of ids) fault.tools.add(id);
+    if (fault.tools.size >= fault.f.afterTools) this.fireFault();
+  }
+
+  /** Stops the real turn (after the adapter's current step, which may be what set it off). */
+  private fireFault() {
+    if (this.fault) this.fault.state = "firing";
+    void Promise.resolve()
+      .then(() => this.faultInterrupt?.())
+      .catch((e) => console.error(`simulated limit: could not stop the turn of ${this.id}: ${e?.message ?? e}`));
+  }
+
+  /**
+   * Adapter, at the end of a turn: the simulated error this turn ends with instead, if one was set
+   * for it. A turn that ends before its tool count is reached ends with it too.
+   */
+  protected takeFault(): Fault | undefined {
+    const fault = this.fault;
+    if (!fault || fault.state === "armed") return undefined;
+    this.fault = undefined;
+    return fault.f;
+  }
+
+  /** Adapter: stops the running turn the harness's own way, for a simulated error (see takeFault). */
+  protected faultInterrupt?(): void | Promise<void>;
+
   // ---- housekeeping ----
 
   private checkStall() {
@@ -1444,6 +1552,28 @@ export function nextTurnSize(list: PendingMessage[]): number {
   let n = 0;
   while (n < list.length && list[n]!.mode === "steer") n++;
   return n || (list.length ? 1 : 0);
+}
+
+/** Tool calls this event reports finished that weren't before (call it before applying the event). */
+export function finishedTools(event: SessionEvent, messages: Msg[]): string[] {
+  const done = (s?: string) => s === "done" || s === "error";
+  const find = (msgId: string) => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.id === msgId) return messages[i];
+  };
+  if (event.type === "tool") {
+    if (!done(event.patch.status)) return [];
+    const old = find(event.msgId)?.parts.find((p) => p.type === "tool" && p.id === event.toolId);
+    return old?.type === "tool" && done(old.status) ? [] : [event.toolId];
+  }
+  if (event.type !== "msg") return [];
+  const old = find(event.msg.id);
+  return event.msg.parts
+    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && done(p.status))
+    .filter((p) => {
+      const was = old?.parts.find((q) => q.type === "tool" && q.id === p.id);
+      return !(was?.type === "tool" && done(was.status));
+    })
+    .map((p) => p.id);
 }
 const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");

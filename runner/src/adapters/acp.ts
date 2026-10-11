@@ -20,6 +20,7 @@ import { findTool } from "../../../web/src/shared/reducer";
 import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
+import { acpFault } from "../faults";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
@@ -511,11 +512,19 @@ class AcpSession extends LiveSession {
       const note = denied.length ? `Earlier tool calls were blocked:\n${denied.map((d) => `- ${d}`).join("\n")}` : undefined;
       const first = withPreamble(this.preamble, withPreamble(note, text));
       this.preamble = undefined;
-      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }, ...(await acpImages(text, this.p.caps))] });
+      const call = this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }, ...(await acpImages(text, this.p.caps))] });
+      this.inPrompt = true;
+      if (this.faultStop) this.cancelForFault();
+      const r = await call.finally(() => (this.inPrompt = false));
+      // A simulated limit (faults.ts): the prompt fails with the agent's own JSON-RPC error instead.
+      const fault = this.takeFault();
+      if (fault) throw acpFault(fault);
       this.finishStreaming();
       if (r.stopReason === "refusal") this.notice("The agent refused this request.", "warning");
       this.turnSucceeded();
-    } catch (e: any) {
+    } catch (err: any) {
+      const fault = this.takeFault();
+      const e = fault ? acpFault(fault) : err;
       this.finishStreaming();
       const msg = errText(e);
       if (await this.handleTurnError(msg)) return;
@@ -528,6 +537,20 @@ class AcpSession extends LiveSession {
   async continueTurn(text = "Continue where you left off.") {
     this.addUserMessage(text.length > 300 ? text.slice(0, 300) + "…" : text);
     this.runTurn(text);
+  }
+
+  /** a prompt request is out (session/cancel ends it) / a simulated limit waits for one */
+  private inPrompt = false;
+  private faultStop = false;
+
+  protected faultInterrupt() {
+    this.faultStop = true;
+    if (this.inPrompt) this.cancelForFault();
+  }
+
+  private cancelForFault() {
+    this.faultStop = false;
+    this.p.conn.cancel({ sessionId: this.nativeId }).catch(() => {});
   }
 
   async abort() {
