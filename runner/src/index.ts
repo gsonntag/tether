@@ -664,6 +664,11 @@ const ops: Handlers = {
     return {};
   },
 
+  async runBlocked({ sessionId, toolId }) {
+    await (await getLive(sessionId)).runBlocked(toolId);
+    return {};
+  },
+
   async stopActivity({ sessionId, id }) {
     await requireLive(sessionId).stopActivity(id);
     return {};

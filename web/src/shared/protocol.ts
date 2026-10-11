@@ -38,6 +38,8 @@ export type Part =
       guard?: GuardVerdict;
       /** The guard's judge model is deciding this call; cleared by the verdict or the call ending. */
       judging?: boolean;
+      /** A blocked shell command the user ran from Tether instead ("Run it myself"). */
+      userRun?: { status: "running" | "done"; exitCode?: number; output?: string };
     }
   | {
       /**
@@ -802,6 +804,8 @@ export interface Ops {
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /** runs a blocked shell command on the runner and gives the agent its output */
+  runBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */

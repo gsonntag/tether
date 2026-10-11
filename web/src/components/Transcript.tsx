@@ -495,16 +495,21 @@ function Tool({ t }: { t: ToolPart }) {
   const stat = pairs.length ? countDiff(pairs) : undefined;
 
   const blocked = t.guard?.decision === "deny";
+  // A blocked command the user ran themselves shows that run's result instead of the agent's.
+  const run = t.userRun;
+  const status = run ? (run.status === "running" ? "running" : run.exitCode ? "error" : "done") : t.status;
+  const output = run ? run.output : t.output;
+  const command = typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string";
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
-  ) : t.status === "running" ? (
+  ) : status === "running" ? (
     <Spinner size="sm" aria-label="Running" />
-  ) : t.status === "error" ? (
+  ) : status === "error" ? (
     <Icon icon="error" color="error" size="sm" label="Failed" />
   ) : (
     <Icon icon="success" color="success" size="sm" label="Done" />
   );
-  const lines = t.output ? t.output.trimEnd().split("\n").length : 0;
+  const lines = output ? output.trimEnd().split("\n").length : 0;
   const guard = t.guard && !blocked && t.guard.by !== "mode" ? t.guard : undefined;
 
   const header = (
@@ -583,7 +588,7 @@ function Tool({ t }: { t: ToolPart }) {
                   {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
                     <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
                   )}
-                  {t.output && (!pairs.length || t.status === "error") && <ToolOutput text={t.output} />}
+                  {output && (!pairs.length || status === "error") && <ToolOutput text={output} />}
                 </VStack>
               )}
             </Collapsible>
@@ -598,7 +603,19 @@ function Tool({ t }: { t: ToolPart }) {
                 {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
               </Text>
             </StackItem>
-            {t.guard!.by !== "user" && <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })} />}
+            {t.guard!.by !== "user" &&
+              (command ? (
+                <Button
+                  label="Run it myself"
+                  size="sm"
+                  onClick={() => {
+                    setOpen(true);
+                    act("runBlocked", { sessionId, toolId: t.id });
+                  }}
+                />
+              ) : (
+                <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })} />
+              ))}
           </HStack>
         )}
       </VStack>
