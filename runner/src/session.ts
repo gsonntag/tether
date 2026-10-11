@@ -53,17 +53,32 @@ const STALL_WARN_MS = 15 * 60_000;
 /** How often a moving conversation re-sends its summary, so session lists stay in order. */
 const SUMMARY_EVERY_MS = 10_000;
 
-/** The conversation time after `event`: a replayed history keeps its own timestamps. */
-export function movedAt(event: SessionEvent, updatedAt: number): number {
+const conversational = (m: Msg) => m.role === "user" || m.role === "assistant";
+
+/**
+ * The time of the session's most recent message after `event` (call it before applying the event):
+ * what session lists sort by. Only user and agent messages count, by their own timestamps, so a
+ * replayed history keeps its times and notices, state and activity never move it. An assistant
+ * message still being written counts as new on every change, so a long reply stays at the top.
+ */
+export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[], now = Date.now()): number {
+  const streaming = (id: string) => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.id === id) return messages[i]!.role === "assistant" && !!messages[i]!.streaming;
+    return false;
+  };
   switch (event.type) {
     case "reset": {
-      const last = event.messages.reduce((t, m) => Math.max(t, m.ts ?? 0), 0);
+      const last = event.messages.reduce((t, m) => (conversational(m) ? Math.max(t, m.ts || 0) : t), 0);
       return last || updatedAt;
     }
-    case "msg":
-      return Math.max(updatedAt, event.msg.ts ?? Date.now());
+    case "msg": {
+      const m = event.msg;
+      if (!conversational(m)) return updatedAt;
+      if (m.role === "assistant" && (m.streaming || streaming(m.id))) return Math.max(updatedAt, m.ts || 0, now);
+      return Math.max(updatedAt, m.ts || 0);
+    }
     case "delta":
-      return Date.now();
+      return streaming(event.msgId) ? Math.max(updatedAt, now) : updatedAt;
     default:
       return updatedAt;
   }
@@ -76,9 +91,9 @@ export abstract class LiveSession {
   title: string;
   createdAt: number;
   /**
-   * When the conversation last moved: what the session lists sort by. Only messages and streamed
-   * text move it, never state, activity or a history replay, so resuming sessions after a runner
-   * restart doesn't shuffle them all to the top.
+   * When the session's most recent message was written (see movedAt): what the session lists sort
+   * by. State, activity, notices and a history replay never move it forward, so resuming sessions
+   * after a runner restart doesn't shuffle them all to the top.
    */
   updatedAt: number;
   /** when a summary last went out because updatedAt moved (see emit) */
@@ -142,10 +157,10 @@ export abstract class LiveSession {
   emit(event: SessionEvent): void {
     const before = this.t.state.status;
     const beforeModel = this.t.state.model;
+    const moved = movedAt(event, this.updatedAt, this.t.messages);
     applyEvent(this.t, event);
     this.seq++;
     this.lastActivity = Date.now();
-    const moved = movedAt(event, this.updatedAt);
     this.stallWarned = false;
     this.sink.emit(this.id, this.seq, event);
     if (moved !== this.updatedAt) {

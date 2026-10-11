@@ -16,6 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
+import { byRecent } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -304,7 +305,7 @@ function upsertSummary(sum: SessionSummary) {
     // A turn just ended: usage moved (the runner has marked its cache stale).
     if (i >= 0 && list[i]!.status !== "idle" && sum.status === "idle") setTimeout(() => ((usageAt = 0), refreshUsage()), 2000);
     const next = i >= 0 ? list.map((x) => (x.id === sum.id ? sum : x)) : [sum, ...list];
-    next.sort((a, b) => b.updatedAt - a.updatedAt);
+    next.sort(byRecent);
     const open = s.open[sum.id] ? { ...s.open, [sum.id]: { ...s.open[sum.id]!, session: sum } } : s.open;
     const knownProject = s.projects.some((p) => p.path === sum.projectPath);
     if (!knownProject) refreshProjects();

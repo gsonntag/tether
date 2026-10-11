@@ -1,7 +1,7 @@
 // The Home dashboard's data: session pulses from every connected runner, grouped into what needs
 // you, what's running and what finished recently. Pure, so it's unit tested (dashboard.test.ts).
 
-import { ACTIVITY_KINDS, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import { ACTIVITY_KINDS, byRecent, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
 
 /** runnerId -> sessionId -> latest pulse */
 export type PulseMap = Record<string, Record<string, SessionPulse>>;
@@ -50,9 +50,10 @@ export function groupDashboard(map: PulseMap, opts: { finished?: number } = {}):
   const rank = (p: SessionPulse) => (p.pendingUi?.length ? 0 : p.session.status === "running" ? 1 : p.session.status === "waiting" ? 2 : 3);
   running.sort((a, b) => rank(a.pulse) - rank(b.pulse) || (b.pulse.turnStartedAt ?? b.pulse.session.updatedAt) - (a.pulse.turnStartedAt ?? a.pulse.session.updatedAt));
 
+  // Like the session lists: the most recent message first.
   const finished = all
     .filter((r) => !isRunning(r.pulse) && r.pulse.finishedAt)
-    .sort((a, b) => b.pulse.finishedAt! - a.pulse.finishedAt!)
+    .sort((a, b) => byRecent(a.pulse.session, b.pulse.session))
     .slice(0, opts.finished ?? 8);
 
   return { needs, running, finished };

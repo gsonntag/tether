@@ -28,7 +28,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
-import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
+import { byRecent, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
@@ -353,7 +353,7 @@ function NeedsYouSection() {
   if (!rows.length && !conflicts) return null;
 
   const groups = new Map<string, SessionSummary[]>();
-  for (const s of rows.sort((a, b) => b.updatedAt - a.updatedAt)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
+  for (const s of rows.sort(byRecent)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
   return (
     <SideNavSection title="Needs you">
       <ConflictRows />
@@ -383,9 +383,9 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   let more: React.ReactNode = null;
   if (!open) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
   else if (loaded) {
-    // Live sessions first, then most recent. Sessions marked done never show here; search finds
+    // Most recent message first, live or not. Sessions marked done never show here; search finds
     // them, and sending one a message brings it back.
-    const sorted = loaded.filter((s) => !s.archived).sort((a, b) => Number(b.live) - Number(a.live) || b.updatedAt - a.updatedAt);
+    const sorted = loaded.filter((s) => !s.archived).sort(byRecent);
     rows = all ? sorted : sorted.slice(0, SHOW);
     more = sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />;
     if (!sorted.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
