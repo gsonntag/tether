@@ -111,6 +111,24 @@ export interface MergeOutcome {
 
 const now = () => new Date().toISOString();
 
+/**
+ * The conflicts a pass raised that are worth a notification: still open, one per memory (the
+ * latest), and not where the pass itself ended up back at the old text (A → B → A) or deleted it.
+ */
+export function conflictsToNotify(raised: MemoryConflict[], store: Store): MemoryConflict[] {
+  const open = new Set(store.conflicts().filter((c) => c.status === "open").map((c) => c.id));
+  const byMemory = new Map<string, MemoryConflict[]>();
+  for (const c of raised) byMemory.set(c.memoryId, [...(byMemory.get(c.memoryId) ?? []), c]);
+  const out: MemoryConflict[] = [];
+  for (const [id, list] of byMemory) {
+    const cur = store.get(id);
+    if (!cur || contentHash(cur.body) === contentHash(list[0]!.oldBody)) continue;
+    const last = list.filter((c) => open.has(c.id)).at(-1);
+    if (last) out.push(last);
+  }
+  return out;
+}
+
 export class Merger {
   constructor(
     private store: Store,

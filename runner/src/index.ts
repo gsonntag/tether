@@ -27,7 +27,7 @@ import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./config";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
-import { forgetSession, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import { ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
@@ -59,6 +59,18 @@ const context = new ContextService({
   emit: (event) => send({ t: "context", event }),
   sessionForKey: (key) => sessionForKey(key)?.id,
   projects: () => config().projects,
+  onConflicts: (list) => conflictNotifier.add(list),
+});
+// A merge pass's contradictions go out as one push; within a minute of one, the next wait and batch.
+const conflictNotifier = new ConflictNotifier({
+  windowMs: 60_000,
+  // Turned off while a batch waited: nothing goes out (the page it links to is off too).
+  isOpen: (id) => context.enabled && context.store.conflicts().some((c) => c.id === id && c.status === "open"),
+  send: (list) => {
+    // Open bells refetch on a bare "sessions" message, which tabs from before this kind existed
+    // handle too (a new context event type would throw in their handler).
+    if (notifyConflicts(list)) send({ t: "sessions" });
+  },
 });
 // `/skill` in the message box: the registry's skills once the master context has been imported.
 useContextSkills(() => ({ enabled: context.enabled, registry: context.store.skillsDir, skills: () => context.listSkills() }));

@@ -368,6 +368,7 @@ const NOTIFY_DESCRIPTIONS: Record<NotifyKind, string> = {
   question: "An agent asks you something or needs an approval.",
   finished: "An agent finishes what it was doing.",
   blocked: "An agent is stuck: an action was blocked, every model hit its usage limit, it went quiet, or it failed.",
+  memory: "A new memory contradicts an older one. The newest is kept; tap to review it.",
 };
 
 /** This device's push notifications from the selected runner. */

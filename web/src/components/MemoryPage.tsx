@@ -1,79 +1,46 @@
-// The Memory & Skills page (docs/master-context.md, UI): one store of memory and skills shared by
-// every harness. Before the first import it is the import wizard; after, four tabs: memory (global
-// and per-repo, searchable, editable), the quiet activity feed, conflicts, and the skill library.
-// Frame: Astryx's table-grouped template (header + grouped table + resizable detail panel).
+// The Memory & Skills page (docs/master-context.md, UI): one page for the memory and skill library
+// every harness shares. Top to bottom: whether shared memory is on (turning it on or off), open
+// conflicts (only when there are some), the memory list (global and per repo, searchable; a row
+// opens in a side panel, full screen on phones) and the skills with their on/off switches.
+// Frame: Astryx's settings template (header + one scrolling column of sections), plus the
+// table-grouped template's resizable detail panel.
 
 import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Grid } from "@astryxdesign/core/Grid";
 import { Icon } from "@astryxdesign/core/Icon";
-import { Layout, LayoutContent, LayoutFooter, LayoutHeader, LayoutPanel, VStack, HStack, StackItem } from "@astryxdesign/core/Layout";
+import { Layout, LayoutContent, LayoutHeader, LayoutPanel, VStack, HStack, StackItem } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
-import { ResizeHandle, useResizable, type ResizableProps } from "@astryxdesign/core/Resizable";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Switch } from "@astryxdesign/core/Switch";
-import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Table, TableBody, TableCell, TableRow, pixel, proportional, resolveColumnWidths, type TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import {
-  ArrowDownTrayIcon,
-  ArrowPathIcon,
-  ArrowsRightLeftIcon,
-  ArrowUpTrayIcon,
-  CheckCircleIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  DocumentDuplicateIcon,
-  ExclamationTriangleIcon,
-  MagnifyingGlassIcon,
-  PencilSquareIcon,
-  PlusCircleIcon,
-  PuzzlePieceIcon,
-  TrashIcon,
-  XCircleIcon,
-  XMarkIcon,
-} from "@heroicons/react/24/outline";
-import type {
-  ContextActivity,
-  ContextActivityKind,
-  ContextImportPreview,
-  ContextSkill,
-  ContextStatus,
-  ContextTurnedOff,
-  MemoryCommit,
-  MemoryConflict,
-  MemoryEntry,
-  MemoryType,
-} from "../shared/protocol";
-import { act, refreshContext, rpc, useStore } from "../store";
+import { ArrowsRightLeftIcon, MagnifyingGlassIcon, PencilSquareIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import type { ContextActivity, ContextImportPreview, ContextSkill, ContextStatus, ContextTurnedOff, MemoryCommit, MemoryConflict, MemoryEntry, MemoryType } from "../shared/protocol";
+import { act, markNoticeRead, refreshContext, resolveConflict, rpc, useStore } from "../store";
 import { Patch } from "./Changes";
 import { HarnessBadge } from "./HarnessBadge";
-import { ConflictView, scopeLabel, sourceHarness, sourceLabel, ts } from "./MemoryConflicts";
+import { scopeLabel, sourceHarness, sourceLabel, ts } from "./MemoryConflicts";
 
-type TabId = "memory" | "activity" | "conflicts" | "skills";
-
-const groupHeaderCell: CSSProperties = {
-  cursor: "pointer",
-  backgroundColor: "var(--color-background-muted)",
-  padding: "var(--spacing-3) var(--spacing-4)",
-};
+const capped: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 20)", width: "100%" };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
-const capped: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 16)", width: "100%" };
+const mutedBox: CSSProperties = { backgroundColor: "var(--color-background-muted)", borderRadius: "var(--radius-container)", overflow: "hidden" };
 
 const TYPE_COLOR: Record<MemoryType, "blue" | "purple" | "green" | "gray"> = {
   user: "blue",
@@ -84,6 +51,8 @@ const TYPE_COLOR: Record<MemoryType, "blue" | "purple" | "green" | "gray"> = {
 const TYPES: MemoryType[] = ["user", "feedback", "project", "reference"];
 const TYPE_LABEL: Record<MemoryType, string> = { user: "User", feedback: "Feedback", project: "Project", reference: "Reference" };
 
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
 /** Source harness tokens for a list of provenance strings ("claude:…", "codex:…"), one per harness. */
 function SourceBadges({ sources }: { sources: string[] }) {
   const kinds = [...new Set(sources.map((s) => (s.includes(":") ? s.slice(0, s.indexOf(":")) : s)))];
@@ -92,13 +61,9 @@ function SourceBadges({ sources }: { sources: string[] }) {
       {kinds.map((k) => {
         const h = sourceHarness(k);
         const paths = sources.filter((s) => s.startsWith(k + ":")).map((s) => s.slice(k.length + 1));
-        return h ? (
+        return (
           <Tooltip key={k} content={paths.join("\n") || k} hasHoverIndication={false}>
-            <HarnessBadge harness={h} />
-          </Tooltip>
-        ) : (
-          <Tooltip key={k} content={paths.join("\n") || k} hasHoverIndication={false}>
-            <Token size="sm" label={k === "mcp" ? "MCP" : k} />
+            {h ? <HarnessBadge harness={h} /> : <Token size="sm" label={k === "mcp" ? "MCP" : k} />}
           </Tooltip>
         );
       })}
@@ -110,16 +75,17 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
   const status = useStore((s) => s.contextStatus);
   const conflicts = useStore((s) => s.conflicts);
   const runnerId = useStore((s) => s.runnerId);
-  const [tab, setTab] = useState<TabId>("memory");
+  const focus = useStore((s) => s.memoryFocus);
   const [importing, setImporting] = useState(false);
+  /** when the last "Turn on" started: errors the runner reported since then are shown */
+  const [importedSince, setImportedSince] = useState<number>();
   const [turnedOff, setTurnedOff] = useState<ContextTurnedOff>();
+  const [highlight, setHighlight] = useState<string>();
+  const [query, setQuery] = useState("");
+  const [entries, setEntries] = useState<MemoryEntry[]>();
   const [selected, setSelected] = useState<string>();
-  const wantTab = useStore((s) => s.memoryTab);
-  useEffect(() => {
-    if (!wantTab) return;
-    setTab(wantTab);
-    useStore.setState({ memoryTab: undefined });
-  }, [wantTab]);
+  const panel = useResizable({ defaultSize: 420, minSize: 320, maxSize: 640 });
+  const live = useStore((s) => s.contextLive);
 
   useEffect(() => {
     document.title = "Memory & Skills · Tether";
@@ -127,128 +93,304 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
     return () => void (document.title = "Tether");
   }, [runnerId]);
 
-  // The wizard stays up (showing progress) until the first import's merge pass has finished.
-  const wizard = !status?.enabled || importing;
+  // "Turning on" lasts until the first import's merge pass has finished.
   useEffect(() => {
     if (importing && status?.enabled && !status.busy) setImporting(false);
   }, [importing, status?.enabled, status?.busy]);
+  const on = !!status?.enabled && !importing;
 
-  const openMemory = (id: string) => {
-    setTab("memory");
-    setSelected(id);
+  // Reload on search, and when the runner reports a change to memory (merges, edits, deletes).
+  const memoryChanges = live.filter((a) => a.memoryId).length;
+  useEffect(() => {
+    if (!on) return;
+    const q = query.trim();
+    const t = setTimeout(
+      () =>
+        rpc("listMemories", q ? { query: q } : {})
+          .then(setEntries)
+          .catch(() => setEntries([])),
+      q ? 250 : 0,
+    );
+    return () => clearTimeout(t);
+  }, [on, query, memoryChanges, runnerId]);
+
+  // Links into the page (a notification, the bell, Needs-you): scroll to the conflict.
+  useEffect(() => {
+    if (!focus || !status) return;
+    const id = focus === "conflicts" ? undefined : focus;
+    if (id) for (const n of useStore.getState().notices) if (n.conflictId === id) markNoticeRead(n.id);
+    const t = setTimeout(() => {
+      useStore.setState({ memoryFocus: undefined });
+      const target = id && conflicts.some((c) => c.id === id) ? `conflict-${id}` : "memory-conflicts";
+      document.getElementById(target)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      if (id) setHighlight(id);
+    }, 50);
+    return () => clearTimeout(t);
+  }, [focus, status, conflicts]);
+  useEffect(() => {
+    if (!highlight) return;
+    const t = setTimeout(() => setHighlight(undefined), 4000);
+    return () => clearTimeout(t);
+  }, [highlight]);
+
+  const current = entries?.find((e) => e.id === selected);
+  const onChanged = (next?: MemoryEntry) => {
+    if (!selected) return;
+    setEntries((list) => (next ? list?.map((e) => (e.id === selected ? next : e)) : list?.filter((e) => e.id !== selected)));
+    if (!next) setSelected(undefined);
   };
+  // Side panel (desktop): opening it moves focus into it, Escape closes it and focus goes back to
+  // where it was (the row). Phones get the full-screen Dialog, which does this itself.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const openId = !narrow && on ? current?.id : undefined;
+  useEffect(() => {
+    if (!openId) return;
+    if (!panelRef.current?.contains(document.activeElement)) returnFocus.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus({ preventScroll: true });
+  }, [openId]);
+  const closePanel = () => {
+    setSelected(undefined);
+    const el = returnFocus.current;
+    returnFocus.current = null;
+    if (el?.isConnected) requestAnimationFrame(() => el.focus({ preventScroll: true }));
+  };
+
+  const detail = on && current && <MemoryDetail key={current.id} entry={current} onClose={closePanel} onChanged={onChanged} />;
 
   return (
     <Layout
       height="fill"
       header={
-        <LayoutHeader hasDivider padding={4} paddingBlockEnd={wizard ? undefined : 0}>
-          <VStack gap={4}>
-            {/* Room on phones (and with the sidebar hidden) for the floating sidebar button. */}
-            <HStack gap={3} vAlign="center" paddingInlineStart={narrow ? 8 : 0}>
-              <StackItem size="fill">
-                <Heading level={1}>Memory & Skills</Heading>
-              </StackItem>
-              {status?.busy && !wizard && <Spinner size="sm" label="Merging…" />}
-              {!wizard && (
-                <Button
-                  label="Turn off shared memory"
-                  size="sm"
-                  onClick={async () => {
-                    if (
-                      !confirm(
-                        "Turn off shared memory? Tether stops syncing and removes what it added to every harness: the managed blocks in CLAUDE.md / AGENTS.md / GEMINI.md, its own memory files, the tether-context MCP entries (~/.claude.json, opencode, Codex, pi, Kiro, Antigravity) and its skill links (skills it had replaced become real copies again). The store, its history and the backups are kept; importing again turns it back on.",
-                      )
-                    )
-                      return;
-                    const st = await act("contextDisable", {});
-                    if (!st) return;
-                    const { turnedOff: off, ...rest } = st;
-                    setTurnedOff(off);
-                    useStore.setState({ contextStatus: rest });
-                  }}
-                />
-              )}
-            </HStack>
-            {!wizard && (
-              <TabList value={tab} onChange={(v) => setTab(v as TabId)} role="tablist" hasDivider isFullBleed>
-                <Tab
-                  value="memory"
-                  label="Memory"
-                  panelId="memory-panel"
-                  endContent={status ? <Badge variant="neutral" label={String(status.memories)} /> : undefined}
-                />
-                <Tab value="activity" label="Activity" panelId="memory-panel" />
-                <Tab
-                  value="conflicts"
-                  label="Conflicts"
-                  panelId="memory-panel"
-                  endContent={conflicts.length ? <Badge variant="warning" label={String(conflicts.length)} /> : undefined}
-                />
-                <Tab
-                  value="skills"
-                  label="Skills"
-                  panelId="memory-panel"
-                  endContent={status ? <Badge variant="neutral" label={String(status.skills)} /> : undefined}
-                />
-              </TabList>
-            )}
-          </VStack>
+        <LayoutHeader hasDivider padding={4}>
+          {/* Room on phones (and with the sidebar hidden) for the floating sidebar button. */}
+          <HStack gap={3} vAlign="center" paddingInlineStart={narrow ? 8 : 0}>
+            <Heading level={1}>Memory & Skills</Heading>
+          </HStack>
         </LayoutHeader>
       }
       content={
-        <LayoutContent role="main" padding={0}>
-          <VStack id="memory-panel" role={wizard ? undefined : "tabpanel"} height="100%">
+        <LayoutContent role="main" padding={4}>
+          <VStack gap={6} style={capped}>
             {!status ? (
-              <VStack padding={6} hAlign="center">
-                <Spinner label="Loading…" />
-              </VStack>
-            ) : wizard ? (
-              <ImportWizard
+              <Spinner label="Loading…" />
+            ) : (
+              <StatusSection
+                status={status}
                 importing={importing}
                 turnedOff={turnedOff}
+                importErrors={importedSince ? live.filter((a) => a.kind === "error" && a.ts >= importedSince) : []}
+                onDismissErrors={() => setImportedSince(undefined)}
                 onImport={() => {
                   setTurnedOff(undefined);
                   setImporting(true);
+                  setImportedSince(Date.now() - 1000);
                 }}
                 onFailed={() => setImporting(false)}
+                onTurnedOff={(off) => {
+                  setTurnedOff(off);
+                  setImportedSince(undefined);
+                  setSelected(undefined);
+                  setEntries(undefined);
+                }}
               />
-            ) : tab === "memory" ? (
-              <MemoryTab narrow={narrow} selected={selected} onSelect={setSelected} />
-            ) : tab === "activity" ? (
-              <ActivityTab onOpenMemory={openMemory} />
-            ) : tab === "conflicts" ? (
-              <ConflictsTab />
-            ) : (
-              <SkillsTab narrow={narrow} />
             )}
+            {on && conflicts.length > 0 && <ConflictsSection conflicts={conflicts} highlight={highlight} narrow={narrow} />}
+            {on && (
+              <MemorySection
+                narrow={narrow}
+                entries={entries}
+                query={query}
+                onQuery={setQuery}
+                selected={selected}
+                onSelect={(id) => setSelected(id === selected ? undefined : id)}
+              />
+            )}
+            {on && <SkillsSection narrow={narrow} />}
           </VStack>
+          {narrow && (
+            <Dialog isOpen={!!detail} onOpenChange={(o) => !o && setSelected(undefined)} purpose="info" variant="fullscreen" padding={4} aria-label="Memory details">
+              {detail}
+            </Dialog>
+          )}
         </LayoutContent>
+      }
+      end={
+        !narrow &&
+        detail && (
+          <>
+            <ResizeHandle resizable={panel.props} isReversed isAlwaysVisible={false} />
+            <LayoutPanel
+              ref={panelRef}
+              tabIndex={-1}
+              onKeyDown={(e) => {
+                // Not from a field (an edit in progress) or an open menu: those handle Escape themselves.
+                const t = e.target as HTMLElement;
+                if (e.key === "Escape" && !e.defaultPrevented && !t.closest("input, textarea, select, [aria-expanded='true'], [role='listbox']")) {
+                  e.preventDefault();
+                  closePanel();
+                }
+              }}
+              style={{ outline: "none" }}
+              hasDivider
+              resizable={panel.props}
+              padding={4}
+              role="complementary"
+              label="Memory details"
+            >
+              {detail}
+            </LayoutPanel>
+          </>
+        )
       }
     />
   );
 }
 
-// ---------------- first-run import wizard ----------------
+// ---------------- status: on / off / turning on ----------------
 
 const PHASE_LABEL: Record<NonNullable<ContextStatus["progress"]>["phase"], string> = {
-  skills: "Importing skills…",
-  scan: "Reading memory sources…",
-  merge: "Merging memories…",
-  export: "Updating each harness's files…",
-  disable: "Turning off…",
+  skills: "Importing skills",
+  scan: "Reading memory sources",
+  merge: "Merging memories",
+  export: "Updating each harness's files",
+  disable: "Turning off",
 };
 
-/** What "Turn off" just undid (shown above the wizard until the next import). */
+const TURN_OFF_CONFIRM =
+  "Turn off shared memory? Tether stops syncing and removes what it added to every harness: the managed blocks in CLAUDE.md / AGENTS.md / GEMINI.md, its own memory files, the tether-context MCP entries (~/.claude.json, opencode, Codex, pi, Kiro, Antigravity) and its skill links (skills it had replaced become real copies again). The store, its history and the backups are kept; turning it on again picks up where it left off.";
+
+function StatusSection({
+  status,
+  importing,
+  turnedOff,
+  importErrors,
+  onDismissErrors,
+  onImport,
+  onFailed,
+  onTurnedOff,
+}: {
+  status: ContextStatus;
+  importing: boolean;
+  turnedOff?: ContextTurnedOff;
+  importErrors: ContextActivity[];
+  onDismissErrors: () => void;
+  onImport: () => void;
+  onFailed: () => void;
+  onTurnedOff: (off?: ContextTurnedOff) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  // What went wrong while turning on (the import keeps going past a source it can't read).
+  const errors = importErrors.length > 0 && (
+    <Banner status="warning" title="Some things couldn't be imported" collapsible={false} isDismissable onDismiss={onDismissErrors}>
+      <List density="compact">
+        {importErrors.slice(0, 20).map((a) => (
+          <ListItem key={a.id} label={a.text} />
+        ))}
+      </List>
+    </Banner>
+  );
+
+  if (importing) {
+    const p = status.progress;
+    const known = !!p && p.total > 0;
+    return (
+      <VStack gap={2}>
+        <HStack gap={2} vAlign="center">
+          <Spinner size="sm" aria-label="Turning on" />
+          <Text type="body" weight="semibold">
+            Turning on shared memory
+          </Text>
+        </HStack>
+        <ProgressBar
+          label={p ? PHASE_LABEL[p.phase] : "Starting"}
+          isIndeterminate={!known}
+          value={known ? p!.done : 0}
+          max={known ? p!.total : 100}
+          hasValueLabel={known}
+          formatValueLabel={(v, max) => `${v} of ${max}`}
+        />
+        <Text type="supporting" color="secondary">
+          You can leave this page; it keeps going on the runner.
+        </Text>
+        {errors}
+      </VStack>
+    );
+  }
+
+  if (status.enabled)
+    return (
+      <VStack gap={2}>
+        <HStack gap={3} vAlign="center" wrap="wrap">
+          <StackItem size="fill">
+            <HStack gap={2} vAlign="center">
+              <StatusDot variant="success" label="On" />
+              <Text type="body" weight="semibold">
+                {`Shared memory is on · ${plural(status.memories, "memory", "memories")} · ${plural(status.skills, "skill")}`}
+              </Text>
+            </HStack>
+          </StackItem>
+          <Button
+            label="Turn off"
+            size="sm"
+            isLoading={busy}
+            onClick={async () => {
+              if (!confirm(TURN_OFF_CONFIRM)) return;
+              setBusy(true);
+              const st = await act("contextDisable", {});
+              setBusy(false);
+              if (!st) return;
+              const { turnedOff: off, ...rest } = st;
+              onTurnedOff(off);
+              useStore.setState({ contextStatus: rest });
+            }}
+          />
+        </HStack>
+        {errors}
+      </VStack>
+    );
+
+  const turnOn = async () => {
+    onImport();
+    const st = await act("contextImport", {});
+    if (st) useStore.setState({ contextStatus: st });
+    else onFailed();
+  };
+
+  return (
+    <VStack gap={3}>
+      {turnedOff && <TurnedOffBanner off={turnedOff} />}
+      <HStack gap={2} vAlign="center">
+        <StatusDot variant="neutral" label="Off" />
+        <Text type="body" weight="semibold">
+          Shared memory is off
+        </Text>
+      </HStack>
+      <Text>
+        Turning it on gives every agent you run (Claude Code, Codex, pi, opencode, Kiro and Antigravity) one memory and one skill library. Tether imports what
+        they already remember, merges it, and keeps it in sync from then on, including CLI sessions you start outside Tether. It adds a marked Tether section
+        to each harness's global instructions file (CLAUDE.md, AGENTS.md, GEMINI.md, Kiro steering) and never edits your text around it, registers its
+        tether-context memory server in each harness's MCP settings, and backs up each skill folder before replacing it with a link to one shared copy. Every
+        change is a git commit in {status.dir}.
+      </Text>
+      <HStack>
+        <Button label="Turn on shared memory" variant="primary" onClick={turnOn} />
+      </HStack>
+      <ImportPreview />
+    </VStack>
+  );
+}
+
+/** What "Turn off" just undid (shown until it's turned on again). */
 function TurnedOffBanner({ off }: { off: ContextTurnedOff }) {
   const skills = [
-    off.skillLinks ? `${off.skillLinks} skill ${off.skillLinks === 1 ? "link" : "links"} removed` : "",
-    off.restoredSkills ? `${off.restoredSkills} skill ${off.restoredSkills === 1 ? "copy" : "copies"} put back` : "",
+    off.skillLinks ? `${plural(off.skillLinks, "skill link")} removed` : "",
+    off.restoredSkills ? `${plural(off.restoredSkills, "skill copy", "skill copies")} put back` : "",
   ].filter(Boolean);
   const description = [
-    off.files.length ? `Tether's blocks and tether-context entries came out of ${off.files.length} ${off.files.length === 1 ? "file" : "files"}.` : "No harness files needed cleaning.",
+    off.files.length ? `Tether's blocks and tether-context entries came out of ${plural(off.files.length, "file")}.` : "No harness files needed cleaning.",
     skills.length ? skills.join(", ") + "." : "",
-    "Your memory store and its history are kept; importing again turns it back on.",
+    "Your memory store and its history are kept; turning it on again picks up where it left off.",
   ]
     .filter(Boolean)
     .join(" ");
@@ -276,412 +418,241 @@ function TurnedOffBanner({ off }: { off: ContextTurnedOff }) {
   );
 }
 
-function ImportWizard({ importing, turnedOff, onImport, onFailed }: { importing: boolean; turnedOff?: ContextTurnedOff; onImport: () => void; onFailed: () => void }) {
+const FIRST = 12;
+
+/** "See exactly what will change": the import's dry run (contextImportPreview) as one compact list. */
+function ImportPreview() {
+  const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<ContextImportPreview>();
   const [err, setErr] = useState<string>();
-  const live = useStore((s) => s.contextLive);
-  const status = useStore((s) => s.contextStatus);
-  const startedAt = useRef(0);
-
+  const [all, setAll] = useState(false);
   useEffect(() => {
-    rpc("contextImportPreview", {})
-      .then(setPreview)
-      .catch((e) => setErr(e?.message ?? String(e)));
-  }, []);
+    if (open && !preview)
+      rpc("contextImportPreview", {})
+        .then(setPreview)
+        .catch((e) => setErr(e?.message ?? String(e)));
+  }, [open, preview]);
 
-  const start = async () => {
-    startedAt.current = Date.now();
-    onImport();
-    const st = await act("contextImport", {});
-    if (st) useStore.setState({ contextStatus: st });
-    else onFailed();
-  };
-
-  const byHarness = useMemo(() => {
-    const g = new Map<string, ContextImportPreview["memories"]>();
-    for (const m of preview?.memories ?? []) g.set(m.harness, [...(g.get(m.harness) ?? []), m]);
-    return [...g];
+  const rows = useMemo(() => {
+    if (!preview) return [];
+    const out: { key: string; label: string; description?: string; start?: React.ReactNode }[] = [];
+    const byHarness = new Map<string, ContextImportPreview["memories"]>();
+    for (const m of preview.memories) byHarness.set(m.harness, [...(byHarness.get(m.harness) ?? []), m]);
+    for (const [h, list] of byHarness) {
+      const id = sourceHarness(h);
+      out.push({
+        key: `m:${h}`,
+        label: `Import ${plural(list.length, "memory", "memories")} from ${sourceLabel(`${h}:`)}`,
+        description: list.map((m) => m.title).join(" · "),
+        start: id ? <HarnessBadge harness={id} /> : <Token size="sm" label={h} />,
+      });
+    }
+    if (preview.skills.length)
+      out.push({
+        key: "skills",
+        label: `Share ${plural(preview.skills.length, "skill")} with every harness`,
+        description: preview.skills.map((s) => (s.drift.length ? `${s.name} (newest copy kept)` : s.name)).join(", "),
+      });
+    // MCP configs are listed among the managed files too: those only get the server entry.
+    for (const f of preview.managedFiles.filter((f) => !preview.mcpConfigs.includes(f))) out.push({ key: `f:${f}`, label: `Add a Tether section to ${f}` });
+    for (const f of preview.mcpConfigs) out.push({ key: `c:${f}`, label: `Register the tether-context memory server in ${f}` });
+    for (const b of preview.backups) out.push({ key: `b:${b.path}`, label: `Back up ${b.path}, then link it to the shared copy`, description: `Backup: ${b.to}` });
+    return out;
   }, [preview]);
 
-  if (importing) {
-    const progress = live.filter((a) => a.ts >= startedAt.current - 1000);
-    const merged = progress.filter((a) => a.kind === "new" || a.kind === "update" || a.kind === "duplicate" || a.kind === "contradicts").length;
-    const skills = progress.filter((a) => a.kind === "skill").length;
-    const p = status?.progress;
-    const known = !!p && p.total > 0;
-    return (
-      <VStack padding={4} gap={4} style={capped}>
-        <VStack gap={2}>
-          <Text type="label">{p ? PHASE_LABEL[p.phase] : "Importing…"}</Text>
-          <ProgressBar
-            label="Import progress"
-            isLabelHidden
-            isIndeterminate={!known}
-            value={known ? p!.done : 0}
-            max={known ? p!.total : 100}
-            hasValueLabel={known}
-            formatValueLabel={(v, max) => `${v} of ${max}`}
-          />
-          <Text type="supporting" color="secondary">
-            {`${merged} ${merged === 1 ? "memory" : "memories"} merged, ${skills} skill ${skills === 1 ? "change" : "changes"} so far.`} You can leave this
-            page; the import keeps going on the runner.
-          </Text>
-        </VStack>
-        <List density="compact">
-          {progress.slice(0, 40).map((a) => (
-            <ActivityRow key={a.id} a={a} />
-          ))}
-        </List>
-      </VStack>
-    );
-  }
-
+  const shown = all ? rows : rows.slice(0, FIRST);
   return (
-    <Layout
-      height="fill"
-      content={
-        <LayoutContent padding={4}>
-          <VStack gap={5} style={capped}>
-            {turnedOff && <TurnedOffBanner off={turnedOff} />}
-            <VStack gap={2}>
-              <Text>
-                Tether can keep one memory and one skill library for every agent you run: Claude Code, Codex, pi, opencode, Kiro and Antigravity. What any of
-                them learns is merged into a shared store and synced back out to the others, including CLI sessions you start outside Tether.
-              </Text>
-              <Text color="secondary">
-                Nothing is changed until you press Import. After that it runs on its own: new memories are merged as they appear, and every change is a git
-                commit you can inspect or revert.
-              </Text>
-            </VStack>
-
-            {err && <Banner status="error" title="Couldn't read what would be imported" description={err} collapsible={false} />}
-            {!preview && !err && <Spinner label="Looking at your harnesses…" />}
-
-            {preview && (
-              <>
-                {preview.warnings.length > 0 && (
-                  <Banner status="warning" title="Some sources couldn't be read" description={preview.warnings.join("\n")} collapsible={false} />
-                )}
-
-                <WizardGroup title="Memories to import" count={preview.memories.length} empty="No memories found.">
-                  {byHarness.map(([h, list]) => (
-                    <Collapsible
-                      key={h}
-                      defaultIsOpen={byHarness.length === 1}
-                      trigger={
-                        <HStack gap={2} vAlign="center">
-                          {sourceHarness(h) ? <HarnessBadge harness={sourceHarness(h)!} /> : <Token size="sm" label={h} />}
-                          <Text type="label">{sourceLabel(`${h}:`)}</Text>
-                          <Badge variant="neutral" label={String(list.length)} />
-                        </HStack>
-                      }
-                    >
-                      <List density="compact">
-                        {list.map((m, i) => (
-                          <ListItem key={m.path + i} label={m.title} description={`${scopeLabel(m.scope)} · ${m.path}`} />
-                        ))}
-                      </List>
-                    </Collapsible>
-                  ))}
-                </WizardGroup>
-
-                <WizardGroup
-                  title="Skills for every harness"
-                  count={preview.skills.length}
-                  empty="No skills found."
-                  rows={preview.skills.map((s) => ({
-                    key: s.name,
-                    label: s.exposedAs ? `${s.name} (as ${s.exposedAs})` : s.name,
-                    description: s.drift.length ? `From ${s.from}. Newest copy kept; ${s.drift.join(", ")} differed.` : `From ${s.from}`,
-                    end: s.drift.length ? <Token size="sm" color="yellow" label="Drift" /> : undefined,
-                  }))}
-                />
-
-                <WizardGroup
-                  title="Skill folders backed up, then replaced by links"
-                  count={preview.backups.length}
-                  empty="None: no skill folder needs moving."
-                  note={`Each folder moves to the backup, and a link to the shared copy takes its place (${preview.symlinks.length} links in all).`}
-                  rows={preview.backups.map((b) => ({ key: b.path, label: b.path, description: `→ ${b.to}` }))}
-                />
-
-                <WizardGroup
-                  title="Files that get a Tether block"
-                  count={preview.managedFiles.length}
-                  empty="None."
-                  note="Tether only writes inside its own marked block (or its own file) and never edits your text around it."
-                  rows={preview.managedFiles.map((f) => ({
-                    key: f,
-                    label: f,
-                    description: preview.mcpConfigs.includes(f) ? "Registers the tether-context MCP server" : undefined,
-                  }))}
-                />
-              </>
-            )}
-          </VStack>
-        </LayoutContent>
-      }
-      footer={
-        <LayoutFooter hasDivider>
-          <HStack gap={3} vAlign="center" wrap="wrap">
-            <Button label="Import" variant="primary" isDisabled={!preview} onClick={start} />
-            <Text type="supporting" color="secondary">
-              Stored in {status?.dir ?? "the runner's config folder"}, a git repo.
-            </Text>
+    <Collapsible trigger={<Text type="label">See exactly what will change</Text>} isOpen={open} onOpenChange={setOpen}>
+      <VStack gap={2} paddingBlockStart={2}>
+        {err && <Banner status="error" title="Couldn't read what would change" description={err} collapsible={false} />}
+        {!preview && !err && <Spinner size="sm" label="Looking at your harnesses…" />}
+        {preview?.warnings.length ? <Banner status="warning" title="Some sources couldn't be read" description={preview.warnings.join("\n")} collapsible={false} /> : null}
+        {preview && !rows.length && <Text type="supporting">Nothing to import and no files to change.</Text>}
+        {shown.length > 0 && (
+          <List density="compact" hasDividers>
+            {shown.map((r) => (
+              // The label wraps (a plain string is cut to one line): on a phone the path is the point.
+              <ListItem key={r.key} label={<Text style={preWrap}>{r.label}</Text>} description={r.description} startContent={r.start} />
+            ))}
+          </List>
+        )}
+        {rows.length > FIRST && (
+          <HStack>
+            <Button label={all ? "Show fewer" : `Show all ${rows.length}`} variant="ghost" size="sm" onClick={() => setAll(!all)} />
           </HStack>
-        </LayoutFooter>
-      }
-    />
+        )}
+      </VStack>
+    </Collapsible>
   );
 }
 
-const FIRST = 5;
+// ---------------- conflicts ----------------
 
-/** A titled list in the wizard; long ones show the first few rows until expanded. */
-function WizardGroup({
-  title,
-  count,
-  empty,
-  note,
-  rows,
-  children,
-}: {
-  title: string;
-  count: number;
-  empty: string;
-  note?: string;
-  rows?: { key: string; label: string; description?: string; end?: React.ReactNode }[];
-  children?: React.ReactNode;
-}) {
-  const [all, setAll] = useState(false);
-  const shown = rows && (all ? rows : rows.slice(0, FIRST));
+const claimStyle = (tone: "old" | "new"): CSSProperties => ({
+  ...preWrap,
+  borderInlineStart: `calc(var(--border-width) * 2) solid var(${tone === "old" ? "--color-border-red" : "--color-border-green"})`,
+  paddingInlineStart: "var(--spacing-2)",
+});
+
+function ConflictsSection({ conflicts, highlight, narrow }: { conflicts: MemoryConflict[]; highlight?: string; narrow: boolean }) {
+  const n = conflicts.length;
   return (
-    <VStack gap={2}>
+    <VStack id="memory-conflicts" gap={2}>
       <HStack gap={2} vAlign="center">
-        <Text type="label" weight="semibold">
-          {title}
+        <StatusDot variant="warning" label="Needs a look" />
+        <Text type="body" weight="semibold">
+          {n === 1 ? "1 memory conflict: the newest was kept" : `${n} memory conflicts: the newest was kept`}
         </Text>
-        <Badge variant="neutral" label={String(count)} />
       </HStack>
-      {note && count > 0 && (
+      <VStack style={mutedBox}>
+        {conflicts.map((c, i) => (
+          <React.Fragment key={c.id}>
+            {i > 0 && <Divider />}
+            <ConflictRow c={c} isHighlighted={c.id === highlight} narrow={narrow} />
+          </React.Fragment>
+        ))}
+      </VStack>
+    </VStack>
+  );
+}
+
+function ConflictRow({ c, isHighlighted, narrow }: { c: MemoryConflict; isHighlighted: boolean; narrow: boolean }) {
+  const [busy, setBusy] = useState<string>();
+  const run = async (action: "keep-new" | "keep-old") => {
+    setBusy(action);
+    await resolveConflict(c.id, action);
+    setBusy(undefined);
+  };
+  return (
+    <VStack
+      id={`conflict-${c.id}`}
+      gap={2}
+      padding={3}
+      style={{ scrollMarginTop: "var(--spacing-4)", backgroundColor: isHighlighted ? "var(--color-background-yellow)" : undefined, transition: "background-color 0.6s" }}
+    >
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <StackItem size="fill">
+          <Text type="body" weight="semibold" maxLines={1}>
+            {c.name}
+          </Text>
+        </StackItem>
         <Text type="supporting" color="secondary">
-          {note}
+          {scopeLabel(c.scope)} · {sourceLabel(c.source)} · <Timestamp value={ts(c.ts)} format="relative_short" type="inherit" />
         </Text>
-      )}
-      {!count && <Text type="supporting">{empty}</Text>}
-      {children}
-      {shown && shown.length > 0 && (
-        <List density="compact">
-          {shown.map((r) => (
-            <ListItem key={r.key} label={r.label} description={r.description} endContent={r.end} />
-          ))}
-        </List>
-      )}
-      {rows && rows.length > FIRST && (
-        <HStack>
-          <Button label={all ? "Show fewer" : `Show all ${rows.length}`} variant="ghost" size="sm" onClick={() => setAll(!all)} />
-        </HStack>
-      )}
+      </HStack>
+      <Grid columns={narrow ? 1 : 2} gap={3}>
+        <VStack gap={0.5} style={claimStyle("old")}>
+          <Text type="supporting" color="secondary">
+            Old
+          </Text>
+          <Text maxLines={4}>{c.oldClaim || c.oldBody}</Text>
+        </VStack>
+        <VStack gap={0.5} style={claimStyle("new")}>
+          <Text type="supporting" color="secondary">
+            New, in use
+          </Text>
+          <Text maxLines={4}>{c.newClaim || c.newBody}</Text>
+        </VStack>
+      </Grid>
+      <HStack gap={2}>
+        <Button label="Keep new" variant="primary" size="sm" isLoading={busy === "keep-new"} isDisabled={!!busy} onClick={() => run("keep-new")} />
+        <Button label="Keep old" size="sm" isLoading={busy === "keep-old"} isDisabled={!!busy || !c.commit} onClick={() => run("keep-old")} />
+      </HStack>
     </VStack>
   );
 }
 
 // ---------------- memory ----------------
 
-const memoryColumns: TableColumn<Record<string, unknown>>[] = [
-  { key: "type", header: "", width: pixel(104) },
-  { key: "memory", header: "Memory", width: proportional(1) },
-  { key: "sources", header: "From", width: pixel(120) },
-  { key: "updated", header: "Updated", width: pixel(88) },
-];
-const narrowColumns = memoryColumns.filter((c) => c.key === "memory" || c.key === "updated");
-
-function MemoryTab({ narrow, selected, onSelect }: { narrow: boolean; selected?: string; onSelect: (id: string | undefined) => void }) {
-  const [entries, setEntries] = useState<MemoryEntry[]>();
-  const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("all");
+function MemorySection({
+  narrow,
+  entries,
+  query,
+  onQuery,
+  selected,
+  onSelect,
+}: {
+  narrow: boolean;
+  entries?: MemoryEntry[];
+  query: string;
+  onQuery: (q: string) => void;
+  selected?: string;
+  onSelect: (id: string) => void;
+}) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const live = useStore((s) => s.contextLive);
-  const panel = useResizable({ defaultSize: 420, minSize: 320, maxSize: 640 });
+  const searching = !!query.trim();
 
-  // Reload on search, and when the runner reports a change to memory (merges, edits, deletes).
-  const memoryChanges = live.filter((a) => a.memoryId).length;
-  useEffect(() => {
-    const q = query.trim();
-    const t = setTimeout(
-      () =>
-        rpc("listMemories", q ? { query: q } : {})
-          .then(setEntries)
-          .catch(() => setEntries([])),
-      q ? 250 : 0,
-    );
-    return () => clearTimeout(t);
-  }, [query, memoryChanges]);
-
-  const scopes = useMemo(() => {
-    const s = [...new Set((entries ?? []).map((e) => e.scope))];
-    return s.sort((a, b) => (a === "global" ? -1 : b === "global" ? 1 : scopeLabel(a).localeCompare(scopeLabel(b))));
-  }, [entries]);
+  // Global first, then repos by name; newest first inside a group unless it's a ranked search.
   const groups = useMemo(() => {
     const g = new Map<string, MemoryEntry[]>();
-    for (const s of scopes) if (scope === "all" || scope === s) g.set(s, []);
-    for (const e of entries ?? []) g.get(e.scope)?.push(e);
-    if (!query.trim()) for (const list of g.values()) list.sort((a, b) => b.updated.localeCompare(a.updated));
-    return [...g].filter(([, l]) => l.length);
-  }, [entries, scopes, scope, query]);
+    for (const e of entries ?? []) g.set(e.scope, [...(g.get(e.scope) ?? []), e]);
+    if (!searching) for (const list of g.values()) list.sort((a, b) => b.updated.localeCompare(a.updated));
+    return [...g].sort(([a], [b]) => (a === "global" ? -1 : b === "global" ? 1 : scopeLabel(a).localeCompare(scopeLabel(b))));
+  }, [entries, searching]);
 
-  const columns = narrow ? narrowColumns : memoryColumns;
-  const widths = resolveColumnWidths(columns);
-  const current = entries?.find((e) => e.id === selected);
-  const toggle = (k: string) => setCollapsed((c) => (c.has(k) ? new Set([...c].filter((x) => x !== k)) : new Set([...c, k])));
-  const onChanged = (next?: MemoryEntry) => {
-    if (!selected) return;
-    setEntries((list) => (next ? list?.map((e) => (e.id === selected ? next : e)) : list?.filter((e) => e.id !== selected)));
-    if (!next) onSelect(undefined);
-  };
-
-  const detail = current && <MemoryDetail key={current.id} entry={current} onClose={() => onSelect(undefined)} onChanged={onChanged} />;
+  const setOpen = (k: string, open: boolean) =>
+    setCollapsed((c) => {
+      const next = new Set(c);
+      if (open) next.delete(k);
+      else next.add(k);
+      return next;
+    });
 
   return (
-    <Layout
-      height="fill"
-      header={
-        <LayoutHeader padding={4} hasDivider>
-          <HStack gap={2} vAlign="center" wrap="wrap">
-            <StackItem size="fill">
-              <TextInput
-                label="Search memory"
-                isLabelHidden
-                size="sm"
-                placeholder="Search memory"
-                startIcon={MagnifyingGlassIcon}
-                hasClear
-                value={query}
-                onChange={setQuery}
-              />
-            </StackItem>
-            <Selector
-              label="Scope"
-              isLabelHidden
-              size="sm"
-              width={narrow ? "100%" : 200}
-              value={scope}
-              options={[
-                { value: "all", label: "Global and all repos" },
-                ...scopes.map((s) => ({ value: s, label: scopeLabel(s), description: s === "global" ? undefined : s.slice(5) })),
-              ]}
-              onChange={setScope}
-            />
-          </HStack>
-        </LayoutHeader>
-      }
-      content={
-        <LayoutContent padding={0}>
-          {!entries ? (
-            <VStack padding={6} hAlign="center">
-              <Spinner label="Loading memory…" />
-            </VStack>
-          ) : groups.length === 0 ? (
-            <VStack padding={6}>
-              <EmptyState title={query.trim() ? `Nothing matches “${query.trim()}”` : "No memories yet"} isCompact />
-            </VStack>
-          ) : (
-            <Table columns={columns} density="balanced" dividers="rows" textOverflow="truncate" hasHover>
-              <colgroup>
-                {columns.map((col) => (
-                  <col key={col.key} style={widths.columns.get(col.key)?.style} />
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center">
+        <Heading level={3}>Memory</Heading>
+        {entries && !searching && <Badge variant="neutral" label={String(entries.length)} />}
+      </HStack>
+      <TextInput label="Search memory" isLabelHidden size="sm" placeholder="Search memory" startIcon={MagnifyingGlassIcon} hasClear value={query} onChange={onQuery} />
+      {!entries ? (
+        <Spinner size="sm" label="Loading memory…" />
+      ) : groups.length === 0 ? (
+        <EmptyState title={searching ? `Nothing matches “${query.trim()}”` : "No memories yet"} isCompact />
+      ) : (
+        <VStack gap={1}>
+          {groups.map(([key, list]) => (
+            <Collapsible
+              key={key}
+              isOpen={searching || !collapsed.has(key)}
+              onOpenChange={(o) => setOpen(key, o)}
+              trigger={
+                <HStack gap={2} vAlign="center">
+                  <Text type="label" weight="semibold">
+                    {scopeLabel(key)}
+                  </Text>
+                  <Badge variant="neutral" label={String(list.length)} />
+                  {key !== "global" && !narrow && (
+                    <Text type="supporting" color="secondary" maxLines={1}>
+                      {key.slice(5)}
+                    </Text>
+                  )}
+                </HStack>
+              }
+            >
+              <List density="compact" hasDividers>
+                {list.map((m) => (
+                  <ListItem
+                    key={m.id}
+                    label={m.description || m.name}
+                    description={narrow ? `${TYPE_LABEL[m.type]} · ${m.name}` : m.name}
+                    isSelected={m.id === selected}
+                    onClick={() => onSelect(m.id)}
+                    endContent={
+                      <HStack gap={2} vAlign="center">
+                        {!narrow && <Token size="sm" color={TYPE_COLOR[m.type]} label={TYPE_LABEL[m.type]} />}
+                        {!narrow && <SourceBadges sources={m.sources} />}
+                        <Timestamp value={m.updated} format="relative_short" />
+                      </HStack>
+                    }
+                  />
                 ))}
-              </colgroup>
-              <TableBody>
-                {groups.map(([key, list]) => {
-                  const open = !collapsed.has(key);
-                  return (
-                    <React.Fragment key={key}>
-                      <TableRow
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => toggle(key)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            toggle(key);
-                          }
-                        }}
-                      >
-                        <TableCell colSpan={columns.length} style={groupHeaderCell}>
-                          <HStack gap={2} vAlign="center">
-                            <Icon icon={open ? ChevronDownIcon : ChevronRightIcon} size="sm" color="secondary" />
-                            <Text type="body" weight="bold">
-                              {scopeLabel(key)}
-                            </Text>
-                            <Badge variant="neutral" label={String(list.length)} />
-                            {key !== "global" && !narrow && (
-                              <Text type="supporting" color="secondary" maxLines={1}>
-                                {key.slice(5)}
-                              </Text>
-                            )}
-                          </HStack>
-                        </TableCell>
-                      </TableRow>
-                      {open &&
-                        list.map((m) => (
-                          <TableRow key={m.id} onClick={() => onSelect(m.id === selected ? undefined : m.id)} aria-selected={m.id === selected}>
-                            {!narrow && (
-                              <TableCell>
-                                <Token size="sm" color={TYPE_COLOR[m.type]} label={TYPE_LABEL[m.type]} />
-                              </TableCell>
-                            )}
-                            <TableCell>
-                              <VStack gap={0}>
-                                <Text type="body" maxLines={1} weight={m.id === selected ? "semibold" : undefined}>
-                                  {m.description || m.name}
-                                </Text>
-                                <Text type="supporting" color="secondary" maxLines={1}>
-                                  {m.name}
-                                </Text>
-                              </VStack>
-                            </TableCell>
-                            {!narrow && (
-                              <TableCell>
-                                <SourceBadges sources={m.sources} />
-                              </TableCell>
-                            )}
-                            <TableCell>
-                              <Timestamp value={m.updated} format="relative_short" />
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                    </React.Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-          {narrow && (
-            <Dialog isOpen={!!detail} onOpenChange={(o) => !o && onSelect(undefined)} purpose="info" width={560} maxHeight="90dvh">
-              {detail}
-            </Dialog>
-          )}
-        </LayoutContent>
-      }
-      end={
-        !narrow &&
-        detail && (
-          <>
-            <ResizeHandle resizable={panel.props} isReversed isAlwaysVisible={false} />
-            <DetailPanel resizable={panel.props}>{detail}</DetailPanel>
-          </>
-        )
-      }
-    />
-  );
-}
-
-function DetailPanel({ resizable, children }: { resizable: ResizableProps; children: React.ReactNode }) {
-  return (
-    <LayoutPanel hasDivider resizable={resizable} padding={4} role="complementary" label="Memory details">
-      {children}
-    </LayoutPanel>
+              </List>
+            </Collapsible>
+          ))}
+        </VStack>
+      )}
+    </VStack>
   );
 }
 
@@ -712,7 +683,6 @@ function MemoryDetail({ entry, onClose, onChanged }: { entry: MemoryEntry; onClo
     }
   };
   const remove = async () => {
-    if (!confirm(`Delete “${entry.description || entry.name}” from every harness's memory? It stays in the git history.`)) return;
     setBusy(true);
     const r = await act("editMemory", { id: entry.id, remove: true });
     setBusy(false);
@@ -788,7 +758,7 @@ function MemoryDetail({ entry, onClose, onChanged }: { entry: MemoryEntry; onClo
       )}
 
       <Divider />
-      <Collapsible trigger={<Text type="label">History</Text>} isOpen={showHistory} onOpenChange={setShowHistory}>
+      <Collapsible trigger={<Text type="supporting">History</Text>} isOpen={showHistory} onOpenChange={setShowHistory}>
         <VStack gap={3} paddingBlockStart={2}>
           {!history && <Spinner size="sm" label="Loading history…" />}
           {history?.length === 0 && <Text type="supporting">No commits yet.</Text>}
@@ -819,280 +789,80 @@ function MemoryDetail({ entry, onClose, onChanged }: { entry: MemoryEntry; onClo
   );
 }
 
-// ---------------- activity ----------------
-
-const ACTIVITY_ICON: Record<ContextActivityKind, typeof PlusCircleIcon> = {
-  new: PlusCircleIcon,
-  duplicate: DocumentDuplicateIcon,
-  update: ArrowPathIcon,
-  contradicts: ExclamationTriangleIcon,
-  edit: PencilSquareIcon,
-  delete: TrashIcon,
-  resolve: CheckCircleIcon,
-  import: ArrowDownTrayIcon,
-  export: ArrowUpTrayIcon,
-  skill: PuzzlePieceIcon,
-  drift: ArrowsRightLeftIcon,
-  error: XCircleIcon,
-};
-
-function ActivityRow({ a, onOpenMemory }: { a: ContextActivity; onOpenMemory?: (id: string) => void }) {
-  const source = a.source && a.source !== "you" ? (a.source.includes(":") ? sourceLabel(a.source) : a.source) : a.source === "you" ? "You" : undefined;
-  return (
-    <ListItem
-      label={a.text}
-      description={[source, a.commit?.slice(0, 8)].filter(Boolean).join(" · ") || undefined}
-      startContent={
-        <Icon
-          icon={ACTIVITY_ICON[a.kind] ?? PlusCircleIcon}
-          size="sm"
-          color={a.kind === "error" ? "error" : a.kind === "contradicts" ? "warning" : "secondary"}
-        />
-      }
-      endContent={<Timestamp value={ts(a.ts)} format="relative_short" />}
-      onClick={a.memoryId && onOpenMemory ? () => onOpenMemory(a.memoryId!) : undefined}
-    />
-  );
-}
-
-const PAGE = 100;
-
-function ActivityTab({ onOpenMemory }: { onOpenMemory: (id: string) => void }) {
-  const [items, setItems] = useState<ContextActivity[]>();
-  const [more, setMore] = useState(false);
-  const live = useStore((s) => s.contextLive);
-  useEffect(() => {
-    rpc("contextActivity", { limit: PAGE })
-      .then((list) => {
-        setItems(list);
-        setMore(list.length >= PAGE);
-      })
-      .catch(() => setItems([]));
-  }, []);
-  const all = useMemo(() => {
-    const by = new Map<string, ContextActivity>();
-    for (const a of [...(items ?? []), ...live]) by.set(a.id, a);
-    return [...by.values()].sort((a, b) => b.ts - a.ts);
-  }, [items, live]);
-  const older = async () => {
-    const before = all[all.length - 1]?.ts;
-    const list = await act("contextActivity", { limit: PAGE, before });
-    if (!list) return;
-    setItems((cur) => [...(cur ?? []), ...list]);
-    setMore(list.length >= PAGE);
-  };
-
-  if (!items)
-    return (
-      <VStack padding={6} hAlign="center">
-        <Spinner label="Loading activity…" />
-      </VStack>
-    );
-  if (!all.length)
-    return (
-      <VStack padding={6}>
-        <EmptyState title="No activity yet" isCompact />
-      </VStack>
-    );
-  return (
-    <VStack padding={2} gap={2}>
-      <List density="compact">
-        {all.map((a) => (
-          <ActivityRow key={a.id} a={a} onOpenMemory={onOpenMemory} />
-        ))}
-      </List>
-      {more && (
-        <HStack paddingInline={2}>
-          <Button label="Show older" variant="ghost" size="sm" clickAction={older} />
-        </HStack>
-      )}
-    </VStack>
-  );
-}
-
-// ---------------- conflicts ----------------
-
-function ConflictsTab() {
-  const open = useStore((s) => s.conflicts);
-  const [show, setShow] = useState<"open" | "all">("open");
-  const [all, setAll] = useState<MemoryConflict[]>();
-  useEffect(() => {
-    if (show === "all")
-      rpc("listConflicts", { status: "all" })
-        .then(setAll)
-        .catch(() => setAll([]));
-  }, [show, open.length]);
-  const list = show === "open" ? open : (all ?? []);
-  return (
-    <VStack padding={4} gap={4}>
-      <HStack>
-        <SegmentedControl label="Show" size="sm" value={show} onChange={(v) => setShow(v as "open" | "all")}>
-          <SegmentedControlItem value="open" label={`Open (${open.length})`} />
-          <SegmentedControlItem value="all" label="All" />
-        </SegmentedControl>
-      </HStack>
-      {list.length === 0 ? (
-        <EmptyState
-          title={show === "open" ? "No conflicts" : "No conflicts yet"}
-          description="When a new memory contradicts an old one, the newest wins and it shows up here so you can keep the old one instead."
-          isCompact
-        />
-      ) : (
-        <VStack gap={4} style={capped}>
-          {list.map((c, i) => (
-            <VStack key={c.id} gap={4}>
-              {i > 0 && <Divider />}
-              <ConflictView c={c} />
-            </VStack>
-          ))}
-        </VStack>
-      )}
-    </VStack>
-  );
-}
-
 // ---------------- skills ----------------
 
-const skillColumns: TableColumn<Record<string, unknown>>[] = [
-  { key: "skill", header: "Skill", width: proportional(1) },
-  { key: "sources", header: "Found in", width: pixel(180) },
-  { key: "drift", header: "", width: pixel(88) },
-  { key: "enabled", header: "On", width: pixel(64) },
-];
-const narrowSkillColumns = skillColumns.filter((c) => c.key === "skill" || c.key === "enabled");
-
-function SkillsTab({ narrow }: { narrow: boolean }) {
+function SkillsSection({ narrow }: { narrow: boolean }) {
   const [skills, setSkills] = useState<ContextSkill[]>();
   const [busy, setBusy] = useState<string>();
-  const [query, setQuery] = useState("");
+  const runnerId = useStore((s) => s.runnerId);
   useEffect(() => {
     rpc("listSkills", {})
       .then(setSkills)
       .catch(() => setSkills([]));
-  }, []);
+  }, [runnerId]);
   const toggle = async (s: ContextSkill, enabled: boolean) => {
     setBusy(s.name);
     const next = await act("setSkillEnabled", { name: s.name, enabled });
     setBusy(undefined);
     if (next) setSkills(next);
   };
-  const columns = narrow ? narrowSkillColumns : skillColumns;
-  const widths = resolveColumnWidths(columns);
-  const q = query.trim().toLowerCase();
-  const shown = (skills ?? []).filter((s) => !q || `${s.name} ${s.description ?? ""}`.toLowerCase().includes(q));
-  const groups: [string, ContextSkill[]][] = [
-    ["Library", shown.filter((s) => !s.repo)],
-    ...[...new Set(shown.filter((s) => s.repo).map((s) => s.repo!))].map((r): [string, ContextSkill[]] => [r, shown.filter((s) => s.repo === r)]),
-  ].filter(([, l]) => l.length) as [string, ContextSkill[]][];
+  // The shared library first, then skills that live in a repo (listed, left in place).
+  const list = (skills ?? []).slice().sort((a, b) => (a.repo ? 1 : 0) - (b.repo ? 1 : 0) || a.name.localeCompare(b.name));
+  const library = list.filter((s) => !s.repo).length;
 
   return (
-    <Layout
-      height="fill"
-      header={
-        <LayoutHeader padding={4} hasDivider>
-          <TextInput
-            label="Filter skills"
-            isLabelHidden
-            size="sm"
-            placeholder="Filter skills"
-            startIcon={MagnifyingGlassIcon}
-            hasClear
-            value={query}
-            onChange={setQuery}
-          />
-        </LayoutHeader>
-      }
-      content={
-        <LayoutContent padding={0}>
-          {!skills ? (
-            <VStack padding={6} hAlign="center">
-              <Spinner label="Loading skills…" />
-            </VStack>
-          ) : !groups.length ? (
-            <VStack padding={6}>
-              <EmptyState title={q ? `No skill matches “${query.trim()}”` : "No skills yet"} isCompact />
-            </VStack>
-          ) : (
-            <Table columns={columns} density="balanced" dividers="rows" textOverflow="wrap" verticalAlign="top">
-              <colgroup>
-                {columns.map((col) => (
-                  <col key={col.key} style={widths.columns.get(col.key)?.style} />
-                ))}
-              </colgroup>
-              <TableBody>
-                {groups.map(([group, list]) => (
-                  <React.Fragment key={group}>
-                    <TableRow>
-                      <TableCell colSpan={columns.length} style={{ ...groupHeaderCell, cursor: "default" }}>
-                        <HStack gap={2} vAlign="center">
-                          <Text type="body" weight="bold">
-                            {group === "Library" ? "Library" : scopeLabel(`repo:${group}`)}
-                          </Text>
-                          <Badge variant="neutral" label={String(list.length)} />
-                          {group !== "Library" && (
-                            <Text type="supporting" color="secondary" maxLines={1}>
-                              In the repo, left in place
-                            </Text>
-                          )}
-                        </HStack>
-                      </TableCell>
-                    </TableRow>
-                    {list.map((s) => (
-                      <TableRow key={`${group}:${s.name}`}>
-                        <TableCell>
-                          <VStack gap={0.5}>
-                            <HStack gap={1.5} vAlign="center">
-                              <Text type="body" weight="semibold" maxLines={1}>
-                                {s.name}
-                              </Text>
-                              {s.exposedAs && (
-                                <Tooltip
-                                  content={`A built-in already uses “${s.name}”, so harnesses see this one as “${s.exposedAs}”.`}
-                                  hasHoverIndication={false}
-                                >
-                                  <Token size="sm" label={`as ${s.exposedAs}`} />
-                                </Tooltip>
-                              )}
-                            </HStack>
-                            {s.description && (
-                              <Text type="supporting" color="secondary" maxLines={2}>
-                                {s.description}
-                              </Text>
-                            )}
-                            {narrow && <SkillSources s={s} />}
-                            {s.drift?.length ? (
-                              <Text type="supporting" color="secondary" maxLines={narrow ? 3 : 2}>
-                                Kept the newest copy; {s.drift.join(", ")} differed (originals are in the backup).
-                              </Text>
-                            ) : null}
-                          </VStack>
-                        </TableCell>
-                        {!narrow && (
-                          <TableCell>
-                            <SkillSources s={s} />
-                          </TableCell>
-                        )}
-                        {!narrow && <TableCell>{s.drift?.length ? <Token size="sm" color="yellow" label="Drift" /> : null}</TableCell>}
-                        <TableCell>
-                          <Switch
-                            label={`Use ${s.name} in every harness`}
-                            isLabelHidden
-                            value={s.enabled}
-                            isLoading={busy === s.name}
-                            isDisabled={!!s.repo || !!busy}
-                            onChange={(v) => toggle(s, v)}
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </React.Fragment>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </LayoutContent>
-      }
-    />
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center">
+        <Heading level={3}>Skills</Heading>
+        {skills && <Badge variant="neutral" label={String(library)} />}
+      </HStack>
+      {!skills ? (
+        <Spinner size="sm" label="Loading skills…" />
+      ) : !list.length ? (
+        <EmptyState title="No skills yet" isCompact />
+      ) : (
+        <List density="compact" hasDividers>
+          {list.map((s) => (
+            <ListItem
+              key={`${s.repo ?? ""}:${s.name}`}
+              label={s.exposedAs ? `${s.name} (as ${s.exposedAs})` : s.name}
+              description={
+                narrow ? (
+                  <VStack gap={1}>
+                    {s.description && (
+                      <Text type="supporting" color="secondary" maxLines={2}>
+                        {s.description}
+                      </Text>
+                    )}
+                    <SkillSources s={s} />
+                  </VStack>
+                ) : (
+                  s.description
+                )
+              }
+              endContent={
+                <HStack gap={2} vAlign="center">
+                  {!narrow && <SkillSources s={s} />}
+                  {s.drift?.length ? (
+                    <Tooltip content={`Kept the newest copy; ${s.drift.join(", ")} differed (originals are in the backup).`} hasHoverIndication={false}>
+                      <Icon icon={ArrowsRightLeftIcon} size="sm" color="warning" />
+                    </Tooltip>
+                  ) : null}
+                  <Switch
+                    label={s.repo ? `${s.name} lives in ${scopeLabel(`repo:${s.repo}`)} and stays there` : `Use ${s.name} in every harness`}
+                    isLabelHidden
+                    value={s.enabled}
+                    isLoading={busy === s.name}
+                    isDisabled={!!s.repo || !!busy}
+                    onChange={(v) => toggle(s, v)}
+                  />
+                </HStack>
+              }
+            />
+          ))}
+        </List>
+      )}
+    </VStack>
   );
 }
 
@@ -1101,6 +871,7 @@ function SkillSources({ s }: { s: ContextSkill }) {
   for (const x of s.sources) by.set(x.harness, [...(by.get(x.harness) ?? []), x.path]);
   return (
     <HStack gap={1} vAlign="center" wrap="wrap">
+      {s.repo && <Token size="sm" label={scopeLabel(`repo:${s.repo}`)} />}
       {[...by].map(([h, paths]) => {
         const id = sourceHarness(h);
         return (
