@@ -1180,13 +1180,13 @@ export abstract class LiveSession {
     return checkPaths(this.projectPath, paths, this.diffBaseSha ?? this.t.state.checkpoints?.[0]?.sha);
   }
 
-  fileDiff(path: string, checkpointId?: string) {
+  fileDiff(path: string, checkpointId?: string, reveal?: boolean) {
     const list = this.t.state.checkpoints ?? [];
-    return fileDiff(this.projectPath, path, this.diffBaseSha ?? list[0]?.sha, list, checkpointId);
+    return fileDiff(this.projectPath, path, this.diffBaseSha ?? list[0]?.sha, list, checkpointId, reveal === true);
   }
 
-  readFile(path: string, maxBytes?: number) {
-    return readProjectFile(this.projectPath, path, maxBytes);
+  readFile(path: string, maxBytes?: number, reveal?: boolean) {
+    return readProjectFile(this.projectPath, path, maxBytes, reveal === true);
   }
 
   inheritDiffBase(sha?: string) {

@@ -7,6 +7,7 @@ import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, stat
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { FILE_VIEW_LIMITS, type Checkpoint, type FileContents, type FileDiffResult, type PathCheck } from "../../web/src/shared/protocol";
 import { changedPaths, computeDiff, pathTurnStats, root } from "./checkpoint";
+import { isSensitive } from "./guard";
 
 const inside = (p: string, dir: string) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 const hasGitSegment = (rel: string) => rel.split(/[\\/]/).some((s) => s.toLowerCase() === ".git");
@@ -22,6 +23,8 @@ export interface Resolved {
   /** the real path when the file exists, else the path it would have */
   real: string;
   exists: boolean;
+  /** a credential or secrets file by the guard's rules (as named, or what a symlink points at) */
+  sensitive: boolean;
 }
 
 /**
@@ -61,7 +64,8 @@ export function resolveInProject(projectPath: string, input: string): Resolved |
   }
   if (!inside(real, rootReal) || hasGitSegment(relative(rootReal, real))) return undefined;
   const found = probe === lexical;
-  return { rel, real: found ? real : join(real, relative(probe, lexical)), exists: found };
+  const target = found ? real : join(real, relative(probe, lexical));
+  return { rel, real: target, exists: found, sensitive: isSensitive(rel) || isSensitive(target) };
 }
 
 function exists(p: string): boolean {
@@ -90,13 +94,16 @@ function changedCached(projectPath: string, base?: string) {
   return value;
 }
 
+/** Paths answered per checkPaths call (the rest are left out); the web app asks in batches of 300. */
+export const MAX_CHECK_PATHS = 500;
+
 /**
  * Which of `paths` are files in the project now, or changed since `base` (deleted files too).
  * Keyed by the path as given; paths that are neither (or outside the project) are left out.
  */
 export async function checkPaths(projectPath: string, paths: string[], base?: string): Promise<Record<string, PathCheck>> {
   const out: Record<string, PathCheck> = {};
-  const unique = [...new Set(paths.filter((p) => typeof p === "string"))].slice(0, 500);
+  const unique = [...new Set(paths.slice(0, MAX_CHECK_PATHS * 4).filter((p) => typeof p === "string"))].slice(0, MAX_CHECK_PATHS);
   const resolved = unique.map((p) => [p, resolveInProject(projectPath, p)] as const);
   if (!resolved.some(([, r]) => r)) return out;
   const changed = await changedCached(projectPath, base);
@@ -114,9 +121,17 @@ const FILE_DIFF_LIMITS = { fileBytes: 512_000, fileLines: 20_000, totalBytes: 51
 
 /**
  * One file's diff: the whole session (from `base` to the working tree), or the turn that started
- * at `checkpointId`. Also lists every turn that changed it, for the scope switch.
+ * at `checkpointId`. Also lists every turn that changed it, for the scope switch. A secrets file's
+ * lines are left out unless `reveal` (the user asked to see them).
  */
-export async function fileDiff(projectPath: string, path: string, base: string | undefined, checkpoints: Checkpoint[], checkpointId?: string): Promise<FileDiffResult> {
+export async function fileDiff(
+  projectPath: string,
+  path: string,
+  base: string | undefined,
+  checkpoints: Checkpoint[],
+  checkpointId?: string,
+  reveal = false,
+): Promise<FileDiffResult> {
   const r = resolveInProject(projectPath, path);
   if (!r) throw new Error("That file isn't in this project.");
   const top = await root(projectPath);
@@ -138,7 +153,9 @@ export async function fileDiff(projectPath: string, path: string, base: string |
       repoPath,
     ),
   ]);
-  const file = diff.files.find((f) => f.path === repoPath);
+  const found = diff.files.find((f) => f.path === repoPath);
+  const withheld = r.sensitive && !reveal && !!found?.patch;
+  const file = found && withheld ? { ...found, patch: "", truncated: undefined } : found;
   const turns = checkpoints.flatMap((c, index) => {
     const s = stats[index];
     if (!s || (!s.additions && !s.deletions && !s.binary)) return [];
@@ -150,23 +167,39 @@ export async function fileDiff(projectPath: string, path: string, base: string |
     base: diff.base,
     ...(file ? { file: { ...file, path: r.rel } } : {}),
     turns,
+    ...(r.sensitive ? { sensitive: true } : {}),
+    ...(withheld ? { withheld: true } : {}),
   };
 }
 
 /** Looks like a binary file: a NUL byte in the first 8 KB. */
 const isBinary = (b: Buffer) => b.subarray(0, 8192).includes(0);
 
-/** A project file's contents now, cut at `maxBytes` (at most 1 MB) and 20,000 lines. Binary files come back without content. */
-export function readProjectFile(projectPath: string, path: string, maxBytes: number = FILE_VIEW_LIMITS.bytes): FileContents {
+/**
+ * A project file's contents now, cut at `maxBytes` (at most 1 MB) and 20,000 lines. Binary files
+ * come back without content, and so do secrets files unless `reveal` (the user asked to see one).
+ */
+export function readProjectFile(projectPath: string, path: string, maxBytes: number = FILE_VIEW_LIMITS.bytes, reveal = false): FileContents {
   const r = resolveInProject(projectPath, path);
   if (!r) throw new Error("That file isn't in this project.");
   if (!r.exists) throw new Error("That file no longer exists.");
+  // Regular files only, checked before opening: opening a device or a FIFO can do things of its own.
+  const before = lstatSync(r.real, { throwIfNoEntry: false });
+  if (!before?.isFile()) throw new Error(before ? "That's not a regular file." : "That file no longer exists.");
+  if (r.sensitive && !reveal) return { path: r.rel, size: before.size, sensitive: true, withheld: true };
   const cap = Math.max(1, Math.min(Number(maxBytes) || FILE_VIEW_LIMITS.bytes, FILE_VIEW_LIMITS.bytes));
   // O_NOFOLLOW: the real path was checked above; refuse if it was swapped for a symlink since.
   const fd = openSync(r.real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) throw new Error("That's not a regular file.");
+    // O_NOFOLLOW covers only the last part of the path: a directory above it swapped for a symlink
+    // between the check and the open would open a file elsewhere. So the file opened must be the
+    // one the path names now, checked afresh.
+    const again = resolveInProject(projectPath, path);
+    const now = again?.exists ? statSync(again.real, { throwIfNoEntry: false }) : undefined;
+    if (!now || now.dev !== st.dev || now.ino !== st.ino) throw new Error("That file changed while it was being opened; try again.");
+    const flag = r.sensitive ? { sensitive: true } : {};
     const want = Math.min(st.size, cap);
     const buf = Buffer.alloc(want);
     let got = 0;
@@ -176,7 +209,7 @@ export function readProjectFile(projectPath: string, path: string, maxBytes: num
       got += n;
     }
     const data = buf.subarray(0, got);
-    if (isBinary(data)) return { path: r.rel, size: st.size, binary: true };
+    if (isBinary(data)) return { path: r.rel, size: st.size, binary: true, ...flag };
     let text = data.toString("utf8");
     let truncated: FileContents["truncated"] = st.size > got ? "bytes" : undefined;
     // A cut in the middle of a multi-byte character decodes as U+FFFD at the end: drop it.
@@ -189,7 +222,7 @@ export function readProjectFile(projectPath: string, path: string, maxBytes: num
         break;
       }
     }
-    return { path: r.rel, size: st.size, content: text, ...(truncated ? { truncated } : {}) };
+    return { path: r.rel, size: st.size, content: text, ...(truncated ? { truncated } : {}), ...flag };
   } finally {
     closeSync(fd);
   }

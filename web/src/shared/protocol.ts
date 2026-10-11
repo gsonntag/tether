@@ -159,6 +159,10 @@ export interface FileDiffResult {
   file?: SessionFileDiff;
   /** the turns that changed this file, oldest first */
   turns: FileTurnStat[];
+  /** a credential or secrets file (.env, keys, tokens…, by the guard's rules) */
+  sensitive?: boolean;
+  /** its lines were left out (`file.patch` empty): a secrets file the user hasn't asked to see */
+  withheld?: boolean;
 }
 
 /** A project file as it is now (readFile). */
@@ -170,6 +174,10 @@ export interface FileContents {
   binary?: boolean;
   /** cut short: past the byte cap, or past the line cap */
   truncated?: "bytes" | "lines";
+  /** a credential or secrets file (.env, keys, tokens…, by the guard's rules) */
+  sensitive?: boolean;
+  /** content left out: a secrets file the user hasn't asked to see (ask again with `reveal`) */
+  withheld?: boolean;
 }
 
 /** Caps for the file panel's File tab. */
@@ -763,9 +771,9 @@ export interface Ops {
    */
   checkPaths: { args: { sessionId: string; paths: string[] }; result: Record<string, PathCheck> };
   /** one file's changes over the whole session, or with `checkpoint` in the turn that started there */
-  fileDiff: { args: { sessionId: string; path: string; checkpoint?: string }; result: FileDiffResult };
-  /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only) */
-  readFile: { args: { sessionId: string; path: string; maxBytes?: number }; result: FileContents };
+  fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
+  /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
+  readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };

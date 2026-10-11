@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,6 +106,16 @@ describe("checkPaths", () => {
     expect(Object.keys(r).sort()).toEqual(["./README.md", join(dir, "src/a.ts"), "gone.txt", "src/a.ts"].sort());
   });
 
+  test("answers at most MAX_CHECK_PATHS per call, and ignores non-strings", async () => {
+    const dir = tmp("tether-many-");
+    writeFileSync(join(dir, "x.py"), "1\n");
+    const many = [...Array.from({ length: 100_000 }, (_, i) => `f${i}.ts`), "x.py"];
+    const t = Date.now();
+    expect(await checkPaths(dir, many)).toEqual({});
+    expect(Date.now() - t).toBeLessThan(2000);
+    expect(await checkPaths(dir, [null, 3, {}, "x.py"] as unknown as string[])).toEqual({ "x.py": { path: "x.py", exists: true, changed: false } });
+  });
+
   test("outside a git repository: existing files only", async () => {
     const dir = tmp("tether-nogit-");
     writeFileSync(join(dir, "x.py"), "print(1)\n");
@@ -145,6 +155,60 @@ describe("readProjectFile", () => {
     expect(() => readProjectFile(dir, ".git/config")).toThrow();
     expect(() => readProjectFile(dir, "src")).toThrow();
     expect(() => readProjectFile(dir, "missing.ts")).toThrow();
+  });
+  test("odd inputs: Windows separators, URL escapes, NUL, very long paths", () => {
+    expect(() => readProjectFile(dir, "..\\..\\etc\\passwd")).toThrow(); // one odd file name on POSIX, not there
+    expect(() => readProjectFile(dir, "%2e%2e/%2e%2e/etc/passwd")).toThrow(); // never decoded
+    expect(() => readProjectFile(dir, "src/a.ts\0.png")).toThrow();
+    expect(() => readProjectFile(dir, "a/".repeat(3000) + "x.ts")).toThrow();
+    expect(() => readProjectFile(dir, 42 as unknown as string)).toThrow();
+  });
+  test("a FIFO is refused without being opened", () => {
+    const p = Bun.spawnSync(["mkfifo", join(dir, "pipe.txt")]);
+    if (p.exitCode !== 0) return;
+    expect(() => readProjectFile(dir, "pipe.txt")).toThrow("not a regular file");
+  });
+  test("secrets files (by the guard's rules) only come back when asked to reveal", () => {
+    writeFileSync(join(dir, ".env"), "TOKEN=abc\n");
+    writeFileSync(join(dir, ".env.example"), "TOKEN=\n");
+    symlinkSync(join(dir, ".env"), join(dir, "settings.txt"));
+    expect(readProjectFile(dir, ".env")).toEqual({ path: ".env", size: 10, sensitive: true, withheld: true });
+    expect(readProjectFile(dir, "settings.txt")).toMatchObject({ sensitive: true, withheld: true });
+    expect(readProjectFile(dir, ".env", undefined, true)).toEqual({ path: ".env", size: 10, content: "TOKEN=abc\n", sensitive: true });
+    expect(readProjectFile(dir, ".env.example")).toEqual({ path: ".env.example", size: 7, content: "TOKEN=\n" });
+  });
+  test("a directory swapped for a symlink out of the project after the check is caught", async () => {
+    // Simulates the race: resolve (inside), then the parent directory becomes a link elsewhere
+    // before the open. The open follows it; the check after the open must refuse.
+    const proj = tmp("tether-race-");
+    const outside = tmp("tether-race-out-");
+    mkdirSync(join(proj, "d"));
+    writeFileSync(join(proj, "d/f.txt"), "inside\n");
+    writeFileSync(join(outside, "f.txt"), "outside secret\n");
+    const files = await import("./files");
+    const fs = await import("node:fs");
+    const realOpen = fs.openSync;
+    let swapped = false;
+    const spy = (p: any, ...rest: any[]) => {
+      if (!swapped && String(p) === join(proj, "d/f.txt")) {
+        swapped = true;
+        fs.renameSync(join(proj, "d"), join(proj, "d.old"));
+        fs.symlinkSync(outside, join(proj, "d"));
+        const fd = (realOpen as any)(p, ...rest);
+        fs.unlinkSync(join(proj, "d"));
+        fs.renameSync(join(proj, "d.old"), join(proj, "d"));
+        return fd;
+      }
+      return (realOpen as any)(p, ...rest);
+    };
+    const s = spyOn(fs, "openSync").mockImplementation(spy as any);
+    try {
+      expect(() => files.readProjectFile(proj, "d/f.txt")).toThrow("changed while");
+    } finally {
+      s.mockRestore();
+    }
+    expect(swapped).toBe(true);
+    expect(files.readProjectFile(proj, "d/f.txt").content).toBe("inside\n");
   });
 });
 
@@ -216,6 +280,17 @@ describe("fileDiff", () => {
     expect(d.file).toMatchObject({ path: "b.ts", additions: 1, deletions: 0 });
     expect(d.turns).toHaveLength(1);
     expect(await checkPaths(proj, ["b.ts", "src/a.ts"], sha)).toEqual({ "b.ts": { path: "b.ts", exists: true, changed: true } });
+  });
+
+  test("a secrets file's lines are left out unless revealed", async () => {
+    const { dir, cps } = await session();
+    writeFileSync(join(dir, "deploy.pem"), "-----BEGIN KEY-----\nabc\n");
+    const hidden = await fileDiff(dir, "deploy.pem", cps[0]!.sha, cps);
+    expect(hidden).toMatchObject({ sensitive: true, withheld: true, file: { status: "added", additions: 2, patch: "" } });
+    const shown = await fileDiff(dir, "deploy.pem", cps[0]!.sha, cps, undefined, true);
+    expect(shown.withheld).toBeUndefined();
+    expect(shown.file!.patch).toContain("+abc");
+    expect((await fileDiff(dir, "src/a.ts", cps[0]!.sha, cps)).sensitive).toBeUndefined();
   });
 
   test("a path with pathspec magic is taken literally", async () => {

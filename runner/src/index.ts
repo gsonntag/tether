@@ -634,12 +634,12 @@ const ops: Handlers = {
     return (await getLive(sessionId)).checkPaths(paths);
   },
 
-  async fileDiff({ sessionId, path, checkpoint }) {
-    return (await getLive(sessionId)).fileDiff(String(path ?? ""), checkpoint);
+  async fileDiff({ sessionId, path, checkpoint, reveal }) {
+    return (await getLive(sessionId)).fileDiff(String(path ?? ""), typeof checkpoint === "string" ? checkpoint : undefined, reveal === true);
   },
 
-  async readFile({ sessionId, path, maxBytes }) {
-    return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes);
+  async readFile({ sessionId, path, maxBytes, reveal }) {
+    return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
   },
 
   async approveBlocked({ sessionId, toolId }) {
