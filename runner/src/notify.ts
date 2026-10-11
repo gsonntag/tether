@@ -89,6 +89,12 @@ export function recent(): AgentNotice[] {
   return store().recent;
 }
 
+/** Clear all in the bell: every device's list empties on its next refresh. */
+export function clearRecent() {
+  store().recent = [];
+  saveConfigSoon();
+}
+
 /** Drops a removed session's notices, so it doesn't come back as needing you. */
 export function forgetSession(sessionId: string) {
   const st = store();
