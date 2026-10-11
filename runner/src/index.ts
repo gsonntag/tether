@@ -28,7 +28,7 @@ import { availableProfiles, config, freezeConfig, prefs, saveConfig } from "./co
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
 import { ContextService } from "./context";
@@ -337,7 +337,7 @@ async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
   const stored = (await Promise.all(Object.values(adapters).map((a) => a.listSessions(projectPath).catch(() => [])))).flat();
   const out = new Map(stored.map((s) => [s.id, s]));
   for (const s of live.values()) if (s.projectPath === projectPath && !s.closed) out.set(s.id, s.summary());
-  return [...out.values()].map(decorate).sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...out.values()].map(decorate).sort(byRecent);
 }
 
 type IndexedUserMessage = { ts: number; text: string };
@@ -422,14 +422,14 @@ async function findSessionMatches(queryText: string): Promise<SessionSearchResul
           const lower = message.text.toLocaleLowerCase();
           return terms.every((term) => lower.includes(term));
         });
-        if (hit) matches.push({ session, excerpt: excerpt(hit.text, terms[0]!), ts: hit.ts });
+        if (hit) matches.push({ session, excerpt: excerpt(hit.text, terms[0]!), ts: hit.ts || session.updatedAt });
       } catch {
         // A harness may have removed or locked a stored transcript since its summary was listed.
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, sessions.length) }, worker));
-  return matches.sort((a, b) => b.session.updatedAt - a.session.updatedAt);
+  return matches.sort((a, b) => byRecent(a.session, b.session));
 }
 
 // ---------------- ops ----------------

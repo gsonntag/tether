@@ -443,6 +443,14 @@ export interface SessionSummary {
   runningKinds?: Partial<Record<ActivityKind, number>>;
 }
 
+/**
+ * How session lists sort: by the time of the most recent user or agent message (`updatedAt`),
+ * newest first, whether or not the session is live. Ties go by id, so the order is stable.
+ */
+export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<SessionSummary, "id" | "updatedAt">): number {
+  return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {
   session: SessionSummary;

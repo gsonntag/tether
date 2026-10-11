@@ -37,9 +37,10 @@ describe("groupDashboard", () => {
       p("busy-older", { turnStartedAt: 50 }, { status: "running" }),
       p("sched-only", { armed: 1 }, { updatedAt: 9 }),
       p("bg-only", { activity: { subagent: 1 } }),
-      p("done-1", { finishedAt: 10, lastText: "ok" }),
-      p("done-2", { finishedAt: 20 }),
-      p("closed-done", { finishedAt: 30 }, { live: false }),
+      p("done-1", { finishedAt: 10, lastText: "ok" }, { updatedAt: 9 }),
+      // sorted like the session lists: by the last message, not by when the turn ended
+      p("done-2", { finishedAt: 20 }, { updatedAt: 35 }),
+      p("closed-done", { finishedAt: 30 }, { live: false, updatedAt: 29 }),
       p("idle-never-ran"),
     ]),
     "r2",
@@ -55,8 +56,8 @@ describe("groupDashboard", () => {
     expect(d.running.map((r) => r.pulse.session.id)).toEqual(["waiting-approval", "busy", "busy-older", "other-runner", "bg-only", "sched-only"]);
   });
 
-  test("recently finished: newest first, includes closed sessions, never a running one", () => {
-    expect(d.finished.map((r) => r.pulse.session.id)).toEqual(["closed-done", "done-2", "done-1"]);
+  test("recently finished: most recent message first, includes closed sessions, never a running one", () => {
+    expect(d.finished.map((r) => r.pulse.session.id)).toEqual(["done-2", "closed-done", "done-1"]);
     expect(groupDashboard(map, { finished: 1 }).finished).toHaveLength(1);
   });
 

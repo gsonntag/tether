@@ -201,7 +201,9 @@ export function transcriptToMessages(entries: any[], model?: string): { messages
   let usage: any;
   let cur: Msg | undefined;
   const tools = new Map<number, Extract<Part, { type: "tool" }>>();
-  const ts = (e: any) => Date.parse(e.created_at) || Date.now();
+  // A step without a time takes the one before it.
+  let last = 0;
+  const ts = (e: any) => (last = Date.parse(e.created_at) || last);
   for (const e of entries) {
     const step = Number(e.step_index);
     switch (e.type) {
