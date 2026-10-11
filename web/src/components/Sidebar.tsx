@@ -33,8 +33,10 @@ import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject,
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { runningCount } from "../dashboard";
+import { runningLine, summaryWork, workState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
+import { WorkIndicator } from "./WorkIndicator";
 
 const SHOW = 8;
 
@@ -275,6 +277,9 @@ function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined 
   if (s.needsInput) return { kind: "blocked", read: notice?.kind !== "finished" && read };
   // A running agent has moved past whatever its last notice said.
   if (!notice || s.status === "running" || s.status === "waiting") return undefined;
+  // Not "Finished" while its subagents or shells still run: that notice is an earlier turn's
+  // (the runner holds this turn's until they're done).
+  if (notice.kind === "finished" && workState(summaryWork(s)) === "background") return undefined;
   return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
 }
 
@@ -502,8 +507,10 @@ function RunningItem() {
 /** Subagents, shells and the like a live session has going, as a count. */
 function ActivityCount({ s }: { s: SessionSummary }) {
   if (!s.live || !s.activeCount) return null;
+  const w = summaryWork(s);
+  const tip = [runningLine(w.running) && `${runningLine(w.running)} running`, w.armed && `${w.armed} scheduled`].filter(Boolean).join(" · ");
   return (
-    <Tooltip content={`${s.activeCount} running: subagents, shells, monitors or wakeups`}>
+    <Tooltip content={tip}>
       <Badge label={s.activeCount} />
     </Tooltip>
   );
@@ -525,10 +532,7 @@ function SessionIndicator({ s }: { s: SessionSummary }) {
       />
     );
   }
-  if (s.status === "running") return <Spinner size="sm" aria-label="Running" />;
-  if (s.status === "waiting") return <StatusDot variant="warning" label="Waiting" tooltip="Waiting (usage limit or retry)" />;
-  if (s.live) return <StatusDot variant="accent" label="Live" tooltip="Live" />;
-  return null;
+  return <WorkIndicator work={summaryWork(s)} />;
 }
 
 function SessionRow({ s }: { s: SessionSummary }) {

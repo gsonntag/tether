@@ -47,7 +47,8 @@ export function groupDashboard(map: PulseMap, opts: { finished?: number } = {}):
   needs.sort((a, b) => a.pulse.session.updatedAt - b.pulse.session.updatedAt);
 
   const running = all.filter((r) => isRunning(r.pulse));
-  const rank = (p: SessionPulse) => (p.pendingUi?.length ? 0 : p.session.status === "running" ? 1 : p.session.status === "waiting" ? 2 : 3);
+  // Needs you, then working, waiting, working in the background, and only a wakeup armed last.
+  const rank = (p: SessionPulse) => (p.pendingUi?.length ? 0 : p.session.status === "running" ? 1 : p.session.status === "waiting" ? 2 : p.activity && Object.keys(p.activity).length ? 3 : 4);
   running.sort((a, b) => rank(a.pulse) - rank(b.pulse) || (b.pulse.turnStartedAt ?? b.pulse.session.updatedAt) - (a.pulse.turnStartedAt ?? a.pulse.session.updatedAt));
 
   const finished = all
