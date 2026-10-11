@@ -51,4 +51,6 @@ export const antigravityConnector: Connector = {
   todos: slot("emulated", "todo_set only where its global tether-context passes the session through"),
   ask_user: slot("emulated", "ask_user only where its global tether-context passes the session through"),
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
+  fork: slot("emulated", "A new session on a brief; agy has no fork Tether can drive"),
+  compact: slot("emulated", "The conversation restarts as a new session on a brief; agy has no compaction Tether can trigger"),
 };

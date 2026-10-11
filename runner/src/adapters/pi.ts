@@ -649,6 +649,17 @@ class PiSession extends LiveSession {
     await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
   }
 
+  /** pi's compact RPC, focus as its custom instructions; it answers once done (compaction_end reloads the transcript). */
+  protected async nativeCompact(focus?: string) {
+    this.setState({ status: "running" });
+    try {
+      await this.rpc.call("compact", focus ? { customInstructions: focus } : {});
+    } finally {
+      if (!this.closed && this.t.state.status === "running") this.setState({ status: "idle" });
+    }
+    return true;
+  }
+
   protected shutdown() {
     this.rpc?.close();
   }

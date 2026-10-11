@@ -155,4 +155,7 @@ export const claudeConnector: Connector = {
   // Agent SDK 0.3.293: CronCreate (durable only to .claude/scheduled_tasks.json, recurring ones
   // expire after 7 days) and ScheduleWakeup are tools of the running process, with no control API.
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; Claude Code's own crons and wakeups (CronCreate, ScheduleWakeup) stay as they are, show as activity and fire only while its process runs. Its own /loop and /schedule are replaced by Tether's"),
+  // Agent SDK 0.3.293: forkSession(sessionId, { upToMessageId }) copies the transcript up to any entry.
+  fork: slot("native", "Its own fork (forkSession) at any message, into Claude Code; into another harness, a new session on a brief"),
+  compact: slot("native", "Its own /compact, focus included"),
 };

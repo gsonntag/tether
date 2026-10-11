@@ -20,6 +20,7 @@ import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
+import type { ForkTarget } from "./fork";
 
 export interface OpenSession extends Transcript {
   session: SessionSummary;
@@ -53,8 +54,10 @@ interface State {
   sidebarHidden: boolean;
   /** the session's Activity panel (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
-  dialog?: "new" | "addProject" | "settings" | "notify";
+  dialog?: "new" | "addProject" | "settings" | "notify" | "fork";
   newSessionProject?: string;
+  /** the message "Fork from here" was picked on (dialog "fork") */
+  forkTarget?: ForkTarget;
   usage?: UsageReport;
   /** recent notifications from the runner (newest first), for the bell */
   notices: AgentNotice[];

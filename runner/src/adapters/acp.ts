@@ -548,6 +548,15 @@ class AcpSession extends LiveSession {
     this.runTurn(text);
   }
 
+  /** ACP has no compaction request: only an agent that offers a `compact` command (opencode's) compacts itself. */
+  protected async nativeCompact(focus?: string) {
+    if (!this.commands.some((c) => c.name === "compact")) return false;
+    const text = focus ? `/compact ${focus}` : "/compact";
+    this.addUserMessage(text);
+    this.runTurn(text);
+    return true;
+  }
+
   /** a prompt request is out (session/cancel ends it) / a simulated limit waits for one */
   private inPrompt = false;
   private faultStop = false;

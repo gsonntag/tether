@@ -24,12 +24,15 @@ import {
   NoSymbolIcon,
   PencilSquareIcon,
   SparklesIcon,
+  Square2StackIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
 import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
-import { act, selectSession } from "../store";
+import { act, selectSession, useStore } from "../store";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
@@ -146,6 +149,29 @@ function SkillChip({ p }: { p: SkillPart }) {
   );
 }
 
+/** "Fork from here": opens the fork dialog for this message (the session's harness and model as defaults). */
+function ForkButton({ m }: { m: Msg }) {
+  const open = () => {
+    const o = useStore.getState().open[sessionId];
+    if (!o?.session) return;
+    useStore.setState({ dialog: "fork", forkTarget: forkTarget(sessionId, m, o.session.harness, o.state.model) });
+  };
+  return <IconButton label="Fork from here" tooltip="Fork from here" variant="ghost" size="sm" icon={<Icon icon={Square2StackIcon} />} onClick={open} />;
+}
+
+/** A message's time and actions, in its metadata row. */
+function Meta({ m, time, children }: { m: Msg; time?: ReactNode; children?: ReactNode }) {
+  const fork = canFork(m);
+  if (!fork && !children) return <>{time}</>;
+  return (
+    <HStack hAlign={m.role === "user" ? "end" : "start"} vAlign="center" gap={1}>
+      {time}
+      {children}
+      {fork && <ForkButton m={m} />}
+    </HStack>
+  );
+}
+
 function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Msg; text: string; chips?: ReactNode; attached?: ReactNode; typed?: string; time?: ReactNode }) {
   const [draft, setDraft] = useState<string>();
   const save = async () => {
@@ -157,8 +183,7 @@ function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Ms
       <ChatMessage sender="user">
         <ChatMessageBubble
           metadata={
-            <HStack hAlign="end" vAlign="center" gap={2}>
-              {time}
+            <Meta m={m} time={time}>
               <Button
                 label="Edit"
                 variant="ghost"
@@ -167,7 +192,7 @@ function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Ms
                 tooltip="The agent already has this message. Editing sends the change as a correction."
                 onClick={() => setDraft(typed)}
               />
-            </HStack>
+            </Meta>
           }
         >
           <VStack gap={1.5}>
@@ -226,7 +251,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
           <Collapsible
             defaultIsOpen={false}
             chevronPosition="start"
-            trigger={<Text type="supporting">Handoff brief given to this agent (conversation + repository state)</Text>}
+            trigger={<Text type="supporting">Brief given to this agent (conversation + repository state)</Text>}
           >
             <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
           </Collapsible>
@@ -248,7 +273,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
         )}
         {visible && !amendable && (
           <ChatMessage sender="user">
-            <ChatMessageBubble metadata={time}>
+            <ChatMessageBubble metadata={<Meta m={m} time={time} />}>
               <VStack gap={1.5}>
                 {chips}
                 {text.trim() && <Text style={preWrap}>{text}</Text>}
@@ -303,7 +328,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
     );
   }
   return (
-    <ChatMessage sender="assistant" metadata={time}>
+    <ChatMessage sender="assistant" metadata={<Meta m={m} time={time} />}>
       <VStack gap={2} width="100%">
         {m.parts.map((p, i) => {
           const tail = last && i === m.parts.length - 1 && m.streaming;
@@ -618,9 +643,21 @@ function Tool({ t }: { t: ToolPart }) {
   );
 }
 
-export function LinkBanner({ from, to }: { from?: { sessionId: string; reason: string }; to?: { sessionId: string; reason: string } }) {
+type Link = { sessionId: string; reason: string };
+
+export function LinkBanner({ from, to, forked }: { from?: Link; to?: Link; forked?: Link }) {
   return (
     <>
+      {forked && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={Square2StackIcon} color="secondary" size="sm" />
+            <Text type="supporting">Forked from</Text>
+            <Button label={`${forked.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(forked.sessionId)} />
+            <Text type="supporting">{forked.reason}</Text>
+          </HStack>
+        </Card>
+      )}
       {from && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">

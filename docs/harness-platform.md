@@ -1,7 +1,8 @@
 # Harness platform: connectors, Tether-owned features, strict fallback
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
-live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b); the rest not started. What was built, emulated or left unsupported per harness is in
+live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b), fork and
+`/compact` (unit p4c); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -384,8 +385,51 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | opencode, Kiro | Tether's (queued messages; unverified, not installed) |
 | Antigravity | Tether's |
 
+**Phase 4c: fork and /compact.**
+- Fork: a "Fork from here" button on your messages and finished replies opens a dialog (harness,
+  model, an optional message). Runner op `forkSession` → `runner/src/fork.ts runFork`. The new
+  session is in the same directory with the conversation up to and including that message; on one
+  of your messages it keeps what came before and sends that message again (plus anything added), so
+  the new agent answers it anew. Linked back through `LiveState.forkedFrom` (saved in prefs), shown
+  like `handoffFrom` ("Forked from …"); its title is the source's plus " (fork)". Goal, plan,
+  schedules, pending messages and the fallback chain are not carried: the original goes on.
+- Native when the target is the same harness and a fork point exists (`LiveSession.forkPoint`, from
+  `forkMarks` the adapters record live and from history): Claude Code `forkSession(id, { dir,
+  upToMessageId })` at the message's last transcript entry (its tool results included; Tether's own
+  user messages now go to Claude Code under their own uuid so they can be cut at), then resumed;
+  Codex `thread/fork { lastTurnId }` only where a turn ends and not through the running turn. A failed
+  native fork falls back to the brief. Otherwise: a new session seeded with `buildBrief({ kind:
+  "fork" })` (memories carried as in a handoff, but no capture: the source goes on, and capturing
+  over a prefix of it would move its watermark back), which says the files may include later
+  changes; with no message it is told to catch up and wait. A fork at the very first message is a
+  plain new session. Images a harness kept inline in your message (Claude Code, pi, ACP history) are
+  stored with the source's attachments (`storeInlineImage`) and sent again as attached files; an
+  image-only message is asked again too.
+- `/compact [focus]` (a Tether command on every harness, `compactCommand`): refused while the agent is
+  busy or the session was handed off. Native: Claude Code's own `/compact <focus>`, pi's `compact`
+  RPC (`customInstructions`), Codex `thread/compact/start` (no focus parameter, so with a focus Codex
+  goes the emulated way), an ACP agent's own `compact` command when it lists one. Emulated
+  (`handoffRun.ts runCompact`): `runHandoff` onto the same harness and model with `buildBrief({ kind:
+  "compact", focus })`, so goal, plan, schedules and waiting messages move like a handoff; the old
+  session is marked done (out of the sidebar) and closed, the new one keeps its title. Refused while
+  background tasks run (the restart would stop them). While the new session starts, an inline notice
+  says so, messages you send wait (and move over; if the restart fails they go out on the old
+  session), scheduled runs don't start, and a second /compact is refused. Compaction turns send no "Finished" push and
+  never turn into a plan review.
+- Capability matrix: new `fork` and `compact` slots ("Fork from a message", "Compact (/compact)").
+
+| | Fork | /compact |
+|---|---|---|
+| Claude Code | native into Claude Code (forkSession, any message); brief into others | native (its /compact, focus included) |
+| Codex | native into Codex where a turn ends (thread/fork lastTurnId); brief elsewhere | native (thread/compact/start); with a focus, Tether's restart |
+| pi | brief (its fork RPC only branches before a user message, inside the running process) | native (compact RPC, focus as instructions) |
+| opencode | brief (ACP's unstable session/fork has no message point) | native if it lists /compact (unverified), else Tether's restart |
+| Kiro | brief | Tether's restart, unless it lists /compact (unverified) |
+| Antigravity | brief | Tether's restart |
+
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
 opencode let a per-session server override a same-named server in their own config, whether Codex
-rollouts or ACP agents persist session MCP headers, and the OAuth redirect through the Foliation
-edge.
+rollouts or ACP agents persist session MCP headers, the OAuth redirect through the Foliation
+edge, Codex `thread/fork` with `lastTurnId` on a thread with turns, and a native Claude Code fork
+resumed and prompted by a live process.

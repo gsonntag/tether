@@ -350,6 +350,11 @@ export class ContextService {
     pendingPrompt?: string;
     budgetTokens?: number;
     timeoutMs?: number;
+    /**
+     * false: carry memories only, capture nothing. A fork's `messages` are a prefix of the source
+     * session: capturing over them would re-read what was captured and move its watermark back.
+     */
+    capture?: boolean;
   }): Promise<HandoffMemory | undefined> {
     if (!this.enabled || !this.store.exists()) return undefined;
     try {
@@ -357,7 +362,7 @@ export class ContextService {
       let captured: CapturedFact[] = [];
       let captureNote: string | undefined;
       let settle: (() => void) | undefined;
-      if (config().context?.handoffCapture !== false) {
+      if (o.capture !== false && config().context?.handoffCapture !== false) {
         const cap = await captureLearnings(this.store, { sessionId: o.sessionId, repoKey: key, messages: o.messages, extractor: this.opts.extractor, timeoutMs: o.timeoutMs });
         captured = cap.facts;
         if (cap.skipped === "timeout") captureNote = "the background model is still extracting facts; they'll be merged when it finishes";

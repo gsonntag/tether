@@ -372,6 +372,8 @@ export interface LiveState {
   /** linked sessions: where this one came from / went to */
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
+  /** a fork ("Fork from here"): the session it was forked from, and where */
+  forkedFrom?: { sessionId: string; reason: string };
   thinking?: string;
   permissionMode?: string;
   /** who approves tool calls: a person, the guard (rules + judge), or nobody */
@@ -861,7 +863,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";
@@ -1002,6 +1004,13 @@ export interface Ops {
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /**
+   * "Fork from here": a new session in the same directory with the conversation up to and including
+   * `msgId` (the harness's own fork where it can, else a brief), on `harness` and `model`. On a user
+   * message the new session answers that message again; `prompt` goes after it (or is the first
+   * message, on any other message).
+   */
+  forkSession: { args: { sessionId: string; msgId: string; harness: HarnessId; model?: string; prompt?: string }; result: SessionSummary };
   /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
   continueOn: { args: { sessionId: string; msgId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */

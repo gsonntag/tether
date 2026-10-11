@@ -136,6 +136,16 @@ export async function buildBrief(opts: {
   goal?: string;
   /** the session's plan and todo list (plan.ts briefSection), which carry over */
   plan?: string;
+  /**
+   * handoff (default): another agent takes the conversation over. fork: a new conversation that
+   * branches off at the last message given (fork.ts). compact: the same conversation restarted to
+   * free up context (`/compact` where the harness can't compact itself).
+   */
+  kind?: "handoff" | "fork" | "compact";
+  /** fork: the original conversation went on after the point it was forked at */
+  later?: boolean;
+  /** compact: what the user asked to keep in focus */
+  focus?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
@@ -160,21 +170,34 @@ export async function buildBrief(opts: {
   const interrupted = open.length ? `\n## Interrupted work\n${open.join("\n\n")}\n` : "";
   const goal = opts.goal?.trim() ? `\n## Goal\n${opts.goal.trim()}\n` : "";
   const plan = opts.plan?.trim() ? `\n## Plan\n${opts.plan.trim()}\n` : "";
-  return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
-You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
+  const kind = opts.kind ?? "handoff";
+  const focus = opts.focus?.trim() ? `\n## Focus\nThe user asked to keep this in focus: ${opts.focus.trim()}\n` : "";
+  const head =
+    kind === "fork"
+      ? `${BRIEF_PREFIX}, forked from a conversation with another agent (${opts.fromLabel}): ${opts.reason}. The conversation below ends at the point the user forked it.${
+          opts.later ? " The original conversation went on after that point, so the files on disk may include changes made later: check the repository state below and re-read files before you rely on them." : ""
+        }`
+      : kind === "compact"
+        ? `${BRIEF_PREFIX} from an earlier session of your own (${opts.fromLabel}), restarted to free up context. You are the same agent, continuing the same work with a fresh context.`
+        : `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.`;
+  const next = opts.pendingPrompt
+    ? `The user's new message:\n\n${opts.pendingPrompt}`
+    : opts.interrupted
+      ? "Inspect the working tree first, then continue the task from where the previous agent stopped. Don't redo finished work."
+      : kind === "fork"
+        ? "Don't start any work yet. Say in a sentence or two where the conversation stands, then wait for the user's next message."
+        : kind === "compact"
+          ? `Don't start new work. Sum up where things stand in a few lines${opts.focus?.trim() ? ", with the focus above in mind" : ""}, then wait for the user's next message.`
+          : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure.";
+  return `${head}
+You are in the same working directory (${opts.cwd}); every change made so far is already on disk. Tool outputs below are truncated, so re-read files before editing them.
 ${memory}
 ## Conversation so far
 ${transcript || "(empty)"}
 
 ## Repository state now
 ${repo}
-${interrupted}${goal}${plan}
+${interrupted}${goal}${plan}${focus}
 ## What to do
-${
-  opts.pendingPrompt
-    ? `The user's new message:\n\n${opts.pendingPrompt}`
-    : opts.interrupted
-      ? "Inspect the working tree first, then continue the task from where the previous agent stopped. Don't redo finished work."
-      : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure."
-}`;
+${next}`;
 }

@@ -418,6 +418,13 @@ describe("service", () => {
     const r2 = await s2.handoffMemory({ sessionId: "s7", projectPath: repo, messages: [user("x ".repeat(300))], target: "pi" });
     expect(r2).toBeDefined();
     expect(called).toBe(false);
+    // a fork (capture: false): carries, no extractor call, the source's watermark untouched
+    config().context = { enabled: true };
+    const s3 = new ContextService({ extractor: async () => ((called = true), []) });
+    const r3 = await s3.handoffMemory({ sessionId: "s6", projectPath: repo, messages: [user("y ".repeat(300))], target: "pi", capture: false });
+    expect(r3).toBeDefined();
+    expect(r3!.settle).toBeUndefined();
+    expect(called).toBe(false);
     // the merge pass settle() started must finish here: the next test file empties this home
     await s.idle();
     await s2.idle();

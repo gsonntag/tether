@@ -211,4 +211,7 @@ export const piConnector: Connector = {
   todos: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "todo_set (tether-context, through pi-mcp-adapter)") : cap("unsupported", "No todo tool; todo_set needs pi-mcp-adapter")) },
   ask_user: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "ask_user (tether-context, through pi-mcp-adapter) as a question card") : cap("unsupported", "No question tool; ask_user needs pi-mcp-adapter")) },
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; pi has no scheduler"),
+  // pi 1.0.4 RPC: `fork` branches only before a user message and moves the running process to the new session.
+  fork: slot("emulated", "A new session on a brief; pi's own fork only branches before one of your messages, inside the running process"),
+  compact: slot("native", "Its own compaction (compact RPC), focus as its instructions"),
 };

@@ -25,7 +25,8 @@ import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, saveConfig, setUiPrefs, uiPrefs } from "./config";
-import { resumeActive, runHandoff } from "./handoffRun";
+import { resumeActive, runCompact, runHandoff } from "./handoffRun";
+import { runFork } from "./fork";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
@@ -135,10 +136,11 @@ const sink: Sink = {
     if (live.has(s.id)) pulses.touch(s.id);
   },
   handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
+  compact: async (from, focus) => void (await runCompact({ adapters, sink, context, track }, from, focus)),
 };
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
-  return runHandoff({ adapters, sink, context, track }, from, to, reason, pendingPrompt, opts);
+  return runHandoff({ adapters, sink, context, track }, from, to, reason, pendingPrompt, opts).then(() => {});
 }
 
 function connect(attempt = 0) {
@@ -531,6 +533,8 @@ const ops: Handlers = {
     // `/goal …` too (goal.ts): Tether's own command, on every harness; so are /loop and /schedule (schedule.ts).
     if (await s.goalCommand(text)) return {};
     if (await s.scheduleCommand(text)) return {};
+    // `/compact [focus]`: the harness's own compaction, or a restart on a brief (fork.ts, handoffRun.ts).
+    if (await s.compactCommand(text)) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -647,6 +651,12 @@ const ops: Handlers = {
   async approveBlocked({ sessionId, toolId }) {
     await (await getLive(sessionId)).approveBlocked(toolId);
     return {};
+  },
+
+  async forkSession({ sessionId, msgId, harness, model, prompt }) {
+    if (!adapters[harness]) throw new Error(`unknown harness ${harness}`);
+    const next = await runFork({ adapters, sink, context, track }, await getLive(sessionId), { msgId, harness, model, prompt });
+    return next.summary();
   },
 
   async continueOn({ sessionId, msgId }) {

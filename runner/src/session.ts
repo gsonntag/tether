@@ -67,6 +67,11 @@ export interface SessionSink {
   emit: Emit;
   summary: SummaryChanged;
   handoff: Handoff;
+  /**
+   * `/compact` where the harness can't compact itself: the conversation restarts as a new session on
+   * the same harness and model, seeded with a brief (handoffRun.ts runCompact). Absent: not offered.
+   */
+  compact?: (from: LiveSession, focus?: string) => Promise<void>;
 }
 
 let counter = 0;
@@ -253,7 +258,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -600,12 +605,14 @@ export abstract class LiveSession {
     if (this.devCommand(text)) return;
     if (await this.goalCommand(text)) return;
     if (await this.scheduleCommand(text)) return;
+    if (await this.compactCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
     if (this.t.state.status !== "running") this.fallbackAttempt = 0;
     if (this.t.state.status === "idle") {
       // An approved plan's turn is starting: this goes in after it, not as a second turn alongside.
-      if (this.planStarting) {
+      // Compacting: it waits, and goes on in the new session.
+      if (this.planStarting || this.restarting) {
         this.pend(text, mode);
         return;
       }
@@ -873,6 +880,7 @@ export abstract class LiveSession {
     if (p.preferEarlier !== undefined) restore.preferEarlier = p.preferEarlier;
     if (p.handoffFrom) restore.handoffFrom = p.handoffFrom;
     if (p.handoffTo) restore.handoffTo = p.handoffTo;
+    if (p.forkedFrom) restore.forkedFrom = p.forkedFrom;
     if (p.guard) restore.guard = p.guard;
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
     if (p.context && !this.t.state.context) restore.context = p.context;
@@ -935,6 +943,7 @@ export abstract class LiveSession {
       preferEarlier: s.preferEarlier,
       handoffFrom: s.handoffFrom,
       handoffTo: s.handoffTo,
+      forkedFrom: s.forkedFrom,
       guard: s.guard,
       checkpoints: s.checkpoints,
       context: s.context,
@@ -2062,6 +2071,8 @@ export abstract class LiveSession {
   private planTurnOver() {
     const partId = this.turnPlan;
     this.turnPlan = undefined;
+    // A compaction's turn writes no plan, whatever mode the session is in.
+    if (this.compactTurn) return void (this.compactTurn = false);
     if (this.closed || this.userStopped || this.turnTrouble) return;
     if (!this.planning() && !this.planGate) return;
     const id = partId ?? (this.planFromReply ? this.replyAsPlan() : undefined);
@@ -2285,7 +2296,7 @@ export abstract class LiveSession {
   // it starts a turn at once when the session is idle, else it waits for the running turn to end.
   // While it waits, more runs of the same schedule collapse into it.
 
-  /** the running turn was started by runs of loops only (no "Finished" notification for it) */
+  /** the running turn was started by runs of loops only, or is a compaction (no "Finished" notification for it) */
   private loopTurn = false;
 
   get schedules(): SessionSchedule[] {
@@ -2383,7 +2394,7 @@ export abstract class LiveSession {
   private sendRunNow(fired?: string) {
     const st = this.t.state;
     if (this.closed || st.status !== "idle" || st.pendingUi.length || st.handoffTo) return;
-    if (this.turnStarting || this.draining || this.planStarting) return;
+    if (this.turnStarting || this.draining || this.planStarting || this.restarting) return;
     const failed = (e: any) => this.notice(`Could not send the scheduled prompt: ${e?.message ?? e}`, "error");
     if (st.pendingHeld) {
       const run = fired ? st.pending?.find((p) => p.scheduleId === fired) : undefined;
@@ -2434,6 +2445,87 @@ export abstract class LiveSession {
   }
 
   // ---- housekeeping ----
+
+  // ---- fork and /compact (runner/src/fork.ts, handoffRun.ts runCompact) ----
+
+  /**
+   * Adapters whose harness forks at a message point (Adapter.fork) record, per transcript message,
+   * where its own fork would cut to keep that message: Claude Code's last transcript entry for it,
+   * Codex's turn.
+   */
+  protected forkMarks = new Map<string, string>();
+
+  /** the running turn is the harness's own compaction (/compact) */
+  private compactTurn = false;
+
+  /** The harness's own fork point that keeps exactly the first `n` messages; undefined: it has none (Tether forks with a brief). */
+  forkPoint(_n: number): string | undefined {
+    return undefined;
+  }
+
+  /** The mark of the last of the first `n` messages the harness has (Tether's own notices and `!` runs don't count); undefined when that one has none. */
+  protected lastMark(n: number): string | undefined {
+    for (let i = Math.min(n, this.t.messages.length) - 1; i >= 0; i--) {
+      const m = this.t.messages[i]!;
+      const mark = this.forkMarks.get(m.id);
+      if (mark) return mark;
+      if (!tetherOnly(m)) return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Adapters whose harness compacts its context on request: starts that (`focus`: what the summary
+   * should keep) and returns true; false when it can't (or not with a focus), and Tether restarts the
+   * conversation on a brief instead.
+   */
+  protected async nativeCompact(_focus?: string): Promise<boolean> {
+    return false;
+  }
+
+  /** `/compact [focus]`: handled here on every harness, never sent as is. True when it was one. */
+  async compactCommand(text: string): Promise<boolean> {
+    const m = text.trim().match(/^\/compact(?:\s+([\s\S]*))?$/);
+    if (!m) return false;
+    const focus = m[1]?.trim() || undefined;
+    const st = this.t.state;
+    if (st.handoffTo) this.notice("This conversation continues in another session. Compact it there.", "warning");
+    else if (this.restarting) this.notice("Already compacting: a new session is starting.", "warning");
+    else if (st.status !== "idle" || st.pendingUi.length) this.notice("The agent is busy. Compact once it's done, or stop it first.", "warning");
+    else {
+      // Like a loop's run, compacting doesn't send "Finished" when it's done.
+      this.loopTurn = this.compactTurn = true;
+      try {
+        if (await this.nativeCompact(focus)) return true;
+        this.loopTurn = this.compactTurn = false;
+        if (!this.sink.compact) this.notice("This runner can't compact this session.", "warning");
+        // The restart ends this process, and with it whatever still runs in the background.
+        else if (this.workingCount) this.notice("Background tasks are still running here, and compacting would stop them. Compact once they're done, or stop them first.", "warning");
+        else {
+          // Until the new session takes over, messages wait (and move over with the conversation).
+          this.restarting = true;
+          this.notice("Compacting: starting a new session with a brief of this conversation.", "info");
+          await this.sink.compact(this, focus);
+        }
+      } catch (e: any) {
+        // Back to idle while the flags still say it was a compaction: no "Finished" for it.
+        if (this.t.state.status !== "idle") this.setState({ status: "idle" });
+        this.loopTurn = this.compactTurn = false;
+        this.notice(`Compacting failed: ${e?.message ?? e}`, "error");
+      } finally {
+        if (this.restarting) {
+          this.restarting = false;
+          // It failed: what was sent meanwhile goes out here after all.
+          const s = this.t.state;
+          if (!this.closed && !s.handoffTo && s.status === "idle" && s.pending?.length && !s.pendingHeld) await this.drainPending();
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Tether's /compact is starting the new session: this one takes no new turns meanwhile */
+  protected restarting = false;
 
   private checkStall() {
     const s = this.t.state;
@@ -2534,6 +2626,8 @@ export function finishedTools(event: SessionEvent, messages: Msg[]): string[] {
     })
     .map((p) => p.id);
 }
+/** A transcript message only Tether has (a notice, a `!` run): no harness keeps it, so no fork point is in it. */
+export const tetherOnly = (m: Msg) => m.role === "notice" || (m.role === "user" && m.parts.every((p) => p.type === "tool"));
 const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
 

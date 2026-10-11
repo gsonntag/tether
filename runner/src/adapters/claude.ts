@@ -3,6 +3,7 @@
 // so the session stays open between turns and later prompts can be queued while it runs.
 
 import {
+  forkSession,
   getSessionMessages,
   listSessions,
   query,
@@ -232,14 +233,22 @@ async function entries(sessionId: string, dir: string) {
 }
 
 /** `onContext`: the context as of the last stored reply (a resumed process reports nothing until prompted). */
-export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void): Promise<Msg[]> {
+export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void, marks?: Map<string, string>): Promise<Msg[]> {
   const [list, meta] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entries(sessionId, dir)]);
   onContext?.(claudeHistoryContext(list));
-  return historyMessages(list, meta);
+  return historyMessages(list, meta, marks);
 }
 
-/** The SDK's history entries as a transcript, each message at the time Claude Code wrote it. */
-export function historyMessages(list: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }[], meta: ReturnType<typeof entryMeta>): Msg[] {
+/**
+ * The SDK's history entries as a transcript, each message at the time Claude Code wrote it.
+ * `marks` gets, per message, the uuid of its last entry (its tool results included): where a fork
+ * that keeps it cuts (forkSession's upToMessageId).
+ */
+export function historyMessages(
+  list: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }[],
+  meta: ReturnType<typeof entryMeta>,
+  marks?: Map<string, string>,
+): Msg[] {
   const out: Msg[] = [];
   const byApiId = new Map<string, Msg>();
   // An entry without a recorded time (none should lack one) takes the one before it.
@@ -260,15 +269,30 @@ export function historyMessages(list: { type: string; uuid: string; message: unk
         byApiId.set(apiId, nm);
         out.push(nm);
       }
+      marks?.set((prev ?? byApiId.get(apiId)!).id, m.uuid);
     } else if (m.type === "user" && msg) {
       const u = applyUser(msg.content, out, m.uuid, ts, meta.flags.get(m.uuid));
       if (u) out.push(u);
+      const owner = u?.id ?? resultOwner(msg.content, out);
+      if (owner) marks?.set(owner, m.uuid);
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
       out.push({ id: m.uuid, role: "notice", level: "info", parts: [{ type: "text", text: "Context compacted." }], ts });
+      marks?.set(m.uuid, m.uuid);
     }
   }
   for (const m of out) for (const p of m.parts) if (p.type === "tool" && p.status === "running") p.status = "error";
   return out;
+}
+
+/** The message whose tool calls these tool_result blocks answer (their entry belongs to it), if any. */
+function resultOwner(content: unknown, messages: Msg[]): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const b of content as any[]) {
+    if (b?.type !== "tool_result") continue;
+    const hit = findTool(messages, b.tool_use_id) ?? findPlan(messages, b.tool_use_id);
+    if (hit) return hit.msg.id;
+  }
+  return undefined;
 }
 
 // ---------------- input queue ----------------
@@ -336,7 +360,7 @@ class ClaudeSession extends LiveSession {
 
   async start() {
     if (this.resumeId) {
-      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath, (c) => this.setContext(c)) });
+      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath, (c) => this.setContext(c), this.forkMarks) });
     }
     // Your own settings (user, project, local) decide model, effort and permission mode unless
     // this session explicitly chose something else.
@@ -490,6 +514,8 @@ class ClaudeSession extends LiveSession {
         const msg: any = m.message;
         if ((m as any).error) this.lastError = { kind: (m as any).error, text: blockText(msg?.content) };
         this.onAssistant(msg);
+        // Claude Code writes an entry per content block: the last one so far ends this message.
+        if (this.current && (m as any).uuid) this.forkMarks.set(this.current.msgId, (m as any).uuid);
         break;
       }
       case "user": {
@@ -500,6 +526,7 @@ class ClaudeSession extends LiveSession {
         if (!um.isReplay && (um.origin && um.origin.kind !== "human" || um.isSynthetic)) {
           const msg = applyUser(content, this.t.messages, um.uuid ?? newId("i"), Date.now(), { origin: um.origin, isMeta: um.isMeta ?? um.isSynthetic });
           if (msg) this.emit({ type: "msg", msg });
+          if (msg && um.uuid) this.forkMarks.set(msg.id, um.uuid);
         }
         if (Array.isArray(content))
           for (const b of content) {
@@ -507,6 +534,8 @@ class ClaudeSession extends LiveSession {
             const hit = findTool(this.t.messages, b.tool_use_id);
             if (hit)
               this.emit({ type: "tool", msgId: hit.msg.id, toolId: b.tool_use_id, patch: { status: b.is_error ? "error" : "done", output: blockText(b.content) } });
+            // The result's entry ends the message that made the call (a fork keeping it keeps the result).
+            if (hit && um.uuid && !um.isReplay) this.forkMarks.set(hit.msg.id, um.uuid);
           }
         break;
       }
@@ -596,7 +625,7 @@ class ClaudeSession extends LiveSession {
         break;
       case "compact_boundary":
         this.contextCompacted(m.compact_metadata?.post_tokens);
-        loadHistory(this.nativeId, this.projectPath)
+        loadHistory(this.nativeId, this.projectPath, undefined, this.forkMarks)
           .then((messages) => this.emit({ type: "reset", messages }))
           .catch(() => {});
         break;
@@ -762,9 +791,30 @@ class ClaudeSession extends LiveSession {
     if (await this.preferBest(text)) return;
     this.turnSeen = false;
     this.autoTitle(text);
-    this.addUserMessage(text);
-    this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
+    this.pushUser(text, await claudeContent(text));
     this.setState({ status: "running" });
+  }
+
+  /** A user message in the transcript and to Claude Code under one uuid: its own entry's, so a fork can cut there. */
+  private pushUser(text: string, content: SDKUserMessage["message"]["content"]) {
+    const uuid = randomUUID();
+    this.addUserMessage(text, uuid);
+    this.forkMarks.set(uuid, uuid);
+    this.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid } as SDKUserMessage);
+  }
+
+  /** forkSession cuts after any entry: the last one of the last message kept. */
+  forkPoint(n: number) {
+    return this.lastMark(n);
+  }
+
+  /** Claude Code's own /compact, focus and all (its compact_boundary reloads the transcript). */
+  protected async nativeCompact(focus?: string) {
+    this.turnSeen = false;
+    const text = focus ? `/compact ${focus}` : "/compact";
+    this.pushUser(text, text);
+    this.setState({ status: "running" });
+    return true;
   }
 
   /** Priority "next": Claude Code folds it in at its next step. */
@@ -914,6 +964,12 @@ export const claudeAdapter: Adapter = {
 
   create(projectPath, opts, sink) {
     return new ClaudeSession({ nativeId: randomUUID(), projectPath }, sink, opts);
+  },
+
+  async fork(from, opts, sink) {
+    // A copy of the transcript up to that entry (fresh uuids, no undo history), resumed as a new session.
+    const { sessionId } = await forkSession(from.nativeId, { dir: from.projectPath, upToMessageId: from.point });
+    return new ClaudeSession({ nativeId: sessionId, projectPath: from.projectPath }, sink, { ...opts, resume: true });
   },
 
   async resume(nativeId, projectPath, sink) {

@@ -21,7 +21,7 @@ import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { codexFault } from "../faults";
 import { CODEX_STATUS } from "../goal";
-import { LiveSession, newId } from "../session";
+import { LiveSession, newId, tetherOnly } from "../session";
 import { sessionLaunch } from "../connectors/launch";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -322,12 +322,13 @@ export function imageItems(text: string): any[] {
 /**
  * A resumed thread's turns as a transcript. A message takes its item's own start time when known
  * (`times`, see itemTimes), else its turn's start (Codex keeps those in seconds); a turn without
- * one takes the time of the one before it.
+ * one takes the time of the one before it. `marks` gets each message's turn id (fork points).
  */
-export function historyMsgs(turns: any[], cwd: string, model?: string, times?: Map<string, number>): Msg[] {
+export function historyMsgs(turns: any[], cwd: string, model?: string, times?: Map<string, number>, marks?: Map<string, string>): Msg[] {
   const out: Msg[] = [];
   let last = 0;
   for (const turn of turns) {
+    const from = out.length;
     let a: Msg | undefined;
     const turnTs = (last = (turn.startedAt ?? 0) * 1000 || (turn.completedAt ?? 0) * 1000 || last);
     const at = (item: any) => times?.get(item.id) || turnTs;
@@ -349,6 +350,7 @@ export function historyMsgs(turns: any[], cwd: string, model?: string, times?: M
       a.parts.push(part);
     }
     if (a && turn.status === "failed") a.error = turn.error?.message ?? "error";
+    if (marks && turn.id) for (const m of out.slice(from)) marks.set(m.id, turn.id);
   }
   return out;
 }
@@ -445,7 +447,7 @@ export class CodexSession extends LiveSession {
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
-    private opts: CreateOpts & { resume?: boolean } = {},
+    private opts: CreateOpts & { resume?: boolean; fork?: { threadId: string; lastTurnId: string } } = {},
   ) {
     super("codex", init, sink);
     this.model = opts.model && opts.model !== "default" ? opts.model : undefined;
@@ -480,7 +482,7 @@ export class CodexSession extends LiveSession {
     const launch = await sessionLaunch("codex", {
       projectPath: this.projectPath,
       session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY },
-      resume: this.opts.resume,
+      resume: this.opts.resume || !!this.opts.fork,
     });
     const params = {
       cwd: this.projectPath,
@@ -494,7 +496,13 @@ export class CodexSession extends LiveSession {
     if (this.opts.resume) {
       r = await this.p.call("thread/resume", { threadId: this.nativeId, ...params });
       const turns = r.thread.turns ?? [];
-      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns)) });
+      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns), this.forkMarks) });
+    } else if (this.opts.fork) {
+      // Codex's own fork: a new thread with the turns up to and including lastTurnId.
+      r = await this.p.call("thread/fork", { threadId: this.opts.fork.threadId, lastTurnId: this.opts.fork.lastTurnId, ...params });
+      this.nativeId = r.thread.id;
+      const turns = r.thread.turns ?? [];
+      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, undefined, this.forkMarks) });
     } else {
       r = await this.p.call("thread/start", params);
       this.nativeId = r.thread.id;
@@ -530,8 +538,51 @@ export class CodexSession extends LiveSession {
     const msg: Msg = { id: newId("a"), role: "assistant", parts: [], ts: Date.now(), model: this.t.state.model, streaming: true };
     this.msgId = msg.id;
     this.emit({ type: "msg", msg });
+    if (this.turnId) this.forkMarks.set(msg.id, this.turnId);
     return msg;
   }
+
+  /**
+   * The messages since the last one placed in a turn belong to this one (fork points): the user
+   * message that started it, steers into it, its replies.
+   */
+  private markTurn(turnId: string) {
+    for (let i = this.t.messages.length - 1; i >= 0; i--) {
+      const m = this.t.messages[i]!;
+      if (this.forkMarks.has(m.id)) break;
+      if (!tetherOnly(m)) this.forkMarks.set(m.id, turnId);
+    }
+  }
+
+  /**
+   * thread/fork keeps whole turns, through a finished one: a fork point only where a turn ends (the
+   * next message Codex has starts another turn) and not in the turn running now.
+   */
+  forkPoint(n: number) {
+    const point = this.lastMark(n);
+    if (!point || point === this.turnId) return undefined;
+    const after = this.t.messages.slice(n).find((m) => !tetherOnly(m));
+    if (after && this.forkMarks.get(after.id) === point) return undefined;
+    if (after && !this.forkMarks.has(after.id)) return undefined;
+    return point;
+  }
+
+  /** thread/compact/start; it takes no instructions, so a focus means Tether's restart on a brief. */
+  protected async nativeCompact(focus?: string) {
+    if (focus) return false;
+    this.finishMsg();
+    this.setState({ status: "running" });
+    await this.p.call("thread/compact/start", { threadId: this.nativeId });
+    // It runs as a turn (turn/started … turn/completed); if none shows up, don't stay "running".
+    // Only until that turn starts: a later turn (still waiting on turn/start) is never cut short.
+    clearTimeout(this.compactTimer);
+    this.compactTimer = setTimeout(() => !this.closed && !this.turnId && this.t.state.status === "running" && this.setState({ status: "idle" }), CodexSession.COMPACT_FALLBACK_MS);
+    return true;
+  }
+
+  static COMPACT_FALLBACK_MS = 15_000;
+  /** a compaction's way back to idle when its turn never shows up */
+  private compactTimer?: ReturnType<typeof setTimeout>;
 
   private addPart(itemId: string, part: Part) {
     const m = this.ensureMsg();
@@ -585,7 +636,9 @@ export class CodexSession extends LiveSession {
     if (p.threadId && p.threadId !== this.nativeId) return; // subagent threads: their activity item shows them
     switch (method) {
       case "turn/started":
+        clearTimeout(this.compactTimer);
         this.turnId = p.turn.id;
+        this.markTurn(p.turn.id);
         if (this.t.state.status !== "running") this.setState({ status: "running" });
         this.interruptForFault();
         break;
@@ -644,6 +697,7 @@ export class CodexSession extends LiveSession {
         break;
       }
       case "turn/completed": {
+        if (p.turn?.id) this.markTurn(p.turn.id);
         // A simulated limit (faults.ts): the turn ends with Codex's own notifications for it instead.
         const fault = this.takeFault();
         this.faultStop = false;
@@ -815,6 +869,7 @@ export class CodexSession extends LiveSession {
 
   /** `skills`: a `/name` paragraph for a skill Codex has goes as a skill item (not for briefs). */
   private async startTurn(text: string, skills = true) {
+    clearTimeout(this.compactTimer);
     this.finishMsg();
     this.setState({ status: "running" });
     try {
@@ -828,6 +883,7 @@ export class CodexSession extends LiveSession {
         ...this.collabParam(),
       });
       this.turnId ??= r.turn?.id;
+      if (r.turn?.id) this.markTurn(r.turn.id);
       this.interruptForFault();
     } catch (e: any) {
       if (await this.handleTurnError(e?.message)) return;
@@ -974,6 +1030,7 @@ export class CodexSession extends LiveSession {
   }
 
   protected shutdown() {
+    clearTimeout(this.compactTimer);
     this.p?.kill();
   }
 }
@@ -1072,6 +1129,11 @@ export const codexAdapter: Adapter = {
   create(projectPath, opts, sink) {
     listCache = undefined;
     return new CodexSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);
+  },
+
+  async fork(from, opts, sink) {
+    listCache = undefined;
+    return new CodexSession({ nativeId: "pending-" + newId(""), projectPath: from.projectPath }, sink, { ...opts, fork: { threadId: from.nativeId, lastTurnId: from.point } });
   },
 
   async resume(nativeId, projectPath, sink) {

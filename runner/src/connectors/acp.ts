@@ -92,6 +92,9 @@ export const opencodeConnector: Connector = {
   todos: slot("native", "Its ACP plan checklist, kept as the session's todo list; todo_set also works" + UNVERIFIED),
   ask_user: slot("emulated", "ask_user (tether-context) as a question card" + UNVERIFIED),
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
+  // ACP 1.7: the unstable session/fork copies a whole session, with no message point.
+  fork: slot("emulated", "A new session on a brief; ACP has no fork at a message"),
+  compact: slot("native", "Its own /compact command, where it lists one; else the conversation restarts on a brief" + UNVERIFIED),
 };
 
 // ---------------- Kiro ----------------
@@ -149,4 +152,6 @@ export const kiroConnector: Connector = {
   todos: slot("emulated", "todo_set; its ACP plan checklist too, if it sends one" + UNVERIFIED),
   ask_user: slot("emulated", "ask_user (tether-context) as a question card" + UNVERIFIED),
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
+  fork: slot("emulated", "A new session on a brief; ACP has no fork at a message"),
+  compact: slot("emulated", "The conversation restarts as a new session on a brief, unless it lists a /compact command of its own" + UNVERIFIED),
 };

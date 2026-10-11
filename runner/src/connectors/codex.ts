@@ -98,4 +98,7 @@ export const codexConnector: Connector = {
   ask_user: slot("native", "Its request_user_input as a question card; ask_user (tether-context) also works"),
   // codex-cli 0.162 app-server: no scheduling requests; ScheduledTaskSummary only describes a plugin's tasks.
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; Codex's app-server has no schedules of its own"),
+  // codex-cli 0.162 app-server: thread/fork keeps whole turns (lastTurnId); thread/compact/start takes no instructions.
+  fork: slot("native", "Its own fork (thread/fork) where a turn ends, into Codex; at a message inside a turn, in the turn running now or into another harness, a new session on a brief"),
+  compact: slot("native", "Its own compaction (thread/compact/start); it takes no focus, so /compact with a focus restarts the conversation on a brief"),
 };

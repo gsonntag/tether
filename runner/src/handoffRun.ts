@@ -28,7 +28,7 @@ export interface HandoffDeps {
  * the conversation so far. The two sessions are linked both ways, and browsers on the old one
  * follow the link.
  */
-export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts: HandoffOpts = {}) {
+export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts: HandoffOpts & { compact?: { focus?: string } } = {}) {
   const { sink, context } = deps;
   const a = deps.adapters[to.harness];
   // The old agent is done here: nothing it asked can be answered any more, and (mid-task) what it
@@ -61,6 +61,7 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     goal: from.goalState?.status === "active" ? briefSection(from.goalState) : undefined,
     // The plan and todo list go with it too (an open review was cancelled above: it starts over there).
     plan: planBrief(from.planState),
+    ...(opts.compact ? { kind: "compact" as const, focus: opts.compact.focus } : {}),
   });
   const mode = from.t.state.permissionMode;
   const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
@@ -100,16 +101,18 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",
     tasks.some((t) => t.stopped) ? `${tasks.filter((t) => t.stopped).length} background ${tasks.filter((t) => t.stopped).length === 1 ? "task was" : "tasks were"} stopped` : "",
   ].filter(Boolean);
-  from.notice(`${reason}. Continued on ${entryLabel(to, from.harness)}.${left.length ? ` ${left.join("; ")}.` : ""}`, "warning");
+  if (opts.compact) from.notice(`${reason}: this conversation goes on in a new session.`, "info");
+  else from.notice(`${reason}. Continued on ${entryLabel(to, from.harness)}.${left.length ? ` ${left.join("; ")}.` : ""}`, "warning");
   const carried = (memory?.carried.length ?? 0) + (memory?.captured.length ?? 0);
+  const focus = opts.compact?.focus ? `, and asked to keep “${opts.compact.focus}” in focus` : "";
   if (memory && (carried || memory.native)) {
     const what = carried ? `${carried} ${carried === 1 ? "memory" : "memories"}` : "the shared memory";
     next.notice(
-      `The agent was given the conversation, the repository state and ${what}.\n\n${carriedNotice(memory, to.harness)}`,
+      `The agent was given the conversation, the repository state and ${what}${focus}.\n\n${carriedNotice(memory, to.harness)}`,
       "info",
       { title: `Continued from a ${from.harness} session: ${reason}. Carried ${what}.`, collapsed: true, source: "memory" },
     );
-  } else next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state.`, "info");
+  } else next.notice(`Continued from a ${from.harness} session: ${reason}. The agent was given the conversation and the repository state${focus}.`, "info");
   if (prompt) next.addUserMessage(prompt);
   // Messages still waiting on the old session move over and wait on the new one.
   const carry = from.t.state.pending ?? [];
@@ -122,6 +125,28 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     next.setState({ pending: [...carry, ...queued] });
   }
   sink.summary(next.summary());
+  return next;
+}
+
+/** Why a compaction restarted the conversation: the link back and the notices say it. */
+export const COMPACT_REASON = "Restarted to free up context";
+
+/**
+ * `/compact` where the harness can't compact itself (or not with a focus): the conversation goes
+ * on in a new session on the same harness and model, seeded with a brief (the focus included) and
+ * linked like a handoff: goal, plan, loops and waiting messages move with it. The old session is
+ * marked done, so the new one takes its place in the session lists, and its process stops.
+ */
+export async function runCompact(deps: HandoffDeps, from: LiveSession, focus?: string) {
+  const next = await runHandoff(deps, from, from.currentEntry, COMPACT_REASON, undefined, { compact: { focus } });
+  const cfg = config();
+  // Its title stays (the new session's first message is the brief).
+  cfg.titles[next.id] ??= from.title;
+  if (!cfg.archived.includes(from.id)) cfg.archived.push(from.id);
+  saveConfig();
+  from.close();
+  deps.sink.summary(from.summary());
+  return next;
 }
 
 /**

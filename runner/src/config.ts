@@ -52,6 +52,7 @@ export interface SessionPrefs {
   preferEarlier?: boolean;
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
+  forkedFrom?: { sessionId: string; reason: string };
   guard?: import("./guard").GuardMode;
   checkpoints?: import("../../web/src/shared/protocol").Checkpoint[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */

@@ -157,6 +157,10 @@ export interface Connector {
   ask_user: Slot;
   /** /loop and /schedule (runner/src/schedule.ts): run by the runner, sent as queued messages */
   schedules: Slot;
+  /** "Fork from here" (runner/src/fork.ts): the harness's own fork at a message, or a new session on a brief */
+  fork: Slot;
+  /** /compact: the harness's own compaction, or a restart on a brief (handoffRun.ts runCompact) */
+  compact: Slot;
 }
 
-export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules"];
+export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact"];

@@ -23,5 +23,11 @@ export interface Adapter {
   readHistory?(nativeId: string, projectPath: string): Promise<Msg[]>;
   create(projectPath: string, opts: CreateOpts, sink: Sink): LiveSession;
   resume(nativeId: string, projectPath: string, sink: Sink): Promise<LiveSession>;
+  /**
+   * The harness's own fork (fork.ts): a new session, not started yet, holding the conversation of
+   * `from` up to `point` (LiveSession.forkPoint: Claude Code's transcript entry, Codex's turn).
+   * Absent: forks of its sessions go through a brief.
+   */
+  fork?(from: { nativeId: string; projectPath: string; point: string }, opts: CreateOpts, sink: Sink): Promise<LiveSession>;
   listModels(live?: LiveSession): Promise<{ models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] }>;
 }

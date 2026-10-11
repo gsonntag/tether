@@ -13,6 +13,8 @@ export const SLOT_LABEL: Record<SlotId, string> = {
   todos: "Todo list",
   ask_user: "Questions to you",
   schedules: "Loops and schedules",
+  fork: "Fork from a message",
+  compact: "Compact (/compact)",
   commands: "Custom commands",
   agents: "Subagents",
   hooks: "Hooks",
