@@ -65,8 +65,8 @@ interface State {
   page?: "memory" | "running";
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
   pulses: PulseMap;
-  /** the Memory & Skills tab to switch to (set by links into the page) */
-  memoryTab?: "memory" | "activity" | "conflicts" | "skills";
+  /** where links into the Memory & Skills page scroll to: "conflicts", or one conflict's id */
+  memoryFocus?: string;
   /** master context (shared memory and skills) */
   contextStatus?: ContextStatus;
   /** memory conflicts nobody has resolved yet, newest first */
@@ -457,9 +457,11 @@ export function selectSession(sessionId: string | undefined) {
 // ---------------- master context (shared memory and skills) ----------------
 
 /** Shows the Memory & Skills page (or, with no page, the session view again). */
-export function openPage(page: State["page"], tab?: State["memoryTab"]) {
-  set({ page, memoryTab: tab, sidebarOpen: false, ...(page ? { selected: undefined } : {}) });
-  history.replaceState(null, "", page ? `#/${page}` : "#/");
+/** `focus` (Memory page): "conflicts" scrolls to the conflicts, a conflict id to that one. */
+export function openPage(page: State["page"], focus?: string) {
+  set({ page, memoryFocus: focus, sidebarOpen: false, ...(page ? { selected: undefined } : {}) });
+  const q = page === "memory" && focus && focus !== "conflicts" ? `?conflict=${encodeURIComponent(focus)}` : "";
+  history.replaceState(null, "", page ? `#/${page}${q}` : "#/");
 }
 
 export async function refreshContext() {
@@ -474,10 +476,11 @@ export async function refreshContext() {
 
 function onContextEvent(e: ContextEvent) {
   if (e.type === "status") set({ contextStatus: e.status });
+  else if (e.type === "notice") set((s) => ({ notices: [e.notice, ...s.notices.filter((n) => n.id !== e.notice.id)] }));
   else if (e.type === "conflict") {
     const c = e.conflict;
     set((s) => ({ conflicts: [...(c.status === "open" ? [c] : []), ...s.conflicts.filter((x) => x.id !== c.id)] }));
-  } else set((s) => ({ contextLive: [e.activity, ...s.contextLive.filter((a) => a.id !== e.activity.id)].slice(0, 300) }));
+  } else if (e.type === "activity") set((s) => ({ contextLive: [e.activity, ...s.contextLive.filter((a) => a.id !== e.activity.id)].slice(0, 300) }));
 }
 
 /** Keep new / keep old / dismiss: the conflict leaves the inbox and the session at once. */

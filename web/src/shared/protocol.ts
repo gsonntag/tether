@@ -386,12 +386,13 @@ export const isActive = (a: ActivityItem) => a.status === "running" || a.status 
 
 // ---------- notifications ----------
 
-export type NotifyKind = "question" | "finished" | "blocked";
+export type NotifyKind = "question" | "finished" | "blocked" | "memory";
 
 export const NOTIFY_KINDS: { id: NotifyKind; label: string; hint: string }[] = [
   { id: "question", label: "Questions", hint: "The agent asks you something or waits for an approval" },
   { id: "finished", label: "Finished", hint: "A turn ends" },
   { id: "blocked", label: "Blocked", hint: "The guard blocks a call, every model is at its usage limit, the agent goes quiet or fails" },
+  { id: "memory", label: "Memory conflicts", hint: "A new memory contradicts an older one (the newest was kept)" },
 ];
 
 export interface AgentNotice {
@@ -404,6 +405,8 @@ export interface AgentNotice {
   /** project folder name */
   project: string;
   ts: number;
+  /** kind "memory": the (newest) conflict it is about, for the Memory page link */
+  conflictId?: string;
 }
 
 export interface PendingMessage {
@@ -656,7 +659,9 @@ export interface BackgroundModelSetting {
 export type ContextEvent =
   | { type: "activity"; activity: ContextActivity }
   | { type: "conflict"; conflict: MemoryConflict }
-  | { type: "status"; status: ContextStatus };
+  | { type: "status"; status: ContextStatus }
+  /** a memory-conflict notification was recorded (runner/src/notify.ts), for the bell */
+  | { type: "notice"; notice: AgentNotice };
 
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {

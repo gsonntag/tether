@@ -143,6 +143,10 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes with
     nothing running, or it failed. (A call the guard denies isn't a notification; the verdict
     shows on its tool card.)
+  - **Memory conflicts:** a new memory contradicted an older one and the newest was kept. One
+    merge pass sends at most one ("3 memory conflicts"), later ones within a minute wait and go
+    out together, and a pass that ends back where it started sends nothing. Tapping it opens the
+    Memory page at that conflict. On by default, also for devices subscribed before it existed.
 
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone

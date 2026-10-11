@@ -154,13 +154,18 @@ Tools: `memory_search(query, scope?)`, `memory_get(slug)`, `memory_write(text, t
 
 ## UI
 
-- **Memory & Skills page** (sidebar entry): global / per-repo memory list with search, view/edit
-  (edits are commits), history per entry, activity feed, conflict list; skills list with source
-  harnesses, drift notes, enable/disable per skill.
+- **Memory & Skills page** (sidebar entry), one page: a status line ("Shared memory is off" with a
+  plain explanation, "Turn on shared memory" and a "See exactly what will change" disclosure with
+  the import's dry run; a progress bar while turning on; "Shared memory is on · N memories · N
+  skills" + "Turn off"), open conflicts at the top (old vs new, Keep new / Keep old), one
+  searchable memory list grouped Global / per repo (a row opens view/edit/delete and a History
+  disclosure in a side panel, full screen on phones), and the skills with on/off switches, source
+  harness badges and drift as a tooltip. The activity log stays on the runner (`activity.jsonl`)
+  but isn't shown.
 - **Inline conflict card** in session transcript; **Needs-you** inbox item for conflicts.
+- **Push notification** (kind `memory`, runner/src/notify.ts) for the conflicts a sync pass leaves
+  open, batched per pass and throttled to one a minute; deep link `#/r/<runner>/memory?conflict=<id>`.
 - **Settings → Background model** (shared with the safety judge).
-- **First-run import wizard**: shows what will be imported and which skill dirs will be backed up and
-  symlinked, then one "Import" button. After that everything is automatic.
 
 ## Open risks
 

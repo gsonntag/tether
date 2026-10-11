@@ -50,10 +50,15 @@ function Shell() {
   const narrow = useNarrow();
   useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
-  // Deep links: #/s/<id>, #/memory, #/running, and #/r/<runnerId>/s/<sessionId> from notifications
+  // Deep links: #/s/<id>, #/memory[?conflict=<id>], #/running, and from notifications
+  // #/r/<runnerId>/s/<sessionId> and #/r/<runnerId>/memory?conflict=<id>
   useEffect(() => {
     const fromHash = () => {
-      if (location.hash === "#/memory") return openPage("memory");
+      const mem = location.hash.match(/^#\/(?:r\/([^/]+)\/)?memory(?:\?conflict=([^&]+))?$/);
+      if (mem) {
+        if (mem[1]) switchRunner(decodeURIComponent(mem[1]));
+        return openPage("memory", mem[2] ? decodeURIComponent(mem[2]) : undefined);
+      }
       if (location.hash === "#/running") return openPage("running");
       const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
       if (r) switchRunner(decodeURIComponent(r[1]!));

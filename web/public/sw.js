@@ -4,7 +4,7 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 
-const ICONS = { question: "❓", finished: "✅", blocked: "⛔" };
+const ICONS = { question: "❓", finished: "✅", blocked: "⛔", memory: "🧠" };
 
 /** Asks a tab whether it is showing this session (its url is the one it loaded with, not the current hash). */
 function isShowing(win, sessionId) {
@@ -19,7 +19,13 @@ function isShowing(win, sessionId) {
   });
 }
 
-const sessionUrl = (n) => (n.sessionId ? `/#/r/${encodeURIComponent(n.runnerId)}/s/${encodeURIComponent(n.sessionId)}` : "/");
+/** Where tapping it goes: the session, or for a memory conflict the Memory page scrolled to it. */
+const noticeUrl = (n) =>
+  n.kind === "memory"
+    ? `/#/r/${encodeURIComponent(n.runnerId)}/memory${n.conflictId ? `?conflict=${encodeURIComponent(n.conflictId)}` : ""}`
+    : n.sessionId
+      ? `/#/r/${encodeURIComponent(n.runnerId)}/s/${encodeURIComponent(n.sessionId)}`
+      : "/";
 
 self.addEventListener("push", (e) => {
   let n;
@@ -39,7 +45,7 @@ self.addEventListener("push", (e) => {
         tag: n.sessionId ? `${n.sessionId}:${n.kind}` : n.id,
         renotify: true,
         requireInteraction: n.kind === "question",
-        data: { url: sessionUrl(n) },
+        data: { url: noticeUrl(n) },
       });
     })(),
   );
