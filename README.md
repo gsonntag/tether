@@ -182,7 +182,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Only real files link: the runner checks each candidate (`checkPaths`), so "and/or", URLs or
     version numbers stay text. It reads only inside the project: paths are resolved against the
     project folder, symlinks must stay inside it, and nothing under `.git` is served
-    (`runner/src/files.ts`).
+    (`runner/src/files.ts`). Files the guard treats as credentials (`.env`, keys, tokens) stay
+    hidden until you click **Show contents**. On phones the browser's back closes the panel.
 
 ## Guard: autonomous but safe
 
