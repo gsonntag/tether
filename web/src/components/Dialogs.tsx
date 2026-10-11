@@ -25,6 +25,7 @@ import {
   HARNESSES,
   NOTIFY_KINDS,
   parseEntry,
+  SIDEBAR_DAYS,
   type BackgroundModelSetting,
   type GuardMode,
   type HarnessId,
@@ -34,7 +35,8 @@ import {
 import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setSidebarDays, toggleProject, useStore } from "../store";
+import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
 import { useModels } from "./ModelMenu";
@@ -368,6 +370,7 @@ const NOTIFY_DESCRIPTIONS: Record<NotifyKind, string> = {
   question: "An agent asks you something or needs an approval.",
   finished: "An agent finishes what it was doing.",
   blocked: "An agent is stuck: an action was blocked, every model hit its usage limit, it went quiet, or it failed.",
+  memory: "A new memory contradicts an older one. The newest is kept; tap to review it.",
 };
 
 /** This device's push notifications from the selected runner. */
@@ -523,6 +526,7 @@ function Settings({ close }: { close: () => void }) {
   const runnerId = useStore((s) => s.runnerId);
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
+  const sidebarDays = useStore((s) => s.sidebarDays);
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [saved, setSaved] = useState<ModelProfile[]>([]);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
@@ -559,6 +563,24 @@ function Settings({ close }: { close: () => void }) {
       actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" isDisabled={invalid} clickAction={done} />}
     >
       <NotificationSettings />
+      <SettingsCard title="Sidebar">
+        <SettingsRow
+          title="Show sessions from the last"
+          description="By latest message. Running sessions and ones that need you always show; search finds the rest."
+          isControlWide
+          control={
+            <Selector
+              label="Show sessions from the last"
+              isLabelHidden
+              size="sm"
+              width={controlWidth}
+              value={String(sidebarDays)}
+              options={SIDEBAR_DAYS.map((d) => ({ value: String(d), label: sidebarDaysLabel(d) }))}
+              onChange={(v) => v != null && setSidebarDays(Number(v))}
+            />
+          }
+        />
+      </SettingsCard>
       <SettingsCard title="New sessions">
         <SettingsRow
           title="Default approvals"

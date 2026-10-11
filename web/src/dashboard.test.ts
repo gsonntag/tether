@@ -35,10 +35,12 @@ describe("groupDashboard", () => {
       p("waiting-approval", { pendingUi: [perm] }, { status: "running", needsInput: true, updatedAt: 5 }),
       p("busy", { turnStartedAt: 100 }, { status: "running" }),
       p("busy-older", { turnStartedAt: 50 }, { status: "running" }),
+      p("sched-only", { armed: 1 }, { updatedAt: 9 }),
       p("bg-only", { activity: { subagent: 1 } }),
-      p("done-1", { finishedAt: 10, lastText: "ok" }),
-      p("done-2", { finishedAt: 20 }),
-      p("closed-done", { finishedAt: 30 }, { live: false }),
+      p("done-1", { finishedAt: 10, lastText: "ok" }, { updatedAt: 9 }),
+      // sorted like the session lists: by the last message, not by when the turn ended
+      p("done-2", { finishedAt: 20 }, { updatedAt: 35 }),
+      p("closed-done", { finishedAt: 30 }, { live: false, updatedAt: 29 }),
       p("idle-never-ran"),
     ]),
     "r2",
@@ -50,12 +52,12 @@ describe("groupDashboard", () => {
     expect(d.needs.map((n) => [n.runnerId, n.pulse.session.id, n.request.id])).toEqual([["r1", "waiting-approval", "q1"]]);
   });
 
-  test("running: prompts first, then running (newest turn first), then waiting, then background only", () => {
-    expect(d.running.map((r) => r.pulse.session.id)).toEqual(["waiting-approval", "busy", "busy-older", "other-runner", "bg-only"]);
+  test("running: prompts first, then running (newest turn first), then waiting, then background only, then a wakeup only", () => {
+    expect(d.running.map((r) => r.pulse.session.id)).toEqual(["waiting-approval", "busy", "busy-older", "other-runner", "bg-only", "sched-only"]);
   });
 
-  test("recently finished: newest first, includes closed sessions, never a running one", () => {
-    expect(d.finished.map((r) => r.pulse.session.id)).toEqual(["closed-done", "done-2", "done-1"]);
+  test("recently finished: most recent message first, includes closed sessions, never a running one", () => {
+    expect(d.finished.map((r) => r.pulse.session.id)).toEqual(["done-2", "closed-done", "done-1"]);
     expect(groupDashboard(map, { finished: 1 }).finished).toHaveLength(1);
   });
 
@@ -147,8 +149,9 @@ describe("answerRequest (Home approve/deny/answer)", () => {
 });
 
 test("runningCount (the sidebar badge) matches Home's Running section across runners", () => {
-  let m = mergePulses({}, "r1", [p("a", {}, { status: "running" }), p("b"), p("c", { armed: 1 })]);
+  let m = mergePulses({}, "r1", [p("a", {}, { status: "running" }), p("b"), p("c", { armed: 1 }), p("bg", { activity: { shell: 1 } })]);
   m = mergePulses(m, "r2", [p("d", {}, { status: "waiting" }), p("e", {}, { live: false, status: "idle" })]);
-  expect(runningCount(m)).toBe(3);
+  // Working in the background counts: the main turn is over, its subagents and shells aren't.
+  expect(runningCount(m)).toBe(4);
   expect(runningCount(m)).toBe(groupDashboard(m).running.length);
 });

@@ -24,8 +24,9 @@ import { rpc } from "../store";
 import { fmtClock } from "../util";
 
 /** Which session's changes are on screen, and the scope: the whole session, or a checkpoint id (one turn). */
-const useChanges = create<{ sessionId?: string; scope: string }>(() => ({ scope: "session" }));
-export const openChanges = (sessionId: string, scope = "session") => useChanges.setState({ sessionId, scope });
+/** `focus`: a file to scroll to once the diff is in. */
+const useChanges = create<{ sessionId?: string; scope: string; focus?: string }>(() => ({ scope: "session" }));
+export const openChanges = (sessionId: string, scope = "session", focus?: string) => useChanges.setState({ sessionId, scope, focus });
 const closeChanges = () => useChanges.setState({ sessionId: undefined });
 
 const SESSION = "session";
@@ -197,6 +198,17 @@ function ChangesBody({ sessionId, state, narrow }: { sessionId: string; state: L
   const bodyRef = useRef<HTMLElement>(null);
   const jump = (path: string) => bodyRef.current?.querySelector(`[data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
 
+  // Opened for one file (the file panel's "Open in Changes"): scroll to it once it's there.
+  const focus = useChanges((s) => s.focus);
+  useEffect(() => {
+    if (!focus || !diff) return;
+    const t = setTimeout(() => {
+      jump(focus);
+      useChanges.setState({ focus: undefined });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [focus, diff]);
+
   const files = diff?.files ?? [];
   const toolbar = (
     <HStack gap={2} vAlign="center" wrap="wrap">
@@ -358,8 +370,17 @@ export function parsePatch(patch: string): Row[] {
   return rows;
 }
 
-/** A unified diff, line by line with word-level emphasis. */
-export function Patch({ patch }: { patch: string }) {
+/** The referenced lines in the file panel: a bar at the start and a tint over the change colors. */
+const MARK: CSSProperties = {
+  boxShadow: "inset var(--spacing-0-5) 0 0 var(--color-accent)",
+  backgroundImage: "linear-gradient(color-mix(in srgb, var(--color-accent) 16%, transparent), color-mix(in srgb, var(--color-accent) 16%, transparent))",
+};
+
+/**
+ * A unified diff, line by line with word-level emphasis. Each row carries its new-file line number
+ * (`data-new-line`, `data-old-line` for removed lines); `highlight` marks a range of new-file lines.
+ */
+export function Patch({ patch, highlight }: { patch: string; highlight?: [number, number] }) {
   const rows = parsePatch(patch);
   const width = String(rows.reduce((m, r) => Math.max(m, r.old ?? 0, r.new ?? 0), 0)).length;
   const num = (v?: number) => (v === undefined ? "" : String(v)).padStart(width);
@@ -368,8 +389,18 @@ export function Patch({ patch }: { patch: string }) {
       <VStack style={diffRows}>
         {rows.map((r, i) => {
           const sign = r.kind === "add" ? "+" : r.kind === "del" ? "-" : " ";
+          const marked = highlight && r.new !== undefined && r.new >= highlight[0] && r.new <= highlight[1];
           return (
-            <Text key={i} type="code" as="div" display="block" style={LINE[r.kind]}>
+            <Text
+              key={i}
+              type="code"
+              as="div"
+              display="block"
+              style={marked ? { ...LINE[r.kind], ...MARK } : LINE[r.kind]}
+              data-new-line={r.kind === "del" ? undefined : r.new}
+              data-old-line={r.kind === "del" ? r.old : undefined}
+              data-marked={marked || undefined}
+            >
               {r.kind === "hunk" || r.kind === "meta" ? (
                 <Text type="inherit" style={gutter}>{` ${" ".repeat(width * 2 + 1)}  `}</Text>
               ) : (

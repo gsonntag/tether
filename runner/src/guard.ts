@@ -100,7 +100,8 @@ const SENSITIVE = [
   /credentials(\.json)?$/i,
 ];
 
-const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p));
+/** Credential and secrets files (keys, tokens, .env…): the guard keeps agents off them; the file panel asks before showing one. */
+export const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p));
 
 const ATTACHMENTS_READ_ONLY = "Blocked: files attached to messages are read-only. Copy one into the project to change it.";
 const ANOTHER_SESSION = "Blocked: that file was attached in another session.";

@@ -34,7 +34,7 @@ interface PiFile {
 }
 
 const headerCache = new Map<string, PiFile>();
-const titleCache = new Map<string, { mtime: number; title: string }>();
+const titleCache = new Map<string, { mtime: number; title: string; lastAt: number }>();
 
 async function scanFiles(): Promise<PiFile[]> {
   const out: PiFile[] = [];
@@ -80,30 +80,49 @@ async function scanFiles(): Promise<PiFile[]> {
   return out;
 }
 
-/** Session name (last session_info) or the first user message. */
-async function titleOf(f: PiFile): Promise<string> {
-  const c = titleCache.get(f.path);
-  if (c && c.mtime === f.mtime) return c.title;
+/** A message entry's time and role, read from the start of its line (pi writes these keys first). */
+const MESSAGE_HEAD = /^\{"type":"message","id":"[^"]*","parentId":(?:null|"[^"]*"),"timestamp":"([^"]+)","message":\{"role":"(\w+)"/;
+
+/**
+ * Session name (last session_info) or the first user message, and when its last user or agent
+ * message was written (the file's mtime also moves on model and thinking changes).
+ */
+export function piMeta(text: string): { title: string; lastAt?: number } {
   let title = "";
   let name = "";
-  try {
-    const text = await Bun.file(f.path).text();
-    for (const line of text.split("\n")) {
-      if (line.includes('"type":"session_info"')) {
-        try {
-          name = JSON.parse(line).name ?? name;
-        } catch {}
-      } else if (!title && line.includes('"role":"user"')) {
-        try {
-          const m = JSON.parse(line).message;
-          title = textOf(m.content);
-        } catch {}
-      }
+  let lastAt: number | undefined;
+  for (const line of text.split("\n")) {
+    if (line.includes('"type":"session_info"')) {
+      try {
+        name = JSON.parse(line).name ?? name;
+      } catch {}
+      continue;
     }
+    const head = line.startsWith('{"type":"message"') ? MESSAGE_HEAD.exec(line) : null;
+    if (head && ["user", "assistant", "toolResult", "bashExecution"].includes(head[2]!)) {
+      const t = Date.parse(head[1]!);
+      if (Number.isFinite(t)) lastAt = Math.max(lastAt ?? 0, t);
+    }
+    if (!title && line.includes('"role":"user"')) {
+      try {
+        const m = JSON.parse(line).message;
+        title = textOf(m.content);
+      } catch {}
+    }
+  }
+  return { title: displayText(name || title || "Untitled").replace(/\s+/g, " ").slice(0, 120), lastAt };
+}
+
+async function metaOf(f: PiFile): Promise<{ title: string; lastAt: number }> {
+  const c = titleCache.get(f.path);
+  if (c && c.mtime === f.mtime) return c;
+  let meta: { title: string; lastAt?: number } = { title: "Untitled" };
+  try {
+    meta = piMeta(await Bun.file(f.path).text());
   } catch {}
-  const t = displayText(name || title || "Untitled").replace(/\s+/g, " ").slice(0, 120);
-  titleCache.set(f.path, { mtime: f.mtime, title: t });
-  return t;
+  const out = { mtime: f.mtime, title: meta.title, lastAt: meta.lastAt ?? f.mtime };
+  titleCache.set(f.path, out);
+  return out;
 }
 
 function textOf(content: unknown): string {
@@ -114,7 +133,14 @@ function textOf(content: unknown): string {
 
 // ---------------- message conversion ----------------
 
-function convertAssistant(m: any, id: string): Msg {
+/** A pi timestamp (epoch ms, or an ISO string on some entries) in ms; 0 when missing. */
+function msTime(v: unknown): number {
+  const t = typeof v === "number" ? v : typeof v === "string" ? Date.parse(v) : NaN;
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
+/** `fallbackTs`: the time for a message pi didn't stamp (live: now; history: the message before). */
+function convertAssistant(m: any, id: string, fallbackTs = Date.now()): Msg {
   const parts: Part[] = (m.content ?? []).map((b: any): Part => {
     if (b.type === "text") return { type: "text", text: b.text ?? "" };
     if (b.type === "thinking") return { type: "thinking", text: b.redacted ? "(redacted)" : (b.thinking ?? "") };
@@ -122,7 +148,7 @@ function convertAssistant(m: any, id: string): Msg {
     return { type: "text", text: "" };
   });
   const error = m.stopReason === "error" ? (m.errorMessage ?? "error") : m.stopReason === "aborted" ? "aborted" : undefined;
-  return { id, role: "assistant", parts, ts: m.timestamp ?? Date.now(), model: m.provider ? `${m.provider}/${m.model}` : m.model, error };
+  return { id, role: "assistant", parts, ts: msTime(m.timestamp) || fallbackTs, model: m.provider ? `${m.provider}/${m.model}` : m.model, error };
 }
 
 /** The images a message lists as attachments, as pi's prompt `images` (ImageContent). */
@@ -137,7 +163,7 @@ function resultText(content: any): string {
 }
 
 /** Converts one pi AgentMessage into transcript changes. Returns a new message, or applies a tool result. */
-function convertMessage(m: any, messages: Msg[], id: string): Msg | undefined {
+function convertMessage(m: any, messages: Msg[], id: string, fallbackTs = Date.now()): Msg | undefined {
   switch (m.role) {
     case "user": {
       // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md.
@@ -147,10 +173,10 @@ function convertMessage(m: any, messages: Msg[], id: string): Msg | undefined {
           : (m.content ?? []).flatMap((b: any, i: number): Part[] =>
               b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(b.text ?? "", `${id}:${i}`),
             );
-      return { id, role: "user", parts, ts: m.timestamp ?? Date.now() };
+      return { id, role: "user", parts, ts: msTime(m.timestamp) || fallbackTs };
     }
     case "assistant":
-      return convertAssistant(m, id);
+      return convertAssistant(m, id, fallbackTs);
     case "toolResult": {
       const hit = findTool(messages, m.toolCallId);
       if (hit) {
@@ -163,26 +189,29 @@ function convertMessage(m: any, messages: Msg[], id: string): Msg | undefined {
       return {
         id,
         role: "user",
-        ts: m.timestamp ?? Date.now(),
+        ts: msTime(m.timestamp) || fallbackTs,
         parts: [{ type: "tool", id: id + "b", name: "bash", input: { command: m.command }, status: m.exitCode === 0 ? "done" : "error", output: m.output }],
       };
     case "compactionSummary":
-      return { id, role: "notice", level: "info", ts: m.timestamp ?? Date.now(), parts: [{ type: "text", text: `Context compacted.\n\n${m.summary}` }] };
+      return { id, role: "notice", level: "info", ts: msTime(m.timestamp) || fallbackTs, parts: [{ type: "text", text: `Context compacted.\n\n${m.summary}` }] };
     case "branchSummary":
-      return { id, role: "notice", level: "info", ts: m.timestamp ?? Date.now(), parts: [{ type: "text", text: `Branch summary:\n\n${m.summary}` }] };
+      return { id, role: "notice", level: "info", ts: msTime(m.timestamp) || fallbackTs, parts: [{ type: "text", text: `Branch summary:\n\n${m.summary}` }] };
     case "custom":
       if (!m.display) return undefined;
-      return { id, role: "notice", level: "info", ts: m.timestamp ?? Date.now(), parts: [{ type: "text", text: textOf(m.content) }] };
+      return { id, role: "notice", level: "info", ts: msTime(m.timestamp) || fallbackTs, parts: [{ type: "text", text: textOf(m.content) }] };
     default:
       return undefined; // system and unknown roles
   }
 }
 
-function convertAll(list: any[]): Msg[] {
+/** A stored conversation (history, or get_messages after a resume or compaction), at its own times. */
+export function convertAll(list: any[]): Msg[] {
   const out: Msg[] = [];
+  let last = 0;
   list.forEach((m, i) => {
-    const msg = convertMessage(m, out, `h${i}`);
+    const msg = convertMessage(m, out, `h${i}`, last);
     if (msg) out.push(msg);
+    last = msg?.ts || msTime(m?.timestamp) || last;
   });
   // Tool calls without a result in history were interrupted.
   for (const m of out) for (const p of m.parts) if (p.type === "tool" && p.status === "running") p.status = "error";
@@ -621,17 +650,20 @@ export const piAdapter: Adapter = {
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
     const files = (await scanFiles()).filter((f) => f.cwd === projectPath);
     return Promise.all(
-      files.map(async (f) => ({
-        id: `pi:${f.id}`,
-        harness: "pi" as const,
-        nativeId: f.id,
-        projectPath: f.cwd,
-        title: await titleOf(f),
-        createdAt: f.createdAt,
-        updatedAt: f.mtime,
-        live: false,
-        status: "idle" as const,
-      })),
+      files.map(async (f) => {
+        const meta = await metaOf(f);
+        return {
+          id: `pi:${f.id}`,
+          harness: "pi" as const,
+          nativeId: f.id,
+          projectPath: f.cwd,
+          title: meta.title,
+          createdAt: f.createdAt,
+          updatedAt: meta.lastAt,
+          live: false,
+          status: "idle" as const,
+        };
+      }),
     );
   },
 
@@ -643,7 +675,8 @@ export const piAdapter: Adapter = {
       .flatMap((line) => {
         try {
           const row = JSON.parse(line);
-          return row.message ? [row.message] : [];
+          // the entry's own time, for a message without one
+          return row.message ? [{ ...row.message, timestamp: row.message.timestamp || row.timestamp }] : [];
         } catch {
           return [];
         }
@@ -658,7 +691,8 @@ export const piAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const f = (await scanFiles()).find((x) => x.id === nativeId);
     if (!f) throw new Error(`pi session ${nativeId} not found`);
-    return new PiSession({ nativeId, projectPath: f.cwd, title: await titleOf(f), createdAt: f.createdAt, updatedAt: f.mtime, sessionFile: f.path }, sink);
+    const meta = await metaOf(f);
+    return new PiSession({ nativeId, projectPath: f.cwd, title: meta.title, createdAt: f.createdAt, updatedAt: meta.lastAt, sessionFile: f.path }, sink);
   },
 
   async listModels(live) {

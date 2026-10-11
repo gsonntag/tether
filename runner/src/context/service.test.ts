@@ -113,6 +113,36 @@ describe("context service", () => {
     s.stop();
   });
 
+  test("a pass's conflicts go to onConflicts once; one that ends back at the old text doesn't", async () => {
+    const batches: string[][] = [];
+    let bodies = ["Prefer npm over bun for scripts.", "Prefer pnpm over bun for scripts."];
+    events = [];
+    const s = new ContextService({
+      emit: (e) => events.push(e),
+      decider: async (e, cands) => (e.consume ? { action: "contradicts", id: cands.find((c) => c.name === "tooling")!.id, body: bodies.shift()!, newClaim: "changed" } : { action: "new" }),
+      onConflicts: (list) => batches.push(list.map((c) => c.memoryId)),
+    });
+    await s.runImport();
+    await s.idle();
+    batches.length = 0;
+    const tooling = (await s.listMemories("global")).find((m) => m.name === "tooling")!;
+    // Two contradictions of the same memory in one pass: one notification, about the latest.
+    put(join(s.store.dir, "inbox", "1.json"), JSON.stringify({ text: "Prefer npm over bun for scripts.", scope: "global" }));
+    put(join(s.store.dir, "inbox", "2.json"), JSON.stringify({ text: "Prefer pnpm over bun for scripts.", scope: "global" }));
+    await s.sync();
+    expect(s.conflicts().length).toBe(2);
+    expect(batches).toEqual([[tooling.id]]);
+    // A pass that goes there and back again (A → B → A) is not worth a notification.
+    const back = s.getMemory(tooling.id).body;
+    bodies = ["Prefer yarn over bun for scripts.", back];
+    put(join(s.store.dir, "inbox", "3.json"), JSON.stringify({ text: "Prefer yarn over bun for scripts.", scope: "global" }));
+    put(join(s.store.dir, "inbox", "4.json"), JSON.stringify({ text: "Prefer pnpm again for scripts, really.", scope: "global" }));
+    await s.sync();
+    expect(s.conflicts().length).toBe(4);
+    expect(batches.length).toBe(1);
+    s.stop();
+  });
+
   test("background model: one normalized 'harness:model'; the judge is a separate on/off", () => {
     config().guard = undefined;
     const s = service();

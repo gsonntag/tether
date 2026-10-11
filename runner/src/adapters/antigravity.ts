@@ -24,6 +24,7 @@ import { LiveSession, newId } from "../session";
 import { sessionContext, withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { agyPick, lastLineTime } from "./lastActivity";
 
 const AGY_BIN = process.env.AGY_BIN ?? "agy";
 const MODES = [...AGY_MODES];
@@ -189,6 +190,7 @@ class AgySession extends LiveSession {
     const record = records().find((r) => r.id === this.nativeId);
     if (!record) return;
     record.userMessages = [...(record.userMessages ?? []), { text, ts: Date.now() }].slice(-500);
+    record.updatedAt = this.updatedAt;
     saveConfigSoon();
   }
 
@@ -324,7 +326,8 @@ class AgySession extends LiveSession {
       cwd: this.projectPath,
       title: this.title,
       createdAt: this.createdAt,
-      updatedAt: Date.now(),
+      // its last message's time (see LiveSession.updatedAt), not when settings changed
+      updatedAt: this.updatedAt,
       model: this.model,
       effort: this.effort,
       mode: this.mode,
@@ -609,6 +612,12 @@ function readTranscript(convId: string): any[] | undefined {
   }
 }
 
+/** When a conversation's last step was written (its transcript), else what Tether recorded. */
+async function lastMessageAt(r: AgyRecord): Promise<number> {
+  const fromTranscript = r.convId ? await lastLineTime(transcriptPath(r.convId), agyPick) : undefined;
+  return fromTranscript ?? r.updatedAt;
+}
+
 export const antigravityAdapter: Adapter = {
   id: "antigravity",
 
@@ -628,19 +637,21 @@ export const antigravityAdapter: Adapter = {
   },
 
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
-    return records()
-      .filter((r) => r.cwd === projectPath)
-      .map((r) => ({
-        id: `antigravity:${r.id}`,
-        harness: "antigravity" as const,
-        nativeId: r.id,
-        projectPath,
-        title: r.title,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt,
-        live: false,
-        status: "idle" as const,
-      }));
+    return Promise.all(
+      records()
+        .filter((r) => r.cwd === projectPath)
+        .map(async (r) => ({
+          id: `antigravity:${r.id}`,
+          harness: "antigravity" as const,
+          nativeId: r.id,
+          projectPath,
+          title: r.title,
+          createdAt: r.createdAt,
+          updatedAt: await lastMessageAt(r),
+          live: false,
+          status: "idle" as const,
+        })),
+    );
   },
 
   async readHistory(nativeId: string, _projectPath: string): Promise<Msg[]> {
@@ -661,7 +672,7 @@ export const antigravityAdapter: Adapter = {
 
   async resume(nativeId, projectPath, sink) {
     const r = records().find((x) => x.id === nativeId);
-    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt, updatedAt: r?.updatedAt }, sink);
+    return new AgySession({ nativeId, projectPath: r?.cwd ?? projectPath, title: r?.title, createdAt: r?.createdAt, updatedAt: r && (await lastMessageAt(r)) }, sink);
   },
 
   async listModels(live) {

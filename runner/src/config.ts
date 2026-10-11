@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { formatEntry, HARNESSES, parseEntry, type ModelProfile } from "../../web/src/shared/protocol";
+import { DEFAULT_SIDEBAR_DAYS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
 // back to the account's real home through the password database.
@@ -40,6 +40,8 @@ export interface RunnerConfig {
    *  the fact capture before a cross-harness handoff (memory is still carried). */
   context?: { enabled?: boolean; importedAt?: number; handoffCapture?: boolean };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
+  /** web app preferences shared by every device (getUiPrefs / setUiPrefs) */
+  ui?: Partial<UiPrefs>;
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
 
@@ -141,6 +143,23 @@ export function migrateJudge(cfg: RunnerConfig): boolean {
   if (bg) cfg.backgroundModel = bg;
   else delete cfg.backgroundModel;
   return JSON.stringify([cfg.guard, cfg.backgroundModel]) !== before;
+}
+
+const isSidebarDays = (v: unknown): v is number => (SIDEBAR_DAYS as readonly unknown[]).includes(v);
+
+/** The web app's preferences, defaults filled in. */
+export function uiPrefs(): UiPrefs {
+  const days = config().ui?.sidebarDays;
+  return { sidebarDays: isSidebarDays(days) ? days : DEFAULT_SIDEBAR_DAYS };
+}
+
+/** Saves the given preferences. An unknown value is refused and nothing changes. */
+export function setUiPrefs(p: Partial<UiPrefs>): UiPrefs {
+  if (p.sidebarDays !== undefined && !isSidebarDays(p.sidebarDays)) throw new Error(`sidebarDays must be one of ${SIDEBAR_DAYS.join(", ")}`);
+  const cfg = config();
+  if (p.sidebarDays !== undefined) cfg.ui = { ...cfg.ui, sidebarDays: p.sidebarDays };
+  saveConfig();
+  return uiPrefs();
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;

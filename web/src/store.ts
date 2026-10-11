@@ -16,6 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
+import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -65,14 +66,16 @@ interface State {
   page?: "memory" | "running";
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
   pulses: PulseMap;
-  /** the Memory & Skills tab to switch to (set by links into the page) */
-  memoryTab?: "memory" | "activity" | "conflicts" | "skills";
+  /** where links into the Memory & Skills page scroll to: "conflicts", or one conflict's id */
+  memoryFocus?: string;
   /** master context (shared memory and skills) */
   contextStatus?: ContextStatus;
   /** memory conflicts nobody has resolved yet, newest first */
   conflicts: MemoryConflict[];
   /** activity that arrived while this tab was open, newest first */
   contextLive: ContextActivity[];
+  /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
+  sidebarDays: number;
 }
 
 export const useStore = create<State>(() => ({
@@ -94,6 +97,7 @@ export const useStore = create<State>(() => ({
   conflicts: [],
   contextLive: [],
   pulses: {},
+  sidebarDays: cachedSidebarDays(loadJSON<string>("tether.runner", "")),
 }));
 
 const set = useStore.setState;
@@ -201,6 +205,7 @@ function onMessage(m: ServerToBrowser) {
         refreshUsage();
         refreshNotices();
         refreshContext();
+        refreshUiPrefs();
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -304,7 +309,7 @@ function upsertSummary(sum: SessionSummary) {
     // A turn just ended: usage moved (the runner has marked its cache stale).
     if (i >= 0 && list[i]!.status !== "idle" && sum.status === "idle") setTimeout(() => ((usageAt = 0), refreshUsage()), 2000);
     const next = i >= 0 ? list.map((x) => (x.id === sum.id ? sum : x)) : [sum, ...list];
-    next.sort((a, b) => b.updatedAt - a.updatedAt);
+    next.sort(byRecent);
     const open = s.open[sum.id] ? { ...s.open, [sum.id]: { ...s.open[sum.id]!, session: sum } } : s.open;
     const knownProject = s.projects.some((p) => p.path === sum.projectPath);
     if (!knownProject) refreshProjects();
@@ -457,9 +462,11 @@ export function selectSession(sessionId: string | undefined) {
 // ---------------- master context (shared memory and skills) ----------------
 
 /** Shows the Memory & Skills page (or, with no page, the session view again). */
-export function openPage(page: State["page"], tab?: State["memoryTab"]) {
-  set({ page, memoryTab: tab, sidebarOpen: false, ...(page ? { selected: undefined } : {}) });
-  history.replaceState(null, "", page ? `#/${page}` : "#/");
+/** `focus` (Memory page): "conflicts" scrolls to the conflicts, a conflict id to that one. */
+export function openPage(page: State["page"], focus?: string) {
+  set({ page, memoryFocus: focus, sidebarOpen: false, ...(page ? { selected: undefined } : {}) });
+  const q = page === "memory" && focus && focus !== "conflicts" ? `?conflict=${encodeURIComponent(focus)}` : "";
+  history.replaceState(null, "", page ? `#/${page}${q}` : "#/");
 }
 
 export async function refreshContext() {
@@ -477,7 +484,7 @@ function onContextEvent(e: ContextEvent) {
   else if (e.type === "conflict") {
     const c = e.conflict;
     set((s) => ({ conflicts: [...(c.status === "open" ? [c] : []), ...s.conflicts.filter((x) => x.id !== c.id)] }));
-  } else set((s) => ({ contextLive: [e.activity, ...s.contextLive.filter((a) => a.id !== e.activity.id)].slice(0, 300) }));
+  } else if (e.type === "activity") set((s) => ({ contextLive: [e.activity, ...s.contextLive.filter((a) => a.id !== e.activity.id)].slice(0, 300) }));
 }
 
 /** Keep new / keep old / dismiss: the conflict leaves the inbox and the session at once. */
@@ -534,6 +541,43 @@ export function switchRunner(id: string) {
   refreshProjects();
   refreshNotices();
   refreshContext();
+  refreshUiPrefs();
+}
+
+// ---------------- preferences kept on the runner (shared by every device) ----------------
+
+// Each runner keeps its own; this device remembers the last value each one gave (by runner id), so
+// the list doesn't change size once the runner answers. (A function: the store's initial state uses it.)
+function cachedSidebarDays(runnerId: string | undefined): number {
+  const v = runnerId ? loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId] : undefined;
+  return typeof v === "number" ? v : DEFAULT_SIDEBAR_DAYS;
+}
+
+/** Applies a runner's answer, unless the sidebar has moved to another runner since it asked. */
+function applyUiPrefs(runnerId: string, p: { sidebarDays: number }) {
+  saveJSON("tether.sidebarDaysBy", { ...loadJSON<Record<string, number>>("tether.sidebarDaysBy", {}), [runnerId]: p.sidebarDays });
+  if (get().runnerId === runnerId) set({ sidebarDays: p.sidebarDays });
+}
+
+export function refreshUiPrefs() {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  set({ sidebarDays: cachedSidebarDays(runnerId) });
+  rpcTo(runnerId, "getUiPrefs", {})
+    .then((p) => applyUiPrefs(runnerId, p))
+    .catch((e) => {
+      // An older runner has no preferences: it gets the default. Other failures keep what we have.
+      if (/doesn't know/.test(e?.message ?? "")) applyUiPrefs(runnerId, { sidebarDays: DEFAULT_SIDEBAR_DAYS });
+    });
+}
+// Another device may have changed them.
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());
+
+export async function setSidebarDays(days: number) {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  const r = await act("setUiPrefs", { sidebarDays: days });
+  if (r) applyUiPrefs(runnerId, r);
 }
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner

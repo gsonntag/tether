@@ -127,6 +127,62 @@ export interface SessionDiff {
   truncated: boolean;
 }
 
+/** A file reference in the transcript, checked by the runner (checkPaths). */
+export interface PathCheck {
+  /** relative to the project directory, normalized */
+  path: string;
+  /** a regular file there now */
+  exists: boolean;
+  /** differs from the session's first checkpoint (deleted files too) */
+  changed: boolean;
+}
+
+/** How one turn changed one file (fileDiff). */
+export interface FileTurnStat {
+  checkpoint: string;
+  /** 0-based position among the session's kept checkpoints ("Turn index + 1") */
+  index: number;
+  label: string;
+  ts: number;
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}
+
+/** One file's changes, for the file panel. */
+export interface FileDiffResult {
+  /** relative to the project directory */
+  path: string;
+  exists: boolean;
+  base: SessionDiff["base"];
+  /** absent: the file didn't change in that scope */
+  file?: SessionFileDiff;
+  /** the turns that changed this file, oldest first */
+  turns: FileTurnStat[];
+  /** a credential or secrets file (.env, keys, tokens…, by the guard's rules) */
+  sensitive?: boolean;
+  /** its lines were left out (`file.patch` empty): a secrets file the user hasn't asked to see */
+  withheld?: boolean;
+}
+
+/** A project file as it is now (readFile). */
+export interface FileContents {
+  path: string;
+  size: number;
+  /** UTF-8 text; absent for binary files */
+  content?: string;
+  binary?: boolean;
+  /** cut short: past the byte cap, or past the line cap */
+  truncated?: "bytes" | "lines";
+  /** a credential or secrets file (.env, keys, tokens…, by the guard's rules) */
+  sensitive?: boolean;
+  /** content left out: a secrets file the user hasn't asked to see (ask again with `reveal`) */
+  withheld?: boolean;
+}
+
+/** Caps for the file panel's File tab. */
+export const FILE_VIEW_LIMITS = { bytes: 1024 * 1024, lines: 20_000 };
+
 export type Role = "user" | "assistant" | "notice";
 
 export interface Msg {
@@ -386,12 +442,13 @@ export const isActive = (a: ActivityItem) => a.status === "running" || a.status 
 
 // ---------- notifications ----------
 
-export type NotifyKind = "question" | "finished" | "blocked";
+export type NotifyKind = "question" | "finished" | "blocked" | "memory";
 
 export const NOTIFY_KINDS: { id: NotifyKind; label: string; hint: string }[] = [
   { id: "question", label: "Questions", hint: "The agent asks you something or waits for an approval" },
   { id: "finished", label: "Finished", hint: "A turn ends" },
   { id: "blocked", label: "Blocked", hint: "The guard blocks a call, every model is at its usage limit, the agent goes quiet or fails" },
+  { id: "memory", label: "Memory conflicts", hint: "A new memory contradicts an older one (the newest was kept)" },
 ];
 
 export interface AgentNotice {
@@ -404,6 +461,8 @@ export interface AgentNotice {
   /** project folder name */
   project: string;
   ts: number;
+  /** kind "memory": the (newest) conflict it is about, for the Memory page link */
+  conflictId?: string;
 }
 
 export interface PendingMessage {
@@ -433,7 +492,31 @@ export interface SessionSummary {
   archived?: boolean;
   /** activity items running or armed right now (subagents, shells, …) */
   activeCount?: number;
+  /**
+   * Of those, the ones doing work now (not an armed wakeup or cron job), by kind: with an idle
+   * status, the session is still working in the background.
+   */
+  runningKinds?: Partial<Record<ActivityKind, number>>;
+  /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
+  workingCount?: number;
 }
+
+/**
+ * How session lists sort: by the time of the most recent user or agent message (`updatedAt`),
+ * newest first, whether or not the session is live. Ties go by id, so the order is stable.
+ */
+export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<SessionSummary, "id" | "updatedAt">): number {
+  return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** Web app preferences kept in the runner's config (getUiPrefs / setUiPrefs). */
+export interface UiPrefs {
+  /** sidebar project lists show sessions whose latest message is this recent, in days; 0 = all */
+  sidebarDays: number;
+}
+/** The sidebar windows on offer, in days (0 = all). */
+export const SIDEBAR_DAYS = [1, 3, 7, 30, 0] as const;
+export const DEFAULT_SIDEBAR_DAYS = 3;
 
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {
@@ -709,6 +792,15 @@ export interface Ops {
   setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
+  /**
+   * File references from the transcript (relative to the project or absolute): those that are a
+   * file in the project or changed in this session, keyed by the path as asked. Others are left out.
+   */
+  checkPaths: { args: { sessionId: string; paths: string[] }; result: Record<string, PathCheck> };
+  /** one file's changes over the whole session, or with `checkpoint` in the turn that started there */
+  fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
+  /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
+  readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
@@ -779,6 +871,9 @@ export interface Ops {
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };
+  /** web app preferences kept on the runner, so every device shares them */
+  getUiPrefs: { args: {}; result: UiPrefs };
+  setUiPrefs: { args: Partial<UiPrefs>; result: UiPrefs };
 }
 
 export type OpName = keyof Ops;

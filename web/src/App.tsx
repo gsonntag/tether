@@ -50,15 +50,28 @@ function Shell() {
   const narrow = useNarrow();
   useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
-  // Deep links: #/s/<id>, #/memory, #/running, and #/r/<runnerId>/s/<sessionId> from notifications
+  // Deep links: #/s/<id>, #/memory[?conflict=<id>], #/running, and from notifications
+  // #/r/<runnerId>/s/<sessionId> and #/r/<runnerId>/memory?conflict=<id>
   useEffect(() => {
+    // A malformed escape in a pasted link must not throw out of the hashchange handler.
+    const decode = (s: string) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
     const fromHash = () => {
-      if (location.hash === "#/memory") return openPage("memory");
+      const mem = location.hash.match(/^#\/(?:r\/([^/]+)\/)?memory(?:\?conflict=([^&]+))?$/);
+      if (mem) {
+        if (mem[1]) switchRunner(decode(mem[1]));
+        return openPage("memory", mem[2] ? decode(mem[2]) : undefined);
+      }
       if (location.hash === "#/running") return openPage("running");
       const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
-      if (r) switchRunner(decodeURIComponent(r[1]!));
+      if (r) switchRunner(decode(r[1]!));
       const m = r ?? location.hash.match(/^#\/s\/(.+)$/);
-      if (m) openLink(decodeURIComponent(m[r ? 2 : 1]!));
+      if (m) openLink(decode(m[r ? 2 : 1]!));
     };
     // Right away, not after the runner connects: a saved copy can show while it does.
     fromHash();

@@ -32,7 +32,7 @@ import { Mutex } from "./git";
 import { asType, slugify, type Memory } from "./format";
 import { assembleHandoffMemory, captureLearnings, nativeIds, type CapturedFact, type Extractor, type HandoffMemory } from "./handoff";
 import { setInjectionEnabled } from "./inject";
-import { Merger, modelDecider, type Decider } from "./merge";
+import { conflictsToNotify, Merger, modelDecider, type Decider } from "./merge";
 import { contextDir, tilde } from "./paths";
 import { repoKey } from "./repokey";
 import { applySkillPlan, disabledSet, listSkills, planSkills, readMeta, unlinkAll, unlinkSkill, writeMeta } from "./skills";
@@ -49,6 +49,8 @@ export interface ContextOptions {
   projects?: () => string[];
   /** the fact extractor run before a handoff (default: the background model) */
   extractor?: Extractor;
+  /** a sync pass ended with new open conflicts (merge.ts conflictsToNotify): push notifications */
+  onConflicts?: (conflicts: MemoryConflict[]) => void;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -202,6 +204,7 @@ export class ContextService {
     }
     this.busy = true;
     this.emit({ type: "status", status: this.status() });
+    const raised: MemoryConflict[] = [];
     try {
       let force = !!opts.forceExport;
       do {
@@ -211,6 +214,7 @@ export class ContextService {
         for (const w of warnings) console.error(`context: ${w}`);
         for (const e of entries) if (!e.sessionId && e.sessionKey) e.sessionId = this.opts.sessionForKey?.(e.sessionKey);
         const out = await this.merger.mergeAll(entries, (done, total) => this.setProgress({ phase: "merge", done, total }));
+        for (const o of out) if (o.conflict) raised.push(o.conflict);
         const changed = out.some((o) => o.commit);
         if (!this.enabled) break; // turned off mid-pass: export nothing
         if (force || changed || entries.some((e) => e.consume)) await this.exportNow();
@@ -221,6 +225,15 @@ export class ContextService {
       this.busy = false;
       if (!this.importing) this.progress = undefined;
       this.emit({ type: "status", status: this.status() });
+      // Even when the pass failed afterwards: these conflicts are recorded and open.
+      if (raised.length && this.opts.onConflicts) {
+        try {
+          const list = conflictsToNotify(raised, this.store);
+          if (list.length) this.opts.onConflicts(list);
+        } catch (e: any) {
+          console.error(`context: conflict notification: ${e?.message ?? e}`);
+        }
+      }
     }
   }
 

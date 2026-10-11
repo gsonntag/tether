@@ -92,12 +92,17 @@ export async function receiveChunk(a: ChunkArgs): Promise<{ attachment?: Attachm
   const offset = Number(a.offset);
   if (!Number.isSafeInteger(size) || !Number.isSafeInteger(offset)) throw new Error("Bad upload size.");
   const key = `${sessionKey(a.sessionId)}/${a.uploadId}`;
+  const buf = Buffer.from(String(a.data ?? ""), "base64");
+  const badChunk = () => offset < 0 || offset >= size || offset % CHUNK_BYTES !== 0 || buf.length !== Math.min(CHUNK_BYTES, size - offset);
   let u = uploads.get(key);
   if (!u) {
     let name = safeName(a.name);
     const mimeType = cleanMime(a.mimeType, name);
     const problem = sizeProblem(size, mimeType);
     if (problem) throw new Error(problem);
+    // Before the file is opened: a bad first chunk leaves nothing behind (no open handle, and no
+    // partial file turning up later, after its folder may have been cleared).
+    if (badChunk()) throw new Error("Bad upload chunk.");
     if (IMAGE_EXT[mimeType] && mimeFromName(name) !== mimeType) name = `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.${IMAGE_EXT[mimeType]}`;
     if (uploads.size >= MAX_OPEN_UPLOADS) sweepUploads(0);
     if (uploads.size >= MAX_OPEN_UPLOADS) throw new Error("Too many uploads at once; try again in a moment.");
@@ -122,9 +127,7 @@ export async function receiveChunk(a: ChunkArgs): Promise<{ attachment?: Attachm
   } else if (u.size !== size) throw new Error("The upload changed size.");
   u.touched = Date.now();
   if (u.done) return { attachment: await u.done };
-  const buf = Buffer.from(String(a.data ?? ""), "base64");
-  const expected = Math.min(CHUNK_BYTES, size - offset);
-  if (offset < 0 || offset >= size || offset % CHUNK_BYTES !== 0 || buf.length !== expected) throw new Error("Bad upload chunk.");
+  if (badChunk()) throw new Error("Bad upload chunk.");
   if (u.got.has(offset)) return {}; // a retry of a chunk already written (or being written)
   u.got.add(offset);
   let fh: FileHandle;

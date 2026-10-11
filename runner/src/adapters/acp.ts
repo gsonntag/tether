@@ -352,7 +352,9 @@ class AcpSession extends LiveSession {
     const last = cur && this.t.messages.find((m) => m.id === cur.id);
     if (last && cur!.role === role && (!messageId || !cur!.messageId || cur!.messageId === messageId)) return last;
     this.finishStreaming();
-    const msg: Msg = { id: newId(role[0]!), role, parts: [], ts: Date.now(), streaming: role === "assistant" && !this.loadingHistory, model: role === "assistant" ? this.t.state.model : undefined };
+    // ACP replays a loaded session without times: 0 is "unknown" (no time shown, lists keep the agent's).
+    const ts = this.loadingHistory ? 0 : Date.now();
+    const msg: Msg = { id: newId(role[0]!), role, parts: [], ts, streaming: role === "assistant" && !this.loadingHistory, model: role === "assistant" ? this.t.state.model : undefined };
     this.curMsg = { id: msg.id, role, messageId };
     this.emit({ type: "msg", msg });
     return msg;

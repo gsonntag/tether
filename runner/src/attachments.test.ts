@@ -116,7 +116,14 @@ describe("chunk reassembly", () => {
     const id = uid();
     await expect(receiveChunk({ ...base, uploadId: id, size: 10, offset: 0, data: "aGVsbG8=" })).rejects.toThrow("Bad upload chunk"); // 5 bytes, not 10
     await expect(receiveChunk({ ...base, uploadId: id, size: 10, offset: 3, data: "aGVsbG8=" })).rejects.toThrow("Bad upload chunk"); // unaligned
-    await expect(receiveChunk({ ...base, uploadId: id, size: 11, offset: 0, data: "aGVsbG8=" })).rejects.toThrow("changed size");
+    // A bad first chunk opens nothing: no partial file (one opened late would land in whatever
+    // folder is there by then — the flake this once was).
+    expect(existsSync(join(attachmentsDir(), sessionKey(SID)))).toBe(false);
+    const buf = bytes(CHUNK_BYTES + 5);
+    await put(buf, { uploadId: id, order: [0] });
+    await expect(receiveChunk({ ...base, uploadId: id, size: CHUNK_BYTES + 6, offset: 0, data: "aGVsbG8=" })).rejects.toThrow("changed size");
+    await expect(receiveChunk({ ...base, uploadId: id, size: buf.length, offset: CHUNK_BYTES, data: "aGk=" })).rejects.toThrow("Bad upload chunk"); // 2 bytes, not 5
+    await discard(SID, { uploadId: id });
   });
 
   test("discard drops an unfinished upload and an unsent file", async () => {
