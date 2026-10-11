@@ -3,7 +3,7 @@
 // built in a temporary index and stored as a commit under refs/tether/checkpoints/, which
 // `git log --all` and GC respect.
 
-import { mkdtempSync, rmSync, copyFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, copyFileSync, existsSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiffStat, SessionDiff, SessionFileDiff } from "../../web/src/shared/protocol";
@@ -38,7 +38,14 @@ async function withTempIndex<T>(top: string, fn: (env: Record<string, string>) =
   const index = join(dir, "index");
   try {
     const real = await git(top, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    if (existsSync(real)) copyFileSync(real, index);
+    if (existsSync(real)) {
+      copyFileSync(real, index);
+      // Keep the index's own time: git re-reads files changed at or after it ("racily clean").
+      // A copy stamped "now" would let a same-size edit made in the same clock tick as the last
+      // `git add` pass for unchanged, and drop it from the snapshot.
+      const st = statSync(real);
+      utimesSync(index, st.atime, st.mtime);
+    }
     return await fn({ GIT_INDEX_FILE: index });
   } finally {
     rmSync(dir, { recursive: true, force: true });
