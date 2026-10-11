@@ -358,6 +358,7 @@ class PiSession extends LiveSession {
       model: st.model ? `${st.model.provider}/${st.model.id}` : undefined,
       thinking: st.thinkingLevel,
     });
+    this.mcpAuthNotice(launch.mcpAuth);
     this.refreshContext();
   }
 

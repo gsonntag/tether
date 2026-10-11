@@ -27,7 +27,7 @@ export interface RegistryServer {
   /** other names it has in harness configs (the guard knows its tools by those too) */
   aliases?: string[];
   addedAt: number;
-  // OAuth (next unit): tokens live in tokens.json keyed by `id`; launchTransport() attaches them.
+  // OAuth: tokens live in tokens.json keyed by `id` (oauth.ts); only a session launch attaches them.
 }
 
 export interface RegistryData {
@@ -85,14 +85,6 @@ export const findByIdentity = (data: RegistryData, t: McpTransport) => {
   const id = identity(t);
   return data.servers.find((s) => identity(s.transport) === id);
 };
-
-/**
- * The transport a launch or export uses. The single place credentials get attached: OAuth tokens
- * from tokens.json become an Authorization header here (next unit), never stored in a harness config.
- */
-export function launchTransport(s: RegistryServer): McpTransport {
-  return s.transport;
-}
 
 /** For tests: forget the cached file. */
 export function resetCache() {

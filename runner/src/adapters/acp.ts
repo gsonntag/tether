@@ -335,6 +335,7 @@ class AcpSession extends LiveSession {
       this.setState({ modes: this.modeIds, permissionMode: modes.current });
     }
     this.setState({ status: "idle" });
+    this.mcpAuthNotice(launch.mcpAuth);
     if (this.opts.model) await this.applyModel(this.opts.model).catch((e) => this.notice(`Could not set model: ${e.message}`, "warning"));
     if (this.opts.permissionMode && this.modeIds.includes(this.opts.permissionMode)) await this.setPermissionMode(this.opts.permissionMode);
   }

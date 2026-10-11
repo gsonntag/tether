@@ -25,7 +25,8 @@ export function writeAtomic(path: string, text: string, mode?: number) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tether-tmp`;
   try {
-    writeFileSync(tmp, text);
+    // Created with its mode (a secret is never readable by others, even briefly); chmod covers a leftover tmp.
+    writeFileSync(tmp, text, mode !== undefined ? { mode } : undefined);
     if (mode !== undefined) chmodSync(tmp, mode);
     renameSync(tmp, path);
   } catch (e) {

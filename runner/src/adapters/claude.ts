@@ -28,6 +28,8 @@ import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow 
 import { LiveSession, newId } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionLaunch } from "../connectors/launch";
+import { argvSafeMcp } from "../connectors/claude";
+import { onTokens } from "../mcp/oauth";
 import { nativeAttachments } from "../attachments";
 import { hardLimit, LimitStatus } from "../limitStatus";
 import { claudeFault } from "../faults";
@@ -275,6 +277,12 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private items: SDKUserMessage[] = [];
   private wake?: () => void;
   private ended = false;
+  private gate?: Promise<unknown>;
+
+  /** Nothing goes to the process until `p` settles (the MCP headers arriving over the control channel). */
+  hold(p: Promise<unknown>) {
+    this.gate = p;
+  }
 
   push(m: SDKUserMessage) {
     this.items.push(m);
@@ -285,6 +293,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     this.wake?.();
   }
   async *[Symbol.asyncIterator]() {
+    await this.gate?.catch(() => {});
     for (;;) {
       while (this.items.length) yield this.items.shift()!;
       if (this.ended) return;
@@ -309,6 +318,10 @@ class ClaudeSession extends LiveSession {
   /** subagents, shells, monitors, cron jobs, wakeups (claudeActivity.ts) */
   private act = new ClaudeActivity();
   private pollTimer?: ReturnType<typeof setInterval>;
+  /** the SDK MCP servers this process has (JSON), and the token listener that swaps them */
+  private mcpApplied?: string;
+  private offTokens?: () => void;
+  private mcpSwap?: ReturnType<typeof setTimeout>;
 
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
@@ -338,6 +351,8 @@ class ClaudeSession extends LiveSession {
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
+    // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
+    const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
     this.q = query({
       prompt: this.input,
       options: {
@@ -351,6 +366,7 @@ class ClaudeSession extends LiveSession {
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code" },
         ...launch.options,
+        ...(mcp.full ? { mcpServers: mcp.launch } : {}),
         canUseTool,
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),
@@ -365,8 +381,45 @@ class ClaudeSession extends LiveSession {
       // A new process has no tasks yet; they arrive as it starts them.
       activity: [],
     });
+    this.mcpAuthNotice(launch.mcpAuth, true);
+    this.mcpApplied = JSON.stringify(mcp.launch);
+    if (mcp.full) this.input.hold(this.applyMcp(mcp.full));
+    this.offTokens?.();
+    this.offTokens = onTokens(() => {
+      clearTimeout(this.mcpSwap);
+      this.mcpSwap = setTimeout(() => void this.swapMcp(), 500);
+    });
     this.pump();
     this.refreshContext();
+  }
+
+  /**
+   * An MCP sign-in or a refreshed token: the registry servers' Authorization headers change, and
+   * the SDK takes the new set without a restart (setMcpServers). Unchanged servers stay connected.
+   */
+  private async swapMcp() {
+    if (this.closed || !this.q) return;
+    try {
+      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
+      await this.applyMcp(launch.options.mcpServers ?? {});
+    } catch (e: any) {
+      console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);
+    }
+  }
+
+  /** setMcpServers when the set changed; at launch the first message waits for it (at most 15 s). */
+  private async applyMcp(servers: Record<string, any>) {
+    const next = JSON.stringify(servers);
+    if (next === this.mcpApplied || this.closed || !this.q) return;
+    try {
+      const q = this.q;
+      const set = q.initializationResult().then(() => q.setMcpServers(servers));
+      const r = await Promise.race([set, Bun.sleep(15_000).then(() => Promise.reject(new Error("timed out")))]);
+      this.mcpApplied = next;
+      for (const [name, err] of Object.entries(r.errors ?? {})) console.error(`claude ${this.id}: MCP server ${name}: ${err}`);
+    } catch (e: any) {
+      console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);
+    }
   }
 
   /** Claude Code's own /context estimate: the window, and (resumed) how full it was. */
@@ -798,6 +851,8 @@ class ClaudeSession extends LiveSession {
 
   protected shutdown() {
     clearTimeout(this.limitTimer);
+    clearTimeout(this.mcpSwap);
+    this.offTokens?.();
     clearInterval(this.pollTimer);
     this.input.end();
     try {

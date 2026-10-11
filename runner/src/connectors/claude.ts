@@ -89,6 +89,25 @@ function claudeMcp({ context, servers }: SessionCtx) {
   return Object.keys(mcpServers).length ? { options: { mcpServers } } : undefined;
 }
 
+/**
+ * The SDK passes `mcpServers` to the claude process as `--mcp-config <json>` on its command line,
+ * which any local user can read (ps, /proc/<pid>/cmdline). So a launch gets the http/SSE servers
+ * without their headers (an OAuth token, a pasted key), and `full` (when any were held back) is the set to hand over
+ * with setMcpServers, which goes over the SDK's stdin control channel, before the first message.
+ */
+export function argvSafeMcp(servers: Record<string, any>): { launch: Record<string, any>; full?: Record<string, any> } {
+  let held = false;
+  const launch: Record<string, any> = {};
+  for (const [name, e] of Object.entries(servers)) {
+    if ((e?.type === "http" || e?.type === "sse") && e.headers && Object.keys(e.headers).length) {
+      const { headers: _, ...bare } = e;
+      launch[name] = bare;
+      held = true;
+    } else launch[name] = e;
+  }
+  return held ? { launch, full: servers } : { launch };
+}
+
 export const claudeConnector: Connector = {
   id: "claude-code",
   memory: {

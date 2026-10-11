@@ -4,21 +4,25 @@
 
 import type { HarnessId } from "../../../web/src/shared/protocol";
 import { sessionContext } from "../context/inject";
-import { sessionServers } from "../mcp/registry";
+import { sessionMcp } from "../mcp/registry";
 import { connectorFor } from "./index";
 import { mergeLaunch } from "./shared";
 import { SLOTS, type SessionCtx, type SessionLaunch } from "./types";
 
-/** Every slot's contribution for this session, in slot order. Empty while the master context is off and the registry has nothing for it. */
+/**
+ * Every slot's contribution for this session, in slot order. Empty while the master context is off
+ * and the registry has nothing for it. `mcpAuth`: registry servers that still need an OAuth sign-in.
+ */
 export async function sessionLaunch(h: HarnessId, ctx: Omit<SessionCtx, "context" | "servers">): Promise<SessionLaunch> {
-  const [context, servers] = await Promise.all([
+  const [context, mcp] = await Promise.all([
     sessionContext(ctx.projectPath, ctx.session),
-    sessionServers(h, ctx.projectPath).catch((e: any) => {
+    sessionMcp(h, ctx.projectPath).catch((e: any) => {
       console.error(`mcp: no registry servers for ${ctx.projectPath}: ${e?.message ?? e}`);
-      return [];
+      return { servers: [], auth: [] };
     }),
   ]);
-  return launchWith(h, { ...ctx, context, servers });
+  const launch = launchWith(h, { ...ctx, context, servers: mcp.servers });
+  return mcp.auth.length ? { ...launch, mcpAuth: mcp.auth } : launch;
 }
 
 /** The same with the context already resolved (tests, and callers that have it). */

@@ -292,6 +292,25 @@ export abstract class LiveSession {
   private turnTrouble = false;
   private userStopped = false;
 
+  private mcpAuthShown = new Set<string>();
+
+  /**
+   * Registry MCP servers this launch has no OAuth token for: a notice with an Authorize button,
+   * once per server per session. `live`: a sign-in reaches this session without a restart (Claude).
+   */
+  mcpAuthNotice(need: { id: string; name: string; status: "needs" | "expired" }[] | undefined, live = false) {
+    for (const n of need ?? []) {
+      if (this.mcpAuthShown.has(n.id)) continue;
+      this.mcpAuthShown.add(n.id);
+      const what = n.status === "expired" ? `The sign-in to the ${n.name} MCP server has expired.` : `The ${n.name} MCP server needs authorization.`;
+      const then = live ? "Its tools work once you sign in." : "Sign in, then start a new session to use its tools.";
+      this.emit({
+        type: "msg",
+        msg: { id: newId("n"), role: "notice", level: "warning", parts: [{ type: "text", text: `${what} ${then}` }], ts: Date.now(), action: { kind: "mcpAuth", label: `Authorize ${n.name}`, server: n.id } },
+      });
+    }
+  }
+
   protected alert(kind: "question" | "finished" | "blocked", what: string, detail: string) {
     const project = this.projectPath.split("/").pop() ?? "";
     notify({
@@ -1062,7 +1081,7 @@ export abstract class LiveSession {
   async continueOn(msgId: string) {
     const msg = this.t.messages.find((m) => m.id === msgId);
     const action = msg?.action;
-    if (!msg || !action) throw new Error("That error has been dealt with already.");
+    if (!msg || action?.kind !== "continueOn") throw new Error("That error has been dealt with already.");
     if (this.t.state.status === "running") throw new Error("The session is already working again.");
     this.cancelWait();
     if (this.offerMsgId === msgId) this.withdrawOffer();

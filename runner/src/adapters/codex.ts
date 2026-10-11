@@ -492,6 +492,7 @@ export class CodexSession extends LiveSession {
     modelCacheAt = Date.now();
     this.collab ??= r.collaborationMode?.mode === "plan" ? "plan" : undefined;
     this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels(), activity: [], modes: CODEX_MODES, permissionMode: this.collab ?? "default" });
+    this.mcpAuthNotice(launch.mcpAuth);
     // Codex reports token usage only as turns run; a resumed thread's last count is in its rollout.
     if (this.opts.resume && r.thread.path && !this.t.state.context)
       await Bun.file(r.thread.path)

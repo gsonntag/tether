@@ -5,15 +5,16 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { HARNESSES, type HarnessId, type McpDelivery, type McpFindResult, type McpServerView } from "../../../web/src/shared/protocol";
+import { HARNESSES, type HarnessId, type McpAuthStart, type McpAuthStatus, type McpDelivery, type McpFindResult, type McpServerView } from "../../../web/src/shared/protocol";
 import { connectorFor, connectors } from "../connectors";
 import type { SessionServer } from "../connectors/types";
 import { tilde } from "../context/paths";
 import { isHome, repoKey } from "../context/repokey";
 import { exportedTo, exportRegistry, type RegistryExport } from "./export";
 import { cleanName, identity, parsePaste, summary } from "./formats";
+import { authorizable, authorized, authStatus, checkUnknown, finishAuth, forget, readTokens, recordFor, signOut, startAuth } from "./oauth";
 import { claudeProjects, merge, repoServers, type Found, type Scan } from "./sources";
-import { findByIdentity, launchTransport, load, mutate, newServerId, uniqueName, type RegistryData, type RegistryServer } from "./store";
+import { findByIdentity, load, mutate, newServerId, uniqueName, type RegistryData, type RegistryServer } from "./store";
 
 // ---------------- import ----------------
 
@@ -97,6 +98,7 @@ export async function importServers(projects: string[] = []): Promise<McpFindRes
     return { added, exp: exportRegistry(data.servers) };
   });
   for (const w of [...scan.warnings, ...exp.warnings]) console.error(`mcp: ${w}`);
+  await checkUnknown(load().servers, 3000);
   return { servers: views(), added, warnings: [...scan.warnings, ...exp.warnings], export: exp };
 }
 
@@ -128,11 +130,22 @@ export async function addServers(text: string, opts: { name?: string; scope?: st
     }
     report(exportRegistry(data.servers));
   });
+  // Does a new URL server want a sign-in? (The rest finish in the background.)
+  await checkUnknown(load().servers, 3000);
   return views();
 }
 
-/** On/off, trusted, or delete. Deleting removes only Tether's own copies from harness configs. */
-export async function setServer(id: string, change: { enabled?: boolean; trusted?: boolean; remove?: boolean }): Promise<McpServerView[]> {
+/**
+ * On/off, trusted, delete, or sign out (drops its OAuth tokens). Deleting removes only Tether's
+ * own copies from harness configs, and its tokens.
+ */
+export async function setServer(id: string, change: { enabled?: boolean; trusted?: boolean; remove?: boolean; signOut?: boolean }): Promise<McpServerView[]> {
+  if (change.signOut) {
+    const s = load().servers.find((x) => x.id === id);
+    if (!s) throw new Error("No such MCP server");
+    await signOut(s);
+  }
+  if (change.remove) await forget(id);
   await mutate((data) => {
     const s = data.servers.find((x) => x.id === id);
     if (!s) throw new Error("No such MCP server");
@@ -148,6 +161,26 @@ export async function setServer(id: string, change: { enabled?: boolean; trusted
   return views();
 }
 
+// ---------------- OAuth sign-in (oauth.ts) ----------------
+
+/** Starts signing in to server `id` (the web app opens the returned page). */
+export async function startServerAuth(id: string, opts: { runnerId: string; redirectUri: string; clientId?: string; clientSecret?: string }): Promise<McpAuthStart> {
+  const s = load().servers.find((x) => x.id === id);
+  if (!s) throw new Error("No such MCP server");
+  return startAuth(s, opts);
+}
+
+/** Finishes a sign-in relayed by the app's callback. */
+export function finishServerAuth(p: Parameters<typeof finishAuth>[0]) {
+  return finishAuth(p, load().servers);
+}
+
+/** The list for the web app, after asking new URL servers whether they want a sign-in (waits briefly). */
+export async function listServers(): Promise<McpServerView[]> {
+  await checkUnknown(load().servers, 2500);
+  return views();
+}
+
 function report(r: RegistryExport) {
   for (const w of r.warnings) console.error(`mcp: ${w}`);
   if (r.written.length) console.log(`mcp: updated ${r.written.map(tilde).join(", ")}`);
@@ -155,26 +188,57 @@ function report(r: RegistryExport) {
 
 // ---------------- sessions ----------------
 
+/** A server a session would get that still needs an OAuth sign-in (the session says so inline). */
+export interface McpAuthNeed {
+  id: string;
+  name: string;
+  status: Exclude<McpAuthStatus, "connected">;
+}
+
 /**
  * The registry servers a session of harness `h` in `projectPath` gets injected: on, global or this
  * repo's, and not already in the harness's own config (Decision 2: same command line or URL, or a
  * different server under the same name; the native entry wins and nothing is added).
+ *
+ * OAuth (Decision 8): a signed-in server gets `Authorization: Bearer <token>` here, refreshed first
+ * when it runs out. Tether's own export of it (written without tokens) doesn't count as native for
+ * that: the session's copy, with the token, goes in under the same name. `auth` lists the servers
+ * this session would get (or Tether's export gives it) that still need a sign-in.
  */
-export async function sessionServers(h: HarnessId, projectPath: string): Promise<SessionServer[]> {
+export async function sessionMcp(h: HarnessId, projectPath: string): Promise<{ servers: SessionServer[]; auth: McpAuthNeed[] }> {
   const data = load();
-  if (!data.servers.some((s) => s.enabled)) return [];
+  if (!data.servers.some((s) => s.enabled)) return { servers: [], auth: [] };
   const key = await repoKey(projectPath).catch(() => undefined);
   const list = data.servers.filter((s) => s.enabled && (s.scope === "global" || (key && s.scope === `repo:${key}`)));
-  if (!list.length) return [];
+  if (!list.length) return { servers: [], auth: [] };
+  const c = connectorFor(h).mcp;
   let native: Found[] = [];
   try {
-    native = connectorFor(h).mcp.native?.(projectPath) ?? [];
+    native = c.native?.(projectPath) ?? [];
   } catch (e: any) {
     console.error(`mcp: couldn't read ${h}'s own MCP config: ${e?.message ?? e}`);
   }
-  const ids = new Set(native.map((f) => identity(f.transport)));
-  const names = new Set(native.map((f) => f.name));
-  return list.filter((s) => !ids.has(identity(s.transport)) && !names.has(s.name)).map((s) => ({ name: s.name, transport: launchTransport(s) }));
+  const tokens = readTokens();
+  const out = await Promise.all(
+    list.map(async (s) => {
+      const id = identity(s.transport);
+      const hits = native.filter((f) => identity(f.transport) === id || f.name === s.name);
+      // The user's own entry (or a different server under this name): the harness's, untouched.
+      if (hits.some((f) => !f.ours)) return {};
+      const signedIn = authorizable(s) && !!recordFor(s, tokens)?.tokens;
+      const a = signedIn ? await authorized(s) : { transport: s.transport, token: false, status: authorizable(s) ? authStatus(s, recordFor(s, tokens)) : undefined };
+      const need = a.status && a.status !== "connected" && c.deliver(s.transport).how === "session" ? { id: s.id, name: s.name, status: a.status } : undefined;
+      // Tether's export already gives it; only a token (under the export's own name) is worth a second copy.
+      if (hits.length && !(a.token && hits.every((f) => f.name === s.name))) return { need };
+      return { server: { name: s.name, transport: a.transport }, need };
+    }),
+  );
+  return { servers: out.flatMap((o) => (o.server ? [o.server] : [])), auth: out.flatMap((o) => (o.need ? [o.need] : [])) };
+}
+
+/** The servers alone (see sessionMcp). */
+export async function sessionServers(h: HarnessId, projectPath: string): Promise<SessionServer[]> {
+  return (await sessionMcp(h, projectPath)).servers;
 }
 
 // ---------------- the web app's view ----------------
@@ -183,7 +247,7 @@ const LABEL = Object.fromEntries(HARNESSES.map((h) => [h.id, h.label])) as Recor
 const IDS = HARNESSES.map((h) => h.id);
 
 /** How each harness gets one server, from its connector, its own config and what the export wrote. */
-function delivery(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported: Map<string, Set<string>>): McpDelivery[] {
+function delivery(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported: Map<string, Set<string>>, tokens: ReturnType<typeof readTokens>): McpDelivery[] {
   return IDS.map((h): McpDelivery => {
     if (!s.enabled) return { harness: h, how: "none", note: "Turned off" };
     const own = natives.get(h)?.find((f) => !f.ours && (identity(f.transport) === identity(s.transport) || f.name === s.name));
@@ -194,13 +258,15 @@ function delivery(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported:
     if (route.how === "none") return { harness: h, how: "none", note: route.note };
     if (route.how === "global") {
       if (s.scope !== "global") return { harness: h, how: "none", note: `${route.note}; repo servers aren't written into global configs` };
-      return files.length ? { harness: h, how: "global", note: `In ${files.join(", ")}` } : { harness: h, how: "none", note: `${route.note}; not written yet (is ${LABEL[h]} set up here?)` };
+      // Decision 8: the global config gets no token; the harness signs in to an OAuth server itself.
+      const signIn = authorizable(s) && authStatus(s, recordFor(s, tokens)) ? `; without Tether's sign-in (${LABEL[h]} signs in itself)` : "";
+      return files.length ? { harness: h, how: "global", note: `In ${files.join(", ")}${signIn}` } : { harness: h, how: "none", note: `${route.note}; not written yet (is ${LABEL[h]} set up here?)` };
     }
     return { harness: h, how: "session", note: files.length ? `${route.note}; also in ${files.join(", ")}` : route.note };
   });
 }
 
-function view(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported: Map<string, Set<string>>): McpServerView {
+function view(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported: Map<string, Set<string>>, tokens: ReturnType<typeof readTokens>): McpServerView {
   const t = s.transport;
   return {
     id: s.id,
@@ -213,7 +279,9 @@ function view(s: RegistryServer, natives: Map<HarnessId, Found[]>, exported: Map
     envKeys: t.type === "stdio" ? Object.keys(t.env) : [],
     headerKeys: t.type === "stdio" ? [] : Object.keys(t.headers),
     sources: s.sources,
-    delivery: delivery(s, natives, exported),
+    delivery: delivery(s, natives, exported, tokens),
+    // Not offered once the server took a request without credentials.
+    ...(authorizable(s) && recordFor(s, tokens)?.required !== false ? { oauth: true, auth: authStatus(s, recordFor(s, tokens)) } : {}),
   };
 }
 
@@ -230,7 +298,8 @@ export function views(): McpServerView[] {
     }
   }
   const exported = exportedTo();
-  return data.servers.map((s) => view(s, natives, exported));
+  const tokens = readTokens();
+  return data.servers.map((s) => view(s, natives, exported, tokens));
 }
 
 // ---------------- the guard ----------------

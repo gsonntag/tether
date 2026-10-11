@@ -34,7 +34,14 @@ import type { HandoffOpts, LiveSession } from "./session";
 import { ContextService } from "./context";
 import { useContextSkills } from "./skillcmd";
 import { capabilityMatrix } from "./connectors";
-import { addServers as addMcpServers, importServers as importMcpServers, setServer as setMcpServer, views as mcpViews } from "./mcp/registry";
+import {
+  addServers as addMcpServers,
+  finishServerAuth,
+  importServers as importMcpServers,
+  listServers as listMcpServers,
+  setServer as setMcpServer,
+  startServerAuth,
+} from "./mcp/registry";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -770,7 +777,7 @@ const ops: Handlers = {
   // ---- MCP registry (runner/src/mcp) ----
 
   async listMcpServers() {
-    return mcpViews();
+    return listMcpServers();
   },
   async addMcpServer({ text, name, scope }) {
     return addMcpServers(text, { name, scope: scope && /^[~/]/.test(scope) ? expand(scope) : scope });
@@ -781,6 +788,13 @@ const ops: Handlers = {
   async findMcpServers() {
     const { export: _, ...r } = await importMcpServers((await allProjects()).map((p) => p.path));
     return r;
+  },
+  // OAuth sign-in (runner/src/mcp/oauth.ts): the app's /api/mcp-oauth/callback relays finishMcpAuth.
+  async startMcpAuth({ id, redirectUri, clientId, clientSecret }) {
+    return startServerAuth(id, { runnerId: config().runnerId, redirectUri, clientId, clientSecret });
+  },
+  async finishMcpAuth(p) {
+    return finishServerAuth(p);
   },
   async getUiPrefs() {
     return uiPrefs();

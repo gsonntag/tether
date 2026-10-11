@@ -31,7 +31,7 @@ export interface SessionCtx {
   mcpCapabilities?: { http?: boolean; sse?: boolean };
 }
 
-/** A registry server as a launch gets it (credentials attached). */
+/** A registry server as a launch gets it (credentials attached: an OAuth token as an Authorization header). */
 export interface SessionServer {
   name: string;
   transport: McpTransport;
@@ -47,6 +47,8 @@ export interface SessionLaunch {
   env: Record<string, string>;
   /** goes in front of the first message (harnesses without a system-prompt hook) */
   preamble?: string;
+  /** registry servers this session would get that still need an OAuth sign-in (shown inline) */
+  mcpAuth?: { id: string; name: string; status: "needs" | "expired" }[];
 }
 
 /** What a global export can do; the helpers keep export.ts's data-safety rules (snapshots, own-write marks). */

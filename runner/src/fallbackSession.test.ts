@@ -89,7 +89,7 @@ function fake(harness: HarnessId = "claude-code", model = "opus") {
   s.t.state.model = model;
   sessions.push(s);
   const notices = () => s.t.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text as string);
-  const actions = () => s.t.messages.filter((m) => m.action).map((m) => ({ id: m.id, ...m.action! }));
+  const actions = () => s.t.messages.flatMap((m) => (m.action?.kind === "continueOn" ? [{ id: m.id, ...m.action }] : []));
   return { s, log, handoffs, notices, actions };
 }
 
@@ -504,6 +504,25 @@ describe("Continue on …", () => {
     await s.turnError("boom");
     s.notice("boom", "error");
     expect(actions()[0]?.entry).toBe("claude-code:sonnet");
+  });
+});
+
+describe("MCP sign-in notices", () => {
+  test("one inline notice per server with an Authorize button; the next launch doesn't repeat it", () => {
+    const { s } = fake();
+    const need = [
+      { id: "mcp_a", name: "docs", status: "needs" as const },
+      { id: "mcp_b", name: "linear", status: "expired" as const },
+    ];
+    s.mcpAuthNotice(need, true);
+    s.mcpAuthNotice(need);
+    const ns = s.t.messages.filter((m) => m.action?.kind === "mcpAuth");
+    expect(ns.map((m) => [m.level, (m.parts[0] as any).text, m.action])).toEqual([
+      ["warning", "The docs MCP server needs authorization. Its tools work once you sign in.", { kind: "mcpAuth", label: "Authorize docs", server: "mcp_a" }],
+      ["warning", "The sign-in to the linear MCP server has expired. Its tools work once you sign in.", { kind: "mcpAuth", label: "Authorize linear", server: "mcp_b" }],
+    ]);
+    // Not an error: no "Failed" alert, no Continue offer.
+    expect(s.t.state.status).toBe("idle");
   });
 });
 

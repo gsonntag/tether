@@ -26,8 +26,9 @@ import {
   SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
-import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
+import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
 import { act, selectSession } from "../store";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { AttachmentChips } from "./Attachments";
@@ -296,6 +297,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
               <Button label={action.label} size="sm" onClick={() => act("continueOn", { sessionId, msgId: m.id })} />
             </HStack>
           )}
+          {action?.kind === "mcpAuth" && <McpAuthAction label={action.label} server={action.server} />}
         </VStack>
       </NoticeCard>
     );
@@ -639,5 +641,47 @@ export function LinkBanner({ from, to }: { from?: { sessionId: string; reason: s
         </Card>
       )}
     </>
+  );
+}
+
+/** A session's "Authorize <server>" button: opens the MCP server's sign-in, then says how it went, in place. */
+function McpAuthAction({ label, server }: { label: string; server: string }) {
+  const [state, setState] = useState<{ busy?: boolean; done?: boolean; url?: string; note?: string }>({});
+  useEffect(() => onMcpAuthorized((id) => id === server && setState({ done: true })), [server]);
+  if (state.done)
+    return (
+      <Text type="supporting" color="secondary">
+        Connected.
+      </Text>
+    );
+  const go = async () => {
+    setState({ busy: true });
+    try {
+      const { start, opened } = await authorizeMcp(server);
+      if ("needsClient" in start) setState({ note: "Its sign-in server needs a client ID: add one under MCP servers on the Memory & Skills page." });
+      else setState(opened ? {} : { url: start.url });
+    } catch (e: any) {
+      setState({ note: e?.message ?? String(e) });
+    }
+  };
+  return (
+    <VStack gap={1}>
+      <HStack>
+        <Button label={label} size="sm" isLoading={state.busy} onClick={go} />
+      </HStack>
+      {state.url && (
+        <Text type="supporting">
+          The browser blocked the sign-in tab:{" "}
+          <a href={state.url} target="_blank" rel="noopener noreferrer">
+            open the sign-in page
+          </a>
+        </Text>
+      )}
+      {state.note && (
+        <Text type="supporting" color="secondary">
+          {state.note}
+        </Text>
+      )}
+    </VStack>
   );
 }

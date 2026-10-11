@@ -202,8 +202,11 @@ export interface Msg {
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
-  /** notice: a button under it. "continueOn": move the session to a chain entry (continueOn op) */
-  action?: { kind: "continueOn"; label: string; entry: string };
+  /**
+   * notice: a button under it. "continueOn": move the session to a chain entry (continueOn op);
+   * "mcpAuth": sign in to a registry MCP server (startMcpAuth)
+   */
+  action?: { kind: "continueOn"; label: string; entry: string } | { kind: "mcpAuth"; label: string; server: string };
 }
 
 import type { Attachment } from "./attachments";
@@ -806,7 +809,25 @@ export interface McpServerView {
   /** provenance: "claude:~/.claude.json", "codex:~/.codex/config.toml", "you", … */
   sources: string[];
   delivery: McpDelivery[];
+  /**
+   * an http/SSE server Tether can sign in to (no Authorization header of its own, and not one that
+   * answered without credentials)
+   */
+  oauth?: boolean;
+  /** its OAuth sign-in, when it has or needs one */
+  auth?: McpAuthStatus;
 }
+
+/**
+ * An MCP server's OAuth sign-in (tokens stay on the runner):
+ *   connected  Tether holds a token (refreshed at launch when it runs out)
+ *   needs      the server asks for a sign-in and there is no token
+ *   expired    the token ran out and couldn't be refreshed: sign in again
+ */
+export type McpAuthStatus = "connected" | "needs" | "expired";
+
+/** startMcpAuth: the sign-in page to open, or the authorization server can't register Tether by itself. */
+export type McpAuthStart = { url: string } | { needsClient: true; redirectUri: string };
 
 export interface McpFindResult {
   servers: McpServerView[];
@@ -955,8 +976,19 @@ export interface Ops {
    * `{"name": {…}}` or one server's object). `scope`: "global" or a project path (its repo).
    */
   addMcpServer: { args: { text: string; name?: string; scope?: string }; result: McpServerView[] };
-  /** turns a server on or off, marks it trusted, or removes it (and only Tether's copies in harness configs) */
-  setMcpServer: { args: { id: string; enabled?: boolean; trusted?: boolean; remove?: boolean }; result: McpServerView[] };
+  /**
+   * turns a server on or off, marks it trusted, or removes it (and only Tether's copies in harness
+   * configs); `signOut` drops its OAuth tokens
+   */
+  setMcpServer: { args: { id: string; enabled?: boolean; trusted?: boolean; remove?: boolean; signOut?: boolean }; result: McpServerView[] };
+  /**
+   * Starts an OAuth sign-in for an http/SSE server. `redirectUri` is the app's
+   * `/api/mcp-oauth/callback`; `clientId` (and secret) when its authorization server can't
+   * register Tether by itself.
+   */
+  startMcpAuth: { args: { id: string; redirectUri: string; clientId?: string; clientSecret?: string }; result: McpAuthStart };
+  /** the app server's callback relays the authorization server's answer here */
+  finishMcpAuth: { args: { state: string; code?: string; error?: string; errorDescription?: string; iss?: string }; result: { id: string; name: string } };
   /** "Find servers": imports every harness's MCP config into the registry */
   findMcpServers: { args: {}; result: McpFindResult };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
