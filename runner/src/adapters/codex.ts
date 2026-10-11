@@ -339,19 +339,26 @@ export function historyMsgs(turns: any[], cwd: string, model?: string, times?: M
  * Item start times for turns where the turn's own start isn't enough: ones with a message steered in
  * after it began. Codex records them per item (`thread/items/list`); best effort, a few calls at most.
  */
-async function itemTimes(p: CodexProcess, threadId: string, turns: any[]): Promise<Map<string, number>> {
+const ITEM_TIMES_BUDGET_MS = 4_000;
+
+export async function itemTimes(p: Pick<CodexProcess, "call">, threadId: string, turns: any[]): Promise<Map<string, number>> {
   const times = new Map<string, number>();
   const steered = turns.filter((t) => (t.items ?? []).filter((i: any) => i.type === "userMessage").length > 1).slice(-20);
+  // The history waits on this: a few seconds at most, whatever Codex does.
+  const deadline = Date.now() + ITEM_TIMES_BUDGET_MS;
   for (const turn of steered) {
     let cursor: string | null = null;
     try {
       for (let page = 0; page < 10; page++) {
-        const r: any = await p.call("thread/items/list", { threadId, turnId: turn.id, cursor, limit: 100 }, 10_000);
+        const left = deadline - Date.now();
+        if (left <= 0) return times;
+        const r: any = await p.call("thread/items/list", { threadId, turnId: turn.id, cursor, limit: 100 }, left);
         for (const e of r?.data ?? []) if (e?.item?.id && e.startedAtMs) times.set(e.item.id, e.startedAtMs);
         if (!(cursor = r?.nextCursor)) break;
       }
     } catch {
-      // an older Codex, or a turn it has no items for: the turn's start stands
+      // An older Codex without the method, or one too slow: the turns' starts stand for the rest.
+      return times;
     }
   }
   return times;

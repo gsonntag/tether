@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 if (!process.env.TETHER_TEST_ROOT) process.env.TETHER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "tether-times-"));
 const { entryMeta, historyMessages } = await import("./claude");
-const { historyMsgs } = await import("./codex");
+const { historyMsgs, itemTimes } = await import("./codex");
 const { convertAll, piMeta } = await import("./pi");
 const { transcriptToMessages } = await import("./agy");
 const { lastLineTime, claudePick, codexPick, agyPick, TAIL_BUDGET } = await import("./lastActivity");
@@ -87,6 +87,35 @@ describe("Codex", () => {
       ["a-i6", T + 76_000],
       ["u-i7", T + 60_000],
     ]);
+  });
+});
+
+describe("Codex item times", () => {
+  const steeredTurn = (id: string) => ({ id, items: [{ type: "userMessage", id: `${id}a` }, { type: "userMessage", id: `${id}b` }] });
+
+  test("asks only about steered turns, and keeps each item's start", async () => {
+    const asked: string[] = [];
+    const p = {
+      call: async (_m: string, params: any) => {
+        asked.push(params.turnId);
+        return { data: [{ item: { id: `${params.turnId}b` }, startedAtMs: T }], nextCursor: null };
+      },
+    } as any;
+    const times = await itemTimes(p, "th", [{ id: "plain", items: [{ type: "userMessage", id: "x" }] }, steeredTurn("s1")]);
+    expect(asked).toEqual(["s1"]);
+    expect(times.get("s1b")).toBe(T);
+  });
+
+  test("a Codex without the method is asked once, not once per turn", async () => {
+    let calls = 0;
+    const p = {
+      call: async () => {
+        calls++;
+        throw new Error("method not found");
+      },
+    } as any;
+    expect((await itemTimes(p, "th", [steeredTurn("a"), steeredTurn("b"), steeredTurn("c")])).size).toBe(0);
+    expect(calls).toBe(1);
   });
 });
 
