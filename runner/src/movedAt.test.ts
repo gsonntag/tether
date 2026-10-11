@@ -9,14 +9,16 @@ const { movedAt } = await import("./session");
 const msg = (ts: number, extra: Partial<Msg> = {}): Msg => ({ id: `m${ts}`, role: "user", parts: [], ts, ...extra });
 const NOW = 1_000_000;
 
-test("a history replay takes the last message's time, not now", () => {
-  expect(movedAt({ type: "reset", messages: [msg(100), msg(300), msg(200)] }, NOW, [], NOW)).toBe(300);
+test("a history replay takes the last message's time, not now, and never moves it back", () => {
+  expect(movedAt({ type: "reset", messages: [msg(100), msg(300), msg(200)] }, 50, [], NOW)).toBe(300);
   expect(movedAt({ type: "reset", messages: [] }, 42, [], NOW)).toBe(42);
+  // resumed at its stored last-message time, later than the replay's (a Codex turn's start)
+  expect(movedAt({ type: "reset", messages: [msg(100), msg(300)] }, 400, [], NOW)).toBe(400);
 });
 
 test("a replay ignores notices and messages without a known time", () => {
   const messages = [msg(100), msg(900, { role: "notice" }), msg(0, { id: "x", role: "assistant" })];
-  expect(movedAt({ type: "reset", messages }, NOW, [], NOW)).toBe(100);
+  expect(movedAt({ type: "reset", messages }, 50, [], NOW)).toBe(100);
 });
 
 test("state, activity, toasts and notices don't move it", () => {

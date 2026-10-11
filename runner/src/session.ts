@@ -68,8 +68,11 @@ export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[],
   };
   switch (event.type) {
     case "reset": {
+      // Never back: a resumed session starts at its stored last-message time (lastActivity.ts), which
+      // can be later than any replayed message's (Codex replays at turn starts, Claude at the start
+      // of each reply, and a tool result's line comes after both).
       const last = event.messages.reduce((t, m) => (conversational(m) ? Math.max(t, m.ts || 0) : t), 0);
-      return last || updatedAt;
+      return Math.max(last, updatedAt);
     }
     case "msg": {
       const m = event.msg;
