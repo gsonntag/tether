@@ -1,19 +1,18 @@
 // Session injection: what a Tether session is told about the master context when it starts.
-// Adapters ask sessionContext() for
+// sessionContext() gives
 //   prompt  the global digest + this repo's memory, for the system prompt (Claude append, pi
 //           --append-system-prompt, Codex developerInstructions) or a first-message preamble
 //           (ACP, Antigravity)
 //   mcp     how to launch the `tether-context` MCP server for this session
-// Both are undefined until the context feature has been turned on by the first import.
+// Both are undefined until the context feature has been turned on by the first import. Each
+// harness's connector (runner/src/connectors/) shapes them into its launch.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { parse } from "jsonc-parser";
-import { sha } from "./format";
-import { configDir, contextDir, harness } from "./paths";
+import { contextDir } from "./paths";
 import { mcpLaunch, type McpLaunch } from "./launch";
 import { repoKey } from "./repokey";
-import { Store, writeAtomic } from "./store";
+import { Store } from "./store";
 import { globalDigest, repoDigest } from "./export";
 
 let enabled = false;
@@ -52,45 +51,4 @@ export async function sessionContext(projectPath: string, session?: { id?: strin
 /** First-message preamble for harnesses without a system-prompt hook (ACP, Antigravity). */
 export function withPreamble(preamble: string | undefined, text: string): string {
   return preamble ? `${preamble}\n\n${text}` : text;
-}
-
-/** ACP's McpServerStdio shape. */
-export function acpMcpServers(ctx: SessionContext | undefined) {
-  if (!ctx) return [];
-  return [{ name: "tether-context", command: ctx.mcp.command, args: ctx.mcp.args, env: Object.entries(ctx.mcp.env).map(([name, value]) => ({ name, value })) }];
-}
-
-/** pi-mcp-adapter is one of pi's packages (it owns the `--mcp-config` flag). */
-export function piMcpAdapterInstalled(): boolean {
-  try {
-    const settings = JSON.parse(readFileSync(harness.piSettings(), "utf8"));
-    return (settings.packages ?? []).some((p: unknown) => {
-      const src = typeof p === "string" ? p : (p as any)?.source;
-      return typeof src === "string" && /(^|[:/])pi-mcp-adapter(@|$|\/|\.git)/.test(src);
-    });
-  } catch {
-    return false;
-  }
-}
-
-/**
- * pi's per-session MCP: a copy of the user's pi-mcp-adapter config (~/.pi/agent/mcp-adapter.json)
- * plus this session's `tether-context`, for `--mcp-config` (which stands in for that file during
- * the run; shared configs like ~/.config/mcp/mcp.json still load). Undefined without the adapter,
- * in which case pi's own MCP reads the global ~/.pi/agent/mcp.json registration from the export.
- */
-export function piMcpConfig(ctx: SessionContext | undefined, sessionKey?: string): string | undefined {
-  if (!ctx || !piMcpAdapterInstalled()) return undefined;
-  let base: any = {};
-  try {
-    base = parse(readFileSync(harness.piMcpAdapter(), "utf8"), [], { allowTrailingComma: true }) ?? {};
-  } catch {}
-  if (!base || typeof base !== "object" || Array.isArray(base)) base = {};
-  const cfg = {
-    ...base,
-    mcpServers: { ...(base.mcpServers ?? {}), "tether-context": { command: ctx.mcp.command, args: ctx.mcp.args, env: ctx.mcp.env } },
-  };
-  const path = join(configDir(), "run", `pi-mcp-${sha(sessionKey ?? JSON.stringify(ctx.mcp.env))}.json`);
-  writeAtomic(path, JSON.stringify(cfg, null, 2) + "\n");
-  return path;
 }

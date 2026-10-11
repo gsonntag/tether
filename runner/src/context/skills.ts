@@ -32,7 +32,9 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import type { ContextSkill } from "../../../web/src/shared/protocol";
+import type { ContextSkill, HarnessId } from "../../../web/src/shared/protocol";
+import { connectorFor } from "../connectors";
+import { agentsSkillDir } from "../connectors/shared";
 import { splitFrontMatter } from "./format";
 import { harness, tilde, untilde } from "./paths";
 import { writeAtomic } from "./store";
@@ -45,18 +47,10 @@ export interface SkillDir {
   skip: string[];
 }
 
+/** Every harness's global skill dirs (from its connector), plus the shared ~/.agents/skills. */
 export function skillDirs(): SkillDir[] {
-  return [
-    { harness: "claude", dir: harness.claudeSkills(), install: true, skip: ["synced"] },
-    { harness: "agents", dir: harness.agentsSkills(), install: true, skip: [] },
-    { harness: "antigravity", dir: harness.agySkills(), install: true, skip: [] },
-    { harness: "gemini", dir: harness.geminiSkills(), install: true, skip: [] },
-    // Kiro reads only its own dir; installed into once Kiro is set up (~/.kiro exists), like its steering export.
-    { harness: "kiro", dir: harness.kiroSkills(), install: existsSync(harness.kiroDir()), skip: [] },
-    { harness: "codex", dir: harness.codexSkills(), install: false, skip: [] },
-    { harness: "pi", dir: harness.piSkills(), install: false, skip: [] },
-    { harness: "opencode", dir: harness.opencodeSkills(), install: false, skip: [] },
-  ];
+  const c = (h: HarnessId) => connectorFor(h).skills.installDirs();
+  return [...c("claude-code"), agentsSkillDir(), ...c("antigravity"), ...c("kiro"), ...c("codex"), ...c("pi"), ...c("opencode")];
 }
 
 /** The harness skill dirs that exist, for the watcher (the rest are picked up once they appear). */

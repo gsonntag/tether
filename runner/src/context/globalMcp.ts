@@ -243,9 +243,19 @@ function unregister(path: string, key: string, jsonc: boolean, out: GlobalMcpRes
  */
 export function registerGlobalMcp(opts: { dryRun?: boolean; before?: (path: string) => void } = {}): GlobalMcpResult {
   const out: GlobalMcpResult = { dryRun: opts.dryRun, written: [], mcpConfigs: [], warnings: [] };
-  if (claudeInstalled()) register(harness.claudeJson(), "mcpServers", claudeEntry(), false, out, opts.before);
-  if (existsSync(harness.opencodeDir())) register(opencodeConfigPath(), "mcp", opencodeEntry(), true, out, opts.before);
+  registerClaudeMcp(out, opts.before);
+  registerOpencodeMcp(out, opts.before);
   return out;
+}
+
+/** Claude Code's half of registerGlobalMcp (its connector's global MCP export). */
+export function registerClaudeMcp(out: GlobalMcpResult, before?: (path: string) => void) {
+  if (claudeInstalled()) register(harness.claudeJson(), "mcpServers", claudeEntry(), false, out, before);
+}
+
+/** opencode's half of registerGlobalMcp. */
+export function registerOpencodeMcp(out: GlobalMcpResult, before?: (path: string) => void) {
+  if (existsSync(harness.opencodeDir())) register(opencodeConfigPath(), "mcp", opencodeEntry(), true, out, before);
 }
 
 /**

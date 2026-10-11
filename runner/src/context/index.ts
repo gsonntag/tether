@@ -204,7 +204,7 @@ export class ContextService {
         await this.harnessLock.run(async () => {
           if (!this.enabled) return;
           const g: ExportResult = { written: [], mcpConfigs: [], warnings: [] };
-          registerNativeMcp(this.store, g);
+          await registerNativeMcp(this.store, g);
           for (const w of g.warnings) this.act({ kind: "error", text: w });
           if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
         });

@@ -13,6 +13,9 @@ import type { ContextSkill, HarnessId, SlashCommand } from "../../web/src/shared
 import { isSkillName, parseInvocation, skillBlock } from "../../web/src/shared/skill";
 import { splitFrontMatter } from "./context/format";
 import { harness as H, untilde } from "./context/paths";
+import { connectorFor } from "./connectors";
+import { upward } from "./connectors/shared";
+import type { HarnessSkillDir as SkillDir } from "./connectors/types";
 
 export interface SkillInfo {
   /** the name typed after `/` */
@@ -106,52 +109,9 @@ export function rememberClaudeBuiltins(names: Iterable<string>) {
   for (const n of names) claudeBuiltins.add(n);
 }
 
-/** The project folder and its parents up to the repo root (or /), nearest first. */
-function upward(projectPath: string): string[] {
-  const out: string[] = [];
-  let d = resolve(projectPath);
-  for (;;) {
-    out.push(d);
-    if (existsSync(join(d, ".git"))) break;
-    const up = dirname(d);
-    if (up === d) break;
-    d = up;
-  }
-  return out;
-}
-
-/** Each harness's own skill dirs, nearest first, with a badge. Read only. */
+/** Each harness's own skill dirs, nearest first, with a badge (its connector's). Read only. */
 export function harnessSkillDirs(harness: HarnessId, projectPath: string): SkillDir[] {
-  const up = upward(projectPath);
-  const repo = (sub: string) => up.map((d) => ({ dir: join(d, sub), source: "repo", root: up[up.length - 1] }));
-  switch (harness) {
-    case "claude-code":
-      return [...repo(".claude/skills"), { dir: H.claudeSkills(), source: "claude" }];
-    case "codex":
-      return [...repo(".agents/skills"), ...repo(".codex/skills"), { dir: H.codexSkills(), source: "codex" }, { dir: H.agentsSkills(), source: "agents" }];
-    case "pi":
-      return [{ dir: join(projectPath, ".pi/skills"), source: "repo", root: up[up.length - 1] }, ...repo(".agents/skills"), { dir: H.piSkills(), source: "pi" }, { dir: H.agentsSkills(), source: "agents" }];
-    case "opencode":
-      return [
-        ...repo(".opencode/skills"),
-        ...repo(".claude/skills"),
-        ...repo(".agents/skills"),
-        { dir: H.opencodeSkills(), source: "opencode" },
-        { dir: H.claudeSkills(), source: "claude" },
-        { dir: H.agentsSkills(), source: "agents" },
-      ];
-    case "antigravity":
-      return [{ dir: H.agySkills(), source: "antigravity" }, { dir: H.geminiSkills(), source: "gemini" }];
-    case "kiro":
-      return [{ dir: join(projectPath, ".kiro/skills"), source: "repo", root: up[up.length - 1] }, { dir: H.kiroSkills(), source: "kiro" }];
-  }
-}
-
-interface SkillDir {
-  dir: string;
-  source: string;
-  /** repo dirs: the repo root its skills must stay inside */
-  root?: string;
+  return connectorFor(harness).skills.dirs(projectPath);
 }
 
 function scan(dirs: SkillDir[], out: Map<string, SkillInfo>, hidden: Set<string>) {
@@ -242,7 +202,7 @@ const under = (p: string, dir: string) => {
 export function decide(harness: HarnessId, skill: Pick<SkillInfo, "name" | "dir" | "installed">, native: Set<string> | undefined, projectPath: string): Resolution {
   if (native) return native.has(skill.name) ? "native" : "expand";
   // No live answer: only harnesses with a native skill syntax, and only for skills in their dirs.
-  if (harness !== "claude-code" && harness !== "codex" && harness !== "pi") return "expand";
+  if (!connectorFor(harness).skills.offline) return "expand";
   // Claude Code runs its own command of that name instead.
   if (harness === "claude-code" && claudeBuiltins.has(skill.name)) return "expand";
   if (skill.installed) return "native";

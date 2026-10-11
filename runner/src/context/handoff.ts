@@ -12,11 +12,14 @@ import type { HarnessId, MemoryEntry, Msg } from "../../../web/src/shared/protoc
 import { isBrief, renderTranscript } from "../handoff";
 import { parseJsonReply, runBackground } from "./background";
 import { asType, contentHash, sha, similarity, words, type MemoryType } from "./format";
+import { connectors } from "../connectors";
 import { globalDigestLayout, repoDigestLayout } from "./export";
 import { writeAtomic, type Store } from "./store";
 
-/** Harnesses whose sessions get sessionContext() at start (every adapter calls it today). */
-export const INJECTING: ReadonlySet<HarnessId> = new Set<HarnessId>(["claude-code", "codex", "pi", "opencode", "kiro", "antigravity"]);
+/** Harnesses whose sessions get the shared memory at start (their connector's memory slot; every one today). */
+export const INJECTING: ReadonlySet<HarnessId> = new Set(
+  (Object.keys(connectors) as HarnessId[]).filter((h) => !!connectors[h].memory.forSession),
+);
 
 /** Ids the new session's native injection already shows in full: the brief leaves them out. */
 export function nativeIds(store: Store, key: string, harness: HarnessId, all = store.list()): Set<string> {

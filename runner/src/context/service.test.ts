@@ -10,7 +10,8 @@ import { CONFIG_DIR, config, migrateJudge, normalizeModelEntry } from "../config
 import { isContextTool, rules } from "../guard";
 import { put, seedHome } from "./fixtures";
 import { ContextService } from "./index";
-import { acpMcpServers, sessionContext, setInjectionEnabled, withPreamble } from "./inject";
+import { acpMcpServers } from "../connectors/acp";
+import { sessionContext, setInjectionEnabled, withPreamble } from "./inject";
 import { handle } from "./mcp";
 import type { Decider } from "./merge";
 import { harness } from "./paths";

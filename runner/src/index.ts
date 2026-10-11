@@ -33,6 +33,7 @@ import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { HandoffOpts, LiveSession } from "./session";
 import { ContextService } from "./context";
 import { useContextSkills } from "./skillcmd";
+import { capabilityMatrix } from "./connectors";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -759,6 +760,9 @@ const ops: Handlers = {
   },
   async contextDisable() {
     return context.disable();
+  },
+  async harnessCapabilities() {
+    return capabilityMatrix();
   },
   async getUiPrefs() {
     return uiPrefs();

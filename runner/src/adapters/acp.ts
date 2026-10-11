@@ -21,7 +21,8 @@ import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
 import { acpFault } from "../faults";
-import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
+import { sessionLaunch } from "../connectors/launch";
+import { withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -298,10 +299,15 @@ class AcpSession extends LiveSession {
     });
     this.p.permission = (r) => this.onPermission(r);
     await this.p.init();
-    // Master context: the tether-context MCP server, and shared memory as a first-message preamble.
-    const ctx = await sessionContext(this.projectPath, { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY });
-    const mcpServers = acpMcpServers(ctx);
-    if (!this.opts.resume) this.preamble = ctx?.prompt;
+    // Master context (its connector): the tether-context MCP server, and shared memory as a
+    // first-message preamble.
+    const launch = await sessionLaunch(this.spec.id, {
+      projectPath: this.projectPath,
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY },
+      resume: this.opts.resume,
+    });
+    const mcpServers = launch.options.mcpServers ?? [];
+    if (!this.opts.resume) this.preamble = launch.preamble;
     let res: any;
     if (this.opts.resume) {
       this.p.handlers.set(this.nativeId, (n) => this.onUpdate(n));

@@ -6,8 +6,10 @@
 //   Kiro        ~/.kiro/steering/tether.md (Tether's own file, inclusion: always)
 //   MCP         `tether-context` registered in Codex, pi, Kiro and Antigravity MCP configs; on the
 //               user's import also in ~/.claude.json and opencode's config (globalMcp.ts)
-// Only harnesses that are installed (their dir exists) are written. Every write is recorded in
-// `ownWrites`, so the watcher can tell Tether's writes from the user's.
+// What each harness gets is its connector's (runner/src/connectors/): this file runs them in a
+// fixed order with the shared write helpers below, and undoes everything. Only harnesses that are
+// installed (their dir exists) are written. Every write is recorded in `ownWrites`, so the watcher
+// can tell Tether's writes from the user's.
 //
 // Data safety: user files are only changed inside the managed block (or one MCP entry / one
 // index line); a symlinked file is written through to its target with its mode kept; whole files
@@ -18,13 +20,16 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { MemoryEntry } from "../../../web/src/shared/protocol";
-import { hasTomlBlock, isTetherOwned, OWNED_MARK, upsertBlock, upsertTomlBlock } from "./blocks";
+import type { HarnessId, MemoryEntry } from "../../../web/src/shared/protocol";
+import { connectorFor } from "../connectors";
+import { isIndexLine, withoutIndexLine } from "../connectors/claude";
+import { isKiroOwned, kiroFile } from "../connectors/acp";
+import type { ExportContext } from "../connectors/types";
+import { hasTomlBlock, isTetherOwned, upsertBlock, upsertTomlBlock } from "./blocks";
 import { contentHash } from "./format";
-import { isOurs, registerGlobalMcp, unregisterGlobalMcp } from "./globalMcp";
+import { isOurs, unregisterGlobalMcp } from "./globalMcp";
 import { mcpLaunch } from "./launch";
 import { harness, tilde } from "./paths";
-import { claudeProjectScope } from "./repokey";
 import { writeAtomic, type Store } from "./store";
 
 const GLOBAL_BUDGET = 4000;
@@ -217,15 +222,21 @@ function readText(p: string): string {
   }
 }
 
-/** The global AGENTS.md / CLAUDE.md / GEMINI.md files that get a managed block. */
+/**
+ * The order connectors export in (and the import preview lists files in): managed blocks, then
+ * Tether's own memory files, then MCP registrations.
+ */
+const EXPORT_ORDER: { memory: HarnessId[]; mcp: HarnessId[] } = {
+  memory: ["claude-code", "antigravity", "codex", "pi", "opencode", "kiro"],
+  mcp: ["codex", "pi", "kiro", "antigravity", "claude-code", "opencode"],
+};
+
+/** The global AGENTS.md / CLAUDE.md / GEMINI.md files that get a managed block (memory connectors). */
 function blockFiles(globalFile: string, text: string): [string, string][] {
-  return [
-    [harness.claudeMd(), `@${tilde(globalFile)}`],
-    [harness.geminiMd(), `@${globalFile}`],
-    [harness.codexAgentsMd(), text],
-    [harness.piAgentsMd(), text],
-    [harness.opencodeAgentsMd(), text],
-  ];
+  return EXPORT_ORDER.memory.flatMap((h) => {
+    const b = connectorFor(h).memory.globalBlock?.(globalFile, text);
+    return b ? [b] : [];
+  });
 }
 
 function setBlock(store: Store, path: string, content: string, out: ExportResult) {
@@ -234,14 +245,8 @@ function setBlock(store: Store, path: string, content: string, out: ExportResult
   writeOwned(store, path, upsertBlock(cur, content), out);
 }
 
-/** JSON MCP configs and the dir that shows the harness is installed (agy's config dir may not exist yet). */
-const jsonMcpTargets = (): [string, string][] => [
-  [harness.piMcp(), dirname(harness.piMcp())],
-  [harness.kiroMcp(), dirname(harness.kiroMcp())],
-  [harness.agyMcp(), harness.agyDir()],
-];
-/** Everywhere a registration may have been written, Antigravity's old path included. */
-const jsonMcpFiles = () => [...jsonMcpTargets().map(([p]) => p), harness.agyMcpLegacy()];
+/** Everywhere a JSON registration (pi, Kiro, Antigravity) may have been written, Antigravity's old path included. */
+const jsonMcpFiles = () => [harness.piMcp(), harness.kiroMcp(), harness.agyMcp(), harness.agyMcpLegacy()];
 
 /** JSON MCP configs (`{"mcpServers": {...}}`). Unparseable files are left alone. */
 function registerJsonMcp(store: Store, path: string, installed: string, out: ExportResult) {
@@ -286,106 +291,34 @@ function registerJsonMcp(store: Store, path: string, installed: string, out: Exp
   out.mcpConfigs.push(path);
 }
 
-function registerCodexMcp(store: Store, out: ExportResult) {
-  const path = harness.codexConfig();
-  if (!existsSync(dirname(path))) return;
-  const cur = readText(path);
-  if (/^\s*\[mcp_servers\.("?)tether-context\1\]/m.test(cur.replace(/# tether:begin[\s\S]*?# tether:end/, ""))) {
-    out.mcpConfigs.push(path); // the user registered it themselves
-    return;
-  }
-  const l = mcpLaunch();
-  const toml = [
-    `[mcp_servers.tether-context]`,
-    `command = ${JSON.stringify(l.command)}`,
-    `args = [${l.args.map((a) => JSON.stringify(a)).join(", ")}]`,
-    `default_tools_approval_mode = "approve"`,
-    `[mcp_servers.tether-context.env]`,
-    ...Object.entries(l.env).map(([k, v]) => `${k} = ${JSON.stringify(v)}`),
-  ].join("\n");
-  writeOwned(store, path, upsertTomlBlock(cur, toml), out);
-  out.mcpConfigs.push(path);
+function exportContext(store: Store, out: ExportResult, globalFile: string, digest: string): ExportContext {
+  return {
+    store,
+    out,
+    globalFile,
+    digest,
+    readText,
+    writeOwned: (path, text) => writeOwned(store, path, text, out),
+    remember: (path, createdDir) => remember(store, path, createdDir),
+    registerJsonMcp: (path, installed) => registerJsonMcp(store, path, installed, out),
+    repoDigest: (key) => repoDigest(store, key),
+  };
 }
 
-const INDEX_LINE = "- [Tether shared memory](tether.md) — repo facts shared by every agent (managed by Tether; edits are overwritten)";
-const isIndexLine = (l: string) => l.trim() === INDEX_LINE || /^- \[Tether shared memory\]\(tether\.md\)/.test(l.trim());
-
-const repoFile = (text: string) =>
-  `---\nname: tether\ndescription: Shared repository memory from Tether (managed; edits are overwritten)\ntype: project\n${OWNED_MARK}\n---\n\n${text}`;
-
-/** Removes our index line from a MEMORY.md, keeping every other byte. */
-function withoutIndexLine(idx: string): string {
-  return idx
-    .split("\n")
-    .filter((l) => !isIndexLine(l))
-    .join("\n");
-}
-
-/** Claude's own per-project memory: a Tether-owned tether.md plus one index line in MEMORY.md. */
-async function claudeRepoFiles(store: Store, out: ExportResult) {
-  const root = harness.claudeProjects();
-  let dirs: string[] = [];
-  try {
-    dirs = readdirSync(root);
-  } catch {
-    return;
-  }
-  const keys = new Set(store.list().flatMap((m) => (m.scope.startsWith("repo:") ? [m.scope.slice(5)] : [])));
-  for (const d of dirs) {
-    const projectDir = join(root, d);
-    if (!statSync(projectDir, { throwIfNoEntry: false })?.isDirectory()) continue;
-    const scope = await claudeProjectScope(projectDir).catch(() => undefined);
-    if (!scope || scope.kind !== "repo") continue;
-    const memDir = join(projectDir, "memory");
-    const file = join(memDir, "tether.md");
-    const index = join(memDir, "MEMORY.md");
-    const existing = existsSync(file) || isLinkish(file) ? readText(file) : undefined;
-    if (existing !== undefined && !isTetherOwned(existing)) {
-      out.warnings.push(`${tilde(file)} is the user's own memory, not Tether's; left alone (repo memory reaches Claude there through MCP only).`);
-      continue;
-    }
-    const text = keys.has(scope.key) ? repoDigest(store, scope.key) : undefined;
-    if (!text) {
-      if (existing !== undefined && !out.dryRun) {
-        remember(store, file);
-        rmSync(file, { force: true });
-        out.written.push(file);
-      }
-      const idx = readText(index);
-      if (idx.split("\n").some(isIndexLine)) writeOwned(store, index, withoutIndexLine(idx), out);
-      continue;
-    }
-    if (!out.dryRun && !existsSync(memDir)) {
-      remember(store, file, true);
-      mkdirSync(memDir, { recursive: true });
-    }
-    writeOwned(store, file, repoFile(text), out);
-    const idx = readText(index);
-    if (!idx.split("\n").some(isIndexLine)) writeOwned(store, index, (idx.trim() ? idx.replace(/\n*$/, "\n") : "") + INDEX_LINE + "\n", out);
+/** Each connector's global MCP registration; `shared`: only the configs the harness itself keeps writing. */
+async function exportMcp(x: ExportContext, shared: boolean) {
+  for (const h of EXPORT_ORDER.mcp) {
+    const mcp = connectorFor(h).mcp;
+    if (!!mcp.sharedConfig === shared) await mcp.exportGlobal?.(x);
   }
 }
-
-const isLinkish = (p: string) => {
-  try {
-    return !!readlinkSync(p);
-  } catch {
-    return false;
-  }
-};
-
-const kiroFile = () => join(harness.kiroSteering(), "tether.md");
-/** Ours: the mark, or (exports before the mark) exactly the shape we used to write. */
-const isKiroOwned = (text: string) => isTetherOwned(text) || /^---\ninclusion: always\n---\n\n# Shared memory \(Tether\)\n/.test(text);
 
 /**
  * `tether-context` in ~/.claude.json and opencode's global config, edited in place under the
  * harness's own file lock (globalMcp.ts); the original is snapshotted like every other export.
  */
-export function registerNativeMcp(store: Store, out: ExportResult) {
-  const g = registerGlobalMcp({ dryRun: out.dryRun, before: (p) => remember(store, p) });
-  out.written.push(...g.written);
-  out.mcpConfigs.push(...g.mcpConfigs);
-  out.warnings.push(...g.warnings);
+export async function registerNativeMcp(store: Store, out: ExportResult) {
+  await exportMcp(exportContext(store, out, join(store.dir, "exports", "global.md"), ""), true);
 }
 
 /** Writes every export. With `dryRun`, lists the files it would change instead. */
@@ -395,21 +328,14 @@ export async function exportAll(store: Store, opts: { dryRun?: boolean; globalMc
   const globalFile = join(store.dir, "exports", "global.md");
   writeOwned(store, globalFile, text, out);
   out.written = out.written.filter((p) => p !== globalFile); // the store's own file isn't news
+  const x = exportContext(store, out, globalFile, text);
   for (const [p, content] of blockFiles(globalFile, text)) setBlock(store, p, content, out);
-  if (existsSync(dirname(harness.kiroSteering()))) {
-    const cur = existsSync(kiroFile()) ? readText(kiroFile()) : undefined;
-    if (cur !== undefined && !isKiroOwned(cur)) out.warnings.push(`${tilde(kiroFile())} is the user's own; left alone.`);
-    else {
-      if (!opts.dryRun) mkdirSync(harness.kiroSteering(), { recursive: true });
-      writeOwned(store, kiroFile(), `---\ninclusion: always\n${OWNED_MARK}\n---\n\n${text}`, out);
-    }
-  }
-  await claudeRepoFiles(store, out);
-  registerCodexMcp(store, out);
-  for (const [p, installed] of jsonMcpTargets()) registerJsonMcp(store, p, installed, out);
+  for (const h of EXPORT_ORDER.memory) await connectorFor(h).memory.exportGlobal?.(x);
+  for (const h of EXPORT_ORDER.memory) await connectorFor(h).memory.exportRepos?.(x);
+  await exportMcp(x, false);
   // Native Claude Code and opencode: their configs are shared with the running harness, so only
   // the user's own import registers there (opts.globalMcp), never a background re-export.
-  if (opts.globalMcp) registerNativeMcp(store, out);
+  if (opts.globalMcp) await exportMcp(x, true);
   return out;
 }
 

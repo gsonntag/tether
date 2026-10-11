@@ -752,6 +752,21 @@ export type ContextEvent =
   | { type: "conflict"; conflict: MemoryConflict }
   | { type: "status"; status: ContextStatus };
 
+/** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env";
+
+/** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
+export type CapabilityLevel = "native" | "emulated" | "unsupported";
+
+export interface SlotCapability {
+  level: CapabilityLevel;
+  /** a short human note: how, or why not */
+  note: string;
+}
+
+/** The capability matrix: what each harness supports per slot. */
+export type HarnessCapabilities = Record<HarnessId, Record<SlotId, SlotCapability>>;
+
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {
   name: string;
@@ -853,6 +868,8 @@ export interface Ops {
   getUsage: { args: { force?: boolean }; result: UsageReport };
   renameSession: { args: { sessionId: string; projectPath: string; title: string }; result: {} };
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };
+  /** per harness and slot: native, emulated or unsupported (runner/src/connectors/) */
+  harnessCapabilities: { args: {}; result: HarnessCapabilities };
   getProfiles: { args: {}; result: ModelProfile[] };
   setProfiles: { args: { profiles: ModelProfile[] }; result: ModelProfile[] };
   /** the `/` menu: the harness's own commands and the skills this session can run */

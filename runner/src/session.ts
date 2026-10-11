@@ -28,8 +28,9 @@ import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntr
 import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
+import { connectorFor } from "./connectors";
 import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
-import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
+import { displayText, parseInvocation } from "../../web/src/shared/skill";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -634,9 +635,9 @@ export abstract class LiveSession {
     return undefined;
   }
 
-  /** How this harness is told to run one of its own skills; undefined: it can't now (expand). */
+  /** How this harness is told to run one of its own skills (its connector's syntax); undefined: it can't now (expand). */
   protected nativeSkillText(name: string, args: string): string | undefined {
-    return invocationText(name, args);
+    return connectorFor(this.harness).skills.invoke(name, args);
   }
 
   /** the harness's last answer, and when */

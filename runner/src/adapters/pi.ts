@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { piFault } from "../faults";
-import { piMcpConfig, sessionContext } from "../context/inject";
+import { sessionLaunch } from "../connectors/launch";
 import { nativeAttachments } from "../attachments";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
@@ -333,12 +333,11 @@ class PiSession extends LiveSession {
     if (this.opts.model) args.push("--model", this.opts.model);
     // Every tool call goes through the Tether guard (pi has no permission system of its own).
     args.push("-e", PI_GUARD_EXT);
-    // Master context: shared memory in the system prompt, and this session's own tether-context
-    // MCP server through pi-mcp-adapter's --mcp-config (else the global mcp.json registration).
-    const ctx = await sessionContext(this.projectPath, { key: this.guardEnv.TETHER_GUARD_KEY });
-    if (ctx) args.push("--append-system-prompt", ctx.prompt);
-    const mcpConfig = piMcpConfig(ctx, this.guardEnv.TETHER_GUARD_KEY);
-    if (mcpConfig) args.push("--mcp-config", mcpConfig);
+    // Master context (its connector): shared memory in the system prompt, and this session's own
+    // tether-context MCP server through pi-mcp-adapter's --mcp-config (else the global mcp.json
+    // registration).
+    const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY } });
+    args.push(...launch.args);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);
     this.rpc.onRecord = (r) => this.onRecord(r);
     this.rpc.onExit = (code, stderr) => {
@@ -610,11 +609,6 @@ class PiSession extends LiveSession {
     return (d.commands ?? [])
       .filter((c: any) => c.source === "skill" && typeof c.name === "string")
       .map((c: any) => ({ name: c.name.replace(/^skill:/, ""), description: c.description, path: c.sourceInfo?.path }));
-  }
-
-  /** pi expands `/skill:name args` itself, in the same block shape Tether uses. */
-  protected nativeSkillText(name: string, args: string) {
-    return args ? `/skill:${name} ${args}` : `/skill:${name}`;
   }
 
   async models() {

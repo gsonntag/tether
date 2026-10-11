@@ -27,7 +27,7 @@ import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
-import { sessionContext } from "../context/inject";
+import { sessionLaunch } from "../connectors/launch";
 import { nativeAttachments } from "../attachments";
 import { hardLimit, LimitStatus } from "../limitStatus";
 import { claudeFault } from "../faults";
@@ -336,8 +336,8 @@ class ClaudeSession extends LiveSession {
     const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
-    // Master context: shared memory in the system prompt, and the tether-context MCP server.
-    const ctx = await sessionContext(this.projectPath, { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY });
+    // Master context (its connector): shared memory in the system prompt, and the tether-context MCP server.
+    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY } });
     this.q = query({
       prompt: this.input,
       options: {
@@ -349,8 +349,8 @@ class ClaudeSession extends LiveSession {
         // A one-line "what it's doing" for running subagents, every ~30 s (forks reuse their cache).
         agentProgressSummaries: true,
         settingSources: ["user", "project", "local"],
-        systemPrompt: { type: "preset", preset: "claude_code", ...(ctx ? { append: ctx.prompt } : {}) },
-        ...(ctx ? { mcpServers: { "tether-context": { type: "stdio" as const, ...ctx.mcp } } } : {}),
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        ...launch.options,
         canUseTool,
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),

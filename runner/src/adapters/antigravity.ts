@@ -23,7 +23,8 @@ import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
 import { agyQuota } from "../fallback";
 import { agyFault, type Fault } from "../faults";
-import { sessionContext, withPreamble } from "../context/inject";
+import { sessionLaunch } from "../connectors/launch";
+import { withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { agyPick, lastLineTime } from "./lastActivity";
@@ -230,7 +231,7 @@ class AgySession extends LiveSession {
     }
     this.setState({ status: "idle", model: this.model ?? "default", modes: MODES, permissionMode: this.mode, ...this.effortState() });
     // Master context: shared memory goes ahead of the first message of a new conversation.
-    if (!this.convId) this.preamble = (await sessionContext(this.projectPath))?.prompt;
+    if (!this.convId) this.preamble = (await sessionLaunch("antigravity", { projectPath: this.projectPath })).preamble;
   }
 
   /** The attachment folders the running process was given (--add-dir). */
