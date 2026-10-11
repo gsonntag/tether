@@ -296,6 +296,30 @@ export interface SessionGoal {
   native?: boolean;
 }
 
+// ---------- plan and todos (plan_set / todo_set, runner/src/plan.ts) ----------
+
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/**
+ * The session's plan, kept by Tether so it survives a handoff: the latest plan the agent wrote
+ * (plan_set, Claude Code's ExitPlanMode, a Codex plan-mode plan, …) and its todo list.
+ *   draft     written, not (yet) up for review
+ *   review    waiting for the user's approval
+ *   approved  the user approved it
+ *   feedback  the user sent it back with comments
+ */
+export interface SessionPlan {
+  text: string;
+  todos: TodoItem[];
+  status: "draft" | "review" | "approved" | "feedback";
+  /** the transcript's plan part that shows it */
+  partId?: string;
+  updatedAt: number;
+}
+
 export interface UiResponse {
   id: string;
   cancelled?: boolean;
@@ -359,6 +383,8 @@ export interface LiveState {
   /** the session's goal (/goal); Tether keeps the agent working while it is active. null: cleared
    *  (an undefined field doesn't survive JSON, so browsers would keep the old goal) */
   goal?: SessionGoal | null;
+  /** the session's plan and todo list (null: none; see SessionGoal for why not undefined) */
+  plan?: SessionPlan | null;
 }
 
 export interface ContextUsage {
@@ -806,7 +832,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";

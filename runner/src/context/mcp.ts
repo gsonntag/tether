@@ -7,10 +7,12 @@
 // note in the store's inbox, and the runner's merge pass (dedupe, update, conflicts, commit)
 // takes it from there, so every write goes through the same path as imported memory.
 //
-// goal_get / goal_update act on the calling session's goal (/goal, runner/src/goal.ts): they go to
-// the runner over its loopback bridge (bridge.ts), as the session whose key is in the environment.
-// With the master context off a session still gets this server, with only those two tools
-// (TETHER_CONTEXT_TOOLS=goal).
+// The session tools act on the calling session: goal_get / goal_update on its goal (/goal,
+// runner/src/goal.ts), plan_get / plan_set / todo_set on its plan (runner/src/plan.ts), and
+// ask_user puts a question card in front of the user and waits for the answer. They go to the
+// runner over its loopback bridge (bridge.ts), as the session whose key is in the environment.
+// With the master context off a session still gets this server, with only the session tools
+// (TETHER_CONTEXT_TOOLS=goal, the name from when they were only the goal tools).
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -84,28 +86,93 @@ export const GOAL_TOOLS = [
   },
 ];
 
-/** The tools this server lists: only the goal tools while the master context is off. */
-export const tools = () => (process.env.TETHER_CONTEXT_TOOLS === "goal" ? GOAL_TOOLS : [...TOOLS, ...GOAL_TOOLS]);
+export const PLAN_TOOLS = [
+  {
+    name: "plan_get",
+    description: "Read this session's plan and todo list as Tether keeps them (they carry over when the session moves to another agent), and whether the user approved the plan.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "plan_set",
+    description:
+      "Write or replace this session's plan, as markdown: what you'll change and how, step by step. The user sees it in Tether. In plan mode, call this with your plan and then end your turn: the user reviews it and either approves it (then you carry it out) or sends feedback.",
+    inputSchema: { type: "object", properties: { markdown: { type: "string", description: "The whole plan, as markdown" } }, required: ["markdown"] },
+  },
+  {
+    name: "todo_set",
+    description: "Replace this session's todo list, shown to the user as a checklist. Send the whole list each time, with each item's status; keep exactly one item in_progress while you work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { text: { type: "string" }, status: { type: "string", enum: ["pending", "in_progress", "completed"] } },
+            required: ["text", "status"],
+          },
+        },
+      },
+      required: ["items"],
+    },
+  },
+];
 
-/** Asks the runner about this session's goal, over its loopback bridge. */
-async function goalCall(action: "get" | "update", args: Record<string, unknown>): Promise<Result> {
+export const ASK_TOOLS = [
+  {
+    name: "ask_user",
+    description:
+      "Ask the user a question and wait for the answer: a question card in Tether, on their phone too. Use it when you can't reasonably decide yourself (a choice between approaches, missing information). Offer options when there are clear choices; the user can always answer in their own words. If nobody answers in time, you're told so: then decide yourself and say what you chose.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "One clear question" },
+        options: { type: "array", items: { type: "string" }, description: "Short answers to pick from (optional)" },
+        multiSelect: { type: "boolean", description: "The user may pick several options" },
+      },
+      required: ["question"],
+    },
+  },
+];
+
+const SESSION_HINT = "its goal (/goal) with goal_get and goal_update; its plan and todo list with plan_get, plan_set and todo_set; questions to the user with ask_user.";
+
+/** Tools that act on the calling session (through the runner), offered even while the master context is off. */
+export const SESSION_TOOLS = [...GOAL_TOOLS, ...PLAN_TOOLS, ...ASK_TOOLS];
+const SESSION_NAMES = new Set(SESSION_TOOLS.map((t) => t.name));
+
+/** The tools this server lists: only the session tools while the master context is off. */
+export const tools = () => (process.env.TETHER_CONTEXT_TOOLS === "goal" ? SESSION_TOOLS : [...TOOLS, ...SESSION_TOOLS]);
+
+/** How often a waiting ask_user tells the client it's still alive (clients time out silent calls). */
+export const timing = { progressMs: 30_000 };
+
+/**
+ * Calls a session tool in the runner, over its loopback bridge. ask_user waits as long as the user
+ * takes (or `signal` says the client gave up); the others answer at once.
+ */
+async function sessionCall(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Result> {
+  const what = tool.startsWith("goal") ? "the goal" : tool === "ask_user" ? "the question" : "the plan";
   const key = process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY;
-  if (!key) return fail("Goals work only in sessions Tether started.");
+  if (!key) return fail(tool.startsWith("goal") ? "Goals work only in sessions Tether started." : "This works only in sessions Tether started.");
   let bridge: { url: string; token: string };
   try {
     bridge = JSON.parse(readFileSync(process.env.TETHER_BRIDGE_FILE ?? bridgeFile(), "utf8"));
   } catch {
-    return fail("Tether's runner isn't reachable from here, so the goal can't be read or updated.");
+    return fail(`Tether's runner isn't reachable from here, so ${what} can't be reached.`);
   }
-  const res = await fetch(`${bridge.url}/goal`, {
+  const waits = tool === "ask_user";
+  const res = await fetch(`${bridge.url}/session`, {
     method: "POST",
     headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ key, action, args }),
-    signal: AbortSignal.timeout(15_000),
-  }).catch(() => undefined);
-  if (!res?.ok) return fail("Tether's runner didn't answer; the goal is unchanged.");
+    body: JSON.stringify({ key, tool, args }),
+    signal: waits ? signal : AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
+    // Bun's own fetch timeout would end a question the user is still reading.
+    ...(waits ? { timeout: false } : {}),
+  } as RequestInit).catch(() => undefined);
+  if (!res?.ok) return fail(`Tether's runner didn't answer; ${what} is unchanged.`);
   const r: any = await res.json().catch(() => ({}));
-  return r.ok ? ok(String(r.text ?? "")) : fail(String(r.text ?? "Tether refused the goal call."));
+  return r.ok ? ok(String(r.text ?? "")) : fail(String(r.text ?? "Tether refused the call."));
 }
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -127,9 +194,8 @@ function repoDocs(cwd: string, query: string): string[] {
   return out.slice(0, 3);
 }
 
-export async function callTool(name: string, args: any, cwd = process.cwd()): Promise<Result> {
-  if (name === "goal_get") return goalCall("get", {});
-  if (name === "goal_update") return goalCall("update", { status: args?.status, note: args?.note });
+export async function callTool(name: string, args: any, cwd = process.cwd(), signal?: AbortSignal): Promise<Result> {
+  if (SESSION_NAMES.has(name)) return sessionCall(name, args && typeof args === "object" ? args : {}, signal);
   if (!tools().some((t) => t.name === name)) return fail(`Unknown tool ${name}`);
   const store = new Store(contextDir());
   switch (name) {
@@ -191,8 +257,14 @@ export async function callTool(name: string, args: any, cwd = process.cwd()): Pr
   return fail(`Unknown tool ${name}`);
 }
 
-/** One JSON-RPC message in, at most one reply out. */
-export async function handle(msg: any): Promise<object | undefined> {
+/** Calls in progress, by JSON-RPC id: `notifications/cancelled` ends one (an ask_user still waiting). */
+const inflight = new Map<string | number, AbortController>();
+
+/**
+ * One JSON-RPC message in, at most one reply out. `notify` sends notifications while a call runs:
+ * progress every `timing.progressMs` on a call that waits (ask_user), when the client asked for progress.
+ */
+export async function handle(msg: any, notify?: (m: object) => void): Promise<object | undefined> {
   const id = msg?.id;
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
   switch (msg?.method) {
@@ -203,19 +275,34 @@ export async function handle(msg: any): Promise<object | undefined> {
         serverInfo: { name: "tether-context", version: "0.1.0" },
         instructions:
           process.env.TETHER_CONTEXT_TOOLS === "goal"
-            ? "This session's goal in Tether (/goal): read it with goal_get, report progress with goal_update."
-            : "The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back. This session's goal (/goal): goal_get, goal_update.",
+            ? `This session in Tether: ${SESSION_HINT}`
+            : `The user's shared memory and skills across coding agents (Tether). Search before assuming; write durable facts back. This session: ${SESSION_HINT}`,
       });
     case "ping":
       return reply({});
     case "tools/list":
       return reply({ tools: tools() });
-    case "tools/call":
+    case "tools/call": {
+      const ctl = new AbortController();
+      if (id !== undefined && id !== null) inflight.set(id, ctl);
+      const token = msg.params?._meta?.progressToken;
+      let n = 0;
+      const timer =
+        token !== undefined && notify
+          ? setInterval(() => notify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: ++n, message: "Waiting for the user" } }), timing.progressMs)
+          : undefined;
       try {
-        return reply(await callTool(String(msg.params?.name), msg.params?.arguments ?? {}));
+        return reply(await callTool(String(msg.params?.name), msg.params?.arguments ?? {}, process.cwd(), ctl.signal));
       } catch (e: any) {
         return reply(fail(`tether-context error: ${e?.message ?? e}`));
+      } finally {
+        clearInterval(timer);
+        if (id !== undefined && id !== null) inflight.delete(id);
       }
+    }
+    case "notifications/cancelled":
+      inflight.get(msg.params?.requestId)?.abort();
+      return undefined;
   }
   if (id === undefined || id === null) return undefined; // notification
   return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${msg?.method}` } };
@@ -238,8 +325,9 @@ if (import.meta.main) {
         process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }) + "\n");
         continue;
       }
-      const out = await handle(msg);
-      if (out) process.stdout.write(JSON.stringify(out) + "\n");
+      // Not awaited: an ask_user waiting for the user mustn't hold up other calls (or their cancellation).
+      const write = (m: object) => process.stdout.write(JSON.stringify(m) + "\n");
+      void handle(msg, write).then((out) => out && write(out));
     }
   }
 }

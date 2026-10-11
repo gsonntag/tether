@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { invocationText } from "../../../web/src/shared/skill";
 import { isTetherOwned, OWNED_MARK } from "../context/blocks";
 import { claudeInstalled, registerClaudeMcp } from "../context/globalMcp";
+import { SESSION_TOOL_TIMEOUT_S } from "../context/launch";
 import { harness, tilde } from "../context/paths";
 import { claudeProjectScope } from "../context/repokey";
 import { toEntry } from "../mcp/formats";
@@ -85,7 +86,8 @@ async function claudeRepoFiles(x: ExportContext) {
 function claudeMcp({ context, servers }: SessionCtx) {
   const mcpServers: Record<string, unknown> = {};
   for (const s of servers ?? []) mcpServers[s.name] = toEntry(s.transport, "claude");
-  if (context) mcpServers["tether-context"] = { type: "stdio" as const, ...context.mcp };
+  // `timeout` (ms): ask_user waits for the user (context/launch.ts SESSION_TOOL_TIMEOUT_S).
+  if (context) mcpServers["tether-context"] = { type: "stdio" as const, ...context.mcp, timeout: SESSION_TOOL_TIMEOUT_S * 1000 };
   return Object.keys(mcpServers).length ? { options: { mcpServers } } : undefined;
 }
 
@@ -147,4 +149,7 @@ export const claudeConnector: Connector = {
   // evaluator keeps the turn going; there is no call to pause it or read its status, so mirroring
   // would run two loops against each other.
   goal: slot("emulated", "Tether's goal loop and goal tools; Claude Code's own /goal (a slash command with no status or pause API) isn't used"),
+  plan: slot("native", "Plan mode with its own review (ExitPlanMode), shown as Tether's plan card; plan_set also records the plan"),
+  todos: slot("native", "Its TodoWrite list, kept as the session's todo list; todo_set also works"),
+  ask_user: slot("native", "AskUserQuestion as a question card; ask_user (tether-context) also works"),
 };

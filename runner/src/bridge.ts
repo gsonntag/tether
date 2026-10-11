@@ -1,7 +1,8 @@
 // Loopback endpoint through which out-of-process gates (the pi extension, the Antigravity
-// PreToolUse hook) ask the guard about a tool call, and the `tether-context` goal tools reach
-// their session (/goal). Each live session gets its own random key, passed to its agent process
-// in the environment, so a call can only speak for its own session.
+// PreToolUse hook) ask the guard about a tool call, and the `tether-context` session tools (goal,
+// plan, todos, ask_user) reach their session (/session; /goal for older tether-context
+// processes). Each live session gets its own random key, passed to its agent process in the
+// environment, so a call can only speak for its own session.
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -18,10 +19,19 @@ const server = Bun.serve({
   idleTimeout: 0, // "ask" mode waits for a person
   async fetch(req) {
     const path = new URL(req.url).pathname;
-    if ((path !== "/guard" && path !== "/goal") || req.method !== "POST") return new Response("not found", { status: 404 });
+    if ((path !== "/guard" && path !== "/goal" && path !== "/session") || req.method !== "POST") return new Response("not found", { status: 404 });
     if (req.headers.get("authorization") !== `Bearer ${TOKEN}`) return new Response("forbidden", { status: 403 });
     const body: any = await req.json().catch(() => ({}));
     const s = sessions.get(String(body.key ?? ""));
+    if (path === "/session") {
+      if (!s || s.closed) return Response.json({ ok: false, text: "This Tether session is no longer running." });
+      try {
+        // ask_user waits for the user; the request's signal ends it if the tool call is given up.
+        return Response.json(await s.sessionTool(String(body.tool ?? ""), body.args && typeof body.args === "object" ? body.args : {}, req.signal));
+      } catch (e: any) {
+        return Response.json({ ok: false, text: `Tether: ${e?.message ?? e}` });
+      }
+    }
     if (path === "/goal") {
       if (!s || s.closed) return Response.json({ ok: false, text: "This Tether session is no longer running." });
       try {

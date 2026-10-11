@@ -74,6 +74,8 @@ export interface SessionPrefs {
   context?: import("../../web/src/shared/protocol").ContextUsage;
   /** the session's goal (/goal, runner/src/goal.ts) */
   goal?: import("../../web/src/shared/protocol").SessionGoal;
+  /** the session's plan and todo list (plan_set / todo_set, runner/src/plan.ts) */
+  plan?: import("../../web/src/shared/protocol").SessionPlan;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

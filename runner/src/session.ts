@@ -15,7 +15,7 @@ import { userParts } from "../../web/src/shared/bash";
 import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
 import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
-import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
+import { applyEvent, emptyState, findPlan, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
@@ -30,7 +30,7 @@ import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type 
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { connectorFor } from "./connectors";
 import { sessionTrust } from "./mcp/registry";
-import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SlashCommand } from "../../web/src/shared/protocol";
+import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
 import {
   budgetHit,
@@ -51,6 +51,7 @@ import {
   withNote,
   type GoalVerdict,
 } from "./goal";
+import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -76,6 +77,8 @@ const STALL_WARN_MS = 15 * 60_000;
 const MANUAL_SKIP_MS = 60 * 60_000;
 /** backoffs on an entry whose usage Tether can't check before its rate-limit error shows with "Continue on …" */
 const UNVERIFIED_BACKOFFS = 3;
+/** ask_user's answer when nobody answered (the same as Claude Code's AskUserQuestion gets) */
+export const NOBODY_ANSWERED = "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue.";
 
 /**
  * One live agent session. The runner keeps the authoritative transcript here; every change goes
@@ -228,12 +231,14 @@ export abstract class LiveSession {
         this.turnStarting = false;
         this.faultTurnStarted();
         this.goalTurnStarted();
+        this.planTurnStarted();
       }
       // The adapter showed the error on the message only (pi, Antigravity): the offer gets a notice.
       if (s.status === "idle" && before !== "idle" && this.continueOffer && !s.handoffTo) this.notice(this.continueOffer.text || "The turn ended with an error.", "error");
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle") this.goalTurnOver();
+      if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.planTurnOver();
       // An approval or question the goal loop waited on was answered after the turn had ended.
       if (s.pendingUi && !s.pendingUi.length && this.goalHeld) {
         this.goalHeld = false;
@@ -245,7 +250,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -254,6 +259,7 @@ export abstract class LiveSession {
       }
     }
     if (event.type === "activity") this.activityChanged();
+    if (event.type === "msg") this.notePlanParts(event.msg);
     if (finished?.length) this.faultToolsFinished(finished);
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
     if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
@@ -590,6 +596,11 @@ export abstract class LiveSession {
     // Your own message starts a fresh run of retries.
     if (this.t.state.status !== "running") this.fallbackAttempt = 0;
     if (this.t.state.status === "idle") {
+      // An approved plan's turn is starting: this goes in after it, not as a second turn alongside.
+      if (this.planStarting) {
+        this.pend(text, mode);
+        return;
+      }
       if (!this.t.state.pending?.length) return this.sendTyped(text);
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
       // and the list goes out from the top as usual (one queued message per turn).
@@ -864,6 +875,8 @@ export abstract class LiveSession {
       goal = { ...goal, status: "paused", reason, updatedAt: Date.now() };
     }
     if (goal) restore.goal = goal;
+    // A review that was open went with the old process; the plan stays, unreviewed.
+    if (p.plan) restore.plan = p.plan.status === "review" ? { ...p.plan, status: "draft" } : p.plan;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
@@ -920,6 +933,7 @@ export abstract class LiveSession {
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
       goal: s.goal ?? undefined,
+      plan: s.plan ?? undefined,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -1317,7 +1331,10 @@ export abstract class LiveSession {
     const key = JSON.stringify([tool, input]);
     let v: Verdict;
     let always = false;
+    // Plan mode (or a plan waiting for review) holds back changes, whatever the guard mode.
+    const held = this.planHold(tool, input);
     if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
+    else if (held) v = { decision: "deny", by: "mode", reason: held };
     else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
@@ -1904,8 +1921,8 @@ export abstract class LiveSession {
   private async sendGoalTurn(opts: { check?: string; kickoff?: boolean }) {
     const g = this.goalState;
     if (!g || g.status !== "active" || this.closed || this.t.state.handoffTo) return;
-    // A message, fallback or the harness's own goal started a turn; queued messages go first.
-    if (this.t.state.status !== "idle" || this.t.state.pending?.length) return;
+    // A message, fallback, a plan approval or the harness's own goal started a turn; queued messages go first.
+    if (this.t.state.status !== "idle" || this.t.state.pending?.length || this.planStarting) return;
     if (this.t.state.pendingUi.length) {
       this.goalHeld = true;
       return;
@@ -1929,6 +1946,324 @@ export abstract class LiveSession {
     }
     // A rejected "done" left the harness's own copy complete: active again, now that the turn runs.
     if (opts.check && this.goalState) void this.putGoal(this.goalState);
+  }
+
+  // ---- plan and todos (runner/src/plan.ts), ask_user ----
+  // One plan and todo list per session, from plan_set / todo_set or the harness's own plan and
+  // todo tools (recorded as their parts go by, see notePlanParts). Where the harness has no plan
+  // review of its own, Tether's review card stands in: when a plan-mode turn ends (Codex, ACP; pi
+  // in Tether's plan mode), or an ACP agent leaves plan mode by itself. While planning, and while
+  // a plan waits for that review, the guard holds back every call that would change something.
+
+  /** Adapters whose harness plans without a review step Tether can see (Codex, ACP) or not at all (pi): planning now. */
+  protected planning(): boolean {
+    return false;
+  }
+  /** Adapters: out of plan mode once its plan is approved (Codex default, ACP's previous mode, pi's own). */
+  protected async leavePlanMode(): Promise<void> {}
+  /** A plan-mode turn's last reply counts as its plan when it wrote none with plan_set (pi, ACP: no plan item of their own). */
+  protected planFromReply = false;
+  /** The harness reviews plans itself (Claude Code's ExitPlanMode, Antigravity): plan_set only records. */
+  protected nativePlanReview = false;
+
+  /** a plan the agent left plan mode without: its review is pending, and changes wait for it (ACP) */
+  private planGate = false;
+  /** the plan part written during the running turn, and where the turn's messages start */
+  private turnPlan?: string;
+  private planTurnFrom = 0;
+  /** plan and todo parts recorded already: an older one sent again can't replace a newer one */
+  private planParts = new Set<string>();
+  private todoPart?: string;
+  /** the todo card todo_set made last */
+  private ownTodoPart?: string;
+  /** the open review (askUi id), and the plan part it is for */
+  private planReviewId?: string;
+  private planReviewPart?: string;
+  /** a plan was approved and its implementing turn is on its way (the goal loop waits for it) */
+  private planStarting = false;
+
+  get planState(): SessionPlan | undefined {
+    return this.t.state.plan ?? undefined;
+  }
+
+  private putPlan(patch: Partial<SessionPlan>) {
+    const cur = this.planState ?? { text: "", todos: [], status: "draft" as const, updatedAt: 0 };
+    const next: SessionPlan = { ...cur, ...patch, updatedAt: Date.now() };
+    if (JSON.stringify({ ...next, updatedAt: 0 }) === JSON.stringify({ ...cur, updatedAt: 0 })) return;
+    this.setState({ plan: next });
+  }
+
+  private planTurnStarted() {
+    this.planStarting = false;
+    this.turnPlan = undefined;
+    this.planTurnFrom = this.t.messages.length;
+  }
+
+  /** Plans and todo lists in what the agent writes (any harness): the session's plan follows them. */
+  private notePlanParts(msg: Msg) {
+    if (msg.role !== "assistant") return;
+    for (const p of msg.parts) {
+      if (p.type === "plan") {
+        if (p.checklist) {
+          // ACP's plan updates are a checklist: the session's todo list.
+          const todos = parseChecklist(p.text);
+          if (todos.length && this.newerPart(p.id, "todo")) this.putPlan({ todos });
+          continue;
+        }
+        if (!p.text.trim() || !this.newerPart(p.id, "plan")) continue;
+        if (this.t.state.status !== "idle") this.turnPlan = p.id;
+        const cur = this.planState;
+        const status = p.outcome === "approved" ? "approved" : p.outcome === "feedback" ? "feedback" : cur?.partId === p.id && cur.status === "review" ? "review" : "draft";
+        this.putPlan({ text: p.text, partId: p.id, status });
+      } else if (p.type === "tool" && /^todowrite$/i.test(p.name)) {
+        const todos = todosFromInput(p.input);
+        if (todos && this.newerPart(p.id, "todo")) this.putPlan({ todos });
+      }
+    }
+  }
+
+  /** Whether this part may set the plan (todo list): the one that last did, or one not seen before. */
+  private newerPart(id: string, kind: "plan" | "todo"): boolean {
+    if (kind === "todo") {
+      if (this.todoPart === id) return true;
+      if (this.planParts.has(`todo:${id}`)) return false;
+      this.planParts.add(`todo:${id}`);
+      this.todoPart = id;
+      return true;
+    }
+    if (this.planState?.partId === id) return true;
+    if (this.planParts.has(id)) return false;
+    this.planParts.add(id);
+    return true;
+  }
+
+  /** Why plan mode holds this call back, if it does (checkTool). */
+  private planHold(tool: string, input: unknown): string | undefined {
+    const planning = this.planning();
+    if (!planning && !this.planGate) return undefined;
+    if (!mutates(tool, input)) return undefined;
+    return planning && !this.planReviewId ? PLAN_MODE_REASON : PLAN_WAIT_REASON;
+  }
+
+  /** A turn ended: in plan mode, its plan goes up for review. */
+  private planTurnOver() {
+    const partId = this.turnPlan;
+    this.turnPlan = undefined;
+    if (this.closed || this.userStopped || this.turnTrouble) return;
+    if (!this.planning() && !this.planGate) return;
+    const id = partId ?? (this.planFromReply ? this.replyAsPlan() : undefined);
+    if (!id) return;
+    // Up for review already (an ACP agent left plan mode by itself mid-turn): that card stays.
+    if (this.planReviewId && this.planReviewPart === id) return;
+    // A turn you started while an older plan waited (a message instead of the review): the newer plan replaces it.
+    if (this.planReviewId) this.uiRespond({ id: this.planReviewId, cancelled: true });
+    void this.tetherPlanReview(id);
+  }
+
+  /** The turn's last reply becomes its plan: the text part turns into a plan part (no second copy). */
+  private replyAsPlan(): string | undefined {
+    const hit = lastReply(this.t.messages, this.planTurnFrom);
+    if (!hit) return undefined;
+    const id = newId("plan");
+    this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p, i) => (i === hit.index ? { type: "plan" as const, id, text: hit.text.trim() } : p)) } });
+    return id;
+  }
+
+  /**
+   * An agent left plan mode by itself (ACP), with no approved plan: changes wait for one. Its plan,
+   * if it wrote one, goes up for review now; otherwise the turn's end looks for one.
+   */
+  protected leftPlanMode() {
+    // Tether's own way out of plan mode (an approval, the mode picker) never comes here (ACP's
+    // settingMode), so an earlier plan's approval doesn't count for this one.
+    this.planGate = true;
+    if (this.turnPlan && !this.planReviewId) void this.tetherPlanReview(this.turnPlan);
+  }
+
+  private get harnessLabel() {
+    return HARNESSES.find((h) => h.id === this.harness)?.label ?? this.harness;
+  }
+
+  /** Tether's review card for a plan part; Approve leaves plan mode and has it carried out, feedback goes back as a message. */
+  private async tetherPlanReview(partId: string) {
+    const id = newId("plan-review");
+    this.planReviewId = id;
+    this.planReviewPart = partId;
+    this.putPlan({ status: "review" });
+    let res: UiResponse;
+    try {
+      res = await this.askUi({ id, kind: "plan", title: `${this.harnessLabel}'s plan is ready for review`, planId: partId });
+    } finally {
+      if (this.planReviewId === id) this.planReviewId = this.planReviewPart = undefined;
+    }
+    if (this.closed) return;
+    const current = this.planState?.partId === partId;
+    if (res.cancelled) {
+      // Replaced by a newer review: that one has the plan now.
+      if (this.planReviewId) return;
+      if (current && this.planState?.status === "review") this.putPlan({ status: "draft" });
+      // Dismissed or stopped: you chose not to wait for it, so changes no longer do either.
+      this.planGate = false;
+      return;
+    }
+    if (res.allow) {
+      // The go-ahead is on its way: a message sent meanwhile waits for it (prompt).
+      this.planStarting = true;
+      this.setPlanPart(partId, { outcome: "approved" });
+      if (current) this.putPlan({ status: "approved" });
+      this.planGate = false;
+      try {
+        await this.leavePlanMode();
+      } catch (e: any) {
+        this.notice(`Could not leave plan mode: ${e?.message ?? e}`, "warning");
+      }
+      return this.implementPlan();
+    }
+    const feedback = res.value?.trim() || "Please revise the plan.";
+    this.setPlanPart(partId, { outcome: "feedback" });
+    if (current) this.putPlan({ status: "feedback" });
+    await this.prompt(feedback);
+  }
+
+  private setPlanPart(partId: string, patch: { text?: string; outcome?: "approved" | "feedback" }) {
+    const hit = findPlan(this.t.messages, partId);
+    if (hit) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, ...patch } : p)) } });
+  }
+
+  /** After an approval: the agent carries the plan out (in the running turn, if there is one). */
+  private async implementPlan() {
+    if (this.t.state.handoffTo || this.closed) {
+      this.planStarting = false;
+      return;
+    }
+    if (this.t.state.status !== "idle") {
+      this.planStarting = false;
+      this.pend(IMPLEMENT_PROMPT, "steer", { now: true });
+      return;
+    }
+    this.planStarting = true;
+    try {
+      await this.checkpoint(IMPLEMENT_PROMPT);
+      this.turnStarting = true;
+      await this.continueTurn(IMPLEMENT_PROMPT);
+    } catch (e: any) {
+      this.planStarting = this.turnStarting = false;
+      this.notice(`Could not start on the plan: ${e?.message ?? e}`, "error");
+      // Messages sent while it was starting go out now.
+      if (this.t.state.status === "idle") await this.drainPending();
+    }
+  }
+
+  /** You picked a mode yourself (the mode picker): out of plan mode, nothing waits for a review any more. */
+  protected modeChosen(mode: string) {
+    if (!isPlanMode(mode)) this.planGate = false;
+  }
+
+  /** A plan that came over in a handoff: the new session's plan, shown again (an open review starts over). */
+  adoptPlan(p: SessionPlan) {
+    const plan: SessionPlan = { ...p, status: p.status === "review" ? "draft" : p.status, partId: undefined, updatedAt: Date.now() };
+    if (plan.text.trim()) {
+      const partId = newId("plan");
+      plan.partId = partId;
+      this.planParts.add(partId);
+      const outcome = plan.status === "approved" ? { outcome: "approved" as const } : {};
+      this.emit({ type: "msg", msg: { id: newId("a"), role: "assistant", parts: [{ type: "plan", id: partId, text: plan.text, ...outcome }], ts: Date.now(), model: this.t.state.model } });
+    }
+    this.setState({ plan });
+    if (plan.todos.length) this.showTodos(plan.todos);
+  }
+
+  /** The todo card (Claude Code's TodoWrite shape): updated in place until a user message comes after it. */
+  private showTodos(todos: TodoItem[]) {
+    // Only a card Tether made: the harness's own todo card is its to change.
+    const part = this.todoPart === this.ownTodoPart ? this.ownTodoPart : undefined;
+    const last = part ? this.t.messages.findLastIndex((m) => m.parts.some((p) => p.type === "tool" && p.id === part)) : -1;
+    const msg = last >= 0 && !this.t.messages.slice(last + 1).some((m) => m.role === "user") ? this.t.messages[last] : undefined;
+    if (msg) {
+      this.emit({ type: "msg", msg: { ...msg, parts: msg.parts.map((p) => (p.type === "tool" && p.id === part ? { ...p, input: todoInput(todos) } : p)) } });
+      return;
+    }
+    const id = newId("todo");
+    this.planParts.add(`todo:${id}`);
+    this.todoPart = this.ownTodoPart = id;
+    this.emit({ type: "msg", msg: { id: newId("a"), role: "assistant", parts: [{ type: "tool", id, name: "TodoWrite", input: todoInput(todos), status: "done" }], ts: Date.now(), model: this.t.state.model } });
+  }
+
+  /**
+   * The session tools of `tether-context` (context/mcp.ts, through bridge.ts): goal_get /
+   * goal_update, plan_get / plan_set / todo_set, ask_user (which waits for the answer; `signal`
+   * ends the wait when the agent gives up on the call).
+   */
+  async sessionTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: boolean; text: string }> {
+    switch (tool) {
+      case "goal_get":
+        return this.goalTool("get", args);
+      case "goal_update":
+        return this.goalTool("update", args);
+      case "plan_get":
+        return { ok: true, text: describePlan(this.planState) };
+      case "plan_set":
+        return this.planSet(args.markdown);
+      case "todo_set":
+        return this.todoSet(args.items);
+      case "ask_user":
+        return this.askUser(args, signal);
+    }
+    return { ok: false, text: `Unknown tool "${tool}".` };
+  }
+
+  private planSet(markdown: unknown): { ok: boolean; text: string } {
+    const text = String(markdown ?? "").trim();
+    if (!text) return { ok: false, text: "markdown is required: the plan, as markdown." };
+    if (text.length > 100_000) return { ok: false, text: "The plan is too long (100,000 characters at most)." };
+    const cur = this.planState;
+    // Rewritten in the same turn before anyone reviewed it: the same card, updated.
+    const hit = cur?.partId && cur.partId === this.turnPlan && cur.status === "draft" ? findPlan(this.t.messages, cur.partId) : undefined;
+    if (hit) this.setPlanPart(hit.part.id, { text });
+    else this.emit({ type: "msg", msg: { id: newId("a"), role: "assistant", parts: [{ type: "plan", id: newId("plan"), text }], ts: Date.now(), model: this.t.state.model } });
+    if (this.planning() || this.planGate)
+      return { ok: true, text: "Plan saved. End your turn now: Tether shows it to the user for review, and you'll hear back when they approve it or send feedback. Don't change anything until then." };
+    if (this.nativePlanReview && this.t.state.permissionMode === "plan")
+      return { ok: true, text: "Plan saved in Tether. You're in your own plan mode: still present the plan for approval the usual way (in Claude Code, ExitPlanMode)." };
+    return { ok: true, text: "Plan saved. The user sees it in Tether, and it carries over if the session moves to another agent." };
+  }
+
+  private todoSet(items: unknown): { ok: boolean; text: string } {
+    const todos = parseTodos(items);
+    if (typeof todos === "string") return { ok: false, text: todos };
+    this.putPlan({ todos });
+    this.showTodos(todos);
+    const done = todos.filter((t) => t.status === "completed").length;
+    return { ok: true, text: `Todo list updated: ${done} of ${todos.length} done.` };
+  }
+
+  /** How long a question waits when nobody is meant to be there to answer it (guard on Auto or Dangerously skip). */
+  static UNATTENDED_QUESTION_MS = 15 * 60_000;
+
+  /** How long a question waits: a person in the loop (Ask, Accept edits) is waited for; otherwise UNATTENDED_QUESTION_MS. */
+  questionTimeout(): number | undefined {
+    return this.guardMode === "ask" || this.guardMode === "edits" ? undefined : LiveSession.UNATTENDED_QUESTION_MS;
+  }
+
+  /** ask_user: the question card, on any harness; waits for the answer (or the unattended timeout). */
+  async askUser(args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: boolean; text: string }> {
+    const question = String(args.question ?? "").trim();
+    if (!question) return { ok: false, text: "question is required." };
+    const raw = Array.isArray(args.options) ? args.options : [];
+    const options = raw
+      .map((o: any) => (typeof o === "string" ? { label: o.trim() } : { label: String(o?.label ?? "").trim(), ...(o?.description ? { description: String(o.description) } : {}) }))
+      .filter((o) => o.label)
+      .slice(0, 12);
+    const id = newId("q");
+    if (signal?.aborted) return { ok: false, text: "The question was cancelled." };
+    signal?.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
+    const res = await this.askUi(
+      { id, kind: "question", title: `${this.harnessLabel} has a question`, questions: [{ question, options, multiSelect: args.multiSelect === true }] },
+      this.questionTimeout(),
+    );
+    const answer = res.answers?.[question]?.trim();
+    if (res.cancelled || !answer) return { ok: true, text: NOBODY_ANSWERED };
+    return { ok: true, text: `The user answered: ${answer}` };
   }
 
   // ---- housekeeping ----

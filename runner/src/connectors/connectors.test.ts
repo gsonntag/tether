@@ -31,7 +31,8 @@ describe("session launch per harness", () => {
       env: {},
       options: {
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.prompt },
-        mcpServers: { "tether-context": { type: "stdio", command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env } },
+        // ask_user waits for the user: a day before Claude Code gives up on the call
+        mcpServers: { "tether-context": { type: "stdio", command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env, timeout: 86_400_000 } },
       },
     });
   });
@@ -42,7 +43,7 @@ describe("session launch per harness", () => {
       env: {},
       options: {
         developerInstructions: ctx.prompt,
-        config: { "mcp_servers.tether-context": { command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env, default_tools_approval_mode: "approve" } },
+        config: { "mcp_servers.tether-context": { command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env, default_tools_approval_mode: "approve", tool_timeout_sec: 86_400 } },
       },
     });
   });
@@ -53,7 +54,7 @@ describe("session launch per harness", () => {
     const l = at("pi");
     expect(l.args.slice(0, 3)).toEqual(["--append-system-prompt", ctx.prompt, "--mcp-config"]);
     expect(l.args[3]!.startsWith(join(configDir(), "run", "pi-mcp-"))).toBe(true);
-    expect(JSON.parse(readFileSync(l.args[3]!, "utf8")).mcpServers["tether-context"]).toEqual({ command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env });
+    expect(JSON.parse(readFileSync(l.args[3]!, "utf8")).mcpServers["tether-context"]).toEqual({ command: "/bun", args: ["/mcp.ts"], env: ctx.mcp.env, timeout: 86_400 });
   });
 
   for (const h of ["opencode", "kiro"] as const)

@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { invocationText } from "../../../web/src/shared/skill";
 import { upsertTomlBlock } from "../context/blocks";
-import { mcpLaunch } from "../context/launch";
+import { mcpLaunch, SESSION_TOOL_TIMEOUT_S } from "../context/launch";
 import { harness } from "../context/paths";
 import { toEntry } from "../mcp/formats";
 import { codexServers } from "../mcp/sources";
@@ -29,6 +29,7 @@ function registerCodexMcp(x: ExportContext) {
     `command = ${JSON.stringify(l.command)}`,
     `args = [${l.args.map((a) => JSON.stringify(a)).join(", ")}]`,
     `default_tools_approval_mode = "approve"`,
+    `tool_timeout_sec = ${SESSION_TOOL_TIMEOUT_S}`,
     `[mcp_servers.tether-context.env]`,
     ...Object.entries(l.env).map(([k, v]) => `${k} = ${JSON.stringify(v)}`),
   ].join("\n");
@@ -44,7 +45,14 @@ function codexMcp({ context, servers }: SessionCtx) {
     if (e) config[`mcp_servers.${s.name}`] = e;
   }
   if (context)
-    config["mcp_servers.tether-context"] = { command: context.mcp.command, args: context.mcp.args, env: context.mcp.env, default_tools_approval_mode: "approve" };
+    config["mcp_servers.tether-context"] = {
+      command: context.mcp.command,
+      args: context.mcp.args,
+      env: context.mcp.env,
+      default_tools_approval_mode: "approve",
+      // ask_user waits for the user; Codex's default is 60 s.
+      tool_timeout_sec: SESSION_TOOL_TIMEOUT_S,
+    };
   return Object.keys(config).length ? { options: { config } } : undefined;
 }
 
@@ -83,4 +91,9 @@ export const codexConnector: Connector = {
   hooks: slot("native", "Hooks in its config; not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("native", "Mirrored into Codex's thread goal (thread/goal/set), status synced back; Tether's loop continues when Codex doesn't"),
+  // Checked with codex-cli 0.162: plan mode (collaborationMode "plan") ends its turn on a `plan`
+  // item; the TUI's "Implement this plan?" prompt is client-side, the app-server has no review step.
+  plan: slot("emulated", "Plan mode has no review over the app-server: Tether's review card when a plan-mode turn ends; Approve switches to Default and sends \"Implement the plan.\""),
+  todos: slot("native", "Its plan checklist (turn/plan/updated), kept as the session's todo list; todo_set also works"),
+  ask_user: slot("native", "Its request_user_input as a question card; ask_user (tether-context) also works"),
 };

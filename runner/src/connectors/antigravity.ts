@@ -47,4 +47,7 @@ export const antigravityConnector: Connector = {
   hooks: slot("native", "Hooks (Tether's guard is a PreToolUse hook); not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("emulated", "Tether's goal loop; the goal tools only where its global tether-context passes the session through"),
+  plan: slot("native", "Plan mode; Tether holds its first change until you approve the plan (headless agy would approve its own)"),
+  todos: slot("emulated", "todo_set only where its global tether-context passes the session through"),
+  ask_user: slot("emulated", "ask_user only where its global tether-context passes the session through"),
 };

@@ -13,6 +13,14 @@ export const MCP_SCRIPT = new URL("./mcp.ts", import.meta.url).pathname;
  */
 export const bridgeFile = () => join(configDir(), "bridge.json");
 
+/**
+ * How long a harness lets one `tether-context` call run: ask_user waits for the user (Tether ends
+ * it after 15 minutes only when nobody is meant to be watching). Harness defaults are far shorter:
+ * Codex 60 s (`tool_timeout_sec`), pi-mcp-adapter 60 s (`timeout`, reset by progress), Claude Code
+ * 30 min of silence on stdio (`timeout` raises it).
+ */
+export const SESSION_TOOL_TIMEOUT_S = 24 * 60 * 60;
+
 export interface McpLaunch {
   command: string;
   args: string[];
@@ -22,7 +30,8 @@ export interface McpLaunch {
 /**
  * The stdio launcher. `sessionKey` (the session's guard key) lets the runner tie a memory_write
  * to the Tether session that made it, even before the harness has assigned a session id, and the
- * goal tools act on that session. `goalOnly`: the master context is off, so only the goal tools.
+ * session tools (goal, plan, todos, ask_user) act on that session. `goalOnly`: the master context
+ * is off, so only the session tools.
  */
 export function mcpLaunch(session?: { id?: string; key?: string }, opts: { goalOnly?: boolean } = {}): McpLaunch {
   const env: Record<string, string> = { TETHER_CONTEXT_DIR: contextDir() };

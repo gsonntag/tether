@@ -24,7 +24,7 @@ import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
-import { LiveSession, newId } from "../session";
+import { LiveSession, newId, NOBODY_ANSWERED } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionLaunch } from "../connectors/launch";
 import { argvSafeMcp } from "../connectors/claude";
@@ -306,6 +306,8 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 // ---------------- live session ----------------
 
 class ClaudeSession extends LiveSession {
+  /** plan mode reviews its own plans (ExitPlanMode, see reviewPlan) */
+  protected nativePlanReview = true;
   private q?: Query;
   private input = new InputQueue();
   private resumeId?: string;
@@ -712,10 +714,8 @@ class ClaudeSession extends LiveSession {
       const id = newId("q");
       signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
       // Unattended (auto/full guard): don't stall forever on a question nobody is there to answer.
-      const timeout = this.guardMode === "ask" || this.guardMode === "edits" ? undefined : 15 * 60_000;
-      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, timeout);
-      if (res.cancelled || !res.answers)
-        return { behavior: "deny", message: "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue." };
+      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, this.questionTimeout());
+      if (res.cancelled || !res.answers) return { behavior: "deny", message: NOBODY_ANSWERED };
       return { behavior: "allow", updatedInput: { ...input, answers: res.answers } };
     }
     if (toolName === "ExitPlanMode") return this.reviewPlan(input, signal, toolUseID);

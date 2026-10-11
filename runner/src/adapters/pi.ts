@@ -11,6 +11,10 @@ import { PiActivity } from "./piActivity";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
+import { PLAN_HINT, PLAN_MODE, withoutPlanHint } from "../plan";
+
+/** pi has no modes of its own: "plan" is Tether's (runner/src/plan.ts), enforced by the guard. */
+export const PI_MODES = ["default", PLAN_MODE];
 import { piFault } from "../faults";
 import { sessionLaunch } from "../connectors/launch";
 import { piGoalFilter } from "../connectors/pi";
@@ -168,12 +172,13 @@ function resultText(content: any): string {
 function convertMessage(m: any, messages: Msg[], id: string, fallbackTs = Date.now()): Msg | undefined {
   switch (m.role) {
     case "user": {
-      // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md.
+      // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md. The
+      // plan-mode note Tether added (send) isn't something you wrote.
       const parts: Part[] =
         typeof m.content === "string"
-          ? userParts(m.content, id)
+          ? userParts(withoutPlanHint(m.content), id)
           : (m.content ?? []).flatMap((b: any, i: number): Part[] =>
-              b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(b.text ?? "", `${id}:${i}`),
+              b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(withoutPlanHint(b.text ?? ""), `${id}:${i}`),
             );
       return { id, role: "user", parts, ts: msTime(m.timestamp) || fallbackTs };
     }
@@ -360,6 +365,8 @@ class PiSession extends LiveSession {
       status: st.isStreaming ? "running" : "idle",
       model: st.model ? `${st.model.provider}/${st.model.id}` : undefined,
       thinking: st.thinkingLevel,
+      modes: PI_MODES,
+      permissionMode: this.opts.permissionMode === PLAN_MODE ? PLAN_MODE : "default",
     });
     this.mcpAuthNotice(launch.mcpAuth);
     this.refreshContext();
@@ -558,7 +565,9 @@ class PiSession extends LiveSession {
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
     this.autoTitle(text);
-    await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
+    // pi doesn't know about Tether's plan mode: the message says so.
+    const message = this.planning() ? `${text}\n\n${PLAN_HINT}` : text;
+    await this.rpc.call("prompt", { message, ...(await piImages(text)) });
   }
 
   protected async steer(text: string) {
@@ -592,8 +601,21 @@ class PiSession extends LiveSession {
     this.setState({ thinking: level });
   }
 
-  async setPermissionMode() {
-    throw new Error("pi has no permission modes");
+  /** Tether's plan mode (the guard holds back changes until the plan is approved) or not. */
+  async setPermissionMode(mode: string) {
+    if (!PI_MODES.includes(mode)) throw new Error(`pi runs in ${PI_MODES.join(" or ")} mode here; the guard setting decides approvals.`);
+    this.setState({ permissionMode: mode });
+  }
+
+  protected planning() {
+    return this.t.state.permissionMode === PLAN_MODE;
+  }
+
+  /** pi has no plan item: the plan-mode turn's reply is the plan, unless plan_set wrote one. */
+  protected planFromReply = true;
+
+  protected async leavePlanMode() {
+    this.setState({ permissionMode: "default" });
   }
 
   async rename(title: string) {
@@ -706,7 +728,7 @@ export const piAdapter: Adapter = {
     if (live instanceof PiSession) {
       const d = await live.models();
       modelCache = { at: Date.now(), data: d };
-      return { ...d, permissionModes: [] };
+      return { ...d, permissionModes: PI_MODES };
     }
     if (!modelCache || Date.now() - modelCache.at > 10 * 60_000) {
       // A short-lived process just to read the model list.
@@ -721,6 +743,6 @@ export const piAdapter: Adapter = {
         rpc.close();
       }
     }
-    return { ...modelCache.data, permissionModes: [] };
+    return { ...modelCache.data, permissionModes: PI_MODES };
   },
 };

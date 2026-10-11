@@ -11,6 +11,7 @@ import type { ContextService } from "./context";
 import { carriedNotice } from "./context/handoff";
 import { buildBrief } from "./handoff";
 import { briefSection } from "./goal";
+import { briefSection as planBrief } from "./plan";
 import { entryLabel, fmtTime, type HandoffOpts, type LiveSession } from "./session";
 import { resolveForBrief } from "./skillcmd";
 
@@ -58,6 +59,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     tasks,
     // Decision 6: an active goal goes with the conversation, and the loop keeps running there.
     goal: from.goalState?.status === "active" ? briefSection(from.goalState) : undefined,
+    // The plan and todo list go with it too (an open review was cancelled above: it starts over there).
+    plan: planBrief(from.planState),
   });
   const mode = from.t.state.permissionMode;
   const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
@@ -85,6 +88,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     await next.adoptGoal(goal);
     from.handOverGoal(entryLabel(to, from.harness));
   }
+  const plan = from.planState;
+  if (plan && (plan.text.trim() || plan.todos.length)) next.adoptPlan(plan);
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   const left = [
     cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",

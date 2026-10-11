@@ -134,6 +134,8 @@ function loadModels(): Promise<ModelRef[]> {
 // ---------------- session ----------------
 
 class AgySession extends LiveSession {
+  /** plan mode's plans go up for review before its first change (see checkTool) */
+  protected nativePlanReview = true;
   private proc?: ReturnType<typeof Bun.spawn>;
   /** the previous process, until it has exited (agy keeps the conversation open until then) */
   private exiting?: Promise<unknown>;

@@ -954,6 +954,16 @@ export class CodexSession extends LiveSession {
     this.setState({ permissionMode: mode });
   }
 
+  /** Plan mode: its `plan` item goes up for Tether's review when the turn ends (the app-server has no review step). */
+  protected planning() {
+    return this.collab === "plan";
+  }
+
+  /** Approved: Default mode from the next turn, as the Codex TUI's "Yes, implement this plan" does. */
+  protected async leavePlanMode() {
+    if (this.collab === "plan") await this.setPermissionMode("default");
+  }
+
   async rename(title: string) {
     await this.p.call("thread/name/set", { threadId: this.nativeId, name: title }).catch(() => {});
     this.setTitle(title);

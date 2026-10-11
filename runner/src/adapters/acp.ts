@@ -19,6 +19,7 @@ import { findTool } from "../../../web/src/shared/reducer";
 import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
+import { isPlanMode } from "../plan";
 import { acpFault } from "../faults";
 import { sessionLaunch } from "../connectors/launch";
 import { withPreamble } from "../context/inject";
@@ -454,7 +455,7 @@ class AcpSession extends LiveSession {
         break;
       }
       case "current_mode_update":
-        this.setState({ permissionMode: u.currentModeId });
+        this.modeChanged(u.currentModeId);
         break;
       case "config_option_update":
         this.applyConfig(u.configOptions);
@@ -584,11 +585,48 @@ class AcpSession extends LiveSession {
 
   async setPermissionMode(mode: string) {
     const opt = configOption(this.configOptions, "mode");
-    if (opt) {
-      const r: any = await this.p.conn.setSessionConfigOption({ sessionId: this.nativeId, configId: opt.id, value: mode } as any);
-      this.applyConfig(r?.configOptions);
-    } else await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
+    const was = this.t.state.permissionMode;
+    this.settingMode = mode;
+    try {
+      if (opt) {
+        const r: any = await this.p.conn.setSessionConfigOption({ sessionId: this.nativeId, configId: opt.id, value: mode } as any);
+        this.applyConfig(r?.configOptions);
+      } else await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
+    } finally {
+      this.settingMode = undefined;
+    }
+    if (isPlanMode(mode) && was && !isPlanMode(was)) this.beforePlan = was;
     this.setState({ permissionMode: mode });
+    this.modeChosen(mode);
+  }
+
+  /** a mode change Tether asked for (the agent's current_mode_update for it isn't the agent's own) */
+  private settingMode?: string;
+  /** the mode before plan mode, to go back to once the plan is approved */
+  private beforePlan?: string;
+
+  /** The agent switched modes: leaving plan mode by itself, its plan still waits for the user's review. */
+  private modeChanged(mode: string) {
+    const was = this.t.state.permissionMode;
+    if (mode === was) return;
+    if (isPlanMode(mode) && was && !isPlanMode(was)) this.beforePlan = was;
+    this.setState({ permissionMode: mode });
+    if (isPlanMode(was) && !isPlanMode(mode) && this.settingMode !== mode && !this.loadingHistory) this.leftPlanMode();
+  }
+
+  /** Its plan mode (opencode's plan agent, …) has no review step: Tether's card stands in when the turn ends. */
+  protected planning() {
+    return isPlanMode(this.t.state.permissionMode);
+  }
+
+  /** ACP plans are checklists, not a plan to approve: the plan-mode turn's reply is the plan (unless plan_set wrote one). */
+  protected planFromReply = true;
+
+  /** Approved: back to the mode it planned from, else the agent's first mode that isn't a plan mode. */
+  protected async leavePlanMode() {
+    if (!this.planning()) return;
+    const to = this.beforePlan && this.modeIds.includes(this.beforePlan) ? this.beforePlan : this.modeIds.find((m) => !isPlanMode(m));
+    if (to) await this.setPermissionMode(to);
   }
 
   async rename(title: string) {

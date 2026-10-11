@@ -1,7 +1,7 @@
 # Harness platform: connectors, Tether-owned features, strict fallback
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
-live. Phase 4 not started. What was built, emulated or left unsupported per harness is in
+live. Phase 4: plan + todos and `ask_user` built (unit p4a); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -304,6 +304,43 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | opencode | native (ACP `mcpServers`; http/sse only if advertised; unverified) | opencode config | header at launch | native for listed commands, else expanded | emulated (preamble) | no | none | manual only | emulated |
 | Kiro | native (ACP; unverified) | `~/.kiro/settings/mcp.json` | header at launch | native for listed commands, else expanded | emulated (preamble) | no | none captured | manual only | emulated |
 | Antigravity | unsupported (global config only, no repo-scope servers) | `~/.gemini/config/mcp_config.json` (+ Gemini CLI `settings.json` if present) | none (signs in by itself, if it can) | emulated (expanded) | emulated (preamble) | no | exact quota message | yes (reads the message as the signal) | emulated; goal tools only if its global tether-context reaches the bridge |
+
+**Phase 4a: plan, todos, ask_user.**
+- State: `LiveState.plan` (`SessionPlan`: markdown, todos, status draft / review / approved /
+  feedback, the plan part showing it), saved with the session (an open review comes back as draft
+  after a restart). Tools in `tether-context`, which every keyed session has (also while the master
+  context is off): `plan_get`, `plan_set(markdown)`, `todo_set(items[{text,status}])`,
+  `ask_user(question, options?, multiSelect?)`, over the bridge's new `/session` route (`/goal` kept
+  for older processes). The MCP server now handles calls concurrently, cancels a call on
+  `notifications/cancelled` and sends progress every 30 s while ask_user waits.
+- Rendering: `plan_set` adds the existing plan card (rewritten in place within one turn until
+  reviewed); `todo_set` the existing todo card (TodoWrite shape, updated in place until you write
+  again). The harness's own plans (ExitPlanMode, Codex plan items, agy) and todo lists (TodoWrite,
+  Codex `turn/plan/updated`, ACP plan checklists) are recorded as the session's plan as they go by.
+- Review gate: Claude Code and Antigravity keep their own. Codex and ACP plan modes (and pi's new
+  Tether "Plan" mode, `PI_MODES`) get Tether's review card when a plan-mode turn ends with a plan:
+  `plan_set`, a Codex `plan` item, or (pi, ACP) the turn's last reply turned into a plan card. While
+  planning or waiting for review the guard denies anything that would change something (`plan.ts
+  mutates`: edits except `plans/*.md`, non-read-only shell, other MCP and unknown tools) with a
+  reason telling the agent to call plan_set and end its turn. An ACP agent leaving plan mode by
+  itself gets the same hold until its plan is approved. Approve leaves plan mode (Codex Default, the
+  ACP mode it came from or its first non-plan mode, pi Default) and sends "Implement the plan."
+  (Codex's own words); "Send feedback" sends the comments as a message and stays in plan mode.
+- ask_user: the existing question card on every harness, blocking until answered; with the guard
+  on Auto or Dangerously skip it gives up after 15 minutes like Claude's AskUserQuestion ("Nobody
+  answered…"). Harness MCP timeouts raised for `tether-context`: Claude `timeout` 24 h, Codex
+  `tool_timeout_sec` 86400 (also in its global block), pi-mcp-adapter `timeout` 86400 s.
+- Handoff: a "## Plan" section in the brief (status, plan, todo list), and the new session adopts
+  the plan (its plan and todo cards shown again).
+
+| | Plan review | Todos | ask_user |
+|---|---|---|---|
+| Claude Code | native (ExitPlanMode) | native (TodoWrite) + todo_set | native (AskUserQuestion) + ask_user |
+| Codex | emulated: review card after a plan-mode turn | native (turn/plan/updated) + todo_set | native (request_user_input) + ask_user |
+| pi | emulated: Tether Plan mode, guard-enforced | todo_set (needs pi-mcp-adapter) | ask_user (needs pi-mcp-adapter) |
+| opencode | emulated: review card, changes held until approved (unverified) | native (ACP plan) + todo_set | ask_user |
+| Kiro | emulated where it has a plan mode (unverified) | todo_set | ask_user |
+| Antigravity | native (Tether holds its first change) | todo_set only via its global tether-context | ask_user only via its global tether-context |
 
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/

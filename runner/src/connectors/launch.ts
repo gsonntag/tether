@@ -12,8 +12,8 @@ import { SLOTS, type SessionCtx, type SessionLaunch } from "./types";
 
 /**
  * Every slot's contribution for this session, in slot order. While the master context is off a
- * session with a guard key still gets `tether-context`, serving only the goal tools (a goal can be
- * set at any time, and a harness reads its MCP servers at launch). `mcpAuth`: registry servers
+ * session with a guard key still gets `tether-context`, serving only the session tools (goal, plan,
+ * todos, ask_user: a goal can be set at any time, and a harness reads its MCP servers at launch). `mcpAuth`: registry servers
  * that still need an OAuth sign-in.
  */
 export async function sessionLaunch(h: HarnessId, ctx: Omit<SessionCtx, "context" | "servers">): Promise<SessionLaunch> {

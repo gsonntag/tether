@@ -134,6 +134,8 @@ export async function buildBrief(opts: {
   tasks?: { item: ActivityItem; stopped: boolean }[];
   /** the session's active goal (goal.ts briefSection), which carries over */
   goal?: string;
+  /** the session's plan and todo list (plan.ts briefSection), which carry over */
+  plan?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
@@ -157,6 +159,7 @@ export async function buildBrief(opts: {
     );
   const interrupted = open.length ? `\n## Interrupted work\n${open.join("\n\n")}\n` : "";
   const goal = opts.goal?.trim() ? `\n## Goal\n${opts.goal.trim()}\n` : "";
+  const plan = opts.plan?.trim() ? `\n## Plan\n${opts.plan.trim()}\n` : "";
   return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
 You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
 ${memory}
@@ -165,7 +168,7 @@ ${transcript || "(empty)"}
 
 ## Repository state now
 ${repo}
-${interrupted}${goal}
+${interrupted}${goal}${plan}
 ## What to do
 ${
   opts.pendingPrompt

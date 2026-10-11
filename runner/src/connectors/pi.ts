@@ -10,6 +10,7 @@ import { sha } from "../context/format";
 import type { SessionContext } from "../context/inject";
 import { configDir, harness } from "../context/paths";
 import { writeAtomic } from "../context/store";
+import { SESSION_TOOL_TIMEOUT_S } from "../context/launch";
 import { toEntry } from "../mcp/formats";
 import { piServers } from "../mcp/sources";
 import { cap, repoDirs, slot, upward } from "./shared";
@@ -44,7 +45,8 @@ export function piMcpConfig(ctx: SessionContext | undefined, sessionKey?: string
   if (!base || typeof base !== "object" || Array.isArray(base)) base = {};
   const mcpServers: Record<string, unknown> = { ...(base.mcpServers ?? {}) };
   for (const s of servers) mcpServers[s.name] = toEntry(s.transport, "plain");
-  if (ctx) mcpServers["tether-context"] = { command: ctx.mcp.command, args: ctx.mcp.args, env: ctx.mcp.env };
+  // `timeout` (seconds): ask_user waits for the user; pi-mcp-adapter's default is the MCP SDK's 60 s.
+  if (ctx) mcpServers["tether-context"] = { command: ctx.mcp.command, args: ctx.mcp.args, env: ctx.mcp.env, timeout: SESSION_TOOL_TIMEOUT_S };
   const cfg = { ...base, mcpServers };
   const path = join(configDir(), "run", `pi-mcp-${sha(sessionKey ?? JSON.stringify(ctx?.mcp.env ?? servers.map((s) => s.name)))}.json`);
   // The registry's env and headers can hold secrets: only this user reads the file.
@@ -199,4 +201,13 @@ export const piConnector: Connector = {
         `Tether's goal loop; the goal tools need pi-mcp-adapter${piHasGoalExtension() ? ". pi's own goal extension is left out of Tether sessions (launched with --no-extensions and every other extension by path), except in a project with its own pi settings or extensions" : ""}`,
       ),
   },
+  plan: {
+    capability: () =>
+      cap(
+        "emulated",
+        `No plan mode: Tether's Plan mode, in which the guard holds back every change until you approve the plan (plan_set${piMcpAdapterInstalled() ? "" : " needs pi-mcp-adapter; without it the agent's reply is the plan"})`,
+      ),
+  },
+  todos: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "todo_set (tether-context, through pi-mcp-adapter)") : cap("unsupported", "No todo tool; todo_set needs pi-mcp-adapter")) },
+  ask_user: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "ask_user (tether-context, through pi-mcp-adapter) as a question card") : cap("unsupported", "No question tool; ask_user needs pi-mcp-adapter")) },
 };
