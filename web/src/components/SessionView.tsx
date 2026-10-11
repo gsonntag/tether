@@ -141,7 +141,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const chat = (
     <VStack style={chatColumn} {...dropHandlers}>
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
-      {o.syncing &&<Banner status="info" container="section" icon={<Spinner size="sm" />} title="Connecting… showing the last copy this browser saw" />}
       <ChatLayout
         ref={scroller}
         density="spacious"
