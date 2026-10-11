@@ -2,6 +2,7 @@
 // you, what's running and what finished recently. Pure, so it's unit tested (dashboard.test.ts).
 
 import { ACTIVITY_KINDS, byRecent, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import { fmtWhen } from "./shared/schedule";
 
 /** runnerId -> sessionId -> latest pulse */
 export type PulseMap = Record<string, Record<string, SessionPulse>>;
@@ -31,10 +32,10 @@ export interface Dashboard {
   finished: PulseRow[];
 }
 
-/** Doing something now: a turn, a wait, a prompt, or subagents/shells/wakeups still going. */
+/** Doing something now: a turn, a wait, a prompt, or subagents/shells/wakeups (or Tether's loops and schedules) still going. */
 export function isRunning(p: SessionPulse): boolean {
   if (!p.session.live) return false;
-  return p.session.status !== "idle" || !!p.session.needsInput || !!p.pendingUi?.length || !!(p.activity && Object.keys(p.activity).length) || !!p.armed;
+  return p.session.status !== "idle" || !!p.session.needsInput || !!p.pendingUi?.length || !!(p.activity && Object.keys(p.activity).length) || !!p.armed || !!p.nextRun;
 }
 
 export function groupDashboard(map: PulseMap, opts: { finished?: number } = {}): Dashboard {
@@ -60,13 +61,14 @@ export function groupDashboard(map: PulseMap, opts: { finished?: number } = {}):
   return { needs, running, finished };
 }
 
-/** "2 agents · 1 shell · 1 scheduled" */
-export function activityLine(p: SessionPulse): string {
+/** "2 agents · 1 shell · 1 scheduled · Next run 14:20" (the last: Tether's loops and schedules) */
+export function activityLine(p: SessionPulse, now = Date.now()): string {
   const parts = ACTIVITY_KINDS.filter((k) => p.activity?.[k.id]).map((k) => {
     const n = p.activity![k.id]!;
     return `${n} ${n === 1 ? k.label : k.plural}`;
   });
   if (p.armed) parts.push(`${p.armed} scheduled`);
+  if (p.nextRun) parts.push(`Next run ${fmtWhen(p.nextRun.at, now)}`);
   return parts.join(" · ");
 }
 

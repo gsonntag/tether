@@ -90,6 +90,11 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   }
   const plan = from.planState;
   if (plan && (plan.text.trim() || plan.todos.length)) next.adoptPlan(plan);
+  // Loops and schedules run on the new session from now on (a run waiting in the queue moves with it, below).
+  if (from.schedules.length) {
+    next.adoptSchedules(from.schedules);
+    from.handOverSchedules();
+  }
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   const left = [
     cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",
@@ -110,7 +115,12 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   const carry = from.t.state.pending ?? [];
   if (carry.length) from.setState({ pending: [], pendingHeld: undefined });
   await next.continueTurn(brief);
-  if (carry.length) next.setState({ pending: carry });
+  // Merged with runs queued on the new session meanwhile (its schedules were armed above); a run
+  // of the same loop or schedule in both collapses into the carried one.
+  if (carry.length) {
+    const queued = (next.t.state.pending ?? []).filter((p) => !p.scheduleId || !carry.some((c) => c.scheduleId === p.scheduleId));
+    next.setState({ pending: [...carry, ...queued] });
+  }
   sink.summary(next.summary());
 }
 
@@ -153,7 +163,10 @@ export async function resumeActive(getLive: (id: string, projectPath?: string) =
       // Sending would end the wait (a message while waiting means "go now"): they wait with it.
       if (p.active && p.waitingUntil) {
         if (unsent.length) s.setState({ pending: unsent });
-      } else for (const m of unsent) await s.prompt(m.text, m.mode);
+      } else
+        for (const m of unsent)
+          if (m.scheduleId) s.requeueRun(m);
+          else await s.prompt(m.text, m.mode);
       console.log(`resumed ${id}${unsent.length ? ` (resent ${unsent.length})` : ""}`);
     } catch (e: any) {
       console.error(`could not resume ${id}: ${e?.message ?? e}`);

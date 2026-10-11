@@ -65,7 +65,7 @@ export interface SessionPrefs {
   /** background tasks running when last saved (reported to the agent if a restart stops them) */
   background?: { id: string; description: string; type?: string }[];
   /** messages sent but not yet taken by the agent; resent after a runner restart */
-  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number }[];
+  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number; scheduleId?: string }[];
   /** the model, effort and mode it last ran with, re-applied on resume (session.reapplyChoices) */
   model?: string;
   thinking?: string;
@@ -76,6 +76,8 @@ export interface SessionPrefs {
   goal?: import("../../web/src/shared/protocol").SessionGoal;
   /** the session's plan and todo list (plan_set / todo_set, runner/src/plan.ts) */
   plan?: import("../../web/src/shared/protocol").SessionPlan;
+  /** Tether's loops and schedules (/loop, /schedule, runner/src/schedule.ts) */
+  schedules?: import("../../web/src/shared/protocol").SessionSchedule[];
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

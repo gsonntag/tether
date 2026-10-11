@@ -45,6 +45,7 @@ import {
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
+import { scheduleChanged, sessionScheduler, setScheduler } from "./schedule";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
 
@@ -210,9 +211,21 @@ function parseId(sessionId: string): { harness: HarnessId; nativeId: string } {
   return { harness, nativeId: sessionId.slice(i + 1) };
 }
 
-async function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
+/** sessions being opened: a second caller (a browser, a schedule run) waits for the same process */
+const opening = new Map<string, Promise<LiveSession>>();
+
+function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
   const existing = live.get(sessionId);
-  if (existing && !existing.closed) return existing;
+  if (existing && !existing.closed) return Promise.resolve(existing);
+  let p = opening.get(sessionId);
+  if (!p) {
+    p = openLive(sessionId, projectPath).finally(() => opening.delete(sessionId));
+    opening.set(sessionId, p);
+  }
+  return p;
+}
+
+async function openLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
   const { harness, nativeId } = parseId(sessionId);
   let path = projectPath;
   if (!path) {
@@ -465,6 +478,8 @@ const ops: Handlers = {
       if (s && s.t.state.status === "idle") s.close();
     }
     saveConfig();
+    // Its loops and schedules wait while it's marked done, and run again once it's back.
+    scheduleChanged();
     return {};
   },
 
@@ -487,9 +502,11 @@ const ops: Handlers = {
     if (last && connected) send({ t: "pulse", pulses: [{ session: { ...last.session, archived: true } }] });
     // Nothing to resume or resend after a runner restart.
     const p = cfg.sessions[sessionId];
-    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
+    // Nor any loop or schedule to run.
+    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined });
     forgetSession(sessionId);
     saveConfig();
+    scheduleChanged();
     return {};
   },
 
@@ -506,12 +523,14 @@ const ops: Handlers = {
     if (cfg.archived.includes(sessionId)) {
       cfg.archived = cfg.archived.filter((id) => id !== sessionId);
       saveConfig();
+      scheduleChanged();
       sink.summary(s.summary());
     }
     // `/tether …` (dev only) is the runner's own: no shell output rides along on it.
     if (s.devCommand(text)) return {};
-    // `/goal …` too (goal.ts): Tether's own command, on every harness.
+    // `/goal …` too (goal.ts): Tether's own command, on every harness; so are /loop and /schedule (schedule.ts).
     if (await s.goalCommand(text)) return {};
+    if (await s.scheduleCommand(text)) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -536,6 +555,22 @@ const ops: Handlers = {
 
   async abort({ sessionId }) {
     await requireLive(sessionId).stop();
+    return {};
+  },
+
+  async deleteSchedule({ sessionId, id }) {
+    const s = live.get(sessionId);
+    if (s && !s.closed) {
+      s.deleteSchedule(id);
+      return {};
+    }
+    const p = config().sessions[sessionId];
+    if (p?.schedules) {
+      p.schedules = p.schedules.filter((x) => x.id !== id);
+      if (!p.schedules.length) p.schedules = undefined;
+      saveConfig();
+      scheduleChanged();
+    }
     return {};
   },
 
@@ -825,7 +860,21 @@ connect();
 scanProjects();
 context.start();
 // A second runner on the same machine (tests, dev) must never take over live sessions.
-if (!process.env.TETHER_NO_RESUME) resumeActive(getLive);
+const resumed = process.env.TETHER_NO_RESUME ? Promise.resolve() : resumeActive(getLive);
+// Loops and schedules (/loop, /schedule): one timer for every session's runs, started once the
+// resumed sessions are open. With TETHER_NO_RESUME only sessions this runner has open run theirs.
+void resumed.finally(() =>
+  setScheduler(
+    sessionScheduler({
+      live: () => live.values(),
+      stored: () => config().sessions,
+      archived: () => config().archived,
+      open: getLive,
+      save: saveConfig,
+      openClosed: !process.env.TETHER_NO_RESUME,
+    }),
+  ),
+);
 
 // Attachments of sessions removed or marked done a while ago, and abandoned uploads.
 function sweep() {

@@ -30,6 +30,8 @@ export const isGoalPrompt = (text: string) => text.trimStart().startsWith(GOAL_M
 /** Tether's own `/` commands, on every harness (a harness's own /goal is left out of the menu). */
 export const TETHER_COMMANDS: SlashCommand[] = [
   { name: "goal", kind: "tether", description: "Keep the agent working until it's done: /goal <objective> [--turns n] [--tokens n] [--time 2h]; /goal pause, resume or clear" },
+  { name: "loop", kind: "tether", description: "Send a prompt now and on an interval: /loop 10m <prompt>; /loop list, /loop stop [n]" },
+  { name: "schedule", kind: "tether", description: "Send a prompt later: /schedule <cron> <prompt>, /schedule at 15:00 <prompt>, /schedule in 2h <prompt>; /schedule list, /schedule delete <n>" },
 ];
 
 export type GoalCommand =

@@ -296,6 +296,29 @@ export interface SessionGoal {
   native?: boolean;
 }
 
+// ---------- loops and schedules (/loop, /schedule, runner/src/schedule.ts) ----------
+
+/**
+ * A prompt the runner sends to the session on a timer, as a queued user message:
+ *   loop  every `everyMs` (/loop 10m …)
+ *   cron  on a 5-field cron expression in the runner's local time (/schedule 0 9 * * 1-5 …)
+ *   once  once, at `nextAt` (/schedule at 15:00 …, /schedule in 2h …)
+ */
+export interface SessionSchedule {
+  id: string;
+  kind: "loop" | "cron" | "once";
+  prompt: string;
+  everyMs?: number;
+  cron?: string;
+  /** how it was written: "every 10m", "0 9 * * 1-5", "at 15:00" */
+  label: string;
+  /** when it runs next */
+  nextAt: number;
+  lastRunAt?: number;
+  runs: number;
+  createdAt: number;
+}
+
 // ---------- plan and todos (plan_set / todo_set, runner/src/plan.ts) ----------
 
 export interface TodoItem {
@@ -385,6 +408,8 @@ export interface LiveState {
   goal?: SessionGoal | null;
   /** the session's plan and todo list (null: none; see SessionGoal for why not undefined) */
   plan?: SessionPlan | null;
+  /** Tether's loops and schedules (/loop, /schedule), soonest first; [] when none */
+  schedules?: SessionSchedule[];
 }
 
 export interface ContextUsage {
@@ -561,6 +586,8 @@ export interface PendingMessage {
   ts: number;
   /** steer: when its grace period ends and it may go to the agent */
   readyAt?: number;
+  /** a run of this loop or schedule (SessionSchedule.id): one at a time waits, more collapse into it */
+  scheduleId?: string;
 }
 
 export interface SessionSummary {
@@ -637,6 +664,8 @@ export interface SessionPulse {
   diffStat?: DiffStat;
   /** when its last turn ended */
   finishedAt?: number;
+  /** its soonest Tether loop or schedule run (/loop, /schedule) and how many it has */
+  nextRun?: { at: number; label: string; count: number };
 }
 
 export interface SessionSearchResult {
@@ -832,7 +861,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";
@@ -996,6 +1025,8 @@ export interface Ops {
     result: {};
   };
   takePending: { args: { sessionId: string }; result: { text: string } };
+  /** stops a loop or deletes a schedule (/loop, /schedule) */
+  deleteSchedule: { args: { sessionId: string; id: string }; result: {} };
   /** Web Push: the runner's key, and this device's subscription if any (by endpoint) */
   pushStatus: { args: { endpoint?: string }; result: { publicKey: string; kinds?: NotifyKind[] } };
   pushSubscribe: {

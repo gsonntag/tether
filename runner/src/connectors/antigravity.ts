@@ -50,4 +50,5 @@ export const antigravityConnector: Connector = {
   plan: slot("native", "Plan mode; Tether holds its first change until you approve the plan (headless agy would approve its own)"),
   todos: slot("emulated", "todo_set only where its global tether-context passes the session through"),
   ask_user: slot("emulated", "ask_user only where its global tether-context passes the session through"),
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
 };

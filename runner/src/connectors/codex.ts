@@ -96,4 +96,6 @@ export const codexConnector: Connector = {
   plan: slot("emulated", "Plan mode has no review over the app-server: Tether's review card when a plan-mode turn ends; Approve switches to Default and sends \"Implement the plan.\""),
   todos: slot("native", "Its plan checklist (turn/plan/updated), kept as the session's todo list; todo_set also works"),
   ask_user: slot("native", "Its request_user_input as a question card; ask_user (tether-context) also works"),
+  // codex-cli 0.162 app-server: no scheduling requests; ScheduledTaskSummary only describes a plugin's tasks.
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; Codex's app-server has no schedules of its own"),
 };

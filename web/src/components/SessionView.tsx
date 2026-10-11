@@ -39,6 +39,7 @@ import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
 import { GoalLine } from "./GoalLine";
+import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
@@ -185,6 +186,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     <VStack style={chatColumn} {...dropHandlers}>
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
       <GoalLine goal={st.goal} inset={narrow || sidebarHidden} />
+      <ScheduleLine sessionId={sessionId} schedules={st.schedules} inset={narrow || sidebarHidden} />
       <ChatLayout
         ref={scroller}
         density="spacious"
@@ -393,6 +395,17 @@ function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveSta
   );
 }
 
+/** A queued run of a loop or schedule (/loop, /schedule): which one it came from. */
+function ScheduledToken({ id, state }: { id: string; state: LiveState }) {
+  const s = state.schedules?.find((x) => x.id === id);
+  const label = !s ? "Scheduled" : s.kind === "loop" ? "Loop" : "Schedule";
+  return (
+    <Tooltip content={s ? `${label} ${s.label}; it goes when the agent is free` : "From a loop or schedule; it goes when the agent is free"}>
+      <Token size="sm" color="blue" label={label} />
+    </Tooltip>
+  );
+}
+
 /** Queued messages wait in the box and go out one per turn, top first. */
 function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const edit = usePendingEdit(sessionId);
@@ -436,6 +449,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
           <StackItem size="fill">
             <PendingText p={p} edit={edit} clamp />
           </StackItem>
+          {p.scheduleId && <ScheduledToken id={p.scheduleId} state={state} />}
           <HStack gap={0.5} vAlign="center">
             <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
             <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />

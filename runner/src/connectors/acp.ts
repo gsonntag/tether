@@ -91,6 +91,7 @@ export const opencodeConnector: Connector = {
   plan: slot("emulated", "Its plan agent has no review step: Tether's review card when a plan-mode turn ends (plan_set, else its reply), and changes wait for approval; Approve switches to Build" + UNVERIFIED),
   todos: slot("native", "Its ACP plan checklist, kept as the session's todo list; todo_set also works" + UNVERIFIED),
   ask_user: slot("emulated", "ask_user (tether-context) as a question card" + UNVERIFIED),
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
 };
 
 // ---------------- Kiro ----------------
@@ -147,4 +148,5 @@ export const kiroConnector: Connector = {
   plan: slot("emulated", "Where it offers a plan mode: Tether's review card when a plan-mode turn ends or it leaves plan mode by itself, and changes wait for approval" + UNVERIFIED),
   todos: slot("emulated", "todo_set; its ACP plan checklist too, if it sends one" + UNVERIFIED),
   ask_user: slot("emulated", "ask_user (tether-context) as a question card" + UNVERIFIED),
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
 };

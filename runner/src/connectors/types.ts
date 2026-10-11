@@ -155,6 +155,8 @@ export interface Connector {
   todos: Slot;
   /** questions to the user: the harness's own question tool, or ask_user */
   ask_user: Slot;
+  /** /loop and /schedule (runner/src/schedule.ts): run by the runner, sent as queued messages */
+  schedules: Slot;
 }
 
-export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user"];
+export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules"];

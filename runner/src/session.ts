@@ -29,8 +29,9 @@ import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { connectorFor } from "./connectors";
+import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, newSchedule, ofKind, parseTimerCommand, scheduleChanged } from "./schedule";
 import { sessionTrust } from "./mcp/registry";
-import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
+import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
 import {
   budgetHit,
@@ -244,13 +245,15 @@ export abstract class LiveSession {
         this.goalHeld = false;
         this.continueGoal();
       }
+      // A scheduled run held back by a question or a plan review goes once it's answered.
+      if (s.pendingUi && !s.pendingUi.length && this.t.state.pending?.[0]?.scheduleId) setTimeout(() => this.sendRunNow(), 0);
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
       if (s.status !== undefined || s.pendingUi !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
       }
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -378,9 +381,13 @@ export abstract class LiveSession {
   }
 
   private turnOver() {
+    const loopTurn = this.loopTurn;
+    this.loopTurn = false;
     if (this.userStopped || this.turnTrouble || this.closed) return;
     // Under a goal the loop goes on, and a stop sends its own notification (stopGoal).
     if (this.goalTurn || this.goalState?.status === "active") return;
+    // A loop's runs (/loop) don't each send "Finished": a 10-minute loop would notify all day.
+    if (loopTurn) return;
     // Only when truly done: nothing the agent started is still working (armed wakeups and cron
     // jobs don't count). The last one to finish sends it (activityChanged).
     if (this.workingCount) {
@@ -592,6 +599,7 @@ export abstract class LiveSession {
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
     if (this.devCommand(text)) return;
     if (await this.goalCommand(text)) return;
+    if (await this.scheduleCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
     if (this.t.state.status !== "running") this.fallbackAttempt = 0;
@@ -739,6 +747,7 @@ export abstract class LiveSession {
   private async sendTyped(typed: string, batch?: PendingMessage[]) {
     const sent = batch ? await this.joinResolved(batch) : await this.resolveSkills(typed);
     this.outgoing = { sent, typed };
+    this.loopTurn = !!batch?.length && batch.every((p) => this.schedules.some((s) => s.id === p.scheduleId && s.kind === "loop"));
     this.turnStarting = true;
     try {
       await this.send(sent);
@@ -877,8 +886,11 @@ export abstract class LiveSession {
     if (goal) restore.goal = goal;
     // A review that was open went with the old process; the plan stays, unreviewed.
     if (p.plan) restore.plan = p.plan.status === "review" ? { ...p.plan, status: "draft" } : p.plan;
+    // Loops and schedules handed off went with the conversation.
+    if (p.schedules?.length && !p.handoffTo) restore.schedules = p.schedules;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
+    if (restore.schedules) scheduleChanged();
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
     // The harness's own goal follows Tether's again (it may still hold an older one).
     if (goal && this.mirrorGoal) void this.mirrorGoal(goal).catch(() => {});
@@ -934,6 +946,7 @@ export abstract class LiveSession {
       background: bg.length ? bg : undefined,
       goal: s.goal ?? undefined,
       plan: s.plan ?? undefined,
+      schedules: s.schedules?.length ? s.schedules : undefined,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -2264,6 +2277,160 @@ export abstract class LiveSession {
     const answer = res.answers?.[question]?.trim();
     if (res.cancelled || !answer) return { ok: true, text: NOBODY_ANSWERED };
     return { ok: true, text: `The user answered: ${answer}` };
+  }
+
+  // ---- loops and schedules (/loop, /schedule, runner/src/schedule.ts) ----
+  // The runner-wide Scheduler calls runSchedule() when a run is due (opening the session first if
+  // its process had closed). A run is a queued user message in `pending`, tagged with the schedule:
+  // it starts a turn at once when the session is idle, else it waits for the running turn to end.
+  // While it waits, more runs of the same schedule collapse into it.
+
+  /** the running turn was started by runs of loops only (no "Finished" notification for it) */
+  private loopTurn = false;
+
+  get schedules(): SessionSchedule[] {
+    return this.t.state.schedules ?? [];
+  }
+
+  private putSchedules(list: SessionSchedule[]) {
+    this.setState({ schedules: [...list].sort(bySoonest) });
+    scheduleChanged();
+  }
+
+  /** `/loop …` and `/schedule …`: handled here, never sent to the harness. True when it was one. */
+  async scheduleCommand(text: string): Promise<boolean> {
+    const c = parseTimerCommand(text);
+    if (!c) return false;
+    const now = Date.now();
+    switch (c.cmd) {
+      case "error":
+        this.notice(c.text, "warning");
+        break;
+      case "list":
+        this.notice(describeList(this.schedules, c.kind, now));
+        break;
+      case "remove": {
+        const mine = ofKind(this.schedules, c.kind);
+        const gone = c.which === "all" ? mine : mine.slice(c.which - 1, c.which);
+        const what = c.kind === "loop" ? "loop" : "schedule";
+        if (!mine.length) this.notice(c.kind === "loop" ? "No loops are running." : "No schedules are set.");
+        else if (!gone.length) this.notice(`There's no ${what} ${c.which}. ${describeList(this.schedules, c.kind, now)}`, "warning");
+        else {
+          for (const s of gone) this.deleteSchedule(s.id, true);
+          this.notice(gone.length === 1 ? `${c.kind === "loop" ? "Loop stopped" : "Schedule deleted"}: ${describeOne(gone[0]!, now).replace(/ Next .*$/, "")}` : `${gone.length} ${what}s ${c.kind === "loop" ? "stopped" : "deleted"}.`);
+        }
+        break;
+      }
+      case "add": {
+        // Runs here would never go (runSchedule): the conversation goes on in the new session.
+        if (this.t.state.handoffTo) {
+          this.notice("This conversation continues in another session. Set it there.", "warning");
+          break;
+        }
+        if (this.schedules.length >= MAX_SCHEDULES) {
+          this.notice(`This session has ${MAX_SCHEDULES} loops and schedules already. Stop one first.`, "warning");
+          break;
+        }
+        const s = newSchedule(c, now);
+        if (!s) {
+          this.notice("That never runs.", "warning");
+          break;
+        }
+        this.putSchedules([...this.schedules, s]);
+        if (s.kind === "loop") {
+          this.notice(`Loop set: ${s.label}. It runs now, then next at ${fmtWhen(s.nextAt + (s.everyMs ?? 0), now)}. /loop stop ends it.`);
+          this.runSchedule(s.id, now);
+        } else this.notice(`Scheduled ${s.label}: next run ${fmtWhen(s.nextAt, now)}. /schedule delete removes it.`);
+        // A loop or schedule set on a new session names it.
+        this.autoTitle(s.prompt);
+        break;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * A run is due (the Scheduler, or a new loop's first run): the schedule moves on to its next
+   * run (a one-off is removed) and its prompt is queued. False when it wasn't due or isn't here.
+   */
+  runSchedule(id: string, now = Date.now()): boolean {
+    const s = this.schedules.find((x) => x.id === id);
+    // A timer may fire a little early; one fired late for a run already moved on is dropped.
+    if (!s || s.nextAt > now + 1_000 || this.closed || this.t.state.handoffTo) return false;
+    const next = advance(s, now);
+    this.putSchedules(this.schedules.flatMap((x) => (x.id !== id ? [x] : next ? [next] : [])));
+    this.queueRun(s);
+    return true;
+  }
+
+  /**
+   * Queues one run of `s`, unless one is waiting already (overlapping runs collapse into it).
+   * After Stop the hold keeps your messages back, but not the loop: a run that fires while held
+   * goes by itself (the run that was waiting when you stopped goes with it, collapsed).
+   */
+  private queueRun(s: SessionSchedule) {
+    const list = this.t.state.pending ?? [];
+    if (!list.some((p) => p.scheduleId === s.id)) this.setPending([...list, { id: crypto.randomUUID(), text: s.prompt, mode: "followUp", ts: Date.now(), scheduleId: s.id }]);
+    this.sendRunNow(s.id);
+  }
+
+  /**
+   * A queued run goes out at once only when nothing else is going on: idle, no turn being
+   * started, nothing waiting on the user (a plan review, a question). Otherwise it waits; the end
+   * of the running turn sends it like any queued message. Held after Stop, only the run of
+   * `fired` (one that just came due) goes, alone; the rest stays held.
+   */
+  private sendRunNow(fired?: string) {
+    const st = this.t.state;
+    if (this.closed || st.status !== "idle" || st.pendingUi.length || st.handoffTo) return;
+    if (this.turnStarting || this.draining || this.planStarting) return;
+    const failed = (e: any) => this.notice(`Could not send the scheduled prompt: ${e?.message ?? e}`, "error");
+    if (st.pendingHeld) {
+      const run = fired ? st.pending?.find((p) => p.scheduleId === fired) : undefined;
+      if (run) void this.sendHeldRun(run).catch(failed);
+      return;
+    }
+    if (st.pending?.[0]?.scheduleId) void this.drainPending().catch(failed);
+  }
+
+  private async sendHeldRun(run: PendingMessage) {
+    this.draining = true;
+    try {
+      this.setPending((this.t.state.pending ?? []).filter((p) => p.id !== run.id));
+      await this.sendTyped(run.text, [run]);
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  /** A run that was waiting when the runner stopped (resumeActive): queued again as it was. */
+  requeueRun(p: PendingMessage) {
+    const list = this.t.state.pending ?? [];
+    if (!list.some((x) => x.scheduleId === p.scheduleId)) this.setPending([...list, { ...p, mode: "followUp", readyAt: undefined }]);
+    this.sendRunNow();
+  }
+
+  /** Stops a loop or deletes a schedule; a run of it still waiting in the queue goes too. */
+  deleteSchedule(id: string, quiet = false): SessionSchedule | undefined {
+    const s = this.schedules.find((x) => x.id === id);
+    if (!s) return undefined;
+    this.putSchedules(this.schedules.filter((x) => x.id !== id));
+    const list = this.t.state.pending ?? [];
+    if (list.some((p) => p.scheduleId === id)) this.setPending(list.filter((p) => p.scheduleId !== id));
+    if (!quiet) this.notice(`${s.kind === "loop" ? "Loop stopped" : "Schedule deleted"}: ${describeOne(s).replace(/ Next .*$/, "")}`);
+    return s;
+  }
+
+  /** Loops and schedules that came over in a handoff: they run here now. */
+  adoptSchedules(list: SessionSchedule[]) {
+    if (!list.length) return;
+    const mine = new Set(this.schedules.map((s) => s.id));
+    this.putSchedules([...this.schedules, ...list.filter((s) => !mine.has(s.id))]);
+  }
+
+  /** They went over to the new session in a handoff: none run here any more. */
+  handOverSchedules() {
+    if (this.schedules.length) this.putSchedules([]);
   }
 
   // ---- housekeeping ----

@@ -210,4 +210,5 @@ export const piConnector: Connector = {
   },
   todos: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "todo_set (tether-context, through pi-mcp-adapter)") : cap("unsupported", "No todo tool; todo_set needs pi-mcp-adapter")) },
   ask_user: { capability: () => (piMcpAdapterInstalled() ? cap("emulated", "ask_user (tether-context, through pi-mcp-adapter) as a question card") : cap("unsupported", "No question tool; ask_user needs pi-mcp-adapter")) },
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; pi has no scheduler"),
 };

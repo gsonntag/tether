@@ -76,6 +76,12 @@ describe("groupDashboard", () => {
 test("activityLine, diffLabel, contextPercent, elapsed", () => {
   expect(activityLine(p("a", { activity: { shell: 1, subagent: 2 }, armed: 1 }))).toBe("2 agents · 1 shell · 1 scheduled");
   expect(activityLine(p("a"))).toBe("");
+  // Tether's loops and schedules: the next run, and the session counts as running while live.
+  const at = new Date(2026, 9, 11, 14, 20).getTime();
+  const looping = p("a", { nextRun: { at, label: "check CI", count: 1 } });
+  expect(activityLine(looping, new Date(2026, 9, 11, 14, 0).getTime())).toBe("Next run 14:20");
+  expect(isRunning(looping)).toBe(true);
+  expect(isRunning(p("a", { nextRun: { at, label: "x", count: 1 } }, { live: false }))).toBe(false);
   expect(diffLabel(p("a", { diffStat: { files: 1, additions: 42, deletions: 3 } }))).toBe("+42 −3");
   expect(diffLabel(p("a", { diffStat: { files: 0, additions: 0, deletions: 0 } }))).toBeUndefined();
   expect(contextPercent(p("a", { context: { used: 50, max: 200 } }))).toBe(25);

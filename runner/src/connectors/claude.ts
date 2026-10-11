@@ -152,4 +152,7 @@ export const claudeConnector: Connector = {
   plan: slot("native", "Plan mode with its own review (ExitPlanMode), shown as Tether's plan card; plan_set also records the plan"),
   todos: slot("native", "Its TodoWrite list, kept as the session's todo list; todo_set also works"),
   ask_user: slot("native", "AskUserQuestion as a question card; ask_user (tether-context) also works"),
+  // Agent SDK 0.3.293: CronCreate (durable only to .claude/scheduled_tasks.json, recurring ones
+  // expire after 7 days) and ScheduleWakeup are tools of the running process, with no control API.
+  schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner; Claude Code's own crons and wakeups (CronCreate, ScheduleWakeup) stay as they are, show as activity and fire only while its process runs. Its own /loop and /schedule are replaced by Tether's"),
 };

@@ -1,7 +1,7 @@
 # Harness platform: connectors, Tether-owned features, strict fallback
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
-live. Phase 4: plan + todos and `ask_user` built (unit p4a); the rest not started. What was built, emulated or left unsupported per harness is in
+live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -341,6 +341,48 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | opencode | emulated: review card, changes held until approved (unverified) | native (ACP plan) + todo_set | ask_user |
 | Kiro | emulated where it has a plan mode (unverified) | todo_set | ask_user |
 | Antigravity | native (Tether holds its first change) | todo_set only via its global tether-context | ask_user only via its global tether-context |
+
+**Phase 4b: loops and schedules.**
+- Commands, handled by the runner on every harness (never sent to it): `/loop <interval> <prompt>`
+  (`10m`, `1h30m`, `1d`, optional `every`; at least 1 minute; the first run is immediate),
+  `/loop` / `/loop list`, `/loop stop [n|all]`; `/schedule <5-field cron|@daily…> <prompt>` (runner
+  local time, quotes allowed around the expression), `/schedule at [today|tomorrow|YYYY-MM-DD]
+  <15:00|3pm> <prompt>`, `/schedule in <duration> <prompt>`, `/schedule` / `list`, `/schedule
+  delete <n|all>`. A prompt can be a `/skill` but not `/loop`, `/schedule` or `/goal`. At most 20
+  per session. They replace Claude Code's own `/loop` and `/schedule` in the `/` menu.
+- State: `LiveState.schedules` (`SessionSchedule`: kind loop / cron / once, prompt, label, nextAt,
+  runs), saved in the session's prefs in runner.json. Missed runs (runner down, session busy) are
+  skipped, not caught up: one run, then the next on the loop's grid or the cron's next match.
+- Timer: one runner-wide `Scheduler` (`runner/src/schedule.ts`) armed for the soonest run of any
+  session (re-checked hourly), over live sessions' state and the stored prefs of closed ones. A due
+  run in a closed session opens it (`getLive`, now deduplicated so a browser and a run can't open
+  two processes); one that can't be opened is skipped and the stored schedule moves on. Started
+  after `resumeActive`; with `TETHER_NO_RESUME` only sessions the runner has open run theirs.
+  Sessions marked done are left out: their runs wait and run once (then on schedule) when the
+  session is back. `/loop` and `/schedule` in a handed-off session are refused.
+- Delivery: a run is a queued (`followUp`) message in `pending`, tagged `scheduleId`. Idle with
+  nothing waiting on the user: it starts a turn at once; busy, waiting on a limit, or a question /
+  plan review open: it waits (the turn's end drains it; an answered question sends it). Held
+  after Stop, your messages stay held but the loop doesn't stop: a run that comes due afterwards
+  goes alone (a run of it already waiting collapses into it). While one run waits, more runs of
+  the same schedule collapse into it, and an idle session sends it. A restart re-queues a waiting run with its tag. Loop turns
+  don't send the per-turn "Finished" push; one-off and cron runs do.
+- Handoff: schedules move to the new session (`adoptSchedules`; the old one keeps none, also
+  after a reload), and a waiting run moves with the rest of `pending` (merged with runs the new session queued
+  during the brief turn, collapsing runs of the same schedule). The brief doesn't mention
+  them: the runner, not the agent, runs them.
+- UI: a compact line per loop/schedule under the goal line (kind, label, next run, prompt, one
+  click to stop/delete via the `deleteSchedule` op); queued runs show a "Loop"/"Schedule" token;
+  Home: `SessionPulse.nextRun`, "Next run 14:20" in the running row, and a live session with a
+  schedule counts as running (like an armed wakeup). Capability matrix: new `schedules` slot.
+
+| | Loops and schedules |
+|---|---|
+| Claude Code | Tether's (emulated). Its own CronCreate / ScheduleWakeup / `/loop` crons stay as they are and show as activity; they fire only while its process runs (durable crons from `.claude/scheduled_tasks.json`, recurring ones expire after 7 days) |
+| Codex | Tether's; the app-server has no scheduling requests (`ScheduledTaskSummary` only describes a plugin's tasks) |
+| pi | Tether's; pi has no scheduler |
+| opencode, Kiro | Tether's (queued messages; unverified, not installed) |
+| Antigravity | Tether's |
 
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
