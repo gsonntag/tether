@@ -105,7 +105,12 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
   Open it from the **2 agents · 1 shell** button under the message box (a side panel on
   desktop, a sheet on phones). Home's **Running** section sums it up for every live session, and
-  each session row in the sidebar shows how many are running. Stop works per item where the harness allows:
+  each session row in the sidebar shows how many are running. A session whose main agent has
+  finished its turn while subagents, shells, monitors or workflows keep running counts as
+  **working in background**: a grey spinner instead of the blue one in the sidebar and on Home
+  (hover for what's still running), and it stays in Home's **Running** section labeled
+  **Background**. With only a wakeup or cron job armed, it shows a clock instead: waiting, not
+  working. Stop works per item where the harness allows:
 
   | Harness | Observed | Stop |
   |---|---|---|

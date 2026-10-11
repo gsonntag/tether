@@ -33,8 +33,10 @@ import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject,
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { runningCount } from "../dashboard";
+import { runningLine, staleFinished, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
+import { WorkIndicator } from "./WorkIndicator";
 
 const SHOW = 8;
 
@@ -275,6 +277,7 @@ function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined 
   if (s.needsInput) return { kind: "blocked", read: notice?.kind !== "finished" && read };
   // A running agent has moved past whatever its last notice said.
   if (!notice || s.status === "running" || s.status === "waiting") return undefined;
+  if (notice.kind === "finished" && staleFinished(s, notice.ts)) return undefined;
   return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
 }
 
@@ -370,10 +373,14 @@ function NeedsYouSection() {
 
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
-  const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
+  // Collapsed, the row still says whether anything in it works: its main turns, or only background work.
+  const countIn = (s: ReturnType<typeof useStore.getState>, state: WorkState) =>
+    [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && workState(summaryWork(x)) === state).length;
+  const running = useStore((s) => countIn(s, "working"));
+  const background = useStore((s) => countIn(s, "background"));
   const [all, setAll] = useState(false);
   const archiveProject = async (archived: boolean) => {
-    if (archived && p.live.some((s) => s.status !== "idle") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
+    if (archived && p.live.some((s) => s.status !== "idle" || workState(summaryWork(s)) === "background") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
       return;
     if ((await act("archiveProject", { path: p.path, archived })) === undefined) return;
     useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
@@ -398,7 +405,12 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
       onClick={() => toggleProject(p.path)}
       endContent={
         <HStack gap={1} vAlign="center">
-          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} running`} />}
+          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} working`} />}
+          {!open && !running && background > 0 && (
+            <Tooltip content={`${background} working in background`}>
+              <Spinner size="sm" shade="subtle" aria-label={`${background} working in background`} />
+            </Tooltip>
+          )}
           {p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : null}
         </HStack>
       }
@@ -502,8 +514,10 @@ function RunningItem() {
 /** Subagents, shells and the like a live session has going, as a count. */
 function ActivityCount({ s }: { s: SessionSummary }) {
   if (!s.live || !s.activeCount) return null;
+  const w = summaryWork(s);
+  const tip = [runningLine(w.running) && `${runningLine(w.running)} running`, w.armed && `${w.armed} scheduled`].filter(Boolean).join(" · ");
   return (
-    <Tooltip content={`${s.activeCount} running: subagents, shells, monitors or wakeups`}>
+    <Tooltip content={tip}>
       <Badge label={s.activeCount} />
     </Tooltip>
   );
@@ -525,10 +539,7 @@ function SessionIndicator({ s }: { s: SessionSummary }) {
       />
     );
   }
-  if (s.status === "running") return <Spinner size="sm" aria-label="Running" />;
-  if (s.status === "waiting") return <StatusDot variant="warning" label="Waiting" tooltip="Waiting (usage limit or retry)" />;
-  if (s.live) return <StatusDot variant="accent" label="Live" tooltip="Live" />;
-  return null;
+  return <WorkIndicator work={summaryWork(s)} />;
 }
 
 function SessionRow({ s }: { s: SessionSummary }) {

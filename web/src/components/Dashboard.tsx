@@ -26,6 +26,8 @@ import { openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useS
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelName } from "./ModelName";
+import { WorkIndicator } from "./WorkIndicator";
+import { pulseWork, workState } from "../workState";
 import { removeSession } from "./Sidebar";
 
 const project = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -279,9 +281,17 @@ function Where({ p, runnerId, ctx, extra }: { p: SessionPulse; runnerId: string;
 
 function StatusOf({ p }: { p: SessionPulse }) {
   if (p.pendingUi?.length) return <StatusDot variant="error" label="Needs you" tooltip="Waiting for you" isPulsing />;
-  if (p.session.status === "running") return <Spinner size="sm" aria-label="Running" />;
-  if (p.session.status === "waiting") return <StatusDot variant="warning" label="Waiting" tooltip="Waiting (usage limit or retry)" />;
-  return <StatusDot variant="accent" label="Background work" tooltip="The turn is over; subagents, shells or wakeups are still going" />;
+  return <WorkIndicator work={pulseWork(p)} />;
+}
+
+/** The Running row's status line: what it's doing now, or that only background work or a wakeup is left. */
+function statusLine(p: SessionPulse): string {
+  const state = workState(pulseWork(p));
+  // A subagent asking for approval while the main agent is idle: the ask is what matters.
+  if (p.pendingUi?.length) return p.action ?? "Waiting for you";
+  if (state === "background") return ["Background", p.action].filter(Boolean).join(" · ");
+  if (state === "scheduled") return "Waiting for a scheduled wakeup";
+  return p.action ?? (state === "idle" ? "" : "Working");
 }
 
 function ContextMini({ p }: { p: SessionPulse }) {
@@ -394,7 +404,7 @@ function RunningItem({ row, ctx }: { row: PulseRow; ctx: RowCtx }) {
           <VStack gap={0.5}>
             <Where p={p} runnerId={row.runnerId} ctx={ctx} />
             <Text type="supporting" maxLines={1} color="primary">
-              {[p.action ?? (busy ? "Working" : "Background work"), busy && p.turnStartedAt ? elapsed(ctx.now - p.turnStartedAt) : ""].filter(Boolean).join(" · ")}
+              {[statusLine(p), busy && p.turnStartedAt ? elapsed(ctx.now - p.turnStartedAt) : ""].filter(Boolean).join(" · ")}
             </Text>
             {(acts || contextPercent(p) !== undefined) && (
               <HStack gap={2} vAlign="center" wrap="wrap">

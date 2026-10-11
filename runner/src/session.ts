@@ -25,7 +25,7 @@ import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
-import { isActive, type ActivityItem, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
+import { isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -131,7 +131,9 @@ export abstract class LiveSession {
       // A closed session has no process, so nothing can be running.
       status: this.closed ? "idle" : this.t.state.status,
       needsInput: this.t.state.pendingUi.length > 0,
-      ...(this.activeCount ? { activeCount: this.activeCount } : {}),
+      // runningKinds goes with activeCount, {} when only wakeups are armed: browsers read its
+      // absence as an older runner that doesn't say.
+      ...(this.activeCount ? { activeCount: this.activeCount, runningKinds: this.runningKinds() } : {}),
     };
   }
 
@@ -303,7 +305,8 @@ export abstract class LiveSession {
 
   // ---- activity: subagents, background shells, monitors, wakeups (adapters derive the items) ----
 
-  private lastActiveCount = 0;
+  /** the activity part of the last summary sent: a change sends a new one */
+  private lastActivityKey = "[0,[]]";
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
@@ -313,6 +316,13 @@ export abstract class LiveSession {
   /** Items doing work right now: not an armed wakeup or cron job waiting for its time. */
   get workingCount(): number {
     return (this.t.state.activity ?? []).filter((a) => a.status === "running").length;
+  }
+
+  /** Items doing work right now, by kind. */
+  runningKinds(): Partial<Record<ActivityKind, number>> {
+    const out: Partial<Record<ActivityKind, number>> = {};
+    for (const a of this.t.state.activity ?? []) if (a.status === "running") out[a.kind] = (out[a.kind] ?? 0) + 1;
+    return out;
   }
 
   activity(id: string): ActivityItem | undefined {
@@ -370,9 +380,12 @@ export abstract class LiveSession {
   }
 
   private activityChanged() {
-    const n = this.activeCount;
-    if (n !== this.lastActiveCount) {
-      this.lastActiveCount = n;
+    // Browsers tell "working in the background" from idle (and agents from shells) by these, so
+    // the summary goes out when an item starts, ends, or a wakeup fires — not only on status changes.
+    // Sorted, so the same counts in another item order don't send again.
+    const key = JSON.stringify([this.activeCount, Object.entries(this.runningKinds()).sort()]);
+    if (key !== this.lastActivityKey) {
+      this.lastActivityKey = key;
       this.sink.summary(this.summary());
       this.savePrefs();
       this.armIdle();

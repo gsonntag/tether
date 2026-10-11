@@ -433,6 +433,11 @@ export interface SessionSummary {
   archived?: boolean;
   /** activity items running or armed right now (subagents, shells, …) */
   activeCount?: number;
+  /**
+   * Of those, the ones doing work now (not an armed wakeup or cron job), by kind: with an idle
+   * status, the session is still working in the background.
+   */
+  runningKinds?: Partial<Record<ActivityKind, number>>;
 }
 
 /** A live session's activity, for the runner-wide Running page. */

@@ -214,6 +214,39 @@ describe("activity in the session", () => {
     expect(summaries.at(-1)!.activeCount).toBeUndefined();
   });
 
+  test("the summary goes out again whenever running work starts or ends, not only on status changes", async () => {
+    const s = fake();
+    await s.prompt("fan out");
+    s.upsertActivity(item("a1"), item("a2"), item("sh", { kind: "shell" }));
+    s.reply("Launched them.");
+    // The main turn is over, the work isn't: the summary says what's still going.
+    let last = summaries.at(-1)!;
+    expect(last.status).toBe("idle");
+    expect(last.activeCount).toBe(3);
+    expect(last.runningKinds).toEqual({ subagent: 2, shell: 1 });
+
+    const n = summaries.length;
+    s.upsertActivity(item("a1", { status: "done", endedAt: Date.now() }));
+    expect(summaries.length).toBe(n + 1);
+    expect(summaries.at(-1)!.runningKinds).toEqual({ subagent: 1, shell: 1 });
+
+    // Progress alone changes no counts: no new summary.
+    s.upsertActivity(item("a2", { latest: "Reading files" }));
+    await Bun.sleep(LiveSession.ACTIVITY_BATCH_MS + 50);
+    expect(summaries.length).toBe(n + 1);
+
+    // Same count, different kinds (one ended as another started): still a new summary.
+    s.upsertActivity(item("a2", { status: "done", endedAt: Date.now() }), item("m1", { kind: "monitor" }));
+    expect(summaries.at(-1)!.runningKinds).toEqual({ shell: 1, monitor: 1 });
+
+    // Only an armed wakeup left: active, but nothing running.
+    s.upsertActivity(item("sh", { kind: "shell", status: "done", endedAt: Date.now() }), item("m1", { kind: "monitor", status: "done", endedAt: Date.now() }), item("w", { kind: "schedule", status: "waiting" }));
+    last = summaries.at(-1)!;
+    expect(last.activeCount).toBe(1);
+    expect(last.runningKinds).toEqual({});
+    s.close();
+  });
+
   test("progress on a running item is batched; new items and status changes go out at once", async () => {
     const events: any[] = [];
     const s = fake();
