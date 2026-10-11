@@ -313,6 +313,8 @@ export interface LiveState {
   /** shown while status=waiting (quota reset, backoff) */
   waitingReason?: string;
   waitingUntil?: number;
+  /** a check running between turns, shown inline in the chat ("Checking usage on GPT-5…"); null when done (undefined doesn't survive JSON) */
+  checking?: string | null;
   model?: string;
   /** model profile the chain came from, if any */
   profile?: string;
@@ -399,9 +401,16 @@ export interface UsageReport {
 /** Which subscription's limits a harness/model draws on (undefined: pay-as-you-go or unknown). */
 export function usageProvider(harness: string | undefined, model?: string): ProviderUsage["provider"] | undefined {
   if (harness === "claude-code") return "claude";
-  if (harness === "codex") return "codex";
+  // A Codex model routed to another provider ("openrouter/x", "ollama/y") isn't on the ChatGPT login.
+  if (harness === "codex") return codexOnChatGpt(model) ? "codex" : undefined;
   if (model?.startsWith("openai-codex/")) return "codex";
   return undefined;
+}
+
+/** A Codex model id on the ChatGPT account: a bare id, or one routed to "openai/…". */
+export function codexOnChatGpt(model?: string): boolean {
+  const i = model?.indexOf("/") ?? -1;
+  return i <= 0 || model!.slice(0, i) === "openai";
 }
 
 /**
@@ -831,12 +840,14 @@ export interface McpDelivery {
   note: string;
 }
 
+/** Where a registry server applies: every project, or the repos it's linked to ("repo:<repo-key>"). */
+export type McpScope = "global" | string[];
+
 /** A registry server as the web app sees it: env and header values stay on the runner. */
 export interface McpServerView {
   id: string;
   name: string;
-  /** "global" or "repo:<repo-key>" */
-  scope: string;
+  scope: McpScope;
   enabled: boolean;
   /** its tools are allowed by the guard without the judge or a person */
   trusted: boolean;

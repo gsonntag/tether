@@ -10,12 +10,12 @@
 // edits and ordinary dev commands, and send everything else to the judge.
 
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { attachmentsDir, isAttachmentPath } from "./attachments";
 import { config } from "./config";
 import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
 import { trustedServerFor, type McpTrust } from "./mcp/registry";
+import { userHome } from "./home";
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
@@ -38,8 +38,6 @@ export interface Verdict {
   by: "rule" | "judge" | "user" | "mode";
   reason: string;
 }
-
-const HOME = homedir();
 
 // ---------------- tool classification ----------------
 
@@ -73,7 +71,7 @@ export function commandOf(input: any): string | undefined {
 }
 
 function abs(p: string, cwd: string) {
-  return resolve(cwd, p.replace(/^~(?=$|\/)/, HOME));
+  return resolve(cwd, p.replace(/^~(?=$|\/)/, userHome()));
 }
 
 function inside(p: string, dir: string) {

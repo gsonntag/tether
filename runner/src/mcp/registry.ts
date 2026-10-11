@@ -14,7 +14,7 @@ import { exportedTo, exportRegistry, type RegistryExport } from "./export";
 import { cleanName, identity, parsePaste, summary } from "./formats";
 import { authorizable, authorized, authStatus, checkUnknown, finishAuth, forget, readTokens, recordFor, signOut, startAuth } from "./oauth";
 import { claudeProjects, merge, repoServers, type Found, type Scan } from "./sources";
-import { findByIdentity, load, mutate, newServerId, uniqueName, type RegistryData, type RegistryServer } from "./store";
+import { addRepo, findByIdentity, inScope, load, mutate, newServerId, uniqueName, type RegistryData, type RegistryServer } from "./store";
 
 // ---------------- import ----------------
 
@@ -44,7 +44,10 @@ interface Resolved extends Found {
   key: string;
 }
 
-/** Merges found entries into the registry; returns the names added. Never imports Tether's own exports. */
+/**
+ * Merges found entries into the registry; returns the names added. Never imports Tether's own
+ * exports. A server found for several repos (Claude's per-project entries) is linked to each.
+ */
 export function mergeFound(data: RegistryData, found: Resolved[]): string[] {
   const added: string[] = [];
   const dismissed = new Set(data.dismissed);
@@ -58,6 +61,7 @@ export function mergeFound(data: RegistryData, found: Resolved[]): string[] {
       if (f.name !== cur.name && !(cur.aliases ?? []).includes(f.name)) cur.aliases = [...(cur.aliases ?? []), f.name];
       // Found in one harness globally and in another for a repo: it's global.
       if (f.key === "global" && cur.scope !== "global" && cur.sources.every((s) => s !== "you")) cur.scope = "global";
+      else if (f.key !== "global") addRepo(cur, f.key);
       continue;
     }
     const name = uniqueName(data, f.name);
@@ -65,7 +69,7 @@ export function mergeFound(data: RegistryData, found: Resolved[]): string[] {
       id: newServerId(),
       name,
       transport: f.transport,
-      scope: f.key,
+      scope: f.key === "global" ? "global" : [f.key],
       enabled: f.enabled,
       trusted: false,
       sources: [f.source],
@@ -110,7 +114,10 @@ async function scopeArg(scope?: string): Promise<string> {
   return `repo:${await repoKey(scope)}`; // a project path
 }
 
-/** Adds servers from pasted text (formats.ts parsePaste). A server already there is turned on (and moved to `scope`). */
+/**
+ * Adds servers from pasted text (formats.ts parsePaste). A server already there is turned on, and
+ * gets `scope`: made global, or linked to one more repo (a global one moves to that repo).
+ */
 export async function addServers(text: string, opts: { name?: string; scope?: string } = {}): Promise<McpServerView[]> {
   const pasted = parsePaste(text, opts.name);
   const scope = await scopeArg(opts.scope);
@@ -120,13 +127,14 @@ export async function addServers(text: string, opts: { name?: string; scope?: st
       data.dismissed = data.dismissed.filter((d) => d !== id);
       const cur = findByIdentity(data, p.transport);
       if (cur) {
+        if (scope === "global" || cur.scope === "global") cur.scope = scope === "global" ? "global" : [scope];
+        else addRepo(cur, scope);
         cur.enabled = true;
-        cur.scope = scope;
         if (!cur.sources.includes("you")) cur.sources.push("you");
         continue;
       }
       if (p.name === "tether-context") throw new Error("tether-context is Tether's own memory server");
-      data.servers.push({ id: newServerId(), name: uniqueName(data, p.name), transport: p.transport, scope, enabled: true, trusted: false, sources: ["you"], addedAt: Date.now() });
+      data.servers.push({ id: newServerId(), name: uniqueName(data, p.name), transport: p.transport, scope: scope === "global" ? "global" : [scope], enabled: true, trusted: false, sources: ["you"], addedAt: Date.now() });
     }
     report(exportRegistry(data.servers));
   });
@@ -209,7 +217,7 @@ export async function sessionMcp(h: HarnessId, projectPath: string): Promise<{ s
   const data = load();
   if (!data.servers.some((s) => s.enabled)) return { servers: [], auth: [] };
   const key = await repoKey(projectPath).catch(() => undefined);
-  const list = data.servers.filter((s) => s.enabled && (s.scope === "global" || (key && s.scope === `repo:${key}`)));
+  const list = data.servers.filter((s) => s.enabled && inScope(s, key));
   if (!list.length) return { servers: [], auth: [] };
   const c = connectorFor(h).mcp;
   let native: Found[] = [];
@@ -327,7 +335,7 @@ export async function sessionTrust(h: HarnessId, projectPath: string): Promise<M
     native = connectorFor(h).mcp.native?.(projectPath) ?? [];
   } catch {}
   const trusted = candidates
-    .filter((s) => s.scope === "global" || (key && s.scope === `repo:${key}`))
+    .filter((s) => inScope(s, key))
     .flatMap((s) => {
       const id = identity(s.transport);
       const names = [s.name, ...(s.aliases ?? [])].filter((n) => !native.some((f) => !f.ours && f.name === n && identity(f.transport) !== id));

@@ -1,11 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SIDEBAR_DAYS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
+import { userHome } from "./home";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
 // back to the account's real home through the password database.
-export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(process.env.HOME || homedir(), ".config", "tether");
+export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(userHome(), ".config", "tether");
 const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
 
 export interface RunnerConfig {

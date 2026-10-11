@@ -10,9 +10,8 @@
 // MCP tool calls are approved through an MCP elicitation (see onElicitation); they go to the guard too.
 // In full: no approvals, no sandbox.
 
-import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { ActivityItem, ModelRef, Msg, Part, SessionGoal, SessionSummary } from "../../../web/src/shared/protocol";
+import { codexOnChatGpt, type ActivityItem, type ModelRef, type Msg, type Part, type SessionGoal, type SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { CodexActivity } from "./codexActivity";
@@ -28,6 +27,7 @@ import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { codexPick, lastLineTime } from "./lastActivity";
 import { formContent, formRequest } from "./elicitation";
+import { userHome } from "../home";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -48,7 +48,7 @@ function sandboxWorks(): Promise<boolean> {
   if (process.platform !== "linux" && process.platform !== "darwin") return Promise.resolve(false);
   return (sandboxProbe ??= (async () => {
     try {
-      const p = Bun.spawn([CODEX_BIN, "sandbox", "true"], { cwd: homedir(), stdout: "ignore", stderr: "ignore" });
+      const p = Bun.spawn([CODEX_BIN, "sandbox", "true"], { cwd: userHome(), stdout: "ignore", stderr: "ignore" });
       const timer = setTimeout(() => p.kill(), 20_000);
       const code = await p.exited;
       clearTimeout(timer);
@@ -67,6 +67,20 @@ export function unwrapShell(cmd: string): string {
 }
 
 // ---------------- connection ----------------
+
+/**
+ * A failed turn's error as fallback sees it. Codex reports usageLimitExceeded for the ChatGPT
+ * plan's limit but also for a provider's quota or billing errors (insufficient_quota): it's a
+ * definite limit only for a model on the ChatGPT login. A model routed to another provider
+ * ("openrouter/…") gets a plain quota hint, so the error offers "Continue on …" and never switches.
+ */
+export function classifyCodexError(e: any, model: string | undefined, quotaReset: () => number | undefined): { status?: number; hint?: Classified } {
+  const info = e?.codexErrorInfo;
+  if (info === "usageLimitExceeded") return { hint: codexOnChatGpt(model) ? { kind: "quota", resetAt: quotaReset(), definite: true } : { kind: "quota" } };
+  if (info === "serverOverloaded" || info === "rateLimitExceeded") return { hint: { kind: "rate_limit" } };
+  const status = info && typeof info === "object" ? (Object.values(info)[0] as any)?.httpStatusCode : undefined;
+  return { status: status ?? undefined };
+}
 
 export class CodexProcess {
   proc: ReturnType<typeof Bun.spawn>;
@@ -164,7 +178,7 @@ export class CodexProcess {
 
 /** A short-lived app-server for catalog calls (thread list, models). */
 async function withProcess<T>(fn: (p: CodexProcess) => Promise<T>): Promise<T> {
-  const p = new CodexProcess(homedir());
+  const p = new CodexProcess(userHome());
   try {
     await p.init();
     return await fn(p);
@@ -672,11 +686,7 @@ export class CodexSession extends LiveSession {
   }
 
   private classifyError(e: any): { status?: number; hint?: Classified } {
-    const info = e?.codexErrorInfo;
-    if (info === "usageLimitExceeded") return { hint: { kind: "quota", resetAt: this.quotaReset(), definite: true } };
-    if (info === "serverOverloaded" || info === "rateLimitExceeded") return { hint: { kind: "rate_limit" } };
-    const status = info && typeof info === "object" ? (Object.values(info)[0] as any)?.httpStatusCode : undefined;
-    return { status: status ?? undefined };
+    return classifyCodexError(e, this.model ?? this.t.state.model, () => this.quotaReset());
   }
 
   private async onTurnCompleted(turn: any) {

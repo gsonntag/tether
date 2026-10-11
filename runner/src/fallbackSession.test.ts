@@ -8,6 +8,7 @@ import type { ChainEntry, HarnessId, ProviderUsage } from "../../web/src/shared/
 import { config, prefs } from "./config";
 import { setUsageSource, type Classified } from "./fallback";
 import { LiveSession, type HandoffOpts } from "./session";
+import { classifyCodexError } from "./adapters/codex";
 import type { UsageAccount } from "./usage";
 
 /** What the fake usage source answers per account, and which accounts were asked. */
@@ -205,6 +206,24 @@ describe("handleTurnError", () => {
     expect(handoffs.map((h) => h.to)).toEqual([{ harness: "claude-code", model: "opus" }]);
   });
 
+  test("Codex's usageLimitExceeded switches only for a model on the ChatGPT login", async () => {
+    const reset = Date.now() + 60 * 60_000;
+    const err = { message: "Quota exceeded. Check your plan and billing details.", codexErrorInfo: "usageLimitExceeded" };
+    expect(classifyCodexError(err, "gpt-5.5", () => reset).hint).toEqual({ kind: "quota", resetAt: reset, definite: true });
+    expect(classifyCodexError(err, "openai/gpt-5.5", () => reset).hint?.definite).toBe(true);
+    // Routed to another provider: its insufficient_quota maps to the same signal, but nothing moves.
+    const { s, handoffs, actions } = fake("codex", "openrouter/deepseek-v4");
+    await s.setChain(["codex:openrouter/deepseek-v4", "claude-code:opus"]);
+    const { status, hint } = classifyCodexError(err, "openrouter/deepseek-v4", () => reset);
+    expect(hint).toEqual({ kind: "quota" });
+    expect(await s.turnError(err.message, status, hint)).toBe(false);
+    expect(config().exhausted).toEqual({});
+    expect(handoffs).toEqual([]);
+    expect(asked).toEqual([]);
+    s.notice(err.message, "error");
+    expect(actions()).toEqual([expect.objectContaining({ entry: "claude-code:opus" })]);
+  });
+
   test("the adapter's hint wins over the text", async () => {
     const { s, log } = fake();
     await s.setChain(["opus", "sonnet"]);
@@ -302,6 +321,87 @@ describe("handleTurnError", () => {
     expect(await s.turnError("429 Too Many Requests", 429)).toBe(true);
     expect(s.t.state.status).toBe("waiting");
     expect(handoffs).toEqual([]);
+  });
+
+  test("an entry Tether can't check: after 3 failed backoffs the error shows with Continue, never a switch", async () => {
+    jest.useFakeTimers();
+    const { s, handoffs, actions, log } = fake("pi", "anthropic/claude-opus-5-5");
+    await s.setChain(["pi:anthropic/claude-opus-5-5", "codex:gpt-5.5"]);
+    const text = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}';
+    for (let i = 0; i < 3; i++) {
+      s.t.state.status = "running";
+      expect(await s.turnError(text, 429)).toBe(true);
+      expect(s.t.state.status as string).toBe("waiting");
+      jest.advanceTimersByTime(s.t.state.waitingUntil! - Date.now());
+      await settle();
+    }
+    expect(log.filter((l) => l === "continue")).toHaveLength(3);
+    s.t.state.status = "running";
+    expect(await s.turnError(text, 429)).toBe(false);
+    s.notice(text, "error");
+    expect(actions()).toEqual([expect.objectContaining({ label: "Continue on GPT-5.5 in Codex", entry: "codex:gpt-5.5" })]);
+    expect(handoffs).toEqual([]);
+    expect(config().exhausted).toEqual({});
+    expect(asked).toEqual([]); // nothing to check on pi's Anthropic key
+    // Your own message starts over: it backs off again.
+    s.t.state.status = "idle";
+    await s.prompt("go on");
+    s.t.state.status = "running";
+    expect(await s.turnError(text, 429)).toBe(true);
+  });
+
+  test("pi's ChatGPT limit text that reads like a rate limit: checked on pi's login, switches when it's at the limit", async () => {
+    const { s, handoffs } = fake("pi", "openai-codex/gpt-5.5");
+    await s.setChain(["pi:openai-codex/gpt-5.5", "claude-code:opus"]);
+    const text = "You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.";
+    usage["chatgpt:pi"] = half("codex");
+    expect(await s.turnError(text)).toBe(true);
+    expect(s.t.state.status).toBe("waiting"); // not at the limit: a backoff
+    expect(handoffs).toEqual([]);
+    usage["chatgpt:pi"] = { provider: "codex", label: "Codex", windows: [], limited: true };
+    s.t.state.status = "running";
+    expect(await s.turnError(text)).toBe(true);
+    expect(handoffs.map((h) => h.to)).toEqual([{ harness: "claude-code", model: "opus" }]);
+    expect(asked).toEqual(["chatgpt:pi", "chatgpt:pi"]);
+  });
+
+  test("an entry whose usage check fails (expired login): after 3 failed backoffs the error shows with Continue", async () => {
+    jest.useFakeTimers();
+    const { s, handoffs, actions, log } = fake("pi", "openai-codex/gpt-5.5");
+    await s.setChain(["pi:openai-codex/gpt-5.5", "claude-code:opus"]);
+    const text = "You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.";
+    setUsageSource(async (a) => {
+      asked.push(a);
+      return { provider: "codex", label: "Codex", windows: [], error: "401" };
+    });
+    for (let i = 0; i < 3; i++) {
+      s.t.state.status = "running";
+      expect(await s.turnError(text)).toBe(true);
+      expect(s.t.state.status as string).toBe("waiting");
+      jest.advanceTimersByTime(s.t.state.waitingUntil! - Date.now());
+      await settle();
+    }
+    expect(log.filter((l) => l === "continue")).toHaveLength(3);
+    s.t.state.status = "running";
+    expect(await s.turnError(text)).toBe(false);
+    s.notice(text, "error");
+    expect(actions()).toEqual([expect.objectContaining({ entry: "claude-code:opus" })]);
+    expect(handoffs).toEqual([]);
+    expect(config().exhausted).toEqual({});
+    expect(asked).toHaveLength(4);
+  });
+
+  test("the usage check shows inline while it runs", async () => {
+    const { s } = fake();
+    await s.setChain(["opus", "sonnet"]);
+    let answer!: (u: ProviderUsage | undefined) => void;
+    setUsageSource(() => new Promise((r) => (answer = r)));
+    const pending = s.turnError("Claude AI usage limit reached");
+    await settle();
+    expect(s.t.state.checking).toBe("Checking usage on Opus…");
+    answer(undefined);
+    await pending;
+    expect(s.t.state.checking).toBeNull();
   });
 
   test("a rate limit that says when to retry waits that long (at least 5 s)", async () => {

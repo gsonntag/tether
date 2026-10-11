@@ -208,6 +208,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
+          {st.checking && (
+            <HStack gap={2} vAlign="center">
+              <Spinner size="sm" />
+              <Text type="supporting" color="secondary">
+                {st.checking}
+              </Text>
+            </HStack>
+          )}
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
           <SessionConflicts sessionId={sessionId} />

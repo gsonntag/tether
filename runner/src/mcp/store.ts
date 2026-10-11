@@ -1,12 +1,12 @@
 // The MCP registry: Tether's canonical list of the user's MCP servers (docs/harness-platform.md,
 // Phase 2), kept in the runner's config dir (paths.ts), never in a harness config. Servers come from
 // the import (every harness's own config, sources.ts) or are added by hand; each one is global or
-// tied to one repo (context/repokey.ts), on or off, and trusted or not (the guard).
+// tied to one or more repos (context/repokey.ts), on or off, and trusted or not (the guard).
 //
 // Env values and headers can be secrets: the file is mode 600 and nothing here logs them.
 
 import { readFileSync, statSync } from "node:fs";
-import type { McpTransport } from "../../../web/src/shared/protocol";
+import type { McpScope, McpTransport } from "../../../web/src/shared/protocol";
 import { Mutex } from "../context/git";
 import { writeAtomic } from "../context/store";
 import { cleanName, identity } from "./formats";
@@ -17,8 +17,8 @@ export interface RegistryServer {
   /** the key it gets in every harness config (unique in the registry) */
   name: string;
   transport: McpTransport;
-  /** "global" or "repo:<repo-key>" */
-  scope: string;
+  /** "global", or the repos it's linked to ("repo:<repo-key>", one or more) */
+  scope: McpScope;
   enabled: boolean;
   /** the guard allows its tools without the judge or a person */
   trusted: boolean;
@@ -48,10 +48,32 @@ export function load(): RegistryData {
   let data: RegistryData = { servers: [], dismissed: [] };
   try {
     const v = JSON.parse(readFileSync(serversFile(), "utf8"));
-    if (v && Array.isArray(v.servers)) data = { servers: v.servers, dismissed: Array.isArray(v.dismissed) ? v.dismissed : [] };
+    if (v && Array.isArray(v.servers)) data = { servers: v.servers.map(migrate), dismissed: Array.isArray(v.dismissed) ? v.dismissed : [] };
   } catch {}
   cache = mtime >= 0 ? { mtime, data } : undefined;
   return data;
+}
+
+/** A scope as stored: "global", a repo list, or (before multi-repo scopes) one "repo:<key>" string. */
+export function normalizeScope(v: unknown): McpScope {
+  if (Array.isArray(v)) {
+    const repos = [...new Set(v.filter((x): x is string => typeof x === "string" && x.startsWith("repo:")))];
+    return repos.length ? repos : "global";
+  }
+  return typeof v === "string" && v.startsWith("repo:") ? [v] : "global";
+}
+
+function migrate(s: RegistryServer): RegistryServer {
+  return { ...s, scope: normalizeScope(s.scope) };
+}
+
+/** Whether a server reaches a session in the repo `key` (undefined: no repo). */
+export const inScope = (s: RegistryServer, key: string | undefined) => s.scope === "global" || (!!key && s.scope.includes(`repo:${key}`));
+
+/** Adds repo `scope` ("repo:<key>") to a server's repos; a global server stays global. */
+export function addRepo(s: RegistryServer, scope: string) {
+  if (s.scope === "global" || s.scope.includes(scope)) return;
+  s.scope = [...s.scope, scope];
 }
 
 function save(data: RegistryData) {

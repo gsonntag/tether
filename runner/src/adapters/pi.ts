@@ -2,7 +2,6 @@
 // Protocol: pi docs rpc.md, rpc-commands.md, json.md, rpc-extension-ui.md.
 
 import { open, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
@@ -14,13 +13,15 @@ import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
 import { piFault } from "../faults";
 import { sessionLaunch } from "../connectors/launch";
+import { piGoalFilter } from "../connectors/pi";
 import { nativeAttachments } from "../attachments";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { userHome } from "../home";
 
 const PI_BIN = process.env.PI_BIN ?? "pi";
-const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(homedir(), ".pi", "agent", "sessions");
+const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(userHome(), ".pi", "agent", "sessions");
 
 // ---------------- session files ----------------
 
@@ -338,6 +339,8 @@ class PiSession extends LiveSession {
     // global mcp.json registrations).
     const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY } });
     args.push(...launch.args);
+    // pi's own goal extension stays out: Tether's /goal drives goals here (connectors/pi.ts).
+    args.push(...(await piGoalFilter(this.projectPath)).args);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);
     this.rpc.onRecord = (r) => this.onRecord(r);
     this.rpc.onExit = (code, stderr) => {
@@ -707,7 +710,7 @@ export const piAdapter: Adapter = {
     }
     if (!modelCache || Date.now() - modelCache.at > 10 * 60_000) {
       // A short-lived process just to read the model list.
-      const rpc = new PiRpc(homedir(), ["--no-session"]);
+      const rpc = new PiRpc(userHome(), ["--no-session"]);
       try {
         const [m, t] = await Promise.all([rpc.call("get_available_models"), rpc.call("get_available_thinking_levels")]);
         modelCache = {

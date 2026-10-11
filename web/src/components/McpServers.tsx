@@ -148,7 +148,16 @@ export function McpSection({ narrow }: { narrow: boolean }) {
                   <HStack gap={1} vAlign="center" wrap="wrap">
                     <Token size="sm" label={TYPE_LABEL[s.type]} />
                     {s.auth && <Token size="sm" label={AUTH[s.auth].label} color={AUTH[s.auth].color} />}
-                    <Token size="sm" label={scopeLabel(s.scope)} />
+                    {s.scope === "global" ? (
+                      <Token size="sm" label="Global" />
+                    ) : (
+                      // a runner from before repo lists sends one "repo:<key>" string
+                      (Array.isArray(s.scope) ? s.scope : [s.scope]).map((r) => (
+                        <Tooltip key={r} content={r.replace(/^repo:/, "")} hasHoverIndication={false}>
+                          <Token size="sm" label={scopeLabel(r)} />
+                        </Tooltip>
+                      ))
+                    )}
                     {[...s.envKeys, ...s.headerKeys].length > 0 && (
                       <Tooltip content={[...s.envKeys, ...s.headerKeys].join(", ")} hasHoverIndication={false}>
                         <Token size="sm" label={`${s.envKeys.length + s.headerKeys.length} secret${s.envKeys.length + s.headerKeys.length === 1 ? "" : "s"}`} />

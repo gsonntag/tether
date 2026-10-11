@@ -24,7 +24,7 @@ import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
-import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified } from "./fallback";
+import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified, type UsageCheck } from "./fallback";
 import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
@@ -39,6 +39,7 @@ import {
   describeGoal,
   fmtBudget,
   fromCodexStatus,
+  GOAL_CHECK_EVERY,
   GOAL_STALL_TURNS,
   isGoalPrompt,
   kickoffPrompt,
@@ -48,6 +49,7 @@ import {
   TETHER_COMMANDS,
   transcriptTail,
   withNote,
+  type GoalVerdict,
 } from "./goal";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -72,6 +74,8 @@ const IDLE_CLOSE_MS = 30 * 60_000;
 const STALL_WARN_MS = 15 * 60_000;
 /** how long "Continue on …" keeps this session off the entry it left, when the error gave no reset */
 const MANUAL_SKIP_MS = 60 * 60_000;
+/** backoffs on an entry whose usage Tether can't check before its rate-limit error shows with "Continue on …" */
+const UNVERIFIED_BACKOFFS = 3;
 
 /**
  * One live agent session. The runner keeps the authoritative transcript here; every change goes
@@ -583,6 +587,8 @@ export abstract class LiveSession {
     if (this.devCommand(text)) return;
     if (await this.goalCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
+    // Your own message starts a fresh run of retries.
+    if (this.t.state.status !== "running") this.fallbackAttempt = 0;
     if (this.t.state.status === "idle") {
       if (!this.t.state.pending?.length) return this.sendTyped(text);
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
@@ -1055,18 +1061,29 @@ export abstract class LiveSession {
     if (!chain) return false;
     const c = hint ?? classify(errorText, status);
     const current = this.currentEntry;
-    if (c.kind === "rate_limit") {
-      // Transient: back off and retry on the same model, indefinitely. Never a switch.
-      const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(this.fallbackAttempt++);
-      this.waitThenContinue(Date.now() + delay, `Rate limited on ${entryLabel(current)}`);
-      return true;
-    }
+    let verifiable = !!accountOf(current);
+    // A possible limit, rate-limit wording included (pi's "You have hit your ChatGPT usage limit …
+    // Try again in ~N min", an Anthropic 429), is checked against the account's usage first. An
+    // adapter's own rate-limit hint is taken as it is.
     let limit: { resetAt?: number } | undefined;
-    if (c.kind === "quota" && c.definite) limit = { resetAt: c.resetAt ?? (await confirmLimit(current))?.resetAt };
-    else if (c.kind === "quota") limit = await confirmLimit(current);
-    if (!limit && c.kind === "quota" && !c.definite && !this.userStopped && !this.closed && isTransient(errorText, status)) {
-      // Limit-looking wording on what is really a per-minute 429: back off like any rate limit.
-      const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(this.fallbackAttempt++);
+    if (c.kind === "quota" && c.definite) limit = { resetAt: c.resetAt ?? (await this.checkUsage(current)).limit?.resetAt };
+    else if (c.kind === "quota" || (c.kind === "rate_limit" && verifiable && !hint)) {
+      const check = await this.checkUsage(current);
+      limit = check.limit;
+      // A check that failed (expired login, network, an API change) proves nothing either way.
+      if (check.unknown) verifiable = false;
+    }
+    const transient = c.kind === "rate_limit" || (c.kind === "quota" && !c.definite && !this.userStopped && !this.closed && isTransient(errorText, status));
+    if (!limit && transient) {
+      // Not a confirmed limit: back off and retry on the same model; never a switch. On an entry
+      // whose usage can't be checked the backoff could go on forever on a real limit, so after
+      // UNVERIFIED_BACKOFFS failed tries the error shows, with "Continue on …".
+      if (!verifiable && this.fallbackAttempt >= UNVERIFIED_BACKOFFS) {
+        this.offerContinue(errorText);
+        return false;
+      }
+      const n = this.fallbackAttempt++;
+      const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(n);
       this.waitThenContinue(Date.now() + delay, `Rate limited on ${entryLabel(current)}`);
       return true;
     }
@@ -1185,6 +1202,20 @@ export abstract class LiveSession {
       await this.continueTurn(text);
     }, Math.max(1_000, until - Date.now()));
     this.setState({ status: "waiting", waitingReason: reason, waitingUntil: until });
+  }
+
+  /**
+   * A fresh usage fetch for the entry's account (fallback.ts confirmLimit), shown inline in the
+   * chat while it runs ("Checking usage on …"): it can take a while.
+   */
+  private async checkUsage(entry: ChainEntry): Promise<UsageCheck> {
+    if (!accountOf(entry)) return { unknown: true };
+    this.setState({ checking: `Checking usage on ${entryLabel(entry)}…` });
+    try {
+      return await confirmLimit(entry);
+    } finally {
+      if (!this.closed) this.setState({ checking: null });
+    }
   }
 
   /** Clears fallback state after a successful turn. */
@@ -1559,13 +1590,16 @@ export abstract class LiveSession {
   // While the goal is active, every turn that ends with nothing waiting on the user (no queued
   // message, approval or question) is followed by a short continuation prompt. The loop stops when
   // the goal is done (the agent says so and the background model agrees), blocked (by the agent,
-  // or GOAL_STALL_TURNS turns without progress), out of its budget, or paused (Stop, /goal pause,
-  // a failed turn). Each stop the user didn't make is a notification.
+  // GOAL_STALL_TURNS turns without progress, or a routine check every GOAL_CHECK_EVERY turns that
+  // finds it stuck), out of its budget, or paused (Stop, /goal pause, a failed turn). Each stop the
+  // user didn't make is a notification.
 
   /** the turn running under an active goal: where its messages start, and whether goal_update was called */
   private goalTurn?: { from: number; startedAt: number; updated: boolean };
   /** turns in a row without a tool call, a change to the working tree or a goal_update */
   private goalIdle = 0;
+  /** goal turns since the background model last checked the goal (GOAL_CHECK_EVERY) */
+  private goalUnchecked = 0;
   /** the working tree after the last goal turn (checkpoint.ts treeHash) */
   private goalTree?: string;
   /** tokens the harness reported during the running goal turn */
@@ -1608,6 +1642,7 @@ export abstract class LiveSession {
    */
   async adoptGoal(g: SessionGoal) {
     this.goalIdle = 0;
+    this.goalUnchecked = 0;
     this.goalClaim = undefined;
     this.goalTree = await treeHash(this.projectPath).catch(() => undefined);
     this.mirrorOnTurn = !!this.mirrorGoal;
@@ -1658,6 +1693,7 @@ export abstract class LiveSession {
         const goal = newGoal(c.objective, c.budget);
         this.autoTitle(c.objective);
         this.goalIdle = 0;
+        this.goalUnchecked = 0;
         this.goalClaim = undefined;
         this.goalHeld = false;
         clearTimeout(this.goalTimer);
@@ -1689,6 +1725,7 @@ export abstract class LiveSession {
         else if (budgetHit(g)) this.notice(`${budgetHit(g)} Set it again with a larger budget: /goal <objective> --turns <n>.`, "warning");
         else {
           this.goalIdle = 0;
+          this.goalUnchecked = 0;
           this.goalClaim = undefined;
           await this.putGoal({ ...withNote(g, "Resumed by you.", "user"), status: "active", reason: undefined, updatedAt: Date.now() });
           this.notice("Goal resumed.");
@@ -1799,7 +1836,10 @@ export abstract class LiveSession {
     void this.afterGoalTurn(turn);
   }
 
-  /** Progress, a "done" claim or a stall checked by the background model, the budget; then the next turn. */
+  /**
+   * Progress; a "done" claim, a stall, or GOAL_CHECK_EVERY turns without a check go to the
+   * background model; the budget; then the next turn.
+   */
   private async afterGoalTurn(turn: { from: number; updated: boolean } | undefined) {
     const tree = await treeHash(this.projectPath).catch(() => undefined);
     const changed = tree !== this.goalTree;
@@ -1811,30 +1851,40 @@ export abstract class LiveSession {
     // A turn Tether didn't see start (the goal was set mid-turn) isn't counted as idle.
     const progress = !turn || turn.updated || tools > 0 || changed;
     this.goalIdle = progress ? 0 : this.goalIdle + 1;
+    if (turn) this.goalUnchecked++;
     const claim = this.goalClaim;
     this.goalClaim = undefined;
     let check: string | undefined;
-    if (claim !== undefined || this.goalIdle >= GOAL_STALL_TURNS) {
-      const stalled = claim === undefined;
-      let verdict: { done: boolean; reason: string } | undefined;
+    const kind = claim !== undefined ? "done" : this.goalIdle >= GOAL_STALL_TURNS ? "stalled" : this.goalUnchecked >= GOAL_CHECK_EVERY ? "periodic" : undefined;
+    if (kind) {
+      const stalled = kind === "stalled";
+      this.goalUnchecked = 0;
+      let verdict: GoalVerdict | undefined;
       let failure = "";
       try {
-        verdict = await checkGoal({ goal: g0, transcript: transcriptTail(this.t.messages), claim: stalled ? "stalled" : "done", cwd: this.projectPath });
+        verdict = await checkGoal({ goal: g0, transcript: transcriptTail(this.t.messages), claim: kind, cwd: this.projectPath });
       } catch (e: any) {
         failure = e?.message ?? String(e);
       }
       // Paused, cleared, replaced or handed off while the check ran (a pause and resume too).
       if (epoch !== this.goalEpoch || this.goalState?.status !== "active" || this.closed || this.t.state.handoffTo) return;
-      if (!verdict) {
-        // No check possible: the agent's word stands for "done"; a stall still stops.
-        if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row (Tether couldn't check whether it's done: ${failure}).`);
-        return this.stopGoal("done", `${claim} (Tether couldn't double-check it: ${failure})`);
+      if (kind === "periodic") {
+        // A routine check: done or stuck stops the loop; otherwise (or with no check possible) it goes on.
+        if (verdict?.done) return this.stopGoal("done", verdict.reason || "The objective is achieved.");
+        if (verdict?.blocked) return this.stopGoal("blocked", verdict.reason || "The agent seems stuck.");
+        if (!verdict) console.error(`goal: periodic check for ${this.id} failed: ${failure}`);
+      } else {
+        if (!verdict) {
+          // No check possible: the agent's word stands for "done"; a stall still stops.
+          if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row (Tether couldn't check whether it's done: ${failure}).`);
+          return this.stopGoal("done", `${claim} (Tether couldn't double-check it: ${failure})`);
+        }
+        if (verdict.done) return this.stopGoal("done", verdict.reason || claim || "The objective is achieved.");
+        if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row. ${verdict.reason}`.trim());
+        check = verdict.reason || "The conversation doesn't show the objective achieved yet.";
+        this.goalIdle = 0;
+        void this.putGoal(withNote(this.goalState!, `Not done yet: ${check}`, "tether"), false);
       }
-      if (verdict.done) return this.stopGoal("done", verdict.reason || claim || "The objective is achieved.");
-      if (stalled) return this.stopGoal("blocked", `No progress for ${GOAL_STALL_TURNS} turns in a row. ${verdict.reason}`.trim());
-      check = verdict.reason || "The conversation doesn't show the objective achieved yet.";
-      this.goalIdle = 0;
-      void this.putGoal(withNote(this.goalState!, `Not done yet: ${check}`, "tether"), false);
     }
     const over = budgetHit(this.goalState!);
     if (over) return this.stopGoal("budget", over);

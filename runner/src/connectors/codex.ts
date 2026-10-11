@@ -76,7 +76,9 @@ export const codexConnector: Connector = {
     offline: true,
     installDirs: () => [{ harness: "codex", dir: harness.codexSkills(), install: false, skip: [] }],
   },
-  commands: slot("native", "Custom commands in its config; not mapped yet"),
+  // Older Codex read custom prompts from ~/.codex/prompts/*.md; codex-cli 0.162 has no loader for
+  // them left (checked in its binary): skills are its custom commands now.
+  commands: slot("native", "Its skills are its custom commands (older versions also read ~/.codex/prompts); not mapped yet"),
   agents: slot("native", "Subagents; not mapped yet"),
   hooks: slot("native", "Hooks in its config; not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),

@@ -13,7 +13,6 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { randomBytes } from "node:crypto";
-import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
@@ -26,6 +25,7 @@ import { withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { userHome } from "../home";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
 
@@ -627,7 +627,7 @@ export function acpAdapter(spec: AcpSpec): Adapter {
   /** One short-lived agent process to list sessions (and learn models). */
   async function catalog() {
     if (listCache && Date.now() - listCache.at < 20_000) return listCache.sessions;
-    const p = new AcpProcess(spec, homedir());
+    const p = new AcpProcess(spec, userHome());
     try {
       await p.init();
       const sessions: any[] = [];
@@ -716,10 +716,10 @@ export function acpAdapter(spec: AcpSpec): Adapter {
       }
       if (!modelCache && Bun.which(spec.bin)) {
         // Learn the model list from a throwaway session in the home directory.
-        const p = new AcpProcess(spec, homedir());
+        const p = new AcpProcess(spec, userHome());
         try {
           await p.init();
-          const r: any = await withTimeout(p.conn.newSession({ cwd: homedir(), mcpServers: [] }), 30_000, () => "session/new timed out");
+          const r: any = await withTimeout(p.conn.newSession({ cwd: userHome(), mcpServers: [] }), 30_000, () => "session/new timed out");
           const m = configOption(r.configOptions, "model");
           const t = configOption(r.configOptions, "thought");
           modelCache = {

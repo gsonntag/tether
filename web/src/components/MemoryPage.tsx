@@ -37,6 +37,7 @@ import type { ContextActivity, ContextImportPreview, ContextSkill, ContextStatus
 import { act, markNoticeRead, refreshContext, resolveConflict, rpc, useStore } from "../store";
 import { Patch } from "./Changes";
 import { HarnessBadge } from "./HarnessBadge";
+import { HarnessSupport } from "./HarnessSupport";
 import { McpSection } from "./McpServers";
 import { scopeLabel, sourceHarness, sourceLabel, ts } from "./MemoryConflicts";
 
@@ -210,6 +211,7 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
             )}
             {on && <SkillsSection narrow={narrow} />}
             {status && !importing && <McpSection narrow={narrow} />}
+            {status && <HarnessSupport />}
           </VStack>
           {narrow && (
             <Dialog isOpen={!!detail} onOpenChange={(o) => !o && setSelected(undefined)} purpose="info" variant="fullscreen" padding={4} aria-label="Memory details">

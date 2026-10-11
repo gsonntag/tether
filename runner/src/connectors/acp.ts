@@ -47,17 +47,20 @@ const preamble = ({ context, resume }: SessionCtx) => (context?.prompt && !resum
 /** mcpServers is always sent (an empty list without the context), as newSession requires it. */
 const acpMcp = ({ context, servers, mcpCapabilities }: SessionCtx) => ({ options: { mcpServers: acpMcpServers(context, servers, mcpCapabilities) } });
 
-const commandSkills = cap("native", "Runs the skills it lists as commands; others are expanded");
+/** opencode and Kiro aren't installed on the box this was built on: what they do is from their docs, not checked. */
+const UNVERIFIED = " (unverified: not checked against an installed CLI)";
+
+const commandSkills = cap("native", "Runs the skills it lists as commands; others are expanded" + UNVERIFIED);
 
 export const opencodeConnector: Connector = {
   id: "opencode",
   memory: {
-    capability: () => cap("emulated", "First-message preamble; also ~/.config/opencode/AGENTS.md"),
+    capability: () => cap("emulated", "First-message preamble; also ~/.config/opencode/AGENTS.md" + UNVERIFIED),
     forSession: preamble,
     globalBlock: (_globalFile, digest) => [harness.opencodeAgentsMd(), digest],
   },
   mcp: {
-    capability: () => cap("native", "ACP session MCP servers; opencode config on import"),
+    capability: () => cap("native", "ACP session MCP servers; registry servers also written to its config on every change (tether-context on import)" + UNVERIFIED),
     forSession: acpMcp,
     sharedConfig: true,
     exportGlobal: (x) => registerOpencodeMcp(x.out, (p) => x.remember(p)),
@@ -80,9 +83,9 @@ export const opencodeConnector: Connector = {
     offline: false,
     installDirs: () => [{ harness: "opencode", dir: harness.opencodeSkills(), install: false, skip: [] }],
   },
-  commands: slot("native", "Custom commands in its config; not mapped yet"),
-  agents: slot("native", "Agents in its config; not mapped yet"),
-  hooks: slot("native", "Plugins; not mapped yet"),
+  commands: slot("native", "Custom commands (command/ dir and config); not mapped yet" + UNVERIFIED),
+  agents: slot("native", "Agents in its config; not mapped yet" + UNVERIFIED),
+  hooks: slot("native", "Plugins; not mapped yet" + UNVERIFIED),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
 };
@@ -105,7 +108,7 @@ function kiroSteering(x: ExportContext) {
 }
 
 const kiroMemory: MemorySlot = {
-  capability: () => cap("emulated", "First-message preamble; also a steering file"),
+  capability: () => cap("emulated", "First-message preamble; also a steering file (~/.kiro/steering)" + UNVERIFIED),
   forSession: preamble,
   exportGlobal: kiroSteering,
 };
@@ -114,7 +117,7 @@ export const kiroConnector: Connector = {
   id: "kiro",
   memory: kiroMemory,
   mcp: {
-    capability: () => cap("native", "ACP session MCP servers; ~/.kiro/settings/mcp.json"),
+    capability: () => cap("native", "ACP session MCP servers; ~/.kiro/settings/mcp.json" + UNVERIFIED),
     forSession: acpMcp,
     exportGlobal: (x) => x.registerJsonMcp(harness.kiroMcp(), dirname(harness.kiroMcp())),
     importGlobal: () => kiroServers(),
@@ -133,9 +136,9 @@ export const kiroConnector: Connector = {
     // Kiro reads only its own dir; installed into once Kiro is set up (~/.kiro exists), like its steering export.
     installDirs: () => [{ harness: "kiro", dir: harness.kiroSkills(), install: existsSync(harness.kiroDir()), skip: [] }],
   },
-  commands: slot("unsupported", "No custom commands over ACP"),
-  agents: slot("native", "Custom agents in ~/.kiro/agents; not mapped yet"),
-  hooks: slot("native", "Hooks in its agent config; not mapped yet"),
+  commands: slot("unsupported", "No custom commands over ACP" + UNVERIFIED),
+  agents: slot("native", "Custom agents in ~/.kiro/agents; not mapped yet" + UNVERIFIED),
+  hooks: slot("native", "Hooks in its agent config; not mapped yet" + UNVERIFIED),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
 };

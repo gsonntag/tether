@@ -92,8 +92,11 @@ function claudeMcp({ context, servers }: SessionCtx) {
 /**
  * The SDK passes `mcpServers` to the claude process as `--mcp-config <json>` on its command line,
  * which any local user can read (ps, /proc/<pid>/cmdline). So a launch gets the http/SSE servers
- * without their headers (an OAuth token, a pasted key), and `full` (when any were held back) is the set to hand over
- * with setMcpServers, which goes over the SDK's stdin control channel, before the first message.
+ * without their headers (an OAuth token, a pasted key) and none of the stdio servers that carry env
+ * values (API keys); `full` (when any were held back) is the set to hand over with setMcpServers,
+ * which goes over the SDK's stdin control channel, before the first message. `tether-context` stays
+ * on the command line: its env is paths and the session's guard key, which is no use without the
+ * bridge's own token (bridge.json, mode 600), and its tools must be there from the start.
  */
 export function argvSafeMcp(servers: Record<string, any>): { launch: Record<string, any>; full?: Record<string, any> } {
   let held = false;
@@ -102,6 +105,9 @@ export function argvSafeMcp(servers: Record<string, any>): { launch: Record<stri
     if ((e?.type === "http" || e?.type === "sse") && e.headers && Object.keys(e.headers).length) {
       const { headers: _, ...bare } = e;
       launch[name] = bare;
+      held = true;
+    } else if (name !== "tether-context" && (e?.type ?? "stdio") === "stdio" && e?.env && Object.keys(e.env).length) {
+      // Started with its env or not at all: setMcpServers adds it.
       held = true;
     } else launch[name] = e;
   }
@@ -117,7 +123,7 @@ export const claudeConnector: Connector = {
     exportRepos: claudeRepoFiles,
   },
   mcp: {
-    capability: () => cap("native", "SDK MCP servers per session; ~/.claude.json on import"),
+    capability: () => cap("native", "SDK MCP servers per session (secrets over stdin, not the command line); registry servers also written to ~/.claude.json on every change (tether-context on import)"),
     forSession: claudeMcp,
     sharedConfig: true,
     exportGlobal: (x) => registerClaudeMcp(x.out, (p) => x.remember(p)),

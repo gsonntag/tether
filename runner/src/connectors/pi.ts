@@ -2,8 +2,9 @@
 // `tether-context` and the MCP registry's servers through pi-mcp-adapter's --mcp-config (else
 // only the global ~/.pi/agent/mcp.json, which pi's built-in MCP reads); skills run as `/skill:name`.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { sha } from "../context/format";
 import type { SessionContext } from "../context/inject";
@@ -51,6 +52,101 @@ export function piMcpConfig(ctx: SessionContext | undefined, sessionKey?: string
   return path;
 }
 
+// ---------------- pi's own goal extension (Phase 3: not used in Tether sessions) ----------------
+
+/** A goal package or extension: `npm:pi-goal-x`, `pi-goals`, `extensions/goal.ts`, … */
+export const isGoalExtension = (s: string) => /(^|[\/:@_-])goals?([\/._@-]|$)/i.test(s);
+
+const RESOLVE_SCRIPT = fileURLToPath(new URL("./piResolve.ts", import.meta.url));
+const PI_BIN = () => process.env.PI_BIN ?? "pi";
+
+/** pi's package dir (`@earendil-works/pi-coding-agent`), from the `pi` on PATH. */
+function piRoot(): string | undefined {
+  const bin = Bun.which(PI_BIN());
+  if (!bin) return undefined;
+  let d = dirname(realpathSync(bin));
+  for (let i = 0; i < 6; i++, d = dirname(d)) {
+    try {
+      if (/pi-coding-agent$/.test(JSON.parse(readFileSync(join(d, "package.json"), "utf8")).name ?? "")) return d;
+    } catch {}
+  }
+  return undefined;
+}
+
+const mtime = (p: string) => statSync(p, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+
+/** Whether the user's pi setup names a goal extension at all (cheap: no pi code runs). */
+export function piHasGoalExtension(): boolean {
+  const agentDir = dirname(harness.piSettings());
+  try {
+    const settings = JSON.parse(readFileSync(harness.piSettings(), "utf8"));
+    const entries = [...(settings.packages ?? []), ...(settings.extensions ?? [])].map((p: any) => (typeof p === "string" ? p : p?.source)).filter((x: unknown) => typeof x === "string");
+    if (entries.some((x: string) => !x.startsWith("-") && !x.startsWith("!") && isGoalExtension(x))) return true;
+  } catch {}
+  try {
+    return readdirSync(join(agentDir, "extensions")).some(isGoalExtension);
+  } catch {
+    return false;
+  }
+}
+
+/** One extension as pi's package manager resolves it (piResolve.ts). */
+export interface PiExtension {
+  path: string;
+  enabled: boolean;
+  /** a package's source ("npm:pi-goal-x"), "local" (settings), "auto" (~/.pi/agent/extensions), "builtin" */
+  source: string;
+}
+
+/** The launch args for pi's resolved extensions: every enabled one by path except the goal ones. */
+export function goalFilterFrom(extensions: PiExtension[]): PiGoalFilter {
+  const on = extensions.filter((e) => e.enabled);
+  // A package by its source; the user's own extension files (settings or ~/.pi/agent/extensions) by name.
+  const goal = (e: PiExtension) => isGoalExtension(e.source) || ((e.source === "local" || e.source === "auto") && isGoalExtension(e.path.slice(e.path.lastIndexOf("/"))));
+  const excluded = on.filter(goal);
+  if (!excluded.length) return { args: [], excluded: [], why: "no goal extension is loaded" };
+  return { args: ["--no-extensions", ...on.filter((e) => !goal(e)).flatMap((e) => ["-e", e.path])], excluded: [...new Set(excluded.map((e) => e.source || e.path))] };
+}
+
+export type PiGoalFilter = { args: string[]; excluded: string[] } | { args: []; excluded: []; why: string };
+let filterCache: { key: string; value: PiGoalFilter } | undefined;
+
+/**
+ * Launch args that keep pi's own goal extension (pi-goal-x and the like) out of a Tether session
+ * while every other extension still loads. pi has no flag to leave one extension out, so this asks
+ * pi's own package manager (piResolve.ts) which extensions the session would load, and launches
+ * with `--no-extensions` plus `-e <path>` for each one except the goal ones (built-ins as
+ * `-e builtin:<name>`). Filters nothing (and says why) when there's no goal extension, when the
+ * project has pi settings or extensions of its own (those go through pi's project trust, which
+ * this can't redo), or when pi's answer can't be had: then pi's goal extension loads and
+ * Tether's goal tools and loop still drive the goal.
+ */
+export async function piGoalFilter(projectPath: string): Promise<PiGoalFilter> {
+  const none = (why: string): PiGoalFilter => ({ args: [], excluded: [], why });
+  if (!piHasGoalExtension()) return none("no goal extension");
+  if (existsSync(join(projectPath, ".pi", "settings.json")) || existsSync(join(projectPath, ".pi", "extensions")))
+    return none("the project has its own pi settings or extensions");
+  const root = piRoot();
+  if (!root) return none("pi's install wasn't found");
+  const agentDir = dirname(harness.piSettings());
+  const key = JSON.stringify([projectPath, root, mtime(harness.piSettings()), mtime(join(agentDir, "extensions")), mtime(join(agentDir, "npm", "node_modules")), mtime(join(root, "package.json"))]);
+  if (filterCache?.key === key) return filterCache.value;
+  let value: PiGoalFilter;
+  try {
+    const proc = Bun.spawn([process.execPath, RESOLVE_SCRIPT, root, projectPath, agentDir], { cwd: projectPath, stdout: "pipe", stderr: "pipe", env: { ...process.env, PI_OFFLINE: "1" } });
+    const timer = setTimeout(() => proc.kill(), 10_000);
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    clearTimeout(timer);
+    if (code !== 0) throw new Error(err.trim().split("\n")[0] || `exit ${code}`);
+    value = goalFilterFrom((JSON.parse(out) as { extensions: PiExtension[] }).extensions);
+  } catch (e: any) {
+    console.error(`pi: couldn't work out its extensions, so its goal extension stays on: ${e?.message ?? e}`);
+    value = none(`pi's extension list couldn't be read: ${e?.message ?? e}`);
+  }
+  filterCache = { key, value };
+  return value;
+}
+
 export const piConnector: Connector = {
   id: "pi",
   memory: {
@@ -96,5 +192,11 @@ export const piConnector: Connector = {
   agents: slot("unsupported", "No built-in subagents (the pi-subagents package adds them)"),
   hooks: slot("native", "Extensions (Tether's guard is one); not mapped yet"),
   env: slot("native", "Process environment; not mapped yet"),
-  goal: slot("emulated", "Tether's goal loop (pi's goal extension isn't used); the goal tools need pi-mcp-adapter"),
+  goal: {
+    capability: () =>
+      cap(
+        "emulated",
+        `Tether's goal loop; the goal tools need pi-mcp-adapter${piHasGoalExtension() ? ". pi's own goal extension is left out of Tether sessions (launched with --no-extensions and every other extension by path), except in a project with its own pi settings or extensions" : ""}`,
+      ),
+  },
 };

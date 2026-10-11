@@ -84,11 +84,15 @@ export function parseReset(s: string, now = Date.now()): number | undefined {
 /**
  * The unit a quota applies to. pi: the provider account ("openai-codex/gpt-6-luna" ->
  * "openai-codex"). Claude Code models have no provider prefix, and subscription limits can be
- * per model family, so each model is its own key ("claude-code:opus"). Codex limits are per
- * ChatGPT account, so all its models share one key.
+ * per model family, so each model is its own key ("claude-code:opus"). OpenAI-backed Codex
+ * models share the ChatGPT account key; custom Codex routes get a route-specific key.
  */
 export function providerOf(model: string, harness: string): string {
-  if (harness === "codex") return "codex";
+  if (harness === "codex") {
+    const i = model.indexOf("/");
+    const provider = i > 0 ? model.slice(0, i) : "openai";
+    return provider === "openai" ? "codex" : `codex:${provider}`;
+  }
   const i = model.indexOf("/");
   return i > 0 ? model.slice(0, i) : `${harness}:${model}`;
 }
@@ -115,7 +119,8 @@ export function exhaustedUntil(provider: string): number | undefined {
 /**
  * The account whose usage Tether can read for this entry: Claude Code runs on the Claude login,
  * Codex on the Codex CLI's ChatGPT login, pi's openai-codex provider on pi's ChatGPT login. pi on
- * Anthropic can't be tied to Claude Code's login, and other harnesses have no usage feed.
+ * Anthropic can't be tied to Claude Code's login, and other harnesses have no usage feed. A Codex
+ * model routed to another provider ("openrouter/…") isn't on the ChatGPT login: none.
  */
 export function accountOf(entry: ChainEntry): UsageAccount | undefined {
   const p = usageProvider(entry.harness, entry.model);
@@ -147,14 +152,22 @@ export function limitReached(u: ProviderUsage | undefined, model?: string): { re
   return { resetAt: resets.length ? Math.max(...resets) : undefined };
 }
 
-/** Fetches the entry's account usage now; undefined when it can't be checked or isn't at a limit. */
-export async function confirmLimit(entry: ChainEntry): Promise<{ resetAt?: number } | undefined> {
+/**
+ * A usage check's outcome: `limit` when the account is at its limit; `unknown` when it couldn't be
+ * checked (no account, no usage, the fetch failed or answered with an error).
+ */
+export type UsageCheck = { limit?: { resetAt?: number }; unknown?: boolean };
+
+/** Fetches the entry's account usage now. */
+export async function confirmLimit(entry: ChainEntry): Promise<UsageCheck> {
   const account = accountOf(entry);
-  if (!account) return undefined;
+  if (!account) return { unknown: true };
   try {
-    return limitReached(await usageSource(account), entry.model);
+    const u = await usageSource(account);
+    if (!u || u.error) return { unknown: true };
+    return { limit: limitReached(u, entry.model) };
   } catch {
-    return undefined;
+    return { unknown: true };
   }
 }
 

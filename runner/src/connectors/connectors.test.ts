@@ -14,6 +14,7 @@ import { skillDirs } from "../context/skills";
 import { Store } from "../context/store";
 import { capabilityMatrix, connectorFor } from "./index";
 import { launchWith } from "./launch";
+import { goalFilterFrom, isGoalExtension, piGoalFilter, piHasGoalExtension } from "./pi";
 import { mergeLaunch } from "./shared";
 import { SLOTS } from "./types";
 
@@ -171,5 +172,43 @@ describe("global export order", () => {
     ]);
     // Without the user's import, the configs Claude Code and opencode keep writing aren't touched.
     expect((await exportAll(store, { dryRun: true })).mcpConfigs.map(tilde)).not.toContain("~/.claude.json");
+  });
+});
+
+describe("pi's own goal extension stays out of Tether sessions", () => {
+  test("goal packages and extension files by name; nothing else", () => {
+    for (const s of ["npm:pi-goal-x", "npm:pi-goal", "npm:@me/pi-goals", "git:github.com/x/pi-goal-x@v1", "/home/u/.pi/agent/extensions/goal.ts", "goal"]) expect(isGoalExtension(s)).toBe(true);
+    for (const s of ["npm:pi-subagents", "npm:goalkeeper", "npm:@narumitw/pi-usage", "/x/goalie.ts", "builtin:mcp"]) expect(isGoalExtension(s)).toBe(false);
+  });
+
+  test("every other enabled extension by path, built-ins included, after --no-extensions", () => {
+    const f = goalFilterFrom([
+      { path: "/n/pi-subagents/index.js", enabled: true, source: "npm:pi-subagents" },
+      { path: "/n/pi-goal-x/extensions/goal.ts", enabled: true, source: "npm:pi-goal-x" },
+      { path: "/n/pi-x/extensions/goal.ts", enabled: true, source: "npm:pi-x" }, // a package's own file named goal: its package decides
+      { path: "/h/.pi/agent/extensions/goal.ts", enabled: true, source: "auto" },
+      { path: "/h/.pi/agent/extensions/limits.ts", enabled: true, source: "auto" },
+      { path: "builtin:codemode", enabled: true, source: "builtin" },
+      { path: "builtin:mcp", enabled: false, source: "builtin" },
+    ]);
+    expect(f).toEqual({
+      args: ["--no-extensions", "-e", "/n/pi-subagents/index.js", "-e", "/n/pi-x/extensions/goal.ts", "-e", "/h/.pi/agent/extensions/limits.ts", "-e", "builtin:codemode"],
+      excluded: ["npm:pi-goal-x", "auto"],
+    });
+    // No goal extension loaded: pi launches as it always did.
+    expect(goalFilterFrom([{ path: "/n/a.js", enabled: true, source: "npm:a" }]).args).toEqual([]);
+  });
+
+  test("only when the user's pi setup has one, and not in a project with pi resources of its own", async () => {
+    const proj = join(process.env.HOME!, "proj");
+    mkdirSync(proj, { recursive: true });
+    put(harness.piSettings(), JSON.stringify({ packages: ["npm:pi-mcp-adapter"] }));
+    expect(piHasGoalExtension()).toBe(false);
+    expect(await piGoalFilter(proj)).toEqual({ args: [], excluded: [], why: "no goal extension" });
+    put(harness.piSettings(), JSON.stringify({ packages: ["npm:pi-mcp-adapter", "npm:pi-goal-x"] }));
+    expect(piHasGoalExtension()).toBe(true);
+    expect(connectorFor("pi").goal.capability().note).toContain("pi's own goal extension is left out");
+    put(join(proj, ".pi", "settings.json"), "{}");
+    expect((await piGoalFilter(proj)).args).toEqual([]);
   });
 });

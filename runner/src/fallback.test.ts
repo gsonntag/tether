@@ -3,9 +3,11 @@
 
 import { resetHome } from "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { switchesAutomatically } from "../../web/src/shared/protocol";
 import { config } from "./config";
-import { accountOf, agyQuota, classify, limitReached, nextEntry } from "./fallback";
+import { accountOf, agyQuota, classify, limitReached, nextEntry, providerOf } from "./fallback";
 
 beforeEach(() => {
   resetHome();
@@ -52,6 +54,13 @@ describe("accountOf", () => {
     expect(switchesAutomatically("pi", "openai-codex/gpt-5.5")).toBe(true);
     expect(switchesAutomatically("pi", "anthropic/claude-opus-5-5")).toBe(false);
     expect(switchesAutomatically("kiro", "auto")).toBe(false);
+    // Codex routed to another provider: not the ChatGPT login, so manual only.
+    expect(switchesAutomatically("codex", "openai/gpt-5.5")).toBe(true);
+    expect(switchesAutomatically("codex", "openrouter/qwen3-coder")).toBe(false);
+    expect(accountOf({ harness: "codex", model: "openrouter/qwen3-coder" })).toBeUndefined();
+    expect(accountOf({ harness: "codex", model: "gpt-5.5" })).toBe("chatgpt:codex");
+    expect(providerOf("openrouter/qwen3-coder", "codex")).toBe("codex:openrouter");
+    expect(providerOf("openai/gpt-5.5", "codex")).toBe("codex");
     expect(switchesAutomatically("opencode", "openai/gpt-5.5")).toBe(false);
   });
 });
@@ -96,5 +105,14 @@ describe("nextEntry", () => {
     expect(nextEntry(chain, { harness: "claude-code", model: "sonnet" }, "claude-code")).toBeUndefined();
     // Not in the chain: from the top.
     expect(nextEntry(chain, { harness: "claude-code", model: "haiku" }, "claude-code")).toEqual({ harness: "claude-code", model: "opus" });
+  });
+});
+
+describe("tests can't reach the real home", () => {
+  test("no runner module but home.ts calls os.homedir() (Bun ignores a HOME set at runtime there)", () => {
+    const root = join(import.meta.dir);
+    const files = [...new Bun.Glob("**/*.ts").scanSync(root)].filter((f) => !f.endsWith(".test.ts") && f !== "home.ts");
+    expect(files.length).toBeGreaterThan(20);
+    for (const f of files) expect([f, /\bhomedir\s*\(/.test(readFileSync(join(root, f), "utf8"))]).toEqual([f, false]);
   });
 });

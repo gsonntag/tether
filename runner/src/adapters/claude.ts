@@ -16,7 +16,6 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ActivityItem, ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { tail } from "./activity";
@@ -35,6 +34,7 @@ import { hardLimit, LimitStatus } from "../limitStatus";
 import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { claudePick, lastLineTime } from "./lastActivity";
+import { userHome } from "../home";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
@@ -192,7 +192,7 @@ function applyUser(content: unknown, messages: Msg[], id: string, ts: number, fl
 
 /** The session's JSONL under ~/.claude/projects (the SDK encodes the cwd by replacing non-alphanumerics). */
 function transcriptFile(sessionId: string, dir: string): string | undefined {
-  const base = join(homedir(), ".claude", "projects");
+  const base = join(userHome(), ".claude", "projects");
   const direct = join(base, dir.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
   if (existsSync(direct)) return direct;
   try {
@@ -867,7 +867,7 @@ let modelCache: ModelRef[] | undefined;
 
 /** When a stored session's last message was written (the file's mtime also moves on titles, modes, …). */
 async function lastMessageAt(s: { sessionId: string; lastModified: number; fileSize?: number }, projectPath: string): Promise<number> {
-  const file = join(homedir(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
+  const file = join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
   const known = s.fileSize !== undefined ? { mtime: s.lastModified, size: s.fileSize } : undefined;
   return (await lastLineTime(file, claudePick, known)) ?? s.lastModified;
 }

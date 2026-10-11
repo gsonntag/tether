@@ -453,6 +453,13 @@ describe("launch and export (Decision 8)", () => {
     expect(split.launch.docs).toEqual({ type: "http", url: MCP_URL() });
     expect(split.full).toBe(claude.options.mcpServers);
     expect(argvSafeMcp({ x: { type: "stdio", command: "x" } }).full).toBeUndefined();
+    // A stdio server's env (an API key) stays off the command line too: it's added over stdin.
+    const ctx = { type: "stdio", command: "bun", args: ["mcp.ts"], env: { TETHER_SESSION_KEY: "k" } };
+    const gh = { type: "stdio", command: "npx", args: ["gh-mcp"], env: { GITHUB_TOKEN: "ghp_secret" } };
+    const stdio = argvSafeMcp({ gh, plain: { command: "x", env: {} }, "tether-context": ctx });
+    expect(stdio.launch).toEqual({ plain: { command: "x", env: {} }, "tether-context": ctx });
+    expect(JSON.stringify(stdio.launch)).not.toContain("ghp_secret");
+    expect(stdio.full).toEqual({ gh, plain: { command: "x", env: {} }, "tether-context": ctx });
     const codex = launchWith("codex", { projectPath: proj, servers: (await sessionMcp("codex", proj)).servers });
     expect(codex.options.config["mcp_servers.docs"]).toEqual({ url: MCP_URL(), http_headers: { Authorization: `Bearer ${at}` } });
 

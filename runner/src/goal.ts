@@ -3,8 +3,9 @@
 // (LiveState.goal, saved with its prefs) and goes with a handoff. When a turn ends with the goal
 // active and nothing waiting on the user, the session sends a short continuation prompt
 // (session.ts, goalTurnEnded). The agent reports through the `tether-context` tools goal_get /
-// goal_update; a "done" claim, or several turns without progress, is checked by the background
-// model against the transcript. There is no default budget: a goal runs until it's done.
+// goal_update; a "done" claim, several turns without progress, and every GOAL_CHECK_EVERY goal
+// turns in any case (a busy agent that never reports) are checked by the background model against
+// the transcript. There is no default budget: a goal runs until it's done.
 //
 // This file is the part without a session: the command, the prompts, the budget and the check.
 
@@ -16,6 +17,8 @@ export { budgetUsed, fmtBudget, fmtDuration, fmtTokens, STATUS_LABEL } from "../
 
 /** Turns in a row with no tool call, no change to the working tree and no goal_update: blocked. */
 export const GOAL_STALL_TURNS = 3;
+/** Goal turns between background-model checks when nothing else triggered one (an agent that never reports). */
+export const GOAL_CHECK_EVERY = 5;
 /** How Tether's own goal prompts start (kept out of what the guard judge reads as the user's asks). */
 export const GOAL_MARK = "[Tether goal]";
 const NOTES_MAX = 20;
@@ -152,20 +155,42 @@ export interface GoalCheck {
   goal: SessionGoal;
   /** the end of the conversation, rendered (transcriptTail) */
   transcript: string;
-  /** done: the agent said so; stalled: several turns without progress */
-  claim: "done" | "stalled";
+  /**
+   * done: the agent said so; stalled: several turns without progress; periodic: GOAL_CHECK_EVERY
+   * turns went by without a check (the agent keeps working and never says it's done)
+   */
+  claim: "done" | "stalled" | "periodic";
   cwd: string;
 }
-export type GoalJudge = (c: GoalCheck) => Promise<{ done: boolean; reason: string }>;
+/**
+ * The check's answer: done, or not done yet (go on). `blocked`: not done and the agent is stuck
+ * (going in circles, or waiting on something only the user can give); only a periodic check acts on it.
+ */
+export type GoalVerdict = { done: boolean; blocked?: boolean; reason: string };
+export type GoalJudge = (c: GoalCheck) => Promise<GoalVerdict>;
 
 const CHECK_SYSTEM = `You check whether a coding agent has achieved the goal its user set. You see the goal and the end of the conversation.
-Answer with JSON only: {"done": true|false, "reason": "<one or two sentences>"}.
-done is true only when the conversation shows the objective fully achieved and verified (for example tests run and passing, the change made and checked). A claim without evidence, a partial result, or remaining steps the agent mentions itself mean false; then say concretely what is still missing, addressed to the agent.`;
+Answer with JSON only: {"status": "done"|"continue"|"blocked", "reason": "<one or two sentences>"}.
+done only when the conversation shows the objective fully achieved and verified (for example tests run and passing, the change made and checked). A claim without evidence, a partial result, or remaining steps the agent mentions itself are not done; then say concretely what is still missing, addressed to the agent.
+continue: not done, and the agent is making real progress toward it.
+blocked: not done, and the agent is stuck: repeating the same failing steps, going in circles, or unable to go on without something only the user can give. Say what it's stuck on.`;
+
+const CLAIM_TEXT: Record<GoalCheck["claim"], string> = {
+  done: "The agent says the goal is done.",
+  stalled: `The agent made no progress for ${GOAL_STALL_TURNS} turns in a row and never said the goal was done.`,
+  periodic: `The agent has worked on the goal for ${GOAL_CHECK_EVERY} more turns without saying it's done. Check whether it is done already, still progressing, or stuck.`,
+};
+
+/** The background model's JSON reply as a verdict ({"status": …}, or the older {"done": true|false}). */
+export function parseVerdict(json: any): GoalVerdict {
+  const reason = String(json?.reason ?? "").slice(0, 600);
+  const status = typeof json?.status === "string" ? json.status.toLowerCase() : json?.done === true ? "done" : "continue";
+  return { done: status === "done", ...(status === "blocked" ? { blocked: true } : {}), reason };
+}
 
 const backgroundJudge: GoalJudge = async (c) => {
-  const prompt = `Goal: ${c.goal.objective}\n\n${c.claim === "done" ? "The agent says the goal is done." : `The agent made no progress for ${GOAL_STALL_TURNS} turns in a row and never said the goal was done.`}\n\nEnd of the conversation:\n${c.transcript}`;
-  const json = parseJsonReply(await runBackground({ system: CHECK_SYSTEM, prompt, cwd: c.cwd, timeoutMs: 90_000 }));
-  return { done: json.done === true, reason: String(json.reason ?? "").slice(0, 600) };
+  const prompt = `Goal: ${c.goal.objective}\n\n${CLAIM_TEXT[c.claim]}\n\nEnd of the conversation:\n${c.transcript}`;
+  return parseVerdict(parseJsonReply(await runBackground({ system: CHECK_SYSTEM, prompt, cwd: c.cwd, timeoutMs: 90_000 })));
 };
 
 let judge: GoalJudge = backgroundJudge;

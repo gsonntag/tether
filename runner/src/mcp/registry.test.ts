@@ -124,7 +124,7 @@ describe("import: every harness's format", () => {
     expect(github.sources).toEqual(["claude:~/.claude.json", "codex:~/.codex/config.toml"]);
     expect(github.aliases).toEqual(["gh"]);
     expect(data.servers.filter((s) => identity(s.transport) === identity(gh))).toHaveLength(1);
-    expect(data.servers.find((s) => s.name === "foliation")?.scope).toBe(`repo:${proj}`);
+    expect(data.servers.find((s) => s.name === "foliation")?.scope).toEqual([`repo:${proj}`]);
     expect(data.servers.find((s) => s.name === "off")?.enabled).toBe(false);
     expect(r.added.sort()).toEqual(["api", "aws", "db", "events", "foliation", "fs", "github", "linear", "off", "pw", "remote", "stream"]);
     // Again: nothing new, and Tether's own exports (now in those files) aren't imported back.
@@ -147,6 +147,31 @@ describe("import: every harness's format", () => {
     put(harness.claudeJson(), JSON.stringify({ projects: { [a]: { mcpServers: {}, enabledMcpjsonServers: ["db"] } } }));
     expect(scanAll([]).found.map((f) => f.name)).toEqual(["db"]);
     expect(scanAll([b]).found.map((f) => f.name).sort()).toEqual(["cache", "db"]);
+  });
+
+  test("a server in several repos (Claude's per-project entries) is linked to each of them", async () => {
+    const a = join(HOME(), "expense-tracker");
+    const b = join(HOME(), "web-coder");
+    const c = join(HOME(), "elsewhere");
+    for (const d of [a, b, c]) mkdirSync(d, { recursive: true });
+    const fol = { type: "http", url: "https://fol.example.com/mcp" };
+    put(harness.claudeJson(), JSON.stringify({ projects: { [a]: { mcpServers: { foliation: fol } }, [b]: { mcpServers: { foliation: fol } } } }));
+    await importServers();
+    const s = load().servers.find((x) => x.name === "foliation")!;
+    expect(s.scope).toEqual([`repo:${a}`, `repo:${b}`]);
+    // Non-Claude harnesses get it in both repos, not elsewhere.
+    expect((await sessionServers("codex", a)).map((x) => x.name)).toEqual(["foliation"]);
+    expect((await sessionServers("codex", b)).map((x) => x.name)).toEqual(["foliation"]);
+    expect(await sessionServers("codex", c)).toEqual([]);
+    // Pasting it for a third repo links that one too; pasting it for every project makes it global.
+    expect((await addServers("https://fol.example.com/mcp", { scope: c }))[0]!.scope).toEqual([`repo:${a}`, `repo:${b}`, `repo:${c}`]);
+    expect((await addServers("https://fol.example.com/mcp"))[0]!.scope).toBe("global");
+  });
+
+  test("the old single-repo scope is read as a one-repo list", () => {
+    const proj = join(HOME(), "old");
+    put(serversFile(), JSON.stringify({ servers: [{ id: "x", name: "x", transport: gh, scope: `repo:${proj}`, enabled: true, trusted: false, sources: ["you"], addedAt: 0 }, { id: "y", name: "y", transport: http.transport, scope: "global", enabled: true, trusted: false, sources: ["you"], addedAt: 0 }], dismissed: [] }));
+    expect(load().servers.map((s) => s.scope)).toEqual([[`repo:${proj}`], "global"]);
   });
 
   test("Codex: a begin marker without its end claims nothing after it", () => {
@@ -186,7 +211,7 @@ describe("adding by paste", () => {
     mkdirSync(proj, { recursive: true });
     let v = await addServers("npx -y some-mcp", { scope: proj });
     expect(v).toHaveLength(1);
-    expect(v[0]).toMatchObject({ name: "some", scope: `repo:${proj}`, enabled: true, trusted: false, sources: ["you"] });
+    expect(v[0]).toMatchObject({ name: "some", scope: [`repo:${proj}`], enabled: true, trusted: false, sources: ["you"] });
     await setServer(v[0]!.id, { enabled: false });
     v = await addServers("npx some-mcp");
     expect(v).toHaveLength(1);
@@ -273,7 +298,7 @@ describe("which servers a session gets (Decision 2)", () => {
     await seed([
       { name: "gh" },
       { name: "off", transport: { ...gh, args: ["off-mcp"] }, enabled: false },
-      { name: "mine", transport: { ...gh, args: ["mine-mcp"] }, scope: `repo:${proj}` },
+      { name: "mine", transport: { ...gh, args: ["mine-mcp"] }, scope: [`repo:${proj}`] },
       { name: "web", transport: http.transport },
     ]);
     const names = async (h: Parameters<typeof sessionServers>[0], p = proj) => (await sessionServers(h, p)).map((s) => s.name);
@@ -338,7 +363,7 @@ describe("global export (Decision 1)", () => {
     seedExportHome();
     const a = server("gh", gh);
     const w = server("web", http.transport);
-    const r = exportRegistry([a, w, server("repo-only", sse.transport, { scope: "repo:x" }), server("off", { ...gh, args: ["off"] }, { enabled: false })]);
+    const r = exportRegistry([a, w, server("repo-only", sse.transport, { scope: ["repo:x"] }), server("off", { ...gh, args: ["off"] }, { enabled: false })]);
     expect(r.warnings).toEqual([]);
     const claude = JSON.parse(read(harness.claudeJson()));
     expect(Object.keys(claude.mcpServers)).toEqual(["mine", "gh", "web"]);
@@ -538,7 +563,7 @@ describe("guard: trusted registry servers", () => {
     const b = join(HOME(), "other");
     mkdirSync(b, { recursive: true });
     await mutate((d) => {
-      d.servers = [server("db", { type: "stdio", command: "uvx", args: ["mcp-db"], env: {} }, { trusted: true, scope: `repo:${a}` })];
+      d.servers = [server("db", { type: "stdio", command: "uvx", args: ["mcp-db"], env: {} }, { trusted: true, scope: [`repo:${a}`] })];
     });
     expect(await verdictIn("claude-code", a, "mcp__db__query")).toBe("allow");
     expect(await verdictIn("claude-code", b, "mcp__db__query")).toBe("judge");

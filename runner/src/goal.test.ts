@@ -17,11 +17,13 @@ import {
   budgetHit,
   continuationPrompt,
   describeGoal,
+  GOAL_CHECK_EVERY,
   GOAL_STALL_TURNS,
   isGoalPrompt,
   kickoffPrompt,
   newGoal,
   parseGoalCommand,
+  parseVerdict,
   setGoalJudge,
   transcriptTail,
   withNote,
@@ -34,7 +36,7 @@ import { LiveSession, newId } from "./session";
 
 let live: LiveSession[] = [];
 let checks: GoalCheck[] = [];
-let verdict: (c: GoalCheck) => { done: boolean; reason: string } = () => ({ done: true, reason: "Tests pass." });
+let verdict: (c: GoalCheck) => { done: boolean; blocked?: boolean; reason: string } = () => ({ done: true, reason: "Tests pass." });
 
 beforeEach(() => {
   resetHome();
@@ -335,6 +337,56 @@ describe("no-progress guard and the done check", () => {
     expect(pushes(s).map((n) => [n.kind, n.title.split(" · ")[0]])).toEqual([["blocked", "Goal blocked"]]);
     await Bun.sleep(50);
     expect(s.sent.length).toBe(GOAL_STALL_TURNS);
+  });
+
+  test(`a busy agent that never reports is checked every ${GOAL_CHECK_EVERY} turns: continue, then blocked`, async () => {
+    let n = 0;
+    verdict = (c) => (++n === 1 ? { done: false, reason: "Still adding tests." } : { done: false, blocked: true, reason: "It reruns the same failing migration." });
+    const s = fake();
+    await s.prompt("/goal make all tests pass");
+    for (let i = 1; i <= GOAL_CHECK_EVERY * 2; i++) {
+      await until(() => s.sent.length === i);
+      s.endTurn({ tools: 2 });
+    }
+    await until(() => s.goalState!.status === "blocked");
+    expect(checks.map((c) => c.claim)).toEqual(["periodic", "periodic"]);
+    // The first check said go on: no "Not done yet" note and no check text in the prompt.
+    expect(s.sent[GOAL_CHECK_EVERY]).not.toContain("Tether's check");
+    expect(s.goalState!.notes.some((x) => x.text.startsWith("Not done yet"))).toBe(false);
+    expect(s.goalState!.reason).toBe("It reruns the same failing migration.");
+    expect(s.sent.length).toBe(GOAL_CHECK_EVERY * 2);
+    expect(pushes(s).map((x) => x.title.split(" · ")[0])).toEqual(["Goal blocked"]);
+  });
+
+  test("a periodic check that finds it done ends the goal; one that can't run lets it go on", async () => {
+    const s = fake();
+    await s.prompt("/goal make all tests pass");
+    for (let i = 1; i <= GOAL_CHECK_EVERY; i++) {
+      await until(() => s.sent.length === i);
+      s.endTurn({ tools: 1 });
+    }
+    await until(() => s.goalState!.status === "done");
+    expect(checks.map((c) => c.claim)).toEqual(["periodic"]);
+
+    setGoalJudge(async () => {
+      throw new Error("claude isn't installed");
+    });
+    const t = fake();
+    await t.prompt("/goal make all tests pass");
+    for (let i = 1; i <= GOAL_CHECK_EVERY; i++) {
+      await until(() => t.sent.length === i);
+      t.endTurn({ tools: 1 });
+    }
+    await until(() => t.sent.length === GOAL_CHECK_EVERY + 1);
+    expect(t.goalState!.status).toBe("active");
+  });
+
+  test("the background model's reply: status, or the older done flag", () => {
+    expect(parseVerdict({ status: "done", reason: "ok" })).toEqual({ done: true, reason: "ok" });
+    expect(parseVerdict({ status: "continue", reason: "more" })).toEqual({ done: false, reason: "more" });
+    expect(parseVerdict({ status: "Blocked", reason: "loop" })).toEqual({ done: false, blocked: true, reason: "loop" });
+    expect(parseVerdict({ done: true, reason: "ok" })).toEqual({ done: true, reason: "ok" });
+    expect(parseVerdict({})).toEqual({ done: false, reason: "" });
   });
 
   test("a goal_update in a turn counts as progress", async () => {

@@ -9,10 +9,10 @@
 //    steps finish, so live sessions tail it for what the stream leaves out, and resumed sessions
 //    replay it as their history.
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionEvent } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
+import { userHome } from "../home";
 
 // ---------------- models and effort ----------------
 
@@ -187,7 +187,7 @@ export function cleanUserText(content: unknown): string {
 }
 
 export function transcriptPath(convId: string): string {
-  return join(homedir(), ".gemini", "antigravity-cli", "brain", convId, ".system_generated", "logs", "transcript_full.jsonl");
+  return join(userHome(), ".gemini", "antigravity-cli", "brain", convId, ".system_generated", "logs", "transcript_full.jsonl");
 }
 
 export const toolId = (step: number) => `agy-${step}`;

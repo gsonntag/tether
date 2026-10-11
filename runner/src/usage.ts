@@ -4,9 +4,9 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderUsage, UsageReport, UsageWindow } from "../../web/src/shared/protocol";
+import { userHome } from "./home";
 
 const TTL = 120_000;
 let cache: { at: number; report: UsageReport } | undefined;
@@ -79,7 +79,7 @@ async function claudeUsage(): Promise<ProviderUsage | undefined> {
   // A throwaway Claude Code process that never gets a prompt: it only answers the usage request.
   const q = query({
     prompt: idle(),
-    options: { cwd: homedir(), persistSession: false, settingSources: [], tools: [] } as any,
+    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [] } as any,
   });
   try {
     const u: any = await Promise.race([
@@ -109,7 +109,7 @@ type CodexAuth = { access: string; accountId?: string; expires?: number };
 
 function piAuth(): CodexAuth | undefined {
   try {
-    const pi = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
+    const pi = JSON.parse(readFileSync(join(userHome(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
     if (pi?.access) return pi;
   } catch {}
   return undefined;
@@ -117,7 +117,7 @@ function piAuth(): CodexAuth | undefined {
 
 function codexCliAuth(): CodexAuth | undefined {
   try {
-    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"), "utf8")).tokens;
+    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(userHome(), ".codex"), "auth.json"), "utf8")).tokens;
     if (t?.access_token) return { access: t.access_token, accountId: t.account_id };
   } catch {}
   return undefined;
