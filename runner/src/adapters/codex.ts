@@ -23,6 +23,7 @@ import { LiveSession, newId } from "../session";
 import { sessionContext } from "../context/inject";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { codexPick, lastLineTime } from "./lastActivity";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -300,32 +301,67 @@ export function imageItems(text: string): any[] {
   return nativeImagePaths(text).map((a) => ({ type: "localImage", path: a.path }));
 }
 
-/** A resumed thread's turns as a transcript. */
-function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
+/**
+ * A resumed thread's turns as a transcript. A message takes its item's own start time when known
+ * (`times`, see itemTimes), else its turn's start (Codex keeps those in seconds); a turn without
+ * one takes the time of the one before it.
+ */
+export function historyMsgs(turns: any[], cwd: string, model?: string, times?: Map<string, number>): Msg[] {
   const out: Msg[] = [];
+  let last = 0;
   for (const turn of turns) {
     let a: Msg | undefined;
-    const ts = (turn.startedAt ?? 0) * 1000 || Date.now();
+    const turnTs = (last = (turn.startedAt ?? 0) * 1000 || (turn.completedAt ?? 0) * 1000 || last);
+    const at = (item: any) => times?.get(item.id) || turnTs;
     for (const item of turn.items ?? []) {
       if (item.type === "userMessage") {
         const text = userText(item);
-        if (text && !text.startsWith(GUARD_NOTE)) out.push({ id: `u-${item.id}`, role: "user", parts: userParts(text, `u-${item.id}`), ts });
+        if (text && !text.startsWith(GUARD_NOTE)) out.push({ id: `u-${item.id}`, role: "user", parts: userParts(text, `u-${item.id}`), ts: at(item) });
         a = undefined;
         continue;
       }
       if (item.type === "contextCompaction") {
-        out.push({ id: `n-${item.id}`, role: "notice", parts: [{ type: "text", text: "Context compacted." }], ts, source: "compaction" });
+        out.push({ id: `n-${item.id}`, role: "notice", parts: [{ type: "text", text: "Context compacted." }], ts: at(item), source: "compaction" });
         continue;
       }
       const part = itemPart(item, cwd);
       if (!part || ((part.type === "text" || part.type === "thinking" || part.type === "plan") && !part.text)) continue;
       if (part.type === "tool" && part.status === "running") part.status = "error";
-      if (!a) out.push((a = { id: `a-${item.id}`, role: "assistant", parts: [], ts, model }));
+      if (!a) out.push((a = { id: `a-${item.id}`, role: "assistant", parts: [], ts: at(item), model }));
       a.parts.push(part);
     }
     if (a && turn.status === "failed") a.error = turn.error?.message ?? "error";
   }
   return out;
+}
+
+/**
+ * Item start times for turns where the turn's own start isn't enough: ones with a message steered in
+ * after it began. Codex records them per item (`thread/items/list`); best effort, a few calls at most.
+ */
+const ITEM_TIMES_BUDGET_MS = 4_000;
+
+export async function itemTimes(p: Pick<CodexProcess, "call">, threadId: string, turns: any[]): Promise<Map<string, number>> {
+  const times = new Map<string, number>();
+  const steered = turns.filter((t) => (t.items ?? []).filter((i: any) => i.type === "userMessage").length > 1).slice(-20);
+  // The history waits on this: a few seconds at most, whatever Codex does.
+  const deadline = Date.now() + ITEM_TIMES_BUDGET_MS;
+  for (const turn of steered) {
+    let cursor: string | null = null;
+    try {
+      for (let page = 0; page < 10; page++) {
+        const left = deadline - Date.now();
+        if (left <= 0) return times;
+        const r: any = await p.call("thread/items/list", { threadId, turnId: turn.id, cursor, limit: 100 }, left);
+        for (const e of r?.data ?? []) if (e?.item?.id && e.startedAtMs) times.set(e.item.id, e.startedAtMs);
+        if (!(cursor = r?.nextCursor)) break;
+      }
+    } catch {
+      // An older Codex without the method, or one too slow: the turns' starts stand for the rest.
+      return times;
+    }
+  }
+  return times;
 }
 
 // ---------------- live session ----------------
@@ -427,7 +463,8 @@ class CodexSession extends LiveSession {
     let r: any;
     if (this.opts.resume) {
       r = await this.p.call("thread/resume", { threadId: this.nativeId, ...params });
-      this.emit({ type: "reset", messages: historyMsgs(r.thread.turns ?? [], this.projectPath, r.model) });
+      const turns = r.thread.turns ?? [];
+      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns)) });
     } else {
       r = await this.p.call("thread/start", params);
       this.nativeId = r.thread.id;
@@ -845,6 +882,16 @@ const titleOf = (t: any, skills?: Set<string>) => {
 };
 const skillNames = (projectPath: string) => new Set(sessionSkills("codex", projectPath).map((s) => s.name));
 
+/**
+ * When a thread's last message was written: the last item in its rollout. Its `updatedAt` also
+ * moves when a client resumes it or changes its settings; `recencyAt` (its last turn's start) is the
+ * fallback.
+ */
+async function lastMessageAt(t: any): Promise<number> {
+  const fromRollout = typeof t.path === "string" ? await lastLineTime(t.path, codexPick) : undefined;
+  return fromRollout ?? (t.recencyAt ?? t.updatedAt) * 1000;
+}
+
 export const codexAdapter: Adapter = {
   id: "codex",
 
@@ -868,17 +915,19 @@ export const codexAdapter: Adapter = {
     if (!Bun.which(CODEX_BIN)) return [];
     const list = (await threads()).filter((t) => t.cwd === projectPath);
     const skills = list.some((t) => !t.name && t.preview?.startsWith("$")) ? skillNames(projectPath) : undefined;
-    return list.map((t) => ({
+    return Promise.all(
+      list.map(async (t) => ({
         id: `codex:${t.id}`,
         harness: "codex" as const,
         nativeId: t.id,
         projectPath,
         title: titleOf(t, skills),
         createdAt: t.createdAt * 1000,
-        updatedAt: t.updatedAt * 1000,
+        updatedAt: await lastMessageAt(t),
         live: false,
         status: "idle" as const,
-      }));
+      })),
+    );
   },
 
   async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
@@ -886,7 +935,7 @@ export const codexAdapter: Adapter = {
     return withProcess(async (p) => {
       const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
       const thread = r.thread ?? r;
-      return historyMsgs(thread.turns ?? [], projectPath, thread.model);
+      return historyMsgs(thread.turns ?? [], projectPath, thread.model, await itemTimes(p, nativeId, thread.turns ?? []));
     });
   },
 
@@ -898,7 +947,7 @@ export const codexAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const t = (await threads()).find((x) => x.id === nativeId);
     return new CodexSession(
-      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined, updatedAt: t ? t.updatedAt * 1000 : undefined },
+      { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined, updatedAt: t && (await lastMessageAt(t)) },
       sink,
       { resume: true },
     );

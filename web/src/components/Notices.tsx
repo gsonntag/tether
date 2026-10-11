@@ -11,7 +11,7 @@ import { StackItem } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
-import { markNoticeRead, refreshNotices, selectSession, useStore } from "../store";
+import { markNoticeRead, openPage, refreshNotices, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
 
 /** The bell: what your agents asked, finished or got stuck on, newest first. */
@@ -47,14 +47,14 @@ export function NoticeBell() {
       <Divider />
       {notices.length === 0 ? (
         <VStack padding={3}>
-          <Text type="supporting">Nothing yet. Questions, finished turns and blocks show up here.</Text>
+          <Text type="supporting">Nothing yet. Questions, finished turns, blocks and memory conflicts show up here.</Text>
         </VStack>
       ) : (
         <VStack isScrollable style={{ maxHeight: "60dvh" }}>
           <List density="compact" hasDividers>
             {notices.slice(0, 50).map((n) => {
               const read = isRead(n.id, n.ts);
-              const kind = n.kind === "finished" ? "Completed" : n.kind === "question" ? "Question" : "Blocked";
+              const kind = n.kind === "finished" ? "Completed" : n.kind === "question" ? "Question" : n.kind === "memory" ? "Memory conflict" : "Blocked";
               return (
                 <ListItem
                   key={n.id}
@@ -66,7 +66,7 @@ export function NoticeBell() {
                   }
                   startContent={
                     <StatusDot
-                      variant={read ? "neutral" : n.kind === "finished" ? "success" : "error"}
+                      variant={read ? "neutral" : n.kind === "finished" ? "success" : n.kind === "memory" ? "warning" : "error"}
                       label={`${kind} · ${read ? "Viewed" : "Ready to view"}`}
                     />
                   }
@@ -78,7 +78,8 @@ export function NoticeBell() {
                   onClick={() => {
                     markNoticeRead(n.id);
                     setOpen(false);
-                    if (n.sessionId) selectSession(n.sessionId);
+                    if (n.kind === "memory") openPage("memory", n.conflictId ?? "conflicts");
+                    else if (n.sessionId) selectSession(n.sessionId);
                   }}
                 />
               );

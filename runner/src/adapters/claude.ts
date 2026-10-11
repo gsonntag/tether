@@ -31,6 +31,7 @@ import { sessionContext } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { LimitStatus, toMs } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { claudePick, lastLineTime } from "./lastActivity";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
@@ -200,29 +201,51 @@ function transcriptFile(sessionId: string, dir: string): string | undefined {
   return undefined;
 }
 
-async function entryFlags(sessionId: string, dir: string): Promise<Map<string, EntryFlags>> {
-  const out = new Map<string, EntryFlags>();
-  const f = transcriptFile(sessionId, dir);
-  if (!f) return out;
-  for (const line of (await Bun.file(f).text()).split("\n")) {
+/**
+ * What the SDK's history API leaves out, by entry uuid: the flags above, and when each entry was
+ * written (`"uuid":"…","timestamp":"…"`, which Claude Code writes next to each other on every entry).
+ */
+export function entryMeta(text: string): { flags: Map<string, EntryFlags>; times: Map<string, number> } {
+  const flags = new Map<string, EntryFlags>();
+  const times = new Map<string, number>();
+  for (const m of text.matchAll(/"uuid":"([^"]+)","timestamp":"([^"]+)"/g)) {
+    const t = Date.parse(m[2]!);
+    // First one wins: an entry's own pair is in its line, before any later line could mention it.
+    if (Number.isFinite(t) && !times.has(m[1]!)) times.set(m[1]!, t);
+  }
+  for (const line of text.split("\n")) {
     if (!line.includes('"type":"user"') || !(line.includes('"isMeta"') || line.includes('"origin"') || line.includes('"isCompactSummary"'))) continue;
     try {
       const e = JSON.parse(line);
-      if (e.uuid) out.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
+      if (e.uuid) flags.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
     } catch {}
   }
-  return out;
+  return { flags, times };
+}
+
+async function entries(sessionId: string, dir: string) {
+  const f = transcriptFile(sessionId, dir);
+  return entryMeta(f ? await Bun.file(f).text() : "");
 }
 
 /** `onContext`: the context as of the last stored reply (a resumed process reports nothing until prompted). */
 export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void): Promise<Msg[]> {
-  const [list, flags] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entryFlags(sessionId, dir)]);
+  const [list, meta] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entries(sessionId, dir)]);
   onContext?.(claudeHistoryContext(list));
+  return historyMessages(list, meta);
+}
+
+/** The SDK's history entries as a transcript, each message at the time Claude Code wrote it. */
+export function historyMessages(list: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }[], meta: ReturnType<typeof entryMeta>): Msg[] {
   const out: Msg[] = [];
   const byApiId = new Map<string, Msg>();
+  // An entry without a recorded time (none should lack one) takes the one before it.
+  let last = 0;
+  const at = (uuid: string) => (last = meta.times.get(uuid) ?? last);
   for (const m of list) {
     if (m.parent_tool_use_id) continue; // subagent internals
     const msg: any = m.message;
+    const ts = at(m.uuid);
     if (m.type === "assistant" && msg?.content) {
       // Claude Code writes one entry per content block, sharing the API message id.
       const apiId = msg.id ?? m.uuid;
@@ -230,15 +253,15 @@ export async function loadHistory(sessionId: string, dir: string, onContext?: (c
       const parts = assistantParts(msg.content);
       if (prev) prev.parts.push(...parts);
       else {
-        const nm: Msg = { id: m.uuid, role: "assistant", parts, ts: 0, model: msg.model };
+        const nm: Msg = { id: m.uuid, role: "assistant", parts, ts, model: msg.model };
         byApiId.set(apiId, nm);
         out.push(nm);
       }
     } else if (m.type === "user" && msg) {
-      const u = applyUser(msg.content, out, m.uuid, 0, flags.get(m.uuid));
+      const u = applyUser(msg.content, out, m.uuid, ts, meta.flags.get(m.uuid));
       if (u) out.push(u);
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
-      out.push({ id: m.uuid, role: "notice", level: "info", parts: [{ type: "text", text: "Context compacted." }], ts: 0 });
+      out.push({ id: m.uuid, role: "notice", level: "info", parts: [{ type: "text", text: "Context compacted." }], ts });
     }
   }
   for (const m of out) for (const p of m.parts) if (p.type === "tool" && p.status === "running") p.status = "error";
@@ -749,6 +772,13 @@ class ClaudeSession extends LiveSession {
 
 let modelCache: ModelRef[] | undefined;
 
+/** When a stored session's last message was written (the file's mtime also moves on titles, modes, …). */
+async function lastMessageAt(s: { sessionId: string; lastModified: number; fileSize?: number }, projectPath: string): Promise<number> {
+  const file = join(homedir(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
+  const known = s.fileSize !== undefined ? { mtime: s.lastModified, size: s.fileSize } : undefined;
+  return (await lastLineTime(file, claudePick, known)) ?? s.lastModified;
+}
+
 export const claudeAdapter: Adapter = {
   id: "claude-code",
 
@@ -769,20 +799,20 @@ export const claudeAdapter: Adapter = {
   },
 
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
-    const list = await listSessions({ dir: projectPath, includeWorktrees: false });
-    return list
-      .filter((s) => !s.cwd || s.cwd === projectPath)
-      .map((s) => ({
+    const list = (await listSessions({ dir: projectPath, includeWorktrees: false })).filter((s) => !s.cwd || s.cwd === projectPath);
+    return Promise.all(
+      list.map(async (s) => ({
         id: `claude-code:${s.sessionId}`,
         harness: "claude-code" as const,
         nativeId: s.sessionId,
         projectPath,
         title: (s.customTitle || s.summary || displayText(cleanUserText(s.firstPrompt ?? "") ?? "") || "Untitled").replace(/\s+/g, " ").slice(0, 120),
         createdAt: s.createdAt ?? s.lastModified,
-        updatedAt: s.lastModified,
+        updatedAt: await lastMessageAt(s, projectPath),
         live: false,
         status: "idle" as const,
-      }));
+      })),
+    );
   },
 
   async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
@@ -796,7 +826,7 @@ export const claudeAdapter: Adapter = {
   async resume(nativeId, projectPath, sink) {
     const s = (await listSessions({ dir: projectPath, includeWorktrees: false })).find((x) => x.sessionId === nativeId);
     return new ClaudeSession(
-      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s?.lastModified },
+      { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s && (await lastMessageAt(s, projectPath)) },
       sink,
       { resume: true },
     );

@@ -25,7 +25,8 @@ import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { CheckCircleIcon, Squares2X2Icon } from "@heroicons/react/24/outline";
 import { modelDisplay } from "../models";
 import { activityOf, activitySummary } from "../activity";
-import { ACTIVITY_KINDS, isActive, type ActivityItem, type ActivityStatus, type LiveState } from "../shared/protocol";
+import { ACTIVITY_KINDS, isActive, type ActivityItem, type ActivityKind, type ActivityStatus, type LiveState } from "../shared/protocol";
+import { workLabel } from "../workState";
 import { act, setActivityOpen, useStore } from "../store";
 import { fmtClock } from "../util";
 
@@ -71,10 +72,14 @@ export function ActivityButton({ state }: { state: LiveState }) {
   const active = items.filter(isActive);
   const summary = activitySummary(items);
   const finished = items.length - active.length;
+  const running: Partial<Record<ActivityKind, number>> = {};
+  for (const a of active) if (a.status === "running") running[a.kind] = (running[a.kind] ?? 0) + 1;
+  // Same words as the sidebar: the main agent may be done while its work isn't.
+  const work = workLabel({ live: true, status: state.status, running });
   return (
     <Button
       label={summary ? `Activity: ${summary}` : "Activity"}
-      tooltip={open ? "Hide activity" : "Subagents, shells and other work in this session"}
+      tooltip={open ? "Hide activity" : work.state === "background" ? work.tooltip : "Subagents, shells and other work in this session"}
       variant="ghost"
       size="sm"
       icon={active.some((a) => a.status === "running") ? <Spinner size="sm" /> : <Icon icon={active.length ? Squares2X2Icon : CheckCircleIcon} />}

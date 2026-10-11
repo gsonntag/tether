@@ -26,11 +26,13 @@ import {
   SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
-import { memo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { act, selectSession } from "../store";
+import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
+import { MsgTime } from "./MsgTime";
 import { PlanCard } from "./PlanReview";
 
 type ToolPart = Extract<Part, { type: "tool" }>;
@@ -38,7 +40,6 @@ type SkillPart = Extract<Part, { type: "skill" }>;
 type FilePart = Extract<Part, { type: "file" }>;
 type ImagePart = Extract<Part, { type: "image" }>;
 
-const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 /** While text streams in, half-typed paths ("src/ma") would be checked one prefix at a time: link once it's done. */
 const noRefs = {};
 
@@ -92,10 +93,11 @@ export const Transcript = memo(function Transcript({
   /** extra rows after a message, by message id (e.g. the end of a turn that changed files) */
   after?: Map<string, ReactNode>;
 }) {
+  const timed = useMemo(() => timedMessages(messages), [messages]);
   return (
     <ChatMessageList align="top" isStreaming={running} style={listStyle}>
       {messages.flatMap((m, i) => {
-        const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} />;
+        const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} timed={timed.has(m.id)} />;
         const extra = after?.get(m.id);
         return extra ? [row, extra] : [row];
       })}
@@ -143,7 +145,7 @@ function SkillChip({ p }: { p: SkillPart }) {
   );
 }
 
-function AmendableUser({ m, text, chips, attached, typed = text }: { m: Msg; text: string; chips?: ReactNode; attached?: ReactNode; typed?: string }) {
+function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Msg; text: string; chips?: ReactNode; attached?: ReactNode; typed?: string; time?: ReactNode }) {
   const [draft, setDraft] = useState<string>();
   const save = async () => {
     if (draft !== undefined && draft.trim() && draft.trim() !== typed.trim()) await act("amendSteer", { sessionId, msgId: m.id, text: draft });
@@ -154,7 +156,8 @@ function AmendableUser({ m, text, chips, attached, typed = text }: { m: Msg; tex
       <ChatMessage sender="user">
         <ChatMessageBubble
           metadata={
-            <HStack hAlign="end">
+            <HStack hAlign="end" vAlign="center" gap={2}>
+              {time}
               <Button
                 label="Edit"
                 variant="ghost"
@@ -209,7 +212,8 @@ const EVENT_ICONS = {
   memory: LightBulbIcon,
 } as const;
 
-const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: boolean; amendable?: boolean }) {
+const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; last: boolean; amendable?: boolean; timed?: boolean }) {
+  const time = timed ? <MsgTime ts={m.ts} /> : undefined;
   if (m.role === "user") {
     const text = m.parts
       .flatMap((p) => (p.type === "text" ? [p.text] : []))
@@ -239,11 +243,11 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
     return (
       <>
         {visible && amendable && (
-          <AmendableUser m={m} text={text} chips={chips} attached={attached} typed={[...skills.map((s) => `/${s.name}`), text.trim()].filter(Boolean).join(" ")} />
+          <AmendableUser m={m} text={text} chips={chips} attached={attached} typed={[...skills.map((s) => `/${s.name}`), text.trim()].filter(Boolean).join(" ")} time={time} />
         )}
         {visible && !amendable && (
           <ChatMessage sender="user">
-            <ChatMessageBubble>
+            <ChatMessageBubble metadata={time}>
               <VStack gap={1.5}>
                 {chips}
                 {text.trim() && <Text style={preWrap}>{text}</Text>}
@@ -271,13 +275,23 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
     const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
     if (m.title) {
       const icon = <Icon icon={(m.source && m.source in EVENT_ICONS ? EVENT_ICONS[m.source as keyof typeof EVENT_ICONS] : ChevronRightIcon)} size="sm" />;
-      if (!text.trim()) return <ChatSystemMessage icon={icon}>{m.title}</ChatSystemMessage>;
-      return <EventCard title={m.title} icon={icon} text={text} agent={m.source === "agent"} collapsed={!!m.collapsed} />;
+      if (!text.trim())
+        return (
+          <ChatSystemMessage icon={icon}>
+            {m.title}
+            {time && <> · {time}</>}
+          </ChatSystemMessage>
+        );
+      return <EventCard title={m.title} icon={icon} text={text} agent={m.source === "agent"} collapsed={!!m.collapsed} time={time} />;
     }
-    return <NoticeCard level={m.level ?? "info"}>{<Markdown density="compact" contentWidth="100%">{text}</Markdown>}</NoticeCard>;
+    return (
+      <NoticeCard level={m.level ?? "info"} time={time}>
+        {<Markdown density="compact" contentWidth="100%">{text}</Markdown>}
+      </NoticeCard>
+    );
   }
   return (
-    <ChatMessage sender="assistant">
+    <ChatMessage sender="assistant" metadata={time}>
       <VStack gap={2} width="100%">
         {m.parts.map((p, i) => {
           const tail = last && i === m.parts.length - 1 && m.streaming;
@@ -311,7 +325,7 @@ const Message = memo(function Message({ m, last, amendable }: { m: Msg; last: bo
   );
 });
 
-function EventCard({ title, icon, text, agent, collapsed }: { title: string; icon: ReactNode; text: string; agent: boolean; collapsed: boolean }) {
+function EventCard({ title, icon, text, agent, collapsed, time }: { title: string; icon: ReactNode; text: string; agent: boolean; collapsed: boolean; time?: ReactNode }) {
   const [open, setOpen] = useFollowOpen(!collapsed);
   return (
     <Card width="100%" padding={3} variant={agent ? "blue" : "default"}>
@@ -320,11 +334,14 @@ function EventCard({ title, icon, text, agent, collapsed }: { title: string; ico
         onOpenChange={setOpen}
         chevronPosition="start"
         trigger={
-          <HStack as="span" gap={2} vAlign="center">
+          <HStack as="span" gap={2} vAlign="center" width="100%">
             {icon}
-            <Text type="label" color={agent ? "accent" : "secondary"}>
-              {title}
-            </Text>
+            <StackItem as="span" size="fill" style={minZero}>
+              <Text type="label" color={agent ? "accent" : "secondary"}>
+                {title}
+              </Text>
+            </StackItem>
+            {time}
           </HStack>
         }
       >
@@ -340,7 +357,7 @@ function EventCard({ title, icon, text, agent, collapsed }: { title: string; ico
 
 const NOTICE_VARIANT = { info: "muted", warning: "yellow", error: "red" } as const;
 
-function NoticeCard({ level, children }: { level: "info" | "warning" | "error"; children: ReactNode }) {
+function NoticeCard({ level, children, time }: { level: "info" | "warning" | "error"; children: ReactNode; time?: ReactNode }) {
   return (
     <Card width="100%" padding={3} variant={NOTICE_VARIANT[level]}>
       <HStack gap={2} vAlign="start">
@@ -348,6 +365,7 @@ function NoticeCard({ level, children }: { level: "info" | "warning" | "error"; 
         <StackItem size="fill" style={minZero}>
           {children}
         </StackItem>
+        {time}
       </HStack>
     </Card>
   );

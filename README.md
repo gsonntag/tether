@@ -26,7 +26,12 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
 ## Features
 
 - **Projects and sessions** are discovered from every harness's own session store, so sessions
-  you started in a terminal show up too.
+  you started in a terminal show up too. Each project lists its sessions by their most recent
+  message (yours or the agent's, live or not), and every message shows when it was written
+  (hover or tap for the full date and time). Only recent sessions are listed (last 3 days by
+  default; Settings → Sidebar, shared by every device), plus any that are running, working in the
+  background, waiting, need you or are open. Search finds the rest, and sending one a message
+  makes it recent again.
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
 - **Steer and queue.** Enter steers a running agent; Alt+Enter queues a message for after the
@@ -105,7 +110,12 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
   Open it from the **2 agents · 1 shell** button under the message box (a side panel on
   desktop, a sheet on phones). Home's **Running** section sums it up for every live session, and
-  each session row in the sidebar shows how many are running. Stop works per item where the harness allows:
+  each session row in the sidebar shows how many are running. A session whose main agent has
+  finished its turn while subagents, shells, monitors or workflows keep running counts as
+  **working in background**: a grey spinner instead of the blue one in the sidebar and on Home
+  (hover for what's still running), and it stays in Home's **Running** section labeled
+  **Background**. With only a wakeup or cron job armed, it shows a clock instead: waiting, not
+  working. Stop works per item where the harness allows:
 
   | Harness | Observed | Stop |
   |---|---|---|
@@ -143,6 +153,11 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes with
     nothing running, or it failed. (A call the guard denies isn't a notification; the verdict
     shows on its tool card.)
+  - **Memory conflicts:** a new memory contradicted an older one and the newest was kept. One
+    merge pass sends at most one ("3 memory conflicts"), later ones within a minute wait and go
+    out together, and a pass that ends back where it started sends nothing. Tapping it opens the
+    Memory page at that conflict. On by default, also for devices subscribed before it existed
+    (unless every kind was switched off there). Nothing waiting goes out once memory is turned off.
 
   Clicking one opens the session; nothing is shown while you're already looking at it. The 🔔
   in the sidebar lists recent ones. Each runner has its own push key in its config. On iPhone

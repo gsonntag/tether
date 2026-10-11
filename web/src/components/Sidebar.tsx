@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -28,13 +28,16 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
-import type { ProjectInfo, SessionSearchResult, SessionSummary } from "../shared/protocol";
+import { byRecent, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
+import { projectIsQuiet, showInSidebar } from "../recentSessions";
 import { runningCount } from "../dashboard";
+import { runningLine, staleFinished, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
+import { WorkIndicator } from "./WorkIndicator";
 
 const SHOW = 8;
 
@@ -275,6 +278,7 @@ function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined 
   if (s.needsInput) return { kind: "blocked", read: notice?.kind !== "finished" && read };
   // A running agent has moved past whatever its last notice said.
   if (!notice || s.status === "running" || s.status === "waiting") return undefined;
+  if (notice.kind === "finished" && staleFinished(s, notice.ts)) return undefined;
   return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
 }
 
@@ -353,7 +357,7 @@ function NeedsYouSection() {
   if (!rows.length && !conflicts) return null;
 
   const groups = new Map<string, SessionSummary[]>();
-  for (const s of rows.sort((a, b) => b.updatedAt - a.updatedAt)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
+  for (const s of rows.sort(byRecent)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
   return (
     <SideNavSection title="Needs you">
       <ConflictRows />
@@ -368,37 +372,79 @@ function NeedsYouSection() {
   );
 }
 
+// One minute clock for every project list, so sessions drop out of the window without a reload.
+// The snapshot reads the clock itself: a list mounted after a long while (the phone sidebar opened
+// again) must not start from the minute the last one saw.
+const minuteListeners = new Set<() => void>();
+let minuteTimer: ReturnType<typeof setInterval> | undefined;
+function subscribeMinute(l: () => void) {
+  minuteListeners.add(l);
+  minuteTimer ??= setInterval(() => {
+    for (const f of minuteListeners) f();
+  }, 60_000);
+  return () => {
+    minuteListeners.delete(l);
+    if (!minuteListeners.size) {
+      clearInterval(minuteTimer);
+      minuteTimer = undefined;
+    }
+  };
+}
+const useMinute = () => useSyncExternalStore(subscribeMinute, () => Math.floor(Date.now() / 60_000));
+
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
-  const running = useStore((s) => [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && x.status === "running").length);
+  // Collapsed, the row still says whether anything in it works: its main turns, or only background work.
+  const countIn = (s: ReturnType<typeof useStore.getState>, state: WorkState) =>
+    [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && workState(summaryWork(x)) === state).length;
+  const running = useStore((s) => countIn(s, "working"));
+  const background = useStore((s) => countIn(s, "background"));
+  const days = useStore((s) => s.sidebarDays);
+  const notices = useStore((s) => s.notices);
+  const noticesSeen = useStore((s) => s.noticesSeen);
+  const noticesRead = useStore((s) => s.noticesRead);
+  const selected = useStore((s) => s.selected);
+  const now = useMinute() * 60_000;
   const [all, setAll] = useState(false);
   const archiveProject = async (archived: boolean) => {
-    if (archived && p.live.some((s) => s.status !== "idle") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
+    if (archived && p.live.some((s) => s.status !== "idle" || workState(summaryWork(s)) === "background") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
       return;
     if ((await act("archiveProject", { path: p.path, archived })) === undefined) return;
     useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
   };
 
+  // Only recent sessions (Settings → "Show sessions from the last"), plus any that are busy, have an
+  // unread notice or are open. Older and done ones aren't listed; search finds them, and sending one
+  // a message makes it recent again.
+  const ctx = { now, days, notices, noticesSeen, noticesRead, selected };
+  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byRecent);
+  // Nothing to list: dimmed, still there to start a session in.
+  const quiet = projectIsQuiet(p, loaded, open, ctx);
+
   let rows: SessionSummary[] = [];
   let more: React.ReactNode = null;
-  if (!open) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
-  else if (loaded) {
-    // Live sessions first, then most recent. Sessions marked done never show here; search finds
-    // them, and sending one a message brings it back.
-    const sorted = loaded.filter((s) => !s.archived).sort((a, b) => Number(b.live) - Number(a.live) || b.updatedAt - a.updatedAt);
-    rows = all ? sorted : sorted.slice(0, SHOW);
-    more = sorted.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${sorted.length}`} onClick={() => setAll(!all)} />;
-    if (!sorted.length) more = <SideNavItem size="sm" label="No sessions" isDisabled />;
-  } else more = <SideNavItem size="sm" label="Loading…" isDisabled />;
+  if (!open || !loaded) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
+  else {
+    // Most recent message first, live or not.
+    rows = all ? visible : visible.slice(0, SHOW);
+    more = visible.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${visible.length}`} onClick={() => setAll(!all)} />;
+    if (!visible.length) more = <SideNavItem size="sm" label={loaded.some((s) => !s.archived) ? "No recent sessions" : "No sessions"} isDisabled />;
+  }
 
   return (
     <SideNavItem
       label={p.name}
+      style={quiet ? { color: "var(--color-text-secondary)" } : undefined}
       collapsible={{ isCollapsed: !open, onCollapsedChange: (collapsed) => toggleProject(p.path, !collapsed) }}
       onClick={() => toggleProject(p.path)}
       endContent={
         <HStack gap={1} vAlign="center">
-          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} running`} />}
+          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} working`} />}
+          {!open && !running && background > 0 && (
+            <Tooltip content={`${background} working in background`}>
+              <Spinner size="sm" shade="subtle" aria-label={`${background} working in background`} />
+            </Tooltip>
+          )}
           {p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : null}
         </HStack>
       }
@@ -502,8 +548,10 @@ function RunningItem() {
 /** Subagents, shells and the like a live session has going, as a count. */
 function ActivityCount({ s }: { s: SessionSummary }) {
   if (!s.live || !s.activeCount) return null;
+  const w = summaryWork(s);
+  const tip = [runningLine(w.running) && `${runningLine(w.running)} running`, w.armed && `${w.armed} scheduled`].filter(Boolean).join(" · ");
   return (
-    <Tooltip content={`${s.activeCount} running: subagents, shells, monitors or wakeups`}>
+    <Tooltip content={tip}>
       <Badge label={s.activeCount} />
     </Tooltip>
   );
@@ -525,10 +573,7 @@ function SessionIndicator({ s }: { s: SessionSummary }) {
       />
     );
   }
-  if (s.status === "running") return <Spinner size="sm" aria-label="Running" />;
-  if (s.status === "waiting") return <StatusDot variant="warning" label="Waiting" tooltip="Waiting (usage limit or retry)" />;
-  if (s.live) return <StatusDot variant="accent" label="Live" tooltip="Live" />;
-  return null;
+  return <WorkIndicator work={summaryWork(s)} />;
 }
 
 function SessionRow({ s }: { s: SessionSummary }) {
