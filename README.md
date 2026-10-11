@@ -92,12 +92,22 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   from the installed Codex CLI's entitlement-aware catalog. Each
   session gets its own copy, which you can edit or reorder.
   - **Quota exhausted:** the runner marks that provider as out until its reset time and moves
-    to the next entry.
-  - **Rate limited:** the runner backs off and retries the same entry indefinitely.
+    to the next entry, but only on a definite signal: the harness's own limit error (Claude
+    Code, Codex, Antigravity), or an error that looks like a limit plus a fresh usage check of
+    that account (Claude, or ChatGPT for Codex and pi on `openai-codex`) showing a window at
+    100%. There is no switching ahead of a limit.
+  - **Entries Tether can't check** (pi on other providers, opencode, Kiro) never switch on their
+    own; the chain editor marks them. Their errors, like any other error in a chain, show a
+    "Continue on …" button that moves the session on by hand.
+  - **Rate limited / overloaded:** the runner backs off and retries the same entry indefinitely.
   - **Earlier entry resets:** the next turn goes back to it. A per-session toggle turns this off.
-  - **Every entry exhausted:** the session waits for the earliest reset, then continues.
+  - **Every entry exhausted:** the session waits for the earliest reset, then continues. The
+    wait survives a runner restart.
 - **Cross-harness handoff.** Moving to an entry in another harness starts a linked session in
   the same directory. It's seeded with the conversation and the git state of the repository.
+  After a mid-task switch, the old session's open approvals and questions are cancelled and its
+  background tasks stopped where the harness allows it (Claude Code tasks, Codex subagents); the
+  new agent is told about both and to check the working tree first.
   The UI follows the link automatically.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.

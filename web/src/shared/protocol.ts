@@ -202,6 +202,8 @@ export interface Msg {
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
+  /** notice: a button under it. "continueOn": move the session to a chain entry (continueOn op) */
+  action?: { kind: "continueOn"; label: string; entry: string };
 }
 
 import type { Attachment } from "./attachments";
@@ -358,6 +360,15 @@ export function usageProvider(harness: string | undefined, model?: string): Prov
   if (harness === "codex") return "codex";
   if (model?.startsWith("openai-codex/")) return "codex";
   return undefined;
+}
+
+/**
+ * Whether a usage limit on this chain entry moves the session down the chain on its own: Tether
+ * can confirm the limit, from the harness's own limit error (Claude Code, Codex, Antigravity) or
+ * by reading the account's usage (pi on the ChatGPT login). Anything else only offers "Continue on …".
+ */
+export function switchesAutomatically(harness: string | undefined, model?: string): boolean {
+  return !!usageProvider(harness, model) || harness === "antigravity";
 }
 
 /** Older runners' flat list (newer ones send `activity`); also what a restart reports as stopped. */
@@ -802,6 +813,8 @@ export interface Ops {
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
   approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
+  continueOn: { args: { sessionId: string; msgId: string }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */

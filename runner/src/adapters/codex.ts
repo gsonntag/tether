@@ -661,8 +661,8 @@ export class CodexSession extends LiveSession {
 
   private classifyError(e: any): { status?: number; hint?: Classified } {
     const info = e?.codexErrorInfo;
-    if (info === "usageLimitExceeded") return { hint: { kind: "quota", resetAt: this.quotaReset() } };
-    if (info === "serverOverloaded") return { hint: { kind: "rate_limit" } };
+    if (info === "usageLimitExceeded") return { hint: { kind: "quota", resetAt: this.quotaReset(), definite: true } };
+    if (info === "serverOverloaded" || info === "rateLimitExceeded") return { hint: { kind: "rate_limit" } };
     const status = info && typeof info === "object" ? (Object.values(info)[0] as any)?.httpStatusCode : undefined;
     return { status: status ?? undefined };
   }

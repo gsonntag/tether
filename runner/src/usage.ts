@@ -24,6 +24,23 @@ export function getUsage(force = false): Promise<UsageReport> {
   return inflight;
 }
 
+/**
+ * The logins whose usage Tether can read: Claude Code's, the Codex CLI's ChatGPT login, and pi's
+ * ChatGPT login (openai-codex). The two ChatGPT logins can be different accounts.
+ */
+export type UsageAccount = "claude" | "chatgpt:codex" | "chatgpt:pi";
+
+/**
+ * A fresh fetch for one account, never from the cache: what fallback checks before it marks a
+ * provider exhausted on an error that only looks like a limit.
+ */
+export async function accountUsage(account: UsageAccount): Promise<ProviderUsage | undefined> {
+  usageChanged();
+  if (account === "claude") return claudeUsage();
+  const auth = account === "chatgpt:pi" ? piAuth() : codexCliAuth();
+  return auth ? codexUsage(auth) : undefined;
+}
+
 /** Marks the cache stale (after a turn ends, usage has moved). */
 export function usageChanged() {
   if (cache) cache.at = 0;
@@ -65,12 +82,17 @@ async function claudeUsage(): Promise<ProviderUsage | undefined> {
   }
 }
 
-/** pi's ChatGPT login, else the Codex CLI's own (~/.codex/auth.json). Both are the same account kind. */
-function codexAuth(): { access: string; accountId?: string; expires?: number } | undefined {
+type CodexAuth = { access: string; accountId?: string; expires?: number };
+
+function piAuth(): CodexAuth | undefined {
   try {
     const pi = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
     if (pi?.access) return pi;
   } catch {}
+  return undefined;
+}
+
+function codexCliAuth(): CodexAuth | undefined {
   try {
     const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"), "utf8")).tokens;
     if (t?.access_token) return { access: t.access_token, accountId: t.account_id };
@@ -78,8 +100,12 @@ function codexAuth(): { access: string; accountId?: string; expires?: number } |
   return undefined;
 }
 
-async function codexUsage(): Promise<ProviderUsage | undefined> {
-  const auth = codexAuth();
+/** pi's ChatGPT login, else the Codex CLI's own (~/.codex/auth.json). Both are the same account kind. */
+function codexAuth(): CodexAuth | undefined {
+  return piAuth() ?? codexCliAuth();
+}
+
+async function codexUsage(auth = codexAuth()): Promise<ProviderUsage | undefined> {
   if (!auth) return undefined;
   // pi refreshes the token whenever it uses Codex; refreshing here would race it, so an expired
   // token just means "unknown until pi runs again".

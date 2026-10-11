@@ -21,6 +21,7 @@ import { agyUsage, knownWindow } from "../contextWindow";
 import { kindOf } from "../guard";
 import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
+import { agyQuota } from "../fallback";
 import { sessionContext, withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -376,7 +377,7 @@ class AgySession extends LiveSession {
     this.save();
     if (error) {
       const hadMsg = !!this.stream.msgId;
-      if (await this.handleTurnError(error)) {
+      if (await this.handleTurnError(error, undefined, agyQuota(error))) {
         this.stream.finish();
         return;
       }

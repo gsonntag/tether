@@ -57,6 +57,9 @@ export interface SessionPrefs {
   diffBaseSha?: string;
   /** a turn was in progress (running or waiting): resume it after a runner restart */
   active?: boolean;
+  /** fallback was waiting on a usage limit or a backoff until then: re-armed after a restart */
+  waitingUntil?: number;
+  waitingReason?: string;
   projectPath?: string;
   /** background tasks running when last saved (reported to the agent if a restart stops them) */
   background?: { id: string; description: string; type?: string }[];

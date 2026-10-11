@@ -4,7 +4,8 @@
 // new agent works in the same directory.
 
 import { withAttachments } from "../../web/src/shared/attachments";
-import type { Msg, Part } from "../../web/src/shared/protocol";
+import type { ActivityItem, Msg, Part, UiRequest } from "../../web/src/shared/protocol";
+import { commandOf } from "./guard";
 
 const MAX_CHARS = 60_000;
 const ASSISTANT_TEXT_MAX = 4_000;
@@ -93,6 +94,26 @@ export async function repoState(cwd: string): Promise<string> {
     .join("\n\n");
 }
 
+/** One cancelled approval or question, as the brief lists it. */
+export function describeRequest(r: UiRequest): string {
+  if (r.kind === "permission" && r.tool) {
+    const what = commandOf(r.tool.input) ?? JSON.stringify(r.tool.input ?? {});
+    return `Approval for ${r.tool.name}: ${clip(what, 300)}`;
+  }
+  if (r.kind === "question" && r.questions?.length) return `Question: ${r.questions.map((q) => q.question).join(" / ")}`;
+  if (r.kind === "plan") return "Review of its plan";
+  return [r.title, r.message].filter(Boolean).map((t) => clip(t!, 300)).join(": ");
+}
+
+/** One background task of the old session, as the brief lists it. */
+export function describeTask(a: ActivityItem): string {
+  const kind = a.kind === "subagent" ? `subagent${a.agentType ? ` (${a.agentType})` : ""}` : a.kind;
+  const what = a.command ?? a.watching ?? a.title;
+  const extra = a.description && a.description !== what ? ` — ${clip(a.description, 300)}` : "";
+  const when = a.schedule ? ` (${a.schedule})` : "";
+  return `${kind}: ${clip(what, 300)}${when}${extra}`;
+}
+
 /** How every brief starts. Some harnesses show the brief (or its start) as a user message. */
 export const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 export const isBrief = (m: Msg) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text.trimStart().startsWith(BRIEF_PREFIX));
@@ -105,10 +126,34 @@ export async function buildBrief(opts: {
   pendingPrompt?: string;
   /** the master context's memory section (context/handoff.ts); absent when the context is off */
   memory?: string;
+  /** the previous agent stopped in the middle of its task (a usage limit or an error) */
+  interrupted?: boolean;
+  /** approvals and questions that were open on the old session and got cancelled */
+  cancelled?: UiRequest[];
+  /** the old session's background tasks; `stopped` false: Tether couldn't stop it */
+  tasks?: { item: ActivityItem; stopped: boolean }[];
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
   const memory = opts.memory?.trim() ? `\n## Memory\n${opts.memory.trim()}\n` : "";
+  const open: string[] = [];
+  if (opts.interrupted)
+    open.push(
+      "The previous agent was interrupted in the middle of its task, possibly halfway through an edit or a command. Before you continue, inspect the working tree (`git status`, `git diff`) and check that the files it was changing are complete and consistent.",
+    );
+  if (opts.cancelled?.length)
+    open.push(
+      `These requests were still open on the old session and have been cancelled, unanswered:\n${opts.cancelled.map((r) => `- ${describeRequest(r)}`).join("\n")}\nAsk again if you still need them.`,
+    );
+  const stopped = opts.tasks?.filter((t) => t.stopped) ?? [];
+  const running = opts.tasks?.filter((t) => !t.stopped) ?? [];
+  if (stopped.length)
+    open.push(`These background tasks of the previous agent were stopped:\n${stopped.map((t) => `- ${describeTask(t.item)}`).join("\n")}\nRestart the ones that are still needed.`);
+  if (running.length)
+    open.push(
+      `These background tasks of the previous agent could not be stopped and may still be running:\n${running.map((t) => `- ${describeTask(t.item)}`).join("\n")}\nCheck on them before starting the same work again.`,
+    );
+  const interrupted = open.length ? `\n## Interrupted work\n${open.join("\n\n")}\n` : "";
   return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
 You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
 ${memory}
@@ -117,11 +162,13 @@ ${transcript || "(empty)"}
 
 ## Repository state now
 ${repo}
-
+${interrupted}
 ## What to do
 ${
   opts.pendingPrompt
     ? `The user's new message:\n\n${opts.pendingPrompt}`
-    : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure."
+    : opts.interrupted
+      ? "Inspect the working tree first, then continue the task from where the previous agent stopped. Don't redo finished work."
+      : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure."
 }`;
 }

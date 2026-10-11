@@ -29,7 +29,7 @@ import { LiveSession, newId } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionContext } from "../context/inject";
 import { nativeAttachments } from "../attachments";
-import { LimitStatus, toMs } from "../limitStatus";
+import { hardLimit, LimitStatus } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { claudePick, lastLineTime } from "./lastActivity";
 
@@ -301,7 +301,7 @@ class ClaudeSession extends LiveSession {
   private resumeId?: string;
   /** API message id -> transcript message id, for streaming + final blocks */
   private current?: { apiId: string; msgId: string; finalCount: number };
-  private rejected?: { resetAt?: number };
+  private rejected?: { resetAt?: number; type?: string };
   private limits = new LimitStatus();
   private limitTimer?: ReturnType<typeof setTimeout>;
   private lastError?: { text?: string; status?: number | null; kind?: string };
@@ -429,10 +429,11 @@ class ClaudeSession extends LiveSession {
         break;
       case "rate_limit_event": {
         const info = (m as any).rate_limit_info;
-        if (info?.status === "rejected") {
-          const r = info.resetsAt;
-          this.rejected = { resetAt: r ? toMs(r) : undefined };
-        } else if (this.limits.update(info)) this.showLimit();
+        // A later event for the same window (allowed, or rejected but covered by extra usage) clears it.
+        const hard = hardLimit(info);
+        if (hard) this.rejected = { ...hard, type: info?.rateLimitType };
+        else if (this.rejected && (!info?.rateLimitType || info.rateLimitType === this.rejected.type)) this.rejected = undefined;
+        if (info?.status !== "rejected" && this.limits.update(info)) this.showLimit();
         break;
       }
     }
@@ -594,12 +595,13 @@ class ClaudeSession extends LiveSession {
     const isErr = r.is_error || (r.subtype && r.subtype !== "success");
     if (isErr) {
       const text = [r.result, this.lastError?.text, this.lastError?.kind].filter(Boolean).join(" ");
-      const hint =
-        this.rejected || this.lastError?.kind === "billing_error"
-          ? { kind: "quota" as const, resetAt: this.rejected?.resetAt }
-          : this.lastError?.kind === "rate_limit" || this.lastError?.kind === "overloaded"
-            ? { kind: "rate_limit" as const }
-            : undefined;
+      // A rejected rate_limit_event is Claude's definite limit signal. billing_error isn't one: it
+      // goes through classify() and a usage check like any other text.
+      const hint = this.rejected
+        ? { kind: "quota" as const, resetAt: this.rejected.resetAt, definite: true }
+        : this.lastError?.kind === "rate_limit" || this.lastError?.kind === "overloaded"
+          ? { kind: "rate_limit" as const }
+          : undefined;
       this.rejected = undefined;
       this.lastError = undefined;
       if (r.subtype !== "error_during_execution" || hint) {
@@ -609,6 +611,7 @@ class ClaudeSession extends LiveSession {
     } else {
       this.turnSucceeded();
     }
+    this.rejected = undefined;
     this.lastError = undefined;
     if (await this.drainPending()) return;
     this.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined });
@@ -671,6 +674,7 @@ class ClaudeSession extends LiveSession {
   }
 
   protected async send(text: string) {
+    this.rejected = undefined;
     if (await this.preferBest(text)) return;
     this.autoTitle(text);
     this.addUserMessage(text);
@@ -741,6 +745,7 @@ class ClaudeSession extends LiveSession {
   }
 
   async continueTurn(text = "Continue where you left off.") {
+    this.rejected = undefined;
     this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
   }

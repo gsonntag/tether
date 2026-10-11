@@ -284,9 +284,19 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
         );
       return <EventCard title={m.title} icon={icon} text={text} agent={m.source === "agent"} collapsed={!!m.collapsed} time={time} />;
     }
+    const action = m.action;
     return (
       <NoticeCard level={m.level ?? "info"} time={time}>
-        {<Markdown density="compact" contentWidth="100%">{text}</Markdown>}
+        <VStack gap={1.5}>
+          <Markdown density="compact" contentWidth="100%">
+            {text}
+          </Markdown>
+          {action?.kind === "continueOn" && (
+            <HStack>
+              <Button label={action.label} size="sm" onClick={() => act("continueOn", { sessionId, msgId: m.id })} />
+            </HStack>
+          )}
+        </VStack>
       </NoticeCard>
     );
   }

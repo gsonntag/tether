@@ -30,7 +30,7 @@ import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
-import type { LiveSession } from "./session";
+import { entryLabel, fmtTime, type HandoffOpts, type LiveSession } from "./session";
 import { ContextService } from "./context";
 import { resolveForBrief, useContextSkills } from "./skillcmd";
 import { displayText } from "../../web/src/shared/skill";
@@ -125,7 +125,7 @@ const sink: Sink = {
     send({ t: "sessions", projectPath: s.projectPath, session: decorate(s) });
     if (live.has(s.id)) pulses.touch(s.id);
   },
-  handoff: (from, to, reason, pendingPrompt) => handoff(from, to, reason, pendingPrompt),
+  handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
 };
 
 /**
@@ -133,8 +133,14 @@ const sink: Sink = {
  * the conversation so far. The two sessions are linked both ways, and browsers on the old one
  * follow the link.
  */
-async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) {
+async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts: HandoffOpts = {}) {
   const a = adapters[to.harness];
+  // The old agent is done here: nothing it asked can be answered any more, and (mid-task) what it
+  // left running in the background is stopped. The brief lists both.
+  const cancelled = from.cancelOpenUi();
+  const tasks = opts.interrupted
+    ? await from.stopBackground()
+    : (from.t.state.activity ?? []).filter((x) => isActive(x) && x.background !== false && !x.parentId).map((item) => ({ item, stopped: false }));
   // The prompt comes as typed: `/skill args` is resolved for the new harness, not the old one.
   const prompt = pendingPrompt === undefined ? undefined : resolveForBrief(to.harness, from.projectPath, pendingPrompt);
   // Master context on: carry the relevant memories and capture what this session learned first.
@@ -148,10 +154,13 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   const brief = await buildBrief({
     messages: from.t.messages,
     cwd: from.projectPath,
-    fromLabel: `${from.harness}, ${from.t.state.model ?? "default model"}`,
+    fromLabel: `${from.harness}, ${entryLabel(from.currentEntry)}`,
     reason,
     pendingPrompt: prompt,
     memory: memory?.text,
+    interrupted: opts.interrupted,
+    cancelled,
+    tasks,
   });
   const mode = from.t.state.permissionMode;
   const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
@@ -175,7 +184,11 @@ async function handoff(from: LiveSession, to: ChainEntry, reason: string, pendin
   });
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
-  from.notice(`${reason}. Continued in ${to.harness} · ${to.model}.`, "warning");
+  const left = [
+    cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",
+    tasks.some((t) => t.stopped) ? `${tasks.filter((t) => t.stopped).length} background ${tasks.filter((t) => t.stopped).length === 1 ? "task was" : "tasks were"} stopped` : "",
+  ].filter(Boolean);
+  from.notice(`${reason}. Continued on ${entryLabel(to, from.harness)}.${left.length ? ` ${left.join("; ")}.` : ""}`, "warning");
   const carried = (memory?.carried.length ?? 0) + (memory?.captured.length ?? 0);
   if (memory && (carried || memory.native)) {
     const what = carried ? `${carried} ${carried === 1 ? "memory" : "memories"}` : "the shared memory";
@@ -664,6 +677,11 @@ const ops: Handlers = {
     return {};
   },
 
+  async continueOn({ sessionId, msgId }) {
+    await requireLive(sessionId).continueOn(msgId);
+    return {};
+  },
+
   async stopActivity({ sessionId, id }) {
     await requireLive(sessionId).stopActivity(id);
     return {};
@@ -851,7 +869,16 @@ async function resumeActive() {
     if (!p.active && !unsent.length) continue;
     try {
       const s = await getLive(id, p.projectPath);
-      if (p.active) {
+      if (p.active && p.waitingUntil) {
+        // It was waiting on a usage limit or a backoff: wait on, then continue as it would have.
+        const bg = p.background ?? [];
+        s.notice(`The runner restarted while this session was waiting. It continues at ${fmtTime(Math.max(p.waitingUntil, Date.now()))}.`, "info");
+        s.resumeWait(
+          p.waitingUntil,
+          p.waitingReason ?? "Waiting on usage limits",
+          bg.length ? `The session was interrupted by a restart, which also stopped these background tasks: ${bg.map((b) => `"${b.description}"`).join(", ")}. Restart the ones still needed, and continue where you left off.` : undefined,
+        );
+      } else if (p.active) {
         const bg = p.background ?? [];
         const parts = ["The runner restarted while this session was working. Resuming."];
         if (bg.length) parts.push(`Stopped background work: ${bg.map((b) => b.description).join("; ")}.`);
@@ -865,7 +892,10 @@ async function resumeActive() {
             : "The session was interrupted by a restart. Continue where you left off.",
         );
       }
-      for (const m of unsent) await s.prompt(m.text, m.mode);
+      // Sending would end the wait (a message while waiting means "go now"): they wait with it.
+      if (p.active && p.waitingUntil) {
+        if (unsent.length) s.setState({ pending: unsent });
+      } else for (const m of unsent) await s.prompt(m.text, m.mode);
       console.log(`resumed ${id}${unsent.length ? ` (resent ${unsent.length})` : ""}`);
     } catch (e: any) {
       console.error(`could not resume ${id}: ${e?.message ?? e}`);

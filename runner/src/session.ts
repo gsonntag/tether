@@ -23,16 +23,21 @@ import { config, prefs, saveConfigSoon } from "./config";
 import { usageChanged } from "./usage";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
-import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
+import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified } from "./fallback";
+import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
-import { isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
+import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
+export interface HandoffOpts {
+  /** the old agent stopped in the middle of its task (a limit, or "Continue on …" after an error) */
+  interrupted?: boolean;
+}
 /** Moves the conversation to a new session in another harness (runner/src/index.ts). */
-export type Handoff = (from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string) => Promise<void>;
+export type Handoff = (from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) => Promise<void>;
 
 export interface SessionSink {
   emit: Emit;
@@ -45,6 +50,8 @@ export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(
 
 const IDLE_CLOSE_MS = 30 * 60_000;
 const STALL_WARN_MS = 15 * 60_000;
+/** how long "Continue on …" keeps this session off the entry it left, when the error gave no reset */
+const MANUAL_SKIP_MS = 60 * 60_000;
 
 /**
  * One live agent session. The runner keeps the authoritative transcript here; every change goes
@@ -182,11 +189,15 @@ export abstract class LiveSession {
       const s = event.state;
       if (s.status === "idle") usageChanged();
       if (s.status === "running" && before !== "running") {
+        this.continueOffer = undefined;
+        this.withdrawOffer();
         this.turnTrouble = this.userStopped = false;
         this.finishDeferred = false;
         clearTimeout(this.settleTimer);
         clearTimeout(this.shellWaitTimer);
       }
+      // The adapter showed the error on the message only (pi, Antigravity): the offer gets a notice.
+      if (s.status === "idle" && before !== "idle" && this.continueOffer && !s.handoffTo) this.notice(this.continueOffer.text || "The turn ended with an error.", "error");
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
@@ -247,7 +258,16 @@ export abstract class LiveSession {
   }
 
   notice(text: string, level: Msg["level"] = "info", extra?: Pick<Msg, "title" | "collapsed" | "source">) {
-    this.emit({ type: "msg", msg: { id: newId("n"), role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level, ...extra } });
+    const id = newId("n");
+    // An error that fallback didn't act on: the button moves the session on by hand.
+    const offer = level === "error" ? this.continueOffer : undefined;
+    const action = offer && { kind: "continueOn" as const, label: `Continue on ${entryLabel(offer.entry, this.harness)}`, entry: formatEntry(offer.entry) };
+    if (offer) {
+      this.continueOffer = undefined;
+      this.withdrawOffer();
+      this.offerMsgId = id;
+    }
+    this.emit({ type: "msg", msg: { id, role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level, ...extra, ...(action ? { action } : {}) } });
     if (level === "error") {
       this.turnTrouble = true;
       this.alert("blocked", "Failed", text);
@@ -808,6 +828,9 @@ export abstract class LiveSession {
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
       active: this.busy,
+      // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
+      waitingUntil: this.waitTimer ? s.waitingUntil : undefined,
+      waitingReason: this.waitTimer ? s.waitingReason : undefined,
       projectPath: this.projectPath,
     });
     saveConfigSoon();
@@ -852,6 +875,41 @@ export abstract class LiveSession {
     for (const [id, done] of this.uiWaiters) done({ id, cancelled: true });
   }
 
+  /** A handoff: cancels the approvals and questions still open here; returns them for the brief. */
+  cancelOpenUi(): UiRequest[] {
+    const open = [...this.t.state.pendingUi];
+    this.cancelAllUi();
+    return open;
+  }
+
+  /**
+   * A mid-turn handoff: stops what the old agent still had going (shells, monitors, subagents,
+   * schedules) where the harness can, and returns each with whether it stopped, for the brief. A
+   * subagent's own items go with it.
+   */
+  async stopBackground(timeoutMs = 5_000): Promise<{ item: ActivityItem; stopped: boolean }[]> {
+    this.flushActivity();
+    const active = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background !== false);
+    const ids = new Set(active.map((a) => a.id));
+    const out: { item: ActivityItem; stopped: boolean }[] = [];
+    for (const item of active.filter((a) => !a.parentId || !ids.has(a.parentId))) {
+      let stopped = false;
+      if (item.stoppable && this.stopActivityItem) {
+        this.stoppedByUser.add(item.id);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([this.stopActivityItem(item), new Promise((_, rej) => (timer = setTimeout(() => rej(new Error("timed out")), timeoutMs)))]);
+          stopped = true;
+        } catch {
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      out.push({ item, stopped });
+    }
+    return out;
+  }
+
   // ---- model chain & fallback ----
 
   get chain(): string[] | undefined {
@@ -875,84 +933,167 @@ export abstract class LiveSession {
     await this.checkpoint(pendingPrompt);
     const chain = this.chain;
     if (!chain || this.t.state.preferEarlier === false) return false;
-    const pick = pickEntry(chain, this.harness);
+    const pick = pickEntry(chain, this.harness, (key) => this.skipUntil(key));
     if (!("entry" in pick) || this.sameEntry(pick.entry, this.currentEntry)) return false;
     // Only move *up* the chain here; never sideways to an entry after the current one.
     const idx = (e: ChainEntry) => chain.findIndex((c) => this.sameEntry(parseEntry(c, this.harness), e));
     const cur = idx(this.currentEntry);
     if (cur >= 0 && idx(pick.entry) > cur) return false;
     if (pick.entry.harness === this.harness) {
+      const key = providerOf(pick.entry.model, pick.entry.harness);
+      const wasSkipped = this.skipped.delete(key);
       await this.applyModel(pick.entry.model);
-      this.notice(`Back on ${pick.entry.model}: its usage limit has reset.`);
+      this.notice(wasSkipped ? `Back on ${entryLabel(pick.entry)}.` : `Back on ${entryLabel(pick.entry)}: its usage limit has reset.`);
       return false;
     }
     // The new harness resolves `/skill` for itself: hand over the message as typed.
     const typed = this.outgoing?.sent === pendingPrompt ? this.outgoing.typed : pendingPrompt;
-    await this.sink.handoff(this, pick.entry, `${formatEntry(pick.entry)} is available again`, typed);
+    await this.sink.handoff(this, pick.entry, `${entryLabel(pick.entry)} is available again`, typed);
     return true;
   }
 
   /**
    * Called by an adapter when a turn ended in an error. Returns true when fallback took over
-   * (the adapter must not report the session idle-with-error then).
+   * (the adapter must not report the session idle-with-error then). Otherwise, with a chain set,
+   * the adapter's error notice gets a "Continue on <next>" button (see notice()).
+   *
+   * Only a definite limit moves the session (docs/harness-platform.md, Phase 1): the harness's
+   * own structured signal (`hint.definite`), or text that looks like a limit confirmed by a fresh
+   * usage fetch for the entry's account. 429/overloaded backs off on the same model. Entries whose
+   * account Tether can't check never switch on their own.
    */
   protected async handleTurnError(errorText: string | undefined, status?: number | null, hint?: Classified): Promise<boolean> {
     const chain = this.chain;
     if (!chain) return false;
     const c = hint ?? classify(errorText, status);
-    if (c.kind === "other") return false;
     const current = this.currentEntry;
-
-    if (c.kind === "quota") {
-      const key = providerOf(current.model, current.harness);
-      const until = markExhausted(key, c.resetAt);
-      this.notice(`Usage limit reached on ${key} (resets ${fmtTime(until)}).`, "warning");
+    if (c.kind === "rate_limit") {
+      // Transient: back off and retry on the same model, indefinitely. Never a switch.
+      const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(this.fallbackAttempt++);
+      this.waitThenContinue(Date.now() + delay, `Rate limited on ${entryLabel(current)}`);
+      return true;
     }
+    let limit: { resetAt?: number } | undefined;
+    if (c.kind === "quota" && c.definite) limit = { resetAt: c.resetAt ?? (await confirmLimit(current))?.resetAt };
+    else if (c.kind === "quota") limit = await confirmLimit(current);
+    if (!limit && c.kind === "quota" && !c.definite && !this.userStopped && !this.closed && isTransient(errorText, status)) {
+      // Limit-looking wording on what is really a per-minute 429: back off like any rate limit.
+      const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(this.fallbackAttempt++);
+      this.waitThenContinue(Date.now() + delay, `Rate limited on ${entryLabel(current)}`);
+      return true;
+    }
+    if (!limit) {
+      this.offerContinue(errorText);
+      return false;
+    }
+    const until = markExhausted(providerOf(current.model, current.harness), limit.resetAt ?? c.resetAt);
+    this.notice(`Usage limit reached on ${entryLabel(current)} (resets ${fmtTime(until)}).`, "warning");
+    // Stopped (or closed) while the usage check ran: the limit stands, but nothing moves on.
+    if (this.userStopped || this.closed) return false;
     const pick = pickEntry(chain, this.harness);
     if ("waitUntil" in pick) {
       this.alert("blocked", "Waiting on usage limits", `Every model in the chain is at its limit; it continues at ${fmtTime(pick.waitUntil)}.`);
       this.waitThenContinue(pick.waitUntil, "Every model in this session's chain is at its usage limit");
       return true;
     }
-    if (!this.sameEntry(pick.entry, current)) {
-      this.fallbackAttempt = 0;
-      if (pick.entry.harness !== this.harness) {
-        await this.sink.handoff(this, pick.entry, c.kind === "quota" ? `${current.harness} (${current.model}) hit its usage limit` : `${current.harness} is rate limited`);
-        return true;
-      }
-      await this.applyModel(pick.entry.model);
-      this.notice(`Switched to ${pick.entry.model}.`);
-      await this.continueTurn();
+    if (this.sameEntry(pick.entry, current)) {
+      // Outside the chain's keys (shouldn't happen): wait for the reset rather than loop.
+      this.waitThenContinue(until, `Waiting on ${entryLabel(current)}`);
       return true;
     }
-    // Same entry (rate limited, or nothing better available): back off and retry, indefinitely.
-    const delay = c.resetAt ? Math.max(5_000, c.resetAt - Date.now()) : backoffMs(this.fallbackAttempt++);
-    this.waitThenContinue(Date.now() + delay, c.kind === "rate_limit" ? `Rate limited on ${current.model}` : `Waiting on ${current.model}`);
+    this.fallbackAttempt = 0;
+    if (pick.entry.harness !== this.harness) {
+      await this.sink.handoff(this, pick.entry, `${entryLabel(current)} hit its usage limit`, undefined, { interrupted: true });
+      return true;
+    }
+    await this.applyModel(pick.entry.model);
+    this.notice(`Switched to ${entryLabel(pick.entry)}.`);
+    await this.continueTurn();
     return true;
   }
 
-  private waitThenContinue(until: number, reason: string) {
+  // ---- "Continue on <next>": an error fallback didn't act on, moved on by hand ----
+
+  /** quota key -> until when this session's preferBest leaves it alone ("Continue on …" moved off it) */
+  private skipped = new Map<string, number>();
+  private skipUntil(key: string) {
+    const until = this.skipped.get(key);
+    return until && until > Date.now() ? until : undefined;
+  }
+
+  /** set by handleTurnError; the next error notice carries it as a button */
+  private continueOffer?: { entry: ChainEntry; text?: string };
+  /** the notice whose button is live (withdrawn when a new turn starts) */
+  private offerMsgId?: string;
+
+  private offerContinue(errorText?: string) {
+    const chain = this.chain;
+    if (!chain || this.userStopped) return;
+    const next = nextEntry(chain, this.currentEntry, this.harness);
+    this.continueOffer = next && { entry: next, text: errorText?.trim() || undefined };
+  }
+
+  /** The session moved on: an older notice's button would act on a stale error. */
+  private withdrawOffer() {
+    const id = this.offerMsgId;
+    this.offerMsgId = undefined;
+    const msg = id && this.t.messages.find((m) => m.id === id);
+    if (msg && msg.action) this.emit({ type: "msg", msg: { ...msg, action: undefined } });
+  }
+
+  /** The "Continue on …" button: moves to that entry (same harness: model switch; else handoff) and continues. */
+  async continueOn(msgId: string) {
+    const msg = this.t.messages.find((m) => m.id === msgId);
+    const action = msg?.action;
+    if (!msg || !action) throw new Error("That error has been dealt with already.");
+    if (this.t.state.status === "running") throw new Error("The session is already working again.");
+    this.cancelWait();
+    if (this.offerMsgId === msgId) this.withdrawOffer();
+    else this.emit({ type: "msg", msg: { ...msg, action: undefined } });
+    const to = parseEntry(action.entry, this.harness);
+    const from = this.currentEntry;
+    // You judged it unusable for now: this session's next message shouldn't go straight back to
+    // it. Only here, though: no limit was confirmed, so other sessions keep using it.
+    const key = providerOf(from.model, from.harness);
+    if (key !== providerOf(to.model, to.harness)) {
+      const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ");
+      this.skipped.set(key, parseReset(text) ?? Date.now() + MANUAL_SKIP_MS);
+    }
+    this.fallbackAttempt = 0;
+    if (to.harness !== this.harness) return this.sink.handoff(this, to, `You moved it on from ${entryLabel(from)} after an error`, undefined, { interrupted: true });
+    await this.applyModel(to.model);
+    this.notice(`Switched to ${entryLabel(to)}.`);
+    await this.continueTurn();
+  }
+
+  /** After a runner restart: picks a saved wait back up (a past time continues right away). */
+  resumeWait(until: number, reason: string, text?: string) {
+    this.waitThenContinue(until, reason, text);
+  }
+
+  private waitThenContinue(until: number, reason: string, text?: string) {
     clearTimeout(this.waitTimer);
-    this.setState({ status: "waiting", waitingReason: reason, waitingUntil: until });
+    // The timer goes first: savePrefs (on the status change) persists the wait only while it's armed.
     this.waitTimer = setTimeout(async () => {
       this.waitTimer = undefined;
       if (this.closed || this.t.state.status !== "waiting") return;
       const chain = this.chain;
       if (chain) {
         const pick = pickEntry(chain, this.harness);
-        if ("waitUntil" in pick) return this.waitThenContinue(pick.waitUntil, reason);
+        if ("waitUntil" in pick) return this.waitThenContinue(pick.waitUntil, reason, text);
         if (pick.entry.harness !== this.harness) {
           this.setState({ waitingReason: undefined, waitingUntil: undefined });
-          return this.sink.handoff(this, pick.entry, `${formatEntry(pick.entry)} has reset`);
+          return this.sink.handoff(this, pick.entry, `${entryLabel(pick.entry)} has reset`, undefined, { interrupted: true });
         }
         if (pick.entry.model !== this.t.state.model) {
           await this.applyModel(pick.entry.model);
-          this.notice(`Switched to ${pick.entry.model}.`);
+          this.notice(`Switched to ${entryLabel(pick.entry)}.`);
         }
       }
       this.setState({ waitingReason: undefined, waitingUntil: undefined });
-      await this.continueTurn();
+      await this.continueTurn(text);
     }, Math.max(1_000, until - Date.now()));
+    this.setState({ status: "waiting", waitingReason: reason, waitingUntil: until });
   }
 
   /** Clears fallback state after a successful turn. */
@@ -1306,6 +1447,12 @@ export function nextTurnSize(list: PendingMessage[]): number {
 }
 const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
+
+/** "Opus 5.5", or "GPT-6 Luna in Codex" when it runs in another harness than `harness`. */
+export function entryLabel(e: ChainEntry, harness?: HarnessId): string {
+  const name = modelDisplay(e.model, e.harness).name;
+  return harness && e.harness !== harness ? `${name} in ${HARNESSES.find((h) => h.id === e.harness)?.label ?? e.harness}` : name;
+}
 
 export function fmtTime(ms: number) {
   const d = new Date(ms);
