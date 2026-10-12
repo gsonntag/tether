@@ -758,6 +758,8 @@ export interface SlashCommand {
 export interface Ops {
   listProjects: { args: {}; result: ProjectInfo[] };
   addProject: { args: { path: string }; result: ProjectInfo };
+  /** repo: org/repo or any git URL (GitHub goes over SSH); cloned into parent (default ~) */
+  cloneProject: { args: { repo: string; parent?: string }; result: ProjectInfo };
   removeProject: { args: { path: string }; result: {} };
   archiveProject: { args: { path: string; archived: boolean }; result: {} };
   listDirs: { args: { path?: string }; result: { path: string; dirs: string[] } };

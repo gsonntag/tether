@@ -40,6 +40,7 @@ import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
+import { cloneRepo } from "./clone";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -333,6 +334,15 @@ function expand(path: string) {
   return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
 }
 
+async function addProject(p: string): Promise<ProjectInfo> {
+  if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`${p} is not a directory`);
+  const cfg = config();
+  if (!cfg.projects.includes(p)) cfg.projects.push(p);
+  cfg.hidden = cfg.hidden.filter((h) => h !== p);
+  saveConfig();
+  return (await allProjects()).find((x) => x.path === p)!;
+}
+
 async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
   const stored = (await Promise.all(Object.values(adapters).map((a) => a.listSessions(projectPath).catch(() => [])))).flat();
   const out = new Map(stored.map((s) => [s.id, s]));
@@ -442,13 +452,11 @@ const ops: Handlers = {
   },
 
   async addProject({ path }) {
-    const p = expand(path);
-    if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`${p} is not a directory`);
-    const cfg = config();
-    if (!cfg.projects.includes(p)) cfg.projects.push(p);
-    cfg.hidden = cfg.hidden.filter((h) => h !== p);
-    saveConfig();
-    return (await allProjects()).find((x) => x.path === p)!;
+    return addProject(expand(path));
+  },
+
+  async cloneProject({ repo, parent }) {
+    return addProject(await cloneRepo(repo, expand(parent || "~")));
   },
 
   async removeProject({ path }) {

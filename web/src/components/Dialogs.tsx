@@ -31,6 +31,7 @@ import {
   type HarnessId,
   type ModelProfile,
   type NotifyKind,
+  type ProjectInfo,
 } from "../shared/protocol";
 import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
@@ -245,12 +246,21 @@ function AddProject({ close }: { close: () => void }) {
   useEffect(() => {
     browse("~");
   }, []);
-  const add = async () => {
-    const p = await act("addProject", { path });
+  const [repo, setRepo] = useState("");
+  const [cloning, setCloning] = useState(false);
+  const opened = async (p: ProjectInfo | undefined) => {
     if (!p) return;
     await refreshProjects();
     toggleProject(p.path, true);
     useStore.setState({ dialog: "new", newSessionProject: p.path });
+  };
+  const add = async () => opened(await act("addProject", { path }));
+  const clone = async () => {
+    if (!repo.trim() || cloning) return;
+    setCloning(true);
+    const p = await act("cloneProject", { repo: repo.trim(), parent: cwd || path });
+    setCloning(false);
+    await opened(p);
   };
   return (
     <Frame
@@ -278,6 +288,17 @@ function AddProject({ close }: { close: () => void }) {
             </List>
           </VStack>
         </Card>
+        <HStack gap={2} vAlign="end">
+          <TextInput
+            label={`Or clone a repo into ${tildify(cwd || path)}`}
+            value={repo}
+            onChange={setRepo}
+            onEnter={clone}
+            placeholder="org/repo or git@github.com:org/repo.git"
+            width="100%"
+          />
+          <Button label="Clone" isDisabled={!repo.trim()} isLoading={cloning} onClick={clone} />
+        </HStack>
       </VStack>
     </Frame>
   );
