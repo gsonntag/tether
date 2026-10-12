@@ -203,6 +203,10 @@ Modelled on the Claude/Codex goals; pi's goal extension is not used in Tether se
    change and no `goal_update`.
 8. **MCP OAuth tokens live in Tether:** the runner's config dir, mode 600. They are never written
    into harness configs; they are injected as headers at launch.
+9. **Antigravity switches automatically (2026-10-12)** on its exact "Individual quota reached … Resets in …"
+   message, even without a usage feed. This is an accepted exception to Decision 4.
+10. **Held calls need a second yes (2026-10-12).** "Run it myself" or "Approve & retry" on a call held back
+    by plan mode or a review asks to confirm first ("Run anyway" / "Approve anyway").
 
 ## Open questions (answered above, kept for context)
 
