@@ -86,12 +86,20 @@ describe("computeDiff", () => {
     expect((await computeDiff(dir, c1)).files).toEqual([]);
   });
 
-  test("binary files get a note instead of a patch", async () => {
+  test("binary files are left out of the diff and the counts", async () => {
     const dir = repo();
     const cp = (await snapshot(dir, "refs/tether/checkpoints/t/1", "turn 1"))!;
     w(dir, "logo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1, 2, 3, 0, 255]));
-    const f = byPath(await computeDiff(dir, cp))["logo.png"] as any;
-    expect(f).toMatchObject({ status: "added", binary: true, patch: "", additions: 0, deletions: 0 });
+    w(dir, "notes.txt", "hello\n");
+    const d = await computeDiff(dir, cp);
+    expect(d.files.map((f) => f.path)).toEqual(["notes.txt"]);
+    expect(d.fileCount).toBe(1);
+    expect(d.truncated).toBe(false);
+    const cp2 = (await snapshot(dir, "refs/tether/checkpoints/t/2", "turn 2", cp))!;
+    expect(await diffStat(dir, cp, cp2)).toEqual({ files: 1, additions: 1, deletions: 0 });
+    // Asking for the file by name (the file panel) still says it's a binary file.
+    const named = await computeDiff(dir, cp, undefined, { paths: ["logo.png"] });
+    expect(named.files[0]).toMatchObject({ path: "logo.png", status: "added", binary: true, patch: "" });
   });
 
   test("huge files are skipped and long patches are cut at a line end", async () => {
