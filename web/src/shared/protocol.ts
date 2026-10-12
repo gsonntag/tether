@@ -38,6 +38,8 @@ export type Part =
       guard?: GuardVerdict;
       /** The guard's judge model is deciding this call; cleared by the verdict or the call ending. */
       judging?: boolean;
+      /** A blocked shell command the user ran from Tether instead ("Run it myself"). */
+      userRun?: { status: "running" | "done"; exitCode?: number; output?: string };
     }
   | {
       /**
@@ -1134,7 +1136,8 @@ export interface Ops {
   fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
-  approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /** `confirmed`: required for a call plan mode or a review held back ("by": "mode") */
+  approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
   /**
    * "Fork from here": a new session in the same directory with the conversation up to and including
    * `msgId` (the harness's own fork where it can, else a brief), on `harness` and `model`. On a user
@@ -1149,6 +1152,8 @@ export interface Ops {
   sendReviewFindings: { args: { sessionId: string; reviewId: string; indexes?: number[] }; result: {} };
   /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
   continueOn: { args: { sessionId: string; msgId: string }; result: {} };
+  /** runs a blocked shell command on the runner and gives the agent its output */
+  runBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */

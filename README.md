@@ -202,7 +202,7 @@ Each session has an approvals mode that applies to every harness:
 | Mode | Behavior |
 |---|---|
 | **Ask** | Safe actions run on their own; anything else waits for you (from any device) |
-| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason, and you can **Approve & retry** it later |
+| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason. You can then run a blocked command yourself with **Run it myself** (the agent gets its output), or **Approve & retry** any other blocked call |
 | **Full** | Everything is allowed |
 
 The rules (`runner/src/guard.ts`, covered by `guard.test.ts`):

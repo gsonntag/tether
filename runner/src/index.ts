@@ -659,8 +659,8 @@ const ops: Handlers = {
     return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
   },
 
-  async approveBlocked({ sessionId, toolId }) {
-    await (await getLive(sessionId)).approveBlocked(toolId);
+  async approveBlocked({ sessionId, toolId, confirmed }) {
+    await (await getLive(sessionId)).approveBlocked(toolId, confirmed === true);
     return {};
   },
 
@@ -678,6 +678,11 @@ const ops: Handlers = {
 
   async continueOn({ sessionId, msgId }) {
     await requireLive(sessionId).continueOn(msgId);
+    return {};
+  },
+
+  async runBlocked({ sessionId, toolId, confirmed }) {
+    await (await getLive(sessionId)).runBlocked(toolId, confirmed === true);
     return {};
   },
 

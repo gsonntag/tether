@@ -11,6 +11,7 @@ import {
   type UiRequest,
   type UiResponse,
 } from "../../web/src/shared/protocol";
+import { resolve } from "node:path";
 import { userParts } from "../../web/src/shared/bash";
 import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
 import { referencedFolders, sessionKey } from "./attachments";
@@ -137,6 +138,11 @@ export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[],
       return updatedAt;
   }
 }
+
+
+/** Held back by plan mode or a review session (not a safety block): running it anyway needs a second yes. */
+const held = (g: GuardVerdict | undefined) => g?.decision === "deny" && g.by === "mode";
+const HELD_CONFIRM = "This call was held back by plan mode or a review. Confirm to run it anyway.";
 
 export abstract class LiveSession {
   readonly harness: HarnessId;
@@ -1532,23 +1538,63 @@ export abstract class LiveSession {
   }
 
   /** "Approve & retry" on a blocked call: allow that exact call from now on and tell the agent. */
-  async approveBlocked(toolId: string) {
+  async approveBlocked(toolId: string, confirmed = false) {
     for (const m of this.t.messages)
       for (const p of m.parts)
         if (p.type === "tool" && p.id === toolId) {
+          if (held(p.guard) && !confirmed) throw new Error(HELD_CONFIRM);
           this.approved.add(JSON.stringify([p.name, p.input]));
           this.emit({ type: "tool", msgId: m.id, toolId, patch: { guard: { decision: "allow", by: "user", reason: "Approved after it was blocked." } } });
           const what = commandOf(p.input) ?? JSON.stringify(p.input).slice(0, 300);
-          const text = `The user approved your earlier blocked ${p.name} call (${what}). Run it now if it is still needed, then continue.`;
-          if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
-          else if (this.t.state.status === "running") this.pend(text, "followUp");
-          else {
-            this.turnStarting = true;
-            await this.continueTurn(text);
-          }
+          await this.tellAgent(`The user approved your earlier blocked ${p.name} call (${what}). Run it now if it is still needed, then continue.`);
           return;
         }
     throw new Error("Tool call not found");
+  }
+
+  private runningBlocked = new Set<string>();
+
+  /**
+   * "Run it myself" on a blocked shell command: the runner runs it in the session's directory, like
+   * `!` shell mode, shows the output on the card and hands it to the agent, which doesn't run it again.
+   */
+  async runBlocked(toolId: string, confirmed = false) {
+    const hit = this.findCall("", toolId);
+    const command = hit && commandOf(hit.part.input);
+    if (!hit || !command) throw new Error("Shell command not found");
+    if (this.runningBlocked.has(toolId) || hit.part.userRun) return;
+    if (hit.part.guard?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
+    if (held(hit.part.guard) && !confirmed) throw new Error(HELD_CONFIRM);
+    this.runningBlocked.add(toolId);
+    const { msg } = hit;
+    try {
+      const guard: GuardVerdict = { decision: "allow", by: "user", reason: "Run by you directly, outside the guard" };
+      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { guard, userRun: { status: "running" } } });
+      const input: any = hit.part.input;
+      const dir = typeof input?.cwd === "string" ? input.cwd : typeof input?.workdir === "string" ? input.workdir : undefined;
+      const cwd = dir ? resolve(this.projectPath, dir) : this.projectPath;
+      const proc = Bun.spawn(["bash", "-lc", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10 * 60_000 });
+      const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      const cap = (s: string) => (s.length > 30_000 ? s.slice(0, 30_000) + "\n…(truncated)" : s.trimEnd());
+      const output = [cap(stdout), cap(stderr)].filter(Boolean).join("\n").trim();
+      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { userRun: { status: "done", exitCode: code, output } } });
+      await this.tellAgent(
+        `Your blocked command was run by the user instead, so don't run it again:\n<bash-input>${command}</bash-input>\n` +
+          `<bash-stdout>${cap(stdout)}</bash-stdout><bash-stderr>${cap(stderr)}${code ? `\n(exit code ${code})` : ""}</bash-stderr>\nContinue from there.`,
+      );
+    } finally {
+      this.runningBlocked.delete(toolId);
+    }
+  }
+
+  /** A note from Tether to the agent: into the running turn where possible, else it starts one. */
+  private async tellAgent(text: string) {
+    if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
+    else if (this.t.state.status === "running") this.pend(text, "followUp");
+    else {
+      this.turnStarting = true;
+      await this.continueTurn(text);
+    }
   }
 
   setGuard(mode: GuardMode) {

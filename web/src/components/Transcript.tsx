@@ -538,16 +538,24 @@ function Tool({ t }: { t: ToolPart }) {
   const stat = pairs.length ? countDiff(pairs) : undefined;
 
   const blocked = t.guard?.decision === "deny";
+  // Plan mode or a review held this back on purpose: running it anyway takes a second click.
+  const held = blocked && t.guard!.by === "mode";
+  const [confirming, setConfirming] = useState(false);
+  // A blocked command the user ran themselves shows that run's result instead of the agent's.
+  const run = t.userRun;
+  const status = run ? (run.status === "running" ? "running" : run.exitCode ? "error" : "done") : t.status;
+  const output = run ? run.output : t.output;
+  const command = typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string";
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
-  ) : t.status === "running" ? (
+  ) : status === "running" ? (
     <Spinner size="sm" aria-label="Running" />
-  ) : t.status === "error" ? (
+  ) : status === "error" ? (
     <Icon icon="error" color="error" size="sm" label="Failed" />
   ) : (
     <Icon icon="success" color="success" size="sm" label="Done" />
   );
-  const lines = t.output ? t.output.trimEnd().split("\n").length : 0;
+  const lines = output ? output.trimEnd().split("\n").length : 0;
   const guard = t.guard && !blocked && t.guard.by !== "mode" ? t.guard : undefined;
 
   const header = (
@@ -626,7 +634,7 @@ function Tool({ t }: { t: ToolPart }) {
                   {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
                     <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
                   )}
-                  {t.output && (!pairs.length || t.status === "error") && <ToolOutput text={t.output} />}
+                  {output && (!pairs.length || status === "error") && <ToolOutput text={output} />}
                 </VStack>
               )}
             </Collapsible>
@@ -637,11 +645,37 @@ function Tool({ t }: { t: ToolPart }) {
           <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
             <StackItem size="fill" style={minZero}>
               <Text type="supporting" style={blockText}>
-                Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
-                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
+                {confirming
+                  ? `Plan mode or a review held this back. ${command ? "Run" : "Allow"} it anyway? `
+                  : held
+                    ? "Held back: "
+                    : null}
+                {held ? (confirming ? null : (t.guard!.reason ?? "")) : <>Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
+                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}</>}
               </Text>
             </StackItem>
-            {t.guard!.by !== "user" && <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })} />}
+            {t.guard!.by !== "user" &&
+              (held && !confirming ? (
+                <Button label={command ? "Run it myself" : "Approve & retry"} size="sm" onClick={() => setConfirming(true)} />
+              ) : command ? (
+                <Button
+                  label={confirming ? "Run anyway" : "Run it myself"}
+                  variant={confirming ? "destructive" : undefined}
+                  size="sm"
+                  onClick={() => {
+                    setOpen(true);
+                    act("runBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined });
+                  }}
+                />
+              ) : (
+                <Button
+                  label={confirming ? "Approve anyway" : "Approve & retry"}
+                  variant={confirming ? "destructive" : undefined}
+                  size="sm"
+                  onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined })}
+                />
+              ))}
+            {confirming && <Button label="Cancel" variant="ghost" size="sm" onClick={() => setConfirming(false)} />}
           </HStack>
         )}
       </VStack>
