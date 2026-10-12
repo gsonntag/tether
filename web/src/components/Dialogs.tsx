@@ -31,6 +31,7 @@ import {
   type HarnessId,
   type ModelProfile,
   type NotifyKind,
+  type SecretView,
 } from "../shared/protocol";
 import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
@@ -595,6 +596,93 @@ function BackgroundModelPicker({ narrow }: { narrow: boolean }) {
   );
 }
 
+/**
+ * The runner's env and secrets (runner/src/secrets.ts): names only come back; a value is typed in
+ * to set or replace it.
+ */
+function SecretsSettings({ narrow }: { narrow: boolean }) {
+  const runnerId = useStore((s) => s.runnerId);
+  const [secrets, setSecrets] = useState<SecretView[]>();
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [replacing, setReplacing] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    rpc("listSecrets", {})
+      .then(setSecrets)
+      .catch(() => setSecrets([]));
+  }, [runnerId]);
+  const save = async (n: string, v: string) => {
+    setBusy(n);
+    setError(undefined);
+    try {
+      setSecrets(await rpc("setSecret", { name: n, value: v }));
+      setName("");
+      setValue("");
+      setReplacing(undefined);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  const remove = async (n: string) => {
+    setBusy(n);
+    const next = await act("setSecret", { name: n, remove: true });
+    setBusy(undefined);
+    if (next) setSecrets(next);
+  };
+  return (
+    <SettingsCard title="Env and secrets">
+      <SettingsRow
+        title="Environment for agents"
+        description={`Every agent gets these as environment variables, and so do the MCP servers Tether starts for it. In an MCP server's env or headers, write \${NAME} to use one. Values stay on this runner.`}
+      />
+      {(secrets ?? []).map((sec) => (
+        <SettingsRow
+          key={sec.name}
+          title={sec.name}
+          description={sec.updatedAt ? `Set ${new Date(sec.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : undefined}
+          control={
+            <HStack gap={2}>
+              <Button label="Replace" size="sm" variant="ghost" isDisabled={!!busy} onClick={() => (setValue(""), setReplacing(replacing === sec.name ? undefined : sec.name))} />
+              <Button label="Remove" size="sm" variant="ghost" isLoading={busy === sec.name && replacing !== sec.name} isDisabled={!!busy} onClick={() => remove(sec.name)} />
+            </HStack>
+          }
+        >
+          {replacing === sec.name && (
+            <HStack gap={2}>
+              <StackItem size="fill">
+                <TextInput label={`New value for ${sec.name}`} isLabelHidden type="password" autoComplete="off" size="sm" placeholder="New value" value={value} onChange={setValue} />
+              </StackItem>
+              <Button label="Save" size="sm" variant="primary" isLoading={busy === sec.name} isDisabled={!value} onClick={() => save(sec.name, value)} />
+            </HStack>
+          )}
+        </SettingsRow>
+      ))}
+      <VStack padding={4} gap={2}>
+        <Stack direction={narrow ? "vertical" : "horizontal"} gap={2} align={narrow ? "stretch" : "end"}>
+          <StackItem size="fill">
+            <TextInput label="Name" size="sm" placeholder="GITHUB_TOKEN" autoComplete="off" value={name} onChange={(v) => (setName(v), setError(undefined))} />
+          </StackItem>
+          <StackItem size="fill">
+            <TextInput label="Value" type="password" autoComplete="off" size="sm" value={replacing ? "" : value} isDisabled={!!replacing} onChange={(v) => (setValue(v), setError(undefined))} />
+          </StackItem>
+          <StackItem size="static">
+            <Button label="Add" size="sm" variant="primary" isLoading={!!busy && busy === name.trim()} isDisabled={!name.trim() || !value || !!replacing} onClick={() => save(name.trim(), value)} />
+          </StackItem>
+        </Stack>
+        {error && (
+          <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
+            {error}
+          </Text>
+        )}
+      </VStack>
+    </SettingsCard>
+  );
+}
+
 function Settings({ close }: { close: () => void }) {
   const narrow = useMediaQuery(NARROW);
   const runnerId = useStore((s) => s.runnerId);
@@ -674,6 +762,7 @@ function Settings({ close }: { close: () => void }) {
           }
         />
       </SettingsCard>
+      <SecretsSettings narrow={narrow} />
       <Collapsible trigger={<Text type="label">Advanced</Text>} defaultIsOpen={dirty}>
         <VStack gap={4} paddingBlockStart={2}>
           <SettingsCard title="Background model and safety">

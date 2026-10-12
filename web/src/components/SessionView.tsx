@@ -48,6 +48,7 @@ import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
 import { withReviews } from "./ReviewCard";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
+import { commandRunsHow } from "../library";
 
 /** Phones: Enter makes a new line, and the less important settings hide. */
 const NARROW = "(max-width: 760px)";
@@ -481,6 +482,18 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
       </HStack>
     ) : c.kind === "tether" ? (
       <Token size="sm" color="blue" label="Tether" />
+    ) : c.sources ? (
+      // One of your commands (Tether's library)
+      <HStack gap={0.5} vAlign="center">
+        {c.sources.slice(0, narrow ? 1 : 3).map((s) => (
+          <Token key={s} size="sm" label={s} />
+        ))}
+        {c.native === false && (
+          <Tooltip content={commandRunsHow(false)}>
+            <Token size="sm" color="purple" label="inline" />
+          </Tooltip>
+        )}
+      </HStack>
     ) : undefined;
   return (
     <Item

@@ -13,21 +13,13 @@ import { writeAtomic } from "../context/store";
 import { SESSION_TOOL_TIMEOUT_S } from "../context/launch";
 import { toEntry } from "../mcp/formats";
 import { piServers } from "../mcp/sources";
-import { cap, repoDirs, slot, upward } from "./shared";
+import { piPromptTemplates } from "../commands";
+import { piSubagentsInstalled, syncPiAgents } from "../subagents";
+import { cap, envSlot, piHasPackage, repoDirs, slot, upward } from "./shared";
 import type { Connector, SessionServer } from "./types";
 
 /** pi-mcp-adapter is one of pi's packages (it owns the `--mcp-config` flag). */
-export function piMcpAdapterInstalled(): boolean {
-  try {
-    const settings = JSON.parse(readFileSync(harness.piSettings(), "utf8"));
-    return (settings.packages ?? []).some((p: unknown) => {
-      const src = typeof p === "string" ? p : (p as any)?.source;
-      return typeof src === "string" && /(^|[:/])pi-mcp-adapter(@|$|\/|\.git)/.test(src);
-    });
-  } catch {
-    return false;
-  }
-}
+export const piMcpAdapterInstalled = () => piHasPackage("pi-mcp-adapter");
 
 /**
  * pi's per-session MCP: a copy of the user's pi-mcp-adapter config (~/.pi/agent/mcp-adapter.json)
@@ -190,10 +182,27 @@ export const piConnector: Connector = {
     offline: true,
     installDirs: () => [{ harness: "pi", dir: harness.piSkills(), install: false, skip: [] }],
   },
-  commands: slot("native", "Prompt templates; not mapped yet"),
-  agents: slot("unsupported", "No built-in subagents (the pi-subagents package adds them)"),
+  commands: {
+    capability: () => cap("native", "Your commands per session as prompt templates (--prompt-template), where pi fills in the arguments the same way; the others are filled in by Tether"),
+    forSession: () => ({ args: piPromptTemplates().flatMap((f) => ["--prompt-template", f]) }),
+  },
+  agents: {
+    capability: () =>
+      piSubagentsInstalled()
+        ? cap("native", "Through pi-subagents: your subagents are written to ~/.pi/agent/agents/tether (pi-subagents has no per-session path); one limited to tools pi doesn't have is left out")
+        : cap("unsupported", "No built-in subagents; the pi-subagents package adds them"),
+    forSession: () => {
+      try {
+        const w = syncPiAgents();
+        if (w) console.error(`pi: ${w}`);
+      } catch (e: any) {
+        console.error(`pi: its agents weren't updated: ${e?.message ?? e}`);
+      }
+      return undefined;
+    },
+  },
   hooks: slot("emulated", "Run by Tether on every tool call (through its guard extension), as tool results come in, at the end of each turn and before your messages"),
-  env: slot("native", "Process environment; not mapped yet"),
+  env: envSlot("Your secrets in its environment; MCP servers Tether hands it get them too"),
   goal: {
     capability: () =>
       cap(

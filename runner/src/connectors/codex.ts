@@ -10,7 +10,8 @@ import { mcpLaunch, SESSION_TOOL_TIMEOUT_S } from "../context/launch";
 import { harness } from "../context/paths";
 import { toEntry } from "../mcp/formats";
 import { codexServers } from "../mcp/sources";
-import { cap, repoDirs, slot } from "./shared";
+import { codexAgentConfig } from "../subagents";
+import { cap, envSlot, repoDirs, slot } from "./shared";
 import type { Connector, ExportContext, SessionCtx } from "./types";
 
 /** `[mcp_servers.tether-context]` in a managed block of ~/.codex/config.toml. */
@@ -69,6 +70,9 @@ export const codexConnector: Connector = {
     exportGlobal: registerCodexMcp,
     importGlobal: codexServers,
     native: () => codexServers().found,
+    // codex-cli 0.162 (rmcp-client executor_process_transport): a stdio server gets HOME, LOGNAME,
+    // PATH, SHELL, USER, LANG, LC_ALL, TERM, TMPDIR, TZ and its own `env`, nothing else.
+    filtersEnv: true,
     deliver: (t) => (t.type === "sse" ? { how: "none", note: "Codex connects only to streamable HTTP servers, not SSE" } : { how: "session", note: "Per session (thread config)" }),
     targets: () => [{ file: harness.codexConfig(), installed: existsSync(harness.codexDir()), format: "toml", flavor: "codex" }],
   },
@@ -86,10 +90,18 @@ export const codexConnector: Connector = {
   },
   // Older Codex read custom prompts from ~/.codex/prompts/*.md; codex-cli 0.162 has no loader for
   // them left (checked in its binary): skills are its custom commands now.
-  commands: slot("native", "Its skills are its custom commands (older versions also read ~/.codex/prompts); not mapped yet"),
-  agents: slot("native", "Subagents; not mapped yet"),
+  commands: slot("emulated", "No custom commands in this version (its skills took their place; older versions read ~/.codex/prompts): Tether fills in your commands and sends them as the message"),
+  // codex-cli 0.162: agent roles are `[agents.<name>] { description, config_file }`, the role file a
+  // config layer with developer_instructions; a thread's config override takes them per session.
+  agents: {
+    capability: () => cap("native", "Your subagents per session as agent roles (thread config agents.<name>, a role file with its instructions); their tools and model aren't carried over"),
+    forSession: () => {
+      const config = codexAgentConfig();
+      return Object.keys(config).length ? { options: { config } } : undefined;
+    },
+  },
   hooks: slot("emulated", "Run by Tether: PreToolUse at its approval requests (its known-safe read-only commands never ask, so they skip it; Full access asks again while you have one), PostToolUse as items finish, Stop and UserPromptSubmit around turns. Its own hooks can't be added per session without your review in Codex, and the ones it already runs from its trusted config run only there"),
-  env: slot("native", "Process environment; not mapped yet"),
+  env: envSlot("Your secrets in the app-server's environment; MCP servers Tether hands it get them too. Codex starts MCP servers with a short allow-listed environment, so the servers in your own Codex config don't get them"),
   goal: slot("native", "Mirrored into Codex's thread goal (thread/goal/set), status synced back; Tether's loop continues when Codex doesn't"),
   // Checked with codex-cli 0.162: plan mode (collaborationMode "plan") ends its turn on a `plan`
   // item; the TUI's "Implement this plan?" prompt is client-side, the app-server has no review step.

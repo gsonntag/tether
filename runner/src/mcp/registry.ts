@@ -15,6 +15,7 @@ import { cleanName, identity, parsePaste, summary } from "./formats";
 import { authorizable, authorized, authStatus, checkUnknown, finishAuth, forget, readTokens, recordFor, signOut, startAuth } from "./oauth";
 import { claudeProjects, merge, repoServers, type Found, type Scan } from "./sources";
 import { addRepo, findByIdentity, inScope, load, mutate, newServerId, uniqueName, type RegistryData, type RegistryServer } from "./store";
+import { refsIn, secretEnv, withSecrets } from "../secrets";
 
 // ---------------- import ----------------
 
@@ -227,6 +228,8 @@ export async function sessionMcp(h: HarnessId, projectPath: string): Promise<{ s
     console.error(`mcp: couldn't read ${h}'s own MCP config: ${e?.message ?? e}`);
   }
   const tokens = readTokens();
+  // Your secrets (secrets.ts): `${NAME}` in env values and headers is resolved here, at launch only.
+  const env = secretEnv();
   const out = await Promise.all(
     list.map(async (s) => {
       const id = identity(s.transport);
@@ -236,12 +239,22 @@ export async function sessionMcp(h: HarnessId, projectPath: string): Promise<{ s
       const signedIn = authorizable(s) && !!recordFor(s, tokens)?.tokens;
       const a = signedIn ? await authorized(s) : { transport: s.transport, token: false, status: authorizable(s) ? authStatus(s, recordFor(s, tokens)) : undefined };
       const need = a.status && a.status !== "connected" && c.deliver(s.transport).how === "session" ? { id: s.id, name: s.name, status: a.status } : undefined;
-      // Tether's export already gives it; only a token (under the export's own name) is worth a second copy.
-      if (hits.length && !(a.token && hits.every((f) => f.name === s.name))) return { need };
-      return { server: { name: s.name, transport: a.transport }, need };
+      // Tether's export already gives it; only a token or a secret (under the export's own name) is
+      // worth a second copy: the export keeps `${NAME}` as written.
+      // A harness that filters its servers' environment (Codex) passes a secret only through the
+      // server's own env, so any stdio server is worth the copy once you have secrets.
+      const secret = usesSecrets(s.transport, env) || (!!c.filtersEnv && s.transport.type === "stdio" && Object.keys(env).length > 0);
+      if (hits.length && !((a.token || secret) && hits.every((f) => f.name === s.name))) return { need };
+      return { server: { name: s.name, transport: withSecrets(a.transport, env) }, need };
     }),
   );
   return { servers: out.flatMap((o) => (o.server ? [o.server] : [])), auth: out.flatMap((o) => (o.need ? [o.need] : [])) };
+}
+
+/** Whether a server's env values or headers refer to one of your secrets as `${NAME}`. */
+function usesSecrets(t: RegistryServer["transport"], env: Record<string, string>): boolean {
+  const values = t.type === "stdio" ? Object.values(t.env) : Object.values(t.headers);
+  return values.some((v) => refsIn(v).some((n) => n in env));
 }
 
 /** The servers alone (see sessionMcp). */

@@ -89,6 +89,12 @@ export interface McpSlot extends Slot {
    * only the user's own import registers there, never a background re-export.
    */
   sharedConfig?: boolean;
+  /**
+   * The harness starts stdio servers with an allow-listed environment, not its own (Codex): your
+   * secrets reach a server only in the server's own `env`, so Tether's exported ones are injected
+   * again per session with them.
+   */
+  filtersEnv?: boolean;
   /** the MCP servers in the harness's own global config (the registry's import) */
   importGlobal?(): Scan;
   /** the servers the harness loads by itself in a session in `projectPath` (Decision 2: never injected again) */

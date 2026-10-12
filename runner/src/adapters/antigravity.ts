@@ -27,6 +27,7 @@ import { sessionLaunch } from "../connectors/launch";
 import { withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { agentEnv } from "../secrets";
 import { agyPick, lastLineTime } from "./lastActivity";
 
 const AGY_BIN = process.env.AGY_BIN ?? "agy";
@@ -250,7 +251,7 @@ class AgySession extends LiveSession {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...this.guardEnv },
+      env: agentEnv(this.guardEnv),
     });
     this.proc = proc;
     this.stale = false;

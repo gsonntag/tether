@@ -11,6 +11,7 @@ import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdi
 import { dirname, join, resolve } from "node:path";
 import type { ContextSkill, HarnessId, SlashCommand } from "../../web/src/shared/protocol";
 import { isSkillName, parseInvocation, skillBlock } from "../../web/src/shared/skill";
+import { libraryCommands, resolveCommand, type StoredCommand } from "./commands";
 import { splitFrontMatter } from "./context/format";
 import { harness as H, untilde } from "./context/paths";
 import { connectorFor } from "./connectors";
@@ -267,6 +268,9 @@ export interface ResolveContext {
   native: Set<string> | undefined;
   /** the harness's own syntax for running one of its skills (undefined: expand it instead) */
   nativeText: (name: string, args: string) => string | undefined;
+  /** your library commands (commands.ts), and the names the harness runs itself (those pass through) */
+  commands?: StoredCommand[];
+  commandNative?: Set<string>;
 }
 
 /**
@@ -287,7 +291,8 @@ export function resolveMessage(text: string, c: ResolveContext): string {
     return readsSlash && runs ? text : inv.literal;
   }
   const skill = c.skills.find((s) => s.name === inv.name);
-  if (!skill) return text;
+  // Not a skill: one of your commands the harness doesn't have is filled in here.
+  if (!skill) return (c.commands && resolveCommand(inv.name, inv.args, c.commands, c.commandNative ?? new Set())) ?? text;
   if (decide(c.harness, skill, c.native, c.projectPath) === "native") {
     const native = c.nativeText(skill.name, inv.args);
     if (native !== undefined) return native;
@@ -304,7 +309,7 @@ export function resolveMessage(text: string, c: ResolveContext): string {
  * of the message, so no harness would run it natively. A skill the new session has is expanded.
  */
 export function resolveForBrief(harness: HarnessId, projectPath: string, text: string): string {
-  return resolveMessage(text, { harness, projectPath, skills: skillsFor(harness, projectPath), native: new Set(), nativeText: () => undefined });
+  return resolveMessage(text, { harness, projectPath, skills: skillsFor(harness, projectPath), native: new Set(), nativeText: () => undefined, commands: libraryCommands(), commandNative: new Set() });
 }
 
 /**
@@ -319,12 +324,18 @@ export function slashMenu(
   harness: HarnessId,
   projectPath: string,
   hidden: Set<string> = new Set(),
+  library: StoredCommand[] = [],
 ): SlashCommand[] {
   const names = new Set(skills.map((s) => s.name));
+  const own = new Set(commands.map((c) => c.name));
+  const mine = library.filter((c) => !names.has(c.name));
+  for (const c of mine) names.add(c.name);
   return [
     ...skills.map(
       (s): SlashCommand => ({ name: s.name, description: s.description, kind: "skill", sources: s.sources, native: decide(harness, s, native, projectPath) === "native" }),
     ),
+    // Your commands: run by the harness when it lists them, else filled in by Tether.
+    ...mine.map((c): SlashCommand => ({ name: c.name, description: c.description, kind: "command", sources: [...new Set(c.sources.map((s) => s.split(":")[0]!))], native: own.has(c.name) })),
     ...commands.filter((c) => !names.has(c.name) && !hidden.has(c.name)).map((c): SlashCommand => ({ ...c, kind: "command" })),
   ];
 }

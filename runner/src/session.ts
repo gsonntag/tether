@@ -28,6 +28,7 @@ import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhauste
 import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, isContextTool, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
+import { libraryCommands, offlineNativeCommands } from "./commands";
 import { connectorFor } from "./connectors";
 import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, newSchedule, ofKind, parseTimerCommand, scheduleChanged } from "./schedule";
 import { sessionTrust } from "./mcp/registry";
@@ -817,11 +818,34 @@ export abstract class LiveSession {
     return true;
   }
 
-  /** One message as it goes out: `/skill args` becomes this harness's own invocation, or the expanded skill. */
+  /** the harness's last command list, and when (your library commands it runs itself) */
+  private commandCache?: { at: number; names: Set<string> };
+
+  /** The commands this harness runs itself, like nativeNow(); with no answer, a guess from where its command files are. */
+  private async nativeCommandsNow(fresh = false): Promise<Set<string>> {
+    const c = this.commandCache;
+    if (!fresh && c && Date.now() - c.at < LiveSession.NATIVE_FRESH_MS) return c.names;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), LiveSession.NATIVE_TIMEOUT_MS)));
+    try {
+      const list = await Promise.race([this.listCommands().catch(() => undefined), timeout]);
+      if (list) this.commandCache = { at: Date.now(), names: new Set(list.map((x) => x.name)) };
+      return list ? this.commandCache!.names : (c?.names ?? offlineNativeCommands(this.harness, this.projectPath));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** One message as it goes out: `/skill args` becomes this harness's own invocation, or the expanded skill; one of your commands it doesn't have is filled in. */
   async resolveSkills(text: string, inner = false): Promise<string> {
-    if (!parseInvocation(text)) return text;
+    const inv = parseInvocation(text);
+    if (!inv) return text;
     const native = await this.nativeNow();
+    const commands = "name" in inv ? libraryCommands().filter((c) => c.name === inv.name) : [];
     return resolveMessage(text, {
+      commands,
+      // Not at the start of what's sent, the harness wouldn't run it: fill it in.
+      commandNative: inner || !commands.length ? new Set() : await this.nativeCommandsNow(),
       harness: this.harness,
       projectPath: this.projectPath,
       skills: skillsFor(this.harness, this.projectPath, native),
@@ -843,7 +867,7 @@ export abstract class LiveSession {
   async slashMenu(): Promise<SlashCommand[]> {
     const [commands, native] = await Promise.all([this.listCommands().catch(() => []), this.nativeNow(true)]);
     const skills = skillsFor(this.harness, this.projectPath, native);
-    const menu = slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills());
+    const menu = slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills(), libraryCommands());
     // Tether handles these before the harness sees the message, so its own of the same name never runs.
     const own = new Set(TETHER_COMMANDS.map((c) => c.name));
     return [...TETHER_COMMANDS, ...menu.filter((c) => !own.has(c.name))];

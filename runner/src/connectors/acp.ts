@@ -12,7 +12,9 @@ import type { SessionContext } from "../context/inject";
 import { harness, tilde } from "../context/paths";
 import { cwdless } from "../mcp/formats";
 import { kiroServers, opencodeServers } from "../mcp/sources";
-import { cap, repoDirs, slot, upward } from "./shared";
+import { opencodeCommands } from "../commands";
+import { opencodeAgentConfig } from "../subagents";
+import { cap, envSlot, repoDirs, slot, upward } from "./shared";
 import type { Connector, ExportContext, McpRoute, MemorySlot, SessionCtx, SessionServer } from "./types";
 
 const pairs = (m: Record<string, string>) => Object.entries(m).map(([name, value]) => ({ name, value }));
@@ -83,10 +85,23 @@ export const opencodeConnector: Connector = {
     offline: false,
     installDirs: () => [{ harness: "opencode", dir: harness.opencodeSkills(), install: false, skip: [] }],
   },
-  commands: slot("native", "Custom commands (command/ dir and config); not mapped yet" + UNVERIFIED),
-  agents: slot("native", "Agents in its config; not mapped yet" + UNVERIFIED),
+  // Shapes from @opencode-ai/sdk 1.18.35's Config type (command.<name>.template, agent.<name>.mode).
+  commands: {
+    capability: () => cap("native", "Its own commands natively; yours per session in its inline config (OPENCODE_CONFIG_CONTENT command), else filled in by Tether" + UNVERIFIED),
+    forSession: () => {
+      const command = opencodeCommands();
+      return Object.keys(command).length ? { options: { opencodeConfig: { command } } } : undefined;
+    },
+  },
+  agents: {
+    capability: () => cap("native", "Your subagents per session in its inline config (OPENCODE_CONFIG_CONTENT agent, mode subagent; a tools list becomes its permission rules, the rest denied)" + UNVERIFIED),
+    forSession: () => {
+      const agent = opencodeAgentConfig();
+      return Object.keys(agent).length ? { options: { opencodeConfig: { agent } } } : undefined;
+    },
+  },
   hooks: slot("emulated", "Run by Tether: PreToolUse only on calls it asks permission for, PostToolUse as tool calls finish, Stop and UserPromptSubmit around turns" + UNVERIFIED),
-  env: slot("native", "Process environment; not mapped yet"),
+  env: envSlot("Your secrets in its environment; MCP servers Tether hands it get them too"),
   goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
   plan: slot("emulated", "Its plan agent has no review step: Tether's review card when a plan-mode turn ends (plan_set, else its reply), and changes wait for approval; Approve switches to Build" + UNVERIFIED),
   todos: slot("native", "Its ACP plan checklist, kept as the session's todo list; todo_set also works" + UNVERIFIED),
@@ -144,10 +159,11 @@ export const kiroConnector: Connector = {
     // Kiro reads only its own dir; installed into once Kiro is set up (~/.kiro exists), like its steering export.
     installDirs: () => [{ harness: "kiro", dir: harness.kiroSkills(), install: existsSync(harness.kiroDir()), skip: [] }],
   },
-  commands: slot("unsupported", "No custom commands over ACP" + UNVERIFIED),
-  agents: slot("native", "Custom agents in ~/.kiro/agents; not mapped yet" + UNVERIFIED),
+  commands: slot("emulated", "Commands it lists run natively; Tether fills in your others and sends them as the message" + UNVERIFIED),
+  // Kiro's custom agents (~/.kiro/agents/*.json) are whole agent configurations, not subagents a session delegates to.
+  agents: slot("unsupported", "No subagent definitions Tether can hand it per session" + UNVERIFIED),
   hooks: slot("emulated", "Run by Tether: PreToolUse only on calls it asks permission for, PostToolUse as tool calls finish, Stop and UserPromptSubmit around turns" + UNVERIFIED),
-  env: slot("native", "Process environment; not mapped yet"),
+  env: envSlot("Your secrets in its environment; MCP servers Tether hands it get them too"),
   goal: slot("emulated", "Tether's goal loop and goal tools (tether-context)"),
   plan: slot("emulated", "Where it offers a plan mode: Tether's review card when a plan-mode turn ends or it leaves plan mode by itself, and changes wait for approval" + UNVERIFIED),
   todos: slot("emulated", "todo_set; its ACP plan checklist too, if it sends one" + UNVERIFIED),
@@ -157,3 +173,23 @@ export const kiroConnector: Connector = {
   compact: slot("emulated", "The conversation restarts as a new session on a brief, unless it lists a /compact command of its own" + UNVERIFIED),
   review: slot("emulated", "Tether's review session, every change held back by the guard, findings through review_report" + UNVERIFIED),
 };
+
+/**
+ * OPENCODE_CONFIG_CONTENT with Tether's additions (your subagents and commands) merged in: under
+ * what's already there, so the guard's plan-agent rule and your own inline config win.
+ */
+export function withOpencodeConfig(current: string | undefined, add: Record<string, unknown>): string {
+  let base: Record<string, any> = {};
+  try {
+    const v = current ? JSON.parse(current) : {};
+    if (v && typeof v === "object" && !Array.isArray(v)) base = v;
+  } catch {
+    return current!; // not ours to rewrite
+  }
+  const out: Record<string, any> = { ...base };
+  for (const [k, v] of Object.entries(add)) {
+    const cur = base[k];
+    out[k] = cur && typeof cur === "object" && !Array.isArray(cur) && v && typeof v === "object" ? { ...(v as object), ...cur } : (cur ?? v);
+  }
+  return JSON.stringify(out);
+}

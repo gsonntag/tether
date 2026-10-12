@@ -2,7 +2,8 @@
 // every harness shares. Top to bottom: whether shared memory is on (turning it on or off), open
 // conflicts (only when there are some), the memory list (global and per repo, searchable; a row
 // opens in a side panel, full screen on phones), the skills with their on/off switches, and the
-// MCP servers (McpServers.tsx) and hooks (Hooks.tsx), shown whether shared memory is on or not.
+// MCP servers (McpServers.tsx), hooks (Hooks.tsx), and your commands and subagents (Library.tsx),
+// shown whether shared memory is on or not.
 // Frame: Astryx's settings template (header + one scrolling column of sections), plus the
 // table-grouped template's resizable detail panel.
 
@@ -40,6 +41,7 @@ import { HarnessBadge } from "./HarnessBadge";
 import { HarnessSupport } from "./HarnessSupport";
 import { McpSection } from "./McpServers";
 import { HooksSection } from "./Hooks";
+import { CommandsSection, SubagentsSection } from "./Library";
 import { scopeLabel, sourceHarness, sourceLabel, ts } from "./MemoryConflicts";
 
 const capped: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 20)", width: "100%" };
@@ -213,6 +215,8 @@ export function MemoryPage({ narrow }: { narrow: boolean }) {
             {on && <SkillsSection narrow={narrow} />}
             {status && !importing && <McpSection narrow={narrow} />}
             {status && !importing && <HooksSection narrow={narrow} />}
+            {status && !importing && <CommandsSection narrow={narrow} />}
+            {status && !importing && <SubagentsSection narrow={narrow} />}
             {status && <HarnessSupport />}
           </VStack>
           {narrow && (

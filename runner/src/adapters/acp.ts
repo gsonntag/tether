@@ -21,12 +21,14 @@ import { AcpActivity } from "./acpActivity";
 import { LiveSession, newId } from "../session";
 import { isPlanMode } from "../plan";
 import { acpFault } from "../faults";
-import { sessionLaunch } from "../connectors/launch";
+import { processLaunch, sessionLaunch } from "../connectors/launch";
 import { withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { userHome } from "../home";
+import { withOpencodeConfig } from "../connectors/acp";
+import { agentEnv } from "../secrets";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
 
@@ -114,9 +116,14 @@ export class AcpProcess {
   /** the agent's own HTTP API (spec.httpPermissionReply) */
   http?: HttpApi;
 
-  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean } = {}) {
+  /**
+   * `env`: a session's additions (your secrets, connectors/launch.ts processLaunch); `opencodeConfig`:
+   * merged into OPENCODE_CONFIG_CONTENT (your subagents and commands), under what's already there.
+   */
+  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean; env?: Record<string, string>; opencodeConfig?: Record<string, unknown> } = {}) {
     const args = [...spec.args];
-    let env: Record<string, string | undefined> = { ...process.env, ...spec.env };
+    let env: Record<string, string | undefined> = opts.env ? { ...agentEnv(opts.env), ...spec.env } : { ...process.env, ...spec.env };
+    if (opts.opencodeConfig) env.OPENCODE_CONFIG_CONTENT = withOpencodeConfig(env.OPENCODE_CONFIG_CONTENT, opts.opencodeConfig);
     if (spec.httpPermissionReply) {
       const server = httpServer(opts.http ? freePort() : undefined);
       args.push(...server.args);
@@ -290,7 +297,8 @@ class AcpSession extends LiveSession {
   }
 
   async start() {
-    this.p = new AcpProcess(this.spec, this.projectPath, { http: true });
+    // Your secrets in its environment; opencode also gets your subagents and commands inline.
+    this.p = new AcpProcess(this.spec, this.projectPath, { http: true, ...processLaunch(this.spec.id, this.projectPath) });
     this.p.exited.then((code) => {
       if (!this.closed) {
         this.notice(`${this.spec.id} exited (code ${code}). ${this.p.stderr.trim().split("\n").slice(-3).join("\n")}`, "error");

@@ -45,6 +45,9 @@ import {
   startServerAuth,
 } from "./mcp/registry";
 import { addHooks, importHooks, listHooks, setHook } from "./hooks";
+import { addLibraryCommand, importCommands, listLibraryCommands, setLibraryCommand } from "./commands";
+import { addSubagent, importSubagents, listSubagents, setSubagent } from "./subagents";
+import { listSecrets, setSecret } from "./secrets";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -864,6 +867,39 @@ const ops: Handlers = {
   },
   async findHooks() {
     return importHooks();
+  },
+
+  // ---- your commands, subagents and secrets (commands.ts, subagents.ts, secrets.ts) ----
+
+  async listLibraryCommands() {
+    return listLibraryCommands();
+  },
+  async addLibraryCommand({ name, text, style }) {
+    return addLibraryCommand(name, text, style);
+  },
+  async setLibraryCommand({ id, ...change }) {
+    return setLibraryCommand(id, change);
+  },
+  async findLibraryCommands() {
+    return importCommands();
+  },
+  async listSubagents() {
+    return listSubagents();
+  },
+  async addSubagent({ text, name }) {
+    return addSubagent(text, name);
+  },
+  async setSubagent({ id, ...change }) {
+    return setSubagent(id, change);
+  },
+  async findSubagents() {
+    return importSubagents();
+  },
+  async listSecrets() {
+    return listSecrets();
+  },
+  async setSecret({ name, ...change }) {
+    return setSecret(name, change);
   },
   // OAuth sign-in (runner/src/mcp/oauth.ts): the app's /api/mcp-oauth/callback relays finishMcpAuth.
   async startMcpAuth({ id, redirectUri, clientId, clientSecret }) {

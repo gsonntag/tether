@@ -1021,15 +1021,68 @@ export interface HookFindResult {
   warnings: string[];
 }
 
+// ---------- commands, subagents, secrets (runner/src/commands.ts, subagents.ts, secrets.ts) ----------
+
+/** One of your custom `/` commands in Tether's library. */
+export interface LibraryCommandView {
+  id: string;
+  name: string;
+  description: string;
+  /** the template */
+  body: string;
+  argumentHint?: string;
+  /** whose argument rules fill it: Claude Code's ($ARGUMENTS, $0 is the first) or the shell-like ones ($1 is the first, $@) */
+  style: "claude" | "shell";
+  enabled: boolean;
+  /** "you", or the file it was imported from ("claude:~/.claude/commands/fix.md") */
+  sources: string[];
+}
+
+export interface CommandFindResult {
+  commands: LibraryCommandView[];
+  /** names new to the library */
+  added: string[];
+  warnings: string[];
+}
+
+/** One of your subagent definitions, and how each harness gets it. */
+export interface SubagentView {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  tools?: string[];
+  model?: string;
+  enabled: boolean;
+  sources: string[];
+  /** session: handed over at launch; global: written into its agent folder; native: it has its own of that name; none: can't */
+  delivery: { harness: HarnessId; how: "session" | "global" | "native" | "none"; note: string }[];
+}
+
+export interface SubagentFindResult {
+  agents: SubagentView[];
+  added: string[];
+  warnings: string[];
+}
+
+/** A secret's name (its value stays on the runner). */
+export interface SecretView {
+  name: string;
+  updatedAt: number;
+}
+
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {
   name: string;
   description?: string;
   /** absent: a harness command (older runners send only these); tether: Tether's own (/goal) */
   kind?: "command" | "skill" | "tether";
-  /** skill: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
+  /** a skill, or a command from your library: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
   sources?: string[];
-  /** skill: the harness runs it itself; otherwise Tether sends SKILL.md along with the message */
+  /**
+   * a skill: the harness runs it itself, otherwise Tether sends SKILL.md along with the message; a
+   * library command (`sources` set): the harness runs it itself, otherwise Tether fills it in
+   */
   native?: boolean;
 }
 
@@ -1201,6 +1254,22 @@ export interface Ops {
   setHook: { args: { id: string; enabled?: boolean; remove?: boolean; json?: string }; result: HookView[] };
   /** "Find hooks": imports the hooks in ~/.claude/settings.json (read only) */
   findHooks: { args: {}; result: HookFindResult };
+  // Your commands (runner/src/commands.ts)
+  listLibraryCommands: { args: {}; result: LibraryCommandView[] };
+  /** adds a command, or replaces the one with that name: `text` is the template, front matter optional */
+  addLibraryCommand: { args: { name: string; text: string; style?: "claude" | "shell" }; result: LibraryCommandView[] };
+  setLibraryCommand: { args: { id: string; enabled?: boolean; remove?: boolean }; result: LibraryCommandView[] };
+  /** "Find commands": imports every harness's command files (read only) */
+  findLibraryCommands: { args: {}; result: CommandFindResult };
+  // Your subagents (runner/src/subagents.ts)
+  listSubagents: { args: {}; result: SubagentView[] };
+  /** adds a subagent, or replaces the one with that name: `text` is a Claude Code agent file */
+  addSubagent: { args: { text: string; name?: string }; result: SubagentView[] };
+  setSubagent: { args: { id: string; enabled?: boolean; remove?: boolean }; result: SubagentView[] };
+  findSubagents: { args: {}; result: SubagentFindResult };
+  // Env and secrets (runner/src/secrets.ts): values go in, never come back
+  listSecrets: { args: {}; result: SecretView[] };
+  setSecret: { args: { name: string; value?: string; remove?: boolean }; result: SecretView[] };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };

@@ -1,9 +1,10 @@
 // Pieces several connectors share.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { SkillDir } from "../context/skills";
 import { harness } from "../context/paths";
+import { secretEnv } from "../secrets";
 import type { CapabilityLevel, SessionLaunch, Slot, SlotCapability } from "./types";
 
 export const cap = (level: CapabilityLevel, note: string): SlotCapability => ({ level, note });
@@ -31,6 +32,15 @@ export function repoDirs(projectPath: string, sub: string) {
   return up.map((d) => ({ dir: join(d, sub), source: "repo", root: up[up.length - 1] }));
 }
 
+/** Your secrets (secrets.ts) in the harness process's environment; adapters add them at spawn (agentEnv). */
+export const envSlot = (note: string): Slot => ({
+  capability: () => cap("native", note),
+  forSession: () => {
+    const env = secretEnv();
+    return Object.keys(env).length ? { env } : undefined;
+  },
+});
+
 /** ~/.agents/skills: shared by Codex, pi and opencode; every registry skill is linked in. */
 export const agentsSkillDir = (): SkillDir => ({ harness: "agents", dir: harness.agentsSkills(), install: true, skip: [] });
 
@@ -53,4 +63,18 @@ export function mergeLaunch(parts: (Partial<SessionLaunch> | undefined)[]): Sess
     if (p.preamble) out.preamble = out.preamble ? `${out.preamble}\n\n${p.preamble}` : p.preamble;
   }
   return out;
+}
+
+/** One of pi's packages (settings.json `packages`: "npm:pi-mcp-adapter", a git URL, …) is installed. */
+export function piHasPackage(name: string): boolean {
+  try {
+    const settings = JSON.parse(readFileSync(harness.piSettings(), "utf8"));
+    const re = new RegExp(`(^|[:/])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(@|$|/|\\.git)`);
+    return (settings.packages ?? []).some((p: unknown) => {
+      const src = typeof p === "string" ? p : (p as any)?.source;
+      return typeof src === "string" && re.test(src);
+    });
+  } catch {
+    return false;
+  }
 }

@@ -2,7 +2,8 @@
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
 live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b), fork and
-`/compact` (unit p4c), `/review` (unit p4d), hooks (unit p4e); the rest not started. What was built, emulated or left unsupported per harness is in
+`/compact` (unit p4c), `/review` (unit p4d), hooks (unit p4e), commands, subagents and env/secrets
+(unit p4f, the Phase 2 "later slots"); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -245,8 +246,8 @@ the brief lists both. Dev-only fault injection (`TETHER_DEV=1`): `/tether simula
 
 **Phase 2.** Connectors live in `runner/src/connectors/` with slots `mcp`, `skills`, `memory`,
 `commands`, `agents`, `hooks`, `env`, `goal`. Driver and connector were not split: adapters call
-`sessionLaunch()`. `commands`, `agents`, `hooks` and `env` declare a capability only ("not mapped
-yet"). The MCP registry (`$TETHER_CONFIG_DIR/mcp/servers.json`, mode 600) imports from every
+`sessionLaunch()`. `commands`, `agents`, `hooks` and `env` declared a capability only (hooks were
+mapped in p4e, the other three in p4f). The MCP registry (`$TETHER_CONFIG_DIR/mcp/servers.json`, mode 600) imports from every
 harness, dedupes by command/URL, injects per session, and exports enabled global servers into each
 installed harness's global config (Decision 1) through a ledger of the exact entries Tether wrote.
 A server the harness already has natively is neither injected nor exported there (Decision 2).
@@ -558,10 +559,76 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | opencode, Kiro | Tether's; PreToolUse only on permission requests (unverified, not installed) |
 | Antigravity | Tether's, every tool call (guard hook) |
 
+**Phase 4f: commands, subagents, env and secrets (the Phase 2 "later slots").** The `commands`,
+`agents` and `env` slots are mapped on every connector; no slot says "not mapped yet" any more.
+- Env and secrets (`runner/src/secrets.ts`): `$TETHER_CONFIG_DIR/secrets.json` (mode 600), edited in
+  Settings ("Env and secrets": name + value, Replace, Remove; ops `listSecrets`, `setSecret`; values
+  never go back to the browser). Names are env names; PATH, HOME, TETHER_*, CLAUDE_CODE_* and a few
+  others are refused. Every agent process gets them (`agentEnv`: runner env, then secrets, then
+  Tether's own guard env): Claude Code through the SDK `env` option (the whole environment, as the
+  SDK replaces it), Codex's app-server, pi, ACP agents and agy at spawn. Registry MCP servers: at
+  launch only (`sessionMcp` → `withSecrets`), `${NAME}` / `${NAME:-default}` in env values and
+  headers is resolved and a stdio server gets every secret under its own variables; unknown names
+  stay as written, `:-default` included (the harness may expand them from its own env). Codex
+  starts stdio servers with an allow-listed environment (HOME, PATH, USER, LANG, TERM, TMPDIR, …;
+  codex-cli 0.162 rmcp-client), so once you have a secret every exported stdio registry server is
+  injected again per session with the secrets in its own `env`; the stdio servers in your own
+  Codex config don't get them (not changed per session; gap). The registry file and the global export keep `${NAME}`; a server whose export is
+  already in the harness's config but uses a secret is injected again (resolved) under the export's
+  name, like an OAuth token. Claude's argv-safe path already keeps stdio servers with env and
+  headers off the command line. pi's `--mcp-config` copy (runner config dir, mode 600) holds the
+  resolved values, as it already did OAuth tokens.
+- Commands (`runner/src/commands.ts`, `$TETHER_CONFIG_DIR/commands.json`, mode 600): imported read
+  only from `~/.claude/commands/**/*.md` (the name is the file's), `~/.codex/prompts/*.md`,
+  opencode's `command/` and `commands/` dirs and its config `command` map, and
+  `~/.pi/agent/prompts/*.md`; same name and text merges sources, a different text is a warning;
+  deletions are remembered. "Find commands" on the Memory & Skills page, the master context's Import,
+  or paste one (name + text). Each command keeps whose argument rules it was written for: `claude`
+  (`$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` counting from 0, unused arguments appended as
+  "ARGUMENTS: …", Claude Code 2.1.296's documented substitution) or `shell` (pi, Codex, opencode:
+  `$1` first, `$@`, `${1:-d}`, `${@:-d}`, `${@:N[:L]}`, `$$`); arguments split like a shell.
+  `/name args` in any session: Tether's own commands first, then skills, then your commands: when
+  the harness lists the command (its live command list; with no answer, Claude Code's command files
+  and pi's prompts) it goes through as typed, otherwise Tether fills in the template and sends the
+  text (also inside joined messages and handoff briefs). `!`-shell lines and `@file` references
+  aren't run when Tether fills a template in. The `/` menu lists them after skills with source
+  badges and "inline" where Tether fills them in. Nothing is written into repos or harness command
+  dirs. opencode (1.18.35's SessionPrompt.command) knows only `$ARGUMENTS` and `$1`…`$N` with the
+  highest taking the rest, so it gets only templates whose sole placeholder is `$ARGUMENTS` (or
+  none); Tether fills in the others.
+- Subagents (`runner/src/subagents.ts`, `$TETHER_CONFIG_DIR/subagents.json`, mode 600): imported
+  read only from `~/.claude/agents/**/*.md`, `~/.codex/agents/*.toml`, opencode's `agent(s)/` and
+  config `agent` map (subagents only; `{file:…}` prompts skipped) and pi-subagents'
+  `~/.pi/agent/agents/**/*.md`; "Find subagents", Import, or paste a Claude Code agent file. Each
+  harness gets the ones it doesn't have under that name: Claude Code per session as SDK `agents`
+  (tools and model when they're Claude's; pi tool names mapped), Codex per session as agent roles
+  (thread config `agents.<name> = {description, config_file}`, the role file in
+  `$TETHER_CONFIG_DIR/run/codex-agents/`), opencode per session in `OPENCODE_CONFIG_CONTENT`
+  (`agent.<name>`, mode subagent, merged under Tether's plan rule and any inline config of yours),
+  pi only with pi-subagents, written to Tether's own `~/.pi/agent/agents/tether/` (marked
+  `.tether-owned`, synced on every change and pi launch, removed when pi-subagents goes; pi-subagents
+  has no per-session path). A tools list is never widened: opencode gets it as the agent's
+  permission rules (`{"*": "deny", <tool>: "ask"}`, the way its own explore agent is restricted;
+  "ask" keeps Tether's guard in the loop), and Claude Code or pi leave out an agent none of whose
+  tools they have ("None of its tools are pi's"). Codex roles still don't carry tools. The list
+  shows per harness how it gets each one.
+
+| | Commands | Subagents | Env and secrets |
+|---|---|---|---|
+| Claude Code | native for its own command files; yours filled in by Tether (the SDK has no per-session commands) | native per session (SDK agents) | native (SDK env); MCP servers resolved at launch |
+| Codex | Tether fills them in (0.162 has no custom prompts) | native per session (agent roles via thread config) | app-server env; MCP servers Tether hands it resolved at launch (its own config's stdio servers don't get them: Codex filters their env) |
+| pi | native per session (`--prompt-template`) where pi fills arguments the same way, else Tether | native through pi-subagents only (Tether's folder), else unsupported | process env; `--mcp-config` copy resolved |
+| opencode | native per session (`OPENCODE_CONFIG_CONTENT` command) where compatible, else Tether (unverified) | native per session (`OPENCODE_CONFIG_CONTENT` agent; unverified) | process env; ACP servers resolved |
+| Kiro | Tether fills them in, unless it lists one (unverified) | unsupported (its custom agents are whole agent configs) | process env; ACP servers resolved |
+| Antigravity | Tether fills them in | unsupported (no subagent definitions) | process env; its MCP servers come only from its global config, where `${NAME}` isn't resolved by Tether |
+
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
 opencode let a per-session server override a same-named server in their own config, whether Codex
 rollouts or ACP agents persist session MCP headers, the OAuth redirect through the Foliation
 edge, Codex `thread/fork` with `lastTurnId` on a thread with turns, a native Claude Code fork
 resumed and prompted by a live process, and a whole /review on live harnesses (reviewer prompt,
-review_report through each harness's MCP client, the card in a browser), hooks on live harnesses (Claude's SDK callbacks alongside its settings hooks, Codex approvals in Full access with a hook on, PostToolUse feedback timing).
+review_report through each harness's MCP client, the card in a browser), hooks on live harnesses (Claude's SDK callbacks alongside its settings hooks, Codex approvals in Full access with a hook on, PostToolUse feedback timing), and for p4f: Claude Code's 0-based `$N` on a live 2.1.296, a Codex
+role used by its multi-agent tools (the thread config was checked to parse it), opencode's inline
+`agent`/`command` config, pi-subagents picking up Tether's folder, and the Settings and Memory &
+Skills sections in a browser.

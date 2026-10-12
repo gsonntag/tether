@@ -29,6 +29,7 @@ import { codexPick, lastLineTime } from "./lastActivity";
 import { formContent, formRequest } from "./elicitation";
 import { userHome } from "../home";
 import { codexNativeKeys, hooksFor } from "../hooks";
+import { agentEnv } from "../secrets";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -93,8 +94,9 @@ export class CodexProcess {
   /** Server-to-client requests (approvals, questions). Returning undefined answers "unsupported". */
   onRequest?: (method: string, params: any) => Promise<unknown>;
 
-  constructor(cwd: string) {
-    const proc = Bun.spawn([CODEX_BIN, "app-server"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env });
+  /** `env`: a session's process gets your secrets (secrets.ts agentEnv); background calls run with the runner's own */
+  constructor(cwd: string, env: Record<string, string | undefined> = process.env) {
+    const proc = Bun.spawn([CODEX_BIN, "app-server"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
     this.proc = proc;
     (async () => {
       const dec = new TextDecoder();
@@ -473,7 +475,7 @@ export class CodexSession extends LiveSession {
   }
 
   async start() {
-    this.p = new CodexProcess(this.projectPath);
+    this.p = new CodexProcess(this.projectPath, agentEnv());
     this.p.onNotify = (m, params) => this.onNotify(m, params);
     this.p.onRequest = (m, params) => this.onRequest(m, params);
     this.p.exited.then((code) => {

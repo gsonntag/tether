@@ -36,3 +36,14 @@ export function launchWith(h: HarnessId, ctx: SessionCtx): SessionLaunch {
   const order = ["memory", ...SLOTS.filter((s) => s !== "memory")] as const;
   return mergeLaunch(order.map((s) => c[s].forSession?.(ctx)));
 }
+
+/**
+ * What a harness process needs before it starts (ACP agents are spawned before their session's
+ * launch): the environment every slot adds (your secrets), and opencode's inline config additions
+ * (your subagents and commands, merged into OPENCODE_CONFIG_CONTENT).
+ */
+export function processLaunch(h: HarnessId, projectPath: string): { env: Record<string, string>; opencodeConfig?: Record<string, unknown> } {
+  const c = connectorFor(h);
+  const l = mergeLaunch([c.env, c.agents, c.commands].map((s) => s.forSession?.({ projectPath })));
+  return { env: l.env, ...(l.options.opencodeConfig ? { opencodeConfig: l.options.opencodeConfig } : {}) };
+}

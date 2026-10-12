@@ -12,6 +12,8 @@ import { harness, tilde } from "../context/paths";
 import { claudeProjectScope } from "../context/repokey";
 import { toEntry } from "../mcp/formats";
 import { claudeServers, claudeSessionServers } from "../mcp/sources";
+import { claudeAgentDefs } from "../subagents";
+import { secretEnv } from "../secrets";
 import { cap, repoDirs, slot } from "./shared";
 import type { Connector, ExportContext, SessionCtx } from "./types";
 
@@ -141,10 +143,26 @@ export const claudeConnector: Connector = {
     offline: true,
     installDirs: () => [{ harness: "claude", dir: harness.claudeSkills(), install: true, skip: ["synced"] }],
   },
-  commands: slot("native", "Its own commands show in the / menu; Tether commands aren't mapped yet"),
-  agents: slot("native", "Subagents (SDK agents, ~/.claude/agents); not mapped yet"),
+  // Agent SDK 0.3.293: no per-session commands option (a plugin's commands would be namespaced).
+  commands: slot("native", "Its own commands (~/.claude/commands, .claude/commands) run natively; Tether's other commands are filled in by Tether ($ARGUMENTS, $N) and sent as the message"),
+  agents: {
+    capability: () => cap("native", "Your subagents per session as SDK agents (description, prompt, tools, model; one limited to tools Claude Code doesn't have is left out); the ones in ~/.claude/agents and the project's .claude/agents it loads itself"),
+    forSession: ({ projectPath }) => {
+      const agents = claudeAgentDefs(projectPath);
+      return Object.keys(agents).length ? { options: { agents } } : undefined;
+    },
+  },
   hooks: slot("native", "Your hooks run as SDK hook callbacks on every tool call, prompt and stop; the ones already in its own settings files run only there"),
-  env: slot("native", "SDK env option; not mapped yet"),
+  env: {
+    capability: () => cap("native", "Your secrets in its environment (SDK env option), so its tools and MCP servers see them"),
+    forSession: () => {
+      const env = secretEnv();
+      if (!Object.keys(env).length) return undefined;
+      // The SDK's env replaces the process environment rather than adding to it.
+      const base = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+      return { options: { env: { ...base, ...env } } };
+    },
+  },
   // Checked with Agent SDK 0.3.293 / Claude Code 2.1.296: its /goal is a slash command whose own
   // evaluator keeps the turn going; there is no call to pause it or read its status, so mirroring
   // would run two loops against each other.

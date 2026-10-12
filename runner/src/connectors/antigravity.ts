@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { invocationText } from "../../../web/src/shared/skill";
 import { harness } from "../context/paths";
 import { antigravityServers, geminiServers, geminiSettings, merge } from "../mcp/sources";
-import { cap, slot } from "./shared";
+import { cap, envSlot, slot } from "./shared";
 import type { Connector } from "./types";
 
 export const antigravityConnector: Connector = {
@@ -42,10 +42,12 @@ export const antigravityConnector: Connector = {
       { harness: "gemini", dir: harness.geminiSkills(), install: true, skip: [] },
     ],
   },
-  commands: slot("native", "Slash commands; not mapped yet"),
-  agents: slot("native", "Agents (--agent); not mapped yet"),
+  // agy (Antigravity CLI): customizations are skills, rules, MCP, hooks and plugins; `agy agents`
+  // lists none and no subagent definition format is documented.
+  commands: slot("emulated", "No custom commands Tether can hand it: Tether fills in your commands and sends them as the message"),
+  agents: slot("unsupported", "No custom subagent definitions"),
   hooks: slot("emulated", "Run by Tether on every tool call (through its guard hook), as steps finish, at the end of each turn and before your messages"),
-  env: slot("native", "Process environment; not mapped yet"),
+  env: envSlot("Your secrets in its environment; its MCP servers come from its global config (${NAME} references there aren't resolved by Tether)"),
   goal: slot("emulated", "Tether's goal loop; the goal tools only where its global tether-context passes the session through"),
   plan: slot("native", "Plan mode; Tether holds its first change until you approve the plan (headless agy would approve its own)"),
   todos: slot("emulated", "todo_set only where its global tether-context passes the session through"),

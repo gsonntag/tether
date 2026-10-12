@@ -39,6 +39,8 @@ import { applySkillPlan, awaitsSkillMd, disabledSet, isOwnSkillEvent, listSkills
 import { scanSources, watchTargets } from "./sources";
 import { importServers as importMcpServers, previewImport as previewMcpImport } from "../mcp/registry";
 import { importHooks } from "../hooks";
+import { importCommands } from "../commands";
+import { importSubagents } from "../subagents";
 import { Store } from "./store";
 import { Watcher } from "./watch";
 
@@ -216,6 +218,7 @@ export class ContextService {
         });
         await this.importMcpServers();
         await this.importHooks();
+        await this.importLibraries();
         if (this.enabled) this.watch();
         this.act({ kind: "import", text: "Import finished" });
       } finally {
@@ -249,6 +252,18 @@ export class ContextService {
       if (r.added) this.act({ kind: "import", text: `Added ${r.added === 1 ? "1 hook" : `${r.added} hooks`} to Tether from Claude Code's settings` });
     } catch (e: any) {
       this.act({ kind: "error", text: `Hooks weren't imported: ${e?.message ?? e}` });
+    }
+  }
+
+  /** Your custom commands and subagent definitions, from every harness (read only), into Tether's libraries. */
+  private async importLibraries() {
+    try {
+      const c = await importCommands();
+      if (c.added.length) this.act({ kind: "import", text: `Added ${c.added.length === 1 ? "1 command" : `${c.added.length} commands`} to Tether: ${c.added.map((n) => `/${n}`).join(", ")}` });
+      const a = await importSubagents();
+      if (a.added.length) this.act({ kind: "import", text: `Added ${a.added.length === 1 ? "1 subagent" : `${a.added.length} subagents`} to Tether: ${a.added.join(", ")}` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `Commands and subagents weren't imported: ${e?.message ?? e}` });
     }
   }
 

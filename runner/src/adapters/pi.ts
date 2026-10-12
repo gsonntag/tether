@@ -23,6 +23,7 @@ import { nativeAttachments } from "../attachments";
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { userHome } from "../home";
+import { agentEnv } from "../secrets";
 
 const PI_BIN = process.env.PI_BIN ?? "pi";
 const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(userHome(), ".pi", "agent", "sessions");
@@ -241,7 +242,8 @@ class PiRpc {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...env },
+      // your secrets (secrets.ts), then the guard's env
+      env: agentEnv(env),
     });
     this.readStdout();
     this.readStderr();
