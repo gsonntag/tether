@@ -1,10 +1,13 @@
 # Harness platform: connectors, Tether-owned features, strict fallback
 
-Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
-live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b), fork and
-`/compact` (unit p4c), `/review` (unit p4d), hooks (unit p4e), commands, subagents and env/secrets
-(unit p4f, the Phase 2 "later slots"); the rest not started. What was built, emulated or left unsupported per harness is in
-"Implementation notes" at the end; the Decisions section overrides the plan text above it.
+Status: Phases 0-4 built on branch `harness-platform` (14 commits, 2026-10-11/12), not merged,
+deployed or run against live harnesses; only stubbed-harness tests pass. Every Phase 4 row is built
+(plan + todos, `ask_user`, loops and schedules, fork, `/review`, `/compact`, hooks), and so are the
+Phase 2 "later slots" (commands, subagents, env/secrets). Not built: the "when CI finishes" trigger
+(Phase 4 loops), a real Driver/Connector split, bundling pi-mcp-adapter, per-session MCP for
+Antigravity, and `splitModelRoute` (Phase 0; it is in uncommitted work in the main checkout). What
+was built, emulated or left unsupported per harness is in "Implementation notes" at the end; the
+Decisions section overrides the plan text above it.
 
 ## Goal
 
@@ -219,13 +222,15 @@ Modelled on the Claude/Codex goals; pi's goal extension is not used in Tether se
 8. **Where MCP OAuth tokens live** (runner config dir, 600 perms?) and whether they sync between
    runners.
 
-## Implementation notes (2026-10-11)
+## Implementation notes (2026-10-12)
 
-Built on `harness-platform` in seven commits (Phase 0, Phase 1 strict fallback, Phase 1 fault
-injection, Phase 2 connector interface, Phase 2 MCP registry, Phase 2 MCP OAuth, Phase 3 /goal),
-plus a follow-up that closes gaps from the Phase 0-3 review (last paragraph before the table).
-Runner tests pass with stubbed harnesses only; nothing here has been run against live harnesses
-or deployed.
+Built on `harness-platform` in fourteen commits: Phase 0, Phase 1 strict fallback, Phase 1 fault
+injection, Phase 2 connector interface, Phase 2 MCP registry, Phase 2 MCP OAuth, Phase 3 /goal, a
+follow-up that closes gaps from the Phase 0-3 review ("Review follow-up (f1)" below), then six
+Phase 4 units (4a plan/todos/ask_user, 4b loops and schedules, 4c fork and /compact, 4d /review,
+4e hooks, 4f commands/subagents/env). Runner (881 tests), web and server tests pass with stubbed
+harnesses only; nothing here has been run against live harnesses, looked at in a browser, or
+deployed. The MCP sign-in callback needs the server deployed; everything else is runner + web.
 
 **Phase 0.** Kiro skills (`~/.kiro/skills`, linked only when `~/.kiro` exists), watched skill dirs
 (with a 10-minute backstop pass and a per-dir watch until `SKILL.md` appears), Codex MCP
@@ -622,6 +627,14 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | Kiro | Tether fills them in, unless it lists one (unverified) | unsupported (its custom agents are whole agent configs) | process env; ACP servers resolved |
 | Antigravity | Tether fills them in | unsupported (no subagent definitions) | process env; its MCP servers come only from its global config, where `${NAME}` isn't resolved by Tether |
 
+Not built, or left as is: the "when CI finishes" trigger; Kiro's limit signal (no real error
+captured); bundling pi-mcp-adapter (pi without it gets no per-session MCP and none of Tether's
+session tools); Antigravity per-session MCP (global config only, so its goal/plan/ask/review tools
+depend on that global entry); the goal on the Home dashboard; hook events other than the four, and
+non-`command` hook types; secrets for hook processes and for Codex's own stdio MCP servers;
+Decision 4 is bent for Antigravity (its exact quota message counts as the signal; it has no usage
+feed).
+
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
 opencode let a per-session server override a same-named server in their own config, whether Codex
@@ -631,4 +644,8 @@ resumed and prompted by a live process, and a whole /review on live harnesses (r
 review_report through each harness's MCP client, the card in a browser), hooks on live harnesses (Claude's SDK callbacks alongside its settings hooks, Codex approvals in Full access with a hook on, PostToolUse feedback timing), and for p4f: Claude Code's 0-based `$N` on a live 2.1.296, a Codex
 role used by its multi-agent tools (the thread config was checked to parse it), opencode's inline
 `agent`/`command` config, pi-subagents picking up Tether's folder, and the Settings and Memory &
-Skills sections in a browser.
+Skills sections in a browser. Also from p4a-p4c: Codex honouring `tool_timeout_sec` from a thread
+config override (a long ask_user), ACP agents' MCP call timeouts (no field), Kiro's mode names,
+pi's `--no-extensions` + `-e` launch on real pi sessions, Codex `thread/compact/start` with a login,
+the emulated /compact restart, and the plan review, goal line, schedule line, review card, fork
+dialog and Harness support table in a browser.
