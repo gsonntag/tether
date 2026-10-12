@@ -15,7 +15,7 @@ import { userParts } from "../../web/src/shared/bash";
 import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
 import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
-import { applyEvent, emptyState, findPlan, type Transcript } from "../../web/src/shared/reducer";
+import { applyEvent, emptyState, findPlan, findTool, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
@@ -31,6 +31,8 @@ import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } 
 import { connectorFor } from "./connectors";
 import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, newSchedule, ofKind, parseTimerCommand, scheduleChanged } from "./schedule";
 import { sessionTrust } from "./mcp/registry";
+import { load as loadMcpRegistry } from "./mcp/store";
+import { hookTool, hooksFor, runHooks, type HookOutcome } from "./hooks";
 import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
 import { displayText, parseInvocation } from "../../web/src/shared/skill";
 import {
@@ -213,6 +215,11 @@ export abstract class LiveSession {
     const beforeModel = this.t.state.model;
     const moved = movedAt(event, this.updatedAt, this.t.messages);
     const finished = this.fault?.state === "active" ? finishedTools(event, this.t.messages) : undefined;
+    // Tool calls that finish during a turn go to your PostToolUse hooks (a history replay doesn't).
+    const hookDone =
+      !this.nativeHooks && this.t.state.status === "running" && (event.type === "tool" || event.type === "msg") && hooksFor("PostToolUse", { skip: this.hookSkip }).length
+        ? finishedTools(event, this.t.messages)
+        : undefined;
     applyEvent(this.t, event);
     this.seq++;
     this.lastActivity = Date.now();
@@ -246,11 +253,20 @@ export abstract class LiveSession {
         this.faultTurnStarted();
         this.goalTurnStarted();
         this.planTurnStarted();
+        this.stopHookTurn = this.stopHookNext;
+        this.stopHookChain = this.stopHookNext ? this.stopHookChain + 1 : 0;
+        this.stopHookNext = false;
       }
       // The adapter showed the error on the message only (pi, Antigravity): the offer gets a notice.
       if (s.status === "idle" && before !== "idle" && this.continueOffer && !s.handoffTo) this.notice(this.continueOffer.text || "The turn ended with an error.", "error");
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
+      if (s.status === "idle" && before !== "idle" && !this.t.state.handoffTo && !this.nativeHooks && !this.userStopped && !this.turnTrouble && !this.closed && !this.restarting && hooksFor("Stop", { skip: this.hookSkip }).length) {
+        const run = this.stopHooks().catch((e) => console.error(`hooks: Stop for ${this.id} failed: ${e?.message ?? e}`));
+        this.stopHookRun = run.finally(() => {
+          if (this.stopHookRun === run) this.stopHookRun = undefined;
+        });
+      }
       if (s.status === "idle" && before !== "idle") this.goalTurnOver();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.planTurnOver();
       if (s.status === "idle" && before !== "idle") this.reviewTurnOver();
@@ -278,6 +294,12 @@ export abstract class LiveSession {
     if (event.type === "activity") this.activityChanged();
     if (event.type === "msg") this.notePlanParts(event.msg);
     if (finished?.length) this.faultToolsFinished(finished);
+    for (const id of hookDone ?? []) {
+      const p = findTool(this.t.messages, id)?.part;
+      // Done, or a command that ran and failed (not one the guard or a hook stopped).
+      if (p && (p.status === "done" || (p.status === "error" && kindOf(p.name) === "shell" && p.guard?.decision !== "deny" && !!p.output)))
+        void this.postToolHook(id).catch((e) => console.error(`hooks: PostToolUse for ${this.id} failed: ${e?.message ?? e}`));
+    }
     // A verdict can arrive before its tool card (Antigravity hooks run before the step event).
     if (event.type === "msg" && (this.pendingVerdicts.size || this.judging.size))
       for (const p of event.msg.parts)
@@ -624,11 +646,24 @@ export abstract class LiveSession {
     if (this.t.state.status === "idle") {
       // An approved plan's turn is starting: this goes in after it, not as a second turn alongside.
       // Compacting: it waits, and goes on in the new session.
-      if (this.planStarting || this.restarting) {
+      // A message is on its way out (its UserPromptSubmit hooks can take a while): this goes in after it.
+      if (this.planStarting || this.restarting || this.draining) {
         this.pend(text, mode);
         return;
       }
-      if (!this.t.state.pending?.length) return this.sendTyped(text);
+      if (!this.t.state.pending?.length) {
+        this.draining = true;
+        let sent = false;
+        try {
+          sent = await this.sendTyped(text);
+        } finally {
+          this.draining = false;
+        }
+        // A hook held it back: what came in meanwhile goes now.
+        if (!sent && this.t.state.status === "idle" && this.t.state.pending?.length) await this.drainPending();
+        else this.scheduleSteers();
+        return;
+      }
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
       // and the list goes out from the top as usual (one queued message per turn).
       this.pend(text, mode);
@@ -706,19 +741,23 @@ export abstract class LiveSession {
       this.setState({ amendable: undefined });
     }
     if (this.closed || this.t.state.pendingHeld) return false;
-    const list = this.t.state.pending ?? [];
-    const n = nextTurnSize(list);
-    if (!n) return false;
     // Steers left at the top may go into this new turn, but only once it has really been sent.
     this.draining = true;
+    let sent = false;
     try {
-      this.setPending(list.slice(n));
-      await this.sendTyped(joinPending(list.slice(0, n)), list.slice(0, n));
+      // A message a UserPromptSubmit hook holds back is dropped; the next one goes instead.
+      while (!sent && !this.closed) {
+        const list = this.t.state.pending ?? [];
+        const n = nextTurnSize(list);
+        if (!n) break;
+        this.setPending(list.slice(n));
+        sent = await this.sendTyped(joinPending(list.slice(0, n)), list.slice(0, n));
+      }
     } finally {
       this.draining = false;
     }
     this.scheduleSteers();
-    return true;
+    return sent;
   }
 
   // ---- `/skill args` (runner/src/skillcmd.ts) ----
@@ -763,8 +802,10 @@ export abstract class LiveSession {
   private outgoing?: { sent: string; typed: string };
 
   /** Resolves and sends; preferBest() can still see what was typed. */
-  private async sendTyped(typed: string, batch?: PendingMessage[]) {
-    const sent = batch ? await this.joinResolved(batch) : await this.resolveSkills(typed);
+  private async sendTyped(typed: string, batch?: PendingMessage[]): Promise<boolean> {
+    const resolved = batch ? await this.joinResolved(batch) : await this.resolveSkills(typed);
+    const sent = await this.promptHooks(typed, resolved);
+    if (sent === undefined) return false; // held back by a UserPromptSubmit hook
     this.outgoing = { sent, typed };
     this.loopTurn = !!batch?.length && batch.every((p) => this.schedules.some((s) => s.id === p.scheduleId && s.kind === "loop"));
     this.turnStarting = true;
@@ -773,6 +814,7 @@ export abstract class LiveSession {
     } finally {
       this.outgoing = undefined;
     }
+    return true;
   }
 
   /** One message as it goes out: `/skill args` becomes this harness's own invocation, or the expanded skill. */
@@ -1378,8 +1420,19 @@ export abstract class LiveSession {
     let always = false;
     // A review session, plan mode (or a plan waiting for review) hold back changes, whatever the guard mode.
     const held = this.reviewHold(tool, input) ?? this.planHold(tool, input);
+    // Your PreToolUse hooks (hooks.ts) come first, as in Claude Code; "Approve & retry" skips them.
+    const hook = this.approved.has(key) || held ? undefined : await this.preToolHook(tool, input, toolId);
+    const hookAllow = hook?.decision === "allow" ? hook.reason : undefined;
     if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
     else if (held) v = { decision: "deny", by: "mode", reason: held };
+    // `continue: false` wins over any decision, as in Claude Code: the call doesn't run and the agent stops.
+    else if (hook?.stop) v = { decision: "deny", by: "hook", reason: hook.stop };
+    else if (hook?.decision === "deny") v = { decision: "deny", by: "hook", reason: hook.reason || "Blocked by a PreToolUse hook." };
+    // A hook's allow skips the judge and the person; the guard's own deny rules still apply.
+    else if (hookAllow !== undefined && this.guardMode !== "full") {
+      const r = rules(call);
+      v = r?.decision === "deny" ? r : { decision: "allow", by: "hook", reason: hookAllow || "Allowed by a PreToolUse hook." };
+    }
     // Reading in a review session needs no judge: only the rules (secrets, other sessions' files) apply.
     else if (this.t.state.reviewOf) {
       const r = rules(call);
@@ -1387,14 +1440,15 @@ export abstract class LiveSession {
     } else if (this.guardMode === "full") v = attachmentWrite(call) ?? { decision: "allow", by: "mode", reason: "Full access." };
     else {
       const r = rules(call);
-      const askEdit = this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit";
+      // A hook's "ask" puts the call in front of you where someone is meant to answer (Ask, Edits).
+      const askEdit = (this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit") || (hook?.decision === "ask" && r?.decision !== "deny");
       if (r?.decision === "allow" && !askEdit) v = r;
       else if (this.guardMode === "ask" || this.guardMode === "edits") {
         const res = await this.askUi({
           id: newId("perm"),
           kind: "permission",
           title: `Allow ${tool}?`,
-          message: r?.decision === "deny" ? `⚠ ${r.reason}` : undefined,
+          message: r?.decision === "deny" ? `⚠ ${r.reason}` : hook?.decision === "ask" && hook.reason ? hook.reason : undefined,
           tool: { name: tool, input },
         });
         v = res.allow ? { decision: "allow", by: "user", reason: "You allowed it." } : { decision: "deny", by: "user", reason: res.value || "You denied it." };
@@ -1479,6 +1533,162 @@ export abstract class LiveSession {
   }
   /** Adapters whose harness needs restarting or reconfiguring on a guard change. */
   protected onGuardChanged?: () => void;
+
+  // ---- your hooks (runner/src/hooks.ts), for harnesses Tether runs them for ----
+  // PreToolUse in checkTool, PostToolUse as tool cards finish, Stop when a turn ends, and
+  // UserPromptSubmit before your message goes out. Claude Code runs them through its SDK instead
+  // (nativeHooks); `hookSkip` leaves out the ones the harness already runs from its own config.
+
+  /** The harness runs Tether's hooks itself (Claude Code's SDK callbacks): none run here. */
+  protected nativeHooks = false;
+  /** commandKeys of hooks the harness already runs natively (Codex's trusted hooks) */
+  protected hookSkip?: Set<string>;
+  /** a Stop hook's run, which the goal loop waits for before it continues */
+  private stopHookRun?: Promise<void>;
+  /** this turn was started by a Stop hook (`stop_hook_active`), and how many in a row */
+  private stopHookTurn = false;
+  private stopHookNext = false;
+  private stopHookChain = 0;
+  static MAX_STOP_CONTINUATIONS = 20;
+
+  /** What every hook gets on stdin, in Claude Code's field names. */
+  private hookInput(): Record<string, unknown> {
+    return { session_id: this.id, transcript_path: "", permission_mode: this.t.state.permissionMode ?? "default", tether: { harness: this.harness, session_id: this.id } };
+  }
+
+  private get hookEnv(): Record<string, string> {
+    return { TETHER_HARNESS: this.harness, TETHER_SESSION_ID: this.id };
+  }
+
+  private hookTool(tool: string, input: unknown) {
+    const reg = loadMcpRegistry();
+    return hookTool(tool, input, reg.servers.flatMap((s) => [s.name, ...(s.aliases ?? [])]));
+  }
+
+  /** systemMessage lines and failed hooks: inline in the chat. */
+  private hookMessages(o: HookOutcome) {
+    for (const m of o.messages) this.notice(m, "warning", { title: "Hook" });
+    if (o.stop) {
+      this.notice(o.stop, "warning", { title: "Stopped by a hook" });
+      void this.stop().catch(() => {});
+    }
+  }
+
+  /**
+   * Calls a native hook allowed (Claude Code's SDK callback), by tool call id: checkTool treats them
+   * like a hook's allow here, so plan mode, a review and the guard's deny rules still apply.
+   */
+  protected hookAllows = new Map<string, string>();
+
+  private async preToolHook(tool: string, input: unknown, toolId?: string): Promise<HookOutcome | undefined> {
+    if (this.nativeHooks) {
+      const reason = toolId ? this.hookAllows.get(toolId) : undefined;
+      if (toolId) this.hookAllows.delete(toolId);
+      return reason !== undefined ? { decision: "allow", reason, context: [], messages: [], ran: 1 } : undefined;
+    }
+    const t = this.hookTool(tool, input);
+    const runs = hooksFor("PreToolUse", { tool: t.name, skip: this.hookSkip });
+    if (!runs.length) return undefined;
+    const o = await runHooks("PreToolUse", { ...this.hookInput(), tool_name: t.name, tool_input: t.input, tool_use_id: toolId ?? "", tether: { harness: this.harness, session_id: this.id, tool_name: tool } }, { cwd: this.projectPath, runs, env: this.hookEnv });
+    this.hookMessages(o);
+    return o;
+  }
+
+  /** A tool card finished during a turn: PostToolUse hooks; what they say goes to the agent. */
+  private async postToolHook(toolId: string) {
+    const hit = findTool(this.t.messages, toolId);
+    if (!hit || hit.msg.role !== "assistant") return;
+    const p = hit.part;
+    const t = this.hookTool(p.name, p.input);
+    const runs = hooksFor("PostToolUse", { tool: t.name, skip: this.hookSkip });
+    if (!runs.length) return;
+    const output = p.output ?? "";
+    const response = t.name === "Bash" ? { stdout: output, stderr: "", interrupted: false, isImage: false } : { output };
+    const o = await runHooks(
+      "PostToolUse",
+      { ...this.hookInput(), tool_name: t.name, tool_input: t.input, tool_response: response, tool_use_id: p.id, tether: { harness: this.harness, session_id: this.id, tool_name: p.name } },
+      { cwd: this.projectPath, runs, env: this.hookEnv },
+    );
+    if (this.closed) return;
+    this.hookMessages(o);
+    const said = [o.decision === "block" ? o.reason : undefined, ...o.context].filter(Boolean).join("\n\n");
+    if (said) await this.hookFeedback(`PostToolUse hook feedback for ${t.name}:\n${said}`);
+  }
+
+  /** Feedback for the agent: into the running turn where it can take it, else with its next turn. */
+  private async hookFeedback(text: string) {
+    if (this.closed || this.t.state.handoffTo) return;
+    if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
+    else if (this.t.state.status === "running") this.pend(text, "followUp");
+    // You stopped the agent (or its turn failed): the feedback waits for your next message.
+    else if (this.userStopped || this.t.state.pendingHeld || this.turnTrouble) {
+      this.pend(text, "followUp");
+      if (this.userStopped || this.t.state.pendingHeld) this.setState({ pendingHeld: true });
+    } else {
+      this.turnStarting = true;
+      await this.continueTurn(text).catch((e) => {
+        this.turnStarting = false;
+        this.notice(`Couldn't send a hook's feedback: ${e?.message ?? e}`, "warning");
+      });
+    }
+  }
+
+  /** The turn ended: Stop hooks; a block sends their reason as the next prompt, like Claude Code. */
+  private async stopHooks() {
+    const runs = hooksFor("Stop", { skip: this.hookSkip });
+    if (!runs.length) return;
+    const last = [...this.t.messages].reverse().find((m) => m.role === "assistant");
+    const text = last?.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n") ?? "";
+    const o = await runHooks("Stop", { ...this.hookInput(), stop_hook_active: this.stopHookTurn, last_assistant_message: text }, { cwd: this.projectPath, runs, env: this.hookEnv });
+    if (this.closed || this.t.state.handoffTo || this.userStopped) return;
+    for (const m of o.messages) this.notice(m, "warning", { title: "Hook" });
+    if (o.decision !== "block" || o.stop) return;
+    if (this.stopHookChain >= LiveSession.MAX_STOP_CONTINUATIONS) {
+      this.notice(`Stop hooks kept the agent going ${this.stopHookChain} times in a row, so Tether let it stop. ${o.reason ?? ""}`.trim(), "warning", { title: "Hook" });
+      return;
+    }
+    const prompt = `Stop hook feedback:\n${o.reason}`;
+    if (this.t.state.status === "idle" && !this.t.state.pending?.length && !this.t.state.pendingUi.length && !this.restarting) {
+      this.stopHookNext = true;
+      this.turnStarting = true;
+      await this.continueTurn(prompt).catch((e) => {
+        this.stopHookNext = this.turnStarting = false;
+        this.notice(`Couldn't continue after a Stop hook: ${e?.message ?? e}`, "warning");
+      });
+    } else this.pend(prompt, "followUp");
+  }
+
+  /**
+   * Your message is about to go out: UserPromptSubmit hooks. Undefined: held back (the reason shows
+   * inline); otherwise the text to send, with any context they added.
+   */
+  private async promptHooks(typed: string, sent: string): Promise<string | undefined> {
+    // Not your words: a hook's own feedback waiting in the list.
+    if (this.nativeHooks || /^(PostToolUse|Stop) hook feedback/.test(typed)) return sent;
+    const runs = hooksFor("UserPromptSubmit", { skip: this.hookSkip });
+    if (!runs.length) return sent;
+    const o = await runHooks("UserPromptSubmit", { ...this.hookInput(), prompt: typed }, { cwd: this.projectPath, runs, env: this.hookEnv });
+    for (const m of o.messages) this.notice(m, "warning", { title: "Hook" });
+    if (o.decision === "block" || o.stop) {
+      this.notice(`${o.reason ?? o.stop ?? ""}\n\nYour message:\n${typed}`.trim(), "warning", { title: "A hook held your message back" });
+      return undefined;
+    }
+    if (!o.context.length) return sent;
+    const block = `<user-prompt-submit-hook>\n${o.context.join("\n\n")}\n</user-prompt-submit-hook>`;
+    // The agent gets it; the transcript shows your message as typed.
+    this.shellShown.add(block);
+    return `${sent}\n\n${block}`;
+  }
+
+  /** Whether "Approve & retry" let this exact call through (a native hook skips it too). */
+  protected isApproved(tool: string, input: unknown): boolean {
+    return this.approved.has(JSON.stringify([tool, input]));
+  }
+
+  /** A native hook (Claude Code's SDK callback) denied a call: the card says so, like the guard's verdicts. */
+  protected hookDenied(tool: string, toolId: string | undefined, reason: string) {
+    this.annotate(tool, toolId, { decision: "deny", by: "hook", reason });
+  }
 
   // ---- checkpoints ----
 
@@ -1968,10 +2178,12 @@ export abstract class LiveSession {
   }
 
   private async sendGoalTurn(opts: { check?: string; kickoff?: boolean }) {
+    // A Stop hook that sends the agent on goes first; the goal waits for that turn to end.
+    if (this.stopHookRun) await this.stopHookRun;
     const g = this.goalState;
     if (!g || g.status !== "active" || this.closed || this.t.state.handoffTo) return;
     // A message, fallback, a plan approval or the harness's own goal started a turn; queued messages go first.
-    if (this.t.state.status !== "idle" || this.t.state.pending?.length || this.planStarting) return;
+    if (this.t.state.status !== "idle" || this.t.state.pending?.length || this.planStarting || this.draining) return;
     if (this.t.state.pendingUi.length) {
       this.goalHeld = true;
       return;

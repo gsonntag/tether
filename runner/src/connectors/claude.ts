@@ -143,7 +143,7 @@ export const claudeConnector: Connector = {
   },
   commands: slot("native", "Its own commands show in the / menu; Tether commands aren't mapped yet"),
   agents: slot("native", "Subagents (SDK agents, ~/.claude/agents); not mapped yet"),
-  hooks: slot("native", "Hooks in settings and the SDK; not mapped yet"),
+  hooks: slot("native", "Your hooks run as SDK hook callbacks on every tool call, prompt and stop; the ones already in its own settings files run only there"),
   env: slot("native", "SDK env option; not mapped yet"),
   // Checked with Agent SDK 0.3.293 / Claude Code 2.1.296: its /goal is a slash command whose own
   // evaluator keeps the turn going; there is no call to pause it or read its status, so mirroring

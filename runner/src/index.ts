@@ -44,6 +44,7 @@ import {
   setServer as setMcpServer,
   startServerAuth,
 } from "./mcp/registry";
+import { addHooks, importHooks, listHooks, setHook } from "./hooks";
 import { untilde } from "./context/paths";
 import { sessionForKey } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -848,6 +849,21 @@ const ops: Handlers = {
   async findMcpServers() {
     const { export: _, ...r } = await importMcpServers((await allProjects()).map((p) => p.path));
     return r;
+  },
+
+  // ---- hooks (runner/src/hooks.ts) ----
+
+  async listHooks() {
+    return listHooks();
+  },
+  async addHooks({ text }) {
+    return addHooks(text);
+  },
+  async setHook({ id, ...change }) {
+    return setHook(id, change);
+  },
+  async findHooks() {
+    return importHooks();
   },
   // OAuth sign-in (runner/src/mcp/oauth.ts): the app's /api/mcp-oauth/callback relays finishMcpAuth.
   async startMcpAuth({ id, redirectUri, clientId, clientSecret }) {

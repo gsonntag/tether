@@ -80,7 +80,8 @@ export const GUARD_MODES: { id: GuardMode; label: string }[] = [
 
 export interface GuardVerdict {
   decision: "allow" | "deny";
-  by: "rule" | "judge" | "user" | "mode";
+  /** hook: one of your PreToolUse hooks (runner/src/hooks.ts) */
+  by: "rule" | "judge" | "user" | "mode" | "hook";
   reason?: string;
 }
 
@@ -994,6 +995,32 @@ export interface McpFindResult {
   warnings: string[];
 }
 
+// ---------- hooks (runner/src/hooks.ts) ----------
+
+/** The Claude Code hook events Tether runs for every harness. */
+export type HookEventName = "PreToolUse" | "PostToolUse" | "Stop" | "UserPromptSubmit";
+
+/** One hook as the web app sees it: Claude Code's matcher group shape, plus on/off and where it came from. */
+export interface HookView {
+  id: string;
+  event: HookEventName;
+  /** tool-name matcher (Claude-style: `Bash`, `Edit|Write`, `mcp__github__.*`); empty: every tool */
+  matcher: string;
+  hooks: { type: "command"; command: string; timeout?: number }[];
+  enabled: boolean;
+  /** "you", or the settings file it was imported from ("claude:~/.claude/settings.json") */
+  sources: string[];
+  /** Claude Code runs it itself from its own settings, so Tether doesn't run it again there */
+  claudeNative?: boolean;
+}
+
+export interface HookFindResult {
+  hooks: HookView[];
+  /** how many hooks were new */
+  added: number;
+  warnings: string[];
+}
+
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {
   name: string;
@@ -1163,6 +1190,17 @@ export interface Ops {
   finishMcpAuth: { args: { state: string; code?: string; error?: string; errorDescription?: string; iss?: string }; result: { id: string; name: string } };
   /** "Find servers": imports every harness's MCP config into the registry */
   findMcpServers: { args: {}; result: McpFindResult };
+  // Hooks (runner/src/hooks.ts)
+  listHooks: { args: {}; result: HookView[] };
+  /**
+   * Adds hooks from pasted JSON in Claude Code's settings shape: `{"hooks": {"PreToolUse": [...]}}`,
+   * `{"PreToolUse": [...]}`, or one `{"event", "matcher", "hooks"}` entry.
+   */
+  addHooks: { args: { text: string }; result: HookView[] };
+  /** turns a hook on or off, removes it, or replaces it with edited JSON (`{"event", "matcher", "hooks"}`) */
+  setHook: { args: { id: string; enabled?: boolean; remove?: boolean; json?: string }; result: HookView[] };
+  /** "Find hooks": imports the hooks in ~/.claude/settings.json (read only) */
+  findHooks: { args: {}; result: HookFindResult };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };

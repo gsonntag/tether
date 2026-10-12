@@ -10,7 +10,11 @@ import {
   renameSession,
   resolveSettings,
   type CanUseTool,
+  type HookCallbackMatcher,
+  type HookEvent,
+  type HookInput,
   type PermissionResult,
+  type SyncHookJSONOutput,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
@@ -36,6 +40,7 @@ import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { claudePick, lastLineTime } from "./lastActivity";
 import { userHome } from "../home";
+import { claudeNativeKeys, HOOK_EVENTS, hooksFor, runHooks } from "../hooks";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
@@ -332,9 +337,11 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 
 // ---------------- live session ----------------
 
-class ClaudeSession extends LiveSession {
+export class ClaudeSession extends LiveSession {
   /** plan mode reviews its own plans (ExitPlanMode, see reviewPlan) */
   protected nativePlanReview = true;
+  /** Your hooks run through the SDK's hook callbacks (sdkHooks), not Tether's emulation. */
+  protected nativeHooks = true;
   private q?: Query;
   private input = new InputQueue();
   private resumeId?: string;
@@ -399,6 +406,7 @@ class ClaudeSession extends LiveSession {
         // A review session (/review): its edit tools are gone; Bash and the rest still go through the guard.
         ...(this.isReviewSession ? { disallowedTools: [...(launch.options.disallowedTools ?? []), ...READ_ONLY_DISALLOWED] } : {}),
         canUseTool,
+        hooks: this.sdkHooks(),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),
       },
@@ -735,6 +743,58 @@ class ClaudeSession extends LiveSession {
     this.lastError = undefined;
     if (await this.drainPending()) return;
     this.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined });
+  }
+
+  /**
+   * Tether's hooks (hooks.ts) as SDK hook callbacks, one per event. Claude Code passes its own
+   * input (already Claude's shape); the hooks it runs itself from its settings files are left out.
+   */
+  private sdkHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    const out: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {};
+    for (const event of HOOK_EVENTS)
+      out[event] = [{ hooks: [(input, toolUseID, { signal }) => this.runSdkHook(input, toolUseID, signal)], timeout: 86_400 }];
+    return out;
+  }
+
+  private async runSdkHook(input: HookInput, toolUseID: string | undefined, signal: AbortSignal): Promise<SyncHookJSONOutput> {
+    const event = input.hook_event_name;
+    if (!(HOOK_EVENTS as string[]).includes(event)) return {};
+    const tool = "tool_name" in input ? (input.tool_name as string) : undefined;
+    const runs = hooksFor(event as (typeof HOOK_EVENTS)[number], { tool, skip: claudeNativeKeys(this.projectPath) });
+    if (!runs.length) return {};
+    // "Approve & retry" on a call a hook blocked lets that exact call through.
+    if (event === "PreToolUse" && tool && this.isApproved(tool, (input as any).tool_input)) return {};
+    const o = await runHooks(event as (typeof HOOK_EVENTS)[number], { ...input, tether: { harness: "claude-code", session_id: this.id } }, { cwd: this.projectPath, runs, signal, env: { TETHER_HARNESS: "claude-code", TETHER_SESSION_ID: this.id } });
+    const r: SyncHookJSONOutput = {};
+    if (o.messages.length) r.systemMessage = o.messages.join("\n");
+    if (o.stop) {
+      r.continue = false;
+      r.stopReason = o.stop;
+    }
+    const context = o.context.length ? o.context.join("\n\n") : undefined;
+    if (event === "PreToolUse") {
+      // An allow isn't passed on: Claude would then skip canUseTool, and with it plan mode, a
+      // review's hold and the guard's deny rules. The guard takes it as the hook's allow instead.
+      if (o.decision === "allow" && toolUseID) {
+        // Calls Claude allows by itself (reads) never reach canUseTool: don't keep theirs forever.
+        if (this.hookAllows.size > 200) this.hookAllows.clear();
+        this.hookAllows.set(toolUseID, o.reason ?? "");
+      }
+      if (o.decision === "deny" || o.decision === "ask" || context)
+        r.hookSpecificOutput = {
+          hookEventName: "PreToolUse",
+          ...(o.decision === "deny" || o.decision === "ask" ? { permissionDecision: o.decision, permissionDecisionReason: o.reason } : {}),
+          ...(context ? { additionalContext: context } : {}),
+        };
+      if (o.decision === "deny") this.hookDenied(tool!, toolUseID, o.reason ?? "Blocked by a PreToolUse hook.");
+    } else {
+      if (o.decision === "block") {
+        r.decision = "block";
+        r.reason = o.reason;
+      }
+      if (context && (event === "PostToolUse" || event === "UserPromptSubmit")) r.hookSpecificOutput = { hookEventName: event, additionalContext: context };
+    }
+    return r;
   }
 
   private async permission(

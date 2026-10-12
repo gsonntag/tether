@@ -44,7 +44,7 @@ export const antigravityConnector: Connector = {
   },
   commands: slot("native", "Slash commands; not mapped yet"),
   agents: slot("native", "Agents (--agent); not mapped yet"),
-  hooks: slot("native", "Hooks (Tether's guard is a PreToolUse hook); not mapped yet"),
+  hooks: slot("emulated", "Run by Tether on every tool call (through its guard hook), as steps finish, at the end of each turn and before your messages"),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("emulated", "Tether's goal loop; the goal tools only where its global tether-context passes the session through"),
   plan: slot("native", "Plan mode; Tether holds its first change until you approve the plan (headless agy would approve its own)"),

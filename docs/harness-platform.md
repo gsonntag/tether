@@ -2,7 +2,7 @@
 
 Status: Phases 0-3 built on branch `harness-platform` (2026-10-11), not merged, deployed or run
 live. Phase 4: plan + todos and `ask_user` built (unit p4a), loops and schedules (unit p4b), fork and
-`/compact` (unit p4c), `/review` (unit p4d); the rest not started. What was built, emulated or left unsupported per harness is in
+`/compact` (unit p4c), `/review` (unit p4d), hooks (unit p4e); the rest not started. What was built, emulated or left unsupported per harness is in
 "Implementation notes" at the end; the Decisions section overrides the plan text above it.
 
 ## Goal
@@ -487,10 +487,81 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
 | opencode, Kiro | Tether's review session, every change held by the guard; review_report (unverified, not installed) |
 | Antigravity | Tether's review session, held by the guard hook; findings from the reply's JSON (its global tether-context has no review_report) |
 
+**Phase 4e: hooks.**
+- Store: `$TETHER_CONFIG_DIR/hooks.json` (mode 600; `runner/src/hooks.ts`), entries in Claude Code's
+  matcher-group shape plus on/off and provenance: `{event, matcher, hooks: [{type: "command",
+  command, timeout?}], enabled, sources}`. Events: PreToolUse, PostToolUse, Stop, UserPromptSubmit
+  (others, and `prompt`/`agent`/`http` hook types, are skipped with a warning). "Find hooks" and the
+  master context's Import read `~/.claude/settings.json` (never written); a deleted import isn't
+  brought back by the next Find (pasting it is). Ops `listHooks`, `addHooks` (pasted settings JSON,
+  its hooks map, or one `{event, matcher, hooks}` / `{event, matcher, command}`), `setHook` (on/off,
+  delete, edited JSON), `findHooks`.
+- Contract (Claude Code's): the event JSON on stdin (`session_id`, `cwd`, `hook_event_name`,
+  `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `prompt`, `stop_hook_active`,
+  `last_assistant_message`, plus `tether: {harness, session_id, tool_name}`; `transcript_path` is
+  empty outside Claude Code), `CLAUDE_PROJECT_DIR`, `TETHER_HARNESS`, `TETHER_SESSION_ID`, never
+  the relay or guard credentials; the project as cwd; its own process group, killed at the timeout
+  (600 s default). Matching hooks run in parallel. Exit 2 blocks (stderr is the reason), exit 0
+  with JSON is read (`permissionDecision` allow/deny/ask, `decision: "block"`, `reason`,
+  `additionalContext`, `continue: false` + `stopReason`, `systemMessage`), other exits and timeouts
+  are shown inline as "Hook" notices and don't block. Deny beats ask beats allow.
+- Where they run (the base `LiveSession`, for every harness but Claude Code):
+  - PreToolUse first thing in `checkTool` (plan/review holds and "Approve & retry" excepted): deny
+    is a guard verdict `by: "hook"` ("Blocked by your hook" on the card, Approve & retry works);
+    allow skips the judge and the person but not the guard's deny rules; ask shows the permission
+    card in Ask/Edits and goes to the judge in Auto.
+  - PostToolUse when a tool card turns done during a turn (or a shell command that ran and failed),
+    from the adapters' existing items; block reasons and additional context go to the agent as
+    "PostToolUse hook feedback for Edit: …" (a steer where the harness steers, else queued).
+  - Stop when a turn ends normally (not after Stop, an error, a handoff or a restart): a block sends
+    "Stop hook feedback:\n<reason>" as the next turn; `stop_hook_active` is true in that turn; at most
+    20 in a row (`MAX_STOP_CONTINUATIONS`). The goal loop waits for Stop hooks before continuing.
+  - UserPromptSubmit before each message goes out (`sendTyped`: typed, queued, scheduled runs): a
+    block holds it back with an inline notice that quotes it (the next queued one goes instead);
+    context and plain stdout ride along in a `<user-prompt-submit-hook>` block the transcript hides.
+    Steers into a running turn don't run it.
+- Tool names normalized to Claude Code's (`hookTool`): bash/shell/exec/run_command → Bash,
+  read/view_file → Read, edit/apply_patch/replace_file_content/str_replace_based_edit_tool → Edit,
+  write/write_to_file/create_file → Write, glob/find/find_by_name → Glob, grep/grep_search/search →
+  Grep, ls/list/list_dir → LS, fetch/webfetch/read_url_content → WebFetch,
+  websearch/web_search/search_web → WebSearch, update_plan/todo_write → TodoWrite, task/agent →
+  Task; MCP: `mcp__s__t` as is, pi-mcp-adapter's `mcp({server, tool})` and opencode's `server_tool`
+  (registry names) → `mcp__server__tool`. Inputs get Claude's field names too (`command`,
+  `file_path`, `content`, `url`, `pattern`), alongside the harness's own.
+- Claude Code: native. The same hooks go in as SDK hook callbacks (`options.hooks`, one callback per
+  event; Claude passes its own input), minus every command Claude already runs from the settings
+  files Tether's sessions load (user, project, local: `claudeNativeKeys`), so an imported hook never
+  runs twice. A hook's allow isn't passed to Claude (it would skip `canUseTool` and with it plan
+  mode, review holds and the deny rules); it is handed to the guard by tool call id instead. Deny,
+  ask, block, context, `continue: false` and `systemMessage` go back in Claude's own output shape.
+- Codex: Tether runs them. Codex 0.162 has its own Claude-style hooks (stable `hooks` feature,
+  `hooks/list`), and per-session ones can be passed with `-c hooks.*` (listed as `sessionFlags`),
+  but those come up `trustStatus: "untrusted"` and don't run until you review them in Codex; Tether
+  doesn't work around that trust step. Its trusted, enabled hooks (from `hooks/list` at launch) are
+  skipped by Tether. PreToolUse sees only what Codex asks approval for: its known-safe read-only
+  commands never ask. With a PreToolUse hook on, Full access runs with `approvalPolicy: "untrusted"`
+  (sandbox still off) so the hook sees commands and patches; the guard then allows what the hook
+  lets through.
+- pi and Antigravity: every tool call already reaches the guard (pi's guard extension, agy's
+  PreToolUse hook), so PreToolUse covers all of them. opencode, Kiro: only calls the agent asks
+  permission for (unverified).
+- UI: a "Hooks" section on the Memory & Skills page under MCP servers (`web/src/components/Hooks.tsx`):
+  each hook's label ("Before Bash", "When a turn ends"), its commands, event and matcher tokens,
+  "Claude Code runs it itself" when it's in Claude's own settings, on/off, edit as JSON, delete,
+  a paste box and "Find hooks". The capability matrix's `hooks` slot says the above per harness.
+
+| | Hooks |
+|---|---|
+| Claude Code | native: SDK hook callbacks on every call; hooks in its own settings run only there |
+| Codex | Tether's: PreToolUse at its approvals (not its known-safe reads; Full access asks again while a PreToolUse hook is on), PostToolUse on items, Stop, UserPromptSubmit; its own trusted hooks run only there |
+| pi | Tether's, every tool call (guard extension) |
+| opencode, Kiro | Tether's; PreToolUse only on permission requests (unverified, not installed) |
+| Antigravity | Tether's, every tool call (guard hook) |
+
 Unverified pending live runs: opencode and Kiro (not installed on the dev box), Codex's
 `persist: "session"` elicitation reply, Codex's own goal continuation timing, whether Claude/Codex/
 opencode let a per-session server override a same-named server in their own config, whether Codex
 rollouts or ACP agents persist session MCP headers, the OAuth redirect through the Foliation
 edge, Codex `thread/fork` with `lastTurnId` on a thread with turns, a native Claude Code fork
 resumed and prompted by a live process, and a whole /review on live harnesses (reviewer prompt,
-review_report through each harness's MCP client, the card in a browser).
+review_report through each harness's MCP client, the card in a browser), hooks on live harnesses (Claude's SDK callbacks alongside its settings hooks, Codex approvals in Full access with a hook on, PostToolUse feedback timing).

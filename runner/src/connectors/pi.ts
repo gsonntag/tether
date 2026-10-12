@@ -192,7 +192,7 @@ export const piConnector: Connector = {
   },
   commands: slot("native", "Prompt templates; not mapped yet"),
   agents: slot("unsupported", "No built-in subagents (the pi-subagents package adds them)"),
-  hooks: slot("native", "Extensions (Tether's guard is one); not mapped yet"),
+  hooks: slot("emulated", "Run by Tether on every tool call (through its guard extension), as tool results come in, at the end of each turn and before your messages"),
   env: slot("native", "Process environment; not mapped yet"),
   goal: {
     capability: () =>

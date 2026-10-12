@@ -28,6 +28,7 @@ import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { codexPick, lastLineTime } from "./lastActivity";
 import { formContent, formRequest } from "./elicitation";
 import { userHome } from "../home";
+import { codexNativeKeys, hooksFor } from "../hooks";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -460,7 +461,9 @@ export class CodexSession extends LiveSession {
     // A review session (/review): Codex's read-only sandbox where it works, and it asks before anything else.
     if (this.isReviewSession)
       return { approvalPolicy: "untrusted", sandboxPolicy: this.sandboxed ? { type: "readOnly", networkAccess: false } : { type: "dangerFullAccess" } };
-    if (this.guardMode === "full") return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+    // Full access asks nothing, unless your PreToolUse hooks need to see the calls (checkTool then allows them).
+    if (this.guardMode === "full" && !hooksFor("PreToolUse", { skip: this.hookSkip }).length) return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+    if (this.guardMode === "full") return { approvalPolicy: "untrusted", sandboxPolicy: { type: "dangerFullAccess" } };
     return {
       approvalPolicy: "untrusted",
       sandboxPolicy: this.sandboxed
@@ -480,6 +483,11 @@ export class CodexSession extends LiveSession {
       this.close();
     });
     [this.sandboxed] = await Promise.all([sandboxWorks(), this.p.init()]);
+    // Hooks Codex runs itself (its own trusted hook config) aren't run again by Tether.
+    this.hookSkip = await this.p
+      .call("hooks/list", { cwds: [this.projectPath] }, 10_000)
+      .then(codexNativeKeys)
+      .catch(() => undefined);
     const { approvalPolicy, sandboxPolicy } = this.policy();
     // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("codex", {

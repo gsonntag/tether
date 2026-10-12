@@ -38,6 +38,7 @@ import { repoKey } from "./repokey";
 import { applySkillPlan, awaitsSkillMd, disabledSet, isOwnSkillEvent, listSkills, planSkills, readMeta, skillWatchTargets, unlinkAll, unlinkSkill, writeMeta } from "./skills";
 import { scanSources, watchTargets } from "./sources";
 import { importServers as importMcpServers, previewImport as previewMcpImport } from "../mcp/registry";
+import { importHooks } from "../hooks";
 import { Store } from "./store";
 import { Watcher } from "./watch";
 
@@ -214,6 +215,7 @@ export class ContextService {
           if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
         });
         await this.importMcpServers();
+        await this.importHooks();
         if (this.enabled) this.watch();
         this.act({ kind: "import", text: "Import finished" });
       } finally {
@@ -236,6 +238,17 @@ export class ContextService {
       if (r.added.length) this.act({ kind: "import", text: `Added ${r.added.length === 1 ? "1 MCP server" : `${r.added.length} MCP servers`} to Tether: ${r.added.join(", ")}` });
     } catch (e: any) {
       this.act({ kind: "error", text: `MCP servers weren't imported: ${e?.message ?? e}` });
+    }
+  }
+
+  /** Your Claude Code hooks (~/.claude/settings.json, read only) into Tether's hooks (runner/src/hooks.ts). */
+  private async importHooks() {
+    try {
+      // Events Tether doesn't run (Notification, SessionStart…) are listed by Find hooks, not here.
+      const r = await importHooks();
+      if (r.added) this.act({ kind: "import", text: `Added ${r.added === 1 ? "1 hook" : `${r.added} hooks`} to Tether from Claude Code's settings` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `Hooks weren't imported: ${e?.message ?? e}` });
     }
   }
 

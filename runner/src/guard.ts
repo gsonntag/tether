@@ -35,7 +35,7 @@ export interface ToolCall {
 
 export interface Verdict {
   decision: "allow" | "deny" | "unsure";
-  by: "rule" | "judge" | "user" | "mode";
+  by: "rule" | "judge" | "user" | "mode" | "hook";
   reason: string;
 }
 

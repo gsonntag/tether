@@ -88,7 +88,7 @@ export const codexConnector: Connector = {
   // them left (checked in its binary): skills are its custom commands now.
   commands: slot("native", "Its skills are its custom commands (older versions also read ~/.codex/prompts); not mapped yet"),
   agents: slot("native", "Subagents; not mapped yet"),
-  hooks: slot("native", "Hooks in its config; not mapped yet"),
+  hooks: slot("emulated", "Run by Tether: PreToolUse at its approval requests (its known-safe read-only commands never ask, so they skip it; Full access asks again while you have one), PostToolUse as items finish, Stop and UserPromptSubmit around turns. Its own hooks can't be added per session without your review in Codex, and the ones it already runs from its trusted config run only there"),
   env: slot("native", "Process environment; not mapped yet"),
   goal: slot("native", "Mirrored into Codex's thread goal (thread/goal/set), status synced back; Tether's loop continues when Codex doesn't"),
   // Checked with codex-cli 0.162: plan mode (collaborationMode "plan") ends its turn on a `plan`

@@ -506,8 +506,8 @@ function countDiff(pairs: { oldText: string; newText: string }[]) {
   return { add, del };
 }
 
-const GUARD_LABEL = { rule: "auto", judge: "judged ✓", user: "you ✓" } as const;
-const GUARD_COLOR = { rule: "gray", judge: "blue", user: "green" } as const;
+const GUARD_LABEL = { rule: "auto", judge: "judged ✓", user: "you ✓", hook: "hook ✓" } as const;
+const GUARD_COLOR = { rule: "gray", judge: "blue", user: "green", hook: "gray" } as const;
 
 function Tool({ t }: { t: ToolPart }) {
   const name = t.name;
@@ -637,7 +637,7 @@ function Tool({ t }: { t: ToolPart }) {
           <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
             <StackItem size="fill" style={minZero}>
               <Text type="supporting" style={blockText}>
-                Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : "the safety rules"}:{" "}
+                Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
                 {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
               </Text>
             </StackItem>
