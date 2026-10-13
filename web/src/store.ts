@@ -76,8 +76,12 @@ interface State {
   contextLive: ContextActivity[];
   /** the Settings dialog's preferences, kept on the runner so they follow the user across devices */
   ui: UiPrefs;
-  /** sessionId -> when you last opened it, on any device (the runner's, plus this device's latest) */
+  /** sessionId -> when you last opened it, on any device, by the runner's clock (getViewed / markViewed) */
   viewed: Record<string, number>;
+  /** sessionId -> when you opened it here, by this device's clock (for ordering until the runner confirms; all an older runner gets) */
+  viewedHere: Record<string, number>;
+  /** the open session sorts by when it was touched before you opened it, so opening it doesn't move it (recentSessions.ts) */
+  hold?: { id: string; at: number };
   /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
   recent: SessionSummary[];
 }
@@ -103,6 +107,7 @@ export const useStore = create<State>(() => ({
   pulses: {},
   ui: cachedUiPrefs(loadJSON<string>("tether.runner", "")),
   viewed: cachedViewed(loadJSON<string>("tether.runner", "")),
+  viewedHere: cachedViewed(loadJSON<string>("tether.runner", ""), "here"),
   recent: [],
 }));
 
@@ -213,7 +218,7 @@ function onMessage(m: ServerToBrowser) {
         refreshContext();
         refreshUiPrefs();
         refreshViewed();
-        refreshRecent();
+        refreshRecent(false);
         // A link opened before the runner was there.
         if (get().selected) markViewed(get().selected!);
         // Re-sync open transcripts (events may have been missed while the runner was away).
@@ -243,6 +248,11 @@ function onMessage(m: ServerToBrowser) {
       break;
     case "pulse":
       set((s) => ({ pulses: mergePulses(s.pulses, m.runnerId, m.pulses) }));
+      break;
+    case "viewed":
+      // Opened on some device. Another runner's sessions keep it on their pulse.
+      if (m.runnerId === get().runnerId) applyViewed(m.runnerId, { [m.sessionId]: m.viewedAt });
+      else patchPulse(m.runnerId, m.sessionId, (p) => ({ ...p, session: { ...p.session, viewedAt: Math.max(m.viewedAt, p.session.viewedAt ?? 0) } }));
       break;
   }
 }
@@ -460,7 +470,13 @@ export async function openLink(id: string) {
 }
 
 export function selectSession(sessionId: string | undefined) {
-  set({ selected: sessionId, sidebarOpen: false, page: undefined });
+  // Where it sorted before you opened it, so it stays there while it's open.
+  const st = get();
+  const hold =
+    !sessionId || st.hold?.id === sessionId
+      ? st.hold
+      : { id: sessionId, at: Math.max(summaryOf(sessionId)?.viewedAt ?? 0, st.viewed[sessionId] ?? 0, st.viewedHere[sessionId] ?? 0) };
+  set({ selected: sessionId, sidebarOpen: false, page: undefined, hold });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
     markViewed(sessionId);
@@ -526,10 +542,7 @@ export function refreshNotices() {
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 function refreshNoticesSoon() {
   clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => {
-    refreshNotices();
-    refreshViewed();
-  }, 1500);
+  noticeTimer = setTimeout(refreshNotices, 1500);
 }
 
 function isNoticeRead(notice: AgentNotice) {
@@ -566,7 +579,7 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id) });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here"), hold: undefined });
   refreshProjects();
   refreshViewed();
   refreshRecent();
@@ -642,16 +655,18 @@ export async function setUiPref(p: Partial<UiPrefs>) {
 
 // ---------------- when you last opened each session (kept on the runner, shared by every device) ----------------
 
-// This device keeps the last map each runner gave (by runner id), so lists sort right on load;
-// with an older runner that doesn't know markViewed, views stay here, on this device.
-// (A function: the initial state uses it.)
-function cachedViewed(runnerId: string | undefined): Record<string, number> {
-  return (runnerId && loadJSON<Record<string, Record<string, number>>>("tether.viewedBy", {})[runnerId]) || {};
+// This device keeps the last map each runner gave (by runner id), so lists sort right on load, and
+// its own views (by its own clock), which are all there is with an older runner that doesn't know
+// markViewed. (A function: the initial state uses it.)
+const VIEW_KEYS = { runner: "tether.viewedBy", here: "tether.viewedHereBy" } as const;
+function cachedViewed(runnerId: string | undefined, which: keyof typeof VIEW_KEYS = "runner"): Record<string, number> {
+  return (runnerId && loadJSON<Record<string, Record<string, number>>>(VIEW_KEYS[which], {})[runnerId]) || {};
 }
 
 /** Merges views into a runner's map (the latest of each wins), and this device's copy of it. */
-function applyViewed(runnerId: string, v: Record<string, number>) {
-  const next = { ...(get().runnerId === runnerId ? get().viewed : cachedViewed(runnerId)) };
+function applyViewed(runnerId: string, v: Record<string, number>, which: keyof typeof VIEW_KEYS = "runner") {
+  const field = which === "runner" ? "viewed" : "viewedHere";
+  const next = { ...(get().runnerId === runnerId ? get()[field] : cachedViewed(runnerId, which)) };
   let changed = false;
   for (const [id, at] of Object.entries(v))
     if (typeof at === "number" && at > (next[id] ?? 0)) {
@@ -660,8 +675,20 @@ function applyViewed(runnerId: string, v: Record<string, number>) {
     }
   if (!changed) return;
   const kept = Object.fromEntries(Object.entries(next).sort((a, b) => b[1] - a[1]).slice(0, 1000));
-  saveJSON("tether.viewedBy", { ...loadJSON<Record<string, unknown>>("tether.viewedBy", {}), [runnerId]: kept });
-  if (get().runnerId === runnerId) set({ viewed: kept });
+  saveJSON(VIEW_KEYS[which], { ...loadJSON<Record<string, unknown>>(VIEW_KEYS[which], {}), [runnerId]: kept });
+  if (get().runnerId === runnerId) set({ [field]: kept } as Pick<State, "viewed">);
+}
+
+/** A session's summary, wherever the sidebar's runner's sessions are known. */
+function summaryOf(sessionId: string): Pick<SessionSummary, "projectPath" | "viewedAt"> | undefined {
+  const st = get();
+  return (
+    st.open[sessionId]?.session ??
+    Object.values(st.sessions).flat().find((x) => x.id === sessionId) ??
+    st.recent.find((x) => x.id === sessionId) ??
+    st.projects.flatMap((p) => p.live).find((x) => x.id === sessionId) ??
+    st.notices.find((n) => n.sessionId === sessionId)
+  );
 }
 
 export function refreshViewed() {
@@ -680,13 +707,14 @@ const viewTimers = new Set<string>();
 export function markViewed(sessionId: string) {
   const runnerId = get().runnerId;
   if (!runnerId) return;
-  applyViewed(runnerId, { [sessionId]: Date.now() });
+  applyViewed(runnerId, { [sessionId]: Date.now() }, "here");
   const key = `${runnerId}\n${sessionId}`;
   if (viewTimers.has(key)) return;
   const send = () => {
     viewTimers.delete(key);
     viewSent.set(key, Date.now());
-    const projectPath = Object.values(get().sessions).flat().find((x) => x.id === sessionId)?.projectPath;
+    // So listRecent can find it later, whatever project it's in (the runner knows a live one's).
+    const projectPath = summaryOf(sessionId)?.projectPath || undefined;
     rpcTo(runnerId, "markViewed", { sessionId, projectPath })
       .then((r) => applyViewed(runnerId, { [sessionId]: r.viewedAt }))
       .catch(() => {});
@@ -701,12 +729,18 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && sel) markViewed(sel);
 });
 
-/** Recent across projects. An older runner has no listRecent: the lists make do with what's loaded. */
+/**
+ * Recent across projects, at most once a minute for the same runner and window unless `force`.
+ * An older runner has no listRecent: the lists make do with what's loaded.
+ */
 let recentAt = 0;
+let recentFor = "";
 export async function refreshRecent(force = true) {
   const runnerId = get().runnerId;
-  if (!runnerId || (!force && Date.now() - recentAt < 60_000)) return;
+  const key = `${runnerId}\n${get().ui.sidebarDays}`;
+  if (!runnerId || (!force && key === recentFor && Date.now() - recentAt < 60_000)) return;
   recentAt = Date.now();
+  recentFor = key;
   try {
     const recent = await rpcTo(runnerId, "listRecent", { days: get().ui.sidebarDays });
     if (get().runnerId === runnerId) set({ recent });

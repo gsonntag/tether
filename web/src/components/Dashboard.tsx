@@ -23,8 +23,8 @@ import { Token } from "@astryxdesign/core/Token";
 import { BellAlertIcon, BoltIcon, CheckCircleIcon, ClockIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
 import type { MemoryConflict, SessionPulse, UiRequest, UiResponse } from "../shared/protocol";
 import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
-import { touched, unreadNotice, type Entry } from "../recentSessions";
-import { useSessionGroups } from "../sessionLists";
+import { touched, type Entry } from "../recentSessions";
+import { useNeedsCount, useSessionGroups } from "../sessionLists";
 import { openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
@@ -140,7 +140,7 @@ export function Dashboard({ focus }: { focus?: "running" }) {
     if (focus === "running") document.getElementById("home-working")?.scrollIntoView({ block: "start" });
   }, [focus]);
 
-  const needCount = needs.length + conflicts.length;
+  const needCount = useNeedsCount(needs);
   const ctx: RowCtx = { multi, phone, now };
 
   const needsSection = (
@@ -492,7 +492,9 @@ function RecentItem({ row, ctx, status, text }: { row: PulseRow; ctx: RowCtx; st
 /** Needs you without a request to answer here: a finished turn or a problem you haven't opened, or a question from an older runner. */
 function NoticeItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
   const s = entry.session;
-  const notice = useStore((st) => unreadNotice(s, st));
+  // Its latest notice: the sidebar's runner's list, else what another runner's pulse carries.
+  const local = useStore((st) => (st.runnerId === entry.runnerId ? st.notices.find((n) => n.sessionId === s.id) : undefined));
+  const notice = local ?? entry.pulse?.notice;
   const asking = s.live && s.needsInput;
   const finished = !asking && notice?.kind === "finished";
   const what = asking ? "Waiting for your answer" : finished ? "Finished" : notice?.kind === "question" ? "Asked you something" : "Needs you";

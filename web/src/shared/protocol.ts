@@ -573,6 +573,8 @@ export interface SessionPulse {
   diffStat?: DiffStat;
   /** when its last turn ended */
   finishedAt?: number;
+  /** its latest notice (finished, blocked, a question), for Home on devices that follow another runner's */
+  notice?: AgentNotice;
 }
 
 export interface SessionSearchResult {
@@ -934,6 +936,8 @@ export type RunnerToServer =
   | { t: "context"; event: ContextEvent }
   /** dashboard updates, throttled per session */
   | { t: "pulse"; pulses: SessionPulse[] }
+  /** a session was opened (markViewed), for every browser to merge */
+  | { t: "viewed"; sessionId: string; viewedAt: number }
   | { t: "pong" };
 
 /** server -> runner */
@@ -951,4 +955,5 @@ export type ServerToBrowser =
   | { t: "sessions"; runnerId: string; projectPath?: string; session?: SessionSummary }
   | { t: "context"; runnerId: string; event: ContextEvent }
   | { t: "pulse"; runnerId: string; pulses: SessionPulse[] }
+  | { t: "viewed"; runnerId: string; sessionId: string; viewedAt: number }
   | { t: "pong" };

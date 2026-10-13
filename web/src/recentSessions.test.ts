@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { groupSessions, hasUnreadNotice, isBusy, mergeEntries, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, type Entry, type RecentContext } from "./recentSessions";
+import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
 import type { AgentNotice, SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -55,8 +55,9 @@ describe("showInSidebar", () => {
     expect(showInSidebar(session("a", old, { activeCount: 2, live: true }), ctx())).toBe(true);
     expect(showInSidebar(session("a", old, { needsInput: true, live: true }), ctx())).toBe(true);
     expect(showInSidebar(session("a", old, { activeCount: 0, live: true }), ctx())).toBe(false);
-    // Only an armed wakeup or cron job: listed by age, like an idle session.
-    expect(showInSidebar(session("a", old, { activeCount: 1, workingCount: 0, live: true }), ctx())).toBe(false);
+    // Only an armed wakeup or cron job: not working, but listed whatever its age (it will work again).
+    expect(showInSidebar(session("a", old, { activeCount: 1, workingCount: 0, live: true }), ctx())).toBe(true);
+    expect(isBusy(session("a", old, { activeCount: 1, workingCount: 0, live: true }))).toBe(false);
     expect(showInSidebar(session("a", DAY, { activeCount: 1, workingCount: 0, live: true }), ctx())).toBe(true);
     expect(showInSidebar(session("a", old, { activeCount: 2, workingCount: 1, live: true }), ctx())).toBe(true);
     // An older runner doesn't say what's working: all of it counts.
@@ -231,5 +232,50 @@ describe("groupSessions", () => {
     expect(g.working.map((x) => `${x.runnerId}:${x.session.id}`).sort()).toEqual(["r1:bg", "r2:a"]);
     // No runner: pulses only.
     expect(mergeEntries(undefined, [session("z", 0)], pulses)).toHaveLength(3);
+  });
+});
+
+describe("review fixes", () => {
+  const e = (s: SessionSummary, extra: Partial<Entry> = {}): Entry => ({ session: s, ...extra });
+  const ids = (l: Entry[]) => l.map((x) => x.session.id);
+
+  test("the open session sorts where it was before you opened it, and moves up once you leave", () => {
+    const list = [e(session("a", DAY)), e(session("b", 2 * DAY)), e(session("c", 3 * DAY))];
+    // Opened c: viewed now, but held at its old place.
+    const open = ctx({ viewedHere: { c: NOW }, viewed: { c: NOW }, selected: "c", hold: { id: "c", at: 0 } });
+    expect(ids(groupSessions(list, open).recent)).toEqual(["a", "b", "c"]);
+    expect([session("c", 3 * DAY), session("a", DAY)].sort(byListOrder(open)).map((s) => s.id)).toEqual(["a", "c"]);
+    // Left it: by when you opened it.
+    expect(ids(groupSessions(list, ctx({ viewedHere: { c: NOW }, viewed: { c: NOW } })).recent)).toEqual(["c", "a", "b"]);
+  });
+
+  test("this device's own clock orders, but only the runner's view reads a notice", () => {
+    const n = notice("a", NOW - 1000);
+    expect(touched(session("a", DAY), ctx({ viewedHere: { a: NOW } }))).toBe(NOW);
+    expect(sessionState(session("a", DAY), ctx({ notices: [n], viewedHere: { a: NOW } }))).toBe("needs");
+    expect(sessionState(session("a", DAY), ctx({ notices: [n], viewed: { a: NOW } }))).toBe("recent");
+  });
+
+  test("another runner's session goes by its pulse: its notice, its viewedAt; never this runner's views", () => {
+    const fin = { ...notice("a", NOW - 1000), id: "other" };
+    const theirs = e(session("a", DAY), { runnerId: "r2", pulse: { session: session("a", DAY), notice: fin } });
+    const c = ctx({ runnerId: "r1", viewed: { a: NOW } });
+    expect(groupSessions([theirs], c).needs).toHaveLength(1);
+    const seen = e(session("a", DAY, { viewedAt: NOW }), { runnerId: "r2", pulse: { session: session("a", DAY), notice: fin } });
+    expect(groupSessions([seen], c).needs).toHaveLength(0);
+    // This runner's own notices don't leak onto it either.
+    const plain = e(session("a", DAY), { runnerId: "r2", pulse: { session: session("a", DAY) } });
+    expect(groupSessions([plain], ctx({ runnerId: "r1", notices: [notice("a", NOW)] })).needs).toHaveLength(0);
+  });
+
+  test("a live session with only a wakeup armed stays in Recent whatever its age", () => {
+    const sched = e(session("s", 30 * DAY, { live: true, activeCount: 1, workingCount: 0, runningKinds: {} }));
+    expect(ids(groupSessions([sched, e(session("old", 30 * DAY))], ctx()).recent)).toEqual(["s"]);
+  });
+
+  test("needCount: one per waiting request, else one", () => {
+    const perm = (id: string) => ({ id, kind: "permission" as const, title: "?" });
+    expect(needCount(e(session("a", 0, { live: true }), { pulse: { session: session("a", 0), pendingUi: [perm("1"), perm("2")] } }))).toBe(2);
+    expect(needCount(e(session("a", 0)))).toBe(1);
   });
 });

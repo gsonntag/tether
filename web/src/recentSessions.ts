@@ -5,18 +5,22 @@
 //   recent: everything else, by "last touched" (the latest message, or when you last opened it).
 // Pure, so it's unit tested (recentSessions.test.ts).
 
-import { byTouched, lastTouched, type AgentNotice, type ProjectInfo, type SessionPulse, type SessionSummary } from "./shared/protocol";
+import { lastTouched, type AgentNotice, type ProjectInfo, type SessionPulse, type SessionSummary } from "./shared/protocol";
 import { pulseWork, summaryWork, workState, type WorkInput } from "./workState";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** What you've looked at: notices read on this device, and when each session was last opened (any device). */
+/** What you've looked at, on the sidebar's runner: notices read on this device, and when each session was last opened. */
 export interface Seen {
   notices: AgentNotice[];
   noticesSeen: number;
   noticesRead: string[];
-  /** sessionId -> when you last opened it (the runner's list, plus this device's latest) */
+  /** sessionId -> when you last opened it (any device), by the runner's clock: notices compare with it */
   viewed?: Record<string, number>;
+  /** sessionId -> when you opened it here, by this device's clock, until the runner confirms: for ordering only */
+  viewedHere?: Record<string, number>;
+  /** the runner these are for; another runner's sessions go by what their pulses say */
+  runnerId?: string;
 }
 
 /** What a project's session list needs to know besides the session itself. */
@@ -26,14 +30,30 @@ export interface RecentContext extends Seen {
   days: number;
   /** the session open on screen */
   selected?: string;
+  /**
+   * The open session sorts by when it was last touched before you opened it: opening it (or coming
+   * back to the tab) doesn't move it under your cursor. It moves up once you leave.
+   */
+  hold?: { id: string; at: number };
 }
 
-export const touched = (s: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, c: Pick<Seen, "viewed">) => lastTouched(s, c.viewed?.[s.id]);
+/** When it was last touched: the latest message, or when you last opened it (here or anywhere). */
+export const touched = (s: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, c: Pick<Seen, "viewed" | "viewedHere">) =>
+  lastTouched(s, Math.max(c.viewed?.[s.id] ?? 0, c.viewedHere?.[s.id] ?? 0));
+
+/** What the lists sort by: last touched, except for the open session (`hold`). */
+export const sortTouched = (s: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, c: Pick<RecentContext, "viewed" | "viewedHere" | "hold">) =>
+  c.hold?.id === s.id ? Math.max(s.updatedAt, c.hold.at) : touched(s, c);
+
+/** Sorts summaries like the lists do: most recently touched first, the open one where it was. */
+export const byListOrder = (c: Pick<RecentContext, "viewed" | "viewedHere" | "hold">) => (a: SessionSummary, b: SessionSummary) =>
+  sortTouched(b, c) - sortTouched(a, c) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /** The session's latest notice (finished, blocked, a question), when it arrived after you last opened the session. */
 export function unreadNotice(s: Pick<SessionSummary, "id" | "viewedAt">, c: Seen): AgentNotice | undefined {
   const n = c.notices.find((x) => x.sessionId === s.id);
   if (!n || n.kind === "memory" || n.ts <= c.noticesSeen || c.noticesRead.includes(n.id)) return undefined;
+  // Both by the runner's clock. A view here counts at once through noticesRead.
   return n.ts > Math.max(s.viewedAt ?? 0, c.viewed?.[s.id] ?? 0) ? n : undefined;
 }
 
@@ -46,9 +66,16 @@ export interface Entry {
   runnerId?: string;
 }
 
+/** Another runner's session: what you've seen of it is what its pulse says (its latest notice, when last opened). */
+const foreign = (e: Entry, c: Pick<Seen, "runnerId">) => !!e.runnerId && !!c.runnerId && e.runnerId !== c.runnerId;
+const seenFor = (e: Entry, c: Seen): Seen => (foreign(e, c) ? { notices: e.pulse?.notice ? [e.pulse.notice] : [], noticesSeen: 0, noticesRead: [] } : c);
+
 const workOf = (e: Entry): WorkInput => (e.pulse ? pulseWork(e.pulse) : summaryWork(e.session));
 /** A question, approval or plan waiting on you right now. */
 const asking = (e: Entry) => e.session.live && (!!e.session.needsInput || !!e.pulse?.pendingUi?.length);
+
+/** How many things it has waiting on you: each request (Home shows one row each), else one. */
+export const needCount = (e: Entry) => Math.max(1, e.session.live ? (e.pulse?.pendingUi?.length ?? 0) : 0);
 
 export type SessionState = "needs" | "working" | "recent";
 
@@ -61,7 +88,7 @@ export function stateOf(e: Entry, c: Seen): SessionState {
   if (asking(e)) return "needs";
   const w = workState(workOf(e));
   if (w === "working" || w === "waiting") return "working";
-  const n = unreadNotice(e.session, c);
+  const n = unreadNotice(e.session, seenFor(e, c));
   if (n && !(n.kind === "finished" && w === "background" && n.ts < e.session.updatedAt)) return "needs";
   return w === "background" ? "working" : "recent";
 }
@@ -72,7 +99,14 @@ export const sessionState = (s: SessionSummary, c: Seen) => stateOf({ session: s
 /** Busy: a session that's working or waiting on you, listed whatever its age. */
 export const isBusy = (s: SessionSummary, c: Seen = { notices: [], noticesSeen: 0, noticesRead: [] }) => sessionState(s, c) !== "recent";
 
-const inWindow = (s: SessionSummary, c: RecentContext) => !c.days || touched(s, c) >= c.now - c.days * DAY;
+/**
+ * Inside the window by last touched; the open one, and a live one with a wakeup or cron job armed
+ * (it will work again), whatever their age.
+ */
+function inWindow(e: Entry, c: RecentContext): boolean {
+  if (!c.days || e.session.id === c.selected || workState(workOf(e)) === "scheduled") return true;
+  return touched(e.session, foreign(e, c) ? {} : c) >= c.now - c.days * DAY;
+}
 
 export interface Groups<T> {
   needs: T[];
@@ -82,21 +116,22 @@ export interface Groups<T> {
 
 /**
  * Splits sessions into the three states, each most recently touched first; recent ones only
- * inside the window. Done (archived) sessions are left out. `hold`: the open session stays in
- * Needs you while you look at it if it was there before (`wasNeeds`), so the list doesn't jump
- * under you; it moves to the top of Recent once you leave.
+ * inside the window. Done (archived) sessions are left out. The open session stays in Needs you
+ * while you look at it if it was there before (`wasNeeds`), and sorts where it was (`hold`), so the
+ * lists don't jump under you; it moves to the top of Recent once you leave.
  */
 export function groupSessions<T extends Entry>(entries: T[], c: RecentContext & { wasNeeds?: Set<string> }): Groups<T> {
   const g: Groups<T> = { needs: [], working: [], recent: [] };
   for (const e of entries) {
     if (e.session.archived) continue;
     let st = stateOf(e, c);
-    if (st === "recent" && e.session.id === c.selected && c.wasNeeds?.has(e.session.id)) st = "needs";
-    if (st === "recent" && !inWindow(e.session, c)) continue;
+    if (st === "recent" && !foreign(e, c) && e.session.id === c.selected && c.wasNeeds?.has(e.session.id)) st = "needs";
+    if (st === "recent" && !inWindow(e, c)) continue;
     g[st].push(e);
   }
-  const by = byTouched(c.viewed);
-  for (const list of [g.needs, g.working, g.recent]) list.sort((a, b) => by(a.session, b.session));
+  const at = (e: Entry) => (foreign(e, c) ? lastTouched(e.session) : sortTouched(e.session, c));
+  const by = (a: Entry, b: Entry) => at(b) - at(a) || (a.session.id < b.session.id ? -1 : a.session.id > b.session.id ? 1 : 0);
+  for (const list of [g.needs, g.working, g.recent]) list.sort(by);
   return g;
 }
 
@@ -117,12 +152,12 @@ export function mergeEntries(runnerId: string | undefined, summaries: Iterable<S
 
 /**
  * Whether a session belongs in its project's sidebar list: touched inside the window, or working,
- * waiting on you, or the one open. Done (archived) sessions never do; search still finds them.
+ * waiting on you, scheduled to work again, or the one open. Done (archived) sessions never do;
+ * search still finds them.
  */
 export function showInSidebar(s: SessionSummary, c: RecentContext): boolean {
   if (s.archived) return false;
-  if (!c.days || s.id === c.selected || isBusy(s, c)) return true;
-  return inWindow(s, c);
+  return isBusy(s, c) || inWindow({ session: s }, c);
 }
 
 /**

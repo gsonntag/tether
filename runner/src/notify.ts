@@ -103,6 +103,9 @@ export function forgetSession(sessionId: string) {
 
 const last = new Map<string, number>();
 
+/** Told of every new notice (Home's pulses carry each session's latest). */
+export const noticeListeners = new Set<(n: AgentNotice) => void>();
+
 /** Records a notice and pushes it to the devices that want this kind. */
 export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">): AgentNotice | undefined {
   const key = `${n.sessionId}:${n.kind}:${n.title}`;
@@ -114,6 +117,7 @@ export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">): AgentNoti
   st.recent = [notice, ...st.recent].slice(0, RECENT_MAX);
   saveConfigSoon();
   for (const sub of st.subs) if (sub.kinds.includes(n.kind)) void send(sub, notice);
+  for (const f of noticeListeners) f(notice);
   return notice;
 }
 

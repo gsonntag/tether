@@ -3,7 +3,7 @@
 
 import { useMemo, useRef, useSyncExternalStore } from "react";
 import type { AgentNotice, ProjectInfo, SessionSummary } from "./shared/protocol";
-import { groupSessions, mergeEntries, type Entry, type Groups, type RecentContext } from "./recentSessions";
+import { groupSessions, mergeEntries, needCount, type Entry, type Groups, type RecentContext } from "./recentSessions";
 import { useStore } from "./store";
 
 /**
@@ -57,10 +57,23 @@ export function useRecentContext(): RecentContext {
   const noticesSeen = useStore((s) => s.noticesSeen);
   const noticesRead = useStore((s) => s.noticesRead);
   const viewed = useStore((s) => s.viewed);
+  const viewedHere = useStore((s) => s.viewedHere);
   const days = useStore((s) => s.ui.sidebarDays);
   const selected = useStore((s) => s.selected);
+  const runnerId = useStore((s) => s.runnerId);
+  const held = useStore((s) => s.hold);
+  const hold = held?.id === selected ? held : undefined;
   const minute = useMinute();
-  return useMemo(() => ({ notices, noticesSeen, noticesRead, viewed, days, selected, now: minute * 60_000 }), [notices, noticesSeen, noticesRead, viewed, days, selected, minute]);
+  return useMemo(
+    () => ({ notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, hold, now: minute * 60_000 }),
+    [notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, hold, minute],
+  );
+}
+
+/** Home's and the Home item's count of what waits on you: one per request to answer, one per other session, and memory conflicts. */
+export function useNeedsCount(needs: Entry[]): number {
+  const conflicts = useStore((s) => s.conflicts.length);
+  return needs.reduce((n, e) => n + needCount(e), conflicts);
 }
 
 /**

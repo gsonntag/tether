@@ -19,12 +19,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
-import { byTouched, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
+import { type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
-import { projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
-import { knownSessions, useRecentContext, useSessionGroups } from "../sessionLists";
+import { byListOrder, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
+import { knownSessions, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
 import { runningLine, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -260,10 +260,9 @@ function SearchHit({ result }: { result: SessionSearchResult }) {
  */
 function HomeNavItem() {
   const on = useStore((s) => !s.selected && s.page !== "memory");
-  const conflicts = useStore((s) => s.conflicts.length);
   const g = useSessionGroups("all");
   const working = g.working.length;
-  const needs = g.needs.length + conflicts;
+  const needs = useNeedsCount(g.needs);
   return (
     <SideNavItem
       label="Home"
@@ -336,7 +335,7 @@ function NeedsYouSection() {
     <SideNavSection title="Needs you">
       <ConflictRows />
       {needs.map((e) => (
-        <SessionRow key={e.session.id} s={e.session} withProject />
+        <SessionRow key={e.session.id} s={e.session} withProject needsYou />
       ))}
     </SideNavSection>
   );
@@ -345,9 +344,9 @@ function NeedsYouSection() {
 /** Everything else touched in the window (working ones too), across projects, most recently touched first. */
 function RecentSection() {
   const { working, recent } = useSessionGroups("runner");
-  const viewed = useStore((s) => s.viewed);
+  const ctx = useRecentContext();
   const [all, setAll] = useState(false);
-  const list = [...working, ...recent].map((e) => e.session).sort(byTouched(viewed));
+  const list = [...working, ...recent].map((e) => e.session).sort(byListOrder(ctx));
   if (!list.length) return null;
   return (
     <SideNavSection title="Recent">
@@ -378,7 +377,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   // Only sessions touched recently (Settings → "Show sessions from the last"), plus any that are
   // working, need you or are open. Older and done ones aren't listed; search finds them, and
   // opening one or sending it a message makes it recent again.
-  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byTouched(ctx.viewed));
+  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byListOrder(ctx));
   // Nothing to list: dimmed, still there to start a session in.
   const quiet = projectIsQuiet(p, loaded, open, ctx);
 
@@ -507,8 +506,17 @@ function ActivityCount({ s }: { s: SessionSummary }) {
 }
 
 /** Needs you: red for a question or a problem, green for a finished turn you haven't opened. Else how it's working, if it is. */
-function SessionIndicator({ s }: { s: SessionSummary }) {
-  const need = useStore((st) => (sessionState(s, st) !== "needs" ? undefined : s.live && s.needsInput ? "asking" : unreadNotice(s, st)?.kind));
+/** `needsYou`: listed under Needs you, where an open one keeps its dot until you leave it (it's read by then). */
+function SessionIndicator({ s, needsYou }: { s: SessionSummary; needsYou?: boolean }) {
+  const need = useStore((st) =>
+    s.live && s.needsInput
+      ? "asking"
+      : sessionState(s, st) === "needs"
+        ? unreadNotice(s, st)?.kind
+        : needsYou
+          ? (st.notices.find((n) => n.sessionId === s.id)?.kind ?? "blocked")
+          : undefined,
+  );
   if (need === "finished") return <StatusDot variant="success" label="Finished, not opened yet" tooltip="Finished · Not opened yet" />;
   if (need) return <StatusDot variant="error" label="Needs you" tooltip={need === "asking" ? "Waiting for your answer" : "Needs you · Not opened yet"} />;
   return <WorkIndicator work={summaryWork(s)} />;
@@ -517,7 +525,7 @@ function SessionIndicator({ s }: { s: SessionSummary }) {
 const projectName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /** `withProject`: in the cross-project lists (Needs you, Recent), the project's name, subtly. */
-function SessionRow({ s, withProject }: { s: SessionSummary; withProject?: boolean }) {
+function SessionRow({ s, withProject, needsYou }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean }) {
   const at = useStore((st) => touched(s, st));
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
@@ -556,7 +564,7 @@ function SessionRow({ s, withProject }: { s: SessionSummary; withProject?: boole
       endContent={
         <HStack gap={1} vAlign="center">
           <ActivityCount s={s} />
-          <SessionIndicator s={s} />
+          <SessionIndicator s={s} needsYou={needsYou} />
           {withProject && (
             <Text type="supporting" maxLines={1} style={{ maxWidth: "calc(var(--spacing-12) * 2)" }}>
               {projectName(s.projectPath)}

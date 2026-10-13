@@ -1,8 +1,11 @@
-// When you last opened each session, on any device: kept in the runner's config so a session read
-// on the phone counts as read on the laptop. The web app orders its lists by it ("last touched").
+// When you last opened each session, on any device: kept on the runner (viewed.json, beside
+// runner.json) so a session read on the phone counts as read on the laptop. The web app orders its
+// lists by it ("last touched") and compares notices against it.
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { lastTouched, type ProjectInfo, type SessionSummary } from "../../web/src/shared/protocol";
-import { config, saveConfigSoon } from "./config";
+import { CONFIG_DIR } from "./config";
 
 const DAY = 24 * 60 * 60 * 1000;
 /** sessions remembered; the oldest views go first */
@@ -14,7 +17,36 @@ export interface Viewed {
   project?: string;
 }
 
-const all = (): Record<string, Viewed> => (config().viewed ??= {});
+const file = () => join(CONFIG_DIR, "viewed.json");
+let cache: Record<string, Viewed> | undefined;
+function all(): Record<string, Viewed> {
+  if (cache) return cache;
+  try {
+    cache = JSON.parse(readFileSync(file(), "utf8"));
+  } catch {}
+  return (cache ??= {});
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+/** Written a second after the last change: views come in bursts. */
+function saveSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveViewed, 1000);
+}
+export function saveViewed() {
+  clearTimeout(saveTimer);
+  if (!cache) return;
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  const tmp = file() + ".tmp";
+  writeFileSync(tmp, JSON.stringify(cache));
+  renameSync(tmp, file());
+}
+
+/** Tests: forget what's in memory (and on disk). */
+export function resetViewed() {
+  cache = {};
+  saveViewed();
+}
 
 export function viewedAt(sessionId: string): number | undefined {
   return all()[sessionId]?.at;
@@ -33,9 +65,11 @@ export function markViewed(sessionId: string, projectPath?: string, now = Date.n
   const ids = Object.keys(map);
   if (ids.length > VIEWED_KEEP)
     for (const id of ids.sort((a, b) => map[a]!.at - map[b]!.at).slice(0, ids.length - VIEWED_KEEP)) delete map[id];
-  saveConfigSoon();
+  saveSoon();
   return at;
 }
+
+export const allViewed = (): Viewed[] => Object.values(all());
 
 /**
  * The projects listRecent reads: live ones, ones with a message in the window, and ones holding a
@@ -60,5 +94,3 @@ export function pickRecent(sessions: SessionSummary[], days: number, now = Date.
     .sort((a, b) => lastTouched(b) - lastTouched(a) || (a.id < b.id ? -1 : 1))
     .slice(0, limit);
 }
-
-export const allViewed = (): Viewed[] => Object.values(all());

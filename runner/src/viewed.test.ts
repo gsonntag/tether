@@ -1,24 +1,28 @@
 import { expect, test } from "bun:test";
 import type { ProjectInfo, SessionSummary } from "../../web/src/shared/protocol";
-import { config } from "./config";
-import { markViewed, pickRecent, recentProjects, VIEWED_KEEP, viewedAt, viewedMap } from "./viewed";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { CONFIG_DIR, config } from "./config";
+import { markViewed, pickRecent, recentProjects, resetViewed, saveViewed, VIEWED_KEEP, viewedAt, viewedMap } from "./viewed";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 13, 12);
 
-test("a view is kept by session, never moves back, and the oldest go past the cap", () => {
-  delete config().viewed;
+test("a view is kept by session in its own file, never moves back, and the oldest go past the cap", () => {
+  resetViewed();
   expect(markViewed("a", "/p", NOW)).toBe(NOW);
   // A slower device's later write doesn't move it back.
   expect(markViewed("a", undefined, NOW - 5)).toBe(NOW);
-  expect(config().viewed!.a).toEqual({ at: NOW, project: "/p" });
+  saveViewed();
+  expect(JSON.parse(readFileSync(join(CONFIG_DIR, "viewed.json"), "utf8")).a).toEqual({ at: NOW, project: "/p" });
+  expect((config() as any).viewed).toBeUndefined();
   expect(viewedAt("a")).toBe(NOW);
   expect(viewedMap()).toEqual({ a: NOW });
   for (let i = 0; i < VIEWED_KEEP + 5; i++) markViewed(`s${i}`, "/p", NOW + i + 1);
-  expect(Object.keys(config().viewed!)).toHaveLength(VIEWED_KEEP);
+  expect(Object.keys(viewedMap())).toHaveLength(VIEWED_KEEP);
   expect(viewedAt("a")).toBeUndefined();
   expect(viewedAt(`s${VIEWED_KEEP + 4}`)).toBe(NOW + VIEWED_KEEP + 5);
-  delete config().viewed;
+  resetViewed();
 });
 
 const project = (path: string, ageMs: number, extra: Partial<ProjectInfo> = {}): ProjectInfo => ({ path, name: path, sessionCount: 1, updatedAt: NOW - ageMs, pinned: false, live: [], ...extra });

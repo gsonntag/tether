@@ -16,6 +16,7 @@ import type {
   ServerToRunner,
   SessionSearchResult,
   SessionEvent,
+  SessionPulse,
   SessionSummary,
 } from "../../web/src/shared/protocol";
 import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
@@ -27,7 +28,7 @@ import type { Adapter, Sink } from "./adapters/types";
 import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
-import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { LiveSession } from "./session";
@@ -41,7 +42,7 @@ import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
-import { allViewed, markViewed, pickRecent, recentProjects, viewedAt, viewedMap } from "./viewed";
+import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -112,11 +113,24 @@ function pulseOf(id: string) {
   return buildPulse({ session: decorate(s.summary()), state: s.t.state, messages: s.t.messages, turnStartedAt: turns.turnStartedAt(id), finishedAt: turns.finishedAt(id) });
 }
 
+/**
+ * With when it was last opened and its latest notice, so Home on a device following another runner
+ * can tell a finished turn you haven't opened (closed pulses are stored copies: read these afresh).
+ */
+function withSeen(p: SessionPulse | undefined): SessionPulse | undefined {
+  if (!p) return p;
+  const at = viewedAt(p.session.id);
+  const notice = recent().find((n) => n.sessionId === p.session.id && n.kind !== "memory");
+  return { ...p, session: at ? { ...p.session, viewedAt: at } : p.session, ...(notice ? { notice } : {}) };
+}
+
 const pulses = new PulseThrottle({
-  build: pulseOf,
+  build: (id) => withSeen(pulseOf(id)),
   // Only while connected: after a reconnect browsers reload the list, and changes send afresh (resetSent).
   send: (list) => connected && send({ t: "pulse", pulses: list }),
 });
+
+noticeListeners.add((n) => n.sessionId && pulses.touch(n.sessionId));
 
 const sink: Sink = {
   emit: (sessionId: string, seq: number, event: SessionEvent) => {
@@ -446,7 +460,9 @@ async function findSessionMatches(queryText: string): Promise<SessionSearchResul
 
 // ---------------- ops ----------------
 
-type Handlers = { [K in OpName]: (args: Ops[K]["args"]) => Promise<Ops[K]["result"]> };
+const recentCache = new Map<number, { at: number; list: Promise<SessionSummary[]> }>();
+
+type Handlers ={ [K in OpName]: (args: Ops[K]["args"]) => Promise<Ops[K]["result"]> };
 
 const ops: Handlers = {
   async listProjects() {
@@ -693,7 +709,7 @@ const ops: Handlers = {
   async listPulses() {
     const out = [...live.values()].filter((s) => !s.closed).map((s) => pulseOf(s.id)!);
     for (const p of closedPulses.list()) if (!live.has(p.session.id)) out.push(p);
-    return out.filter((p) => !p.session.archived);
+    return out.filter((p) => !p.session.archived).map((p) => withSeen(p)!);
   },
 
   async guardSetup({ judgeModel, defaultMode }) {
@@ -838,18 +854,25 @@ const ops: Handlers = {
   },
   async markViewed({ sessionId, projectPath }) {
     if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required");
-    const s = live.get(sessionId);
-    const at = markViewed(sessionId, s?.projectPath ?? (typeof projectPath === "string" ? projectPath : undefined));
-    // Other devices: a live session's summary carries it; a bare message has them fetch getViewed.
-    if (s && !s.closed) sink.summary(s.summary());
-    send({ t: "sessions" });
+    const at = markViewed(sessionId, live.get(sessionId)?.projectPath ?? (typeof projectPath === "string" && projectPath ? projectPath : undefined));
+    // Every browser merges just this one; Home's pulse (if it has one) says it too.
+    send({ t: "viewed", sessionId, viewedAt: at });
+    pulses.touch(sessionId);
     return { viewedAt: at };
   },
   async listRecent({ days }) {
     const d = typeof days === "number" && days >= 0 ? days : 3;
-    const projects = recentProjects(await allProjects(), allViewed(), d);
-    const sessions = (await Promise.all(projects.map((p) => projectSessions(p.path).catch(() => [])))).flat();
-    return pickRecent(sessions, d);
+    // Several browsers load at once (a reconnect): one scan serves them all for a few seconds.
+    const hit = recentCache.get(d);
+    if (hit && Date.now() - hit.at < 10_000) return hit.list;
+    const list = (async () => {
+      const projects = recentProjects(await allProjects(), allViewed(), d);
+      const sessions = (await Promise.all(projects.map((p) => projectSessions(p.path).catch(() => [])))).flat();
+      return pickRecent(sessions, d);
+    })();
+    recentCache.set(d, { at: Date.now(), list });
+    list.catch(() => recentCache.delete(d));
+    return list;
   },
 };
 
@@ -862,6 +885,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
     // on the next start picks these sessions back up.
     for (const s of live.values()) if (!s.closed) s.savePrefs();
     freezeConfig();
+    saveViewed();
     console.log(`stopping (${sig}); ${[...live.values()].filter((s) => !s.closed && s.busy).length} busy session(s) will resume on restart`);
     for (const s of live.values()) s.close();
     setTimeout(() => process.exit(0), 500);
