@@ -507,6 +507,8 @@ export interface SessionSummary {
   runningKinds?: Partial<Record<ActivityKind, number>>;
   /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
   workingCount?: number;
+  /** when you last opened it, on any device (markViewed) */
+  viewedAt?: number;
 }
 
 /**
@@ -515,6 +517,17 @@ export interface SessionSummary {
  */
 export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<SessionSummary, "id" | "updatedAt">): number {
   return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** "Last touched": the latest message, or the last time you opened it, whichever is later. */
+export function lastTouched(s: Pick<SessionSummary, "updatedAt" | "viewedAt">, viewedAt?: number): number {
+  return Math.max(s.updatedAt, s.viewedAt ?? 0, viewedAt ?? 0);
+}
+
+/** Like byRecent, by last touched. `viewed` (sessionId -> when opened) adds what this device knows. */
+export function byTouched(viewed: Record<string, number> = {}) {
+  return (a: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, b: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">): number =>
+    lastTouched(b, viewed[b.id]) - lastTouched(a, viewed[a.id]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 /** Web app preferences kept in the runner's config (getUiPrefs / setUiPrefs). */
@@ -889,6 +902,15 @@ export interface Ops {
   /** web app preferences kept on the runner, so every device shares them */
   getUiPrefs: { args: {}; result: UiPrefs };
   setUiPrefs: { args: Partial<UiPrefs>; result: UiPrefs };
+  /** when each session was last opened (sessionId -> ms), on any device */
+  getViewed: { args: {}; result: Record<string, number> };
+  /** you opened (or are looking at) a session: now, by the runner's clock */
+  markViewed: { args: { sessionId: string; projectPath?: string }; result: { viewedAt: number } };
+  /**
+   * Sessions touched (a message, or opened) in the last `days` (0: any time), plus every live
+   * one, across projects, most recently touched first: the sidebar's Recent and Home.
+   */
+  listRecent: { args: { days: number }; result: SessionSummary[] };
 }
 
 export type OpName = keyof Ops;

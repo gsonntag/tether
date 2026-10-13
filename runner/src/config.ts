@@ -42,6 +42,8 @@ export interface RunnerConfig {
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   /** web app preferences shared by every device (getUiPrefs / setUiPrefs) */
   ui?: Partial<UiPrefs>;
+  /** when each session was last opened, on any device (viewed.ts) */
+  viewed?: Record<string, import("./viewed").Viewed>;
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
 

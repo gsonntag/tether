@@ -41,6 +41,7 @@ import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
+import { allViewed, markViewed, pickRecent, recentProjects, viewedAt, viewedMap } from "./viewed";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -87,11 +88,12 @@ function send(m: RunnerToServer) {
   else if (m.t !== "event") outbox.push(m); // events are re-synced by snapshots on reconnect
 }
 
-/** Applies runner-side overrides (archive, user title) to a summary. */
+/** Applies runner-side overrides (archive, user title) and when it was last opened to a summary. */
 function decorate(s: SessionSummary): SessionSummary {
   const cfg = config();
   const title = cfg.titles[s.id];
-  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}) };
+  const viewed = viewedAt(s.id);
+  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}), ...(viewed ? { viewedAt: viewed } : {}) };
 }
 
 // ---------------- dashboard pulses ----------------
@@ -830,6 +832,24 @@ const ops: Handlers = {
   },
   async setUiPrefs(prefs) {
     return setUiPrefs(prefs ?? {});
+  },
+  async getViewed() {
+    return viewedMap();
+  },
+  async markViewed({ sessionId, projectPath }) {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required");
+    const s = live.get(sessionId);
+    const at = markViewed(sessionId, s?.projectPath ?? (typeof projectPath === "string" ? projectPath : undefined));
+    // Other devices: a live session's summary carries it; a bare message has them fetch getViewed.
+    if (s && !s.closed) sink.summary(s.summary());
+    send({ t: "sessions" });
+    return { viewedAt: at };
+  },
+  async listRecent({ days }) {
+    const d = typeof days === "number" && days >= 0 ? days : 3;
+    const projects = recentProjects(await allProjects(), allViewed(), d);
+    const sessions = (await Promise.all(projects.map((p) => projectSessions(p.path).catch(() => [])))).flat();
+    return pickRecent(sessions, d);
   },
 };
 

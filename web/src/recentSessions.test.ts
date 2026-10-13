@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasUnreadNotice, isBusy, projectIsQuiet, showInSidebar, sidebarDaysLabel, type RecentContext } from "./recentSessions";
+import { groupSessions, hasUnreadNotice, isBusy, mergeEntries, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, type Entry, type RecentContext } from "./recentSessions";
 import type { AgentNotice, SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -123,5 +123,113 @@ describe("projectIsQuiet", () => {
     expect(projectIsQuiet(project(10 * DAY), undefined, false, ctx({ notices: [notice("x", NOW)] }))).toBe(false);
     expect(projectIsQuiet(project(400 * DAY), undefined, false, ctx({ days: 0 }))).toBe(false);
     expect(projectIsQuiet(project(400 * DAY, { sessionCount: 0 }), undefined, false, ctx({ days: 0 }))).toBe(true);
+  });
+});
+
+describe("viewed: opening a session reads its notices, on every device", () => {
+  test("a notice counts until the session is opened after it", () => {
+    const s = session("a", 10 * DAY);
+    const n = notice("a", NOW - DAY);
+    expect(hasUnreadNotice(s, ctx({ notices: [n] }))).toBe(true);
+    // Opened (here or elsewhere) after it came: read.
+    expect(hasUnreadNotice(s, ctx({ notices: [n], viewed: { a: NOW - DAY + 1 } }))).toBe(false);
+    expect(hasUnreadNotice({ ...s, viewedAt: NOW - DAY + 1 }, ctx({ notices: [n] }))).toBe(false);
+    // Opened before it came: still unread.
+    expect(hasUnreadNotice(s, ctx({ notices: [n], viewed: { a: NOW - 2 * DAY } }))).toBe(true);
+    // Memory notices are the conflicts' business.
+    expect(hasUnreadNotice(s, ctx({ notices: [notice("a", NOW, "memory")] }))).toBe(false);
+  });
+
+  test("the window goes by last touched: opening an old session makes it recent", () => {
+    const old = session("a", 10 * DAY);
+    expect(showInSidebar(old, ctx())).toBe(false);
+    expect(showInSidebar(old, ctx({ viewed: { a: NOW - DAY } }))).toBe(true);
+    expect(showInSidebar({ ...old, viewedAt: NOW - DAY }, ctx())).toBe(true);
+  });
+});
+
+describe("the three states", () => {
+  const st = (s: SessionSummary, c: Partial<RecentContext> = {}) => sessionState(s, ctx(c));
+
+  test("working: the main turn, a wait, or background work; a wakeup alone isn't", () => {
+    expect(st(session("a", 0, { live: true, status: "running" }))).toBe("working");
+    expect(st(session("a", 0, { live: true, status: "waiting" }))).toBe("working");
+    expect(st(session("a", 0, { live: true, activeCount: 1, workingCount: 1, runningKinds: { shell: 1 } }))).toBe("working");
+    expect(st(session("a", 0, { live: true, activeCount: 1, workingCount: 0, runningKinds: {} }))).toBe("recent");
+    // An older runner without runningKinds: workingCount says.
+    expect(st(session("a", 0, { live: true, activeCount: 1, workingCount: 0 }))).toBe("recent");
+    // Idle with its process still up looks like any other recent session.
+    expect(st(session("a", 0, { live: true }))).toBe("recent");
+  });
+
+  test("needs you: a question waiting, or a notice you haven't opened", () => {
+    expect(st(session("a", 0, { live: true, status: "running", needsInput: true }))).toBe("needs");
+    // A closed process can't be asking.
+    expect(st(session("a", 0, { live: false, needsInput: true }))).toBe("recent");
+    const n = notice("a", NOW - 1000);
+    expect(st(session("a", 0), { notices: [n] })).toBe("needs");
+    expect(st(session("a", 0), { notices: [n], viewed: { a: NOW } })).toBe("recent");
+    expect(st(session("a", 0), { notices: [notice("a", NOW - 1000, "blocked")] })).toBe("needs");
+    // Working again: past whatever the notice said.
+    expect(st(session("a", 0, { live: true, status: "running" }), { notices: [n] })).toBe("working");
+  });
+
+  test("a finished turn beats background work, unless a later message started more", () => {
+    const bg = { live: true, activeCount: 1, workingCount: 1, runningKinds: { shell: 1 } };
+    expect(st(session("a", 2000, bg), { notices: [notice("a", NOW - 1000)] })).toBe("needs");
+    expect(st(session("a", 0, bg), { notices: [notice("a", NOW - 1000)] })).toBe("working");
+    expect(st(session("a", 2000, bg), { notices: [notice("a", NOW - 1000)], viewed: { a: NOW } })).toBe("working");
+  });
+});
+
+describe("groupSessions", () => {
+  const e = (s: SessionSummary, extra: Partial<Entry> = {}): Entry => ({ session: s, ...extra });
+
+  test("each session in one group, most recently touched first; recent only inside the window; done never", () => {
+    const g = groupSessions(
+      [
+        e(session("old", 10 * DAY)),
+        e(session("msg", 2 * DAY)),
+        e(session("opened", 5 * DAY), {}),
+        e(session("run", 9 * DAY, { live: true, status: "running" })),
+        e(session("ask", 8 * DAY, { live: true, needsInput: true })),
+        e(session("done", 0, { archived: true })),
+      ],
+      ctx({ viewed: { opened: NOW - DAY } }),
+    );
+    expect(g.needs.map((x) => x.session.id)).toEqual(["ask"]);
+    expect(g.working.map((x) => x.session.id)).toEqual(["run"]);
+    expect(g.recent.map((x) => x.session.id)).toEqual(["opened", "msg"]);
+  });
+
+  test("an opened needs-you session stays put while open, then tops Recent", () => {
+    const n = notice("a", NOW - 2 * DAY);
+    const list = [e(session("a", 2 * DAY)), e(session("b", DAY))];
+    const before = groupSessions(list, ctx({ notices: [n] }));
+    expect(before.needs.map((x) => x.session.id)).toEqual(["a"]);
+    const was = new Set(before.needs.map((x) => x.session.id));
+    // Opened: viewed now, and selected.
+    const open = groupSessions(list, ctx({ notices: [n], viewed: { a: NOW }, selected: "a", wasNeeds: was } as RecentContext));
+    expect(open.needs.map((x) => x.session.id)).toEqual(["a"]);
+    const left = groupSessions(list, ctx({ notices: [n], viewed: { a: NOW }, wasNeeds: was } as RecentContext));
+    expect(left.needs).toEqual([]);
+    expect(left.recent.map((x) => x.session.id)).toEqual(["a", "b"]);
+    // Opening a recent one doesn't put it in Needs you.
+    expect(groupSessions(list, ctx({ selected: "b", wasNeeds: was } as RecentContext)).needs).toEqual([]);
+  });
+
+  test("pulses: a waiting request needs you, background activity works; summaries win, other runners stay apart", () => {
+    const perm = { id: "q1", kind: "permission" as const, title: "Allow?" };
+    const pulses = {
+      r1: { a: { session: session("a", 0, { live: true, title: "stale" }), pendingUi: [perm] }, bg: { session: session("bg", 0, { live: true }), activity: { subagent: 1 } } },
+      r2: { a: { session: session("a", 0, { live: true, status: "running" as const }) } },
+    };
+    const entries = mergeEntries("r1", [session("a", 0, { live: true, title: "fresh" })], pulses);
+    expect(entries).toHaveLength(3);
+    const g = groupSessions(entries, ctx());
+    expect(g.needs.map((x) => [x.runnerId, x.session.title])).toEqual([["r1", "fresh"]]);
+    expect(g.working.map((x) => `${x.runnerId}:${x.session.id}`).sort()).toEqual(["r1:bg", "r2:a"]);
+    // No runner: pulses only.
+    expect(mergeEntries(undefined, [session("z", 0)], pulses)).toHaveLength(3);
   });
 });

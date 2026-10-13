@@ -1,7 +1,8 @@
-// The Home dashboard's data: session pulses from every connected runner, grouped into what needs
-// you, what's running and what finished recently. Pure, so it's unit tested (dashboard.test.ts).
+// The Home dashboard's data: session pulses from every connected runner (grouped into the three
+// states by recentSessions.ts), and answering what waits on you. Pure, so it's unit tested
+// (dashboard.test.ts).
 
-import { ACTIVITY_KINDS, byRecent, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import { ACTIVITY_KINDS, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
 
 /** runnerId -> sessionId -> latest pulse */
 export type PulseMap = Record<string, Record<string, SessionPulse>>;
@@ -23,41 +24,6 @@ export interface PulseRow {
 
 export interface NeedRow extends PulseRow {
   request: UiRequest;
-}
-
-export interface Dashboard {
-  needs: NeedRow[];
-  running: PulseRow[];
-  finished: PulseRow[];
-}
-
-/** Doing something now: a turn, a wait, a prompt, or subagents/shells/wakeups still going. */
-export function isRunning(p: SessionPulse): boolean {
-  if (!p.session.live) return false;
-  return p.session.status !== "idle" || !!p.session.needsInput || !!p.pendingUi?.length || !!(p.activity && Object.keys(p.activity).length) || !!p.armed;
-}
-
-export function groupDashboard(map: PulseMap, opts: { finished?: number } = {}): Dashboard {
-  const all: PulseRow[] = [];
-  for (const [runnerId, byId] of Object.entries(map)) for (const pulse of Object.values(byId)) if (!pulse.session.archived) all.push({ runnerId, pulse });
-
-  const needs: NeedRow[] = [];
-  for (const row of all) if (row.pulse.session.live) for (const request of row.pulse.pendingUi ?? []) needs.push({ ...row, request });
-  // Oldest waiting first: it has waited longest.
-  needs.sort((a, b) => a.pulse.session.updatedAt - b.pulse.session.updatedAt);
-
-  const running = all.filter((r) => isRunning(r.pulse));
-  // Needs you, then working, waiting, working in the background, and only a wakeup armed last.
-  const rank = (p: SessionPulse) => (p.pendingUi?.length ? 0 : p.session.status === "running" ? 1 : p.session.status === "waiting" ? 2 : p.activity && Object.keys(p.activity).length ? 3 : 4);
-  running.sort((a, b) => rank(a.pulse) - rank(b.pulse) || (b.pulse.turnStartedAt ?? b.pulse.session.updatedAt) - (a.pulse.turnStartedAt ?? a.pulse.session.updatedAt));
-
-  // Like the session lists: the most recent message first.
-  const finished = all
-    .filter((r) => !isRunning(r.pulse) && r.pulse.finishedAt)
-    .sort((a, b) => byRecent(a.pulse.session, b.pulse.session))
-    .slice(0, opts.finished ?? 8);
-
-  return { needs, running, finished };
 }
 
 /** "2 agents · 1 shell · 1 scheduled" */
@@ -90,13 +56,6 @@ export function diffLabel(p: SessionPulse): string | undefined {
 export function contextPercent(p: SessionPulse): number | undefined {
   const c = p.context;
   return c?.used !== undefined && c.max ? Math.min(100, (c.used / c.max) * 100) : undefined;
-}
-
-/** Sessions doing something now on every runner: Home's Running count, and the sidebar's. */
-export function runningCount(map: PulseMap): number {
-  let n = 0;
-  for (const byId of Object.values(map)) for (const p of Object.values(byId)) if (!p.session.archived && isRunning(p)) n++;
-  return n;
 }
 
 /** Requests being answered from this tab, by runner, session and request id. */

@@ -62,7 +62,7 @@ interface State {
   noticesSeen: number;
   /** individual notices opened on this device */
   noticesRead: string[];
-  /** a full page shown instead of a session ("running": Home, scrolled to its Running section) */
+  /** a full page shown instead of a session ("running": Home, scrolled to its Working section) */
   page?: "memory" | "running";
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
   pulses: PulseMap;
@@ -76,6 +76,10 @@ interface State {
   contextLive: ContextActivity[];
   /** the Settings dialog's preferences, kept on the runner so they follow the user across devices */
   ui: UiPrefs;
+  /** sessionId -> when you last opened it, on any device (the runner's, plus this device's latest) */
+  viewed: Record<string, number>;
+  /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
+  recent: SessionSummary[];
 }
 
 export const useStore = create<State>(() => ({
@@ -98,6 +102,8 @@ export const useStore = create<State>(() => ({
   contextLive: [],
   pulses: {},
   ui: cachedUiPrefs(loadJSON<string>("tether.runner", "")),
+  viewed: cachedViewed(loadJSON<string>("tether.runner", "")),
+  recent: [],
 }));
 
 const set = useStore.setState;
@@ -206,6 +212,10 @@ function onMessage(m: ServerToBrowser) {
         refreshNotices();
         refreshContext();
         refreshUiPrefs();
+        refreshViewed();
+        refreshRecent();
+        // A link opened before the runner was there.
+        if (get().selected) markViewed(get().selected!);
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -273,7 +283,7 @@ export function openOnRunner(runnerId: string, session: SessionSummary, opts: { 
   if (opts.activity) setActivityOpen(true);
 }
 
-/** Home: the dashboard (no session, no page). */
+/** Home: Needs you, Working and Recent (no session, no page). */
 export function goHome() {
   set({ selected: undefined, page: undefined, sidebarOpen: false });
   history.replaceState(null, "", "#/");
@@ -453,6 +463,7 @@ export function selectSession(sessionId: string | undefined) {
   set({ selected: sessionId, sidebarOpen: false, page: undefined });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
+    markViewed(sessionId);
     if (!get().open[sessionId]) loadSession(sessionId);
     rememberLink(sessionId);
     history.replaceState(null, "", `#/s/${encodeURIComponent(linkId(sessionId))}`);
@@ -505,6 +516,8 @@ export function refreshNotices() {
       if (selected && document.visibilityState === "visible") {
         const current = notices.find((notice) => notice.sessionId === selected);
         if (current) markNoticeRead(current.id);
+        // Seen as it arrived: on every device.
+        if (current && current.ts > (get().viewed[selected] ?? 0)) markViewed(selected);
       }
     })
     .catch(() => {});
@@ -513,7 +526,10 @@ export function refreshNotices() {
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 function refreshNoticesSoon() {
   clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(refreshNotices, 1500);
+  noticeTimer = setTimeout(() => {
+    refreshNotices();
+    refreshViewed();
+  }, 1500);
 }
 
 function isNoticeRead(notice: AgentNotice) {
@@ -550,8 +566,10 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [] });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id) });
   refreshProjects();
+  refreshViewed();
+  refreshRecent();
   refreshNotices();
   refreshContext();
   refreshUiPrefs();
@@ -579,7 +597,10 @@ function cachedUiPrefs(runnerId: string | undefined): UiPrefs {
 function applyUiPrefs(runnerId: string, p: Partial<UiPrefs>) {
   const ui = { ...cachedUiPrefs(runnerId), ...p };
   saveJSON("tether.uiPrefsBy", { ...loadJSON<Record<string, UiPrefs>>("tether.uiPrefsBy", {}), [runnerId]: ui });
-  if (get().runnerId === runnerId) set({ ui });
+  if (get().runnerId !== runnerId) return;
+  const windowMoved = ui.sidebarDays !== get().ui.sidebarDays;
+  set({ ui });
+  if (windowMoved) refreshRecent();
 }
 
 export function refreshUiPrefs() {
@@ -618,6 +639,81 @@ export async function setUiPref(p: Partial<UiPrefs>) {
     refreshUiPrefs();
   }
 }
+
+// ---------------- when you last opened each session (kept on the runner, shared by every device) ----------------
+
+// This device keeps the last map each runner gave (by runner id), so lists sort right on load;
+// with an older runner that doesn't know markViewed, views stay here, on this device.
+// (A function: the initial state uses it.)
+function cachedViewed(runnerId: string | undefined): Record<string, number> {
+  return (runnerId && loadJSON<Record<string, Record<string, number>>>("tether.viewedBy", {})[runnerId]) || {};
+}
+
+/** Merges views into a runner's map (the latest of each wins), and this device's copy of it. */
+function applyViewed(runnerId: string, v: Record<string, number>) {
+  const next = { ...(get().runnerId === runnerId ? get().viewed : cachedViewed(runnerId)) };
+  let changed = false;
+  for (const [id, at] of Object.entries(v))
+    if (typeof at === "number" && at > (next[id] ?? 0)) {
+      next[id] = at;
+      changed = true;
+    }
+  if (!changed) return;
+  const kept = Object.fromEntries(Object.entries(next).sort((a, b) => b[1] - a[1]).slice(0, 1000));
+  saveJSON("tether.viewedBy", { ...loadJSON<Record<string, unknown>>("tether.viewedBy", {}), [runnerId]: kept });
+  if (get().runnerId === runnerId) set({ viewed: kept });
+}
+
+export function refreshViewed() {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  rpcTo(runnerId, "getViewed", {})
+    .then((v) => applyViewed(runnerId, v))
+    .catch(() => {}); // an older runner: this device's views are all there are
+}
+
+// Opening a session, or coming back to it, counts here at once; the runner hears of it at most
+// every VIEW_WRITE_MS per session (a later one waits out the rest, so the last always goes).
+const VIEW_WRITE_MS = 30_000;
+const viewSent = new Map<string, number>();
+const viewTimers = new Set<string>();
+export function markViewed(sessionId: string) {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  applyViewed(runnerId, { [sessionId]: Date.now() });
+  const key = `${runnerId}\n${sessionId}`;
+  if (viewTimers.has(key)) return;
+  const send = () => {
+    viewTimers.delete(key);
+    viewSent.set(key, Date.now());
+    const projectPath = Object.values(get().sessions).flat().find((x) => x.id === sessionId)?.projectPath;
+    rpcTo(runnerId, "markViewed", { sessionId, projectPath })
+      .then((r) => applyViewed(runnerId, { [sessionId]: r.viewedAt }))
+      .catch(() => {});
+  };
+  const wait = (viewSent.get(key) ?? 0) + VIEW_WRITE_MS - Date.now();
+  if (wait <= 0) return send();
+  viewTimers.add(key);
+  setTimeout(send, wait);
+}
+document.addEventListener("visibilitychange", () => {
+  const sel = get().selected;
+  if (document.visibilityState === "visible" && sel) markViewed(sel);
+});
+
+/** Recent across projects. An older runner has no listRecent: the lists make do with what's loaded. */
+let recentAt = 0;
+export async function refreshRecent(force = true) {
+  const runnerId = get().runnerId;
+  if (!runnerId || (!force && Date.now() - recentAt < 60_000)) return;
+  recentAt = Date.now();
+  try {
+    const recent = await rpcTo(runnerId, "listRecent", { days: get().ui.sidebarDays });
+    if (get().runnerId === runnerId) set({ recent });
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshRecent(false));
+setInterval(() => document.visibilityState === "visible" && refreshRecent(false), 5 * 60_000);
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner
 // (with push, the service worker shows them, tab or not).
