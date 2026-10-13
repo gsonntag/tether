@@ -51,26 +51,47 @@ export function phaseLabel(a: ActivityItem): string | undefined {
   return c ? `Step ${c.index + 1} of ${c.total} · ${c.title}` : undefined;
 }
 
+/** A parent's children the strip shows before "+N more" (the rest open with the parent). */
+export const STRIP_CHILD_ROWS = 2;
+
 export interface StripRow {
   item: ActivityItem;
   /** 0: on its own; 1+: started by the row above (a workflow's or subagent's own work) */
   depth: number;
+  /** a "+N more" row for `item`'s children past STRIP_CHILD_ROWS */
+  more?: number;
 }
 
+/** The main agent's own long tool call: the transcript shows it, the strip doesn't. */
+const ownToolCall = (a: ActivityItem) => a.kind === "tool" && a.background === false;
+
 /**
- * The strip: everything running (a long main-thread tool call excepted, the transcript shows it),
- * children right under their parent; armed wakeups and cron jobs apart, for one quiet line.
+ * The strip: everything running (the main agent's own long tool calls excepted), children right
+ * under their parent, a few per parent so other work stays in view; armed wakeups, cron jobs and
+ * queued agents apart, for one quiet line. `open`: the row opened (an opened workflow with phases
+ * shows its agents in its step track; another opened parent shows all its children).
  */
-export function stripModel(items: ActivityItem[]): { rows: StripRow[]; waiting: ActivityItem[] } {
-  const live = items.filter((a) => a.status === "running" && a.kind !== "tool");
+export function stripModel(items: ActivityItem[], open?: string | null): { rows: StripRow[]; waiting: ActivityItem[] } {
+  const live = items.filter((a) => a.status === "running" && !ownToolCall(a));
   const ids = new Set(live.map((a) => a.id));
   const rows: StripRow[] = [];
   const add = (a: ActivityItem, depth: number) => {
     rows.push({ item: a, depth });
-    for (const c of live) if (c.parentId === a.id && c.id !== a.id) add(c, Math.min(depth + 1, 2));
+    if (a.id === open && a.phases?.length) return;
+    const kids = live.filter((c) => c.parentId === a.id && c.id !== a.id);
+    const cap = a.id === open ? kids.length : STRIP_CHILD_ROWS + (kids.length === STRIP_CHILD_ROWS + 1 ? 1 : 0);
+    for (const c of kids.slice(0, cap)) add(c, Math.min(depth + 1, 2));
+    if (kids.length > cap) rows.push({ item: a, depth: Math.min(depth + 1, 2), more: kids.length - cap });
   };
   for (const a of live) if (!a.parentId || !ids.has(a.parentId)) add(a, 0);
   return { rows, waiting: items.filter((a) => a.status === "waiting").sort((a, b) => (a.nextAt ?? Infinity) - (b.nextAt ?? Infinity)) };
+}
+
+/** The quiet line's words: "Check the deploy", "2 scheduled · 1 queued". */
+export function waitingLabel(items: ActivityItem[]): string {
+  if (items.length === 1) return items[0]!.title;
+  const sched = items.filter((a) => a.kind === "schedule").length;
+  return [sched && `${sched} scheduled`, items.length - sched && `${items.length - sched} queued`].filter(Boolean).join(" · ");
 }
 
 /** The history panel: finished items, newest first; a workflow's or subagent's own work stays inside it. */

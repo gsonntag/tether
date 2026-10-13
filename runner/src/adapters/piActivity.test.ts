@@ -98,14 +98,46 @@ describe("pi activity", () => {
       { title: "fix", status: "pending" },
       { title: "CI", status: "pending" },
     ]);
+    // A running lane keeps its item (it was running before as s1's sibling run): its agents sit under it.
     expect(lanes.filter((a) => a.parentId === "async:r1").map((a) => [a.id, a.phase, a.status])).toEqual([
       ["async:s1", 0, "done"],
-      ["async:n1", 1, "running"],
+      ["async:s2", 1, "running"],
     ]);
+    expect(lanes.find((a) => a.id === "async:n1")).toMatchObject({ parentId: "async:s2", phase: 1, status: "running" });
+    // The lane gains another agent: it stays running (not ended for "leaving" the snapshot).
+    t = 60;
+    const more = act.onRecord(
+      snap([
+        {
+          id: "r1",
+          kind: "workflow",
+          label: "review",
+          state: "running",
+          startedAt: 5,
+          children: [
+            { id: "s1", kind: "step", label: "scout", state: "complete", endedAt: 20 },
+            {
+              id: "s2",
+              kind: "step",
+              label: "reviewers",
+              state: "running",
+              children: [
+                { id: "n1", kind: "subagent", label: "reviewer-a", state: "running" },
+                { id: "n2", kind: "subagent", label: "reviewer-b", state: "running" },
+              ],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(more.filter((a) => a.endedAt).map((a) => a.id)).toEqual(["async:s1"]);
+    t = 70;
     const gone = act.onRecord(snap([]));
     expect(gone.map((a) => [a.id, a.status, a.endedAt])).toEqual([
-      ["async:r1", "done", 50],
-      ["async:n1", "done", 50],
+      ["async:r1", "done", 70],
+      ["async:s2", "done", 70],
+      ["async:n1", "done", 70],
+      ["async:n2", "done", 70],
     ]);
   });
 

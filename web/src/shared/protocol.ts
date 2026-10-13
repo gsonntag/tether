@@ -461,6 +461,30 @@ export const ACTIVITY_KEEP_FINISHED = 20;
 export const ACTIVITY_MAX_STEPS = 40;
 export const isActive = (a: ActivityItem) => a.status === "running" || a.status === "waiting";
 /**
+ * The items that count as the session's work: active ones not started by another active item. A
+ * workflow's 30 agents or a subagent's own shells are part of it, not work of their own (counts,
+ * "busy", what a restart reports).
+ */
+export function ownWork(items: ActivityItem[]): ActivityItem[] {
+  const live = new Set(items.filter(isActive).map((a) => a.id));
+  return items.filter((a) => isActive(a) && !(a.parentId && a.parentId !== a.id && live.has(a.parentId)));
+}
+/** Everything started by `ids`, at any depth (the ids themselves excluded). */
+export function descendants(items: ActivityItem[], ids: Set<string>): ActivityItem[] {
+  const out: ActivityItem[] = [];
+  const seen = new Set(ids);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const a of items)
+      if (a.parentId && seen.has(a.parentId) && !seen.has(a.id)) {
+        seen.add(a.id);
+        out.push(a);
+        grew = true;
+      }
+  }
+  return out;
+}
+/**
  * Which finished items to keep first: the newest, but a workflow's or subagent's own items after
  * every top-level one (a 30-agent workflow mustn't push the session's other results out).
  */

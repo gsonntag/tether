@@ -28,7 +28,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { CheckCircleIcon, ClockIcon, CommandLineIcon, CpuChipIcon, EyeIcon, QueueListIcon, Squares2X2Icon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { modelDisplay } from "../models";
-import { activityOf, childrenOf, currentPhase, historyItems, nowLine, phaseLabel, STRIP_ROWS, stripModel } from "../activity";
+import { activityOf, childrenOf, currentPhase, historyItems, nowLine, phaseLabel, STRIP_ROWS, stripModel, waitingLabel } from "../activity";
 import { isActive, type ActivityItem, type ActivityKind, type ActivityStatus, type LiveState } from "../shared/protocol";
 import { act, setActivityOpen, useStore } from "../store";
 import { fmtClock } from "../util";
@@ -39,6 +39,8 @@ const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word"
 const strip: CSSProperties = { border: "var(--border-width) solid var(--color-border)", borderRadius: "var(--radius-container)", background: "var(--color-background-surface)", overflow: "hidden" };
 /** An opened row's details scroll inside the strip, so the composer doesn't fly up the screen. */
 const stripDetails: CSSProperties = { maxHeight: "40vh", overflowY: "auto" };
+/** The rows scroll too ("N more" opened on a phone), the waiting line stays in view. */
+const stripRows: CSSProperties = { maxHeight: "45vh", overflowY: "auto" };
 const titleCap: CSSProperties = { display: "block", maxWidth: "min(50vw, calc(var(--spacing-4) * 24))" };
 const indent = (depth: number): CSSProperties | undefined => (depth ? { paddingInlineStart: `calc(var(--spacing-4) * ${depth})` } : undefined);
 
@@ -93,36 +95,40 @@ function stopItem(sessionId: string, a: ActivityItem, setStopping: (b: boolean) 
 export function ActivityStrip({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const harness = useStore((s) => s.open[sessionId]?.session?.harness);
   const items = activityOf(state);
-  const { rows, waiting } = useMemo(() => stripModel(items), [items]);
   const [all, setAll] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [waitOpen, setWaitOpen] = useState(false);
+  const { rows, waiting } = useMemo(() => stripModel(items, open), [items, open]);
   if (!rows.length && !waiting.length) return null;
   // Never "1 more": a fifth row shows itself.
   const capped = rows.length > STRIP_ROWS + 1;
   const shown = all || !capped ? rows : rows.slice(0, STRIP_ROWS);
   const toggle = (id: string) => setOpen((o) => (o === id ? null : id));
-  const openItem = open ? items.find((a) => a.id === open) : undefined;
   return (
     <VStack style={strip} role="region" aria-label="Running now">
-      {shown.map(({ item, depth }) =>
-        // An opened workflow shows its agents in its step track.
-        open && item.parentId === open && openItem?.phases?.length ? null : (
-          <VStack key={item.id} style={indent(depth)}>
-            <LiveRow item={item} harness={harness} isOpen={open === item.id} onToggle={() => toggle(item.id)} />
-            {open === item.id && (
-              <VStack style={stripDetails}>
-                <ActivityDetails sessionId={sessionId} item={item} all={items} harness={harness} />
-              </VStack>
-            )}
-          </VStack>
-        ),
-      )}
-      {capped ? (
-        <Button label={all ? "Show fewer" : `${rows.length - shown.length} more running`} variant="ghost" size="sm" onClick={() => setAll(!all)}>
-          {all ? "Show fewer" : `${rows.length - shown.length} more`}
-        </Button>
-      ) : null}
+      <VStack style={stripRows}>
+        {shown.map(({ item, depth, more }) =>
+          more ? (
+            <VStack key={`${item.id}:more`} style={indent(depth)}>
+              <Item density="compact" layout="inline" onClick={() => toggle(item.id)} label={<Text type="supporting">{`+${more} more`}</Text>} />
+            </VStack>
+          ) : (
+            <VStack key={item.id} style={indent(depth)}>
+              <LiveRow item={item} harness={harness} isOpen={open === item.id} onToggle={() => toggle(item.id)} />
+              {open === item.id && (
+                <VStack style={stripDetails}>
+                  <ActivityDetails sessionId={sessionId} item={item} all={items} harness={harness} />
+                </VStack>
+              )}
+            </VStack>
+          ),
+        )}
+        {capped ? (
+          <Button label={all ? "Show fewer" : `${rows.length - shown.length} more running`} variant="ghost" size="sm" onClick={() => setAll(!all)}>
+            {all ? "Show fewer" : `${rows.length - shown.length} more`}
+          </Button>
+        ) : null}
+      </VStack>
       {waiting.length > 0 && (
         <>
           <WaitingLine items={waiting} isOpen={waitOpen} onToggle={() => setWaitOpen(!waitOpen)} />
@@ -164,10 +170,10 @@ function LiveRow({ item: a, harness, isOpen, onToggle }: { item: ActivityItem; h
   );
 }
 
-/** Armed wakeups and cron jobs: one quiet line ("Next 14:30"), opened into their rows. */
+/** Armed wakeups and cron jobs, queued agents: one quiet line ("Next 14:30"), opened into their rows. */
 function WaitingLine({ items, isOpen, onToggle }: { items: ActivityItem[]; isOpen: boolean; onToggle: () => void }) {
   const next = items.find((a) => a.nextAt)?.nextAt;
-  const label = items.length === 1 ? items[0]!.title : `${items.length} scheduled`;
+  const label = waitingLabel(items);
   const when = next ? `Next ${fmtClock(next)}` : items.length === 1 ? items[0]!.schedule : undefined;
   return (
     <Item

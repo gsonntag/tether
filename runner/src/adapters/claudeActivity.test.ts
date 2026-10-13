@@ -211,6 +211,46 @@ describe("the book stays bounded in long sessions", () => {
     expect(out.find((a) => a.id === "w1/2")).toMatchObject({ status: "done" });
   });
 
+  test("late workflow frames can't revive a finished workflow or agent", () => {
+    let t = 1_000;
+    const act = new ClaudeActivity(() => t);
+    act.onMessage({ type: "system", subtype: "task_started", task_id: "w3", task_type: "local_workflow", workflow_name: "wf", is_backgrounded: false });
+    const agent = (state: string, over: any = {}) => ({ type: "workflow_agent", index: 1, label: "a", phaseIndex: 1, state, startedAt: 900, ...over });
+    const progress = (entries: any[]) => act.onMessage({ type: "system", subtype: "task_progress", task_id: "w3", description: "x", usage: {}, workflow_progress: [{ type: "workflow_phase", index: 1, title: "P" }, ...entries] });
+    let out = progress([agent("progress"), { ...agent("progress"), index: 2 }]);
+    // Foreground workflow: its agents are foreground too (they end with the turn).
+    expect(out.find((a) => a.id === "w3/1")).toMatchObject({ status: "running", background: false });
+    // An agent done, then an older "progress" frame for it: stays done.
+    t += 10;
+    progress([agent("done", { resultPreview: "ok" }), { ...agent("progress"), index: 2 }]);
+    t += 10;
+    out = progress([agent("progress"), { ...agent("progress"), index: 2 }]);
+    expect(out.find((a) => a.id === "w3/1")).toBeUndefined();
+    expect(act.get("w3/1")).toMatchObject({ status: "done", summary: "ok", endedAt: 1_010 });
+    // The workflow completes, then a late frame: nothing changes, nothing is sent.
+    t += 10;
+    act.onMessage({ type: "system", subtype: "task_notification", task_id: "w3", status: "completed" });
+    expect(act.get("w3/2")).toMatchObject({ status: "done" });
+    t += 10;
+    out = progress([agent("progress"), { ...agent("progress"), index: 2 }, { ...agent("progress"), index: 3 }]);
+    expect(out).toEqual([]);
+    expect(act.get("w3")!.phases).toEqual([{ title: "P", status: "done", detail: "1 of 2 agents done" }]);
+  });
+
+  test("undocumented workflow fields are coerced", () => {
+    const act = new ClaudeActivity(() => 5_000_000_000);
+    act.onMessage({ type: "system", subtype: "task_started", task_id: "w4", task_type: "local_workflow", workflow_name: "wf" });
+    const out = act.onMessage({
+      type: "system",
+      subtype: "task_progress",
+      task_id: "w4",
+      description: "x",
+      usage: {},
+      workflow_progress: [{ type: "workflow_agent", index: 1, label: { n: 1 }, state: "error", error: { message: "boom" }, startedAt: "soon", lastToolSummary: 7 }],
+    });
+    expect(out.find((a) => a.id === "w4/1")).toMatchObject({ title: '{"n":1}', summary: "boom", latest: "7", startedAt: 5_000_000_000, status: "failed" });
+  });
+
   test("a workflow without phases keeps its agents and no phases", () => {
     const act = new ClaudeActivity(() => 0);
     act.onMessage({ type: "system", subtype: "task_started", task_id: "w2", task_type: "local_workflow", workflow_name: "fanout" });

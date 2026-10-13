@@ -51,7 +51,7 @@ interface State {
   sidebarOpen: boolean;
   /** desktop: sidebar collapsed to focus on one session */
   sidebarHidden: boolean;
-  /** the session's Activity panel (side panel on desktop, sheet on phones) */
+  /** the session's history panel of finished work (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
   dialog?: "new" | "addProject" | "settings" | "notify";
   newSessionProject?: string;
@@ -90,7 +90,8 @@ export const useStore = create<State>(() => ({
   sidebarOpen: false,
   sidebarHidden: loadJSON("tether.sidebarHidden", false),
   // Phones start closed: there it's a sheet over the session.
-  activityOpen: !window.matchMedia("(max-width: 767px)").matches && loadJSON("tether.activityOpen", false),
+  // A new key: the old one remembered the panel of running work, now the strip's job.
+  activityOpen: !window.matchMedia("(max-width: 767px)").matches && loadJSON("tether.historyOpen", false),
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
@@ -643,7 +644,7 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
 
 export function setActivityOpen(open: boolean) {
   set({ activityOpen: open });
-  if (!isNarrow()) saveJSON("tether.activityOpen", open);
+  if (!isNarrow()) saveJSON("tether.historyOpen", open);
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */

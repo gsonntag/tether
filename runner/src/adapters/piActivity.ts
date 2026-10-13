@@ -48,9 +48,9 @@ function lanePhase(c: any): ActivityPhase {
   return { title: firstLine(c.label) || "Step", status, ...(detail ? { detail } : {}) };
 }
 
-/** A foreground workflow graph node's status (WorkflowNodeStatus) as a phase status. */
+/** A foreground workflow graph node's status (WorkflowNodeStatus) as a phase status; detached or unknown: not running here. */
 const graphStatus = (s: string): ActivityPhase["status"] =>
-  s === "completed" || s === "partial" ? "done" : s === "failed" || s === "rejected" || s === "stopped" ? "failed" : s === "pending" || s === "paused" ? "pending" : "running";
+  s === "completed" || s === "partial" ? "done" : s === "failed" || s === "rejected" || s === "stopped" ? "failed" : s === "running" ? "running" : "pending";
 
 /**
  * The steps of a foreground chain or workflow call, each over a run of agent indexes (a parallel
@@ -183,7 +183,7 @@ export class PiActivity extends ActivityBook {
         return;
       }
     const seen = new Set<string>();
-    const visit = (n: any, parentId?: string, phase?: number) => {
+    const visit = (n: any, parentId?: string, phase?: number, lane = false) => {
       if (!n?.id) return;
       const id = `async:${n.id}`;
       const cur = this.get(id);
@@ -209,15 +209,16 @@ export class PiActivity extends ActivityBook {
         latest: a.currentTool ? describeTool(a.currentTool, {}) : n.hostStep?.detail ? firstLine(n.hostStep.detail, 160) : cur?.latest,
         ...(lanes.length ? { phases: lanes.map(lanePhase) } : {}),
       });
-      // A lane's own runs (a parallel step's agents) stand for it, in its phase; a host check
-      // (CI, review bot) is only a phase.
-      if (phase !== undefined) return;
+      // A lane's own runs (a parallel step's agents) sit under it, in its phase.
+      if (lane) {
+        for (const g of n.children ?? []) visit(g, id, phase);
+        return;
+      }
       for (const c of n.children ?? []) {
-        const lane = lanes.indexOf(c);
-        if (lane < 0) visit(c, id);
-        else if (c.kind === "host-step") continue;
-        else if (c.children?.length) for (const g of c.children) visit(g, id, lane);
-        else visit(c, id, lane);
+        const i = lanes.indexOf(c);
+        if (i < 0) visit(c, id);
+        // A host check (CI, review bot) is only a phase.
+        else if (c.kind !== "host-step") visit(c, id, i, true);
       }
     };
     for (const n of runs) visit(n);

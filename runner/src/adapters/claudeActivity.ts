@@ -19,6 +19,19 @@ import { ActivityBook, BoundedMap, describeTool } from "./activity";
 /** A main-thread tool call shows as activity once it has run this long. */
 export const LONG_TOOL_S = 15;
 
+/** An undocumented field as display text: strings as they are, an error object's message, else JSON. */
+function text(v: unknown): string | undefined {
+  if (v == null || v === "") return undefined;
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (typeof (v as any).message === "string") return (v as any).message;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return undefined;
+  }
+}
+
 const TASK_TOOLS = new Set(["Agent", "Task", "Workflow", "Monitor"]);
 
 function blockText(content: unknown): string {
@@ -58,7 +71,16 @@ export class ClaudeActivity extends ActivityBook {
   /** finished items pruned from the book: a stale level signal can't bring them back */
   private gone = new BoundedMap<string, true>(500);
 
+  /** workflow id -> indexes of its agents that got an item (a pruned one isn't made again) */
+  private agentsSeen = new Map<string, Set<number>>();
+
+  /** A time the CLI sent, if it is one (a number within a day of now). */
+  private time(t: unknown): number | undefined {
+    return typeof t === "number" && Number.isFinite(t) && Math.abs(t - this.now()) < 86_400_000 ? t : undefined;
+  }
+
   protected forget(id: string) {
+    this.agentsSeen.delete(id);
     this.counted.delete(id);
     this.gone.set(id, true);
     for (const [tool, item] of this.byTool) if (item === id) this.byTool.delete(tool);
@@ -238,6 +260,8 @@ export class ClaudeActivity extends ActivityBook {
           p.toolUses = m.usage.tool_uses;
         }
         const cur = this.get(id)!;
+        // A late frame for a workflow that ended changes nothing (its agents and phases are settled).
+        if (cur.kind === "workflow" && cur.endedAt) return;
         // `summary` is the harness's own progress line; `description` the step it's on. A
         // workflow's summary is its fixed description, and its description "phase: agent".
         const latest = cur.kind === "workflow" ? m.description : m.summary || m.description;
@@ -311,51 +335,66 @@ export class ClaudeActivity extends ActivityBook {
     const titles = new Map<number, string>();
     const agents = new Map<number, any>();
     for (const e of entries) {
-      if (e?.type === "workflow_phase" && typeof e.index === "number") titles.set(e.index, String(e.title ?? `Phase ${e.index}`));
+      if (e?.type === "workflow_phase" && typeof e.index === "number") titles.set(e.index, text(e.title) || `Phase ${e.index}`);
       else if (e?.type === "workflow_agent" && typeof e.index === "number") agents.set(e.index, e);
     }
-    for (const a of agents.values()) if (a.phaseIndex != null && !titles.has(a.phaseIndex)) titles.set(a.phaseIndex, String(a.phaseTitle ?? `Phase ${a.phaseIndex}`));
+    for (const a of agents.values()) if (a.phaseIndex != null && !titles.has(a.phaseIndex)) titles.set(a.phaseIndex, text(a.phaseTitle) || `Phase ${a.phaseIndex}`);
     const order = [...titles.keys()].sort((a, b) => a - b);
     const pos = new Map(order.map((idx, i) => [idx, i]));
 
+    const wf = this.get(id)!;
+    const known = this.agentsSeen.get(id) ?? new Set<number>();
+    this.agentsSeen.set(id, known);
     for (const a of agents.values()) {
       const childId = `${id}/${a.index}`;
       const cur = this.get(childId);
-      if (this.gone.has(childId) || (a.state === "start" && a.startedAt == null && !cur)) continue;
+      // Ended stays ended (a late frame can't revive it); seen before but gone: pruned, stays gone.
+      if (cur?.endedAt || (!cur && known.has(a.index))) continue;
+      if (a.state === "start" && a.startedAt == null && !cur) continue;
+      known.add(a.index);
       const ended = a.state === "done" || a.state === "error";
       const status: ActivityStatus = a.state === "done" ? "done" : a.state === "error" ? (a.skipped ? "stopped" : "failed") : "running";
-      const latest: string | undefined = a.lastToolSummary || (a.lastToolName ? describeTool(a.lastToolName, {}) : undefined) || cur?.latest;
+      const tool = text(a.lastToolName);
+      const latest = text(a.lastToolSummary) || (tool ? describeTool(tool, {}) : undefined) || cur?.latest;
       let steps = cur?.steps;
       if (latest && latest !== cur?.latest) {
         const n = (cur?.steps?.length ? Number(cur.steps.at(-1)!.id) + 1 : 0) || 0;
-        steps = [...(steps ?? []).map((s) => (s.status === "running" ? { ...s, status: "done" as const } : s)), { id: String(n), tool: a.lastToolName ?? "", label: latest, status: "running" as const, ts: this.now() }].slice(-ACTIVITY_MAX_STEPS);
+        steps = [...(steps ?? []).map((s) => (s.status === "running" ? { ...s, status: "done" as const } : s)), { id: String(n), tool: tool ?? "", label: latest, status: "running" as const, ts: this.now() }].slice(
+          -ACTIVITY_MAX_STEPS,
+        );
       }
       if (ended && steps?.some((s) => s.status === "running")) steps = steps.map((s) => (s.status === "running" ? { ...s, status: status === "failed" ? ("error" as const) : ("done" as const) } : s));
-      const startedAt = cur?.startedAt ?? a.startedAt ?? a.queuedAt ?? this.now();
+      const startedAt = cur?.startedAt ?? this.time(a.startedAt) ?? this.time(a.queuedAt) ?? this.now();
+      const ms = typeof a.durationMs === "number" && a.durationMs >= 0 ? a.durationMs : undefined;
       const item: ActivityItem = {
         id: childId,
         kind: "subagent",
-        title: a.label || `Agent ${a.index}`,
-        description: a.promptPreview ?? cur?.description,
+        title: text(a.label) || `Agent ${a.index}`,
+        description: text(a.promptPreview) ?? cur?.description,
         status,
         startedAt,
-        endedAt: ended ? (cur?.endedAt ?? (a.durationMs ? startedAt + a.durationMs : this.now())) : undefined,
+        endedAt: ended ? Math.min(this.now(), ms !== undefined ? startedAt + ms : this.now()) : undefined,
         parentId: id,
         phase: a.phaseIndex != null ? pos.get(a.phaseIndex) : undefined,
-        background: true,
-        agentType: a.agentType ?? cur?.agentType,
-        model: a.model ?? cur?.model,
-        tokens: a.tokens ?? cur?.tokens,
-        toolUses: a.toolCalls ?? cur?.toolUses,
+        // A foreground workflow's agents end with the turn, like it.
+        background: wf.background,
+        agentType: text(a.agentType) ?? cur?.agentType,
+        model: text(a.model) ?? cur?.model,
+        tokens: typeof a.tokens === "number" ? a.tokens : cur?.tokens,
+        toolUses: typeof a.toolCalls === "number" ? a.toolCalls : cur?.toolUses,
         latest,
         steps,
-        summary: a.error ?? a.resultPreview ?? cur?.summary,
+        summary: text(a.error) ?? text(a.resultPreview) ?? cur?.summary,
       };
       if (!cur || JSON.stringify(cur) !== JSON.stringify(item)) this.put(item);
     }
 
     if (!order.length) return undefined;
-    const list = [...agents.values()];
+    // An agent whose item already ended counts as it ended (a late frame may say otherwise).
+    const list = [...agents.values()].map((a) => {
+      const it = this.get(`${id}/${a.index}`);
+      return it?.endedAt ? { ...a, state: it.status === "done" ? "done" : "error", skipped: it.status === "stopped" } : a;
+    });
     // A phase with no agents of its own is over once a later one has started.
     const lastStarted = Math.max(-1, ...list.filter((a) => a.phaseIndex != null).map((a) => pos.get(a.phaseIndex)!));
     return order.map((idx, i): ActivityPhase => {
