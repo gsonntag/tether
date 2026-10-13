@@ -735,9 +735,9 @@ const ops: Handlers = {
     return s && !s.closed ? s.plans.setDraft(String(planId), draft, b) : saveStoredDraft(sessionId, String(planId), draft, b);
   },
 
-  async planAction({ sessionId, planId, action, draft }) {
+  async planAction({ sessionId, planId, action, draft, base }) {
     if (!["discuss", "revise", "approve"].includes(action)) throw new Error(`unknown plan action ${action}`);
-    await (await getLive(sessionId)).plans.act(String(planId), action, draft);
+    await (await getLive(sessionId)).plans.act(String(planId), action, draft, typeof base === "number" ? base : undefined);
     return {};
   },
 

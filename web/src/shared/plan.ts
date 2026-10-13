@@ -51,6 +51,8 @@ export interface PlanReviewState {
   discussing?: { text: string; ids: string[]; ts: number };
   /** when a waiting approval was declined to discuss the plan: Approve still applies to it */
   held?: number;
+  /** approved from here after a discussion (the agent was asked to go ahead) */
+  approved?: number;
   /**
    * sent back for revision with these comments; `next` is the revised plan. `closed`: the turn that
    * took the request ended without a new plan, so a later plan isn't taken for the revision.
@@ -122,6 +124,53 @@ export function mergeAgentReplies(incoming: PlanDraft, current: PlanDraft | unde
   });
   const thread = fold(incoming.thread ?? [], current.thread ?? []);
   return { ...incoming, comments, ...(thread.length ? { thread } : {}) };
+}
+
+const replyKey = (r: PlanReply) => r.id ?? `${r.author}:${r.text}`;
+
+/**
+ * Three-way merge of a list by key: the remote list, without what the local side removed (since
+ * `base`), plus what it added, each after the entry it followed.
+ */
+function mergeList<T>(base: T[], local: T[], remote: T[], key: (x: T) => string): T[] {
+  const inBase = new Set(base.map(key));
+  const inLocal = new Set(local.map(key));
+  const out = remote.filter((x) => !inBase.has(key(x)) || inLocal.has(key(x)));
+  local.forEach((x, i) => {
+    if (inBase.has(key(x)) || out.some((o) => key(o) === key(x))) return;
+    let at = 0;
+    for (let j = i - 1; j >= 0 && !at; j--) at = out.findIndex((o) => key(o) === key(local[j]!)) + 1;
+    out.splice(at, 0, x);
+  });
+  return out;
+}
+
+/**
+ * A device's edit (`local`, started from `base`) on top of the draft as it is now (`remote`):
+ * comments and replies are merged by id, and the local side's edits and deletions apply only to
+ * what it changed, so another device's new comments, replies and the agent's answers all stay.
+ */
+export function mergeDrafts(base: PlanDraft | undefined, local: PlanDraft, remote: PlanDraft | undefined): PlanDraft {
+  const b = base ?? EMPTY_DRAFT;
+  const r = remote ?? EMPTY_DRAFT;
+  const byId = (d: PlanDraft) => new Map(d.comments.map((c) => [c.id, c]));
+  const [bc, lc, rc] = [byId(b), byId(local), byId(r)];
+  const ids = mergeList(
+    b.comments.map((c) => c.id),
+    local.comments.map((c) => c.id),
+    r.comments.map((c) => c.id),
+    (x) => x,
+  );
+  const comments = ids.map((id) => {
+    const [was, mine, theirs] = [bc.get(id), lc.get(id), rc.get(id)];
+    if (!mine || !theirs) return (mine ?? theirs)!;
+    const pick = <K extends keyof PlanComment>(k: K) => (was && JSON.stringify(mine[k]) === JSON.stringify(was[k]) ? theirs[k] : mine[k]);
+    const replies = mergeList(repliesOf(was ?? {}), repliesOf(mine), repliesOf(theirs), replyKey);
+    const c = { ...theirs, text: pick("text"), quote: pick("quote"), offset: pick("offset"), anchor: pick("anchor"), resolved: pick("resolved"), replies: replies.length ? replies : undefined };
+    return Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)) as unknown as PlanComment;
+  });
+  const thread = mergeList(b.thread ?? [], local.thread ?? [], r.thread ?? [], replyKey);
+  return { comments, general: local.general !== b.general ? local.general : r.general, ...(thread.length ? { thread } : {}) };
 }
 
 /** Markdown blockquote of `text`, one `>` per line. */

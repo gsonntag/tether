@@ -15,7 +15,7 @@ import { userParts } from "../../web/src/shared/bash";
 import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
 import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
-import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
+import { applyEvent, emptyState, findPlan, type Transcript } from "../../web/src/shared/reducer";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
@@ -503,6 +503,7 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+    this.plans.disarm(); // a new message changes the plan's approval
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
       if (!this.t.state.pending?.length) return this.sendTyped(text);
@@ -517,6 +518,7 @@ export abstract class LiveSession {
   }
 
   protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean } = {}): PendingMessage {
+    this.plans.disarm();
     const now = Date.now();
     const p: PendingMessage = { id: crypto.randomUUID(), text, mode, ts: now, ...(mode === "steer" ? { readyAt: opts.now ? now : now + LiveSession.STEER_GRACE_MS } : {}) };
     const list = this.t.state.pending ?? [];
@@ -853,6 +855,12 @@ export abstract class LiveSession {
     if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
+  }
+
+  /** Records the person's answer on a plan part (plan review approving it from Tether). */
+  markPlan(planId: string, outcome: "approved" | "feedback") {
+    const hit = findPlan(this.t.messages, planId);
+    if (hit && hit.part.outcome !== outcome) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, outcome } : p)) } });
   }
 
   cancelAllUi() {

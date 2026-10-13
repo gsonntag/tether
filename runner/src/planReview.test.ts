@@ -8,6 +8,7 @@ import {
   cleanDraft,
   discussionMessage,
   mergeAgentReplies,
+  mergeDrafts,
   parseDiscussion,
   parseVerdicts,
   reviseMessage,
@@ -15,7 +16,7 @@ import {
   type PlanDraft,
 } from "../../web/src/shared/plan";
 import type { LiveState, Msg, SessionEvent, UiResponse } from "../../web/src/shared/protocol";
-import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
+import { applyEvent, emptyState, findPlan, type Transcript } from "../../web/src/shared/reducer";
 import { CONFIG_DIR } from "./config";
 import { forgetPlans, PlanReviews, saveStoredDraft, type PlanHost } from "./planReview";
 
@@ -90,6 +91,23 @@ describe("drafts", () => {
     expect(prompt.match(/<\/comments>/g)).toHaveLength(1);
   });
 
+  test("a stale edit merges three ways: both sides' additions stay, each side's edits and deletions apply to what it changed", () => {
+    const u = (text: string, id: string) => ({ author: "user" as const, text, id });
+    const base: PlanDraft = { comments: [c("a", 0, "A"), c("b", 5, "B"), { ...c("x", 9, "X"), replies: [u("x1", "u1")] }], general: "g" };
+    // this device: edits A, deletes B, adds C, replies under X, deletes its x1 reply
+    const local: PlanDraft = { comments: [c("a", 0, "A edited"), c("c", 7, "C"), { ...c("x", 9, "X"), replies: [u("mine", "u2")] }], general: "g" };
+    // meanwhile: another device added D and replied under X; the agent answered A
+    const remote: PlanDraft = {
+      comments: [{ ...c("a", 0, "A"), replies: [{ author: "agent", text: "ok", id: "r1" }] }, c("b", 5, "B"), c("d", 3, "D"), { ...c("x", 9, "X"), replies: [u("x1", "u1"), u("theirs", "u3")] }],
+      general: "g, edited there",
+    };
+    const m = mergeDrafts(base, local, remote);
+    expect(Object.fromEntries(m.comments.map((x) => [x.id, x.text]))).toEqual({ a: "A edited", d: "D", x: "X", c: "C" });
+    expect(m.comments.find((x) => x.id === "a")!.replies).toEqual([{ author: "agent", text: "ok", id: "r1" }]);
+    expect(m.comments.find((x) => x.id === "x")!.replies!.map((r) => r.text)).toEqual(["mine", "theirs"]);
+    expect(m.general).toBe("g, edited there");
+  });
+
   test("verdicts map back to comment ids; unknown statuses are dropped", () => {
     const json = { verdicts: [{ id: "C1", status: "addressed", reason: "Done." }, { id: "[C2]", status: "Partly", reason: "Half" }, { id: "C3", status: "maybe" }] };
     expect(parseVerdicts(json, ["a", "b", "c"])).toEqual({ a: { status: "addressed", reason: "Done." }, b: { status: "partly", reason: "Half" } });
@@ -111,19 +129,31 @@ function host(id: string, harness = "claude-code") {
     harness,
     t,
     setState: (state: Partial<LiveState>) => emit({ type: "state", state }),
-    prompt: async (text) => void sent.push(text),
+    // like LiveSession.prompt: disarms at once; the message reaches the transcript a moment later (unless queued)
+    prompt: async (text) => {
+      reviews.disarm();
+      sent.push(text);
+      await Promise.resolve();
+      if (!queue) say("user", text);
+    },
     uiRespond: (r) => {
+      reviews.disarm();
       responses.push(r);
       t.state.pendingUi = t.state.pendingUi.filter((u) => u.id !== r.id);
       return true;
     },
+    markPlan: (planId) => {
+      const hit = findPlan(t.messages, planId);
+      if (hit) hit.part.outcome = "approved";
+    },
   };
+  let queue = false;
   let check = async (_: any) => JSON.stringify({ verdicts: [{ id: "C1", status: "addressed", reason: "Uses bun now." }] });
   reviews = new PlanReviews(h, (req) => check(req));
   const plan = (msgId: string, planId: string, text: string, ts = Date.now()) =>
     emit({ type: "msg", msg: { id: msgId, role: "assistant", parts: [{ type: "plan", id: planId, text }], ts } });
   const say = (role: Msg["role"], text: string) => emit({ type: "msg", msg: { id: `m${t.messages.length}`, role, parts: [{ type: "text", text }], ts: Date.now() } });
-  return { t, sent, responses, reviews, emit, plan, say, setCheck: (f: typeof check) => (check = f) };
+  return { t, sent, responses, reviews, emit, plan, say, setCheck: (f: typeof check) => (check = f), setQueue: (q: boolean) => (queue = q) };
 }
 
 describe("plan reviews on the runner", () => {
@@ -137,8 +167,9 @@ describe("plan reviews on the runner", () => {
     again.reviews.load();
     expect(again.t.state.plans?.p1?.draft?.comments[0]?.text).toBe("Hm");
     h.reviews.setDraft("p1", null);
-    expect(h.t.state.plans).toEqual({});
-    expect(JSON.parse(readFileSync(join(CONFIG_DIR, "plans", "claude-code_s1.json"), "utf8"))).toEqual({});
+    // the revision stays (it never goes back), the draft is gone
+    expect(h.t.state.plans).toEqual({ p1: { rev: 2 } });
+    expect(JSON.parse(readFileSync(join(CONFIG_DIR, "plans", "claude-code_s1.json"), "utf8"))).toEqual({ p1: { rev: 2 } });
   });
 
   test("discuss on a waiting plan declines it without a verdict, then splits the answer into the threads", async () => {
@@ -163,7 +194,36 @@ describe("plan reviews on the runner", () => {
     expect(h.sent.at(-1)).toContain("Call ExitPlanMode with it unchanged");
     expect(h.reviews.autoApproves("1.  Do it")).toBe(true);
     expect(h.reviews.autoApproves("1. Do it")).toBe(false); // once
-    expect(h.t.state.plans?.p1).toBeUndefined();
+    expect(h.t.state.plans?.p1).toMatchObject({ approved: expect.any(Number) });
+    expect(h.t.state.plans?.p1?.draft).toBeUndefined();
+    expect(findPlan(h.t.messages, "p1")?.part.outcome).toBe("approved");
+  });
+
+  test("an answer that is only a new plan still ends the discussion", async () => {
+    const h = host("claude-code:s12");
+    h.reviews.load();
+    h.plan("a1", "p1", "1. Do it", Date.now() - 1000);
+    h.emit({ type: "state", state: { status: "running", pendingUi: [{ id: "req1", kind: "plan", title: "Plan", planId: "p1" }] } });
+    await h.reviews.act("p1", "discuss", { comments: [c("a", 0, "Why?")], general: "" });
+    h.say("user", h.responses[0]!.value!);
+    h.plan("a2", "p2", "1. Do it, better");
+    h.emit({ type: "state", state: { pendingUi: [{ id: "req2", kind: "plan", title: "Plan", planId: "p2" }] } });
+    expect(Object.values(h.t.state.plans!).some((p) => p.discussing)).toBe(false);
+    // nothing blocks acting on the waiting plan
+    await h.reviews.act("p2", "approve", { comments: [], general: "" });
+    expect(h.responses.at(-1)).toEqual({ id: "req2", allow: true });
+  });
+
+  test("two actions at once run one after the other: the second sees the first's result", async () => {
+    const h = host("claude-code:s13");
+    h.reviews.load();
+    h.plan("a1", "p1", "plan", Date.now() - 1000);
+    h.emit({ type: "state", state: { status: "running", pendingUi: [{ id: "req1", kind: "plan", title: "Plan", planId: "p1" }] } });
+    const d = { comments: [c("a", 0, "Hm")], general: "" };
+    const results = await Promise.allSettled([h.reviews.act("p1", "approve", d), h.reviews.act("p1", "revise", d)]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    // the revise found no waiting approval: it went as a message, after the approval
+    expect(h.responses).toEqual([{ id: "req1", allow: true }]);
   });
 
   test("revise remembers the comments; the next plan is linked and checked once", async () => {
@@ -199,7 +259,7 @@ describe("plan reviews on the runner", () => {
     const agent = { author: "agent" as const, text: "Yes", id: "r1" };
     expect(h.reviews.setDraft("p1", { comments: [{ ...c("a", 0, "Hm"), replies: [agent] }], general: "" }, 1)).toEqual({ rev: 2 });
     // a device still on rev 1 (say, offline since) can't overwrite or clear it
-    expect(h.reviews.setDraft("p1", null, 1)).toEqual({ stale: true, rev: 2 });
+    expect(h.reviews.setDraft("p1", null, 1)).toEqual({ stale: true, rev: 2, draft: { comments: [{ ...c("a", 0, "Hm"), replies: [agent] }], general: "" } });
     expect(h.t.state.plans?.p1?.draft?.comments[0]?.replies).toEqual([agent]);
     // up to date: the person resolved the thread away, and it stays away
     expect(h.reviews.setDraft("p1", { comments: [c("a", 0, "Hm")], general: "" }, 2)).toEqual({ rev: 3 });
@@ -209,7 +269,7 @@ describe("plan reviews on the runner", () => {
   test("a session that isn't running gets the draft in its file; removing the session deletes it", () => {
     const file = join(CONFIG_DIR, "plans", "claude-code_s6.json");
     expect(saveStoredDraft("claude-code:s6", "p1", { comments: [c("a", 0, "Hm")], general: "" }, 0)).toEqual({ rev: 1 });
-    expect(saveStoredDraft("claude-code:s6", "p1", null, 0)).toEqual({ stale: true, rev: 1 });
+    expect(saveStoredDraft("claude-code:s6", "p1", null, 0)).toMatchObject({ stale: true, rev: 1 });
     expect(JSON.parse(readFileSync(file, "utf8")).p1.draft.comments[0].text).toBe("Hm");
     forgetPlans("claude-code:s6");
     expect(existsSync(file)).toBe(false);
@@ -240,7 +300,8 @@ describe("plan reviews on the runner", () => {
     // same turn: Claude calls ExitPlanMode again with the same plan
     h.plan("a2", "p2", "1.  Do it");
     h.emit({ type: "state", state: { pendingUi: [{ id: "req2", kind: "plan", title: "Plan", planId: "p2" }] } });
-    expect(h.t.state.plans?.p1).toBeUndefined();
+    expect(h.t.state.plans?.p1?.draft).toBeUndefined();
+    expect(h.t.state.plans?.p1?.held).toBeUndefined();
     expect(h.t.state.plans?.p2?.draft?.comments[0]?.replies?.[0]).toMatchObject({ author: "agent", text: "Because." });
     expect(h.t.state.plans?.p2?.held).toBeUndefined();
     await h.reviews.act("p2", "approve", h.t.state.plans!.p2!.draft!);
@@ -284,6 +345,25 @@ describe("plan reviews on the runner", () => {
     await h.reviews.act("p1", "approve", { comments: [], general: "" });
     h.say("user", "actually, wait");
     expect(h.reviews.autoApproves("plan")).toBe(false);
+    // queued behind other messages: not live until the approval itself reaches the agent
+    h.setQueue(true);
+    h.t.state.plans = { p1: { held: 1 } };
+    h.t.state.pending = [{ id: "q", text: "older", mode: "followUp", ts: 0 }];
+    await h.reviews.act("p1", "approve", { comments: [], general: "" });
+    h.say("user", "older");
+    h.t.state.pending = [];
+    expect(h.reviews.autoApproves("plan")).toBe(false);
+    h.t.state.plans = { p1: { held: 1 } };
+    await h.reviews.act("p1", "approve", { comments: [], general: "" });
+    h.say("user", "older");
+    h.say("user", h.sent.at(-1)!);
+    expect(h.reviews.autoApproves("plan")).toBe(true);
+    // never armed for an empty plan
+    h.setQueue(false);
+    h.plan("a0", "p0", " ");
+    h.t.state.plans = { p0: { held: 1 } };
+    await h.reviews.act("p0", "approve", { comments: [], general: "" });
+    expect(h.reviews.autoApproves(" ")).toBe(false);
     // held, but the agent has put up a different plan meanwhile: refused
     h.t.state.plans = { p1: { held: 1 } };
     h.plan("a2", "p2", "another plan");

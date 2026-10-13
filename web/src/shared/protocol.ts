@@ -844,14 +844,19 @@ export interface Ops {
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
   /**
    * A plan's draft comments, kept on the runner so every device has them; null clears it. `base`:
-   * the review's `rev` the edit started from; when it has moved on, nothing is saved (`stale`).
+   * the review's `rev` the edit started from; when it has moved on, nothing is saved (`stale`, with
+   * the draft as it is now, to merge into).
    */
-  setPlanDraft: { args: { sessionId: string; planId: string; draft: PlanDraft | null; base?: number }; result: { rev?: number; stale?: boolean } };
+  setPlanDraft: {
+    args: { sessionId: string; planId: string; draft: PlanDraft | null; base?: number };
+    result: { rev?: number; stale?: boolean; draft?: PlanDraft };
+  };
   /**
    * Discuss (the agent answers the comments, the plan stays as it is), Revise (sent back for a new
-   * plan) or Approve, with the draft as this device has it. Revise and Approve clear the draft.
+   * plan) or Approve, with the draft as this device has it (`base`: its `rev`; refused when the
+   * draft has moved on since). Revise and Approve clear the draft.
    */
-  planAction: { args: { sessionId: string; planId: string; action: "discuss" | "revise" | "approve"; draft: PlanDraft }; result: {} };
+  planAction: { args: { sessionId: string; planId: string; action: "discuss" | "revise" | "approve"; draft: PlanDraft; base?: number }; result: {} };
   /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
   uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };
   getUsage: { args: { force?: boolean }; result: UsageReport };

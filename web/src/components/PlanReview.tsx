@@ -31,7 +31,7 @@ import {
   EMPTY_DRAFT,
   formatPlanFeedback,
   isEmptyDraft,
-  mergeAgentReplies,
+  mergeDrafts,
   repliesOf,
   reviseMessage,
   type PlanComment,
@@ -121,13 +121,17 @@ function useDraft(sessionId: string, planId: string): PlanDraft {
 }
 
 /** The runner's draft revision each local edit started from (sent with the save, see setPlanDraft). */
-const bases = new Map<string, number>();
+const bases = new Map<string, { rev: number; draft?: PlanDraft }>();
 const forget = (key: string) => (dropLocal(key), bases.delete(key));
+const baseOf = (sessionId: string, planId: string) => {
+  const r = reviewOf(sessionId, planId);
+  return { rev: r?.rev ?? 0, draft: r?.draft };
+};
 
 /** Shows at once here; reaches the runner (and every other device) once typing pauses. */
 function writeDraft(sessionId: string, planId: string, d: PlanDraft) {
   const key = draftKey(sessionId, planId);
-  if (!useLocal.getState()[key]) bases.set(key, reviewOf(sessionId, planId)?.rev ?? 0);
+  if (!useLocal.getState()[key]) bases.set(key, baseOf(sessionId, planId));
   useLocal.setState({ [key]: d });
   if (!keepsPlans(sessionId)) return store(key, d);
   clearTimeout(saves.get(key)?.timer);
@@ -141,11 +145,11 @@ async function saveDraft(key: string) {
   saves.delete(key);
   if (!s || !d) return;
   try {
-    const r = await rpc("setPlanDraft", { sessionId: s.sessionId, planId: s.planId, draft: isEmptyDraft(d) ? null : d, base: bases.get(key) ?? 0 });
-    if (r.stale) return rebase(key, s, r.rev ?? 0);
+    const r = await rpc("setPlanDraft", { sessionId: s.sessionId, planId: s.planId, draft: isEmptyDraft(d) ? null : d, base: bases.get(key)?.rev ?? 0 });
+    if (r.stale) return rebase(key, s, { rev: r.rev ?? 0, draft: r.draft });
     // The runner's copy (pushed to every device, this one first) takes over, unless typing went on.
     if (useLocal.getState()[key] === d) forget(key);
-    else bases.set(key, r.rev ?? 0);
+    else bases.set(key, { rev: r.rev ?? 0, draft: d });
   } catch (e: any) {
     const msg = e?.message ?? "";
     // A runner that doesn't keep drafts: this browser does. Offline: tried again. Anything else
@@ -157,16 +161,17 @@ async function saveDraft(key: string) {
 
 /**
  * The draft moved on since this edit started (another device, the agent's answers, a Revise or
- * Approve). On a plan that has been dealt with the edit is dropped; otherwise it goes on top of
- * the runner's copy, keeping the agent's new replies, and is saved again.
+ * Approve). On a plan that has been dealt with the edit is dropped; otherwise it's merged with
+ * the runner's copy (three ways, against the draft it started from) and saved again.
  */
-function rebase(key: string, s: { sessionId: string; planId: string }, rev: number) {
+function rebase(key: string, s: { sessionId: string; planId: string }, now: { rev: number; draft?: PlanDraft }) {
   const local = useLocal.getState()[key];
   const review = reviewOf(s.sessionId, s.planId);
   const outcome = findPlan(useStore.getState().open[s.sessionId]?.messages ?? [], s.planId)?.part.outcome;
-  if (!local || (!review?.draft && (review?.revised || outcome))) return forget(key);
-  bases.set(key, rev);
-  useLocal.setState({ [key]: mergeAgentReplies(local, review?.draft) });
+  if (!local || (!now.draft && (review?.revised || review?.approved || outcome))) return forget(key);
+  const merged = mergeDrafts(bases.get(key)?.draft, local, now.draft);
+  bases.set(key, now);
+  useLocal.setState({ [key]: merged });
   saves.set(key, { ...s, timer: setTimeout(() => saveDraft(key), 0) });
 }
 
@@ -227,14 +232,16 @@ async function planAct(sessionId: string, planId: string, action: Action, reques
   clearTimeout(saves.get(key)?.timer);
   saves.delete(key);
   if (keepsPlans(sessionId)) {
+    const base = useLocal.getState()[key] ? bases.get(key)?.rev : reviewOf(sessionId, planId)?.rev;
     try {
-      await rpc("planAction", { sessionId, planId, action, draft: d });
+      await rpc("planAction", { sessionId, planId, action, draft: d, base: base ?? 0 });
       if (useLocal.getState()[key] === d) forget(key);
       return true;
     } catch (e: any) {
       if (!/doesn't know/.test(e?.message ?? "")) {
-        const local = useLocal.getState()[key];
-        if (local) writeDraft(sessionId, planId, local);
+        // Changed elsewhere meanwhile: merged here (and saved) to look over before sending again.
+        if (/another device/.test(e?.message ?? "") && useLocal.getState()[key]) rebase(key, { sessionId, planId }, baseOf(sessionId, planId));
+        else if (useLocal.getState()[key]) writeDraft(sessionId, planId, useLocal.getState()[key]!);
         toast("error", e?.message ?? String(e));
         return false;
       }
@@ -469,7 +476,8 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const comments = useMemo(() => [...draft.comments].sort((a, b) => a.offset - b.offset), [draft.comments]);
   const save = (d: Partial<PlanDraft>) => writeDraft(sessionId, part.id, { ...readDraft(sessionId, part.id), ...d });
   const message = formatPlanFeedback(comments, draft.general, draft.thread);
-  const discussing = !!review?.discussing;
+  // A waiting approval means the agent is done answering (it may have answered with a new plan alone).
+  const discussing = !!review?.discussing && !request;
 
   const addComment = () => {
     if (!spot || !composing.trim()) return;
@@ -484,7 +492,8 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const removeComment = (id: string) => save({ comments: readDraft(sessionId, part.id).comments.filter((c) => c.id !== id) });
   const addReply = () => {
     if (!replying?.text.trim()) return setReplying(undefined);
-    const r: PlanReply = { author: "user", text: replying.text.trim() };
+    // An id, so another device's copy of the thread merges with this one (mergeDrafts).
+    const r: PlanReply = { author: "user", text: replying.text.trim(), id: `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` };
     if (replying.id === "general") save({ thread: [...(readDraft(sessionId, part.id).thread ?? []), r] });
     else patchComment(replying.id, (c) => ({ ...c, replies: [...repliesOf(c), r] }));
     setReplying(undefined);
@@ -656,7 +665,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
       />
     ) : (
       <HStack gap={1} hAlign="end">
-        <Button label="Reply" size="sm" variant="ghost" onClick={() => setReplying({ id, text: "" })} />
+        <Button label="Reply" size="sm" variant="ghost" onClick={() => ((cancelled.current = false), setReplying({ id, text: "" }))} />
         {extra}
       </HStack>
     );

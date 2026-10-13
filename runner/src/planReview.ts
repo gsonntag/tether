@@ -38,6 +38,8 @@ export interface PlanHost {
   setState(s: Partial<LiveState>): void;
   prompt(text: string, mode?: "steer" | "followUp"): Promise<void>;
   uiRespond(r: UiResponse): boolean;
+  /** records the person's answer on the plan part */
+  markPlan(planId: string, outcome: "approved"): void;
 }
 
 export type PlanAction = "discuss" | "revise" | "approve";
@@ -75,13 +77,16 @@ function writePlans(sessionId: string, plans: Plans) {
 /** A removed session's plan reviews go with it. */
 export const forgetPlans = (sessionId: string) => rmSync(fileOf(sessionId), { force: true });
 
-/** One review changed: the draft's revision moves with every change to it; old plan texts are dropped. */
+/**
+ * One review changed: the draft's revision moves with every change to it (and is kept once there
+ * is one, so it never goes back); old plan texts are dropped.
+ */
 function update(plans: Plans, planId: string, f: (p: PlanReviewState) => PlanReviewState): Plans {
   const cur = plans[planId] ?? {};
   const next = prune(f(cur));
   if (JSON.stringify(next.draft) !== JSON.stringify(cur.draft)) next.rev = (cur.rev ?? 0) + 1;
   const out = { ...plans };
-  if (Object.keys(next).filter((k) => k !== "rev").length) out[planId] = next;
+  if (Object.keys(next).length) out[planId] = next;
   else delete out[planId];
   const texts = Object.keys(out).filter((id) => out[id]!.previous?.text);
   for (const id of texts.slice(0, -KEEP_TEXTS)) out[id] = { ...out[id]!, previous: { ...out[id]!.previous!, text: "" } };
@@ -99,11 +104,14 @@ function draftUpdate(p: PlanReviewState, draft: PlanDraft | null, base?: number)
   return { ...p, draft: isEmptyDraft(next) ? undefined : next };
 }
 
+type SaveResult = { rev?: number; stale?: boolean; draft?: PlanDraft };
+const staleResult = (p: PlanReviewState | undefined): SaveResult => ({ stale: true, rev: p?.rev ?? 0, ...(p?.draft ? { draft: p.draft } : {}) });
+
 /** setPlanDraft for a session that isn't running: straight to its file (nothing to push to). */
-export function saveStoredDraft(sessionId: string, planId: string, draft: PlanDraft | null, base?: number): { rev?: number; stale?: boolean } {
+export function saveStoredDraft(sessionId: string, planId: string, draft: PlanDraft | null, base?: number): SaveResult {
   const plans = readPlans(sessionId);
   const next = draftUpdate(plans[planId] ?? {}, draft, base);
-  if (!next) return { stale: true, rev: plans[planId]?.rev ?? 0 };
+  if (!next) return staleResult(plans[planId]);
   const out = update(plans, planId, () => next);
   writePlans(sessionId, out);
   return { rev: out[planId]?.rev ?? 0 };
@@ -114,7 +122,7 @@ let replyN = 0;
 export class PlanReviews {
   private loaded = false;
   /** Approved after a discussion declined the approval: the plan the agent submits again is approved without asking, once. */
-  private approveNext?: { planId: string; text: string };
+  private approveNext?: { planId: string; text: string; message: string; live: boolean };
 
   constructor(
     private s: PlanHost,
@@ -160,10 +168,10 @@ export class PlanReviews {
     }
   }
 
-  setDraft(planId: string, draft: PlanDraft | null, base?: number): { rev?: number; stale?: boolean } {
+  setDraft(planId: string, draft: PlanDraft | null, base?: number): SaveResult {
     const cur = this.all[planId] ?? {};
     const next = draftUpdate(cur, draft, base);
-    if (!next) return { stale: true, rev: cur.rev ?? 0 };
+    if (!next) return staleResult(cur);
     this.patch(planId, () => next);
     return { rev: this.all[planId]?.rev ?? 0 };
   }
@@ -174,12 +182,24 @@ export class PlanReviews {
     return !!req && this.s.uiRespond({ id: req.id, ...r });
   }
 
-  async act(planId: string, action: PlanAction, draft: PlanDraft) {
+  /** the actions in progress, one at a time (two devices pressing at once see each other's result) */
+  private acting: Promise<unknown> = Promise.resolve();
+
+  act(planId: string, action: PlanAction, draft: PlanDraft, base?: number): Promise<void> {
+    const run = this.acting.then(() => this.actNow(planId, action, draft, base));
+    this.acting = run.catch(() => {});
+    return run;
+  }
+
+  private async actNow(planId: string, action: PlanAction, draft: PlanDraft, base?: number) {
+    this.disarm();
     const d = cleanDraft(draft) ?? EMPTY_DRAFT;
     const review = this.all[planId] ?? {};
     const waiting = !!this.request(planId);
     const idle = this.s.t.state.status === "idle";
-    if (review.discussing) throw new Error("The agent is still answering your comments.");
+    // A waiting approval means the agent is done answering (it may have answered with the plan alone).
+    if (review.discussing && !waiting) throw new Error("The agent is still answering your comments.");
+    if (base !== undefined && base !== (review.rev ?? 0)) throw new Error("Your comments changed on another device meanwhile: check them and try again.");
     if (action === "discuss") {
       const { text, ids } = discussionMessage(d);
       if (!text) throw new Error("Write a comment first.");
@@ -187,7 +207,12 @@ export class PlanReviews {
       const latest = this.latest();
       if (!waiting && !idle) throw new Error("The agent is working: discuss the plan once it has finished.");
       if (!waiting && !review.held && (latest?.id !== planId || latest.approved)) throw new Error("A newer plan has replaced this one.");
-      this.patch(planId, (p) => ({ ...p, draft: mergeAgentReplies(d, p.draft), discussing: { text, ids, ts: Date.now() }, held: waiting ? Date.now() : p.held }));
+      this.patch(planId, (p) => ({
+        ...p,
+        draft: base === undefined ? mergeAgentReplies(d, p.draft) : d,
+        discussing: { text, ids, ts: Date.now() },
+        held: waiting ? Date.now() : p.held,
+      }));
       // Declining a waiting approval this way keeps the plan under review (the adapters see `discuss`).
       if (!this.answer(planId, { allow: false, value: text, discuss: true })) await this.s.prompt(text, "followUp");
       return;
@@ -203,40 +228,55 @@ export class PlanReviews {
         this.patch(planId, (p) => ({ ...p, revised: review.revised }));
         throw e;
       }
-      this.patch(planId, (p) => ({ ...p, draft: undefined, held: undefined }));
+      this.patch(planId, (p) => ({ ...p, draft: undefined, held: undefined, discussing: undefined }));
       return;
     }
     const notes = approveNotes(d);
+    const done = (p: PlanReviewState): PlanReviewState => ({ ...p, draft: undefined, held: undefined, discussing: undefined });
     if (this.answer(planId, { allow: true })) {
+      this.patch(planId, done);
       if (notes) await this.s.prompt(notes, "steer");
-    } else if (review.held) {
-      const text = this.planText(planId);
-      const other = this.s.t.state.pendingUi.find((r) => r.kind === "plan" && r.planId !== planId);
-      if (other) {
-        // Already submitted again: approve that request if it's the same plan.
-        if (squash(this.planText(other.planId ?? "")) !== squash(text)) throw new Error("The agent has since presented a different plan: review that one.");
-        this.s.uiRespond({ id: other.id, allow: true });
-        if (notes) await this.s.prompt(notes, "steer");
-      } else {
-        if (!idle) throw new Error("The agent is working: approve once it has finished.");
-        const claude = this.s.harness === "claude-code";
-        const ask = claude ? "I approve the plan as it stands. Call ExitPlanMode with it unchanged, then implement it." : "I approve the plan as it stands. Implement it now.";
-        await this.s.prompt(notes ? `${ask}\n\nNotes for the work:\n\n${notes}` : ask);
-        // Armed after the prompt went out (its own message would disarm it).
-        this.approveNext = { planId, text: squash(text) };
-      }
-    } else throw new Error("The plan isn't waiting for approval any more.");
-    this.patch(planId, (p) => ({ ...p, draft: undefined, held: undefined }));
+      return;
+    }
+    if (!review.held) throw new Error("The plan isn't waiting for approval any more.");
+    const text = squash(this.planText(planId));
+    const others = this.s.t.state.pendingUi.filter((r) => r.kind === "plan" && r.planId !== planId);
+    if (others.length) {
+      // Already submitted again: approve that request if it's this plan, unchanged.
+      const same = text && others.find((r) => squash(this.planText(r.planId ?? "")) === text);
+      if (!same) throw new Error("The agent has since presented a different plan: review that one.");
+      this.s.uiRespond({ id: same.id, allow: true });
+      this.patch(planId, done);
+      if (notes) await this.s.prompt(notes, "steer");
+      return;
+    }
+    if (!idle) throw new Error("The agent is working: approve once it has finished.");
+    const claude = this.s.harness === "claude-code";
+    const ask = claude ? "I approve the plan as it stands. Call ExitPlanMode with it unchanged, then implement it." : "I approve the plan as it stands. Implement it now.";
+    const message = notes ? `${ask}\n\nNotes for the work:\n\n${notes}` : ask;
+    // Settled before anything is awaited, so nothing else can act on it meanwhile.
+    this.patch(planId, (p) => ({ ...done(p), approved: Date.now() }));
+    this.s.markPlan(planId, "approved");
+    const sending = this.s.prompt(message); // a new message disarms, synchronously: armed right after
+    // Armed, but live only once this message reaches the agent (queued behind others, it waits).
+    if (text) this.approveNext = { planId, text, message, live: false };
+    try {
+      await sending;
+    } catch (e) {
+      this.disarm();
+      this.patch(planId, (p) => ({ ...p, held: review.held, approved: undefined }));
+      throw e;
+    }
   }
 
-  /** The agent submits a plan approved after a discussion: true (once) when it's that plan, unchanged. */
+  /** The agent submits a plan approved after a discussion: true (once) when it's that plan, unchanged, and nothing else is waiting to go in. */
   autoApproves(text: string): boolean {
     const want = this.approveNext;
     this.approveNext = undefined;
-    return !!want && squash(text) === want.text;
+    return !!want?.live && !this.s.t.state.pending?.length && squash(text) === want.text;
   }
 
-  /** A plan approval was answered, the agent stopped, the turn ended or a new message went in: no auto-approval. */
+  /** A plan approval was answered, the agent stopped, or a new message was sent: no auto-approval. */
   disarm() {
     this.approveNext = undefined;
   }
@@ -244,9 +284,14 @@ export class PlanReviews {
   /** Every session event, after it was applied. */
   observe(e: SessionEvent) {
     if (!this.loaded) return;
-    if (e.type === "msg" && e.msg.role === "user") this.disarm();
+    const armed = this.approveNext;
+    // The approval message reaching the agent makes the auto-approval live; anything after it ends it.
+    if (armed && e.type === "msg" && e.msg.role === "user") {
+      if (!armed.live && textOf(e.msg).includes(armed.message.trim())) armed.live = true;
+      else if (armed.live) this.disarm();
+    }
     if (e.type === "msg" && e.msg.role === "assistant") for (const p of e.msg.parts) if (p.type === "plan") this.link(p.id, e.msg.ts);
-    if (e.type === "state" && e.state.status === "idle") this.disarm();
+    if (e.type === "state" && e.state.status === "idle" && armed?.live) this.disarm();
     if (e.type === "state" && (e.state.status === "idle" || e.state.pendingUi?.some((r) => r.kind === "plan"))) this.settle();
   }
 
@@ -320,7 +365,9 @@ export class PlanReviews {
     const said: string[] = [];
     for (let j = i + 1; j < msgs.length && msgs[j]!.role !== "user"; j++) if (msgs[j]!.role === "assistant") said.push(textOf(msgs[j]!));
     const answer = said.filter(Boolean).join("\n\n");
-    if (!answer && this.s.t.state.status !== "idle") return;
+    // Over at the turn's end, or when a plan waits for approval (the agent may answer with a plan alone).
+    const over = this.s.t.state.status === "idle" || this.s.t.state.pendingUi.some((r) => r.kind === "plan");
+    if (!over) return;
     const model = this.s.t.state.model;
     const reply = (text: string) => ({ author: "agent" as const, text, id: `r${Date.now().toString(36)}${(replyN++).toString(36)}`, ...(model ? { model } : {}) });
     this.patch(planId, (p) => ({
