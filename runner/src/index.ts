@@ -724,6 +724,17 @@ const ops: Handlers = {
     return {};
   },
 
+  async setPlanDraft({ sessionId, planId, draft }) {
+    (await getLive(sessionId)).plans.setDraft(String(planId), draft);
+    return {};
+  },
+
+  async planAction({ sessionId, planId, action, draft }) {
+    if (!["discuss", "revise", "approve"].includes(action)) throw new Error(`unknown plan action ${action}`);
+    await (await getLive(sessionId)).plans.act(String(planId), action, draft);
+    return {};
+  },
+
   async uiRespond({ sessionId, response }) {
     // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop)
     return requireLive(sessionId).uiRespond(response) ? {} : { stale: true };

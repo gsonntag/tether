@@ -1,7 +1,10 @@
 // Plan review: a plan opens as a document; selecting text (or clicking a paragraph) offers a Comment
-// button, and comments (with follow-up replies) sit in the right-hand margin (a bottom sheet on phones). The comments go back to the agent as one
-// message of quote + reply pairs: as the feedback that declines the plan when the agent waits for
-// approval (Claude Code's ExitPlanMode), otherwise as an ordinary message.
+// button, and comments (with their threads) sit in the right-hand margin (a bottom sheet on phones).
+// The draft is kept on the runner, so it follows you across devices. From there:
+//  - Discuss: the agent answers each comment in its thread and leaves the plan as it is;
+//  - Revise plan: the plan goes back with the comments (declining a waiting ExitPlanMode);
+//  - Approve: the agent starts, the comments follow as notes.
+// A revised plan shows what changed and whether each earlier comment was addressed.
 
 import { BottomSheet } from "@astryxdesign/core/BottomSheet";
 import { Button } from "@astryxdesign/core/Button";
@@ -11,27 +14,40 @@ import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { HStack, Layout, LayoutContent, LayoutFooter, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { List, ListItem } from "@astryxdesign/core/List";
 import { Markdown } from "@astryxdesign/core/Markdown";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
+import { ToggleButton } from "@astryxdesign/core/ToggleButton";
 import { Token } from "@astryxdesign/core/Token";
 import { ChatBubbleLeftEllipsisIcon, ClipboardDocumentListIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { create } from "zustand";
-import { formatPlanFeedback, type PlanComment } from "../shared/plan";
+import {
+  cleanDraft,
+  discussionIds,
+  EMPTY_DRAFT,
+  formatPlanFeedback,
+  isEmptyDraft,
+  repliesOf,
+  reviseMessage,
+  type PlanComment,
+  type PlanDraft,
+  type PlanReply,
+  type PlanReviewState,
+  type PlanVerdict,
+} from "../shared/plan";
 import type { Part, UiRequest } from "../shared/protocol";
-import { act, NARROW_QUERY, useStore } from "../store";
+import { act, NARROW_QUERY, rpc, toast, useStore } from "../store";
 import { FileRefScope, fileRefMarkdown } from "./FileRefs";
+import { ModelName } from "./ModelName";
+import { Diff } from "./Transcript";
 
 type PlanPart = Extract<Part, { type: "plan" }>;
-/** A comment in the browser: `anchor` is the raw text its offset points at, to find it again. */
-type Comment = PlanComment & { anchor: string };
-interface Draft {
-  comments: Comment[];
-  general: string;
-}
+type Action = "discuss" | "revise" | "approve";
 /** Where a new comment would go (the selection or the clicked paragraph). */
-type Spot = Omit<Comment, "id" | "text">;
+type Spot = Pick<PlanComment, "quote" | "offset"> & { anchor: string };
 
 const HIGHLIGHT = "tether-plan-comment";
 const HIGHLIGHT_ACTIVE = "tether-plan-active";
@@ -49,47 +65,162 @@ const quoteText: CSSProperties = {
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
 };
+const agentBox: CSSProperties = { background: "var(--color-background-muted)", borderRadius: "var(--radius-inner)", padding: "var(--spacing-2)" };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
 const minZero: CSSProperties = { minWidth: 0 };
+const hidden: CSSProperties = { display: "none" };
 // The CSS Custom Highlight API marks commented text without touching the rendered markdown.
 const highlightCss = `::highlight(${HIGHLIGHT}){background-color:var(--color-warning-muted)}::highlight(${HIGHLIGHT_ACTIVE}){background-color:var(--color-accent-muted)}`;
 
-// ---------------- drafts (kept in localStorage until sent) ----------------
+// ---------------- drafts (kept on the runner, so every device has them) ----------------
 
-const EMPTY: Draft = { comments: [], general: "" };
 const draftKey = (sessionId: string, planId: string) => `tether.plan.${sessionId}.${planId}`;
-const useDrafts = create<Record<string, Draft>>(() => ({}));
+/** Edits the runner doesn't have yet (the last moments of typing; all of them with a runner too old to keep drafts). */
+const useLocal = create<Record<string, PlanDraft>>(() => ({}));
+const saves = new Map<string, { sessionId: string; planId: string; timer: ReturnType<typeof setTimeout> }>();
+const SAVE_MS = 600;
 
-function readDraft(key: string): Draft {
-  const live = useDrafts.getState()[key];
-  if (live) return live;
+const reviewOf = (sessionId: string, planId: string) => useStore.getState().open[sessionId]?.state.plans?.[planId];
+/** Older runners don't keep plan reviews (no LiveState.plans): drafts stay in this browser, as before. */
+const keepsPlans = (sessionId: string) => !!useStore.getState().open[sessionId]?.state.plans;
+
+function stored(key: string): PlanDraft | undefined {
   try {
-    const v = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (v && Array.isArray(v.comments)) return { comments: v.comments, general: v.general ?? "" };
-  } catch {}
-  return EMPTY;
+    return cleanDraft(JSON.parse(localStorage.getItem(key) ?? "null"));
+  } catch {
+    return undefined;
+  }
 }
 
-function writeDraft(key: string, d: Draft) {
-  useDrafts.setState({ [key]: d });
+function store(key: string, d: PlanDraft) {
   try {
-    if (d.comments.length || d.general.trim()) localStorage.setItem(key, JSON.stringify(d));
-    else localStorage.removeItem(key);
+    if (isEmptyDraft(d)) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(d));
   } catch {}
 }
 
-function useDraft(key: string): Draft {
-  const live = useDrafts((s) => s[key]);
-  return useMemo(() => live ?? readDraft(key), [live, key]);
+const dropLocal = (key: string) =>
+  useLocal.setState((s) => {
+    const { [key]: _, ...rest } = s;
+    return rest;
+  }, true);
+
+function readDraft(sessionId: string, planId: string): PlanDraft {
+  const key = draftKey(sessionId, planId);
+  return useLocal.getState()[key] ?? reviewOf(sessionId, planId)?.draft ?? stored(key) ?? EMPTY_DRAFT;
+}
+
+function useDraft(sessionId: string, planId: string): PlanDraft {
+  const key = draftKey(sessionId, planId);
+  const local = useLocal((s) => s[key]);
+  const remote = useStore((s) => s.open[sessionId]?.state.plans?.[planId]?.draft);
+  return useMemo(() => local ?? remote ?? stored(key) ?? EMPTY_DRAFT, [local, remote, key]);
+}
+
+/** Shows at once here; reaches the runner (and every other device) once typing pauses. */
+function writeDraft(sessionId: string, planId: string, d: PlanDraft) {
+  const key = draftKey(sessionId, planId);
+  useLocal.setState({ [key]: d });
+  if (!keepsPlans(sessionId)) return store(key, d);
+  clearTimeout(saves.get(key)?.timer);
+  saves.set(key, { sessionId, planId, timer: setTimeout(() => saveDraft(key), SAVE_MS) });
+}
+
+async function saveDraft(key: string) {
+  const s = saves.get(key);
+  const d = useLocal.getState()[key];
+  if (s) clearTimeout(s.timer);
+  saves.delete(key);
+  if (!s || !d) return;
+  try {
+    await rpc("setPlanDraft", { sessionId: s.sessionId, planId: s.planId, draft: isEmptyDraft(d) ? null : d });
+    // The runner's copy (pushed to every device, this one first) takes over, unless typing went on.
+    if (useLocal.getState()[key] === d) dropLocal(key);
+  } catch (e: any) {
+    // A runner that doesn't keep drafts: this browser does. Otherwise (offline) it's tried again.
+    if (/doesn't know/.test(e?.message ?? "")) store(key, d);
+    else if (!saves.has(key)) saves.set(key, { ...s, timer: setTimeout(() => saveDraft(key), 5_000) });
+  }
+}
+
+/** Typing not saved yet goes now: the plan closes, the page goes away. */
+const flushDrafts = () => [...saves.keys()].forEach((key) => void saveDraft(key));
+window.addEventListener("pagehide", flushDrafts);
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && flushDrafts());
+
+/** A draft this browser kept before the runner kept them goes up to the runner, once. */
+function useMigrate(sessionId: string, planId: string) {
+  const ready = useStore((s) => {
+    const o = s.open[sessionId];
+    return !!o?.state.plans && !o.loading && !o.syncing;
+  });
+  useEffect(() => {
+    const key = draftKey(sessionId, planId);
+    const old = ready ? stored(key) : undefined;
+    if (!old) return;
+    const cur = reviewOf(sessionId, planId)?.draft;
+    const draft = cur
+      ? { ...cur, comments: [...cur.comments, ...old.comments.filter((c) => !cur.comments.some((x) => x.id === c.id))], general: cur.general.trim() ? cur.general : old.general }
+      : old;
+    rpc("setPlanDraft", { sessionId, planId, draft }).then(
+      () => localStorage.removeItem(key),
+      () => {},
+    );
+  }, [ready, sessionId, planId]);
 }
 
 /** Which plan's document is open (one at a time). */
 const useOpenPlan = create<{ id?: string }>(() => ({}));
 export const openPlan = (id: string) => useOpenPlan.setState({ id });
-const closePlan = () => useOpenPlan.setState({ id: undefined });
+const closePlan = () => (flushDrafts(), useOpenPlan.setState({ id: undefined }));
 
 function usePlanRequest(sessionId: string, planId: string): UiRequest | undefined {
   return useStore((s) => s.open[sessionId]?.state.pendingUi.find((r) => r.kind === "plan" && r.planId === planId));
+}
+
+const useReview = (sessionId: string, planId: string): PlanReviewState | undefined => useStore((s) => s.open[sessionId]?.state.plans?.[planId]);
+
+/**
+ * Discuss, Revise or Approve with the comments as this device has them. The runner sends them and
+ * keeps the review; with an older runner Revise and Approve go from here, as before (it can't
+ * discuss). False when something failed (reported as a toast); if only the notes after an approval
+ * failed, the plan is approved but the draft is kept, so they can still be sent.
+ */
+async function planAct(sessionId: string, planId: string, action: Action, request?: UiRequest): Promise<boolean> {
+  const key = draftKey(sessionId, planId);
+  const d = readDraft(sessionId, planId);
+  clearTimeout(saves.get(key)?.timer);
+  saves.delete(key);
+  if (keepsPlans(sessionId)) {
+    try {
+      await rpc("planAction", { sessionId, planId, action, draft: d });
+      if (useLocal.getState()[key] === d) dropLocal(key);
+      return true;
+    } catch (e: any) {
+      if (!/doesn't know/.test(e?.message ?? "")) {
+        const local = useLocal.getState()[key];
+        if (local) writeDraft(sessionId, planId, local);
+        toast("error", e?.message ?? String(e));
+        return false;
+      }
+    }
+  }
+  if (action === "discuss") return toast("error", "This runner can't discuss plans yet. Restart it to update."), false;
+  if (action === "approve") {
+    const notes = formatPlanFeedback(d.comments, d.general, d.thread);
+    if (!request || !(await act("uiRespond", { sessionId, response: { id: request.id, allow: true } }))) return false;
+    if (notes && !(await act("prompt", { sessionId, text: notes, mode: "steer" }))) return false;
+  } else {
+    const text = reviseMessage(d);
+    const running = useStore.getState().open[sessionId]?.state.status === "running";
+    const ok = request
+      ? await act("uiRespond", { sessionId, response: { id: request.id, allow: false, value: text } })
+      : await act("prompt", { sessionId, text, mode: running ? "steer" : undefined });
+    if (!ok) return false;
+  }
+  dropLocal(key);
+  store(key, EMPTY_DRAFT);
+  return true;
 }
 
 /**
@@ -109,30 +240,21 @@ const claimEscape = (e: { preventDefault(): void; stopPropagation(): void; curre
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-/** The draft as the message the agent gets: quoted comments in document order, then the general note. */
-const draftMessage = (d: Draft) => formatPlanFeedback([...d.comments].sort((a, b) => a.offset - b.offset), d.general);
-
-/**
- * Approves a waiting plan. Draft comments are never left behind: they follow the approval as notes
- * for the work, and the draft is cleared. The dock's Approve and the dialog's both come here.
- * False when something failed (reported as a toast); if only the notes failed to send, the plan is
- * approved but the draft is kept, so they can be sent from the plan as comments.
- */
-async function approvePlan(sessionId: string, requestId: string, key: string): Promise<boolean> {
-  const message = draftMessage(readDraft(key));
-  if (!(await act("uiRespond", { sessionId, response: { id: requestId, allow: true } }))) return false;
-  if (message && !(await act("prompt", { sessionId, text: message, mode: "steer" }))) return false;
-  writeDraft(key, EMPTY);
-  return true;
-}
+const VERDICT: Record<PlanVerdict["status"], { label: string; color: "green" | "yellow" | "red" }> = {
+  addressed: { label: "Addressed", color: "green" },
+  partly: { label: "Partly", color: "yellow" },
+  not: { label: "Not addressed", color: "red" },
+};
 
 // ---------------- transcript card ----------------
 
 export function PlanCard({ part }: { part: PlanPart }) {
   const sessionId = useStore((s) => s.selected) ?? "";
   const request = usePlanRequest(sessionId, part.id);
-  const draft = useDraft(draftKey(sessionId, part.id));
+  const draft = useDraft(sessionId, part.id);
+  const review = useReview(sessionId, part.id);
   const isOpen = useOpenPlan((s) => s.id === part.id);
+  useMigrate(sessionId, part.id);
   const n = draft.comments.length;
   return (
     <Card width="100%" padding={3} variant={request ? "blue" : "default"}>
@@ -145,6 +267,7 @@ export function PlanCard({ part }: { part: PlanPart }) {
           {request && <Token size="sm" label="Waiting for your review" color="blue" />}
           {!request && part.outcome === "approved" && <Token size="sm" label="Approved" color="green" />}
           {!request && part.outcome === "feedback" && <Token size="sm" label="Sent back with feedback" color="yellow" />}
+          {!request && review?.held && <Token size="sm" label="Under discussion" color="blue" />}
           <StackItem size="fill" />
           {n > 0 && <Text type="supporting">{plural(n, "draft comment")}</Text>}
           <Button label="Open plan" size="sm" variant={request ? "primary" : "secondary"} onClick={() => openPlan(part.id)} />
@@ -162,10 +285,9 @@ export function PlanCard({ part }: { part: PlanPart }) {
 
 /** The approval prompt in the dock under the transcript. */
 export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequest }) {
-  const key = draftKey(sessionId, r.planId ?? "");
-  const draft = useDraft(key);
+  const draft = useDraft(sessionId, r.planId ?? "");
   const n = draft.comments.length;
-  const notes = !!draftMessage(draft);
+  const notes = !!formatPlanFeedback(draft.comments, draft.general, draft.thread);
   return (
     <Card width="100%" padding={3} variant="blue">
       <VStack gap={2}>
@@ -173,7 +295,7 @@ export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequ
           {r.title}
         </Text>
         <Text type="supporting">
-          Open it to comment on any part. Feedback sends the plan back for revision; Approve lets the agent start.
+          Open it to comment on any part, talk your comments over with the agent, or send it back for revision. Approve lets the agent start.
           {n > 0 ? ` You have ${plural(n, "draft comment")}.` : ""}
         </Text>
         <HStack gap={2} wrap="wrap">
@@ -181,7 +303,7 @@ export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequ
           <Button
             label={notes ? "Approve with notes" : "Approve"}
             tooltip={notes ? "Approve the plan; your draft comments follow as notes for the work" : undefined}
-            clickAction={async () => void (await approvePlan(sessionId, r.id, key))}
+            clickAction={async () => void (r.planId && (await planAct(sessionId, r.planId, "approve", r)))}
           />
         </HStack>
       </VStack>
@@ -220,7 +342,7 @@ function rangeAt(root: HTMLElement, start: number, length: number): Range | unde
 }
 
 /** The comment's text in the current rendering; it follows the quote if the plan was revised. */
-function locate(root: HTMLElement, c: { offset: number; anchor: string }): Range | undefined {
+function locate(root: HTMLElement, c: { offset: number; anchor?: string }): Range | undefined {
   if (!c.anchor) return undefined;
   const text = root.textContent ?? "";
   let start = c.offset;
@@ -250,46 +372,88 @@ function spotFromBlock(root: HTMLElement, target: EventTarget | null): Spot | un
   return { quote, offset: textOffset(root, block, 0), anchor: block.textContent ?? "" };
 }
 
+/** The earlier comments a revision answers, each with whether it was addressed (once checked). */
+function EarlierComments({ prev, check }: { prev: NonNullable<PlanReviewState["previous"]>; check?: PlanReviewState["check"] }) {
+  const comments = [...prev.comments].sort((a, b) => a.offset - b.offset);
+  return (
+    <List density="compact">
+      {comments.map((c) => {
+        const v = check?.verdicts?.[c.id];
+        return (
+          <ListItem
+            key={c.id}
+            label={c.text.trim() || repliesOf(c).at(-1)?.text || "(no text)"}
+            description={
+              <VStack gap={0.5}>
+                {c.quote.trim() && (
+                  <Text type="supporting" color="secondary" maxLines={2} style={quoteText}>
+                    {c.quote}
+                  </Text>
+                )}
+                {v?.reason && <Text type="supporting">{v.reason}</Text>}
+              </VStack>
+            }
+            endContent={
+              v ? <Token size="sm" label={VERDICT[v.status].label} color={VERDICT[v.status].color} /> : check?.status === "checking" ? <Text type="supporting">Checking…</Text> : undefined
+            }
+          />
+        );
+      })}
+      {prev.general.trim() && <ListItem label={prev.general.trim()} description="General comment" />}
+    </List>
+  );
+}
+
 function PlanReview({ sessionId, part, request }: { sessionId: string; part: PlanPart; request?: UiRequest }) {
   const narrow = useMediaQuery(NARROW_QUERY);
-  const key = draftKey(sessionId, part.id);
-  const draft = useDraft(key);
-  const running = useStore((s) => s.open[sessionId]?.state.status === "running");
+  const draft = useDraft(sessionId, part.id);
+  const review = useReview(sessionId, part.id);
+  const keeps = useStore((s) => !!s.open[sessionId]?.state.plans);
+  const harness = useStore((s) => s.open[sessionId]?.session.harness);
   const [spot, setSpot] = useState<Spot>();
   /** the composer is open for `spot` (until then the spot only offers a Comment button) */
   const [writing, setWriting] = useState(false);
   const [composing, setComposing] = useState("");
   const [editing, setEditing] = useState<string>();
+  /** a reply being written: under a comment, or ("general") under the agent's general answers */
   const [replying, setReplying] = useState<{ id: string; text: string }>();
   const [active, setActive] = useState<string>();
   const [listOpen, setListOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [changes, setChanges] = useState(false);
+  const [earlierOpen, setEarlierOpen] = useState(false);
+  const [busy, setBusy] = useState<Action>();
   const [, rerender] = useState(0);
   const docRef = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
   const [tops, setTops] = useState<Record<string, number>>({});
 
   const comments = useMemo(() => [...draft.comments].sort((a, b) => a.offset - b.offset), [draft.comments]);
-  const save = (d: Partial<Draft>) => writeDraft(key, { ...readDraft(key), ...d });
-  const message = formatPlanFeedback(comments, draft.general);
+  const save = (d: Partial<PlanDraft>) => writeDraft(sessionId, part.id, { ...readDraft(sessionId, part.id), ...d });
+  const message = formatPlanFeedback(comments, draft.general, draft.thread);
+  const discussing = !!review?.discussing;
 
   const addComment = () => {
     if (!spot || !composing.trim()) return;
-    save({ comments: [...readDraft(key).comments, { ...spot, id: `c${Date.now().toString(36)}`, text: composing.trim() }] });
+    save({ comments: [...readDraft(sessionId, part.id).comments, { ...spot, id: `c${Date.now().toString(36)}`, text: composing.trim() }] });
     cancelSpot();
     window.getSelection()?.removeAllRanges();
   };
   const cancelSpot = () => (setSpot(undefined), setWriting(false), setComposing(""));
-  const patchComment = (id: string, f: (c: Comment) => Comment) => save({ comments: readDraft(key).comments.map((c) => (c.id === id ? f(c) : c)) });
+  const patchComment = (id: string, f: (c: PlanComment) => PlanComment) =>
+    save({ comments: readDraft(sessionId, part.id).comments.map((c) => (c.id === id ? f(c) : c)) });
   const updateComment = (id: string, text: string) => patchComment(id, (c) => ({ ...c, text }));
-  const removeComment = (id: string) => save({ comments: readDraft(key).comments.filter((c) => c.id !== id) });
+  const removeComment = (id: string) => save({ comments: readDraft(sessionId, part.id).comments.filter((c) => c.id !== id) });
   const addReply = () => {
     if (!replying?.text.trim()) return setReplying(undefined);
-    const text = replying.text.trim();
-    patchComment(replying.id, (c) => ({ ...c, replies: [...(c.replies ?? []), text] }));
+    const r: PlanReply = { author: "user", text: replying.text.trim() };
+    if (replying.id === "general") save({ thread: [...(readDraft(sessionId, part.id).thread ?? []), r] });
+    else patchComment(replying.id, (c) => ({ ...c, replies: [...repliesOf(c), r] }));
     setReplying(undefined);
   };
-  const removeReply = (id: string, i: number) => patchComment(id, (c) => ({ ...c, replies: c.replies?.filter((_, j) => j !== i) }));
+  const removeReply = (id: string, i: number) =>
+    id === "general"
+      ? save({ thread: readDraft(sessionId, part.id).thread?.filter((_, j) => j !== i) })
+      : patchComment(id, (c) => ({ ...c, replies: repliesOf(c).filter((_, j) => j !== i) }));
 
   // A selection or a clicked paragraph only marks the spot; "Comment" (next to it in the margin, in
   // the footer on phones) opens the composer, so reading and selecting don't open boxes.
@@ -340,7 +504,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
       const lit = [active && ranges.get(active), spotRange].filter(Boolean);
       reg.set(HIGHLIGHT_ACTIVE, new HighlightCtor(...lit));
     }
-    if (narrow) return;
+    if (narrow || changes) return;
 
     // Each card wants to sit level with its text; cards push the ones below them down.
     const base = root.getBoundingClientRect().top;
@@ -369,25 +533,12 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     [],
   );
 
-  const finish = () => {
-    writeDraft(key, EMPTY);
-    closePlan();
-  };
-  const send = async (approve: boolean) => {
-    setBusy(true);
+  const send = async (action: Action) => {
+    setBusy(action);
     try {
-      if (request) {
-        const ok = approve
-          ? await approvePlan(sessionId, request.id, key)
-          : await act("uiRespond", { sessionId, response: { id: request.id, allow: false, value: message } });
-        if (!ok) return;
-      } else {
-        const ok = await act("prompt", { sessionId, text: message, mode: running ? "steer" : undefined });
-        if (!ok) return;
-      }
-      finish();
+      if ((await planAct(sessionId, part.id, action, request)) && action !== "discuss") closePlan();
     } finally {
-      setBusy(false);
+      setBusy(undefined);
     }
   };
 
@@ -424,7 +575,53 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     </Card>
   );
 
-  const commentCard = (c: Comment, style?: CSSProperties) => {
+  /** A thread's entries: the agent's answers marked with its model, the person's own deletable. */
+  const thread = (id: string, replies: PlanReply[]) =>
+    replies.map((r, i) =>
+      r.author === "agent" ? (
+        <VStack key={r.id ?? i} gap={1} style={agentBox}>
+          <Text type="supporting" weight="semibold">
+            <ModelName id={r.model} harness={harness} />
+          </Text>
+          <Markdown density="compact" contentWidth="100%">
+            {r.text}
+          </Markdown>
+        </VStack>
+      ) : (
+        <HStack key={i} gap={1} vAlign="start">
+          <StackItem size="fill" style={minZero}>
+            <Text style={{ ...preWrap, ...quoteText }}>{r.text}</Text>
+          </StackItem>
+          <IconButton label="Delete reply" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={() => removeReply(id, i)} />
+        </HStack>
+      ),
+    );
+
+  const replyBox = (id: string, extra?: ReactNode) =>
+    replying?.id === id ? (
+      <TextArea
+        label="Reply"
+        isLabelHidden
+        hasAutoFocus
+        rows={2}
+        placeholder="Reply"
+        value={replying.text}
+        onChange={(v) => setReplying({ id, text: v })}
+        onBlur={addReply}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") (claimEscape(e), setReplying(undefined));
+          if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), addReply());
+        }}
+        width="100%"
+      />
+    ) : (
+      <HStack gap={1} hAlign="end">
+        <Button label="Reply" size="sm" variant="ghost" onClick={() => setReplying({ id, text: "" })} />
+        {extra}
+      </HStack>
+    );
+
+  const commentCard = (c: PlanComment, style?: CSSProperties) => {
     const found = !docRef.current || !!locate(docRef.current, c);
     return (
       <Card key={c.id} ref={setRef(c.id)} padding={2} width="100%" variant={active === c.id ? "blue" : "default"} style={style} onClick={() => setActive(c.id)}>
@@ -450,41 +647,50 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           ) : (
             <Text style={preWrap}>{c.text}</Text>
           )}
-          {c.replies?.map((r, i) => (
-            <HStack key={i} gap={1} vAlign="start">
-              <StackItem size="fill" style={minZero}>
-                <Text style={{ ...preWrap, ...quoteText }}>{r}</Text>
-              </StackItem>
-              <IconButton label="Delete reply" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={() => removeReply(c.id, i)} />
-            </HStack>
-          ))}
-          {replying?.id === c.id ? (
-            <TextArea
-              label="Reply"
-              isLabelHidden
-              hasAutoFocus
-              rows={2}
-              placeholder="Reply"
-              value={replying.text}
-              onChange={(v) => setReplying({ id: c.id, text: v })}
-              onBlur={addReply}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") (claimEscape(e), setReplying(undefined));
-                if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), addReply());
-              }}
-              width="100%"
-            />
-          ) : (
-            <HStack gap={1} hAlign="end">
-              <Button label="Reply" size="sm" variant="ghost" onClick={() => setReplying({ id: c.id, text: "" })} />
+          {thread(c.id, repliesOf(c))}
+          {replyBox(
+            c.id,
+            <>
               <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(c.id)} />
               <Button label="Delete" size="sm" variant="ghost" onClick={() => removeComment(c.id)} />
-            </HStack>
+            </>,
           )}
         </VStack>
       </Card>
     );
   };
+
+  // Answers about the plan as a whole (or a discussion answer that couldn't be split per comment).
+  const general = !!draft.thread?.length && (
+    <Card padding={2} width="100%">
+      <VStack gap={1.5}>
+        <Text type="label" weight="semibold">
+          About the whole plan
+        </Text>
+        {thread("general", draft.thread)}
+        {replyBox("general")}
+      </VStack>
+    </Card>
+  );
+
+  // A revised plan: what changed, and whether the comments it was asked with were addressed.
+  const prev = review?.previous;
+  const check = review?.check;
+  const verdicts = Object.values(check?.verdicts ?? {});
+  const revision = prev && (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Text type="supporting">
+          Revised after your comments
+          {check?.status === "checking" ? " · Checking them…" : verdicts.length ? ` · ${verdicts.filter((v) => v.status === "addressed").length} of ${discussionIds(prev.comments).length} addressed` : ""}
+        </Text>
+        <StackItem size="fill" />
+        {!!prev.text && <ToggleButton label="Changes" size="sm" isPressed={changes} onPressedChange={setChanges} />}
+        <ToggleButton label="Your earlier comments" size="sm" isPressed={earlierOpen} onPressedChange={setEarlierOpen} />
+      </HStack>
+      {earlierOpen && <EarlierComments prev={prev} check={check} />}
+    </VStack>
+  );
 
   // A file reference in the plan opens the file panel, which sits under this dialog: close it first
   // (the draft comments are kept).
@@ -500,7 +706,8 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   );
 
   const n = comments.length;
-  const canSend = !!message && !busy;
+  const approvable = !!request || !!review?.held;
+  const canDiscuss = keeps && (discussionIds(comments).length > 0 || !!draft.general.trim()) && !discussing;
   const footer = (
     <LayoutFooter hasDivider>
       <VStack gap={2}>
@@ -521,23 +728,42 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
               icon={<Icon icon={ChatBubbleLeftEllipsisIcon} />}
               onClick={() => (setWriting(!!spot), setListOpen(true))}
             />
-          ) : (
+          ) : discussing ? null : (
             <Text type="supporting">{n ? plural(n, "comment") : "Select text or click a paragraph, then Comment."}</Text>
           )}
-          <StackItem size="fill" />
-          {request ? (
-            <>
-              <Button
-                label={message ? "Approve with notes" : "Approve"}
-                tooltip={message ? "Approve the plan; your comments follow as notes for the work" : undefined}
-                isDisabled={busy}
-                onClick={() => send(true)}
-              />
-              <Button label="Send feedback" variant="primary" isDisabled={!canSend} tooltip="Send the plan back with your comments" onClick={() => send(false)} />
-            </>
-          ) : (
-            <Button label="Send comments" variant="primary" isDisabled={!canSend} onClick={() => send(false)} />
+          {discussing && (
+            <HStack gap={1} vAlign="center">
+              <Spinner size="sm" />
+              <Text type="supporting">Waiting for the agent's answers</Text>
+            </HStack>
           )}
+          <StackItem size="fill" />
+          {approvable && (
+            <Button
+              label={message ? "Approve with notes" : "Approve"}
+              tooltip={message ? "Approve the plan; your comments follow as notes for the work" : undefined}
+              isDisabled={!!busy}
+              isLoading={busy === "approve"}
+              onClick={() => send("approve")}
+            />
+          )}
+          {keeps && (
+            <Button
+              label="Discuss"
+              tooltip="The agent answers each comment in its thread and leaves the plan as it is"
+              isDisabled={!canDiscuss || !!busy}
+              isLoading={busy === "discuss"}
+              onClick={() => send("discuss")}
+            />
+          )}
+          <Button
+            label="Revise plan"
+            variant="primary"
+            tooltip="Send the plan back with your comments for a revised one"
+            isDisabled={!message || !!busy}
+            isLoading={busy === "revise"}
+            onClick={() => send("revise")}
+          />
         </HStack>
       </VStack>
     </LayoutFooter>
@@ -565,27 +791,35 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
         }
         content={
           <LayoutContent>
-            {narrow ? (
-              doc
-            ) : (
-              <HStack gap={6} vAlign="start">
-                <StackItem size="fill" style={docPane}>
-                  {doc}
-                </StackItem>
-                <VStack style={{ ...marginPane, minHeight: tops.end ?? 0 }}>
-                  {comments.map((c) => commentCard(c, { ...marginCard, top: tops[c.id] ?? 0 }))}
-                  {spot && (
-                    <VStack ref={setRef("new")} style={{ ...marginCard, top: tops.new ?? 0 }}>
-                      {composer || (
-                        <HStack>
-                          <Button label="Comment" size="sm" icon={<Icon icon={ChatBubbleLeftEllipsisIcon} />} onClick={() => setWriting(true)} />
-                        </HStack>
+            <VStack gap={4}>
+              {revision}
+              {general}
+              {changes && prev && <Diff pairs={[{ oldText: prev.text, newText: part.text }]} wrap />}
+              {/* Hidden, not unmounted, while the changes show: the margin keeps measuring the same document. */}
+              <VStack style={changes ? hidden : undefined}>
+                {narrow ? (
+                  doc
+                ) : (
+                  <HStack gap={6} vAlign="start">
+                    <StackItem size="fill" style={docPane}>
+                      {doc}
+                    </StackItem>
+                    <VStack style={{ ...marginPane, minHeight: tops.end ?? 0 }}>
+                      {comments.map((c) => commentCard(c, { ...marginCard, top: tops[c.id] ?? 0 }))}
+                      {spot && (
+                        <VStack ref={setRef("new")} style={{ ...marginCard, top: tops.new ?? 0 }}>
+                          {composer || (
+                            <HStack>
+                              <Button label="Comment" size="sm" icon={<Icon icon={ChatBubbleLeftEllipsisIcon} />} onClick={() => setWriting(true)} />
+                            </HStack>
+                          )}
+                        </VStack>
                       )}
                     </VStack>
-                  )}
-                </VStack>
-              </HStack>
-            )}
+                  </HStack>
+                )}
+              </VStack>
+            </VStack>
           </LayoutContent>
         }
         footer={footer}

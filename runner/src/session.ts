@@ -28,6 +28,7 @@ import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type 
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
+import { PlanReviews } from "./planReview";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -116,6 +117,8 @@ export abstract class LiveSession {
   private prefsLoaded = false;
   private diffBaseSha?: string;
   onClose?: () => void;
+  /** plan review: drafts, discussions, revisions (runner/src/planReview.ts) */
+  readonly plans: PlanReviews = new PlanReviews(this);
 
   constructor(
     harness: HarnessId,
@@ -213,6 +216,7 @@ export abstract class LiveSession {
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { guard } });
         } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
+    this.plans.observe(event);
   }
 
   setState(state: Partial<LiveState>) {
@@ -757,6 +761,7 @@ export abstract class LiveSession {
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
+    this.plans.load();
   }
 
   /**

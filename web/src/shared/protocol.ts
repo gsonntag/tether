@@ -206,6 +206,7 @@ export interface Msg {
 
 import type { Attachment } from "./attachments";
 export type { Attachment } from "./attachments";
+import type { PlanDraft, PlanReviewState } from "./plan";
 
 // ---------- live state ----------
 
@@ -265,6 +266,8 @@ export interface UiResponse {
   always?: boolean;
   /** question: question text -> answer label(s) */
   answers?: Record<string, string>;
+  /** plan, with allow: false: `value` asks to talk the plan over, not to revise it (it stays under review) */
+  discuss?: boolean;
 }
 
 export interface LiveState {
@@ -313,6 +316,8 @@ export interface LiveState {
   contextPercent?: number;
   /** how full the model's context window is, as of its last request */
   context?: ContextUsage;
+  /** plan reviews by plan id (shared/plan.ts); present (maybe empty) once the runner keeps them */
+  plans?: Record<string, PlanReviewState>;
 }
 
 export interface ContextUsage {
@@ -837,6 +842,13 @@ export interface Ops {
   /** empties the runner's notification list (the bell and sidebar dots, on every device) */
   clearNotifications: { args: {}; result: {} };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
+  /** a plan's draft comments, kept on the runner so every device has them; null clears it */
+  setPlanDraft: { args: { sessionId: string; planId: string; draft: PlanDraft | null }; result: {} };
+  /**
+   * Discuss (the agent answers the comments, the plan stays as it is), Revise (sent back for a new
+   * plan) or Approve, with the draft as this device has it. Revise and Approve clear the draft.
+   */
+  planAction: { args: { sessionId: string; planId: string; action: "discuss" | "revise" | "approve"; draft: PlanDraft }; result: {} };
   /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
   uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };
   getUsage: { args: { force?: boolean }; result: UsageReport };

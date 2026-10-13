@@ -569,6 +569,11 @@ class AgySession extends LiveSession {
       this.planReview = undefined;
       return { allow: true };
     }
+    // Discuss: the plan stays under review; the next change it tries asks again.
+    if (res.discuss && res.value) {
+      this.addUserMessage(res.value);
+      return { allow: false, reason: `${res.value}\n\nDon't change anything until the user has reviewed the plan.` };
+    }
     const feedback = res.value?.trim() || "Please revise the plan.";
     this.setPlan(plan, { outcome: "feedback" });
     this.addUserMessage(feedback);
