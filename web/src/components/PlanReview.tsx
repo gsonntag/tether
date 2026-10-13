@@ -1,5 +1,5 @@
-// Plan review: a plan opens as a document; selecting text (or clicking a paragraph) adds a comment
-// in the right-hand margin (a bottom sheet on phones). The comments go back to the agent as one
+// Plan review: a plan opens as a document; selecting text (or clicking a paragraph) offers a Comment
+// button, and comments (with follow-up replies) sit in the right-hand margin (a bottom sheet on phones). The comments go back to the agent as one
 // message of quote + reply pairs: as the feedback that declines the plan when the agent waits for
 // approval (Claude Code's ExitPlanMode), otherwise as an ordinary message.
 
@@ -9,12 +9,13 @@ import { Card } from "@astryxdesign/core/Card";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { HStack, Layout, LayoutContent, LayoutFooter, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { Token } from "@astryxdesign/core/Token";
-import { ChatBubbleLeftEllipsisIcon, ClipboardDocumentListIcon } from "@heroicons/react/24/outline";
+import { ChatBubbleLeftEllipsisIcon, ClipboardDocumentListIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { create } from "zustand";
 import { formatPlanFeedback, type PlanComment } from "../shared/plan";
@@ -49,6 +50,7 @@ const quoteText: CSSProperties = {
   wordBreak: "break-word",
 };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
+const minZero: CSSProperties = { minWidth: 0 };
 // The CSS Custom Highlight API marks commented text without touching the rendered markdown.
 const highlightCss = `::highlight(${HIGHLIGHT}){background-color:var(--color-warning-muted)}::highlight(${HIGHLIGHT_ACTIVE}){background-color:var(--color-accent-muted)}`;
 
@@ -254,8 +256,11 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const draft = useDraft(key);
   const running = useStore((s) => s.open[sessionId]?.state.status === "running");
   const [spot, setSpot] = useState<Spot>();
+  /** the composer is open for `spot` (until then the spot only offers a Comment button) */
+  const [writing, setWriting] = useState(false);
   const [composing, setComposing] = useState("");
   const [editing, setEditing] = useState<string>();
+  const [replying, setReplying] = useState<{ id: string; text: string }>();
   const [active, setActive] = useState<string>();
   const [listOpen, setListOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -271,23 +276,30 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const addComment = () => {
     if (!spot || !composing.trim()) return;
     save({ comments: [...readDraft(key).comments, { ...spot, id: `c${Date.now().toString(36)}`, text: composing.trim() }] });
-    setSpot(undefined);
-    setComposing("");
+    cancelSpot();
     window.getSelection()?.removeAllRanges();
   };
-  const updateComment = (id: string, text: string) => save({ comments: readDraft(key).comments.map((c) => (c.id === id ? { ...c, text } : c)) });
+  const cancelSpot = () => (setSpot(undefined), setWriting(false), setComposing(""));
+  const patchComment = (id: string, f: (c: Comment) => Comment) => save({ comments: readDraft(key).comments.map((c) => (c.id === id ? f(c) : c)) });
+  const updateComment = (id: string, text: string) => patchComment(id, (c) => ({ ...c, text }));
   const removeComment = (id: string) => save({ comments: readDraft(key).comments.filter((c) => c.id !== id) });
+  const addReply = () => {
+    if (!replying?.text.trim()) return setReplying(undefined);
+    const text = replying.text.trim();
+    patchComment(replying.id, (c) => ({ ...c, replies: [...(c.replies ?? []), text] }));
+    setReplying(undefined);
+  };
+  const removeReply = (id: string, i: number) => patchComment(id, (c) => ({ ...c, replies: c.replies?.filter((_, j) => j !== i) }));
 
-  // Desktop: a selection or a clicked paragraph starts a comment right away. Phones: a tap only
-  // marks the spot, and "Comment" opens the composer, so reading by tapping doesn't open sheets.
+  // A selection or a clicked paragraph only marks the spot; "Comment" (next to it in the margin, in
+  // the footer on phones) opens the composer, so reading and selecting don't open boxes.
   const pick = (target: EventTarget | null) => {
     const root = docRef.current;
     if (!root || (composing.trim() && spot)) return;
     const s = spotFromSelection(root) ?? (window.getSelection()?.isCollapsed !== false ? spotFromBlock(root, target) : undefined);
-    if (s) {
-      setSpot(s);
-      setActive(undefined);
-    }
+    setSpot(s);
+    setWriting(false);
+    if (s) setActive(undefined);
   };
 
   // Phones select text with a long press, which fires no click.
@@ -384,7 +396,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     else cardRefs.current.delete(id);
   };
 
-  const composer = spot && (
+  const composer = spot && writing && (
     <Card padding={2} variant="blue" width="100%">
       <VStack gap={2}>
         <Text type="supporting" color="secondary" maxLines={3} style={quoteText}>
@@ -399,13 +411,13 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           value={composing}
           onChange={(v) => setComposing(v)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") (claimEscape(e), setSpot(undefined), setComposing(""));
+            if (e.key === "Escape") (claimEscape(e), cancelSpot());
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) (e.preventDefault(), addComment());
           }}
           width="100%"
         />
         <HStack gap={1.5} hAlign="end">
-          <Button label="Cancel" size="sm" variant="ghost" onClick={() => (setSpot(undefined), setComposing(""))} />
+          <Button label="Cancel" size="sm" variant="ghost" onClick={cancelSpot} />
           <Button label="Comment" size="sm" variant="primary" isDisabled={!composing.trim()} onClick={addComment} />
         </HStack>
       </VStack>
@@ -438,10 +450,37 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           ) : (
             <Text style={preWrap}>{c.text}</Text>
           )}
-          <HStack gap={1} hAlign="end">
-            <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(c.id)} />
-            <Button label="Delete" size="sm" variant="ghost" onClick={() => removeComment(c.id)} />
-          </HStack>
+          {c.replies?.map((r, i) => (
+            <HStack key={i} gap={1} vAlign="start">
+              <StackItem size="fill" style={minZero}>
+                <Text style={{ ...preWrap, ...quoteText }}>{r}</Text>
+              </StackItem>
+              <IconButton label="Delete reply" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={() => removeReply(c.id, i)} />
+            </HStack>
+          ))}
+          {replying?.id === c.id ? (
+            <TextArea
+              label="Reply"
+              isLabelHidden
+              hasAutoFocus
+              rows={2}
+              placeholder="Reply"
+              value={replying.text}
+              onChange={(v) => setReplying({ id: c.id, text: v })}
+              onBlur={addReply}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") (claimEscape(e), setReplying(undefined));
+                if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), addReply());
+              }}
+              width="100%"
+            />
+          ) : (
+            <HStack gap={1} hAlign="end">
+              <Button label="Reply" size="sm" variant="ghost" onClick={() => setReplying({ id: c.id, text: "" })} />
+              <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(c.id)} />
+              <Button label="Delete" size="sm" variant="ghost" onClick={() => removeComment(c.id)} />
+            </HStack>
+          )}
         </VStack>
       </Card>
     );
@@ -480,10 +519,10 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
               label={spot ? "Comment" : `Comments (${n})`}
               size="sm"
               icon={<Icon icon={ChatBubbleLeftEllipsisIcon} />}
-              onClick={() => setListOpen(true)}
+              onClick={() => (setWriting(!!spot), setListOpen(true))}
             />
           ) : (
-            <Text type="supporting">{n ? plural(n, "comment") : "Select text or click a paragraph to comment."}</Text>
+            <Text type="supporting">{n ? plural(n, "comment") : "Select text or click a paragraph, then Comment."}</Text>
           )}
           <StackItem size="fill" />
           {request ? (
@@ -535,9 +574,13 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
                 </StackItem>
                 <VStack style={{ ...marginPane, minHeight: tops.end ?? 0 }}>
                   {comments.map((c) => commentCard(c, { ...marginCard, top: tops[c.id] ?? 0 }))}
-                  {composer && (
+                  {spot && (
                     <VStack ref={setRef("new")} style={{ ...marginCard, top: tops.new ?? 0 }}>
-                      {composer}
+                      {composer || (
+                        <HStack>
+                          <Button label="Comment" size="sm" icon={<Icon icon={ChatBubbleLeftEllipsisIcon} />} onClick={() => setWriting(true)} />
+                        </HStack>
+                      )}
                     </VStack>
                   )}
                 </VStack>
@@ -548,7 +591,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
         footer={footer}
       />
       {narrow && (
-        <BottomSheet isOpen={listOpen} onOpenChange={(o) => (setListOpen(o), !o && !composing.trim() && setSpot(undefined))} label="Comments" height="tall" padding={3}>
+        <BottomSheet isOpen={listOpen} onOpenChange={(o) => (setListOpen(o), !o && !composing.trim() && cancelSpot())} label="Comments" height="tall" padding={3}>
           <VStack gap={2}>
             <Text type="label" weight="semibold">
               {plural(n, "comment")}

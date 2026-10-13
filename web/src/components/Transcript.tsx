@@ -28,7 +28,7 @@ import {
 import { diffLines } from "diff";
 import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
-import { act, selectSession } from "../store";
+import { act, selectSession, useStore } from "../store";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
@@ -474,7 +474,15 @@ function Tool({ t }: { t: ToolPart }) {
   const isWrite = lower === "write";
   const isShell = ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
   const isTodo = lower === "todowrite" && Array.isArray(input.todos);
-  const [open, setOpen] = useState(isEdit || (isShell && t.status === "running") || isTodo);
+  const expandShell = useStore((s) => s.expandShell);
+  const failed = isShell && t.status === "error";
+  const [open, setOpen] = useState(isEdit || (isShell && expandShell) || isTodo || failed);
+  // A command that fails opens, even collapsed by default: the output is what you'd look for.
+  const [wasFailed, setWasFailed] = useState(failed);
+  if (wasFailed !== failed) {
+    setWasFailed(failed);
+    if (failed) setOpen(true);
+  }
 
   let arg = "";
   /** the file this tool read or wrote, for the open-file button */

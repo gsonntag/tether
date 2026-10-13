@@ -36,7 +36,7 @@ import {
 import { profileProblems } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setSidebarDays, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setExpandShell, setSidebarDays, toggleProject, useStore } from "../store";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
@@ -548,6 +548,7 @@ function Settings({ close }: { close: () => void }) {
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
   const sidebarDays = useStore((s) => s.sidebarDays);
+  const expandShell = useStore((s) => s.expandShell);
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [saved, setSaved] = useState<ModelProfile[]>([]);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
@@ -600,6 +601,13 @@ function Settings({ close }: { close: () => void }) {
               onChange={(v) => v != null && setSidebarDays(Number(v))}
             />
           }
+        />
+      </SettingsCard>
+      <SettingsCard title="Transcript">
+        <SettingsRow
+          title="Expand shell commands by default"
+          description="Show a command's output without clicking it. On this device."
+          control={<Switch label="Expand shell commands by default" isLabelHidden value={expandShell} onChange={setExpandShell} />}
         />
       </SettingsCard>
       <SettingsCard title="New sessions">

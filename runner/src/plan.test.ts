@@ -18,6 +18,13 @@ describe("plan feedback", () => {
     expect(quote("## Steps\n\n1. one\n2. two  ")).toBe("> ## Steps\n>\n> 1. one\n> 2. two");
   });
 
+  test("replies follow their comment under the same quote", () => {
+    expect(formatPlanFeedback([{ id: "a", quote: "Step 2", text: "Skip this.", replies: ["Actually, keep it", "  "], offset: 0 }])).toBe(
+      "> Step 2\nSkip this.\nActually, keep it",
+    );
+    expect(formatPlanFeedback([{ id: "a", quote: "x", text: " ", replies: ["Only the reply"], offset: 0 }])).toBe("> x\nOnly the reply");
+  });
+
   test("comments without text are left out; nothing to send is empty", () => {
     expect(formatPlanFeedback([{ id: "a", quote: "x", text: "  ", offset: 0 }])).toBe("");
     expect(formatPlanFeedback([], "  ")).toBe("");

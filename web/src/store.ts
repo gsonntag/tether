@@ -76,6 +76,8 @@ interface State {
   contextLive: ContextActivity[];
   /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
   sidebarDays: number;
+  /** shell tool calls start expanded in the transcript (this device) */
+  expandShell: boolean;
 }
 
 export const useStore = create<State>(() => ({
@@ -98,6 +100,7 @@ export const useStore = create<State>(() => ({
   contextLive: [],
   pulses: {},
   sidebarDays: cachedSidebarDays(loadJSON<string>("tether.runner", "")),
+  expandShell: loadJSON("tether.expandShell", false),
 }));
 
 const set = useStore.setState;
@@ -618,6 +621,11 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
 export function setActivityOpen(open: boolean) {
   set({ activityOpen: open });
   if (!isNarrow()) saveJSON("tether.activityOpen", open);
+}
+
+export function setExpandShell(expandShell: boolean) {
+  set({ expandShell });
+  saveJSON("tether.expandShell", expandShell);
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */
