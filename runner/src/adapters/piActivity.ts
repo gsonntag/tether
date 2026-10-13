@@ -4,8 +4,11 @@
 //    tools, tokens, model), and tool_execution_end carries details.results with the final outputs;
 //  - async (background) runs and workflows are published as a JSON snapshot through the
 //    "subagent-async" widget (extension_ui_request setWidget, "PI_SUBAGENT_ASYNC_JSON:" + JSON).
+// Workflows and chains have real steps: a foreground chain/workflow call's chainAgents or
+// workflowGraph, an async workflow's "step"/"host-step" children. They become the workflow item's
+// phases, and each agent's item names its phase.
 
-import type { ActivityItem, ActivityStatus } from "../../../web/src/shared/protocol";
+import type { ActivityItem, ActivityPhase, ActivityStatus } from "../../../web/src/shared/protocol";
 import { ActivityBook, describeTool, tail } from "./activity";
 
 const ASYNC_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
@@ -25,6 +28,58 @@ const nodeStatus = (s: string | undefined): ActivityStatus =>
           ? "waiting"
           : "running";
 
+const isLane = (c: any) => c?.kind === "step" || c?.kind === "host-step";
+
+const phaseStatus = (s: string | undefined): ActivityPhase["status"] =>
+  s === "complete" || s === "partial" ? "done" : s === "failed" || s === "rejected" || s === "stopped" ? "failed" : s === "queued" || s === "paused" ? "pending" : "running";
+
+function lanePhase(c: any): ActivityPhase {
+  const status = phaseStatus(c.state);
+  const detail =
+    c.state === "stopped"
+      ? "Stopped"
+      : c.state === "partial"
+        ? "Partly done"
+        : status === "running" && c.activity?.currentTool
+          ? describeTool(c.activity.currentTool, {})
+          : c.hostStep?.detail
+            ? firstLine(c.hostStep.detail, 160)
+            : undefined;
+  return { title: firstLine(c.label) || "Step", status, ...(detail ? { detail } : {}) };
+}
+
+/** A foreground workflow graph node's status (WorkflowNodeStatus) as a phase status. */
+const graphStatus = (s: string): ActivityPhase["status"] =>
+  s === "completed" || s === "partial" ? "done" : s === "failed" || s === "rejected" || s === "stopped" ? "failed" : s === "pending" || s === "paused" ? "pending" : "running";
+
+/**
+ * The steps of a foreground chain or workflow call, each over a run of agent indexes (a parallel
+ * step has several): from details.workflowGraph when sent, else details.chainAgents ("[a+b]" is a
+ * parallel step of two). Same reading as pi-subagents' own renderer (tui/render.js).
+ */
+export function chainSpans(d: any): { title: string; start: number; count: number; status?: string }[] {
+  const nodes: any[] = (d?.workflowGraph?.nodes ?? []).filter((n: any) => n?.stepIndex !== undefined).sort((a: any, b: any) => a.stepIndex - b.stepIndex);
+  if (nodes.length) {
+    let cursor = 0;
+    return nodes.map((n) => {
+      const kids: number[] = (n.children ?? []).map((c: any) => c.flatIndex).filter((x: unknown) => typeof x === "number");
+      const group = n.kind === "parallel-group" || n.kind === "dynamic-parallel-group";
+      const start = group ? (kids.length ? Math.min(...kids) : cursor) : (n.flatIndex ?? cursor);
+      const count = group ? (n.children?.length ?? 0) : 1;
+      cursor = Math.max(cursor, start + count);
+      return { title: firstLine(n.label) || n.agent || `Step ${n.stepIndex + 1}`, start, count, status: n.status };
+    });
+  }
+  let start = 0;
+  return (d?.chainAgents ?? []).map((label: string) => {
+    const parallel = typeof label === "string" && label.startsWith("[") && label.endsWith("]");
+    const count = parallel ? label.slice(1, -1).split("+").filter((x) => x.trim()).length : 1;
+    const span = { title: parallel ? label.slice(1, -1).split("+").map((x) => x.trim()).join(" + ") : String(label), start, count };
+    start += count;
+    return span;
+  });
+}
+
 export class PiActivity extends ActivityBook {
   /** async run ids in the last snapshot */
   private asyncIds = new Set<string>();
@@ -40,9 +95,42 @@ export class PiActivity extends ActivityBook {
   private onProgress(toolCallId: string, d: any) {
     if (!d) return;
     const results: any[] = d.results ?? [];
-    for (const p of d.progress ?? results.map((x) => x.progress).filter(Boolean)) {
+    const progress: any[] = d.progress ?? results.map((x) => x.progress).filter(Boolean);
+    // A chain or workflow call: its steps are phases of one workflow item, its agents children.
+    const spans = (d.mode === "chain" || d.mode === "workflow") && !d.background ? chainSpans(d) : [];
+    const chainId = spans.length > 1 ? `chain:${toolCallId}` : undefined;
+    if (chainId) {
+      const cur = this.get(chainId);
+      const phases = spans.map((s): ActivityPhase => {
+        const mine = progress.filter((p) => (p.index ?? 0) >= s.start && (p.index ?? 0) < s.start + s.count);
+        const done = mine.filter((p) => p.status === "completed").length;
+        const failed = mine.some((p) => p.status === "failed");
+        const going = mine.find((p) => p.status === "running");
+        const status = s.status ? graphStatus(s.status) : failed ? "failed" : going ? "running" : done && done >= s.count ? "done" : "pending";
+        const detail = s.count > 1 && mine.length ? `${done} of ${s.count} agents done` : going?.currentTool ? describeTool(going.currentTool, going.currentToolArgs) : undefined;
+        return { title: s.title, status, ...(detail ? { detail } : {}) };
+      });
+      const now = progress.find((p) => p.status === "running");
+      if (!cur?.endedAt)
+        this.put({
+          ...cur,
+          id: chainId,
+          kind: "workflow",
+          title: d.mode === "workflow" ? "Workflow" : `Chain: ${spans.map((s) => s.title).join(" → ")}`.slice(0, 120),
+          status: "running",
+          startedAt: cur?.startedAt ?? this.now(),
+          toolId: toolCallId,
+          background: false,
+          latest: now ? (now.currentTool ? describeTool(now.currentTool, now.currentToolArgs) : firstLine(now.task)) : cur?.latest,
+          phases,
+        });
+    }
+    for (const p of progress) {
       const id = `${toolCallId}:${p.index ?? 0}`;
       const cur = this.get(id);
+      // Not started yet (a later chain step): nothing running to show.
+      if (p.status === "pending" && !cur) continue;
+      const phase = chainId ? spans.findIndex((s) => (p.index ?? 0) >= s.start && (p.index ?? 0) < s.start + s.count) : -1;
       const item: ActivityItem = {
         ...cur,
         id,
@@ -53,6 +141,7 @@ export class PiActivity extends ActivityBook {
         status: progressStatus(p.status),
         startedAt: cur?.startedAt ?? this.now() - (p.durationMs ?? 0),
         toolId: toolCallId,
+        ...(chainId ? { parentId: chainId, ...(phase >= 0 ? { phase } : {}) } : {}),
         background: false,
         model: p.model ?? cur?.model,
         tokens: p.tokens ?? cur?.tokens,
@@ -94,12 +183,16 @@ export class PiActivity extends ActivityBook {
         return;
       }
     const seen = new Set<string>();
-    const visit = (n: any, parentId?: string) => {
+    const visit = (n: any, parentId?: string, phase?: number) => {
       if (!n?.id) return;
       const id = `async:${n.id}`;
-      seen.add(id);
       const cur = this.get(id);
       const status = nodeStatus(n.state);
+      // A workflow's lanes ("step" nodes, planned stages included) and host checks are its phases.
+      const lanes = n.kind === "workflow" ? (n.children ?? []).filter(isLane) : [];
+      // A lane that hasn't started is only a phase, not something running.
+      if (phase !== undefined && status === "waiting" && !cur) return;
+      seen.add(id);
       const a = n.activity ?? {};
       this.put({
         ...cur,
@@ -110,11 +203,22 @@ export class PiActivity extends ActivityBook {
         startedAt: n.startedAt ?? cur?.startedAt ?? this.now(),
         endedAt: status === "running" || status === "waiting" ? undefined : (n.endedAt ?? cur?.endedAt ?? this.now()),
         parentId,
+        phase,
         background: true,
         toolUses: a.toolCount ?? cur?.toolUses,
-        latest: a.currentTool ? describeTool(a.currentTool, {}) : cur?.latest,
+        latest: a.currentTool ? describeTool(a.currentTool, {}) : n.hostStep?.detail ? firstLine(n.hostStep.detail, 160) : cur?.latest,
+        ...(lanes.length ? { phases: lanes.map(lanePhase) } : {}),
       });
-      for (const c of n.children ?? []) visit(c, id);
+      // A lane's own runs (a parallel step's agents) stand for it, in its phase; a host check
+      // (CI, review bot) is only a phase.
+      if (phase !== undefined) return;
+      for (const c of n.children ?? []) {
+        const lane = lanes.indexOf(c);
+        if (lane < 0) visit(c, id);
+        else if (c.kind === "host-step") continue;
+        else if (c.children?.length) for (const g of c.children) visit(g, id, lane);
+        else visit(c, id, lane);
+      }
     };
     for (const n of runs) visit(n);
     // Gone from the snapshot while still going: it ended out of sight.

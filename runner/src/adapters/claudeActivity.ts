@@ -8,10 +8,12 @@
 //    steps and latest action instead of transcript entries.
 //  - The spawning tool call (Agent, Bash, Monitor) and its structured result (tool_use_result) fill
 //    in what the task events leave out: command, model, worktree, final usage.
+//  - A workflow's task_progress carries workflow_progress (its phases and its agents, undocumented
+//    in the SDK types but sent by the CLI): phases go on the workflow item, agents become its children.
 //  - CronCreate / CronDelete / ScheduleWakeup results become schedule items.
 //  - A main-thread tool that reports tool_progress for a while is a long tool call.
 
-import type { ActivityItem, ActivityKind } from "../../../web/src/shared/protocol";
+import { ACTIVITY_MAX_STEPS, type ActivityItem, type ActivityKind, type ActivityPhase, type ActivityStatus } from "../../../web/src/shared/protocol";
 import { ActivityBook, BoundedMap, describeTool } from "./activity";
 
 /** A main-thread tool call shows as activity once it has run this long. */
@@ -235,9 +237,15 @@ export class ClaudeActivity extends ActivityBook {
           p.tokens = m.usage.total_tokens;
           p.toolUses = m.usage.tool_uses;
         }
-        // `summary` is the harness's own progress line; `description` the step it's on.
-        const latest = m.summary || m.description;
-        if (latest && latest !== this.get(id)!.title) p.latest = latest;
+        const cur = this.get(id)!;
+        // `summary` is the harness's own progress line; `description` the step it's on. A
+        // workflow's summary is its fixed description, and its description "phase: agent".
+        const latest = cur.kind === "workflow" ? m.description : m.summary || m.description;
+        if (latest && latest !== cur.title && !(cur.kind === "workflow" && latest === m.summary)) p.latest = latest;
+        if (cur.kind === "workflow" && Array.isArray(m.workflow_progress)) {
+          const phases = this.onWorkflow(id, m.workflow_progress);
+          if (phases) p.phases = phases;
+        }
         this.patch(id, p);
         return;
       }
@@ -291,6 +299,74 @@ export class ClaudeActivity extends ActivityBook {
         return;
       }
     }
+  }
+
+  /**
+   * A workflow's progress (task_progress.workflow_progress, every few frames: the whole list).
+   * workflow_phase entries are its phases (declared in the script's meta, then as phase() runs),
+   * workflow_agent entries its agents: each becomes a child item in its phase. Agents still queued
+   * for a slot only count toward their phase. Returns the phases, or undefined when it has none.
+   */
+  private onWorkflow(id: string, entries: any[]): ActivityPhase[] | undefined {
+    const titles = new Map<number, string>();
+    const agents = new Map<number, any>();
+    for (const e of entries) {
+      if (e?.type === "workflow_phase" && typeof e.index === "number") titles.set(e.index, String(e.title ?? `Phase ${e.index}`));
+      else if (e?.type === "workflow_agent" && typeof e.index === "number") agents.set(e.index, e);
+    }
+    for (const a of agents.values()) if (a.phaseIndex != null && !titles.has(a.phaseIndex)) titles.set(a.phaseIndex, String(a.phaseTitle ?? `Phase ${a.phaseIndex}`));
+    const order = [...titles.keys()].sort((a, b) => a - b);
+    const pos = new Map(order.map((idx, i) => [idx, i]));
+
+    for (const a of agents.values()) {
+      const childId = `${id}/${a.index}`;
+      const cur = this.get(childId);
+      if (this.gone.has(childId) || (a.state === "start" && a.startedAt == null && !cur)) continue;
+      const ended = a.state === "done" || a.state === "error";
+      const status: ActivityStatus = a.state === "done" ? "done" : a.state === "error" ? (a.skipped ? "stopped" : "failed") : "running";
+      const latest: string | undefined = a.lastToolSummary || (a.lastToolName ? describeTool(a.lastToolName, {}) : undefined) || cur?.latest;
+      let steps = cur?.steps;
+      if (latest && latest !== cur?.latest) {
+        const n = (cur?.steps?.length ? Number(cur.steps.at(-1)!.id) + 1 : 0) || 0;
+        steps = [...(steps ?? []).map((s) => (s.status === "running" ? { ...s, status: "done" as const } : s)), { id: String(n), tool: a.lastToolName ?? "", label: latest, status: "running" as const, ts: this.now() }].slice(-ACTIVITY_MAX_STEPS);
+      }
+      if (ended && steps?.some((s) => s.status === "running")) steps = steps.map((s) => (s.status === "running" ? { ...s, status: status === "failed" ? ("error" as const) : ("done" as const) } : s));
+      const startedAt = cur?.startedAt ?? a.startedAt ?? a.queuedAt ?? this.now();
+      const item: ActivityItem = {
+        id: childId,
+        kind: "subagent",
+        title: a.label || `Agent ${a.index}`,
+        description: a.promptPreview ?? cur?.description,
+        status,
+        startedAt,
+        endedAt: ended ? (cur?.endedAt ?? (a.durationMs ? startedAt + a.durationMs : this.now())) : undefined,
+        parentId: id,
+        phase: a.phaseIndex != null ? pos.get(a.phaseIndex) : undefined,
+        background: true,
+        agentType: a.agentType ?? cur?.agentType,
+        model: a.model ?? cur?.model,
+        tokens: a.tokens ?? cur?.tokens,
+        toolUses: a.toolCalls ?? cur?.toolUses,
+        latest,
+        steps,
+        summary: a.error ?? a.resultPreview ?? cur?.summary,
+      };
+      if (!cur || JSON.stringify(cur) !== JSON.stringify(item)) this.put(item);
+    }
+
+    if (!order.length) return undefined;
+    const list = [...agents.values()];
+    // A phase with no agents of its own is over once a later one has started.
+    const lastStarted = Math.max(-1, ...list.filter((a) => a.phaseIndex != null).map((a) => pos.get(a.phaseIndex)!));
+    return order.map((idx, i): ActivityPhase => {
+      const mine = list.filter((a) => a.phaseIndex === idx);
+      const done = mine.filter((a) => a.state === "done").length;
+      const failed = mine.filter((a) => a.state === "error" && !a.skipped).length;
+      const going = mine.length - done - mine.filter((a) => a.state === "error").length;
+      const status = going ? "running" : mine.length ? (failed === mine.length ? "failed" : "done") : i < lastStarted ? "done" : "pending";
+      const detail = mine.length ? `${done} of ${mine.length} ${mine.length === 1 ? "agent" : "agents"} done${failed ? ` · ${failed} failed` : ""}` : undefined;
+      return { title: titles.get(idx)!, status, ...(detail ? { detail } : {}) };
+    });
   }
 
   private onToolProgress(m: any) {

@@ -166,4 +166,56 @@ describe("the book stays bounded in long sessions", () => {
     const changed = act.onMessage({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "keep" }, { task_id: "t0" }] });
     expect(changed.some((a) => a.id === "t0")).toBe(false);
   });
+
+  // task_progress.workflow_progress as the CLI (2.1.29x) sends it for a local_workflow task.
+  test("a workflow: phases on the item, its agents as children in their phase", () => {
+    let t = 1_000;
+    const act = new ClaudeActivity(() => t);
+    act.onMessage({ type: "system", subtype: "task_started", task_id: "w1", task_type: "local_workflow", workflow_name: "review", description: "Review the branch", tool_use_id: "tu1" });
+    const phase = (index: number, title: string) => ({ type: "workflow_phase", index, title });
+    const agent = (index: number, phaseIndex: number, state: string, over: any = {}) => ({ type: "workflow_agent", index, label: `agent ${index}`, phaseIndex, phaseTitle: "x", state, startedAt: 500, ...over });
+    const progress = (entries: any[], description = "Review: agent 2") =>
+      act.onMessage({ type: "system", subtype: "task_progress", task_id: "w1", description, summary: "Review the branch", usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1 }, workflow_progress: entries });
+    let out = progress([
+      phase(1, "Map"),
+      phase(2, "Review"),
+      phase(3, "Report"),
+      agent(1, 1, "done", { resultPreview: "mapped", tokens: 900, toolCalls: 4 }),
+      agent(2, 2, "progress", { lastToolName: "Read", lastToolSummary: "Reading auth.ts", model: "claude-sonnet-5" }),
+      agent(3, 2, "start", { startedAt: undefined, queuedAt: 600 }),
+    ]);
+    const wf = out.find((a) => a.id === "w1")!;
+    expect(wf.title).toBe("review");
+    expect(wf.latest).toBe("Review: agent 2");
+    expect(wf.phases).toEqual([
+      { title: "Map", status: "done", detail: "1 of 1 agent done" },
+      { title: "Review", status: "running", detail: "0 of 2 agents done" },
+      { title: "Report", status: "pending" },
+    ]);
+    // The queued agent only counts toward its phase.
+    expect(out.filter((a) => a.parentId === "w1").map((a) => [a.id, a.status, a.phase, a.latest ?? a.summary])).toEqual([
+      ["w1/1", "done", 0, "mapped"],
+      ["w1/2", "running", 1, "Reading auth.ts"],
+    ]);
+    // Unchanged agents aren't sent again.
+    t += 100;
+    out = progress([phase(1, "Map"), phase(2, "Review"), phase(3, "Report"), agent(1, 1, "done", { resultPreview: "mapped", tokens: 900, toolCalls: 4 }), agent(2, 2, "progress", { lastToolName: "Grep", lastToolSummary: "Searching for token" })]);
+    expect(out.map((a) => a.id)).toEqual(["w1/2", "w1"]);
+    expect(out[0]!.steps!.map((s) => [s.label, s.status])).toEqual([
+      ["Reading auth.ts", "done"],
+      ["Searching for token", "running"],
+    ]);
+    // The workflow ends: its last phase that was going is over, and so are its agents.
+    out = act.onMessage({ type: "system", subtype: "task_notification", task_id: "w1", status: "completed", summary: "done" });
+    expect(out.find((a) => a.id === "w1")!.phases!.map((p) => p.status)).toEqual(["done", "done", "pending"]);
+    expect(out.find((a) => a.id === "w1/2")).toMatchObject({ status: "done" });
+  });
+
+  test("a workflow without phases keeps its agents and no phases", () => {
+    const act = new ClaudeActivity(() => 0);
+    act.onMessage({ type: "system", subtype: "task_started", task_id: "w2", task_type: "local_workflow", workflow_name: "fanout" });
+    const out = act.onMessage({ type: "system", subtype: "task_progress", task_id: "w2", description: "a", usage: {}, workflow_progress: [{ type: "workflow_agent", index: 1, label: "a", state: "progress", startedAt: 0 }] });
+    expect(out.find((a) => a.id === "w2")!.phases).toBeUndefined();
+    expect(out.find((a) => a.id === "w2/1")).toMatchObject({ parentId: "w2", phase: undefined, status: "running" });
+  });
 });

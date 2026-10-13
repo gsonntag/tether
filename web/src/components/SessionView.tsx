@@ -34,7 +34,7 @@ import { GUARD_MODES, type LiveState, type Ops, type PendingMessage, type SlashC
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
-import { ActivityButton, ActivityPanel } from "./Activity";
+import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
@@ -637,6 +637,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
+      <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner
           status="warning"
