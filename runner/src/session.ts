@@ -27,7 +27,7 @@ import { notify } from "./notify";
 import { backoffMs, classify, markExhausted, pickEntry, profile, providerOf, type Classified } from "./fallback";
 import { attachmentWrite, commandOf, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
-import { isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
+import { descendants, isActive, ownWork, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SlashCommand } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 import { PlanReviews } from "./planReview";
 
@@ -338,18 +338,18 @@ export abstract class LiveSession {
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
-    return (this.t.state.activity ?? []).filter(isActive).length;
+    return ownWork(this.t.state.activity ?? []).length;
   }
 
   /** Items doing work right now: not an armed wakeup or cron job waiting for its time. */
   get workingCount(): number {
-    return (this.t.state.activity ?? []).filter((a) => a.status === "running").length;
+    return ownWork(this.t.state.activity ?? []).filter((a) => a.status === "running").length;
   }
 
   /** Items doing work right now, by kind. */
   runningKinds(): Partial<Record<ActivityKind, number>> {
     const out: Partial<Record<ActivityKind, number>> = {};
-    for (const a of this.t.state.activity ?? []) if (a.status === "running") out[a.kind] = (out[a.kind] ?? 0) + 1;
+    for (const a of ownWork(this.t.state.activity ?? [])) if (a.status === "running") out[a.kind] = (out[a.kind] ?? 0) + 1;
     return out;
   }
 
@@ -402,7 +402,10 @@ export abstract class LiveSession {
   private endForeground() {
     this.flushActivity();
     const now = Date.now();
-    const stale = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background === false);
+    const all = this.t.state.activity ?? [];
+    const ended = all.filter((a) => isActive(a) && a.background === false);
+    // What they started ends with them (a foreground workflow's agents).
+    const stale = [...ended, ...descendants(all, new Set(ended.map((a) => a.id))).filter(isActive)];
     for (const a of stale) this.endedWithTurn.add(a.id);
     if (stale.length) this.upsertActivity(...stale.map((a) => ({ ...a, status: "stopped" as const, endedAt: now })));
   }
@@ -798,7 +801,7 @@ export abstract class LiveSession {
   /** What a restart would stop, as the agent is told after one. */
   private backgroundWork(): BackgroundTask[] {
     if (!this.t.state.activity) return this.t.state.background ?? [];
-    return this.t.state.activity.filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
+    return ownWork(this.t.state.activity).filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
   }
 
   savePrefs() {

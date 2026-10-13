@@ -407,6 +407,14 @@ export interface ActivityStep {
   ts: number;
 }
 
+/** One phase of a workflow, as the harness reports it (never made up from counts). */
+export interface ActivityPhase {
+  title: string;
+  status: "done" | "running" | "pending" | "failed";
+  /** "2 of 5 agents done", or what the phase is doing now */
+  detail?: string;
+}
+
 export interface ActivityItem {
   id: string;
   kind: ActivityKind;
@@ -418,8 +426,10 @@ export interface ActivityItem {
   endedAt?: number;
   /** the transcript tool call that started it */
   toolId?: string;
-  /** the subagent that started it (a subagent's own shells and agents) */
+  /** the subagent or workflow that started it (a subagent's own shells and agents, a workflow's agents) */
   parentId?: string;
+  /** the parent workflow's phase it works in: an index into the parent's `phases` */
+  phase?: number;
   /** runs on its own while the turn goes on (false: the turn waits for it) */
   background?: boolean;
   /** Stop works on it */
@@ -447,11 +457,43 @@ export interface ActivityItem {
   nextAt?: number;
   /** "every 30 minutes" */
   schedule?: string;
+  // workflow
+  /** its phases in order, when the harness reports them (Claude Code workflows, pi workflows and chains) */
+  phases?: ActivityPhase[];
 }
 
 export const ACTIVITY_KEEP_FINISHED = 20;
 export const ACTIVITY_MAX_STEPS = 40;
 export const isActive = (a: ActivityItem) => a.status === "running" || a.status === "waiting";
+/**
+ * The items that count as the session's work: active ones not started by another active item. A
+ * workflow's 30 agents or a subagent's own shells are part of it, not work of their own (counts,
+ * "busy", what a restart reports).
+ */
+export function ownWork(items: ActivityItem[]): ActivityItem[] {
+  const live = new Set(items.filter(isActive).map((a) => a.id));
+  return items.filter((a) => isActive(a) && !(a.parentId && a.parentId !== a.id && live.has(a.parentId)));
+}
+/** Everything started by `ids`, at any depth (the ids themselves excluded). */
+export function descendants(items: ActivityItem[], ids: Set<string>): ActivityItem[] {
+  const out: ActivityItem[] = [];
+  const seen = new Set(ids);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const a of items)
+      if (a.parentId && seen.has(a.parentId) && !seen.has(a.id)) {
+        seen.add(a.id);
+        out.push(a);
+        grew = true;
+      }
+  }
+  return out;
+}
+/**
+ * Which finished items to keep first: the newest, but a workflow's or subagent's own items after
+ * every top-level one (a 30-agent workflow mustn't push the session's other results out).
+ */
+export const finishedOrder = (a: ActivityItem, b: ActivityItem) => (a.parentId ? 1 : 0) - (b.parentId ? 1 : 0) || (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt);
 
 // ---------- notifications ----------
 
