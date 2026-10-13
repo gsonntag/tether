@@ -399,7 +399,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
     [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && workState(summaryWork(x)) === state).length;
   const running = useStore((s) => countIn(s, "working"));
   const background = useStore((s) => countIn(s, "background"));
-  const days = useStore((s) => s.sidebarDays);
+  const days = useStore((s) => s.ui.sidebarDays);
   const notices = useStore((s) => s.notices);
   const noticesSeen = useStore((s) => s.noticesSeen);
   const noticesRead = useStore((s) => s.noticesRead);

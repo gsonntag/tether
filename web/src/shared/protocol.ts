@@ -513,10 +513,13 @@ export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<Se
 export interface UiPrefs {
   /** sidebar project lists show sessions whose latest message is this recent, in days; 0 = all */
   sidebarDays: number;
+  /** shell tool calls start expanded in the transcript */
+  expandShell: boolean;
 }
 /** The sidebar windows on offer, in days (0 = all). */
 export const SIDEBAR_DAYS = [1, 3, 7, 30, 0] as const;
 export const DEFAULT_SIDEBAR_DAYS = 3;
+export const DEFAULT_UI_PREFS: UiPrefs = { sidebarDays: DEFAULT_SIDEBAR_DAYS, expandShell: false };
 
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {

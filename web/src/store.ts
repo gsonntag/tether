@@ -16,7 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
+import { byRecent, DEFAULT_UI_PREFS, type UiPrefs } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -74,10 +74,8 @@ interface State {
   conflicts: MemoryConflict[];
   /** activity that arrived while this tab was open, newest first */
   contextLive: ContextActivity[];
-  /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
-  sidebarDays: number;
-  /** shell tool calls start expanded in the transcript (this device) */
-  expandShell: boolean;
+  /** the Settings dialog's preferences, kept on the runner so they follow the user across devices */
+  ui: UiPrefs;
 }
 
 export const useStore = create<State>(() => ({
@@ -99,8 +97,7 @@ export const useStore = create<State>(() => ({
   conflicts: [],
   contextLive: [],
   pulses: {},
-  sidebarDays: cachedSidebarDays(loadJSON<string>("tether.runner", "")),
-  expandShell: loadJSON("tether.expandShell", false),
+  ui: cachedUiPrefs(loadJSON<string>("tether.runner", "")),
 }));
 
 const set = useStore.setState;
@@ -562,38 +559,64 @@ export function switchRunner(id: string) {
 
 // ---------------- preferences kept on the runner (shared by every device) ----------------
 
-// Each runner keeps its own; this device remembers the last value each one gave (by runner id), so
-// the list doesn't change size once the runner answers. (A function: the store's initial state uses it.)
-function cachedSidebarDays(runnerId: string | undefined): number {
-  const v = runnerId ? loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId] : undefined;
-  return typeof v === "number" ? v : DEFAULT_SIDEBAR_DAYS;
+// Each runner keeps its own; this device remembers the last ones each gave (by runner id), so the
+// sidebar doesn't change size once the runner answers. An older runner that doesn't know a
+// preference (or the RPC) leaves it here, on this device. (A function: the initial state uses it.)
+function cachedUiPrefs(runnerId: string | undefined): UiPrefs {
+  if (!runnerId) return DEFAULT_UI_PREFS;
+  // Older web apps kept the sidebar window as tether.sidebarDaysBy and expandShell per device.
+  const days = loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId];
+  const expand = loadJSON<unknown>("tether.expandShell", undefined);
+  return {
+    ...DEFAULT_UI_PREFS,
+    ...(typeof days === "number" && { sidebarDays: days }),
+    ...(typeof expand === "boolean" && { expandShell: expand }),
+    ...loadJSON<Record<string, Partial<UiPrefs>>>("tether.uiPrefsBy", {})[runnerId],
+  };
 }
 
-/** Applies a runner's answer, unless the sidebar has moved to another runner since it asked. */
-function applyUiPrefs(runnerId: string, p: { sidebarDays: number }) {
-  saveJSON("tether.sidebarDaysBy", { ...loadJSON<Record<string, number>>("tether.sidebarDaysBy", {}), [runnerId]: p.sidebarDays });
-  if (get().runnerId === runnerId) set({ sidebarDays: p.sidebarDays });
+/** Applies a runner's answer (or a change made here), unless the sidebar has moved to another runner since. */
+function applyUiPrefs(runnerId: string, p: Partial<UiPrefs>) {
+  const ui = { ...cachedUiPrefs(runnerId), ...p };
+  saveJSON("tether.uiPrefsBy", { ...loadJSON<Record<string, UiPrefs>>("tether.uiPrefsBy", {}), [runnerId]: ui });
+  if (get().runnerId === runnerId) set({ ui });
 }
 
 export function refreshUiPrefs() {
   const runnerId = get().runnerId;
   if (!runnerId) return;
-  set({ sidebarDays: cachedSidebarDays(runnerId) });
+  set({ ui: cachedUiPrefs(runnerId) });
   rpcTo(runnerId, "getUiPrefs", {})
-    .then((p) => applyUiPrefs(runnerId, p))
-    .catch((e) => {
-      // An older runner has no preferences: it gets the default. Other failures keep what we have.
-      if (/doesn't know/.test(e?.message ?? "")) applyUiPrefs(runnerId, { sidebarDays: DEFAULT_SIDEBAR_DAYS });
-    });
+    .then((p) => {
+      applyUiPrefs(runnerId, p);
+      migrateExpandShell(runnerId, p);
+    })
+    // An older runner has no preferences: this device's stay. Other failures keep what we have.
+    .catch(() => {});
 }
 // Another device may have changed them.
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());
 
-export async function setSidebarDays(days: number) {
+/** Once per device: a local "expand shell commands" from before it moved to the runner goes there. */
+function migrateExpandShell(runnerId: string, p: Partial<UiPrefs>) {
+  const local = loadJSON<unknown>("tether.expandShell", undefined);
+  if (local === undefined || p.expandShell === undefined) return; // nothing to move, or the runner can't keep it
+  localStorage.removeItem("tether.expandShell");
+  if (local === true && !p.expandShell) setUiPref({ expandShell: true });
+}
+
+/** Changes preferences at once, then saves them on the runner. */
+export async function setUiPref(p: Partial<UiPrefs>) {
   const runnerId = get().runnerId;
   if (!runnerId) return;
-  const r = await act("setUiPrefs", { sidebarDays: days });
-  if (r) applyUiPrefs(runnerId, r);
+  applyUiPrefs(runnerId, p);
+  try {
+    applyUiPrefs(runnerId, await rpcTo(runnerId, "setUiPrefs", p));
+  } catch (e: any) {
+    if (/doesn't know/.test(e?.message ?? "")) return; // an older runner: kept on this device
+    toast("error", e?.message ?? String(e));
+    refreshUiPrefs();
+  }
 }
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner
@@ -621,11 +644,6 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
 export function setActivityOpen(open: boolean) {
   set({ activityOpen: open });
   if (!isNarrow()) saveJSON("tether.activityOpen", open);
-}
-
-export function setExpandShell(expandShell: boolean) {
-  set({ expandShell });
-  saveJSON("tether.expandShell", expandShell);
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */

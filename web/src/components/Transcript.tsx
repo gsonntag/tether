@@ -474,7 +474,7 @@ function Tool({ t }: { t: ToolPart }) {
   const isWrite = lower === "write";
   const isShell = ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
   const isTodo = lower === "todowrite" && Array.isArray(input.todos);
-  const expandShell = useStore((s) => s.expandShell);
+  const expandShell = useStore((s) => s.ui.expandShell);
   const failed = isShell && t.status === "error";
   const [open, setOpen] = useState(isEdit || (isShell && expandShell) || isTodo || failed);
   // A command that fails opens, even collapsed by default: the output is what you'd look for.
