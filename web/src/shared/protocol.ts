@@ -18,6 +18,8 @@ export const HARNESSES: { id: HarnessId; label: string; badge: string }[] = [
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";
+/** A tool call by what it does: "search" looks through files, "fetch" reads the web, "task" runs a subagent. */
+export type ToolKind = "shell" | "edit" | "write" | "read" | "search" | "fetch" | "todo" | "task" | "other";
 
 export type Part =
   | { type: "text"; text: string }
@@ -32,6 +34,12 @@ export type Part =
       input: unknown;
       status: ToolStatus;
       output?: string;
+      /** What the call is, whatever the harness names it (runner/src/toolKind.ts). Older transcripts lack it. */
+      kind?: ToolKind;
+      /** the command a shell call runs */
+      command?: string;
+      /** the file (or folder) a read, edit or write is about */
+      path?: string;
       /** Set when the tool ran inside a subagent (Claude Code Task tool). */
       parentToolId?: string;
       /** The guard's verdict on this call */
@@ -206,6 +214,7 @@ export interface Msg {
 
 import type { Attachment } from "./attachments";
 export type { Attachment } from "./attachments";
+import type { PlanDraft, PlanReviewState } from "./plan";
 
 // ---------- live state ----------
 
@@ -265,6 +274,8 @@ export interface UiResponse {
   always?: boolean;
   /** question: question text -> answer label(s) */
   answers?: Record<string, string>;
+  /** plan, with allow: false: `value` asks to talk the plan over, not to revise it (it stays under review) */
+  discuss?: boolean;
 }
 
 export interface LiveState {
@@ -313,6 +324,8 @@ export interface LiveState {
   contextPercent?: number;
   /** how full the model's context window is, as of its last request */
   context?: ContextUsage;
+  /** plan reviews by plan id (shared/plan.ts); present (maybe empty) once the runner keeps them */
+  plans?: Record<string, PlanReviewState>;
 }
 
 export interface ContextUsage {
@@ -394,6 +407,14 @@ export interface ActivityStep {
   ts: number;
 }
 
+/** One phase of a workflow, as the harness reports it (never made up from counts). */
+export interface ActivityPhase {
+  title: string;
+  status: "done" | "running" | "pending" | "failed";
+  /** "2 of 5 agents done", or what the phase is doing now */
+  detail?: string;
+}
+
 export interface ActivityItem {
   id: string;
   kind: ActivityKind;
@@ -405,8 +426,10 @@ export interface ActivityItem {
   endedAt?: number;
   /** the transcript tool call that started it */
   toolId?: string;
-  /** the subagent that started it (a subagent's own shells and agents) */
+  /** the subagent or workflow that started it (a subagent's own shells and agents, a workflow's agents) */
   parentId?: string;
+  /** the parent workflow's phase it works in: an index into the parent's `phases` */
+  phase?: number;
   /** runs on its own while the turn goes on (false: the turn waits for it) */
   background?: boolean;
   /** Stop works on it */
@@ -434,11 +457,43 @@ export interface ActivityItem {
   nextAt?: number;
   /** "every 30 minutes" */
   schedule?: string;
+  // workflow
+  /** its phases in order, when the harness reports them (Claude Code workflows, pi workflows and chains) */
+  phases?: ActivityPhase[];
 }
 
 export const ACTIVITY_KEEP_FINISHED = 20;
 export const ACTIVITY_MAX_STEPS = 40;
 export const isActive = (a: ActivityItem) => a.status === "running" || a.status === "waiting";
+/**
+ * The items that count as the session's work: active ones not started by another active item. A
+ * workflow's 30 agents or a subagent's own shells are part of it, not work of their own (counts,
+ * "busy", what a restart reports).
+ */
+export function ownWork(items: ActivityItem[]): ActivityItem[] {
+  const live = new Set(items.filter(isActive).map((a) => a.id));
+  return items.filter((a) => isActive(a) && !(a.parentId && a.parentId !== a.id && live.has(a.parentId)));
+}
+/** Everything started by `ids`, at any depth (the ids themselves excluded). */
+export function descendants(items: ActivityItem[], ids: Set<string>): ActivityItem[] {
+  const out: ActivityItem[] = [];
+  const seen = new Set(ids);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const a of items)
+      if (a.parentId && seen.has(a.parentId) && !seen.has(a.id)) {
+        seen.add(a.id);
+        out.push(a);
+        grew = true;
+      }
+  }
+  return out;
+}
+/**
+ * Which finished items to keep first: the newest, but a workflow's or subagent's own items after
+ * every top-level one (a 30-agent workflow mustn't push the session's other results out).
+ */
+export const finishedOrder = (a: ActivityItem, b: ActivityItem) => (a.parentId ? 1 : 0) - (b.parentId ? 1 : 0) || (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt);
 
 // ---------- notifications ----------
 
@@ -499,6 +554,8 @@ export interface SessionSummary {
   runningKinds?: Partial<Record<ActivityKind, number>>;
   /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
   workingCount?: number;
+  /** when you last opened it, on any device (markViewed) */
+  viewedAt?: number;
 }
 
 /**
@@ -509,14 +566,28 @@ export function byRecent(a: Pick<SessionSummary, "id" | "updatedAt">, b: Pick<Se
   return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
+/** "Last touched": the latest message, or the last time you opened it, whichever is later. */
+export function lastTouched(s: Pick<SessionSummary, "updatedAt" | "viewedAt">, viewedAt?: number): number {
+  return Math.max(s.updatedAt, s.viewedAt ?? 0, viewedAt ?? 0);
+}
+
+/** Like byRecent, by last touched. `viewed` (sessionId -> when opened) adds what this device knows. */
+export function byTouched(viewed: Record<string, number> = {}) {
+  return (a: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, b: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">): number =>
+    lastTouched(b, viewed[b.id]) - lastTouched(a, viewed[a.id]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
 /** Web app preferences kept in the runner's config (getUiPrefs / setUiPrefs). */
 export interface UiPrefs {
   /** sidebar project lists show sessions whose latest message is this recent, in days; 0 = all */
   sidebarDays: number;
+  /** shell tool calls start expanded in the transcript */
+  expandShell: boolean;
 }
 /** The sidebar windows on offer, in days (0 = all). */
 export const SIDEBAR_DAYS = [1, 3, 7, 30, 0] as const;
 export const DEFAULT_SIDEBAR_DAYS = 3;
+export const DEFAULT_UI_PREFS: UiPrefs = { sidebarDays: DEFAULT_SIDEBAR_DAYS, expandShell: false };
 
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {
@@ -549,6 +620,8 @@ export interface SessionPulse {
   diffStat?: DiffStat;
   /** when its last turn ended */
   finishedAt?: number;
+  /** its latest notice (finished, blocked, a question), for Home on devices that follow another runner's */
+  notice?: AgentNotice;
 }
 
 export interface SessionSearchResult {
@@ -837,6 +910,21 @@ export interface Ops {
   /** empties the runner's notification list (the bell and sidebar dots, on every device) */
   clearNotifications: { args: {}; result: {} };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
+  /**
+   * A plan's draft comments, kept on the runner so every device has them; null clears it. `base`:
+   * the review's `rev` the edit started from; when it has moved on, nothing is saved (`stale`, with
+   * the draft as it is now, to merge into).
+   */
+  setPlanDraft: {
+    args: { sessionId: string; planId: string; draft: PlanDraft | null; base?: number };
+    result: { rev?: number; stale?: boolean; draft?: PlanDraft };
+  };
+  /**
+   * Discuss (the agent answers the comments, the plan stays as it is), Revise (sent back for a new
+   * plan) or Approve, with the draft as this device has it (`base`: its `rev`; refused when the
+   * draft has moved on since). Revise and Approve clear the draft.
+   */
+  planAction: { args: { sessionId: string; planId: string; action: "discuss" | "revise" | "approve"; draft: PlanDraft; base?: number }; result: {} };
   /** `stale`: no request with that id was waiting (already answered, timed out or cancelled); nothing happened */
   uiRespond: { args: { sessionId: string; response: UiResponse }; result: { stale?: boolean } };
   getUsage: { args: { force?: boolean }; result: UsageReport };
@@ -878,6 +966,15 @@ export interface Ops {
   /** web app preferences kept on the runner, so every device shares them */
   getUiPrefs: { args: {}; result: UiPrefs };
   setUiPrefs: { args: Partial<UiPrefs>; result: UiPrefs };
+  /** when each session was last opened (sessionId -> ms), on any device */
+  getViewed: { args: {}; result: Record<string, number> };
+  /** you opened (or are looking at) a session: now, by the runner's clock */
+  markViewed: { args: { sessionId: string; projectPath?: string }; result: { viewedAt: number } };
+  /**
+   * Sessions touched (a message, or opened) in the last `days` (0: any time), plus every live
+   * one, across projects, most recently touched first: the sidebar's Recent and Home.
+   */
+  listRecent: { args: { days: number }; result: SessionSummary[] };
 }
 
 export type OpName = keyof Ops;
@@ -901,6 +998,8 @@ export type RunnerToServer =
   | { t: "context"; event: ContextEvent }
   /** dashboard updates, throttled per session */
   | { t: "pulse"; pulses: SessionPulse[] }
+  /** a session was opened (markViewed), for every browser to merge */
+  | { t: "viewed"; sessionId: string; viewedAt: number }
   | { t: "pong" };
 
 /** server -> runner */
@@ -918,4 +1017,5 @@ export type ServerToBrowser =
   | { t: "sessions"; runnerId: string; projectPath?: string; session?: SessionSummary }
   | { t: "context"; runnerId: string; event: ContextEvent }
   | { t: "pulse"; runnerId: string; pulses: SessionPulse[] }
+  | { t: "viewed"; runnerId: string; sessionId: string; viewedAt: number }
   | { t: "pong" };

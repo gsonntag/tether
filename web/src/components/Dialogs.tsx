@@ -1,4 +1,4 @@
-import { Children, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { Children, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
@@ -33,10 +33,10 @@ import {
   type NotifyKind,
   type ProjectInfo,
 } from "../shared/protocol";
-import { profileProblems } from "../shared/profiles";
+import { profileProblems, profilesToSave } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setSidebarDays, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setUiPref, toggleProject, useStore } from "../store";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
@@ -121,6 +121,7 @@ function NewSession({ close }: { close: () => void }) {
   const [choice, setChoice] = useState("last"); // "last" | "" (harness default) | model id | profile:<name>
   const [guard, setGuard] = useState<GuardMode>(() => last?.guard ?? "auto");
   const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState("");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const models = useModels([harness]);
@@ -154,10 +155,21 @@ function NewSession({ close }: { close: () => void }) {
     });
     setBusy(false);
     if (!s) return;
+    if (name.trim()) act("renameSession", { sessionId: s.id, projectPath: s.projectPath, title: name });
     close();
     toggleProject(project, true);
     selectSession(s.id);
   };
+  // ⌘/Ctrl+Enter starts the session from anywhere in the dialog (a menu that's open keeps its Enter).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || e.defaultPrevented) return;
+      e.preventDefault();
+      start();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const projectOptions: SelectorOptionType[] = [
     ...projects.map((p) => ({ value: p.path, label: `${p.name} — ${tildify(p.path)}` })),
@@ -187,7 +199,7 @@ function NewSession({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label="Start session" variant="primary" isDisabled={!project} isLoading={busy} onClick={start} />
+          <Button label="Start session" variant="primary" tooltip="⌘↵" isDisabled={!project} isLoading={busy} onClick={start} />
         </>
       }
     >
@@ -224,9 +236,8 @@ function NewSession({ close }: { close: () => void }) {
           </SegmentedControl>
         </Group>
       )}
-      <VStack onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && start()}>
-        <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do?" />
-      </VStack>
+      <TextInput label="Name" value={name} onChange={setName} placeholder="Optional: named from the first message otherwise" />
+      <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do? (⌘↵ to start)" />
     </Frame>
   );
 }
@@ -339,14 +350,21 @@ const NARROW = "(max-width: 640px)";
 /** Width of a row's control when it sits beside the row's text. */
 const CONTROL_WIDTH = "calc(var(--spacing-12) * 4)";
 
-/** A titled, muted card of settings rows separated by hairlines. */
-function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
+/** A titled, muted card of settings rows separated by hairlines. `scope` notes where it applies, beside the title. */
+function SettingsCard({ title, scope, children }: { title: string; scope?: string; children: ReactNode }) {
   const rows = Children.toArray(children);
   return (
     <VStack gap={1.5}>
-      <Text type="supporting" weight="semibold" color="secondary">
-        {title}
-      </Text>
+      <HStack gap={2} hAlign="between" vAlign="center">
+        <Text type="supporting" weight="semibold" color="secondary">
+          {title}
+        </Text>
+        {scope && (
+          <Text type="supporting" color="placeholder">
+            {scope}
+          </Text>
+        )}
+      </HStack>
       <Card padding={0} width="100%" variant="muted">
         <VStack as="ul" role="list" gap={0}>
           {rows.map((row, i) => (
@@ -429,7 +447,7 @@ function NotificationSettings() {
 
   return (
     <VStack gap={2}>
-      <SettingsCard title="Notifications">
+      <SettingsCard title="Notifications" scope="This device">
         <SettingsRow
           title="Notify this device"
           description={status}
@@ -547,15 +565,18 @@ function Settings({ close }: { close: () => void }) {
   const runnerId = useStore((s) => s.runnerId);
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
-  const sidebarDays = useStore((s) => s.sidebarDays);
-  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
-  const [saved, setSaved] = useState<ModelProfile[]>([]);
+  const ui = useStore((s) => s.ui);
+  // undefined until the runner answers, so nothing is saved over profiles not loaded yet
+  const [loaded, setProfiles] = useState<ModelProfile[]>();
+  const profiles = loaded ?? [];
+  const saved = useRef<ModelProfile[]>(undefined);
+  const pending = useRef<ModelProfile[]>(undefined);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
   useEffect(() => {
     rpc("getProfiles", {})
       .then((p) => {
+        saved.current = p;
         setProfiles(p);
-        setSaved(p);
       })
       .catch(() => {});
     rpc("guardSetup", {}).then(setGuardInfo).catch(() => {});
@@ -564,15 +585,24 @@ function Settings({ close }: { close: () => void }) {
     const r = await act("guardSetup", args);
     if (r) setGuardInfo(r);
   };
-  const dirty = JSON.stringify(profiles) !== JSON.stringify(saved);
   const problems = profileProblems(profiles);
-  const invalid = dirty && problems.some(Boolean);
-  // Everything else applies as you change it; profile edits are saved here.
-  const done = async () => {
-    if (invalid) return;
-    if (dirty && !(await act("setProfiles", { profiles }))) return;
-    close();
+  // Profiles save themselves a moment after the last edit, once every one is valid; closing saves at once.
+  const flush = () => {
+    const p = pending.current;
+    if (!p) return;
+    pending.current = undefined;
+    saved.current = p;
+    act("setProfiles", { profiles: p }).then((r) => {
+      if (!r) saved.current = undefined; // retried on the next edit
+    });
   };
+  useEffect(() => {
+    pending.current = profilesToSave(loaded, saved.current);
+    if (!pending.current) return;
+    const t = setTimeout(flush, 600);
+    return () => clearTimeout(t);
+  }, [loaded]);
+  useEffect(() => flush, []);
   const controlWidth = narrow ? "100%" : CONTROL_WIDTH;
   const setProfile = (i: number, p: Partial<ModelProfile>) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
@@ -581,7 +611,7 @@ function Settings({ close }: { close: () => void }) {
       title="Settings"
       subtitle={manyRunners && runnerId ? `For runner ${runnerId}` : undefined}
       close={close}
-      actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" isDisabled={invalid} clickAction={done} />}
+      actions={<Button label="Done" variant="primary" onClick={close} />}
     >
       <NotificationSettings />
       <SettingsCard title="Sidebar">
@@ -595,11 +625,18 @@ function Settings({ close }: { close: () => void }) {
               isLabelHidden
               size="sm"
               width={controlWidth}
-              value={String(sidebarDays)}
+              value={String(ui.sidebarDays)}
               options={SIDEBAR_DAYS.map((d) => ({ value: String(d), label: sidebarDaysLabel(d) }))}
-              onChange={(v) => v != null && setSidebarDays(Number(v))}
+              onChange={(v) => v != null && setUiPref({ sidebarDays: Number(v) })}
             />
           }
+        />
+      </SettingsCard>
+      <SettingsCard title="Transcript">
+        <SettingsRow
+          title="Expand shell commands by default"
+          description="Show a command's output without clicking it."
+          control={<Switch label="Expand shell commands by default" isLabelHidden value={ui.expandShell} onChange={(v) => setUiPref({ expandShell: v })} />}
         />
       </SettingsCard>
       <SettingsCard title="New sessions">
@@ -621,7 +658,7 @@ function Settings({ close }: { close: () => void }) {
           }
         />
       </SettingsCard>
-      <Collapsible trigger={<Text type="label">Advanced</Text>} defaultIsOpen={dirty}>
+      <Collapsible trigger={<Text type="label">Advanced</Text>}>
         <VStack gap={4} paddingBlockStart={2}>
           <SettingsCard title="Background model and safety">
             <SettingsRow
@@ -652,36 +689,29 @@ function Settings({ close }: { close: () => void }) {
               }
             />
           </SettingsCard>
-          <VStack gap={1.5}>
-            <SettingsCard title="Fallback profiles">
-              <SettingsRow
-                title="Switch models at usage limits"
-                description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
-                control={<Button label="Add profile" size="sm" onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
-              />
-              {profiles.map((p, i) => (
-                <VStack key={i} padding={4} gap={2}>
-                  <HStack gap={2} vAlign="center">
-                    <StackItem size="fill">
-                      <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
-                    </StackItem>
-                    <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
-                  </HStack>
-                  {problems[i] && (
-                    <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
-                      {problems[i]}
-                    </Text>
-                  )}
-                  <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
-                </VStack>
-              ))}
-            </SettingsCard>
-            {dirty && (
-              <Text type="supporting">
-                {invalid ? "Fix the profiles marked in red to save, or close to discard the changes." : "Profile changes are saved when you press Save and close."}
-              </Text>
-            )}
-          </VStack>
+          <SettingsCard title="Fallback profiles">
+            <SettingsRow
+              title="Switch models at usage limits"
+              description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
+              control={<Button label="Add profile" size="sm" isDisabled={!loaded} onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
+            />
+            {profiles.map((p, i) => (
+              <VStack key={i} padding={4} gap={2}>
+                <HStack gap={2} vAlign="center">
+                  <StackItem size="fill">
+                    <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
+                  </StackItem>
+                  <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
+                </HStack>
+                {problems[i] && (
+                  <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
+                    {problems[i]}. Not saved until fixed.
+                  </Text>
+                )}
+                <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
+              </VStack>
+            ))}
+          </SettingsCard>
         </VStack>
       </Collapsible>
     </Frame>

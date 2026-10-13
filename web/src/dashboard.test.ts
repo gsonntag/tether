@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionPulse, SessionSummary } from "./shared/protocol";
-import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, groupDashboard, isRunning, mergePulses, oneTapQuestion, requestLine, runningCount } from "./dashboard";
+import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, mergePulses, oneTapQuestion, requestLine } from "./dashboard";
 
 const s = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
   id,
@@ -25,51 +25,6 @@ describe("mergePulses", () => {
     expect(m.r1!.a!.action).toBe("x");
     expect(m.r1!.b).toBeUndefined();
     expect(m.r2!.a).toBeDefined();
-  });
-});
-
-describe("groupDashboard", () => {
-  const perm = { id: "q1", kind: "permission" as const, title: "Allow Bash?", tool: { name: "Bash", input: { command: "rm -rf build" } } };
-  const map = mergePulses(
-    mergePulses({}, "r1", [
-      p("waiting-approval", { pendingUi: [perm] }, { status: "running", needsInput: true, updatedAt: 5 }),
-      p("busy", { turnStartedAt: 100 }, { status: "running" }),
-      p("busy-older", { turnStartedAt: 50 }, { status: "running" }),
-      p("sched-only", { armed: 1 }, { updatedAt: 9 }),
-      p("bg-only", { activity: { subagent: 1 } }),
-      p("done-1", { finishedAt: 10, lastText: "ok" }, { updatedAt: 9 }),
-      // sorted like the session lists: by the last message, not by when the turn ended
-      p("done-2", { finishedAt: 20 }, { updatedAt: 35 }),
-      p("closed-done", { finishedAt: 30 }, { live: false, updatedAt: 29 }),
-      p("idle-never-ran"),
-    ]),
-    "r2",
-    [p("other-runner", {}, { status: "waiting" })],
-  );
-  const d = groupDashboard(map);
-
-  test("needs you: one row per waiting request", () => {
-    expect(d.needs.map((n) => [n.runnerId, n.pulse.session.id, n.request.id])).toEqual([["r1", "waiting-approval", "q1"]]);
-  });
-
-  test("running: prompts first, then running (newest turn first), then waiting, then background only, then a wakeup only", () => {
-    expect(d.running.map((r) => r.pulse.session.id)).toEqual(["waiting-approval", "busy", "busy-older", "other-runner", "bg-only", "sched-only"]);
-  });
-
-  test("recently finished: most recent message first, includes closed sessions, never a running one", () => {
-    expect(d.finished.map((r) => r.pulse.session.id)).toEqual(["done-2", "closed-done", "done-1"]);
-    expect(groupDashboard(map, { finished: 1 }).finished).toHaveLength(1);
-  });
-
-  test("a closed session is never running, even with stale counts", () => {
-    expect(isRunning(p("x", { activity: { shell: 1 } }, { live: false, status: "running" }))).toBe(false);
-  });
-
-  test("a finished session that starts again moves back to running", () => {
-    const again = mergePulses(map, "r1", [p("done-2", { finishedAt: 20 }, { status: "running" })]);
-    const g = groupDashboard(again);
-    expect(g.running.some((r) => r.pulse.session.id === "done-2")).toBe(true);
-    expect(g.finished.some((r) => r.pulse.session.id === "done-2")).toBe(false);
   });
 });
 
@@ -148,10 +103,3 @@ describe("answerRequest (Home approve/deny/answer)", () => {
   });
 });
 
-test("runningCount (the sidebar badge) matches Home's Running section across runners", () => {
-  let m = mergePulses({}, "r1", [p("a", {}, { status: "running" }), p("b"), p("c", { armed: 1 }), p("bg", { activity: { shell: 1 } })]);
-  m = mergePulses(m, "r2", [p("d", {}, { status: "waiting" }), p("e", {}, { live: false, status: "idle" })]);
-  // Working in the background counts: the main turn is over, its subagents and shells aren't.
-  expect(runningCount(m)).toBe(4);
-  expect(runningCount(m)).toBe(groupDashboard(m).running.length);
-});

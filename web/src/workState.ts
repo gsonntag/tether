@@ -9,7 +9,7 @@ import { ACTIVITY_KINDS, type ActivityKind, type RunStatus, type SessionPulse, t
  * waiting: the turn waits (usage limit, retry).
  * background: the turn is over but subagents, shells, monitors or workflows are still running.
  * scheduled: nothing is running, but a wakeup or cron job is armed.
- * idle: a live process with nothing going. closed: no process.
+ * idle: a live process with nothing going (shown like closed: nothing to look at). closed: no process.
  */
 export type WorkState = "working" | "waiting" | "background" | "scheduled" | "idle" | "closed";
 
@@ -36,8 +36,9 @@ export function workState(w: WorkInput): WorkState {
 /** From a sidebar summary: `activeCount` is running + armed, `runningKinds` the running ones. */
 export function summaryWork(s: SessionSummary): WorkInput {
   const active = s.activeCount ?? 0;
-  // An older runner sends only the count: count it all as running, the safer reading.
-  const running = s.runningKinds ?? (active ? { other: active } : undefined);
+  // An older runner sends only the counts: count what it says works (else all of it) as running.
+  const working = s.workingCount ?? active;
+  const running = s.runningKinds ?? (working ? { other: working } : undefined);
   return { live: s.live, status: s.status, running, armed: Math.max(0, active - total(running)) };
 }
 
@@ -80,8 +81,6 @@ export function workLabel(w: WorkInput): { state: WorkState; label: string; tool
     }
     case "scheduled":
       return { state, label: "Scheduled", tooltip: w.armed === 1 ? "Waiting for a scheduled wakeup" : `Waiting for ${w.armed} scheduled wakeups` };
-    case "idle":
-      return { state, label: "Live", tooltip: "Live" };
     default:
       return { state, label: "", tooltip: "" };
   }

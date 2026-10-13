@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_SIDEBAR_DAYS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
+import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
 // back to the account's real home through the password database.
@@ -145,19 +145,25 @@ export function migrateJudge(cfg: RunnerConfig): boolean {
   return JSON.stringify([cfg.guard, cfg.backgroundModel]) !== before;
 }
 
-const isSidebarDays = (v: unknown): v is number => (SIDEBAR_DAYS as readonly unknown[]).includes(v);
+/** Each preference's check, and what a refused value is told. */
+const UI_PREF_CHECKS: { [K in keyof UiPrefs]: [(v: unknown) => boolean, string] } = {
+  sidebarDays: [(v) => (SIDEBAR_DAYS as readonly unknown[]).includes(v), `one of ${SIDEBAR_DAYS.join(", ")}`],
+  expandShell: [(v) => typeof v === "boolean", "true or false"],
+};
+const uiKeys = Object.keys(UI_PREF_CHECKS) as (keyof UiPrefs)[];
 
-/** The web app's preferences, defaults filled in. */
+/** The web app's preferences, defaults filled in (a bad hand-edited value reads as the default). */
 export function uiPrefs(): UiPrefs {
-  const days = config().ui?.sidebarDays;
-  return { sidebarDays: isSidebarDays(days) ? days : DEFAULT_SIDEBAR_DAYS };
+  const ui = config().ui ?? {};
+  return Object.fromEntries(uiKeys.map((k) => [k, UI_PREF_CHECKS[k][0](ui[k]) ? ui[k] : DEFAULT_UI_PREFS[k]])) as unknown as UiPrefs;
 }
 
-/** Saves the given preferences. An unknown value is refused and nothing changes. */
+/** Saves the given preferences. An unknown value is refused and nothing changes; unknown keys are ignored. */
 export function setUiPrefs(p: Partial<UiPrefs>): UiPrefs {
-  if (p.sidebarDays !== undefined && !isSidebarDays(p.sidebarDays)) throw new Error(`sidebarDays must be one of ${SIDEBAR_DAYS.join(", ")}`);
+  const given = uiKeys.filter((k) => p[k] !== undefined);
+  for (const k of given) if (!UI_PREF_CHECKS[k][0](p[k])) throw new Error(`${k} must be ${UI_PREF_CHECKS[k][1]}`);
   const cfg = config();
-  if (p.sidebarDays !== undefined) cfg.ui = { ...cfg.ui, sidebarDays: p.sidebarDays };
+  if (given.length) cfg.ui = { ...cfg.ui, ...Object.fromEntries(given.map((k) => [k, p[k]])) };
   saveConfig();
   return uiPrefs();
 }

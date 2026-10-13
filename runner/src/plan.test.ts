@@ -18,6 +18,23 @@ describe("plan feedback", () => {
     expect(quote("## Steps\n\n1. one\n2. two  ")).toBe("> ## Steps\n>\n> 1. one\n> 2. two");
   });
 
+  test("replies follow their comment under the same quote (old drafts: plain strings)", () => {
+    expect(formatPlanFeedback([{ id: "a", quote: "Step 2", text: "Skip this.", replies: ["Actually, keep it", "  "] as any, offset: 0 }])).toBe(
+      "> Step 2\nSkip this.\nActually, keep it",
+    );
+    expect(formatPlanFeedback([{ id: "a", quote: "x", text: " ", replies: [{ author: "user", text: "Only the reply" }], offset: 0 }])).toBe("> x\nOnly the reply");
+  });
+
+  test("once the agent has answered, the thread says who said what", () => {
+    const replies = [
+      { author: "agent" as const, text: "Because the API needs it." },
+      { author: "user" as const, text: "Fine, keep it." },
+    ];
+    expect(formatPlanFeedback([{ id: "a", quote: "Step 2", text: "Why this?", replies, offset: 0 }], "Ship it", [{ author: "agent", text: "Will do." }])).toBe(
+      "> Step 2\nWhy this?\nYou answered: Because the API needs it.\nI replied: Fine, keep it.\n\nShip it\nYou answered: Will do.",
+    );
+  });
+
   test("comments without text are left out; nothing to send is empty", () => {
     expect(formatPlanFeedback([{ id: "a", quote: "x", text: "  ", offset: 0 }])).toBe("");
     expect(formatPlanFeedback([], "  ")).toBe("");

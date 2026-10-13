@@ -19,6 +19,7 @@ import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
 import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
+import { ACP_KINDS } from "../toolKind";
 import { LiveSession, newId } from "../session";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
@@ -387,6 +388,9 @@ class AcpSession extends LiveSession {
       patch.output = typeof u.rawOutput === "string" ? u.rawOutput : (u.rawOutput?.output ?? JSON.stringify(u.rawOutput, null, 2));
     if (u.rawInput !== undefined && !diffs.length) patch.input = u.rawInput;
     if (u.name) patch.name = u.name;
+    // Hints for runner/src/toolKind.ts: ACP's own kind, and a shell call's title is its command.
+    if (u.kind) patch.kind = ACP_KINDS[u.kind] ?? "other";
+    if (u.kind === "execute" && typeof u.title === "string" && u.title) patch.command = u.title;
     return patch;
   }
 

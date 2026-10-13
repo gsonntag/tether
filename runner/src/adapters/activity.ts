@@ -1,6 +1,6 @@
 // Helpers the adapters share to build activity items (web/src/shared/protocol.ts ActivityItem).
 
-import { ACTIVITY_KEEP_FINISHED, ACTIVITY_MAX_STEPS, type ActivityItem, type ActivityStep, type ToolStatus } from "../../../web/src/shared/protocol";
+import { ACTIVITY_KEEP_FINISHED, ACTIVITY_MAX_STEPS, finishedOrder, type ActivityItem, type ActivityStep, type ToolStatus } from "../../../web/src/shared/protocol";
 
 const base = (p: unknown) => (typeof p === "string" ? p.split(/[\\/]/).filter(Boolean).pop() ?? p : "");
 const clip = (s: string, n = 80) => {
@@ -83,7 +83,13 @@ export class ActivityBook {
     const cur = this.get(id);
     if (!cur) return undefined;
     if (cur.endedAt) return Object.keys(p).length ? this.put({ ...cur, ...p }) : cur;
-    return this.put({ ...cur, ...p, status, endedAt: p.endedAt ?? this.now() });
+    const endedAt = p.endedAt ?? this.now();
+    const phases = cur.kind === "workflow" ? (p.phases ?? cur.phases) : undefined;
+    // A workflow's phase that was going ends with it; its agents can't outlive it.
+    const ended = phases?.map((ph) => (ph.status === "running" ? { ...ph, status: status === "done" ? ("done" as const) : ("failed" as const) } : ph));
+    const out = this.put({ ...cur, ...p, ...(ended ? { phases: ended } : {}), status, endedAt });
+    if (cur.kind === "workflow") for (const c of this.list()) if (c.parentId === id && !c.endedAt && (c.status === "running" || c.status === "waiting")) this.end(c.id, status === "done" ? "done" : "stopped", { endedAt });
+    return out;
   }
 
   /** One step of a subagent's mini-transcript; it also becomes the item's latest action. */
@@ -115,7 +121,7 @@ export class ActivityBook {
     if (this.items.size <= ACTIVITY_KEEP_FINISHED * 2) return;
     const done = this.list()
       .filter((a) => a.endedAt)
-      .sort((a, b) => b.endedAt! - a.endedAt!);
+      .sort(finishedOrder);
     for (const a of done.slice(ACTIVITY_KEEP_FINISHED)) {
       this.items.delete(a.id);
       this.forget(a.id);

@@ -16,3 +16,9 @@ export function profileProblems(profiles: ModelProfile[]): (string | undefined)[
     return undefined;
   });
 }
+
+/** What the settings should autosave: the edited profiles when every one is valid and they differ (once cleaned) from the saved ones. */
+export function profilesToSave(profiles: ModelProfile[] | undefined, saved: ModelProfile[] | undefined): ModelProfile[] | undefined {
+  if (!profiles || profileProblems(profiles).some(Boolean)) return undefined;
+  return saved && JSON.stringify(cleanProfiles(profiles)) === JSON.stringify(cleanProfiles(saved)) ? undefined : profiles;
+}

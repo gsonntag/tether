@@ -30,11 +30,11 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, type LiveState, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
-import { ActivityButton, ActivityPanel } from "./Activity";
+import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
@@ -190,7 +190,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        composer={<Composer sessionId={sessionId} state={st} />}
+        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} />}
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
@@ -469,12 +469,15 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state }: { sessionId: string; state: LiveState }) {
+function Composer({ sessionId, state, messages }: { sessionId: string; state: LiveState; messages: Msg[] }) {
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
   const input = useRef<ChatComposerInputHandle>(null);
+  const historyPosition = useRef<number | null>(null);
+  const historySnapshot = useRef<string[]>([]);
+  const historyDraft = useRef("");
   const narrow = useNarrow();
   const touch = useMediaQuery("(pointer: coarse)");
   const running = state.status === "running";
@@ -511,11 +514,27 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   const cameraInput = useRef<HTMLInputElement>(null);
   const shell = text.startsWith("!");
   const canSend = (!!text.trim() || (ready.length > 0 && !shell)) && !uploading && !(shell && ready.length > 0);
+  const history = useMemo(
+    () =>
+      messages
+        .filter((m) => m.role === "user")
+        // As typed: without the attached-files block the runner adds.
+        .map((m) => splitAttachments(m.parts.filter((p) => p.type === "text").map((p) => p.text).join("")).text)
+        .filter((message) => message.trim()),
+    [messages],
+  );
+
+  const clearHistoryNavigation = () => {
+    historyPosition.current = null;
+    historySnapshot.current = [];
+    historyDraft.current = "";
+  };
 
   const send = async (mode?: "steer" | "followUp") => {
     const t = text.trim();
     if (!canSend) return;
     const files = ready.map((d) => d.attachment!);
+    clearHistoryNavigation();
     setText("");
     const r = await act("prompt", { sessionId, text: t, mode: running ? (mode ?? "steer") : undefined, ...(files.length ? { attachments: files } : {}) });
     if (r === undefined) setText(t);
@@ -538,12 +557,14 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   };
 
   const pick = (name: string) => {
+    clearHistoryNavigation();
     setText(`/${name} `);
     input.current?.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (matches.length) {
+    // A recalled "/cmd" opens the menu; while stepping through history the arrows stay history's.
+    if (matches.length && historyPosition.current === null) {
       const idx = Math.min(cmdIdx, matches.length - 1);
       if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
       if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
@@ -558,8 +579,41 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
       e.preventDefault();
       rpc("takePending", { sessionId })
-        .then((r) => r.text && setText(takeBack(sessionId, r.text)))
+        .then((r) => {
+          if (!r.text) return;
+          clearHistoryNavigation();
+          setText(takeBack(sessionId, r.text));
+        })
         .catch(() => {});
+      return;
+    }
+    // Only from the first line up / the last line down, so the caret still moves inside a message.
+    const box = e.target as HTMLTextAreaElement;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
+    const onFirst = !box.value?.slice(0, box.selectionStart ?? 0).includes("\n");
+    const onLast = !box.value?.slice(box.selectionEnd ?? 0).includes("\n");
+    if (e.key === "ArrowUp" && plain && onFirst && (historyPosition.current !== null || !text) && history.length) {
+      e.preventDefault();
+      if (historyPosition.current === null) {
+        historySnapshot.current = history;
+        historyDraft.current = text;
+        historyPosition.current = historySnapshot.current.length - 1;
+      } else {
+        historyPosition.current = Math.max(0, historyPosition.current - 1);
+      }
+      setText(historySnapshot.current[historyPosition.current]!);
+      return;
+    }
+    if (e.key === "ArrowDown" && plain && onLast && historyPosition.current !== null) {
+      e.preventDefault();
+      const next = historyPosition.current + 1;
+      if (next >= historySnapshot.current.length) {
+        setText(historyDraft.current);
+        clearHistoryNavigation();
+      } else {
+        historyPosition.current = next;
+        setText(historySnapshot.current[next]!);
+      }
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -637,6 +691,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
+      <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner
           status="warning"
@@ -647,6 +702,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       <ChatComposer
         value={text}
         onChange={(v) => {
+          clearHistoryNavigation();
           setText(v);
           setCmdIdx(0);
         }}

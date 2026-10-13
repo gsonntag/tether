@@ -1,5 +1,6 @@
-// Home: every connected runner's sessions at a glance, live (runner pulses, no polling). What needs
-// you (approve, answer, review), what's running, and what finished recently. Phones land here.
+// Home, the main page: every connected runner's sessions at a glance, live (runner pulses, no
+// polling), in the three states the sidebar uses (recentSessions.ts): what needs you (approve,
+// answer, review, a finished turn you haven't opened), what's working, and what's recent.
 // Frame from Astryx's dashboard-alert-rail template: header | content | triage rail (Needs you),
 // with the rail folded to the top of the content on narrow screens.
 
@@ -19,9 +20,11 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
-import { BellAlertIcon, BoltIcon, CheckCircleIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
+import { BellAlertIcon, BoltIcon, CheckCircleIcon, ClockIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
 import type { MemoryConflict, SessionPulse, UiRequest, UiResponse } from "../shared/protocol";
-import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, groupDashboard, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
+import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
+import { touched, type Entry } from "../recentSessions";
+import { useNeedsCount, useSessionGroups } from "../sessionLists";
 import { openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
@@ -29,6 +32,9 @@ import { ModelName } from "./ModelName";
 import { WorkIndicator } from "./WorkIndicator";
 import { pulseWork, workState } from "../workState";
 import { removeSession } from "./Sidebar";
+
+/** Recent rows shown before "Show more". */
+const RECENT = 10;
 
 const project = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
@@ -109,6 +115,12 @@ async function remove(row: PulseRow) {
   patchPulse(row.runnerId, s.id, () => undefined);
 }
 
+/** A Home row from a session entry: its pulse (or just its summary, from an older runner), with the freshest summary. */
+const rowOf = (e: Entry): PulseRow => ({ runnerId: e.runnerId!, pulse: { ...e.pulse, session: e.session } });
+
+/** Its waiting requests, each answerable here; none when it needs you for a notice instead. */
+const requestsOf = (e: Entry): NeedRow[] => (e.session.live ? (e.pulse?.pendingUi ?? []).map((request) => ({ ...rowOf(e), request })) : []);
+
 export function Dashboard({ focus }: { focus?: "running" }) {
   const pulses = useStore((s) => s.pulses);
   const runners = useStore((s) => s.runners);
@@ -119,15 +131,16 @@ export function Dashboard({ focus }: { focus?: "running" }) {
   const phone = useMediaQuery("(max-width: 767px)");
   const online = runners.filter((r) => r.connected);
   const multi = online.length > 1;
-  const { needs, running, finished } = groupDashboard(pulses);
-  const now = useNow(running.length > 0);
+  const { needs, working, recent } = useSessionGroups("all");
+  const [allRecent, setAllRecent] = useState(false);
+  const now = useNow(working.length > 0);
   const loaded = online.every((r) => pulses[r.id]);
 
   useEffect(() => {
-    if (focus === "running") document.getElementById("home-running")?.scrollIntoView({ block: "start" });
+    if (focus === "running") document.getElementById("home-working")?.scrollIntoView({ block: "start" });
   }, [focus]);
 
-  const needCount = needs.length + conflicts.length;
+  const needCount = useNeedsCount(needs);
   const ctx: RowCtx = { multi, phone, now };
 
   const needsSection = (
@@ -136,11 +149,14 @@ export function Dashboard({ focus }: { focus?: "running" }) {
       title="Needs you"
       count={needCount}
       countVariant="error"
-      empty={<EmptyState isCompact title="Nothing needs you" description="Approvals, questions and plans to review show here." icon={<Icon icon={CheckCircleIcon} size="lg" color="success" />} />}
+      empty={<EmptyState isCompact title="Nothing needs you" description="Approvals, questions, plans to review and finished work you haven't opened show here." icon={<Icon icon={CheckCircleIcon} size="lg" color="success" />} />}
     >
-      {needs.map((n) => (
-        <NeedItem key={`${n.runnerId}:${n.request.id}`} row={n} ctx={ctx} />
-      ))}
+      {needs.flatMap((e) => {
+        const reqs = requestsOf(e);
+        return reqs.length
+          ? reqs.map((n) => <NeedItem key={`${n.runnerId}:${n.request.id}`} row={n} ctx={ctx} />)
+          : [<NoticeItem key={`${e.runnerId}:${e.session.id}`} entry={e} ctx={ctx} />];
+      })}
       {conflicts.map((c) => runnerId && <ConflictItem key={c.id} c={c} runnerId={runnerId} ctx={ctx} />)}
     </Section>
   );
@@ -155,9 +171,9 @@ export function Dashboard({ focus }: { focus?: "running" }) {
             <VStack gap={0} vAlign="center">
               <Heading level={1}>Home</Heading>
               <HStack gap={2} vAlign="center">
-                <StatusDot variant={online.length ? "success" : "neutral"} label={online.length ? "Live" : "No runner"} isPulsing={running.length > 0} />
+                <StatusDot variant={online.length ? "success" : "neutral"} label={online.length ? "Connected" : "No runner"} isPulsing={working.length > 0} />
                 <Text type="supporting">
-                  {[`${running.length} running`, needCount ? `${needCount} need${needCount === 1 ? "s" : ""} you` : "", multi ? `${online.length} runners` : ""].filter(Boolean).join(" · ")}
+                  {[`${working.length} working`, needCount ? `${needCount} need${needCount === 1 ? "s" : ""} you` : "", multi ? `${online.length} runners` : ""].filter(Boolean).join(" · ")}
                 </Text>
               </HStack>
             </VStack>
@@ -176,30 +192,35 @@ export function Dashboard({ focus }: { focus?: "running" }) {
         <LayoutContent padding={phone ? 0 : 6} role="main">
           <VStack gap={phone ? 4 : 8} paddingBlock={phone ? 2 : 0}>
             {narrow && needCount > 0 && needsSection}
-            <VStack id="home-running">
+            <VStack id="home-working">
               <Section
                 icon={BoltIcon}
-                title="Running"
-                count={running.length}
+                title="Working"
+                count={working.length}
                 countVariant="info"
                 empty={
                   loaded ? (
-                    <EmptyState isCompact title="Nothing running" description="Agents keep running on your runners when you close this page." />
+                    <EmptyState isCompact title="Nothing working" description="Agents keep working on your runners when you close this page." />
                   ) : (
                     <Spinner label="Loading…" />
                   )
                 }
               >
-                {running.map((r) => (
-                  <RunningItem key={`${r.runnerId}:${r.pulse.session.id}`} row={r} ctx={ctx} />
+                {working.map((e) => (
+                  <RunningItem key={`${e.runnerId}:${e.session.id}`} row={rowOf(e)} ctx={ctx} />
                 ))}
               </Section>
             </VStack>
-            <Section icon={CheckCircleIcon} title="Recently finished" count={0} empty={loaded ? <Text type="supporting">No finished turns since the runner started.</Text> : null}>
-              {finished.map((r) => (
-                <FinishedItem key={`${r.runnerId}:${r.pulse.session.id}`} row={r} ctx={ctx} />
+            <Section icon={ClockIcon} title="Recent" count={0} empty={loaded ? <Text type="supporting">Nothing touched lately. Search the sidebar for older sessions.</Text> : null}>
+              {(allRecent ? recent : recent.slice(0, RECENT)).map((e) => (
+                <RecentItem key={`${e.runnerId}:${e.session.id}`} row={rowOf(e)} ctx={ctx} />
               ))}
             </Section>
+            {recent.length > RECENT && (
+              <HStack paddingInline={phone ? 2 : 0}>
+                <Button label={allRecent ? "Show fewer" : `Show all ${recent.length}`} variant="ghost" onClick={() => setAllRecent(!allRecent)} />
+              </HStack>
+            )}
             {narrow && needCount === 0 && needsSection}
           </VStack>
         </LayoutContent>
@@ -419,16 +440,24 @@ function RunningItem({ row, ctx }: { row: PulseRow; ctx: RowCtx }) {
   );
 }
 
-function FinishedItem({ row, ctx }: { row: PulseRow; ctx: RowCtx }) {
+/** A recent session: what it changed, when you last touched it, and the last thing the agent said. */
+function RecentItem({ row, ctx, status, text }: { row: PulseRow; ctx: RowCtx; status?: ReactNode; text?: string }) {
   const p = row.pulse;
   const s = p.session;
   const diff = diffLabel(p);
+  const at = useStore((st) => touched(s, st));
+  const last = text ?? p.lastText;
   return (
     <Row row={row} running={false} ctx={ctx}>
       <Item
         align="start"
         onClick={() => openOnRunner(row.runnerId, s)}
-        startContent={<HarnessBadge harness={s.harness} />}
+        startContent={
+          <VStack gap={1.5} hAlign="center" paddingBlockStart={0.5}>
+            <HarnessBadge harness={s.harness} />
+            {status ?? <WorkIndicator work={pulseWork(p)} />}
+          </VStack>
+        }
         label={s.title}
         labelLines={1}
         description={
@@ -444,19 +473,38 @@ function FinishedItem({ row, ctx }: { row: PulseRow; ctx: RowCtx }) {
                       {diff}
                     </Text>
                   )}
-                  <Text type="supporting">{ago(p.finishedAt!)}</Text>
+                  <Text type="supporting">{ago(at)}</Text>
                 </>
               }
             />
-            {p.lastText && (
+            {last && (
               <Text type="supporting" color="primary" maxLines={2}>
-                {p.lastText}
+                {last}
               </Text>
             )}
           </VStack>
         }
       />
     </Row>
+  );
+}
+
+/** Needs you without a request to answer here: a finished turn or a problem you haven't opened, or a question from an older runner. */
+function NoticeItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
+  const s = entry.session;
+  // Its latest notice: the sidebar's runner's list, else what another runner's pulse carries.
+  const local = useStore((st) => (st.runnerId === entry.runnerId ? st.notices.find((n) => n.sessionId === s.id) : undefined));
+  const notice = local ?? entry.pulse?.notice;
+  const asking = s.live && s.needsInput;
+  const finished = !asking && notice?.kind === "finished";
+  const what = asking ? "Waiting for your answer" : finished ? "Finished" : notice?.kind === "question" ? "Asked you something" : "Needs you";
+  return (
+    <RecentItem
+      row={rowOf(entry)}
+      ctx={ctx}
+      status={<StatusDot variant={finished ? "success" : "error"} label={what} tooltip={`${what} · Not opened yet`} />}
+      text={finished ? undefined : notice?.body || what}
+    />
   );
 }
 
