@@ -651,6 +651,11 @@ class ClaudeSession extends LiveSession {
     } else {
       this.emit({ type: "msg", msg: { id: newId("a"), role: "assistant", parts: [{ type: "plan", id: planId, text }], ts: Date.now(), model: this.t.state.model } });
     }
+    // Approved after a discussion, and this is that plan again, unchanged.
+    if (this.plans.autoApproves(text)) {
+      this.setPlan(planId, { outcome: "approved" });
+      return { behavior: "allow", updatedInput: input };
+    }
     const id = newId("plan-review");
     signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
     const res = await this.askUi({ id, kind: "plan", title: "Claude's plan is ready for review", planId });
@@ -658,6 +663,11 @@ class ClaudeSession extends LiveSession {
     if (res.allow) {
       this.setPlan(planId, { outcome: "approved" });
       return { behavior: "allow", updatedInput: input };
+    }
+    // Discuss: declined without a verdict, so Claude stays in plan mode and the plan under review.
+    if (res.discuss && res.value) {
+      this.addUserMessage(res.value);
+      return { behavior: "deny", message: res.value };
     }
     const feedback = res.value?.trim() || "Please revise the plan.";
     this.setPlan(planId, { outcome: "feedback" });

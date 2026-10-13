@@ -75,6 +75,7 @@ const diffBox: CSSProperties = {
   paddingBlock: "var(--spacing-1-5)",
 };
 const diffLineBase: CSSProperties = { whiteSpace: "pre", minHeight: "1.5em", paddingInline: "var(--spacing-3)" };
+const wrapped: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
 const diffLine: Record<"add" | "del" | "ctx", CSSProperties> = {
   add: { ...diffLineBase, background: "var(--color-success-muted)", color: "var(--color-text-green)" },
   del: { ...diffLineBase, background: "var(--color-error-muted)", color: "var(--color-text-red)" },
@@ -424,7 +425,8 @@ function edits(input: any): { oldText: string; newText: string }[] {
   return [];
 }
 
-function Diff({ pairs }: { pairs: { oldText: string; newText: string }[] }) {
+/** Line diffs, one block per pair; `wrap` wraps long lines (prose, like a plan) instead of scrolling. */
+export function Diff({ pairs, wrap }: { pairs: { oldText: string; newText: string }[]; wrap?: boolean }) {
   return (
     <VStack isScrollable style={diffBox}>
       {pairs.map((e, k) => (
@@ -440,7 +442,7 @@ function Diff({ pairs }: { pairs: { oldText: string; newText: string }[] }) {
               .replace(/\n$/, "")
               .split("\n")
               .map((line, n) => (
-                <Text key={`${j}-${n}`} type="code" as="div" display="block" style={diffLine[kind]}>
+                <Text key={`${j}-${n}`} type="code" as="div" display="block" style={wrap ? { ...diffLine[kind], ...wrapped } : diffLine[kind]}>
                   {(part.added ? "+ " : part.removed ? "- " : "  ") + line}
                 </Text>
               ));

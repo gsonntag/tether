@@ -43,6 +43,7 @@ import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, s
 import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
 import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
+import { forgetPlans, saveStoredDraft } from "./planReview";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -569,6 +570,7 @@ const ops: Handlers = {
     const p = cfg.sessions[sessionId];
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
     forgetSession(sessionId);
+    forgetPlans(sessionId);
     saveConfig();
     return {};
   },
@@ -739,6 +741,21 @@ const ops: Handlers = {
     // The picker never offers these; refuse them here too so no client can skip the guard.
     if (APPROVING_MODES.has(mode)) throw new Error(`${mode} approves tool calls without the guard; use the guard setting instead.`);
     await requireLive(sessionId).setPermissionMode(mode);
+    return {};
+  },
+
+  async setPlanDraft({ sessionId, planId, draft, base }) {
+    // A draft never starts an agent: a session that isn't running gets it in its file.
+    const s = live.get(sessionId);
+    parseId(sessionId);
+    if ((!s || s.closed) && config().archived.includes(sessionId)) throw new Error("That session was archived or removed; its drafts weren't kept.");
+    const b = typeof base === "number" ? base : undefined;
+    return s && !s.closed ? s.plans.setDraft(String(planId), draft, b) : saveStoredDraft(sessionId, String(planId), draft, b);
+  },
+
+  async planAction({ sessionId, planId, action, draft, base }) {
+    if (!["discuss", "revise", "approve"].includes(action)) throw new Error(`unknown plan action ${action}`);
+    await (await getLive(sessionId)).plans.act(String(planId), action, draft, typeof base === "number" ? base : undefined);
     return {};
   },
 
