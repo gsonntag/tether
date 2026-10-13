@@ -518,7 +518,8 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
     () =>
       messages
         .filter((m) => m.role === "user")
-        .map((m) => m.parts.filter((p) => p.type === "text").map((p) => p.text).join(""))
+        // As typed: without the attached-files block the runner adds.
+        .map((m) => splitAttachments(m.parts.filter((p) => p.type === "text").map((p) => p.text).join("")).text)
         .filter((message) => message.trim()),
     [messages],
   );
@@ -562,7 +563,8 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (matches.length) {
+    // A recalled "/cmd" opens the menu; while stepping through history the arrows stay history's.
+    if (matches.length && historyPosition.current === null) {
       const idx = Math.min(cmdIdx, matches.length - 1);
       if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
       if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
@@ -585,7 +587,12 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
         .catch(() => {});
       return;
     }
-    if (e.key === "ArrowUp" && (historyPosition.current !== null || !text) && history.length) {
+    // Only from the first line up / the last line down, so the caret still moves inside a message.
+    const box = e.target as HTMLTextAreaElement;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
+    const onFirst = !box.value?.slice(0, box.selectionStart ?? 0).includes("\n");
+    const onLast = !box.value?.slice(box.selectionEnd ?? 0).includes("\n");
+    if (e.key === "ArrowUp" && plain && onFirst && (historyPosition.current !== null || !text) && history.length) {
       e.preventDefault();
       if (historyPosition.current === null) {
         historySnapshot.current = history;
@@ -597,7 +604,7 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
       setText(historySnapshot.current[historyPosition.current]!);
       return;
     }
-    if (e.key === "ArrowDown" && historyPosition.current !== null) {
+    if (e.key === "ArrowDown" && plain && onLast && historyPosition.current !== null) {
       e.preventDefault();
       const next = historyPosition.current + 1;
       if (next >= historySnapshot.current.length) {
