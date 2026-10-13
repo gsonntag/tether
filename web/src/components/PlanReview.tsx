@@ -25,11 +25,13 @@ import { ChatBubbleLeftEllipsisIcon, ClipboardDocumentListIcon, XMarkIcon } from
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { create } from "zustand";
 import {
+  approveNotes,
   cleanDraft,
   discussionIds,
   EMPTY_DRAFT,
   formatPlanFeedback,
   isEmptyDraft,
+  mergeAgentReplies,
   repliesOf,
   reviseMessage,
   type PlanComment,
@@ -38,7 +40,8 @@ import {
   type PlanReviewState,
   type PlanVerdict,
 } from "../shared/plan";
-import type { Part, UiRequest } from "../shared/protocol";
+import type { Msg, Part, UiRequest } from "../shared/protocol";
+import { findPlan } from "../shared/reducer";
 import { act, NARROW_QUERY, rpc, toast, useStore } from "../store";
 import { FileRefScope, fileRefMarkdown } from "./FileRefs";
 import { ModelName } from "./ModelName";
@@ -117,9 +120,14 @@ function useDraft(sessionId: string, planId: string): PlanDraft {
   return useMemo(() => local ?? remote ?? stored(key) ?? EMPTY_DRAFT, [local, remote, key]);
 }
 
+/** The runner's draft revision each local edit started from (sent with the save, see setPlanDraft). */
+const bases = new Map<string, number>();
+const forget = (key: string) => (dropLocal(key), bases.delete(key));
+
 /** Shows at once here; reaches the runner (and every other device) once typing pauses. */
 function writeDraft(sessionId: string, planId: string, d: PlanDraft) {
   const key = draftKey(sessionId, planId);
+  if (!useLocal.getState()[key]) bases.set(key, reviewOf(sessionId, planId)?.rev ?? 0);
   useLocal.setState({ [key]: d });
   if (!keepsPlans(sessionId)) return store(key, d);
   clearTimeout(saves.get(key)?.timer);
@@ -133,14 +141,33 @@ async function saveDraft(key: string) {
   saves.delete(key);
   if (!s || !d) return;
   try {
-    await rpc("setPlanDraft", { sessionId: s.sessionId, planId: s.planId, draft: isEmptyDraft(d) ? null : d });
+    const r = await rpc("setPlanDraft", { sessionId: s.sessionId, planId: s.planId, draft: isEmptyDraft(d) ? null : d, base: bases.get(key) ?? 0 });
+    if (r.stale) return rebase(key, s, r.rev ?? 0);
     // The runner's copy (pushed to every device, this one first) takes over, unless typing went on.
-    if (useLocal.getState()[key] === d) dropLocal(key);
+    if (useLocal.getState()[key] === d) forget(key);
+    else bases.set(key, r.rev ?? 0);
   } catch (e: any) {
-    // A runner that doesn't keep drafts: this browser does. Otherwise (offline) it's tried again.
-    if (/doesn't know/.test(e?.message ?? "")) store(key, d);
-    else if (!saves.has(key)) saves.set(key, { ...s, timer: setTimeout(() => saveDraft(key), 5_000) });
+    const msg = e?.message ?? "";
+    // A runner that doesn't keep drafts: this browser does. Offline: tried again. Anything else
+    // (the session was removed): the edit stays on screen only.
+    if (/doesn't know/.test(msg)) store(key, d);
+    else if (/Not connected|Connection lost|No runner/.test(msg) && !saves.has(key)) saves.set(key, { ...s, timer: setTimeout(() => saveDraft(key), 5_000) });
   }
+}
+
+/**
+ * The draft moved on since this edit started (another device, the agent's answers, a Revise or
+ * Approve). On a plan that has been dealt with the edit is dropped; otherwise it goes on top of
+ * the runner's copy, keeping the agent's new replies, and is saved again.
+ */
+function rebase(key: string, s: { sessionId: string; planId: string }, rev: number) {
+  const local = useLocal.getState()[key];
+  const review = reviewOf(s.sessionId, s.planId);
+  const outcome = findPlan(useStore.getState().open[s.sessionId]?.messages ?? [], s.planId)?.part.outcome;
+  if (!local || (!review?.draft && (review?.revised || outcome))) return forget(key);
+  bases.set(key, rev);
+  useLocal.setState({ [key]: mergeAgentReplies(local, review?.draft) });
+  saves.set(key, { ...s, timer: setTimeout(() => saveDraft(key), 0) });
 }
 
 /** Typing not saved yet goes now: the plan closes, the page goes away. */
@@ -178,6 +205,14 @@ function usePlanRequest(sessionId: string, planId: string): UiRequest | undefine
   return useStore((s) => s.open[sessionId]?.state.pendingUi.find((r) => r.kind === "plan" && r.planId === planId));
 }
 
+/** The newest plan in the transcript. */
+function latestPlanId(messages: Msg[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const plans = messages[i]!.parts.filter((x) => x.type === "plan");
+    if (plans.length) return plans[plans.length - 1]!.id;
+  }
+}
+
 const useReview = (sessionId: string, planId: string): PlanReviewState | undefined => useStore((s) => s.open[sessionId]?.state.plans?.[planId]);
 
 /**
@@ -194,7 +229,7 @@ async function planAct(sessionId: string, planId: string, action: Action, reques
   if (keepsPlans(sessionId)) {
     try {
       await rpc("planAction", { sessionId, planId, action, draft: d });
-      if (useLocal.getState()[key] === d) dropLocal(key);
+      if (useLocal.getState()[key] === d) forget(key);
       return true;
     } catch (e: any) {
       if (!/doesn't know/.test(e?.message ?? "")) {
@@ -207,7 +242,7 @@ async function planAct(sessionId: string, planId: string, action: Action, reques
   }
   if (action === "discuss") return toast("error", "This runner can't discuss plans yet. Restart it to update."), false;
   if (action === "approve") {
-    const notes = formatPlanFeedback(d.comments, d.general, d.thread);
+    const notes = approveNotes(d);
     if (!request || !(await act("uiRespond", { sessionId, response: { id: request.id, allow: true } }))) return false;
     if (notes && !(await act("prompt", { sessionId, text: notes, mode: "steer" }))) return false;
   } else {
@@ -218,7 +253,7 @@ async function planAct(sessionId: string, planId: string, action: Action, reques
       : await act("prompt", { sessionId, text, mode: running ? "steer" : undefined });
     if (!ok) return false;
   }
-  dropLocal(key);
+  forget(key);
   store(key, EMPTY_DRAFT);
   return true;
 }
@@ -287,7 +322,7 @@ export function PlanCard({ part }: { part: PlanPart }) {
 export function PlanRequestCard({ sessionId, r }: { sessionId: string; r: UiRequest }) {
   const draft = useDraft(sessionId, r.planId ?? "");
   const n = draft.comments.length;
-  const notes = !!formatPlanFeedback(draft.comments, draft.general, draft.thread);
+  const notes = !!approveNotes(draft);
   return (
     <Card width="100%" padding={3} variant="blue">
       <VStack gap={2}>
@@ -410,6 +445,8 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const review = useReview(sessionId, part.id);
   const keeps = useStore((s) => !!s.open[sessionId]?.state.plans);
   const harness = useStore((s) => s.open[sessionId]?.session.harness);
+  const idle = useStore((s) => s.open[sessionId]?.state.status === "idle");
+  const latest = useStore((s) => latestPlanId(s.open[sessionId]?.messages ?? []));
   const [spot, setSpot] = useState<Spot>();
   /** the composer is open for `spot` (until then the spot only offers a Comment button) */
   const [writing, setWriting] = useState(false);
@@ -423,6 +460,8 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
   const [earlierOpen, setEarlierOpen] = useState(false);
   const [busy, setBusy] = useState<Action>();
   const [, rerender] = useState(0);
+  /** the reply box was cancelled (Escape): its blur doesn't save */
+  const cancelled = useRef(false);
   const docRef = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
   const [tops, setTops] = useState<Record<string, number>>({});
@@ -607,9 +646,10 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
         placeholder="Reply"
         value={replying.text}
         onChange={(v) => setReplying({ id, text: v })}
-        onBlur={addReply}
+        onBlur={() => (cancelled.current ? (cancelled.current = false) : addReply())}
         onKeyDown={(e) => {
-          if (e.key === "Escape") (claimEscape(e), setReplying(undefined));
+          // Escape cancels: claimEscape moves focus away, and that blur mustn't save the reply.
+          if (e.key === "Escape") ((cancelled.current = true), setReplying(undefined), claimEscape(e));
           if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), addReply());
         }}
         width="100%"
@@ -621,8 +661,26 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
       </HStack>
     );
 
+  const setResolved = (id: string, resolved: boolean) => patchComment(id, ({ resolved: _, ...c }) => (resolved ? { ...c, resolved } : c));
+
   const commentCard = (c: PlanComment, style?: CSSProperties) => {
     const found = !docRef.current || !!locate(docRef.current, c);
+    // Settled: folded down to a line, and left out of everything the agent gets.
+    if (c.resolved)
+      return (
+        <Card key={c.id} ref={setRef(c.id)} padding={2} width="100%" style={style} onClick={() => setActive(c.id)}>
+          <HStack gap={1.5} vAlign="center">
+            <StackItem size="fill" style={minZero}>
+              <Text type="supporting" color="secondary" maxLines={1}>
+                {c.text || c.quote}
+              </Text>
+            </StackItem>
+            <Token size="sm" label="Resolved" color="gray" />
+            <Button label="Reopen" size="sm" variant="ghost" onClick={() => setResolved(c.id, false)} />
+          </HStack>
+        </Card>
+      );
+    const answered = repliesOf(c).some((r) => r.author === "agent");
     return (
       <Card key={c.id} ref={setRef(c.id)} padding={2} width="100%" variant={active === c.id ? "blue" : "default"} style={style} onClick={() => setActive(c.id)}>
         <VStack gap={1.5}>
@@ -650,10 +708,14 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           {thread(c.id, repliesOf(c))}
           {replyBox(
             c.id,
-            <>
-              <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(c.id)} />
-              <Button label="Delete" size="sm" variant="ghost" onClick={() => removeComment(c.id)} />
-            </>,
+            answered ? (
+              <Button label="Resolve" size="sm" variant="ghost" tooltip="Settled: kept here, no longer sent to the agent" onClick={() => setResolved(c.id, true)} />
+            ) : (
+              <>
+                <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(c.id)} />
+                <Button label="Delete" size="sm" variant="ghost" onClick={() => removeComment(c.id)} />
+              </>
+            ),
           )}
         </VStack>
       </Card>
@@ -668,7 +730,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           About the whole plan
         </Text>
         {thread("general", draft.thread)}
-        {replyBox("general")}
+        {replyBox("general", <Button label="Resolve" size="sm" variant="ghost" tooltip="Clear this thread" onClick={() => save({ thread: undefined })} />)}
       </VStack>
     </Card>
   );
@@ -707,7 +769,10 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
 
   const n = comments.length;
   const approvable = !!request || !!review?.held;
-  const canDiscuss = keeps && (discussionIds(comments).length > 0 || !!draft.general.trim()) && !discussing;
+  const notes = !!approveNotes(draft);
+  // The answer has to be the agent's next turn: a waiting approval, a held plan, or the newest plan while idle.
+  const discussable = !!request || !!review?.held || (idle && latest === part.id && part.outcome !== "approved");
+  const canDiscuss = keeps && discussable && (discussionIds(comments).length > 0 || !!draft.general.trim()) && !discussing;
   const footer = (
     <LayoutFooter hasDivider>
       <VStack gap={2}>
@@ -734,15 +799,15 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
           {discussing && (
             <HStack gap={1} vAlign="center">
               <Spinner size="sm" />
-              <Text type="supporting">Waiting for the agent's answers</Text>
+              <Text type="supporting">The agent is answering…</Text>
             </HStack>
           )}
           <StackItem size="fill" />
           {approvable && (
             <Button
-              label={message ? "Approve with notes" : "Approve"}
-              tooltip={message ? "Approve the plan; your comments follow as notes for the work" : undefined}
-              isDisabled={!!busy}
+              label={notes ? "Approve with notes" : "Approve"}
+              tooltip={notes ? "Approve the plan; comments the agent hasn't answered follow as notes for the work" : undefined}
+              isDisabled={!!busy || discussing}
               isLoading={busy === "approve"}
               onClick={() => send("approve")}
             />
@@ -760,7 +825,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
             label="Revise plan"
             variant="primary"
             tooltip="Send the plan back with your comments for a revised one"
-            isDisabled={!message || !!busy}
+            isDisabled={!message || !!busy || discussing}
             isLoading={busy === "revise"}
             onClick={() => send("revise")}
           />

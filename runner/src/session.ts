@@ -737,6 +737,7 @@ export abstract class LiveSession {
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
+    this.plans.disarm();
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
@@ -849,6 +850,7 @@ export abstract class LiveSession {
   uiRespond(r: UiResponse): boolean {
     const done = this.uiWaiters.get(r.id);
     if (!done) return false;
+    if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
   }

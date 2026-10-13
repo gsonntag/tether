@@ -41,6 +41,7 @@ import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
+import { forgetPlans, saveStoredDraft } from "./planReview";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -551,6 +552,7 @@ const ops: Handlers = {
     const p = cfg.sessions[sessionId];
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
     forgetSession(sessionId);
+    forgetPlans(sessionId);
     saveConfig();
     return {};
   },
@@ -724,9 +726,13 @@ const ops: Handlers = {
     return {};
   },
 
-  async setPlanDraft({ sessionId, planId, draft }) {
-    (await getLive(sessionId)).plans.setDraft(String(planId), draft);
-    return {};
+  async setPlanDraft({ sessionId, planId, draft, base }) {
+    // A draft never starts an agent: a session that isn't running gets it in its file.
+    const s = live.get(sessionId);
+    parseId(sessionId);
+    if ((!s || s.closed) && config().archived.includes(sessionId)) throw new Error("That session was archived or removed; its drafts weren't kept.");
+    const b = typeof base === "number" ? base : undefined;
+    return s && !s.closed ? s.plans.setDraft(String(planId), draft, b) : saveStoredDraft(sessionId, String(planId), draft, b);
   },
 
   async planAction({ sessionId, planId, action, draft }) {

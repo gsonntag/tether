@@ -842,8 +842,11 @@ export interface Ops {
   /** empties the runner's notification list (the bell and sidebar dots, on every device) */
   clearNotifications: { args: {}; result: {} };
   amendSteer: { args: { sessionId: string; msgId: string; text: string }; result: {} };
-  /** a plan's draft comments, kept on the runner so every device has them; null clears it */
-  setPlanDraft: { args: { sessionId: string; planId: string; draft: PlanDraft | null }; result: {} };
+  /**
+   * A plan's draft comments, kept on the runner so every device has them; null clears it. `base`:
+   * the review's `rev` the edit started from; when it has moved on, nothing is saved (`stale`).
+   */
+  setPlanDraft: { args: { sessionId: string; planId: string; draft: PlanDraft | null; base?: number }; result: { rev?: number; stale?: boolean } };
   /**
    * Discuss (the agent answers the comments, the plan stays as it is), Revise (sent back for a new
    * plan) or Approve, with the draft as this device has it. Revise and Approve clear the draft.
