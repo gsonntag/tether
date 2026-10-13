@@ -609,7 +609,8 @@ function SessionRow({ s }: { s: SessionSummary }) {
       label={s.title}
       size="sm"
       isSelected={sel}
-      onClick={() => selectSession(s.id)}
+      // Double-click renames.
+      onClick={(e) => (e.detail === 2 ? setEditing(true) : selectSession(s.id))}
       endContent={
         <HStack gap={1} vAlign="center">
           <ActivityCount s={s} />
