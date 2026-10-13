@@ -121,6 +121,7 @@ function NewSession({ close }: { close: () => void }) {
   const [choice, setChoice] = useState("last"); // "last" | "" (harness default) | model id | profile:<name>
   const [guard, setGuard] = useState<GuardMode>(() => last?.guard ?? "auto");
   const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState("");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const models = useModels([harness]);
@@ -154,10 +155,21 @@ function NewSession({ close }: { close: () => void }) {
     });
     setBusy(false);
     if (!s) return;
+    if (name.trim()) act("renameSession", { sessionId: s.id, projectPath: s.projectPath, title: name });
     close();
     toggleProject(project, true);
     selectSession(s.id);
   };
+  // ⌘/Ctrl+Enter starts the session from anywhere in the dialog (a menu that's open keeps its Enter).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || e.defaultPrevented) return;
+      e.preventDefault();
+      start();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const projectOptions: SelectorOptionType[] = [
     ...projects.map((p) => ({ value: p.path, label: `${p.name} — ${tildify(p.path)}` })),
@@ -187,7 +199,7 @@ function NewSession({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label="Start session" variant="primary" isDisabled={!project} isLoading={busy} onClick={start} />
+          <Button label="Start session" variant="primary" tooltip="⌘↵" isDisabled={!project} isLoading={busy} onClick={start} />
         </>
       }
     >
@@ -224,9 +236,8 @@ function NewSession({ close }: { close: () => void }) {
           </SegmentedControl>
         </Group>
       )}
-      <VStack onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && start()}>
-        <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do?" />
-      </VStack>
+      <TextInput label="Name" value={name} onChange={setName} placeholder="Optional: named from the first message otherwise" />
+      <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do? (⌘↵ to start)" />
     </Frame>
   );
 }
