@@ -15,7 +15,8 @@ import { userParts } from "../../web/src/shared/bash";
 import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachments";
 import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
-import { applyEvent, emptyState, type Transcript } from "../../web/src/shared/reducer";
+import { applyEvent, emptyState, findTool, type Transcript } from "../../web/src/shared/reducer";
+import { tagToolParts, tagToolPatch } from "./toolKind";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
@@ -161,6 +162,10 @@ export abstract class LiveSession {
   }
 
   emit(event: SessionEvent): void {
+    // Tool cards say what they are (shell, edit…) whatever the harness calls them.
+    if (event.type === "msg") tagToolParts([event.msg]);
+    else if (event.type === "reset") tagToolParts(event.messages);
+    else if (event.type === "tool") tagToolPatch(() => findTool(this.t.messages, event.toolId)?.part, event.patch);
     const before = this.t.state.status;
     const beforeModel = this.t.state.model;
     const moved = movedAt(event, this.updatedAt, this.t.messages);

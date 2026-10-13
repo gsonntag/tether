@@ -18,6 +18,8 @@ export const HARNESSES: { id: HarnessId; label: string; badge: string }[] = [
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";
+/** A tool call by what it does: "search" looks through files, "fetch" reads the web, "task" runs a subagent. */
+export type ToolKind = "shell" | "edit" | "write" | "read" | "search" | "fetch" | "todo" | "task" | "other";
 
 export type Part =
   | { type: "text"; text: string }
@@ -32,6 +34,12 @@ export type Part =
       input: unknown;
       status: ToolStatus;
       output?: string;
+      /** What the call is, whatever the harness names it (runner/src/toolKind.ts). Older transcripts lack it. */
+      kind?: ToolKind;
+      /** the command a shell call runs */
+      command?: string;
+      /** the file (or folder) a read, edit or write is about */
+      path?: string;
       /** Set when the tool ran inside a subagent (Claude Code Task tool). */
       parentToolId?: string;
       /** The guard's verdict on this call */
