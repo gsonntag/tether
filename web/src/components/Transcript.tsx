@@ -522,7 +522,11 @@ function Tool({ t }: { t: ToolPart }) {
   const isShell = k ? k === "shell" : ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
   const isTodo = (k ? k === "todo" : lower === "todowrite") && Array.isArray(input.todos);
   const expandShell = useStore((s) => s.ui.expandShell);
-  const failed = isShell && t.status === "error";
+  // A blocked command the user ran themselves shows that run's result instead of the agent's.
+  const run = t.userRun;
+  const status = run ? (run.status === "running" ? "running" : run.exitCode ? "error" : "done") : t.status;
+  const output = run ? run.output : t.output;
+  const failed = isShell && status === "error";
   const [open, setOpen] = useState(isEdit || (isShell && expandShell) || isTodo || failed);
   // A command that fails opens, even collapsed by default: the output is what you'd look for.
   const [wasFailed, setWasFailed] = useState(failed);
@@ -557,10 +561,6 @@ function Tool({ t }: { t: ToolPart }) {
   // Plan mode or a review held this back on purpose: running it anyway takes a second click.
   const held = blocked && t.guard!.by === "mode";
   const [confirming, setConfirming] = useState(false);
-  // A blocked command the user ran themselves shows that run's result instead of the agent's.
-  const run = t.userRun;
-  const status = run ? (run.status === "running" ? "running" : run.exitCode ? "error" : "done") : t.status;
-  const output = run ? run.output : t.output;
   const command = typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string";
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
