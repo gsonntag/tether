@@ -187,7 +187,8 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
 
   if (brief) {
     if (prompt) next.addUserMessage(prompt);
-    await next.continueTurn(brief);
+    // Held open until the brief has reached the agent (the idle close waits).
+    await next.hold(() => next.continueTurn(brief));
   } else if (prompt) await next.prompt(prompt);
   sink.summary(next.summary());
   return next;

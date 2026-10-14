@@ -280,7 +280,7 @@ export abstract class LiveSession {
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle" && !this.t.state.handoffTo && !this.nativeHooks && !this.userStopped && !this.turnTrouble && !this.closed && !this.restarting && hooksFor("Stop", { skip: this.hookSkip }).length) {
-        const run = this.stopHooks().catch((e) => console.error(`hooks: Stop for ${this.id} failed: ${e?.message ?? e}`));
+        const run = this.hold(() => this.stopHooks()).catch((e) => console.error(`hooks: Stop for ${this.id} failed: ${e?.message ?? e}`));
         this.stopHookRun = run.finally(() => {
           if (this.stopHookRun === run) this.stopHookRun = undefined;
         });
@@ -790,6 +790,11 @@ export abstract class LiveSession {
 
   /** Adapter: the turn is over. Pending messages (unless held after Stop) start the next turn; true if they did. */
   protected async drainPending(): Promise<boolean> {
+    // Held open until the next turn has been sent (the idle close waits).
+    return this.hold(() => this.drainPendingNow());
+  }
+
+  private async drainPendingNow(): Promise<boolean> {
     clearTimeout(this.steerTimer);
     if (this.steered.size) {
       this.steered.clear();
@@ -1660,6 +1665,11 @@ export abstract class LiveSession {
    * `!` shell mode, shows the output on the card and hands it to the agent, which doesn't run it again.
    */
   async runBlocked(toolId: string, confirmed = false) {
+    // Held open while the command runs and its output reaches the agent (the idle close waits).
+    return this.hold(() => this.runBlockedNow(toolId, confirmed));
+  }
+
+  private async runBlockedNow(toolId: string, confirmed: boolean) {
     const hit = this.findCall("", toolId);
     // Shell commands only: an MCP or other tool with a `command` argument isn't one to run here.
     const command = hit?.part.kind === "shell" ? commandOf(hit.part.input) : undefined;
@@ -1789,6 +1799,10 @@ export abstract class LiveSession {
 
   /** Feedback for the agent: into the running turn where it can take it, else with its next turn. */
   private async hookFeedback(text: string) {
+    return this.hold(() => this.hookFeedbackNow(text));
+  }
+
+  private async hookFeedbackNow(text: string) {
     if (this.closed || this.t.state.handoffTo) return;
     if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
     else if (this.t.state.status === "running") this.pend(text, "followUp");
@@ -2346,7 +2360,7 @@ export abstract class LiveSession {
   private continueGoal(opts: { check?: string; kickoff?: boolean } = {}) {
     clearTimeout(this.goalTimer);
     const wait = this.nativeGoal && !opts.check ? LiveSession.GOAL_NATIVE_SETTLE_MS : 0;
-    this.goalTimer = setTimeout(() => void this.sendGoalTurn(opts), wait);
+    this.goalTimer = setTimeout(() => void this.hold(() => this.sendGoalTurn(opts)), wait);
   }
 
   private async sendGoalTurn(opts: { check?: string; kickoff?: boolean }) {
@@ -2618,6 +2632,11 @@ export abstract class LiveSession {
 
   /** After an approval: the agent carries the plan out (in the running turn, if there is one). */
   private async implementPlan(notes?: string) {
+    // Held open until the plan's turn has started (the idle close waits).
+    return this.hold(() => this.implementPlanNow(notes));
+  }
+
+  private async implementPlanNow(notes?: string) {
     const text = notes ? `${IMPLEMENT_PROMPT}\n\nNotes for the work:\n\n${notes}` : IMPLEMENT_PROMPT;
     if (this.t.state.handoffTo || this.closed) {
       this.planStarting = false;
@@ -2865,7 +2884,7 @@ export abstract class LiveSession {
     const failed = (e: any) => this.notice(`Could not send the scheduled prompt: ${e?.message ?? e}`, "error");
     if (st.pendingHeld) {
       const run = fired ? st.pending?.find((p) => p.scheduleId === fired) : undefined;
-      if (run) void this.sendHeldRun(run).catch(failed);
+      if (run) void this.hold(() => this.sendHeldRun(run)).catch(failed);
       return;
     }
     if (st.pending?.[0]?.scheduleId) void this.drainPending().catch(failed);

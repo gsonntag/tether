@@ -339,7 +339,14 @@ export async function runReview(deps: ReviewDeps, from: LiveSession, req: Review
  * A review session's result reaches the session it reviews: live, its card updates; closed, its
  * stored reviews do (the card shows it when the session is opened again).
  */
-export function applyReview(live: (id: string) => LiveSession | undefined, sessionId: string, reviewId: string, patch: Partial<SessionReview>) {
+export function applyReview(
+  live: (id: string) => LiveSession | undefined,
+  sessionId: string,
+  reviewId: string,
+  patch: Partial<SessionReview>,
+  /** a session that isn't running had its stored reviews changed (index.ts tells browsers on it) */
+  storedChanged?: (sessionId: string, reviews: SessionReview[]) => void,
+) {
   // Handed off meanwhile: the sessions it went on in have the card too.
   const seen = new Set<string>();
   for (let id: string | undefined = sessionId; id && !seen.has(id) && seen.size < 10; ) {
@@ -355,6 +362,7 @@ export function applyReview(live: (id: string) => LiveSession | undefined, sessi
     if (p?.reviews && i >= 0) {
       p.reviews[i] = mergeReview(p.reviews[i]!, patch);
       saveConfigSoon();
+      storedChanged?.(id, p.reviews);
     }
     id = p?.handoffTo?.sessionId;
   }

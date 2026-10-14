@@ -30,7 +30,7 @@ import {
   runReview,
   type ReviewDeps,
 } from "./review";
-import { LiveSession, newId } from "./session";
+import { IDLE_CLOSE, LiveSession, newId } from "./session";
 
 let live: LiveSession[] = [];
 const byId = new Map<string, LiveSession>();
@@ -442,13 +442,13 @@ describe("a review", () => {
     await runReview(deps({ codex: () => (reviewer = fake("codex", dir)) }), s, {});
     jest.useFakeTimers({ now: Date.now() });
     s.setState({ status: "idle" });
-    jest.advanceTimersByTime(31 * 60_000);
+    jest.advanceTimersByTime(IDLE_CLOSE.ms + 60_000);
     expect(s.closed).toBe(false);
-    jest.advanceTimersByTime(31 * 60_000);
+    jest.advanceTimersByTime(IDLE_CLOSE.ms + 60_000);
     expect(s.closed).toBe(false);
     await reviewer.sessionTool("review_report", { findings: [finding] });
     expect(s.reviews[0]!.status).toBe("done");
-    jest.advanceTimersByTime(29 * 60_000);
+    jest.advanceTimersByTime(IDLE_CLOSE.ms - 60_000);
     expect(s.closed).toBe(false);
     jest.advanceTimersByTime(2 * 60_000);
     expect(s.closed).toBe(true);

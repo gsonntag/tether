@@ -187,7 +187,9 @@ const sink: Sink = {
   handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
   compact: async (from, focus) => void (await runCompact({ adapters, sink, context, track }, from, focus)),
   review: async (from, req) => void (await runReview({ adapters, sink, track }, from, req)),
-  reviewResult: (sessionId, reviewId, patch) => applyReview((id) => live.get(id), sessionId, reviewId, patch),
+  // A session that isn't running gets it in its saved settings; browsers on it hear it as a state event.
+  reviewResult: (sessionId, reviewId, patch) =>
+    applyReview((id) => live.get(id), sessionId, reviewId, patch, (id, reviews) => send({ t: "event", sessionId: id, seq: stored.nextSeq(id), event: { type: "state", state: { reviews } } })),
 };
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
@@ -702,15 +704,11 @@ const ops: Handlers = {
       scheduleChanged();
       sink.summary(s.summary());
     }
-    // `/tether …` (dev only) is the runner's own: no shell output rides along on it.
-    if (s.devCommand(text)) return {};
-    // `/goal …` too (goal.ts): Tether's own command, on every harness; so are /loop and /schedule (schedule.ts).
-    if (await s.goalCommand(text)) return {};
-    if (await s.scheduleCommand(text)) return {};
-    // `/compact [focus]`: the harness's own compaction, or a restart on a brief (fork.ts, handoffRun.ts).
-    if (await s.compactCommand(text)) return {};
-    // `/review …`: a read-only review session on another harness (review.ts).
-    if (await s.reviewCommand(text)) return {};
+    // Tether's own commands, before the shell output rides along: `/tether …` (dev only), `/goal …`
+    // (goal.ts), /loop and /schedule (schedule.ts), `/compact [focus]` (the harness's own compaction,
+    // or a restart on a brief: fork.ts, handoffRun.ts), `/review …` (a read-only review session on
+    // another harness: review.ts). Held open meanwhile (the idle close waits).
+    if (await s.hold(() => s.tetherCommand(text))) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -735,7 +733,7 @@ const ops: Handlers = {
     // Not running: nothing to stop, it just starts with this message.
     const s = await getLive(sessionId);
     // Tether's own commands (/goal, /compact…) first, as typed, like prompt: no shell output rides along.
-    if (!files.length && text && (await s.tetherCommand(text))) return {};
+    if (!files.length && text && (await s.hold(() => s.tetherCommand(text)))) return {};
     await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },
@@ -760,16 +758,18 @@ const ops: Handlers = {
   },
 
   async deleteSchedule({ sessionId, id }) {
-    const s = live.get(sessionId);
-    if (s && !s.closed) {
+    // Never starts the agent: a session that isn't running has it removed from its saved list.
+    const now = current(sessionId);
+    const s = now instanceof Promise ? await now : now;
+    if (s) {
       s.deleteSchedule(id);
       return {};
     }
     const p = config().sessions[sessionId];
     if (p?.schedules) {
-      p.schedules = p.schedules.filter((x) => x.id !== id);
-      if (!p.schedules.length) p.schedules = undefined;
-      saveConfig();
+      const left = p.schedules.filter((x) => x.id !== id);
+      // Browsers on it hear the shorter list (writeStored saves it).
+      writeStored(sessionId, { schedules: left.length ? left : undefined }, { schedules: left });
       scheduleChanged();
     }
     return {};
@@ -881,9 +881,11 @@ const ops: Handlers = {
   },
 
   async continueOn({ sessionId, msgId }) {
+    // The offer lives with the process that hit the error: once it has closed, a message goes on
+    // (on the model the session's settings pick; they can be changed while it's stopped).
     const s = await runningLive(sessionId);
-    if (!s) throw new Error("Session is not running. Open it again.");
-    await s.continueOn(msgId);
+    if (!s) throw new Error("This session's agent has stopped since that error. Send a message to go on, after changing the model if you like.");
+    await s.hold(() => s.continueOn(msgId));
     return {};
   },
 
