@@ -80,4 +80,14 @@ describe("resume restores the session's choices", () => {
     await s.reapplyChoices({ permissionMode: "build" }); // not offered by this harness
     expect(log).toEqual([]);
   });
+  test("a harness without a model or effort choice (Kiro over ACP): nothing is restored, and no warning", async () => {
+    const { s, log } = fake();
+    (s as any).offers = () => false;
+    const notices: string[] = [];
+    (s as any).notice = (t: string) => notices.push(t);
+    await s.start();
+    await s.reapplyChoices({ model: "claude-sonnet-5-5", thinking: "low" });
+    expect(log).toEqual([]);
+    expect(notices).toEqual([]);
+  });
 });

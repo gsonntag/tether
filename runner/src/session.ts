@@ -1145,9 +1145,10 @@ export abstract class LiveSession {
     if (!saved) return;
     const st = this.t.state;
     const warn = (what: string) => (e: any) => this.notice(`Could not restore the ${what}: ${e?.message ?? e}`, "warning");
-    if (saved.model && saved.model !== "default" && saved.model !== st.model) await this.applyModel(saved.model).catch(warn("model"));
+    // A harness that has no model or effort choice (Kiro over ACP) has nothing to restore: no warning.
+    if (saved.model && saved.model !== "default" && saved.model !== st.model && this.offers("model")) await this.applyModel(saved.model).catch(warn("model"));
     const levels = this.t.state.thinkingLevels;
-    if (saved.thinking && saved.thinking !== this.t.state.thinking) {
+    if (saved.thinking && saved.thinking !== this.t.state.thinking && this.offers("thinking")) {
       if (!levels || levels.includes(saved.thinking)) await this.setThinking(saved.thinking).catch(warn("effort"));
       else this.notice(`Could not restore the effort: ${this.t.state.model ?? "this model"} doesn't offer “${saved.thinking}”.`, "warning");
     }
@@ -1156,6 +1157,11 @@ export abstract class LiveSession {
       if (this.t.state.modes?.includes(mode)) await this.setPermissionMode(mode).catch(warn("mode"));
       else this.notice(`Could not restore the mode: ${this.harness} doesn't offer “${mode}” here.`, "warning");
     }
+  }
+
+  /** Whether this harness lets the model or effort be chosen (restoring skips what it doesn't). */
+  protected offers(_what: "model" | "thinking"): boolean {
+    return true;
   }
 
   /** Whether the agent is doing anything a restart would interrupt. */
