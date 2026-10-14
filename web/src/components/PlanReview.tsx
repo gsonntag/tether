@@ -854,7 +854,7 @@ function PlanReview({ sessionId, part, request }: { sessionId: string; part: Pla
     >
       <style>{highlightCss}</style>
       <Layout
-        height={narrow ? "fill" : "auto"}
+        height="fill"
         contentWidth="100%"
         header={
           <DialogHeader
