@@ -29,9 +29,11 @@ import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs,
 import { buildBrief } from "./handoff";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type LiveState, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
-import type { LiveSession } from "./session";
+import { sessionFiles, storedSlashMenu, type LiveSession } from "./session";
+import { settingChange, storedSnapshot, storedState, StoredSessions, type StoredSetting } from "./stored";
+import { workingTreeStats } from "./checkpoint";
 import { ContextService } from "./context";
 import { resolveForBrief, useContextSkills } from "./skillcmd";
 import { displayText } from "../../web/src/shared/skill";
@@ -44,7 +46,7 @@ import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
 import { createProject, githubAccount, githubRepos } from "./newProject";
 import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
-import { forgetPlans, saveStoredDraft } from "./planReview";
+import { forgetPlans, saveStoredDraft, storedPlans } from "./planReview";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -59,6 +61,10 @@ const adapters: Record<HarnessId, Adapter> = {
   antigravity: antigravityAdapter,
 };
 const live = new Map<string, LiveSession>();
+/** sessions whose agent is starting (getLive): everyone asking waits for the same one */
+const starting = new Map<string, Promise<LiveSession>>();
+/** sessions that aren't running: their stored conversations, paths and event numbers (stored.ts) */
+const stored = new StoredSessions(async (s) => adapters[s.harness].storedHistory?.(s.nativeId, s.projectPath));
 // Master context: inert until the first import is run from the UI (contextImport).
 const context = new ContextService({
   emit: (event) => send({ t: "context", event }),
@@ -266,6 +272,8 @@ function track(s: LiveSession) {
   live.set(s.id, s);
   closedPulses.delete(s.id);
   s.onClose = () => {
+    // Browsers keep counting its events: a new process (or a change while closed) goes on from here.
+    stored.closed(s.id, s.seq, s.projectPath);
     // Its last pulse stays for "Recently finished" (a removed session is archived: browsers drop it).
     const last = pulseOf(s.id);
     if (live.get(s.id) === s) live.delete(s.id);
@@ -283,34 +291,91 @@ function parseId(sessionId: string): { harness: HarnessId; nativeId: string } {
   return { harness, nativeId: sessionId.slice(i + 1) };
 }
 
+/** Where a session is, without starting it: known, else searched for in every project. */
+async function sessionPath(sessionId: string, projectPath?: string): Promise<string> {
+  const { harness, nativeId } = parseId(sessionId);
+  const known = projectPath ?? live.get(sessionId)?.projectPath ?? stored.path(sessionId) ?? config().sessions[sessionId]?.projectPath;
+  if (known) return known;
+  for (const p of await allProjects()) {
+    if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) return p.path;
+  }
+  throw new Error(`session ${sessionId} not found`);
+}
+
+/** The session's agent, started (resumed) if it isn't running: for whatever needs the agent itself. */
 async function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
   const existing = live.get(sessionId);
   if (existing && !existing.closed) return existing;
-  const { harness, nativeId } = parseId(sessionId);
-  let path = projectPath;
-  if (!path) {
-    for (const p of await allProjects()) {
-      if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) {
-        path = p.path;
-        break;
-      }
-    }
+  let p = starting.get(sessionId);
+  if (!p) {
+    p = startLive(sessionId, projectPath).finally(() => starting.delete(sessionId));
+    starting.set(sessionId, p);
   }
-  if (!path) throw new Error(`session ${sessionId} not found`);
+  return p;
+}
+
+async function startLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
+  const { harness, nativeId } = parseId(sessionId);
+  const path = await sessionPath(sessionId, projectPath);
   // Read before starting: a starting session saves its (default) model over these.
   const saved = config().sessions[sessionId];
   const choices = saved && { model: saved.model, thinking: saved.thinking, permissionMode: saved.permissionMode };
   const s = await adapters[harness].resume(nativeId, path, sink);
+  // Its events go on from where browsers left off.
+  s.seq = stored.seq(sessionId);
+  // Harnesses that take the guard as a launch setting see the saved one (loadPrefs restores the rest).
+  if (saved?.guard) s.t.state.guard = saved.guard;
   await s.start();
   track(s);
   await s.reapplyChoices(choices);
   return s;
 }
 
-function requireLive(sessionId: string): LiveSession {
+/** The session's agent if it's running (or starting); undefined when it isn't. */
+async function runningLive(sessionId: string): Promise<LiveSession | undefined> {
   const s = live.get(sessionId);
-  if (!s || s.closed) throw new Error("Session is not running. Open it again.");
-  return s;
+  if (s && !s.closed) return s;
+  const p = starting.get(sessionId);
+  return p ? p.catch(() => undefined) : undefined;
+}
+
+/** What opening a session that isn't running shows, without starting it; undefined when only its agent can show it. */
+async function storedSessionSnapshot(sessionId: string, projectPath?: string): Promise<SessionSnapshot | undefined> {
+  const { harness, nativeId } = parseId(sessionId);
+  const a = adapters[harness];
+  if (!a.storedHistory) return undefined;
+  const path = await sessionPath(sessionId, projectPath);
+  const summary = (await a.listSessions(path)).find((x) => x.nativeId === nativeId);
+  if (!summary) return undefined;
+  const history = await stored.history(summary);
+  if (!history) return undefined;
+  const p = config().sessions[sessionId];
+  // What the whole session changed, measured now (a running session measures it after each turn).
+  const base = p?.diffBaseSha ?? p?.checkpoints?.[0]?.sha;
+  const diffStat = base ? await workingTreeStats(path, [base]).then(([total]) => total).catch(() => undefined) : undefined;
+  const state = storedState({ prefs: p, history, modes: a.modes, plans: storedPlans(sessionId), defaultGuard: config().guard?.defaultMode ?? "auto", diffStat });
+  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId));
+}
+
+/**
+ * A setting changed while the session isn't running: saved with its other settings and applied
+ * when its agent starts (getLive: reapplyChoices, loadPrefs). Browsers on it hear it as a state event.
+ */
+async function changeStored(sessionId: string, setting: StoredSetting) {
+  const { harness } = parseId(sessionId);
+  const change = settingChange(harness, setting);
+  const path = await sessionPath(sessionId).catch(() => undefined);
+  Object.assign(prefs(sessionId), change, path ? { projectPath: path } : {});
+  saveConfig();
+  send({ t: "event", sessionId, seq: stored.nextSeq(sessionId), event: { type: "state", state: change as Partial<LiveState> } });
+}
+
+/** A running session's changes and files, else the ones its saved settings describe: never starts it. */
+async function filesOf(sessionId: string) {
+  const s = await runningLive(sessionId);
+  if (s) return s.files;
+  const p = config().sessions[sessionId];
+  return sessionFiles({ projectPath: await sessionPath(sessionId), diffBase: p?.diffBaseSha, checkpoints: p?.checkpoints });
 }
 
 // Scanning every harness's session store takes seconds; serve a cached copy and refresh it behind.
@@ -547,7 +612,15 @@ const ops: Handlers = {
   },
 
   async openSession({ sessionId, projectPath }) {
-    return (await getLive(sessionId, projectPath)).snapshot();
+    // Opening only shows the conversation: the agent starts when something needs it.
+    const running = await runningLive(sessionId);
+    if (running) return running.snapshot();
+    const snap = await storedSessionSnapshot(sessionId, projectPath).catch((e) => {
+      console.error(`reading ${sessionId} without its agent failed: ${e?.message ?? e}`);
+      return undefined;
+    });
+    // Harnesses that can't show a conversation without their agent (Kiro), or a store that couldn't be read.
+    return snap ?? (await getLive(sessionId, projectPath)).snapshot();
   },
 
   async closeSession({ sessionId }) {
@@ -589,6 +662,7 @@ const ops: Handlers = {
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined });
     forgetSession(sessionId);
     forgetPlans(sessionId);
+    stored.forget(sessionId);
     saveConfig();
     return {};
   },
@@ -618,14 +692,18 @@ const ops: Handlers = {
   },
 
   async forceSend({ sessionId, text, id, attachments }) {
-    const s = requireLive(sessionId);
     if (id) {
+      // Nothing waits on a session that isn't running.
+      const s = await runningLive(sessionId);
+      if (!s) throw new Error("That message was already sent.");
       await s.forceSend({ id });
       return {};
     }
     const files = checkAttachments(attachments);
     if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
     if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    // Not running: nothing to stop, it just starts with this message.
+    const s = await getLive(sessionId);
     await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },
@@ -644,17 +722,20 @@ const ops: Handlers = {
   },
 
   async abort({ sessionId }) {
-    await requireLive(sessionId).stop();
+    // Not running: nothing to stop.
+    await (await runningLive(sessionId))?.stop();
     return {};
   },
 
   async editPending({ sessionId, id, ...change }) {
-    await requireLive(sessionId).editPending(id, change);
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("That message was already sent.");
+    await s.editPending(id, change);
     return {};
   },
 
   async takePending({ sessionId }) {
-    return { text: requireLive(sessionId).takePending() };
+    return { text: (await runningLive(sessionId))?.takePending() ?? "" };
   },
 
   async pushStatus({ endpoint }) {
@@ -687,35 +768,41 @@ const ops: Handlers = {
   },
 
   async amendSteer({ sessionId, msgId, text }) {
-    requireLive(sessionId).amendSteer(msgId, text);
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("That message can't be changed any more: the turn it went into has ended.");
+    s.amendSteer(msgId, text);
     return {};
   },
 
   async setModel({ sessionId, model, profile }) {
-    await requireLive(sessionId).setModelOrProfile(model, profile);
+    const s = await runningLive(sessionId);
+    if (s) await s.setModelOrProfile(model, profile);
+    else await changeStored(sessionId, { op: "model", model, profile });
     return {};
   },
 
   async setGuard({ sessionId, mode }) {
-    requireLive(sessionId).setGuard(mode);
+    const s = await runningLive(sessionId);
+    if (s) s.setGuard(mode);
+    else await changeStored(sessionId, { op: "guard", mode });
     return {};
   },
 
   async getSessionDiff({ sessionId, checkpoint }) {
-    return (await getLive(sessionId)).diff(checkpoint);
+    return (await filesOf(sessionId)).diff(checkpoint);
   },
 
   async checkPaths({ sessionId, paths }) {
     if (!Array.isArray(paths)) throw new Error("paths must be a list");
-    return (await getLive(sessionId)).checkPaths(paths);
+    return (await filesOf(sessionId)).checkPaths(paths);
   },
 
   async fileDiff({ sessionId, path, checkpoint, reveal }) {
-    return (await getLive(sessionId)).fileDiff(String(path ?? ""), typeof checkpoint === "string" ? checkpoint : undefined, reveal === true);
+    return (await filesOf(sessionId)).fileDiff(String(path ?? ""), typeof checkpoint === "string" ? checkpoint : undefined, reveal === true);
   },
 
   async readFile({ sessionId, path, maxBytes, reveal }) {
-    return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
+    return (await filesOf(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
   },
 
   async approveBlocked({ sessionId, toolId }) {
@@ -724,7 +811,9 @@ const ops: Handlers = {
   },
 
   async stopActivity({ sessionId, id }) {
-    await requireLive(sessionId).stopActivity(id);
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("That item is no longer listed.");
+    await s.stopActivity(id);
     return {};
   },
 
@@ -759,19 +848,25 @@ const ops: Handlers = {
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
-    await requireLive(sessionId).setChain(chain, preferEarlier, undefined);
+    const s = await runningLive(sessionId);
+    if (s) await s.setChain(chain, preferEarlier, undefined);
+    else await changeStored(sessionId, { op: "chain", chain, preferEarlier });
     return {};
   },
 
   async setThinking({ sessionId, level }) {
-    await requireLive(sessionId).setThinking(level);
+    const s = await runningLive(sessionId);
+    if (s) await s.setThinking(level);
+    else await changeStored(sessionId, { op: "thinking", level });
     return {};
   },
 
   async setPermissionMode({ sessionId, mode }) {
     // The picker never offers these; refuse them here too so no client can skip the guard.
     if (APPROVING_MODES.has(mode)) throw new Error(`${mode} approves tool calls without the guard; use the guard setting instead.`);
-    await requireLive(sessionId).setPermissionMode(mode);
+    const s = await runningLive(sessionId);
+    if (s) await s.setPermissionMode(mode);
+    else await changeStored(sessionId, { op: "mode", mode });
     return {};
   },
 
@@ -791,8 +886,9 @@ const ops: Handlers = {
   },
 
   async uiRespond({ sessionId, response }) {
-    // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop)
-    return requireLive(sessionId).uiRespond(response) ? {} : { stale: true };
+    // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop or the process ending)
+    const s = await runningLive(sessionId);
+    return s?.uiRespond(response) ? {} : { stale: true };
   },
 
   async getUsage({ force }) {
@@ -838,7 +934,10 @@ const ops: Handlers = {
   },
 
   async listCommands({ sessionId }) {
-    return requireLive(sessionId).slashMenu();
+    const s = await runningLive(sessionId);
+    if (s) return s.slashMenu();
+    // Not running: the skills, and the commands its harness reported when it last ran.
+    return storedSlashMenu(parseId(sessionId).harness, await sessionPath(sessionId));
   },
 
   // ---- master context (runner/src/context) ----

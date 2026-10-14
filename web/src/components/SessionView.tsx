@@ -30,10 +30,11 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, STARTS_ON_OPEN, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock, harnessLabel } from "../util";
+import { opensByStarting } from "../sessionStart";
 import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
@@ -78,7 +79,8 @@ const harnessOf = (sessionId: string) => sessionId.split(":")[0] as HarnessId;
 
 export function SessionView({ sessionId }: { sessionId: string }) {
   const o = useStore((s) => s.open[sessionId]);
-  // Opening a session whose process has stopped starts it again first.
+  // Opening a session whose process has stopped shows its stored conversation; only harnesses that
+  // can't (STARTS_ON_OPEN) start the process for it.
   const knownLive = useStore((s) => (s.open[sessionId]?.session ?? Object.values(s.sessions).flat().find((x) => x.id === sessionId) ?? s.recent?.find((x) => x.id === sessionId))?.live);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -177,7 +179,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   if (!o || o.loading || !o.session)
     return (
       <VStack style={fill} vAlign="center" hAlign="center">
-        <EmptyState title={knownLive === false ? `Starting ${harnessLabel(harnessOf(sessionId))} process…` : "Loading session…"} icon={<Spinner />} isCompact />
+        <EmptyState title={opensByStarting(harnessOf(sessionId), knownLive) ? `Starting ${harnessLabel(harnessOf(sessionId))} process…` : "Loading session…"} icon={<Spinner />} isCompact />
       </VStack>
     );
 
@@ -194,7 +196,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing} />}
+        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>

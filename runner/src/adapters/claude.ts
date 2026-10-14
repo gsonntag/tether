@@ -829,6 +829,14 @@ export const claudeAdapter: Adapter = {
     return loadHistory(nativeId, projectPath);
   },
 
+  async storedHistory(nativeId: string, projectPath: string) {
+    let context: ContextUsage | undefined;
+    const messages = await loadHistory(nativeId, projectPath, (c) => (context = c));
+    return { messages, context };
+  },
+
+  modes: PERMISSION_MODES,
+
   create(projectPath, opts, sink) {
     return new ClaudeSession({ nativeId: randomUUID(), projectPath }, sink, opts);
   },

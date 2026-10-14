@@ -204,7 +204,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.pending !== undefined) this.armIdle();
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -686,8 +686,8 @@ export abstract class LiveSession {
   /** The composer's `/` menu: the skills this session can run, then the harness's own commands. */
   async slashMenu(): Promise<SlashCommand[]> {
     const [commands, native] = await Promise.all([this.listCommands().catch(() => []), this.nativeNow(true)]);
-    const skills = skillsFor(this.harness, this.projectPath, native);
-    return slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills());
+    if (commands.length || native) rememberMenu(this.harness, this.projectPath, { commands, native });
+    return menuOf(this.harness, this.projectPath, { commands, native });
   }
 
   private takeAllPending(): string | undefined {
@@ -800,6 +800,8 @@ export abstract class LiveSession {
     if (p.context && !this.t.state.context) restore.context = p.context;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
+    // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
+    else this.savePrefs();
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
     this.plans.load();
   }
@@ -849,6 +851,8 @@ export abstract class LiveSession {
       model: s.model,
       thinking: s.thinking,
       permissionMode: s.permissionMode,
+      modes: s.modes,
+      thinkingLevels: s.thinkingLevels,
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
@@ -1244,13 +1248,14 @@ export abstract class LiveSession {
     }
   }
 
+  /** Its changes and files: what the Changes view and file references read (see sessionFiles). */
+  get files() {
+    return sessionFiles({ projectPath: this.projectPath, diffBase: this.diffBaseSha, checkpoints: this.t.state.checkpoints });
+  }
+
   /** The whole session's changes, or with a checkpoint id the changes of the turn that started there. */
-  async diff(checkpointId?: string): Promise<SessionDiff> {
-    const list = this.t.state.checkpoints ?? [];
-    if (!checkpointId) return computeDiff(this.projectPath, this.diffBaseSha ?? list[0]?.sha);
-    const i = list.findIndex((c) => c.id === checkpointId);
-    if (i < 0) throw new Error("That turn's checkpoint is no longer kept.");
-    return computeDiff(this.projectPath, list[i]!.sha, list[i + 1]?.sha);
+  diff(checkpointId?: string): Promise<SessionDiff> {
+    return this.files.diff(checkpointId);
   }
 
   get diffBase() {
@@ -1260,16 +1265,15 @@ export abstract class LiveSession {
   // ---- file references (runner/src/files.ts): read-only, inside the project ----
 
   checkPaths(paths: string[]) {
-    return checkPaths(this.projectPath, paths, this.diffBaseSha ?? this.t.state.checkpoints?.[0]?.sha);
+    return this.files.checkPaths(paths);
   }
 
   fileDiff(path: string, checkpointId?: string, reveal?: boolean) {
-    const list = this.t.state.checkpoints ?? [];
-    return fileDiff(this.projectPath, path, this.diffBaseSha ?? list[0]?.sha, list, checkpointId, reveal === true);
+    return this.files.fileDiff(path, checkpointId, reveal);
   }
 
   readFile(path: string, maxBytes?: number, reveal?: boolean) {
-    return readProjectFile(this.projectPath, path, maxBytes, reveal === true);
+    return this.files.readFile(path, maxBytes, reveal);
   }
 
   inheritDiffBase(sha?: string) {
@@ -1349,6 +1353,57 @@ export abstract class LiveSession {
   /** Resumes after a fallback switch, a wait, or a runner restart. */
   abstract continueTurn(text?: string): Promise<void>;
   protected abstract shutdown(): void;
+}
+
+/** What a session's changes and file references are measured against; a session that isn't running has it from its saved settings. */
+export interface FilesView {
+  projectPath: string;
+  /** first working-tree snapshot (SessionPrefs.diffBaseSha) */
+  diffBase?: string;
+  checkpoints?: Checkpoint[];
+}
+
+/** The Changes view and file references, for a running session or one that isn't (index.ts). */
+export function sessionFiles(v: FilesView) {
+  const list = v.checkpoints ?? [];
+  const base = v.diffBase ?? list[0]?.sha;
+  return {
+    async diff(checkpointId?: string): Promise<SessionDiff> {
+      if (!checkpointId) return computeDiff(v.projectPath, base);
+      const i = list.findIndex((c) => c.id === checkpointId);
+      if (i < 0) throw new Error("That turn's checkpoint is no longer kept.");
+      return computeDiff(v.projectPath, list[i]!.sha, list[i + 1]?.sha);
+    },
+    checkPaths: (paths: string[]) => checkPaths(v.projectPath, paths, base),
+    fileDiff: (path: string, checkpointId?: string, reveal?: boolean) => fileDiff(v.projectPath, path, base, list, checkpointId, reveal === true),
+    readFile: (path: string, maxBytes?: number, reveal?: boolean) => readProjectFile(v.projectPath, path, maxBytes, reveal === true),
+  };
+}
+
+// ---- the `/` menu of a session that isn't running ----
+
+type MenuSource = { commands: { name: string; description?: string }[]; native?: NativeSkill[] };
+/** what each harness last reported (its commands, the skills it runs itself), by project and overall */
+const lastMenus = new Map<string, MenuSource>();
+
+function rememberMenu(harness: HarnessId, projectPath: string, src: MenuSource) {
+  lastMenus.delete(`${harness}\0${projectPath}`);
+  lastMenus.set(`${harness}\0${projectPath}`, src);
+  lastMenus.set(harness, src);
+  while (lastMenus.size > 200) lastMenus.delete(lastMenus.keys().next().value!);
+}
+
+function menuOf(harness: HarnessId, projectPath: string, src: MenuSource | undefined): SlashCommand[] {
+  const native = src?.native;
+  return slashMenu(skillsFor(harness, projectPath, native), src?.commands ?? [], native && new Set(native.map((n) => n.name)), harness, projectPath, hiddenSkills());
+}
+
+/**
+ * The `/` menu without starting the agent: the skills as they are now, with the commands the
+ * harness reported when it last ran here (else anywhere); none before it ever has.
+ */
+export function storedSlashMenu(harness: HarnessId, projectPath: string): SlashCommand[] {
+  return menuOf(harness, projectPath, lastMenus.get(`${harness}\0${projectPath}`) ?? lastMenus.get(harness));
 }
 
 /** How many messages from the top start the next turn: the steers at the top, else one queued message. */

@@ -684,6 +684,11 @@ export const piAdapter: Adapter = {
     return convertAll(rows);
   },
 
+  async storedHistory(nativeId: string, projectPath: string) {
+    const messages = await piAdapter.readHistory!(nativeId, projectPath);
+    return { messages, model: [...messages].reverse().find((m) => m.role === "assistant" && m.model)?.model };
+  },
+
   create(projectPath, opts, sink) {
     return new PiSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);
   },

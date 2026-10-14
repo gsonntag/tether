@@ -15,6 +15,12 @@ export const HARNESSES: { id: HarnessId; label: string; badge: string }[] = [
   { id: "antigravity", label: "Antigravity", badge: "agy" },
 ];
 
+/**
+ * Harnesses whose sessions open only by starting their agent (it alone can replay the
+ * conversation). The others show a stored conversation without it; the agent starts when you send.
+ */
+export const STARTS_ON_OPEN: ReadonlySet<HarnessId> = new Set<HarnessId>(["kiro"]);
+
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";

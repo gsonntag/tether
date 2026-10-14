@@ -939,6 +939,30 @@ export const codexAdapter: Adapter = {
     });
   },
 
+  // A short-lived app-server answers thread/read; the thread itself isn't resumed.
+  async storedHistory(nativeId: string, projectPath: string) {
+    if (!Bun.which(CODEX_BIN)) return undefined;
+    return withProcess(async (p) => {
+      const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
+      const thread = r.thread ?? r;
+      const turns = thread.turns ?? [];
+      const messages = historyMsgs(turns, projectPath, thread.model, await itemTimes(p, nativeId, turns));
+      const model: string | undefined = thread.model ?? [...messages].reverse().find((m) => m.model)?.model;
+      // Codex reports token usage only as turns run; the last count is in the rollout.
+      const context =
+        typeof thread.path === "string"
+          ? await Bun.file(thread.path)
+              .slice(-4_000_000)
+              .text()
+              .then((text) => codexRollout(text, model))
+              .catch(() => undefined)
+          : undefined;
+      return { messages, context, model };
+    });
+  },
+
+  modes: CODEX_MODES,
+
   create(projectPath, opts, sink) {
     listCache = undefined;
     return new CodexSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);

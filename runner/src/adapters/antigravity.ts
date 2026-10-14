@@ -677,6 +677,20 @@ export const antigravityAdapter: Adapter = {
     }));
   },
 
+  async storedHistory(nativeId: string, _projectPath: string) {
+    const record = records().find((r) => r.id === nativeId);
+    const entries = record?.convId ? readTranscript(record.convId) : undefined;
+    const settings = { model: record?.model ?? "default", thinking: record?.model ? undefined : record?.effort, permissionMode: sessionMode(record?.mode) };
+    if (!entries) return { messages: await antigravityAdapter.readHistory!(nativeId, _projectPath), ...settings };
+    const h = transcriptToMessages(entries, record?.model);
+    const model = record?.model;
+    const c = h.usage ? agyUsage(h.usage, model) : undefined;
+    const context = c && !model ? { ...c, max: knownWindow("gemini"), maxEstimated: true } : c;
+    return { messages: h.messages, context, ...settings };
+  },
+
+  modes: MODES,
+
   create(projectPath, opts, sink) {
     return new AgySession({ nativeId: crypto.randomUUID(), projectPath }, sink, opts);
   },

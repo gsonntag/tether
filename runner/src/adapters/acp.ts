@@ -24,7 +24,8 @@ import { LiveSession, newId } from "../session";
 import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
-import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import type { Adapter, CreateOpts, Sink, StoredHistory, StoredProject } from "./types";
+import { readOpencodeSession } from "./opencodeDb";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
 
@@ -41,6 +42,8 @@ export interface AcpSpec {
    * user, so it is bound to loopback and locked with a per-process random password (httpServer).
    */
   httpPermissionReply?: boolean;
+  /** Reads a stored session without the agent (opencode's database); undefined: replay it through the agent. */
+  storedHistory?: (nativeId: string) => StoredHistory | undefined;
 }
 
 /** Where and how to reach the agent's own HTTP API. */
@@ -662,7 +665,16 @@ export function acpAdapter(spec: AcpSpec): Adapter {
         });
     },
 
+    // The modes it reported last (listModels), for a session that hasn't run in Tether yet.
+    get modes() {
+      return modelCache?.modes.length ? modelCache.modes : undefined;
+    },
+
+    ...(spec.storedHistory ? { storedHistory: async (nativeId: string) => spec.storedHistory!(nativeId) } : {}),
+
     async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
+      const stored = spec.storedHistory?.(nativeId);
+      if (stored) return stored.messages;
       const session = new AcpSession(spec, { nativeId, projectPath }, SEARCH_SINK, { resume: true });
       try {
         await session.start();
@@ -728,6 +740,7 @@ export const opencodeAdapter = acpAdapter({
   args: ["acp"],
   env: OPENCODE_ENV,
   httpPermissionReply: true,
+  storedHistory: (nativeId) => readOpencodeSession(nativeId),
 });
 
 // Kiro CLI V3 engine: model/effort through session config options, CLI-side auth.
