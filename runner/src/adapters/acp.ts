@@ -592,6 +592,10 @@ class AcpSession extends LiveSession {
     await this.p.conn.cancel({ sessionId: this.nativeId });
   }
 
+  protected offers(what: "model" | "thinking") {
+    return !!configOption(this.configOptions, what === "model" ? "model" : "thought");
+  }
+
   async applyModel(model: string) {
     const opt = configOption(this.configOptions, "model");
     if (!opt) throw new Error(`${this.spec.id} does not offer model selection over ACP`);
