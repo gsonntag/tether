@@ -9,6 +9,9 @@ Antigravity, and `splitModelRoute` (Phase 0; it is in uncommitted work in the ma
 was built, emulated or left unsupported per harness is in "Implementation notes" at the end; the
 Decisions section overrides the plan text above it.
 
+Phase 5 (cross-harness subagents) built on branch `xh-subagents` (2026-10-14), stub-tested only;
+its status is at the end ("Phase 5: status").
+
 Synced with master on 2026-10-14 (merge of `origin/master` at 686017d: plan review v2, sessions
 model, uiPrefs, tool kinds, force send, Add project). Master's plan review (`LiveState.plans`,
 `planReview.ts`, `~/.config/tether/plans/`) sits beside this branch's session plan
@@ -706,3 +709,86 @@ for the cross-harness case, where Tether is the only piece that can start every 
   mentions that cross-harness subagents exist and how to verify their work (read agent_result, run
   the tests, then merge the worktree branch or cherry-pick).
 - Idle close (5 min) must not close a parent that is waiting on subagents (they count as activity).
+
+### Phase 5: status (2026-10-14, branch `xh-subagents`)
+
+Built; tested with stub harnesses only (runner `crossAgents.test.ts`, 20 tests: real git
+worktrees, fake sessions). Not run against live harnesses or looked at in a browser.
+
+- **Tools** (`runner/src/context/mcp.ts` `AGENT_TOOLS`): `agent_harnesses`, `agent_start`,
+  `agent_status`, `agent_wait`, `agent_message`, `agent_result`, `agent_stop`, `agent_list`, listed
+  in every keyed session's `tether-context` (also while the master context is off) except review
+  sessions. Like the goal/plan tools they reach the runner over the loopback bridge
+  (`bridge.ts` `/session`) as the session whose key is in `TETHER_SESSION_KEY` (the guard key; or
+  `TETHER_GUARD_KEY`), so the runner knows which parent calls. Bridge timeouts: `agent_wait` 130 s
+  (it blocks ≤ 100 s), `agent_start` / `agent_harnesses` 180 s, the rest 60 s. The guard allows
+  them by rule, like every `tether-context` tool. The server's `instructions` (Claude and Codex put
+  them in context) and the tool descriptions say when to use them and how to verify.
+- **Runner** (`runner/src/crossAgents.ts` `CrossAgents`, wired in index.ts as `sink.agents`):
+  - `agent_start` validates the harness (ids, labels, `agy`/`claude`), that it's installed, the
+    model against the harness's `listModels` (the picker's ids; also a case-insensitive id, a
+    label, or pi's model without its `provider/`), effort against its levels, mode against its
+    modes (approving modes refused), guard (`ask` < `edits` < `auto` < `full`; never looser than the
+    parent's, default the parent's). Refused in review sessions and while planning.
+  - Worktree: `git worktree add -b tether/<parent-short>/<name> ~/.tether/worktrees/<repo>-<hash>/<parent-short>-<name> <HEAD>`
+    (outside the repo, so the parent's diff, tests and searches don't see it, and outside
+    `~/.config/tether`, which the guard keeps agents off); the same subfolder as the parent's cwd.
+    The result says when the parent had uncommitted changes (not included). `cwd: "shared"`, a
+    non-git folder or a repo without commits: the parent's folder. Worktrees and branches are left
+    for the parent (agent_result says how to merge and remove them).
+  - The subagent is a session from the same path as fork/review (`adapter.create`, `start`,
+    `track`), titled `<name>: <task>`, with `startedBy {sessionId, name, depth, rootId,
+    projectPath}`; its first message (`SUBAGENT_TASK_PREFIX`) says who started it, where it works,
+    to commit on its branch and to end with a report, then the task. The parent keeps a
+    `SubagentLink` per subagent (`LiveState.subagents`, saved in prefs) and an activity item
+    `xa:<name>` (kind subagent, `harness`, `sessionId`, model, `latest` = the subagent's
+    `currentAction`, tokens, worktree, report), updated at most once a second (status changes at
+    once).
+  - Completion: a subagent's turn end (Finished / failed / stopped) settles for 1.5 s (no next
+    goal or Stop-hook turn, nothing queued, no question, none of its own work running), then the
+    link is updated and the parent hears: an `agent_wait` waiting on it returns instead; otherwise
+    `LiveSession.tetherNote` sends "[Tether] Subagent "write-tests" (Kiro, Claude Sonnet 4.5)
+    finished: <500 chars>. Use agent_result…" (a steer while running, queued while waiting on a
+    limit or held after Stop, else a message that starts a turn). A closed parent is reopened for
+    it; an archived one isn't told. A subagent's questions and approvals stay in its session
+    (Needs you): its item says "Waiting for you", `agent_wait` returns, the parent isn't messaged.
+    Subagents send no "Finished" push of their own.
+  - `agent_result`: the last reply (12k chars), `computeDiff` from the worktree base (or the
+    subagent's diff base when shared) to its working tree, committed or not, per-file stat, the
+    diff (40 KB, `formatDiff`), commits on its branch, whether it left changes uncommitted, and the
+    merge / cherry-pick / cleanup commands.
+  - Guardrails: depth ≤ `MAX_SUBAGENT_DEPTH` (2), ≤ `MAX_RUNNING_SUBAGENTS` (4) working or waiting
+    per tree (counted over every session's links), the parent's Stop, archive (Mark done) and
+    removal stop its running subagents (and theirs) without messaging it; `agent_stop` likewise;
+    the Stop button on the item stops it and the parent hears. Subagents count in the parent's
+    `activeCount` / `workingCount` (the idle close and "Finished" wait for them) but not in `busy`
+    (a restart doesn't report them as stopped work, and they resume on their own as sessions).
+  - Handoffs: a parent's handoff or emulated /compact moves its links to the new session
+    (`adoptSubagents`); a subagent's handoff keeps `startedBy` (`inheritStartedBy`) and the link
+    follows `handoffTo`.
+- **Lists**: a subagent in a worktree has `listedUnder` (the parent's project) and `startedBy`
+  (`{sessionId, name, title}`) on its summary; `listSessions` of the parent's project includes it,
+  worktree folders aren't projects of their own, the web keys session lists by `listPath`. Sidebar:
+  nested under its parent with a subagent marker; Home: "subagent of …"; the session: a banner back
+  to the parent; the parent's strip: harness badge, model, doing now, Open session, Stop.
+
+| | Starts subagents (agent_* tools) | Can be started as one |
+|---|---|---|
+| Claude Code | yes (SDK `mcpServers`, per session); its own Task subagents stay native | yes |
+| Codex | yes (thread config, per session) | yes; effort from its levels |
+| pi | only with pi-mcp-adapter (`--mcp-config`) | yes; `provider/model` ids |
+| opencode | yes (ACP `mcpServers`; unverified) | yes (unverified) |
+| Kiro | yes (ACP `mcpServers`; unverified) | yes (unverified) |
+| Antigravity | only where its global `tether-context` passes `TETHER_GUARD_KEY` through (no per-session MCP); otherwise the tools answer "only in sessions Tether started" | yes |
+
+Decisions made while building: the id is the subagent's name (unique per parent); `agent_wait`
+returns on "waiting for the user" too (so a parent doesn't spin) and a turn it reports isn't also
+messaged; worktrees live under `~/.tether/worktrees` (override `TETHER_WORKTREES_DIR`); a stop the
+parent caused (its Stop, `agent_stop`, archive) isn't reported back to it; messages from the parent
+reach the subagent as "[From the agent that started you] …".
+
+Not done / unverified: live runs on every harness (the MCP calls, steering, timing of the settle);
+ACP agents' MCP timeouts for a 100 s `agent_wait`; the 5-minute idle close (other branch: subagents
+already count in `activeCount`); automatic worktree cleanup; a parent changing its guard later
+doesn't tighten running subagents; the running count reads stored links, so a link left "working"
+by a crash heals only when the parent is reopened (`restored`) or the subagent reports.

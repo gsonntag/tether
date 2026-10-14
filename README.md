@@ -138,6 +138,18 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   | pi | pi-subagents' foreground agents and async runs, when that package is installed | no |
   | opencode, Kiro | `task` subagents (start, end, report; no steps over ACP) | no |
   | Antigravity | nothing beyond its tool cards | no |
+- **Cross-harness subagents.** Any agent can start another agent on any installed harness and
+  model through Tether ("use a Kiro subagent on Sonnet to write the tests"): `tether-context`'s
+  `agent_harnesses` lists what's installed (models, effort levels), `agent_start` starts it,
+  `agent_status` / `agent_wait` follow it, `agent_message` steers it, `agent_result` returns its
+  report, diff and branch, `agent_stop` stops it. The subagent is a Tether session of its own,
+  listed under the session that started it and shown in that one's activity strip (harness
+  badge, model, what it's doing now); by default it works in a git worktree on a new branch
+  `tether/<parent>/<name>` from the parent's HEAD (under `~/.tether/worktrees/`), or in the same
+  folder on request. When its turn ends, the parent is told (a steer, or a message that starts a
+  turn). Its questions and approvals come to you. Its guard is never looser than the parent's;
+  at most 2 levels deep and 4 running per tree; stopping, archiving or removing the parent stops
+  them. Details: `docs/harness-platform.md`, Phase 5.
 - **Home.** The landing screen (and the 🏠 in the sidebar header) shows every connected runner's
   sessions at a glance, labeled by runner when there are several:
   - **Needs you:** permission prompts (Approve / Deny right there), questions with a few choices

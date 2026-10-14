@@ -3115,7 +3115,8 @@ export abstract class LiveSession {
         this.loopTurn = this.compactTurn = false;
         if (!this.sink.compact) this.notice("This runner can't compact this session.", "warning");
         // The restart ends this process, and with it whatever still runs in the background.
-        else if (this.workingCount) this.notice("Background tasks are still running here, and compacting would stop them. Compact once they're done, or stop them first.", "warning");
+        // (Cross-harness subagents are sessions of their own: they go on, and report to the new session.)
+        else if (this.busy) this.notice("Background tasks are still running here, and compacting would stop them. Compact once they're done, or stop them first.", "warning");
         else {
           // Until the new session takes over, messages wait (and move over with the conversation).
           this.restarting = true;

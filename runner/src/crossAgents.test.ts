@@ -14,6 +14,7 @@ import { config } from "./config";
 import { tools } from "./context/mcp";
 import { CrossAgents, lastReport, slug, worktreesRoot } from "./crossAgents";
 import { LiveSession, newId } from "./session";
+import { runHandoff, type HandoffDeps } from "./handoffRun";
 
 const byId = new Map<string, LiveSession>();
 let all: LiveSession[] = [];
@@ -482,4 +483,58 @@ test("lastReport is the text after the last user message", () => {
     { id: "4", role: "assistant", parts: [{ type: "text", text: "b" }], ts: 4 },
   ];
   expect(lastReport(msgs)).toBe("a\n\nb");
+});
+
+describe("handoffs", () => {
+  test("a parent that hands off: the new session follows its subagents and hears from them", async () => {
+    const w = world();
+    const p = w.parent(repo());
+    await call(p, "agent_start", { task: "x", name: "a", cwd: "shared" });
+    const child = w.created[0]!;
+    const next = makeFake("codex", p.projectPath, w.sink);
+    const hd: HandoffDeps = {
+      adapters: { codex: { create: () => next } } as any,
+      sink: w.sink,
+      context: { handoffMemory: async () => undefined },
+      track: (x) => {
+        byId.set(x.id, x);
+        x.loadPrefs();
+      },
+    };
+    p.savePrefs();
+    await runHandoff(hd, p, { harness: "codex", model: "default" }, "test");
+    expect(next.subagents.map((l) => l.id)).toEqual(["a"]);
+    expect(next.activity("xa:a")).toMatchObject({ status: "running", sessionId: child.id });
+    expect(p.subagents).toEqual([]);
+    expect(p.activity("xa:a")).toBeUndefined();
+    // The brief doesn't list it as a background task that was stopped.
+    expect(next.sent[0]).not.toContain("background");
+    next.setState({ status: "idle" });
+    child.endTurn("done");
+    await until(() => next.sent.some((t) => t.startsWith(SUBAGENT_NOTE_PREFIX)));
+    expect(next.subagents[0]!.status).toBe("finished");
+  });
+
+  test("a subagent that hands off stays one: the parent's link follows it", async () => {
+    const w = world();
+    const p = w.parent(repo());
+    await call(p, "agent_start", { task: "x", name: "a", cwd: "shared" });
+    const child = w.created[0]!;
+    const next = makeFake("pi", child.projectPath, w.sink);
+    const hd: HandoffDeps = {
+      adapters: { pi: { create: () => next } } as any,
+      sink: w.sink,
+      context: { handoffMemory: async () => undefined },
+      track: (x) => {
+        byId.set(x.id, x);
+        x.loadPrefs();
+      },
+    };
+    await runHandoff(hd, child, { harness: "pi", model: "default" }, "limit");
+    expect(next.t.state.startedBy).toMatchObject({ sessionId: p.id, name: "a" });
+    await until(() => p.subagents[0]!.sessionId === next.id);
+    next.endTurn("finished on pi");
+    await until(() => p.sent.length);
+    expect(p.sent[0]).toContain("finished on pi");
+  });
 });
