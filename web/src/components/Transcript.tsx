@@ -561,7 +561,8 @@ function Tool({ t }: { t: ToolPart }) {
   // Plan mode or a review held this back on purpose: running it anyway takes a second click.
   const held = blocked && t.guard!.by === "mode";
   const [confirming, setConfirming] = useState(false);
-  const command = typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string";
+  // "Run it myself" is for shell commands only, not an MCP tool that happens to take a `command`.
+  const command = isShell && (typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string");
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
   ) : status === "running" ? (

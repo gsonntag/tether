@@ -30,10 +30,16 @@ const notice = (sessionId: string, ts: number, kind: AgentNotice["kind"] = "fini
 const ctx = (c: Partial<RecentContext> = {}): RecentContext => ({ now: NOW, days: 3, notices: [], noticesSeen: 0, noticesRead: [], ...c });
 
 describe("showInSidebar", () => {
-  test("a review session only while it's the one open, even running", () => {
-    const r = session("r", 0, { reviewOf: "a", status: "running" });
+  test("a review session only while it's open, working or asking you something; not for its notices", () => {
+    const r = session("r", 0, { reviewOf: "a" });
     expect(showInSidebar(r, ctx())).toBe(false);
     expect(showInSidebar(r, ctx({ selected: "r" }))).toBe(true);
+    expect(showInSidebar({ ...r, live: true, status: "running" }, ctx())).toBe(true);
+    expect(showInSidebar({ ...r, live: true, needsInput: true }, ctx())).toBe(true);
+    expect(showInSidebar(r, ctx({ notices: [notice("r", NOW)] }))).toBe(false);
+    const g = groupSessions([{ session: { ...r, live: true, needsInput: true } }, { session: r }], ctx({ notices: [notice("r", NOW)] }));
+    expect(g.needs.map((e) => e.session.id)).toEqual(["r"]);
+    expect(groupSessions([{ session: r }], ctx({ notices: [notice("r", NOW)] })).needs).toEqual([]);
   });
 
   test("by the time of the latest message, inside the window", () => {

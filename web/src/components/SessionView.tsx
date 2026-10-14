@@ -33,6 +33,7 @@ import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
 import { GUARD_MODES, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
+import { composerHistory } from "../composerHistory";
 import { fmtClock } from "../util";
 import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
@@ -557,15 +558,8 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
   const cameraInput = useRef<HTMLInputElement>(null);
   const shell = text.startsWith("!");
   const canSend = (!!text.trim() || (ready.length > 0 && !shell)) && !uploading && !(shell && ready.length > 0);
-  const history = useMemo(
-    () =>
-      messages
-        .filter((m) => m.role === "user")
-        // As typed: without the attached-files block the runner adds.
-        .map((m) => splitAttachments(m.parts.filter((p) => p.type === "text").map((p) => p.text).join("")).text)
-        .filter((message) => message.trim()),
-    [messages],
-  );
+  // What you typed, as typed (not what Tether sent for you: composerHistory.ts).
+  const history = useMemo(() => composerHistory(messages), [messages]);
 
   const clearHistoryNavigation = () => {
     historyPosition.current = null;
