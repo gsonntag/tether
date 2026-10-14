@@ -16,7 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent, DEFAULT_UI_PREFS, type UiPrefs } from "./shared/protocol";
+import { byRecent, DEFAULT_UI_PREFS, listPath, type UiPrefs } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -294,7 +294,7 @@ export function openOnRunner(runnerId: string, session: SessionSummary, opts: { 
   if (runnerId !== get().runnerId) switchRunner(runnerId);
   // With its summary known, opening it doesn't have to search every project for it.
   set((s) => ({
-    sessions: { ...s.sessions, [session.projectPath]: [...(s.sessions[session.projectPath] ?? []).filter((x) => x.id !== session.id), session] },
+    sessions: { ...s.sessions, [listPath(session)]: [...(s.sessions[listPath(session)] ?? []).filter((x) => x.id !== session.id), session] },
   }));
   selectSession(session.id);
   if (opts.activity) setActivityOpen(true);
@@ -330,17 +330,19 @@ function onEvent(sessionId: string, seq: number, event: SessionEvent) {
 }
 
 function upsertSummary(sum: SessionSummary) {
+  // A subagent in its own worktree is listed in its parent's project.
+  const key = listPath(sum);
   set((s) => {
-    const list = s.sessions[sum.projectPath] ?? [];
+    const list = s.sessions[key] ?? [];
     const i = list.findIndex((x) => x.id === sum.id);
     // A turn just ended: usage moved (the runner has marked its cache stale).
     if (i >= 0 && list[i]!.status !== "idle" && sum.status === "idle") setTimeout(() => ((usageAt = 0), refreshUsage()), 2000);
     const next = i >= 0 ? list.map((x) => (x.id === sum.id ? sum : x)) : [sum, ...list];
     next.sort(byRecent);
     const open = s.open[sum.id] ? { ...s.open, [sum.id]: { ...s.open[sum.id]!, session: sum } } : s.open;
-    const knownProject = s.projects.some((p) => p.path === sum.projectPath);
+    const knownProject = s.projects.some((p) => p.path === key);
     if (!knownProject) refreshProjects();
-    return { sessions: { ...s.sessions, [sum.projectPath]: next }, open };
+    return { sessions: { ...s.sessions, [key]: next }, open };
   });
 }
 

@@ -20,6 +20,7 @@ import {
   ChevronRightIcon,
   ClipboardDocumentCheckIcon,
   Cog6ToothIcon,
+  CpuChipIcon,
   EnvelopeIcon,
   LightBulbIcon,
   NoSymbolIcon,
@@ -36,6 +37,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { REVIEW_PREFIX } from "../shared/review";
+import { SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX } from "../shared/subagents";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
 import { MsgTime } from "./MsgTime";
@@ -248,6 +250,29 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
       .flatMap((p) => (p.type === "text" ? [p.text] : []))
       .join("\n")
       .trimEnd();
+    // Tether's word about a subagent (finished, failed, stopped), and a subagent's task with its instructions.
+    if (text.startsWith(SUBAGENT_NOTE_PREFIX) || text.startsWith(SUBAGENT_TASK_PREFIX)) {
+      const note = text.startsWith(SUBAGENT_NOTE_PREFIX);
+      const head = note ? text.slice("[Tether] ".length).split("\n")[0]! : "Task from the agent that started this subagent";
+      return (
+        <Card width="100%" padding={3} variant="transparent">
+          <Collapsible
+            defaultIsOpen={!note}
+            chevronPosition="start"
+            trigger={
+              <HStack gap={1.5} vAlign="center">
+                <Icon icon={CpuChipIcon} color="secondary" size="sm" />
+                <Text type="supporting" maxLines={2}>
+                  {head}
+                </Text>
+              </HStack>
+            }
+          >
+            <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
+          </Collapsible>
+        </Card>
+      );
+    }
     if (text.startsWith(BRIEF_PREFIX) || text.startsWith(REVIEW_PREFIX))
       return (
         <Card width="100%" padding={3} variant="transparent">
@@ -701,9 +726,31 @@ function Tool({ t }: { t: ToolPart }) {
 
 type Link = { sessionId: string; reason: string };
 
-export function LinkBanner({ from, to, forked, reviewOf }: { from?: Link; to?: Link; forked?: Link; reviewOf?: { sessionId: string } }) {
+export function LinkBanner({
+  from,
+  to,
+  forked,
+  reviewOf,
+  startedBy,
+}: {
+  from?: Link;
+  to?: Link;
+  forked?: Link;
+  reviewOf?: { sessionId: string };
+  startedBy?: { sessionId: string; name: string };
+}) {
   return (
     <>
+      {startedBy && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={CpuChipIcon} color="secondary" size="sm" />
+            <Text type="supporting">{`Subagent "${startedBy.name}", started by`}</Text>
+            <Button label={`${startedBy.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(startedBy.sessionId)} />
+            <Text type="supporting">That session hears when its turns end.</Text>
+          </HStack>
+        </Card>
+      )}
       {reviewOf && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">

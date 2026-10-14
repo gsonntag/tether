@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
-import type { AgentNotice, SessionSummary } from "./shared/protocol";
+import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, nestSubagents, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
+import { listPath, type AgentNotice, type SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 11, 12);
@@ -284,4 +284,17 @@ describe("review fixes", () => {
     expect(needCount(e(session("a", 0, { live: true }), { pulse: { session: session("a", 0), pendingUi: [perm("1"), perm("2")] } }))).toBe(2);
     expect(needCount(e(session("a", 0)))).toBe(1);
   });
+});
+
+describe("nestSubagents", () => {
+  test("subagents follow the session that started them; ones whose parent isn't listed stay put", () => {
+    const by = (sessionId: string, name: string) => ({ startedBy: { sessionId, name } });
+    const list = [session("a", 1), session("x", 2, by("gone", "x")), session("b", 3), session("a1", 4, by("a", "one")), session("a1a", 5, by("a1", "deep")), session("b1", 6, by("b", "two"))];
+    expect(nestSubagents(list).map((r) => `${r.session.id}:${r.depth}`)).toEqual(["a:0", "a1:1", "a1a:2", "x:0", "b:0", "b1:1"]);
+  });
+});
+
+test("listPath: a subagent in its own worktree is listed in its parent's project", () => {
+  expect(listPath(session("a", 1))).toBe("/p");
+  expect(listPath(session("a", 1, { projectPath: "/home/u/.tether/worktrees/p-1/x", listedUnder: "/p" }))).toBe("/p");
 });

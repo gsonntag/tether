@@ -18,12 +18,12 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
-import { type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
+import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { listPath, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
-import { byListOrder, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
+import { byListOrder, nestSubagents, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
 import { knownSessions, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
 import { runningLine, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
@@ -238,14 +238,14 @@ function SearchHit({ result }: { result: SessionSearchResult }) {
       startContent={<HarnessBadge harness={session.harness} />}
       label={session.title}
       labelLines={1}
-      description={`${session.projectPath.split(/[\\/]/).filter(Boolean).slice(-1)[0] || session.projectPath} · ${result.excerpt}`}
+      description={`${listPath(session).split(/[\\/]/).filter(Boolean).slice(-1)[0] || listPath(session)} · ${result.excerpt}`}
       descriptionLines={2}
       endContent={<Text type="supporting">{ago(session.updatedAt)}</Text>}
       onClick={() => {
         useStore.setState((state) => ({
           sessions: {
             ...state.sessions,
-            [session.projectPath]: [...(state.sessions[session.projectPath] ?? []).filter((item) => item.id !== session.id), session],
+            [listPath(session)]: [...(state.sessions[listPath(session)] ?? []).filter((item) => item.id !== session.id), session],
           },
         }));
         selectSession(session.id);
@@ -362,7 +362,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
   // Collapsed, the row still says whether anything in it works: its main turns, or only background work.
   const countIn = (s: ReturnType<typeof useStore.getState>, state: WorkState) =>
-    [...knownSessions(s.projects, s.sessions, s.recent).values()].filter((x) => x.projectPath === p.path && !x.archived && workState(summaryWork(x)) === state).length;
+    [...knownSessions(s.projects, s.sessions, s.recent).values()].filter((x) => listPath(x) === p.path && !x.archived && workState(summaryWork(x)) === state).length;
   const running = useStore((s) => countIn(s, "working"));
   const background = useStore((s) => countIn(s, "background"));
   const ctx = useRecentContext();
@@ -428,8 +428,8 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
         </>
       }
     >
-      {rows.map((s) => (
-        <SessionRow key={s.id} s={s} />
+      {nestSubagents(rows).map(({ session: s, depth }) => (
+        <SessionRow key={s.id} s={s} depth={depth} />
       ))}
       {more}
     </SideNavItem>
@@ -441,9 +441,9 @@ export async function archive(s: SessionSummary, archived: boolean) {
   if (r === undefined) return;
   useStore.setState((st) => {
     // Added when only Recent knew it, so it leaves there too.
-    const list = st.sessions[s.projectPath] ?? [];
+    const list = st.sessions[listPath(s)] ?? [];
     const next = { ...(list.find((x) => x.id === s.id) ?? s), archived };
-    return { sessions: { ...st.sessions, [s.projectPath]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? next : x)) : [...list, next] } };
+    return { sessions: { ...st.sessions, [listPath(s)]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? next : x)) : [...list, next] } };
   });
   if (archived && useStore.getState().selected === s.id) selectSession(undefined);
 }
@@ -452,11 +452,11 @@ export async function archive(s: SessionSummary, archived: boolean) {
 export async function removeSession(s: SessionSummary) {
   if ((await act("removeSession", { sessionId: s.id })) === undefined) return;
   useStore.setState((st) => {
-    const list = st.sessions[s.projectPath] ?? [];
+    const list = st.sessions[listPath(s)] ?? [];
     const gone = { ...(list.find((x) => x.id === s.id) ?? s), archived: true, live: false, status: "idle" as const, needsInput: false };
     return {
-      sessions: { ...st.sessions, [s.projectPath]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? gone : x)) : [...list, gone] },
-      projects: st.projects.map((p) => (p.path === s.projectPath ? { ...p, live: p.live.filter((x) => x.id !== s.id) } : p)),
+      sessions: { ...st.sessions, [listPath(s)]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? gone : x)) : [...list, gone] },
+      projects: st.projects.map((p) => (p.path === listPath(s) ? { ...p, live: p.live.filter((x) => x.id !== s.id) } : p)),
       // The runner forgets them too, so a removed session never comes back as needing you.
       notices: st.notices.filter((n) => n.sessionId !== s.id),
     };
@@ -525,7 +525,7 @@ function SessionIndicator({ s, needsYou }: { s: SessionSummary; needsYou?: boole
 const projectName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /** `withProject`: in the cross-project lists (Needs you, Recent), the project's name, subtly. */
-function SessionRow({ s, withProject, needsYou }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean }) {
+function SessionRow({ s, withProject, needsYou, depth = 0 }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean; depth?: number }) {
   const at = useStore((st) => touched(s, st));
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
@@ -554,7 +554,11 @@ function SessionRow({ s, withProject, needsYou }: { s: SessionSummary; withProje
     />
   );
   return (
-    <VStack {...getContainerProps({ forceState: removing ? "active" : held ? "inactive" : undefined })}>
+    <VStack
+      {...getContainerProps({ forceState: removing ? "active" : held ? "inactive" : undefined })}
+      // A subagent sits under the session that started it.
+      style={depth ? { paddingInlineStart: `calc(var(--spacing-3) * ${Math.min(depth, 3)})` } : undefined}
+    >
     <SideNavItem
       label={s.title}
       size="sm"
@@ -565,9 +569,14 @@ function SessionRow({ s, withProject, needsYou }: { s: SessionSummary; withProje
         <HStack gap={1} vAlign="center">
           <ActivityCount s={s} />
           <SessionIndicator s={s} needsYou={needsYou} />
+          {s.startedBy && (
+            <Tooltip content={`Subagent "${s.startedBy.name}", started by ${s.startedBy.title ? `“${s.startedBy.title}”` : "another session"}`}>
+              <Icon icon={CpuChipIcon} size="sm" color="secondary" />
+            </Tooltip>
+          )}
           {withProject && (
             <Text type="supporting" maxLines={1} style={{ maxWidth: "calc(var(--spacing-12) * 2)" }}>
-              {projectName(s.projectPath)}
+              {projectName(listPath(s))}
             </Text>
           )}
           <HarnessBadge harness={s.harness} />

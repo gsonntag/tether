@@ -165,6 +165,30 @@ export function showInSidebar(s: SessionSummary, c: RecentContext): boolean {
 }
 
 /**
+ * Cross-harness subagents right under the session that started them (theirs under them), the rest
+ * in the list's order. `depth`: how far in a row is (0 for a session whose parent isn't listed).
+ */
+export function nestSubagents(list: SessionSummary[]): { session: SessionSummary; depth: number }[] {
+  const ids = new Set(list.map((s) => s.id));
+  const kids = new Map<string, SessionSummary[]>();
+  for (const s of list) {
+    const p = s.startedBy?.sessionId;
+    if (p && ids.has(p) && p !== s.id) kids.set(p, [...(kids.get(p) ?? []), s]);
+  }
+  const out: { session: SessionSummary; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (s: SessionSummary, depth: number) => {
+    if (seen.has(s.id)) return;
+    seen.add(s.id);
+    out.push({ session: s, depth });
+    for (const k of kids.get(s.id) ?? []) walk(k, depth + 1);
+  };
+  for (const s of list) if (!s.startedBy?.sessionId || !ids.has(s.startedBy.sessionId)) walk(s, 0);
+  for (const s of list) walk(s, 0); // a cycle (shouldn't happen): still listed
+  return out;
+}
+
+/**
  * Whether a project has nothing to list (it's dimmed). An open project's list was just fetched, so
  * it decides. A closed one may know only some of its sessions (the live ones from listProjects, or
  * one that changed or was opened from search), so any of those that would show un-dims it, and
