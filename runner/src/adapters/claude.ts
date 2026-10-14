@@ -1064,7 +1064,9 @@ export const claudeAdapter: Adapter = {
     return new ClaudeSession(
       { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s && (await lastMessageAt(s, projectPath)) },
       sink,
-      { resume: true },
+      // A session that never got a message has nothing on disk to resume (Claude writes it with the
+      // first one): it starts fresh under the same id, so switching or reopening it just works.
+      { resume: !!s },
     );
   },
 
