@@ -1,8 +1,11 @@
 // Everything a session has going on besides the transcript: subagents, background shells,
-// monitors, cron jobs and wakeups. A compact summary under the message box opens the Activity
-// panel (a side panel on desktop, a sheet on phones); the Running page lists it for every session.
+// monitors, workflows, cron jobs and wakeups.
+//  - The strip above the message box: one live row per running item (what it's doing now, how
+//    long), a workflow's step, children under their parent; armed items as one quiet line.
+//  - The history panel (a side panel on desktop, a sheet on phones): finished items with their
+//    reports and output, opened from the settings bar.
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type ComponentType, type CSSProperties, type SVGProps } from "react";
 import { BottomSheet } from "@astryxdesign/core/BottomSheet";
 import { Button } from "@astryxdesign/core/Button";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
@@ -18,22 +21,38 @@ import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList"
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Step, Stepper } from "@astryxdesign/core/Stepper";
 import { Text } from "@astryxdesign/core/Text";
 import { Timer } from "@astryxdesign/core/Timer";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { CheckCircleIcon, Squares2X2Icon } from "@heroicons/react/24/outline";
+import { CheckCircleIcon, ClockIcon, CommandLineIcon, CpuChipIcon, EyeIcon, QueueListIcon, Squares2X2Icon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { modelDisplay } from "../models";
-import { activityOf, activitySummary } from "../activity";
-import { ACTIVITY_KINDS, isActive, type ActivityItem, type ActivityKind, type ActivityStatus, type LiveState } from "../shared/protocol";
-import { workLabel } from "../workState";
+import { activityOf, childrenOf, currentPhase, historyItems, nowLine, phaseLabel, STRIP_ROWS, stripModel, waitingLabel } from "../activity";
+import { isActive, type ActivityItem, type ActivityKind, type ActivityStatus, type LiveState } from "../shared/protocol";
 import { act, setActivityOpen, useStore } from "../store";
 import { fmtClock } from "../util";
 
 const NARROW = "(max-width: 767px)";
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
-/** Child items (a subagent's own shells and agents) sit under their parent. */
-const nested: CSSProperties = { paddingInlineStart: "var(--spacing-4)" };
+/** The strip: a quiet bordered list right above the composer. */
+const strip: CSSProperties = { border: "var(--border-width) solid var(--color-border)", borderRadius: "var(--radius-container)", background: "var(--color-background-surface)", overflow: "hidden" };
+/** An opened row's details scroll inside the strip, so the composer doesn't fly up the screen. */
+const stripDetails: CSSProperties = { maxHeight: "40vh", overflowY: "auto" };
+/** The rows scroll too ("N more" opened on a phone), the waiting line stays in view. */
+const stripRows: CSSProperties = { maxHeight: "45vh", overflowY: "auto" };
+const titleCap: CSSProperties = { display: "block", maxWidth: "min(50vw, calc(var(--spacing-4) * 24))" };
+const indent = (depth: number): CSSProperties | undefined => (depth ? { paddingInlineStart: `calc(var(--spacing-4) * ${depth})` } : undefined);
+
+const KIND_ICON: Record<ActivityKind, ComponentType<SVGProps<SVGSVGElement>>> = {
+  subagent: CpuChipIcon,
+  shell: CommandLineIcon,
+  monitor: EyeIcon,
+  workflow: QueueListIcon,
+  schedule: ClockIcon,
+  tool: WrenchScrewdriverIcon,
+  other: Squares2X2Icon,
+};
 
 const STATUS: Record<ActivityStatus, { variant: "accent" | "warning" | "success" | "error" | "neutral"; label: string }> = {
   running: { variant: "accent", label: "Running" },
@@ -52,40 +71,140 @@ function duration(ms: number): string {
 
 const tokens = (n: number) => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n));
 
-/** The second line of a row: what it's doing now, or what it is. */
-function rowDescription(a: ActivityItem, harness?: string): string {
-  const what = [a.agentType, a.model ? modelDisplay(a.model, harness).name : undefined].filter(Boolean).join(" · ");
-  if (isActive(a)) {
-    if (a.status === "waiting" && a.nextAt) return `Next ${fmtClock(a.nextAt)}${a.schedule ? ` · ${a.schedule}` : ""}`;
-    if (a.status === "waiting" && a.schedule) return a.schedule;
-    return a.latest ?? (a.kind === "shell" || a.kind === "monitor" ? (a.command ?? what) : what);
+/** What an agent is, for a finished row with nothing else to say. */
+const what = (a: ActivityItem, harness?: string) => [a.agentType, a.model ? modelDisplay(a.model, harness).name : undefined].filter(Boolean).join(" · ");
+
+/** The second line of a history row: its result. */
+function resultLine(a: ActivityItem, harness?: string): string {
+  if (a.kind === "workflow" && a.phases?.length) {
+    const done = a.phases.filter((p) => p.status === "done").length;
+    const end = a.summary?.split("\n").find((l) => l.trim());
+    return end ?? `${done} of ${a.phases.length} steps done`;
   }
-  const end = a.summary?.split("\n").find((l) => l.trim());
-  return end ?? what;
+  return a.summary?.split("\n").find((l) => l.trim()) ?? what(a, harness);
 }
 
-/** The session's running work, for the bar under the message box. Opens the Activity panel. */
-export function ActivityButton({ state }: { state: LiveState }) {
+function stopItem(sessionId: string, a: ActivityItem, setStopping: (b: boolean) => void) {
+  setStopping(true);
+  act("stopActivity", { sessionId, id: a.id }).then((r) => r === undefined && setStopping(false));
+}
+
+// ---------- the strip ----------
+
+/** Above the message box: what's running besides the main agent, live. Nothing when nothing is. */
+export function ActivityStrip({ sessionId, state }: { sessionId: string; state: LiveState }) {
+  const harness = useStore((s) => s.open[sessionId]?.session?.harness);
   const items = activityOf(state);
+  const [all, setAll] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
+  const [waitOpen, setWaitOpen] = useState(false);
+  const { rows, waiting } = useMemo(() => stripModel(items, open), [items, open]);
+  if (!rows.length && !waiting.length) return null;
+  // Never "1 more": a fifth row shows itself.
+  const capped = rows.length > STRIP_ROWS + 1;
+  const shown = all || !capped ? rows : rows.slice(0, STRIP_ROWS);
+  const toggle = (id: string) => setOpen((o) => (o === id ? null : id));
+  return (
+    <VStack style={strip} role="region" aria-label="Running now">
+      <VStack style={stripRows}>
+        {shown.map(({ item, depth, more }) =>
+          more ? (
+            <VStack key={`${item.id}:more`} style={indent(depth)}>
+              <Item density="compact" layout="inline" onClick={() => toggle(item.id)} label={<Text type="supporting">{`+${more} more`}</Text>} />
+            </VStack>
+          ) : (
+            <VStack key={item.id} style={indent(depth)}>
+              <LiveRow item={item} harness={harness} isOpen={open === item.id} onToggle={() => toggle(item.id)} />
+              {open === item.id && (
+                <VStack style={stripDetails}>
+                  <ActivityDetails sessionId={sessionId} item={item} all={items} harness={harness} />
+                </VStack>
+              )}
+            </VStack>
+          ),
+        )}
+        {capped ? (
+          <Button label={all ? "Show fewer" : `${rows.length - shown.length} more running`} variant="ghost" size="sm" onClick={() => setAll(!all)}>
+            {all ? "Show fewer" : `${rows.length - shown.length} more`}
+          </Button>
+        ) : null}
+      </VStack>
+      {waiting.length > 0 && (
+        <>
+          <WaitingLine items={waiting} isOpen={waitOpen} onToggle={() => setWaitOpen(!waitOpen)} />
+          {waitOpen && (
+            <VStack style={stripDetails} paddingInlineStart={4}>
+              {waiting.map((a) => (
+                <ActivityRow key={a.id} sessionId={sessionId} item={a} all={items} harness={harness} />
+              ))}
+            </VStack>
+          )}
+        </>
+      )}
+    </VStack>
+  );
+}
+
+/** One running item on one line: icon, title, what it's doing now, elapsed time. */
+function LiveRow({ item: a, harness, isOpen, onToggle }: { item: ActivityItem; harness?: string; isOpen: boolean; onToggle: () => void }) {
+  const step = a.kind === "workflow" ? phaseLabel(a) : undefined;
+  const now = nowLine(a);
+  const line = step ? (now && !now.startsWith(currentPhase(a)!.title) ? `${step} · ${now}` : step) : (now ?? what(a, harness));
+  return (
+    <Item
+      density="compact"
+      layout="inline"
+      isSelected={isOpen}
+      onClick={onToggle}
+      startContent={<Icon icon={KIND_ICON[a.kind]} size="sm" color="accent" />}
+      // An inline Item never shrinks its label: cap it so a long title leaves room for the rest.
+      label={
+        <Text maxLines={1} style={titleCap}>
+          {a.title}
+        </Text>
+      }
+      description={line || undefined}
+      descriptionLines={1}
+      endContent={<Timer startTime={a.startedAt} />}
+    />
+  );
+}
+
+/** Armed wakeups and cron jobs, queued agents: one quiet line ("Next 14:30"), opened into their rows. */
+function WaitingLine({ items, isOpen, onToggle }: { items: ActivityItem[]; isOpen: boolean; onToggle: () => void }) {
+  const next = items.find((a) => a.nextAt)?.nextAt;
+  const label = waitingLabel(items);
+  const when = next ? `Next ${fmtClock(next)}` : items.length === 1 ? items[0]!.schedule : undefined;
+  return (
+    <Item
+      density="compact"
+      layout="inline"
+      isSelected={isOpen}
+      onClick={onToggle}
+      startContent={<Icon icon={ClockIcon} size="sm" color="secondary" />}
+      label={<Text type="supporting">{label}</Text>}
+      description={when}
+    />
+  );
+}
+
+// ---------- the history panel ----------
+
+/** In the settings bar: opens the finished work, when there is some. */
+export function ActivityButton({ state }: { state: LiveState }) {
   const open = useStore((s) => s.activityOpen);
-  if (!items.length) return null;
-  const active = items.filter(isActive);
-  const summary = activitySummary(items);
-  const finished = items.length - active.length;
-  const running: Partial<Record<ActivityKind, number>> = {};
-  for (const a of active) if (a.status === "running") running[a.kind] = (running[a.kind] ?? 0) + 1;
-  // Same words as the sidebar: the main agent may be done while its work isn't.
-  const work = workLabel({ live: true, status: state.status, running });
+  const n = historyItems(activityOf(state)).length;
+  if (!n) return null;
   return (
     <Button
-      label={summary ? `Activity: ${summary}` : "Activity"}
-      tooltip={open ? "Hide activity" : work.state === "background" ? work.tooltip : "Subagents, shells and other work in this session"}
+      label={`Finished work: ${n}`}
+      tooltip={open ? "Hide finished work" : "Finished subagents, shells and workflows, with their reports and output"}
       variant="ghost"
       size="sm"
-      icon={active.some((a) => a.status === "running") ? <Spinner size="sm" /> : <Icon icon={active.length ? Squares2X2Icon : CheckCircleIcon} />}
+      icon={<Icon icon={CheckCircleIcon} />}
       onClick={() => setActivityOpen(!open)}
     >
-      {summary || `${finished} finished`}
+      {`${n} finished`}
     </Button>
   );
 }
@@ -97,92 +216,49 @@ export function ActivityPanel({ sessionId, state, harness }: { sessionId: string
   const items = activityOf(state);
   if (narrow)
     return (
-      <BottomSheet isOpen={open} onOpenChange={setActivityOpen} label="Activity" height="tall" padding={3}>
+      <BottomSheet isOpen={open} onOpenChange={setActivityOpen} label="Finished" height="tall" padding={3}>
         <ActivityList sessionId={sessionId} items={items} harness={harness} />
       </BottomSheet>
     );
   if (!open) return null;
   return (
-    <LayoutPanel width={400} hasDivider isScrollable label="Activity" padding={3}>
+    <LayoutPanel width={400} hasDivider isScrollable label="Finished" padding={3}>
       <ActivityList sessionId={sessionId} items={items} harness={harness} onClose={() => setActivityOpen(false)} />
     </LayoutPanel>
   );
 }
 
-/** Running and armed items grouped by kind, then the recently finished ones (folded). */
+/** Finished items, newest first; a workflow's agents and a subagent's shells open inside it. */
 export function ActivityList({ sessionId, items, harness, onClose }: { sessionId: string; items: ActivityItem[]; harness?: string; onClose?: () => void }) {
-  const active = items.filter(isActive);
-  const finished = items.filter((a) => !isActive(a)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
-  const summary = activitySummary(items);
+  const done = historyItems(items);
   return (
     <VStack gap={3}>
       <HStack gap={2} vAlign="center">
         <StackItem size="fill">
-          <VStack gap={0.5}>
-            <Heading level={2}>Activity</Heading>
-            <Text type="supporting">{summary || (items.length ? "Nothing running now" : "Nothing yet")}</Text>
-          </VStack>
+          <Heading level={2}>Finished</Heading>
         </StackItem>
-        {onClose && <IconButton label="Close activity" tooltip="Close" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={onClose} />}
+        {onClose && <IconButton label="Close" tooltip="Close" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={onClose} />}
       </HStack>
-      {!items.length && (
-        <EmptyState
-          isCompact
-          title="Nothing running"
-          description="Subagents, background shells, monitors and scheduled wakeups show here while the agent runs them."
-        />
-      )}
-      {ACTIVITY_KINDS.map((k) => {
-        const group = active.filter((a) => a.kind === k.id);
-        if (!group.length) return null;
-        return (
-          <VStack key={k.id} gap={0.5}>
-            <Text type="label" color="secondary">
-              {k.plural[0]!.toUpperCase() + k.plural.slice(1)} · {group.length}
-            </Text>
-            <Rows sessionId={sessionId} items={group} all={items} harness={harness} />
-          </VStack>
-        );
-      })}
-      {finished.length > 0 && (
-        <Collapsible defaultIsOpen={!active.length} trigger={<Text type="label" color="secondary">{`Finished · ${finished.length}`}</Text>}>
-          <Rows sessionId={sessionId} items={finished} all={items} harness={harness} />
-        </Collapsible>
-      )}
-    </VStack>
-  );
-}
-
-/** Rows with children (a subagent's own work) right under their parent. */
-function Rows({ sessionId, items, all, harness }: { sessionId: string; items: ActivityItem[]; all: ActivityItem[]; harness?: string }) {
-  const ids = new Set(items.map((a) => a.id));
-  const known = new Set(all.map((a) => a.id));
-  const top = items.filter((a) => !a.parentId || !ids.has(a.parentId));
-  const out: { a: ActivityItem; depth: number }[] = [];
-  const add = (a: ActivityItem, depth: number) => {
-    out.push({ a, depth });
-    for (const c of items) if (c.parentId === a.id) add(c, depth + 1);
-  };
-  for (const a of top) add(a, a.parentId && known.has(a.parentId) ? 1 : 0);
-  return (
-    <VStack>
-      {out.map(({ a, depth }) => (
-        <VStack key={a.id} style={depth ? nested : undefined}>
-          <ActivityRow sessionId={sessionId} item={a} harness={harness} parent={a.parentId ? all.find((p) => p.id === a.parentId)?.title : undefined} />
+      {!done.length ? (
+        <EmptyState isCompact title="Nothing finished yet" description="Subagents, shells and workflows land here with their reports and output once they end." />
+      ) : (
+        <VStack>
+          {done.map((a) => (
+            <ActivityRow key={a.id} sessionId={sessionId} item={a} all={items} harness={harness} />
+          ))}
         </VStack>
-      ))}
+      )}
     </VStack>
   );
 }
 
-export function ActivityRow({ sessionId, item: a, harness, parent }: { sessionId: string; item: ActivityItem; harness?: string; parent?: string }) {
+/** A row that opens into its details: history, armed items, a workflow's agents. */
+export function ActivityRow({ sessionId, item: a, all, harness }: { sessionId: string; item: ActivityItem; all: ActivityItem[]; harness?: string }) {
   const [open, setOpen] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const st = STATUS[a.status];
   const live = isActive(a);
-  useEffect(() => {
-    if (!live) setStopping(false);
-  }, [live]);
+  const line =
+    a.status === "waiting" ? (a.nextAt ? `Next ${fmtClock(a.nextAt)}${a.schedule ? ` · ${a.schedule}` : ""}` : a.schedule) : live ? (nowLine(a) ?? what(a, harness)) : resultLine(a, harness);
   return (
     <VStack>
       <Item
@@ -193,44 +269,36 @@ export function ActivityRow({ sessionId, item: a, harness, parent }: { sessionId
         startContent={<StatusDot variant={st.variant} label={st.label} tooltip={st.label} isPulsing={a.status === "running"} />}
         label={a.title}
         labelLines={1}
-        description={rowDescription(a, harness) || undefined}
+        description={line || undefined}
         descriptionLines={open ? 3 : 1}
         endContent={
-          <HStack gap={1} vAlign="center">
-            {a.status === "running" ? (
-              <Timer startTime={a.startedAt} />
-            ) : a.endedAt ? (
-              <Tooltip content={`${st.label} ${fmtClock(a.endedAt)}`}>
-                <Text type="supporting" hasTabularNumbers>
-                  {duration(a.endedAt - a.startedAt)}
-                </Text>
-              </Tooltip>
-            ) : null}
-            {live && a.stoppable && (
-              <IconButton
-                label={`Stop ${a.title}`}
-                tooltip="Stop"
-                variant="ghost"
-                size="sm"
-                isLoading={stopping}
-                icon={<Icon icon="stop" />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setStopping(true);
-                  act("stopActivity", { sessionId, id: a.id }).then((r) => r === undefined && setStopping(false));
-                }}
-              />
-            )}
-          </HStack>
+          a.status === "running" ? (
+            <Timer startTime={a.startedAt} />
+          ) : a.endedAt ? (
+            <Tooltip content={`${st.label} ${fmtClock(a.endedAt)}`}>
+              <Text type="supporting" hasTabularNumbers>
+                {duration(a.endedAt - a.startedAt)}
+              </Text>
+            </Tooltip>
+          ) : undefined
         }
       />
-      {open && <ActivityDetails item={a} harness={harness} parent={parent} />}
+      {open && <ActivityDetails sessionId={sessionId} item={a} all={all} harness={harness} />}
     </VStack>
   );
 }
 
-function ActivityDetails({ item: a, harness, parent }: { item: ActivityItem; harness?: string; parent?: string }) {
+// ---------- details ----------
+
+function ActivityDetails({ sessionId, item: a, all, harness }: { sessionId: string; item: ActivityItem; all: ActivityItem[]; harness?: string }) {
+  const [stopping, setStopping] = useState(false);
+  const live = isActive(a);
+  useEffect(() => {
+    if (!live) setStopping(false);
+  }, [live]);
   const model = a.model ? modelDisplay(a.model, harness) : undefined;
+  const parent = a.parentId ? all.find((p) => p.id === a.parentId)?.title : undefined;
+  const children = childrenOf(all, a.id);
   const facts: [string, string][] = [];
   if (a.agentType) facts.push(["Agent", a.agentType]);
   if (model) facts.push(["Model", model.name]);
@@ -241,10 +309,28 @@ function ActivityDetails({ item: a, harness, parent }: { item: ActivityItem; har
   if (a.nextAt && a.status === "waiting") facts.push(["Next", fmtClock(a.nextAt)]);
   if (a.watching && a.watching !== a.command && a.watching !== a.description) facts.push(["Watching", a.watching]);
   if (parent) facts.push(["Started by", parent]);
-  if (a.background === false && isActive(a)) facts.push(["Runs", "in the turn (the agent waits for it)"]);
+  if (a.background === false && live) facts.push(["Runs", "in the turn (the agent waits for it)"]);
   facts.push(["Started", fmtClock(a.startedAt)]);
   return (
     <VStack gap={2} paddingInlineStart={6} paddingBlock={1.5} paddingInlineEnd={1}>
+      {live && a.stoppable && (
+        <HStack>
+          <Button label={`Stop ${a.title}`} size="sm" icon={<Icon icon="stop" />} isLoading={stopping} onClick={() => stopItem(sessionId, a, setStopping)}>
+            Stop
+          </Button>
+        </HStack>
+      )}
+      {a.phases?.length ? <PhaseTrack sessionId={sessionId} item={a} kids={children} all={all} harness={harness} /> : null}
+      {!a.phases?.length && children.length > 0 && (
+        <VStack>
+          <Text type="label" color="secondary">
+            {a.kind === "workflow" ? "Agents" : "Started"}
+          </Text>
+          {children.map((c) => (
+            <ActivityRow key={c.id} sessionId={sessionId} item={c} all={all} harness={harness} />
+          ))}
+        </VStack>
+      )}
       <MetadataList label={{ position: "start", width: "35%" }}>
         {facts.map(([k, v]) => (
           <MetadataListItem key={k} label={k}>
@@ -263,9 +349,7 @@ function ActivityDetails({ item: a, harness, parent }: { item: ActivityItem; har
               key={s.id}
               density="compact"
               layout="inline"
-              startContent={
-                s.status === "running" ? <Spinner size="sm" /> : <StatusDot variant={s.status === "error" ? "error" : "neutral"} label={s.status === "error" ? "Failed" : "Done"} />
-              }
+              startContent={s.status === "running" ? <Spinner size="sm" /> : <StatusDot variant={s.status === "error" ? "error" : "neutral"} label={s.status === "error" ? "Failed" : "Done"} />}
               label={<Text type="supporting">{s.label}</Text>}
             />
           ))}
@@ -281,12 +365,72 @@ function ActivityDetails({ item: a, harness, parent }: { item: ActivityItem; har
         </VStack>
       )}
       {a.description && a.description !== a.title && (
-        <Collapsible defaultIsOpen={false} trigger={<Text type="label" color="secondary">{a.kind === "schedule" ? "Prompt" : "Task"}</Text>}>
+        <Collapsible
+          defaultIsOpen={false}
+          trigger={
+            <Text type="label" color="secondary">
+              {a.kind === "schedule" ? "Prompt" : a.kind === "workflow" ? "Script" : "Task"}
+            </Text>
+          }
+        >
           <Text type="supporting" style={preWrap}>
             {a.description}
           </Text>
         </Collapsible>
       )}
+    </VStack>
+  );
+}
+
+/**
+ * A workflow's phases as a step track: done ✓, the one it's on, the ones to come. Under each
+ * phase, its agents; the current and failed phases show them open, finished ones fold them.
+ */
+function PhaseTrack({ sessionId, item: a, kids, all, harness }: { sessionId: string; item: ActivityItem; kids: ActivityItem[]; all: ActivityItem[]; harness?: string }) {
+  const phases = a.phases!;
+  const cur = currentPhase(a);
+  const active = cur?.index ?? phases.length;
+  const loose = kids.filter((c) => c.phase === undefined || c.phase >= phases.length);
+  return (
+    <VStack gap={1}>
+      <Stepper activeStep={active} orientation="vertical" density="compact" label={`${a.title} steps`}>
+        {phases.map((p, i) => {
+          const mine = kids.filter((c) => c.phase === i);
+          const openAgents = p.status === "running" || p.status === "failed" || i === active;
+          return (
+            <Step
+              key={i}
+              step={i}
+              label={p.title}
+              description={p.detail}
+              status={p.status === "failed" ? "error" : p.status === "running" ? "accent" : undefined}
+              indicator={
+                p.status === "running" ? <Spinner size="sm" /> : p.status === "failed" ? <Icon icon="error" size="sm" /> : p.status === "done" && i > active ? <Icon icon="check" size="sm" /> : "auto"
+              }
+            >
+              {mine.length > 0 &&
+                (openAgents ? (
+                  <VStack>
+                    {mine.map((c) => (
+                      <ActivityRow key={c.id} sessionId={sessionId} item={c} all={all} harness={harness} />
+                    ))}
+                  </VStack>
+                ) : (
+                  <Collapsible defaultIsOpen={false} trigger={<Text type="supporting">{`${mine.length} ${mine.length === 1 ? "agent" : "agents"}`}</Text>}>
+                    <VStack>
+                      {mine.map((c) => (
+                        <ActivityRow key={c.id} sessionId={sessionId} item={c} all={all} harness={harness} />
+                      ))}
+                    </VStack>
+                  </Collapsible>
+                ))}
+            </Step>
+          );
+        })}
+      </Stepper>
+      {loose.map((c) => (
+        <ActivityRow key={c.id} sessionId={sessionId} item={c} all={all} harness={harness} />
+      ))}
     </VStack>
   );
 }

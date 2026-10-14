@@ -16,7 +16,7 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent, DEFAULT_SIDEBAR_DAYS } from "./shared/protocol";
+import { byRecent, DEFAULT_UI_PREFS, type UiPrefs } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { applyEvent, type Transcript } from "./shared/reducer";
@@ -52,7 +52,7 @@ interface State {
   sidebarOpen: boolean;
   /** desktop: sidebar collapsed to focus on one session */
   sidebarHidden: boolean;
-  /** the session's Activity panel (side panel on desktop, sheet on phones) */
+  /** the session's history panel of finished work (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
   dialog?: "new" | "addProject" | "settings" | "notify" | "fork";
   newSessionProject?: string;
@@ -65,7 +65,7 @@ interface State {
   noticesSeen: number;
   /** individual notices opened on this device */
   noticesRead: string[];
-  /** a full page shown instead of a session ("running": Home, scrolled to its Running section) */
+  /** a full page shown instead of a session ("running": Home, scrolled to its Working section) */
   page?: "memory" | "running";
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
   pulses: PulseMap;
@@ -77,9 +77,20 @@ interface State {
   conflicts: MemoryConflict[];
   /** activity that arrived while this tab was open, newest first */
   contextLive: ContextActivity[];
-  /** sidebar project lists show sessions from the last this many days (0 = all); kept on the runner */
-  sidebarDays: number;
+  /** the Settings dialog's preferences, kept on the runner so they follow the user across devices */
+  ui: UiPrefs;
+  /** sessionId -> when you last opened it, on any device, by the runner's clock (getViewed / markViewed) */
+  viewed: Record<string, number>;
+  /** sessionId -> when you opened it here, by this device's clock (for ordering until the runner confirms; all an older runner gets) */
+  viewedHere: Record<string, number>;
+  /** the open session sorts by when it was touched before you opened it, so opening it doesn't move it (recentSessions.ts) */
+  hold?: { id: string; at: number };
+  /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
+  recent: SessionSummary[];
 }
+
+// Above useStore: its initial state reads it (cachedViewed), and a const used before its line throws.
+const VIEW_KEYS = { runner: "tether.viewedBy", here: "tether.viewedHereBy" } as const;
 
 export const useStore = create<State>(() => ({
   connected: false,
@@ -93,14 +104,18 @@ export const useStore = create<State>(() => ({
   sidebarOpen: false,
   sidebarHidden: loadJSON("tether.sidebarHidden", false),
   // Phones start closed: there it's a sheet over the session.
-  activityOpen: !window.matchMedia("(max-width: 767px)").matches && loadJSON("tether.activityOpen", false),
+  // A new key: the old one remembered the panel of running work, now the strip's job.
+  activityOpen: !window.matchMedia("(max-width: 767px)").matches && loadJSON("tether.historyOpen", false),
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
   conflicts: [],
   contextLive: [],
   pulses: {},
-  sidebarDays: cachedSidebarDays(loadJSON<string>("tether.runner", "")),
+  ui: cachedUiPrefs(loadJSON<string>("tether.runner", "")),
+  viewed: cachedViewed(loadJSON<string>("tether.runner", "")),
+  viewedHere: cachedViewed(loadJSON<string>("tether.runner", ""), "here"),
+  recent: [],
 }));
 
 const set = useStore.setState;
@@ -209,6 +224,10 @@ function onMessage(m: ServerToBrowser) {
         refreshNotices();
         refreshContext();
         refreshUiPrefs();
+        refreshViewed();
+        refreshRecent(false);
+        // A link opened before the runner was there.
+        if (get().selected) markViewed(get().selected!);
         // Re-sync open transcripts (events may have been missed while the runner was away).
         loads.clear();
         for (const id of Object.keys(get().open)) loadSession(id);
@@ -236,6 +255,11 @@ function onMessage(m: ServerToBrowser) {
       break;
     case "pulse":
       set((s) => ({ pulses: mergePulses(s.pulses, m.runnerId, m.pulses) }));
+      break;
+    case "viewed":
+      // Opened on some device. Another runner's sessions keep it on their pulse.
+      if (m.runnerId === get().runnerId) applyViewed(m.runnerId, { [m.sessionId]: m.viewedAt });
+      else patchPulse(m.runnerId, m.sessionId, (p) => ({ ...p, session: { ...p.session, viewedAt: Math.max(m.viewedAt, p.session.viewedAt ?? 0) } }));
       break;
   }
 }
@@ -276,7 +300,7 @@ export function openOnRunner(runnerId: string, session: SessionSummary, opts: { 
   if (opts.activity) setActivityOpen(true);
 }
 
-/** Home: the dashboard (no session, no page). */
+/** Home: Needs you, Working and Recent (no session, no page). */
 export function goHome() {
   set({ selected: undefined, page: undefined, sidebarOpen: false });
   history.replaceState(null, "", "#/");
@@ -453,9 +477,16 @@ export async function openLink(id: string) {
 }
 
 export function selectSession(sessionId: string | undefined) {
-  set({ selected: sessionId, sidebarOpen: false, page: undefined });
+  // Where it sorted before you opened it, so it stays there while it's open.
+  const st = get();
+  const hold =
+    !sessionId || st.hold?.id === sessionId
+      ? st.hold
+      : { id: sessionId, at: Math.max(summaryOf(sessionId)?.viewedAt ?? 0, st.viewed[sessionId] ?? 0, st.viewedHere[sessionId] ?? 0) };
+  set({ selected: sessionId, sidebarOpen: false, page: undefined, hold });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
+    markViewed(sessionId);
     if (!get().open[sessionId]) loadSession(sessionId);
     rememberLink(sessionId);
     history.replaceState(null, "", `#/s/${encodeURIComponent(linkId(sessionId))}`);
@@ -508,6 +539,8 @@ export function refreshNotices() {
       if (selected && document.visibilityState === "visible") {
         const current = notices.find((notice) => notice.sessionId === selected);
         if (current) markNoticeRead(current.id);
+        // Seen as it arrived: on every device.
+        if (current && current.ts > (get().viewed[selected] ?? 0)) markViewed(selected);
       }
     })
     .catch(() => {});
@@ -553,8 +586,10 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [] });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here"), hold: undefined });
   refreshProjects();
+  refreshViewed();
+  refreshRecent();
   refreshNotices();
   refreshContext();
   refreshUiPrefs();
@@ -562,39 +597,163 @@ export function switchRunner(id: string) {
 
 // ---------------- preferences kept on the runner (shared by every device) ----------------
 
-// Each runner keeps its own; this device remembers the last value each one gave (by runner id), so
-// the list doesn't change size once the runner answers. (A function: the store's initial state uses it.)
-function cachedSidebarDays(runnerId: string | undefined): number {
-  const v = runnerId ? loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId] : undefined;
-  return typeof v === "number" ? v : DEFAULT_SIDEBAR_DAYS;
+// Each runner keeps its own; this device remembers the last ones each gave (by runner id), so the
+// sidebar doesn't change size once the runner answers. An older runner that doesn't know a
+// preference (or the RPC) leaves it here, on this device. (A function: the initial state uses it.)
+function cachedUiPrefs(runnerId: string | undefined): UiPrefs {
+  if (!runnerId) return DEFAULT_UI_PREFS;
+  // Older web apps kept the sidebar window as tether.sidebarDaysBy and expandShell per device.
+  const days = loadJSON<Record<string, unknown>>("tether.sidebarDaysBy", {})[runnerId];
+  const expand = loadJSON<unknown>("tether.expandShell", undefined);
+  return {
+    ...DEFAULT_UI_PREFS,
+    ...(typeof days === "number" && { sidebarDays: days }),
+    ...(typeof expand === "boolean" && { expandShell: expand }),
+    ...loadJSON<Record<string, Partial<UiPrefs>>>("tether.uiPrefsBy", {})[runnerId],
+  };
 }
 
-/** Applies a runner's answer, unless the sidebar has moved to another runner since it asked. */
-function applyUiPrefs(runnerId: string, p: { sidebarDays: number }) {
-  saveJSON("tether.sidebarDaysBy", { ...loadJSON<Record<string, number>>("tether.sidebarDaysBy", {}), [runnerId]: p.sidebarDays });
-  if (get().runnerId === runnerId) set({ sidebarDays: p.sidebarDays });
+/** Applies a runner's answer (or a change made here), unless the sidebar has moved to another runner since. */
+function applyUiPrefs(runnerId: string, p: Partial<UiPrefs>) {
+  const ui = { ...cachedUiPrefs(runnerId), ...p };
+  saveJSON("tether.uiPrefsBy", { ...loadJSON<Record<string, UiPrefs>>("tether.uiPrefsBy", {}), [runnerId]: ui });
+  if (get().runnerId !== runnerId) return;
+  const windowMoved = ui.sidebarDays !== get().ui.sidebarDays;
+  set({ ui });
+  if (windowMoved) refreshRecent();
 }
 
 export function refreshUiPrefs() {
   const runnerId = get().runnerId;
   if (!runnerId) return;
-  set({ sidebarDays: cachedSidebarDays(runnerId) });
+  set({ ui: cachedUiPrefs(runnerId) });
   rpcTo(runnerId, "getUiPrefs", {})
-    .then((p) => applyUiPrefs(runnerId, p))
-    .catch((e) => {
-      // An older runner has no preferences: it gets the default. Other failures keep what we have.
-      if (/doesn't know/.test(e?.message ?? "")) applyUiPrefs(runnerId, { sidebarDays: DEFAULT_SIDEBAR_DAYS });
-    });
+    .then((p) => {
+      applyUiPrefs(runnerId, p);
+      migrateExpandShell(runnerId, p);
+    })
+    // An older runner has no preferences: this device's stay. Other failures keep what we have.
+    .catch(() => {});
 }
 // Another device may have changed them.
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());
 
-export async function setSidebarDays(days: number) {
+/** Once per device: a local "expand shell commands" from before it moved to the runner goes there. */
+function migrateExpandShell(runnerId: string, p: Partial<UiPrefs>) {
+  const local = loadJSON<unknown>("tether.expandShell", undefined);
+  if (local === undefined || p.expandShell === undefined) return; // nothing to move, or the runner can't keep it
+  localStorage.removeItem("tether.expandShell");
+  if (local === true && !p.expandShell) setUiPref({ expandShell: true });
+}
+
+/** Changes preferences at once, then saves them on the runner. */
+export async function setUiPref(p: Partial<UiPrefs>) {
   const runnerId = get().runnerId;
   if (!runnerId) return;
-  const r = await act("setUiPrefs", { sidebarDays: days });
-  if (r) applyUiPrefs(runnerId, r);
+  applyUiPrefs(runnerId, p);
+  try {
+    applyUiPrefs(runnerId, await rpcTo(runnerId, "setUiPrefs", p));
+  } catch (e: any) {
+    if (/doesn't know/.test(e?.message ?? "")) return; // an older runner: kept on this device
+    toast("error", e?.message ?? String(e));
+    refreshUiPrefs();
+  }
 }
+
+// ---------------- when you last opened each session (kept on the runner, shared by every device) ----------------
+
+// This device keeps the last map each runner gave (by runner id), so lists sort right on load, and
+// its own views (by its own clock), which are all there is with an older runner that doesn't know
+// markViewed. (A function, and VIEW_KEYS is defined above useStore: the initial state uses them.)
+function cachedViewed(runnerId: string | undefined, which: keyof typeof VIEW_KEYS = "runner"): Record<string, number> {
+  return (runnerId && loadJSON<Record<string, Record<string, number>>>(VIEW_KEYS[which], {})[runnerId]) || {};
+}
+
+/** Merges views into a runner's map (the latest of each wins), and this device's copy of it. */
+function applyViewed(runnerId: string, v: Record<string, number>, which: keyof typeof VIEW_KEYS = "runner") {
+  const field = which === "runner" ? "viewed" : "viewedHere";
+  const next = { ...(get().runnerId === runnerId ? get()[field] : cachedViewed(runnerId, which)) };
+  let changed = false;
+  for (const [id, at] of Object.entries(v))
+    if (typeof at === "number" && at > (next[id] ?? 0)) {
+      next[id] = at;
+      changed = true;
+    }
+  if (!changed) return;
+  const kept = Object.fromEntries(Object.entries(next).sort((a, b) => b[1] - a[1]).slice(0, 1000));
+  saveJSON(VIEW_KEYS[which], { ...loadJSON<Record<string, unknown>>(VIEW_KEYS[which], {}), [runnerId]: kept });
+  if (get().runnerId === runnerId) set({ [field]: kept } as Pick<State, "viewed">);
+}
+
+/** A session's summary, wherever the sidebar's runner's sessions are known. */
+function summaryOf(sessionId: string): Pick<SessionSummary, "projectPath" | "viewedAt"> | undefined {
+  const st = get();
+  return (
+    st.open[sessionId]?.session ??
+    Object.values(st.sessions).flat().find((x) => x.id === sessionId) ??
+    st.recent.find((x) => x.id === sessionId) ??
+    st.projects.flatMap((p) => p.live).find((x) => x.id === sessionId) ??
+    st.notices.find((n) => n.sessionId === sessionId)
+  );
+}
+
+export function refreshViewed() {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  rpcTo(runnerId, "getViewed", {})
+    .then((v) => applyViewed(runnerId, v))
+    .catch(() => {}); // an older runner: this device's views are all there are
+}
+
+// Opening a session, or coming back to it, counts here at once; the runner hears of it at most
+// every VIEW_WRITE_MS per session (a later one waits out the rest, so the last always goes).
+const VIEW_WRITE_MS = 30_000;
+const viewSent = new Map<string, number>();
+const viewTimers = new Set<string>();
+export function markViewed(sessionId: string) {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  applyViewed(runnerId, { [sessionId]: Date.now() }, "here");
+  const key = `${runnerId}\n${sessionId}`;
+  if (viewTimers.has(key)) return;
+  const send = () => {
+    viewTimers.delete(key);
+    viewSent.set(key, Date.now());
+    // So listRecent can find it later, whatever project it's in (the runner knows a live one's).
+    const projectPath = summaryOf(sessionId)?.projectPath || undefined;
+    rpcTo(runnerId, "markViewed", { sessionId, projectPath })
+      .then((r) => applyViewed(runnerId, { [sessionId]: r.viewedAt }))
+      .catch(() => {});
+  };
+  const wait = (viewSent.get(key) ?? 0) + VIEW_WRITE_MS - Date.now();
+  if (wait <= 0) return send();
+  viewTimers.add(key);
+  setTimeout(send, wait);
+}
+document.addEventListener("visibilitychange", () => {
+  const sel = get().selected;
+  if (document.visibilityState === "visible" && sel) markViewed(sel);
+});
+
+/**
+ * Recent across projects, at most once a minute for the same runner and window unless `force`.
+ * An older runner has no listRecent: the lists make do with what's loaded.
+ */
+let recentAt = 0;
+let recentFor = "";
+export async function refreshRecent(force = true) {
+  const runnerId = get().runnerId;
+  const key = `${runnerId}\n${get().ui.sidebarDays}`;
+  if (!runnerId || (!force && key === recentFor && Date.now() - recentAt < 60_000)) return;
+  recentAt = Date.now();
+  recentFor = key;
+  try {
+    const recent = await rpcTo(runnerId, "listRecent", { days: get().ui.sidebarDays });
+    if (get().runnerId === runnerId) set({ recent });
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshRecent(false));
+setInterval(() => document.visibilityState === "visible" && refreshRecent(false), 5 * 60_000);
 
 // In-tab fallback for sessions open in this tab, when this device has no push from the runner
 // (with push, the service worker shows them, tab or not).
@@ -620,7 +779,7 @@ function attention(o: OpenSession, s: Partial<OpenSession["state"]>) {
 
 export function setActivityOpen(open: boolean) {
   set({ activityOpen: open });
-  if (!isNarrow()) saveJSON("tether.activityOpen", open);
+  if (!isNarrow()) saveJSON("tether.historyOpen", open);
 }
 
 /** Below Astryx's md breakpoint the sidebar is a drawer. */

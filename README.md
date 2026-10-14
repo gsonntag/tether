@@ -32,6 +32,10 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   default; Settings → Sidebar, shared by every device), plus any that are running, working in the
   background, waiting, need you or are open. Search finds the rest, and sending one a message
   makes it recent again.
+- **Clone a repo as a project.** Add project → type `org/repo` (or any GitHub URL) to clone it
+  into the folder you're browsing. GitHub repos always go over SSH (`git@github.com:org/repo.git`),
+  so the runner machine's own SSH key authenticates; other git URLs are cloned as given. Clones
+  that take over 110 s are stopped (do those in a terminal).
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
 - **Steer and queue.** Enter steers a running agent; Alt+Enter queues a message for after the

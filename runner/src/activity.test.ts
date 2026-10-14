@@ -274,6 +274,31 @@ describe("activity in the session", () => {
     s.close();
   });
 
+  test("a workflow's agents are part of it: one workflow, not 30 agents of running work", () => {
+    const s = fake();
+    s.loadPrefs();
+    s.upsertActivity(item("w1", { kind: "workflow", title: "review" }), ...[1, 2, 3].map((n) => item(`w1/${n}`, { parentId: "w1" })));
+    expect(s.activeCount).toBe(1);
+    expect(s.runningKinds()).toEqual({ workflow: 1 });
+    expect(summaries.at(-1)!.runningKinds).toEqual({ workflow: 1 });
+    expect(config().sessions[s.id]!.background!.map((b) => b.id)).toEqual(["w1"]);
+    // An agent outliving its workflow (the workflow ended, the harness didn't say) counts again.
+    s.upsertActivity(item("w1", { kind: "workflow", status: "done", endedAt: Date.now() }));
+    expect(s.workingCount).toBe(3);
+    s.close();
+  });
+
+  test("a foreground workflow's agents end with the turn, like it", async () => {
+    const s = fake();
+    s.loadPrefs();
+    await s.prompt("run the workflow");
+    s.upsertActivity(item("w2", { kind: "workflow", background: false }), item("w2/1", { parentId: "w2", background: true }));
+    s.reply("Done.");
+    expect([s.activity("w2")!.status, s.activity("w2/1")!.status]).toEqual(["stopped", "stopped"]);
+    expect(s.busy).toBe(false);
+    s.close();
+  });
+
   test("a restart is told which work it stopped", () => {
     const s = fake();
     s.loadPrefs();

@@ -2,7 +2,7 @@
 // counts, context, waiting approvals, last line). The runner pushes them to every browser as
 // sessions change, throttled per session, so the dashboard is live without polling.
 
-import { isActive, type ActivityKind, type LiveState, type Msg, type SessionPulse, type SessionSummary, type UiRequest } from "../../web/src/shared/protocol";
+import { ownWork, type ActivityKind, type LiveState, type Msg, type SessionPulse, type SessionSummary, type UiRequest } from "../../web/src/shared/protocol";
 import { describeTool } from "./adapters/activity";
 import { redactSecrets } from "./context/handoff";
 
@@ -94,8 +94,7 @@ export function buildPulse(p: { session: SessionSummary; state: LiveState; messa
   const { session, state, messages } = p;
   const counts: Partial<Record<ActivityKind, number>> = {};
   let armed = 0;
-  for (const a of state.activity ?? []) {
-    if (!isActive(a)) continue;
+  for (const a of ownWork(state.activity ?? [])) {
     if (a.status === "waiting") armed++;
     else counts[a.kind] = (counts[a.kind] ?? 0) + 1;
   }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -18,23 +18,14 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import {
-  BoltIcon,
-  BookOpenIcon,
-  ChevronDoubleLeftIcon,
-  Cog6ToothIcon,
-  HomeIcon,
-  MagnifyingGlassIcon,
-  PlusIcon,
-  TrashIcon,
-} from "@heroicons/react/24/outline";
-import { byRecent, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
+import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
-import { projectIsQuiet, showInSidebar } from "../recentSessions";
-import { runningCount } from "../dashboard";
-import { runningLine, staleFinished, summaryWork, workState, type WorkState } from "../workState";
+import { byListOrder, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
+import { knownSessions, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
+import { runningLine, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
 import { WorkIndicator } from "./WorkIndicator";
@@ -118,9 +109,10 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
       header={
         <SideNavHeading
           heading="Tether"
+          // To Home (App.tsx reads "#/" as Home).
+          headingHref="#/"
           headerEndContent={
             <HStack gap={0.5} vAlign="center">
-              <IconButton label="Home" tooltip="Home: everything running and waiting on you" variant="ghost" size="sm" icon={<Icon icon={HomeIcon} />} onClick={goHome} />
               <NoticeBell />
               {!narrow && (
                 <IconButton label="Hide sidebar" tooltip="Hide sidebar (⌘B)" variant="ghost" size="sm" icon={<Icon icon={ChevronDoubleLeftIcon} />} onClick={toggleSidebar} />
@@ -176,9 +168,10 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         </SideNavSection>
       ) : (
         <>
-        <RunningItem />
+        <HomeNavItem />
         <MemoryNavItem />
         <NeedsYouSection />
+        <RecentSection />
         <SideNavSection
           title="Projects"
           endContent={<IconButton label="Add project" tooltip="Add project" variant="ghost" size="sm" icon={<Icon icon={PlusIcon} />} onClick={() => useStore.setState({ dialog: "addProject" })} />}
@@ -261,25 +254,39 @@ function SearchHit({ result }: { result: SessionSearchResult }) {
   );
 }
 
-/** Every session we know a summary for. Loaded summaries are pushed live by the runner, so they win over the listProjects snapshot. */
-function knownSessions(projects: ProjectInfo[], sessions: Record<string, SessionSummary[]>) {
-  const by = new Map(projects.flatMap((p) => p.live.map((s) => [s.id, s] as const)));
-  for (const s of Object.values(sessions).flat()) by.set(s.id, s);
-  return by;
-}
-
-type Attention = { kind: "finished" | "blocked"; read: boolean };
-
-/** Whether a session is waiting on you: finished (green) or blocked (red), and whether you've looked since. */
-type NoticeState = Pick<ReturnType<typeof useStore.getState>, "notices" | "noticesSeen" | "noticesRead">;
-function attentionOf(st: NoticeState, s: SessionSummary): Attention | undefined {
-  const notice = st.notices.find((n) => n.sessionId === s.id);
-  const read = !!notice && (notice.ts <= st.noticesSeen || st.noticesRead.includes(notice.id));
-  if (s.needsInput) return { kind: "blocked", read: notice?.kind !== "finished" && read };
-  // A running agent has moved past whatever its last notice said.
-  if (!notice || s.status === "running" || s.status === "waiting") return undefined;
-  if (notice.kind === "finished" && staleFinished(s, notice.ts)) return undefined;
-  return { kind: notice.kind === "finished" ? "finished" : "blocked", read };
+/**
+ * Home, the main page: what needs you, what's working and what's recent, on every runner. Its
+ * counts: sessions working, and things waiting on you.
+ */
+function HomeNavItem() {
+  const on = useStore((s) => !s.selected && s.page !== "memory");
+  const g = useSessionGroups("all");
+  const working = g.working.length;
+  const needs = useNeedsCount(g.needs);
+  return (
+    <SideNavItem
+      label="Home"
+      icon={HomeIcon}
+      isSelected={on}
+      onClick={goHome}
+      endContent={
+        working || needs ? (
+          <HStack gap={1} vAlign="center">
+            {working > 0 && (
+              <Tooltip content={`${working} working`}>
+                <Badge label={working} variant="info" />
+              </Tooltip>
+            )}
+            {needs > 0 && (
+              <Tooltip content={`${needs} need${needs === 1 ? "s" : ""} you`}>
+                <Badge label={needs} variant="error" />
+              </Tooltip>
+            )}
+          </HStack>
+        ) : undefined
+      }
+    />
+  );
 }
 
 /** The Memory & Skills page; the count is open memory conflicts. */
@@ -316,95 +323,49 @@ function ConflictRows() {
 }
 
 /**
- * Sessions that need you, grouped by project. Unread ones leave once you've opened them and moved on;
- * blocked ones stay until the agent is unblocked.
+ * Sessions that need you, across projects: a question or approval waiting, or a notice (finished,
+ * blocked) you haven't opened since it came. Once opened, a session moves to the top of Recent
+ * when you leave it (not while you're on it, so the list doesn't jump under you).
  */
 function NeedsYouSection() {
-  const projects = useStore((s) => s.projects);
-  const sessions = useStore((s) => s.sessions);
-  const notices = useStore((s) => s.notices);
-  const selected = useStore((s) => s.selected);
-  const noticesRead = useStore((s) => s.noticesRead);
-  const noticesSeen = useStore((s) => s.noticesSeen);
   const conflicts = useStore((s) => s.conflicts.length);
-  const shown = useRef(new Set<string>());
-
-  const by = knownSessions(projects, sessions);
-  // A notice for a session we have no summary for yet (its project is collapsed): enough to show and open it.
-  for (const n of notices)
-    if (!by.has(n.sessionId))
-      by.set(n.sessionId, {
-        id: n.sessionId,
-        harness: n.sessionId.split(":")[0] as SessionSummary["harness"],
-        nativeId: n.sessionId.split(":").slice(1).join(":"),
-        projectPath: n.projectPath,
-        title: n.title.split(" · ").slice(1).join(" · ") || n.title,
-        createdAt: n.ts,
-        updatedAt: n.ts,
-        live: false,
-        status: "idle",
-      });
-
-  const st = { notices, noticesRead, noticesSeen };
-  const rows = [...by.values()].filter((s) => {
-    if (s.archived) return false;
-    const a = attentionOf(st, s);
-    if (a && (a.kind === "blocked" || !a.read)) return true;
-    // Stay put while you're looking at it, so the list doesn't jump under you.
-    return !!a && s.id === selected && shown.current.has(s.id);
-  });
-  shown.current = new Set(rows.map((s) => s.id));
-  if (!rows.length && !conflicts) return null;
-
-  const groups = new Map<string, SessionSummary[]>();
-  for (const s of rows.sort(byRecent)) groups.set(s.projectPath, [...(groups.get(s.projectPath) ?? []), s]);
+  const { needs } = useSessionGroups("runner");
+  if (!needs.length && !conflicts) return null;
   return (
     <SideNavSection title="Needs you">
       <ConflictRows />
-      {[...groups].map(([path, list]) => (
-        <SideNavItem key={path} label={projects.find((p) => p.path === path)?.name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path} size="sm">
-          {list.map((s) => (
-            <SessionRow key={s.id} s={s} />
-          ))}
-        </SideNavItem>
+      {needs.map((e) => (
+        <SessionRow key={e.session.id} s={e.session} withProject needsYou />
       ))}
     </SideNavSection>
   );
 }
 
-// One minute clock for every project list, so sessions drop out of the window without a reload.
-// The snapshot reads the clock itself: a list mounted after a long while (the phone sidebar opened
-// again) must not start from the minute the last one saw.
-const minuteListeners = new Set<() => void>();
-let minuteTimer: ReturnType<typeof setInterval> | undefined;
-function subscribeMinute(l: () => void) {
-  minuteListeners.add(l);
-  minuteTimer ??= setInterval(() => {
-    for (const f of minuteListeners) f();
-  }, 60_000);
-  return () => {
-    minuteListeners.delete(l);
-    if (!minuteListeners.size) {
-      clearInterval(minuteTimer);
-      minuteTimer = undefined;
-    }
-  };
+/** Everything else touched in the window (working ones too), across projects, most recently touched first. */
+function RecentSection() {
+  const { working, recent } = useSessionGroups("runner");
+  const ctx = useRecentContext();
+  const [all, setAll] = useState(false);
+  const list = [...working, ...recent].map((e) => e.session).sort(byListOrder(ctx));
+  if (!list.length) return null;
+  return (
+    <SideNavSection title="Recent">
+      {(all ? list : list.slice(0, SHOW)).map((s) => (
+        <SessionRow key={s.id} s={s} withProject />
+      ))}
+      {list.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : "Show more"} onClick={() => setAll(!all)} />}
+    </SideNavSection>
+  );
 }
-const useMinute = () => useSyncExternalStore(subscribeMinute, () => Math.floor(Date.now() / 60_000));
 
 function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
   // Collapsed, the row still says whether anything in it works: its main turns, or only background work.
   const countIn = (s: ReturnType<typeof useStore.getState>, state: WorkState) =>
-    [...knownSessions(s.projects, s.sessions).values()].filter((x) => x.projectPath === p.path && workState(summaryWork(x)) === state).length;
+    [...knownSessions(s.projects, s.sessions, s.recent).values()].filter((x) => x.projectPath === p.path && !x.archived && workState(summaryWork(x)) === state).length;
   const running = useStore((s) => countIn(s, "working"));
   const background = useStore((s) => countIn(s, "background"));
-  const days = useStore((s) => s.sidebarDays);
-  const notices = useStore((s) => s.notices);
-  const noticesSeen = useStore((s) => s.noticesSeen);
-  const noticesRead = useStore((s) => s.noticesRead);
-  const selected = useStore((s) => s.selected);
-  const now = useMinute() * 60_000;
+  const ctx = useRecentContext();
   const [all, setAll] = useState(false);
   const archiveProject = async (archived: boolean) => {
     if (archived && p.live.some((s) => s.status !== "idle" || workState(summaryWork(s)) === "background") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
@@ -413,11 +374,10 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
     useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
   };
 
-  // Only recent sessions (Settings → "Show sessions from the last"), plus any that are busy, have an
-  // unread notice or are open. Older and done ones aren't listed; search finds them, and sending one
-  // a message makes it recent again.
-  const ctx = { now, days, notices, noticesSeen, noticesRead, selected };
-  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byRecent);
+  // Only sessions touched recently (Settings → "Show sessions from the last"), plus any that are
+  // working, need you or are open. Older and done ones aren't listed; search finds them, and
+  // opening one or sending it a message makes it recent again.
+  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byListOrder(ctx));
   // Nothing to list: dimmed, still there to start a session in.
   const quiet = projectIsQuiet(p, loaded, open, ctx);
 
@@ -425,7 +385,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   let more: React.ReactNode = null;
   if (!open || !loaded) more = <SideNavItem size="sm" label="Loading…" isDisabled />;
   else {
-    // Most recent message first, live or not.
+    // Most recently touched first, live or not.
     rows = all ? visible : visible.slice(0, SHOW);
     more = visible.length > SHOW && <SideNavItem size="sm" label={all ? "Show fewer" : `Show all ${visible.length}`} onClick={() => setAll(!all)} />;
     if (!visible.length) more = <SideNavItem size="sm" label={loaded.some((s) => !s.archived) ? "No recent sessions" : "No sessions"} isDisabled />;
@@ -479,9 +439,12 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
 export async function archive(s: SessionSummary, archived: boolean) {
   const r = await act("archiveSession", { sessionId: s.id, archived });
   if (r === undefined) return;
-  useStore.setState((st) => ({
-    sessions: { ...st.sessions, [s.projectPath]: (st.sessions[s.projectPath] ?? []).map((x) => (x.id === s.id ? { ...x, archived } : x)) },
-  }));
+  useStore.setState((st) => {
+    // Added when only Recent knew it, so it leaves there too.
+    const list = st.sessions[s.projectPath] ?? [];
+    const next = { ...(list.find((x) => x.id === s.id) ?? s), archived };
+    return { sessions: { ...st.sessions, [s.projectPath]: list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? next : x)) : [...list, next] } };
+  });
   if (archived && useStore.getState().selected === s.id) selectSession(undefined);
 }
 
@@ -530,21 +493,6 @@ function RenameInput({ session, onDone }: { session: SessionSummary; onDone: () 
   );
 }
 
-/** Home's Running section, with its count: sessions doing something now on every runner. */
-function RunningItem() {
-  const page = useStore((s) => s.page);
-  const n = useStore((s) => runningCount(s.pulses));
-  return (
-    <SideNavItem
-      label="Running"
-      icon={BoltIcon}
-      isSelected={page === "running"}
-      onClick={() => openPage("running")}
-      endContent={n > 0 ? <Badge label={n} variant="info" /> : undefined}
-    />
-  );
-}
-
 /** Subagents, shells and the like a live session has going, as a count. */
 function ActivityCount({ s }: { s: SessionSummary }) {
   if (!s.live || !s.activeCount) return null;
@@ -557,26 +505,28 @@ function ActivityCount({ s }: { s: SessionSummary }) {
   );
 }
 
-function SessionIndicator({ s }: { s: SessionSummary }) {
-  const kind = useStore((st) => attentionOf(st, s)?.kind);
-  const read = useStore((st) => attentionOf(st, s)?.read);
-  if (kind) {
-    const what = kind === "finished" ? "Finished" : "Needs your input";
-    const color = kind === "finished" ? "success" : "error";
-    return (
-      <StatusDot
-        variant={color}
-        label={`${what}, ${read ? "viewed" : "not viewed yet"}`}
-        tooltip={`${what} · ${read ? "Viewed" : "Not viewed yet"}`}
-        // Viewed: a ring instead of a filled dot.
-        style={read ? { background: "transparent", boxShadow: `inset 0 0 0 calc(var(--border-width) * 2) var(--color-${color})` } : undefined}
-      />
-    );
-  }
+/** Needs you: red for a question or a problem, green for a finished turn you haven't opened. Else how it's working, if it is. */
+/** `needsYou`: listed under Needs you, where an open one keeps its dot until you leave it (it's read by then). */
+function SessionIndicator({ s, needsYou }: { s: SessionSummary; needsYou?: boolean }) {
+  const need = useStore((st) =>
+    s.live && s.needsInput
+      ? "asking"
+      : sessionState(s, st) === "needs"
+        ? unreadNotice(s, st)?.kind
+        : needsYou
+          ? (st.notices.find((n) => n.sessionId === s.id)?.kind ?? "blocked")
+          : undefined,
+  );
+  if (need === "finished") return <StatusDot variant="success" label="Finished, not opened yet" tooltip="Finished · Not opened yet" />;
+  if (need) return <StatusDot variant="error" label="Needs you" tooltip={need === "asking" ? "Waiting for your answer" : "Needs you · Not opened yet"} />;
   return <WorkIndicator work={summaryWork(s)} />;
 }
 
-function SessionRow({ s }: { s: SessionSummary }) {
+const projectName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** `withProject`: in the cross-project lists (Needs you, Recent), the project's name, subtly. */
+function SessionRow({ s, withProject, needsYou }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean }) {
+  const at = useStore((st) => touched(s, st));
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
   const [removing, setRemoving] = useState(false);
@@ -609,13 +559,19 @@ function SessionRow({ s }: { s: SessionSummary }) {
       label={s.title}
       size="sm"
       isSelected={sel}
-      onClick={() => selectSession(s.id)}
+      // Double-click renames.
+      onClick={(e) => (e.detail === 2 ? setEditing(true) : selectSession(s.id))}
       endContent={
         <HStack gap={1} vAlign="center">
           <ActivityCount s={s} />
-          <SessionIndicator s={s} />
+          <SessionIndicator s={s} needsYou={needsYou} />
+          {withProject && (
+            <Text type="supporting" maxLines={1} style={{ maxWidth: "calc(var(--spacing-12) * 2)" }}>
+              {projectName(s.projectPath)}
+            </Text>
+          )}
           <HarnessBadge harness={s.harness} />
-          {!s.live && <Text type="supporting">{ago(s.updatedAt)}</Text>}
+          <Text type="supporting">{ago(at)}</Text>
         </HStack>
       }
       actions={

@@ -9,7 +9,7 @@ import { ACTIVITY_KINDS, type ActivityKind, type RunStatus, type SessionPulse, t
  * waiting: the turn waits (usage limit, retry).
  * background: the turn is over but subagents, shells, monitors or workflows are still running.
  * scheduled: nothing is running, but a wakeup or cron job is armed.
- * idle: a live process with nothing going. closed: no process.
+ * idle: a live process with nothing going (shown like closed: nothing to look at). closed: no process.
  */
 export type WorkState = "working" | "waiting" | "background" | "scheduled" | "idle" | "closed";
 
@@ -36,8 +36,9 @@ export function workState(w: WorkInput): WorkState {
 /** From a sidebar summary: `activeCount` is running + armed, `runningKinds` the running ones. */
 export function summaryWork(s: SessionSummary): WorkInput {
   const active = s.activeCount ?? 0;
-  // An older runner sends only the count: count it all as running, the safer reading.
-  const running = s.runningKinds ?? (active ? { other: active } : undefined);
+  // An older runner sends only the counts: count what it says works (else all of it) as running.
+  const working = s.workingCount ?? active;
+  const running = s.runningKinds ?? (working ? { other: working } : undefined);
   return { live: s.live, status: s.status, running, armed: Math.max(0, active - total(running)) };
 }
 
@@ -51,9 +52,10 @@ export function staleFinished(s: SessionSummary, noticeTs: number): boolean {
   return workState(summaryWork(s)) === "background" && noticeTs < s.updatedAt;
 }
 
-/** From a Home pulse. */
+/** From a Home pulse. Tether's own loops and schedules (/loop, /schedule) count as armed: it will work again. */
 export function pulseWork(p: SessionPulse): WorkInput {
-  return { live: p.session.live, status: p.session.status, running: p.activity, armed: p.armed };
+  const armed = (p.armed ?? 0) + (p.nextRun?.count ?? 0);
+  return { live: p.session.live, status: p.session.status, running: p.activity, armed: armed || undefined };
 }
 
 /** "2 agents, 1 shell": running items, by kind. */
@@ -80,8 +82,6 @@ export function workLabel(w: WorkInput): { state: WorkState; label: string; tool
     }
     case "scheduled":
       return { state, label: "Scheduled", tooltip: w.armed === 1 ? "Waiting for a scheduled wakeup" : `Waiting for ${w.armed} scheduled wakeups` };
-    case "idle":
-      return { state, label: "Live", tooltip: "Live" };
     default:
       return { state, label: "", tooltip: "" };
   }

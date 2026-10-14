@@ -12,7 +12,7 @@ import { SessionView } from "./components/SessionView";
 import { Dashboard } from "./components/Dashboard";
 import { Sidebar } from "./components/Sidebar";
 import { listenForOpen, pushOnHere, pushSupported } from "./push";
-import { NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
+import { goHome, NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
 import { useDrawerSwipe } from "./swipe";
 
 listenForOpen();
@@ -50,7 +50,7 @@ function Shell() {
   const narrow = useNarrow();
   useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
-  // Deep links: #/s/<id>, #/memory[?conflict=<id>], #/running, and from notifications
+  // Deep links: #/ (Home), #/s/<id>, #/memory[?conflict=<id>], #/running, and from notifications
   // #/r/<runnerId>/s/<sessionId> and #/r/<runnerId>/memory?conflict=<id>
   useEffect(() => {
     // A malformed escape in a pasted link must not throw out of the hashchange handler.
@@ -67,7 +67,10 @@ function Shell() {
         if (mem[1]) switchRunner(decode(mem[1]));
         return openPage("memory", mem[2] ? decode(mem[2]) : undefined);
       }
+      // The old Running page is Home's Working section.
       if (location.hash === "#/running") return openPage("running");
+      // The sidebar's "Tether" heading.
+      if (location.hash === "#/") return goHome();
       const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
       if (r) switchRunner(decode(r[1]!));
       const m = r ?? location.hash.match(/^#\/s\/(.+)$/);

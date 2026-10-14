@@ -1,4 +1,4 @@
-import { Children, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { Children, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
@@ -12,6 +12,7 @@ import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector, type SelectorOptionType } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { Stack, StackItem } from "@astryxdesign/core/Stack";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
@@ -31,12 +32,15 @@ import {
   type HarnessId,
   type ModelProfile,
   type NotifyKind,
+  type Ops,
+  type ProjectInfo,
   type SecretView,
 } from "../shared/protocol";
-import { profileProblems } from "../shared/profiles";
+import { profileProblems, profilesToSave } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setSidebarDays, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setUiPref, toast, toggleProject, useStore } from "../store";
+import { addModeOf, filterRepos, isMissing, isOldRunner, type AddMode } from "../addProject";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
@@ -122,6 +126,7 @@ function NewSession({ close }: { close: () => void }) {
   const [choice, setChoice] = useState("last"); // "last" | "" (harness default) | model id | profile:<name>
   const [guard, setGuard] = useState<GuardMode>(() => last?.guard ?? "auto");
   const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState("");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const models = useModels([harness]);
@@ -155,10 +160,21 @@ function NewSession({ close }: { close: () => void }) {
     });
     setBusy(false);
     if (!s) return;
+    if (name.trim()) act("renameSession", { sessionId: s.id, projectPath: s.projectPath, title: name });
     close();
     toggleProject(project, true);
     selectSession(s.id);
   };
+  // ⌘/Ctrl+Enter starts the session from anywhere in the dialog (a menu that's open keeps its Enter).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || e.defaultPrevented) return;
+      e.preventDefault();
+      start();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const projectOptions: SelectorOptionType[] = [
     ...projects.map((p) => ({ value: p.path, label: `${p.name} — ${tildify(p.path)}` })),
@@ -188,7 +204,7 @@ function NewSession({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label="Start session" variant="primary" isDisabled={!project} isLoading={busy} onClick={start} />
+          <Button label="Start session" variant="primary" tooltip="⌘↵" isDisabled={!project} isLoading={busy} onClick={start} />
         </>
       }
     >
@@ -225,9 +241,8 @@ function NewSession({ close }: { close: () => void }) {
           </SegmentedControl>
         </Group>
       )}
-      <VStack onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && start()}>
-        <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do?" />
-      </VStack>
+      <TextInput label="Name" value={name} onChange={setName} placeholder="Optional: named from the first message otherwise" />
+      <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do? (⌘↵ to start)" />
     </Frame>
   );
 }
@@ -305,28 +320,132 @@ function ForkSession({ close }: { close: () => void }) {
   );
 }
 
+type GithubRepo = Ops["githubRepos"]["result"][number];
+const DEFAULT_PARENT = "~/projects";
+
 function AddProject({ close }: { close: () => void }) {
+  const [mode, setMode] = useState<AddMode>(() => addModeOf(localStorage.getItem("tether.addMode")));
+  const narrow = useMediaQuery(NARROW);
   const [path, setPath] = useState("~");
   const [dirs, setDirs] = useState<string[]>([]);
   const [cwd, setCwd] = useState("");
-  const browse = async (p: string) => {
-    const r = await act("listDirs", { path: p });
-    if (r) {
+  /** where new projects and clones go: remembered per device */
+  const [parent, setParent] = useState(() => localStorage.getItem("tether.projectParent") || DEFAULT_PARENT);
+  const [missing, setMissing] = useState(false);
+  /** Opens p below and returns where that is; false: it doesn't exist (Add then offers to create it); undefined: some other failure, toasted. */
+  const browse = async (p: string): Promise<string | false | undefined> => {
+    try {
+      const r = await rpc("listDirs", { path: p });
       setCwd(r.path);
       setPath(r.path);
       setDirs(r.dirs);
+      setMissing(false);
+      return r.path;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (!isMissing(msg)) return void toast("error", msg);
+      setMissing(true);
+      setCwd("");
+      setDirs([]);
+      return false;
     }
   };
   useEffect(() => {
     browse("~");
   }, []);
-  const add = async () => {
-    const p = await act("addProject", { path });
+  const [account, setAccount] = useState<Ops["githubAccount"]["result"]>();
+  const [oldRunner, setOldRunner] = useState(false);
+  useEffect(() => {
+    // An older runner doesn't know it, or gh isn't logged in: no GitHub options.
+    rpc("githubAccount", {})
+      .then(setAccount)
+      .catch((e) => (setAccount(null), setOldRunner(isOldRunner(e?.message ?? ""))));
+  }, []);
+
+  const [name, setName] = useState("");
+  const [github, setGithub] = useState(true);
+  const [owner, setOwner] = useState("");
+  const [isPrivate, setPrivate] = useState(true);
+  const [repo, setRepo] = useState("");
+  /** per owner, loaded on first look */
+  const [repos, setRepos] = useState<Record<string, GithubRepo[] | "loading" | "failed">>({});
+  const [filter, setFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const listOwner = owner || account?.login || "";
+  useEffect(() => {
+    if (mode !== "clone" || !account || repos[listOwner]) return;
+    const put = (r: GithubRepo[] | "loading" | "failed") => setRepos((m) => ({ ...m, [listOwner]: r }));
+    put("loading");
+    rpc("githubRepos", { owner: listOwner === account.login ? undefined : listOwner }).then(put, () => put("failed"));
+  }, [mode, account, listOwner, repos]);
+
+  const pickMode = (m: AddMode) => (setMode(m), localStorage.setItem("tether.addMode", m));
+  const opened = async (p: ProjectInfo | undefined) => {
     if (!p) return;
     await refreshProjects();
     toggleProject(p.path, true);
     useStore.setState({ dialog: "new", newSessionProject: p.path });
   };
+  const keepParent = () => localStorage.setItem("tether.projectParent", parent.trim() || DEFAULT_PARENT);
+  const run = async (f: () => Promise<ProjectInfo | undefined>) => {
+    if (busy) return;
+    setBusy(true);
+    const p = await f();
+    setBusy(false);
+    await opened(p);
+  };
+  const add = () =>
+    run(async () => {
+      if (missing) return act("addProject", { path, create: true });
+      // Typed, not opened with Enter: look first, so a folder that isn't there turns the button into "Create and add".
+      const there = path.trim() === cwd ? cwd : await browse(path.trim());
+      return there ? act("addProject", { path: there }) : undefined;
+    });
+  const create = () =>
+    name.trim() &&
+    run(() => {
+      keepParent();
+      return act("createProject", {
+        name: name.trim(),
+        parent: parent.trim() || DEFAULT_PARENT,
+        github: account && github ? { owner: owner && owner !== account.login ? owner : undefined, private: isPrivate } : undefined,
+      });
+    });
+  const clone = (r = repo) =>
+    r.trim() &&
+    run(() => {
+      keepParent();
+      return act("cloneProject", { repo: r.trim(), parent: parent.trim() || DEFAULT_PARENT });
+    });
+
+  const list = repos[listOwner];
+  const shown = Array.isArray(list) ? filterRepos(list, filter) : [];
+  const ownerPicker = account && account.orgs.length > 0 && (
+    <Selector
+      label="Owner"
+      size="sm"
+      value={listOwner}
+      options={[account.login, ...account.orgs].map((o) => ({ value: o, label: o }))}
+      onChange={(v) => v && setOwner(v)}
+    />
+  );
+  const noGithub =
+    account === null &&
+    (oldRunner ? (
+      <Text type="supporting">For GitHub options, restart the runner: it's older than the web app.</Text>
+    ) : (
+      <Text type="supporting">For GitHub options, sign in to the GitHub CLI on the runner: gh auth login.</Text>
+    ));
+  const where = tildify(parent.trim() || DEFAULT_PARENT);
+  const action =
+    mode === "folder" ? (
+      <Button label={missing ? `Create and add ${tildify(path)}` : `Add ${tildify(path)}`} variant="primary" isLoading={busy} onClick={add} />
+    ) : mode === "new" ? (
+      <Button label={account && github ? "Create project and repo" : "Create project"} variant="primary" isDisabled={!name.trim()} isLoading={busy} onClick={create} />
+    ) : (
+      <Button label="Clone" variant="primary" isDisabled={!repo.trim()} isLoading={busy} onClick={() => clone()} />
+    );
+
   return (
     <Frame
       title="Add project"
@@ -334,26 +453,104 @@ function AddProject({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label={`Add ${tildify(path)}`} variant="primary" clickAction={add} />
+          {action}
         </>
       }
     >
-      <VStack gap={2}>
-        <TextInput label="Directory on the runner" value={path} onChange={setPath} onEnter={() => browse(path)} />
-        <Card variant="muted" padding={0}>
-          <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
-            <List density="compact">
-              {dirs.map((d) => (
-                <ListItem
-                  key={d}
-                  label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
-                  onClick={() => browse(d)}
-                />
-              ))}
-            </List>
-          </VStack>
-        </Card>
-      </VStack>
+      <SegmentedControl label="How" value={mode} onChange={(v) => pickMode(v as AddMode)}>
+        <SegmentedControlItem value="folder" label={narrow ? "Folder" : "Existing folder"} />
+        <SegmentedControlItem value="new" label={narrow ? "New" : "New project"} />
+        <SegmentedControlItem value="clone" label={narrow ? "Clone" : "Clone a repo"} />
+      </SegmentedControl>
+      {mode === "folder" && (
+        <VStack gap={2}>
+          <TextInput
+            label="Folder on the runner"
+            value={path}
+            onChange={(v) => (setPath(v), setMissing(false))}
+            onEnter={() => browse(path)}
+            description={missing ? "This folder doesn't exist yet. Add creates it." : "Enter to open it below."}
+          />
+          <Card variant="muted" padding={0}>
+            <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+              <List density="compact">
+                {dirs.map((d) => (
+                  <ListItem
+                    key={d}
+                    label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
+                    onClick={() => browse(d)}
+                  />
+                ))}
+              </List>
+            </VStack>
+          </Card>
+        </VStack>
+      )}
+      {mode === "new" && (
+        <VStack gap={3}>
+          <TextInput label="Name" value={name} onChange={setName} onEnter={() => create()} placeholder="email-reply" hasAutoFocus />
+          <TextInput label="Create it in" value={parent} onChange={setParent} description={name.trim() ? `${where}/${name.trim()}, with git init` : undefined} />
+          {account ? (
+            <VStack gap={2}>
+              <Switch label={`Also create a GitHub repo (signed in as ${account.login})`} value={github} onChange={setGithub} />
+              {github && (
+                <HStack gap={2} wrap="wrap">
+                  {ownerPicker}
+                  <Group label="Visibility">
+                    <SegmentedControl label="Visibility" value={isPrivate ? "private" : "public"} onChange={(v) => setPrivate(v === "private")}>
+                      <SegmentedControlItem value="private" label="Private" />
+                      <SegmentedControlItem value="public" label="Public" />
+                    </SegmentedControl>
+                  </Group>
+                </HStack>
+              )}
+            </VStack>
+          ) : (
+            noGithub
+          )}
+        </VStack>
+      )}
+      {mode === "clone" && (
+        <VStack gap={2}>
+          <TextInput label={`Repo to clone into ${where}`} value={repo} onChange={setRepo} onEnter={() => clone()} placeholder="org/repo or git@github.com:org/repo.git" />
+          <TextInput label="Into" value={parent} onChange={setParent} />
+          {account ? (
+            <VStack gap={1.5}>
+              <HStack gap={2} vAlign="end" wrap="wrap">
+                {ownerPicker}
+                <StackItem size="fill">
+                  <TextInput label={ownerPicker ? "Repos" : `Your repos (${account.login})`} size="sm" value={filter} onChange={setFilter} placeholder="Filter…" hasClear />
+                </StackItem>
+              </HStack>
+              <Card variant="muted" padding={0}>
+                <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+                  {!list || list === "loading" ? (
+                    <Spinner size="sm" label="Loading repos…" />
+                  ) : list === "failed" || !shown.length ? (
+                    <VStack padding={3}>
+                      <Text type="supporting">{list === "failed" ? "Couldn't load your repos." : filter.trim() ? "No repos match." : "No repos yet."}</Text>
+                    </VStack>
+                  ) : (
+                    <List density="compact">
+                      {shown.map((r) => (
+                        <ListItem
+                          key={r.nameWithOwner}
+                          label={r.nameWithOwner}
+                          description={[r.isPrivate ? "Private" : "Public", r.description].filter(Boolean).join(" · ")}
+                          isSelected={repo === r.nameWithOwner}
+                          onClick={() => setRepo(r.nameWithOwner)}
+                        />
+                      ))}
+                    </List>
+                  )}
+                </VStack>
+              </Card>
+            </VStack>
+          ) : (
+            noGithub
+          )}
+        </VStack>
+      )}
     </Frame>
   );
 }
@@ -393,14 +590,21 @@ const NARROW = "(max-width: 640px)";
 /** Width of a row's control when it sits beside the row's text. */
 const CONTROL_WIDTH = "calc(var(--spacing-12) * 4)";
 
-/** A titled, muted card of settings rows separated by hairlines. */
-function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
+/** A titled, muted card of settings rows separated by hairlines. `scope` notes where it applies, beside the title. */
+function SettingsCard({ title, scope, children }: { title: string; scope?: string; children: ReactNode }) {
   const rows = Children.toArray(children);
   return (
     <VStack gap={1.5}>
-      <Text type="supporting" weight="semibold" color="secondary">
-        {title}
-      </Text>
+      <HStack gap={2} hAlign="between" vAlign="center">
+        <Text type="supporting" weight="semibold" color="secondary">
+          {title}
+        </Text>
+        {scope && (
+          <Text type="supporting" color="placeholder">
+            {scope}
+          </Text>
+        )}
+      </HStack>
       <Card padding={0} width="100%" variant="muted">
         <VStack as="ul" role="list" gap={0}>
           {rows.map((row, i) => (
@@ -483,7 +687,7 @@ function NotificationSettings() {
 
   return (
     <VStack gap={2}>
-      <SettingsCard title="Notifications">
+      <SettingsCard title="Notifications" scope="This device">
         <SettingsRow
           title="Notify this device"
           description={status}
@@ -688,15 +892,18 @@ function Settings({ close }: { close: () => void }) {
   const runnerId = useStore((s) => s.runnerId);
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
-  const sidebarDays = useStore((s) => s.sidebarDays);
-  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
-  const [saved, setSaved] = useState<ModelProfile[]>([]);
+  const ui = useStore((s) => s.ui);
+  // undefined until the runner answers, so nothing is saved over profiles not loaded yet
+  const [loaded, setProfiles] = useState<ModelProfile[]>();
+  const profiles = loaded ?? [];
+  const saved = useRef<ModelProfile[]>(undefined);
+  const pending = useRef<ModelProfile[]>(undefined);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
   useEffect(() => {
     rpc("getProfiles", {})
       .then((p) => {
+        saved.current = p;
         setProfiles(p);
-        setSaved(p);
       })
       .catch(() => {});
     rpc("guardSetup", {}).then(setGuardInfo).catch(() => {});
@@ -705,15 +912,24 @@ function Settings({ close }: { close: () => void }) {
     const r = await act("guardSetup", args);
     if (r) setGuardInfo(r);
   };
-  const dirty = JSON.stringify(profiles) !== JSON.stringify(saved);
   const problems = profileProblems(profiles);
-  const invalid = dirty && problems.some(Boolean);
-  // Everything else applies as you change it; profile edits are saved here.
-  const done = async () => {
-    if (invalid) return;
-    if (dirty && !(await act("setProfiles", { profiles }))) return;
-    close();
+  // Profiles save themselves a moment after the last edit, once every one is valid; closing saves at once.
+  const flush = () => {
+    const p = pending.current;
+    if (!p) return;
+    pending.current = undefined;
+    saved.current = p;
+    act("setProfiles", { profiles: p }).then((r) => {
+      if (!r) saved.current = undefined; // retried on the next edit
+    });
   };
+  useEffect(() => {
+    pending.current = profilesToSave(loaded, saved.current);
+    if (!pending.current) return;
+    const t = setTimeout(flush, 600);
+    return () => clearTimeout(t);
+  }, [loaded]);
+  useEffect(() => flush, []);
   const controlWidth = narrow ? "100%" : CONTROL_WIDTH;
   const setProfile = (i: number, p: Partial<ModelProfile>) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
@@ -722,7 +938,7 @@ function Settings({ close }: { close: () => void }) {
       title="Settings"
       subtitle={manyRunners && runnerId ? `For runner ${runnerId}` : undefined}
       close={close}
-      actions={<Button label={dirty ? "Save and close" : "Done"} variant="primary" isDisabled={invalid} clickAction={done} />}
+      actions={<Button label="Done" variant="primary" onClick={close} />}
     >
       <NotificationSettings />
       <SettingsCard title="Sidebar">
@@ -736,11 +952,18 @@ function Settings({ close }: { close: () => void }) {
               isLabelHidden
               size="sm"
               width={controlWidth}
-              value={String(sidebarDays)}
+              value={String(ui.sidebarDays)}
               options={SIDEBAR_DAYS.map((d) => ({ value: String(d), label: sidebarDaysLabel(d) }))}
-              onChange={(v) => v != null && setSidebarDays(Number(v))}
+              onChange={(v) => v != null && setUiPref({ sidebarDays: Number(v) })}
             />
           }
+        />
+      </SettingsCard>
+      <SettingsCard title="Transcript">
+        <SettingsRow
+          title="Expand shell commands by default"
+          description="Show a command's output without clicking it."
+          control={<Switch label="Expand shell commands by default" isLabelHidden value={ui.expandShell} onChange={(v) => setUiPref({ expandShell: v })} />}
         />
       </SettingsCard>
       <SettingsCard title="New sessions">
@@ -763,7 +986,7 @@ function Settings({ close }: { close: () => void }) {
         />
       </SettingsCard>
       <SecretsSettings narrow={narrow} />
-      <Collapsible trigger={<Text type="label">Advanced</Text>} defaultIsOpen={dirty}>
+      <Collapsible trigger={<Text type="label">Advanced</Text>}>
         <VStack gap={4} paddingBlockStart={2}>
           <SettingsCard title="Background model and safety">
             <SettingsRow
@@ -794,36 +1017,29 @@ function Settings({ close }: { close: () => void }) {
               }
             />
           </SettingsCard>
-          <VStack gap={1.5}>
-            <SettingsCard title="Fallback profiles">
-              <SettingsRow
-                title="Switch models at usage limits"
-                description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
-                control={<Button label="Add profile" size="sm" onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
-              />
-              {profiles.map((p, i) => (
-                <VStack key={i} padding={4} gap={2}>
-                  <HStack gap={2} vAlign="center">
-                    <StackItem size="fill">
-                      <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
-                    </StackItem>
-                    <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
-                  </HStack>
-                  {problems[i] && (
-                    <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
-                      {problems[i]}
-                    </Text>
-                  )}
-                  <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
-                </VStack>
-              ))}
-            </SettingsCard>
-            {dirty && (
-              <Text type="supporting">
-                {invalid ? "Fix the profiles marked in red to save, or close to discard the changes." : "Profile changes are saved when you press Save and close."}
-              </Text>
-            )}
-          </VStack>
+          <SettingsCard title="Fallback profiles">
+            <SettingsRow
+              title="Switch models at usage limits"
+              description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
+              control={<Button label="Add profile" size="sm" isDisabled={!loaded} onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
+            />
+            {profiles.map((p, i) => (
+              <VStack key={i} padding={4} gap={2}>
+                <HStack gap={2} vAlign="center">
+                  <StackItem size="fill">
+                    <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
+                  </StackItem>
+                  <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
+                </HStack>
+                {problems[i] && (
+                  <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
+                    {problems[i]}. Not saved until fixed.
+                  </Text>
+                )}
+                <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
+              </VStack>
+            ))}
+          </SettingsCard>
         </VStack>
       </Collapsible>
     </Frame>

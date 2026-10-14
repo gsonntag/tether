@@ -591,12 +591,23 @@ class AgySession extends LiveSession {
   }
 
   private async reviewPlan(plan: string): Promise<{ allow: boolean; reason?: string }> {
+    // Approved after a discussion, and this is that plan again, unchanged: no second ask.
+    if (this.plans.autoApproves(findPlan(this.t.messages, plan)?.part.text ?? "")) {
+      this.setPlan(plan, { outcome: "approved" });
+      this.planReview = undefined;
+      return { allow: true };
+    }
     const res = await this.askUi({ id: newId("plan-review"), kind: "plan", title: "Antigravity's plan is ready for review", planId: plan });
     if (res.cancelled) return { allow: false, reason: "The plan review was cancelled. Stop here and wait for the user." };
     if (res.allow) {
       this.setPlan(plan, { outcome: "approved" });
       this.planReview = undefined;
       return { allow: true };
+    }
+    // Discuss: the plan stays under review; the next change it tries asks again.
+    if (res.discuss && res.value) {
+      this.addUserMessage(res.value);
+      return { allow: false, reason: `${res.value}\n\nDon't change anything until the user has reviewed the plan.` };
     }
     const feedback = res.value?.trim() || "Please revise the plan.";
     this.setPlan(plan, { outcome: "feedback" });

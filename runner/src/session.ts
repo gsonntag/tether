@@ -17,6 +17,7 @@ import { attachmentBlock, splitAttachments } from "../../web/src/shared/attachme
 import { referencedFolders, sessionKey } from "./attachments";
 import { APPROVING_MODES } from "../../web/src/shared/protocol";
 import { applyEvent, emptyState, findPlan, findTool, type Transcript } from "../../web/src/shared/reducer";
+import { tagToolParts, tagToolPatch } from "./toolKind";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
 import { checkPaths, fileDiff, readProjectFile } from "./files";
@@ -35,8 +36,8 @@ import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, 
 import { sessionTrust } from "./mcp/registry";
 import { load as loadMcpRegistry } from "./mcp/store";
 import { hookTool, hooksFor, runHooks, type HookOutcome } from "./hooks";
-import { HARNESSES, isActive, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
-import { displayText, parseInvocation } from "../../web/src/shared/skill";
+import { descendants, HARNESSES, isActive, ownWork, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
+import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 import {
   budgetHit,
   checkGoal,
@@ -58,6 +59,7 @@ import {
 } from "./goal";
 import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
 import { describeFindings, fixMessage, MAX_REVIEWS, mergeReview, parseReport, parseReviewCommand, reportFromReply, REVIEW_READ_ONLY_REASON, type ReviewRequest } from "./review";
+import { PlanReviews } from "./planReview";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 export type SummaryChanged = (s: SessionSummary) => void;
@@ -172,6 +174,8 @@ export abstract class LiveSession {
   private prefsLoaded = false;
   private diffBaseSha?: string;
   onClose?: () => void;
+  /** plan review: drafts, discussions, revisions (runner/src/planReview.ts) */
+  readonly plans: PlanReviews = new PlanReviews(this);
 
   constructor(
     harness: HarnessId,
@@ -218,6 +222,10 @@ export abstract class LiveSession {
   }
 
   emit(event: SessionEvent): void {
+    // Tool cards say what they are (shell, edit…) whatever the harness calls them.
+    if (event.type === "msg") tagToolParts([event.msg]);
+    else if (event.type === "reset") tagToolParts(event.messages);
+    else if (event.type === "tool") tagToolPatch(() => findTool(this.t.messages, event.toolId)?.part, event.patch);
     const before = this.t.state.status;
     const beforeModel = this.t.state.model;
     const moved = movedAt(event, this.updatedAt, this.t.messages);
@@ -316,6 +324,7 @@ export abstract class LiveSession {
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { guard } });
         } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
+    this.plans.observe(event);
   }
 
   setState(state: Partial<LiveState>) {
@@ -472,18 +481,18 @@ export abstract class LiveSession {
 
   /** Items running or armed (waiting) right now. */
   get activeCount(): number {
-    return (this.t.state.activity ?? []).filter(isActive).length;
+    return ownWork(this.t.state.activity ?? []).length;
   }
 
   /** Items doing work right now: not an armed wakeup or cron job waiting for its time. */
   get workingCount(): number {
-    return (this.t.state.activity ?? []).filter((a) => a.status === "running").length;
+    return ownWork(this.t.state.activity ?? []).filter((a) => a.status === "running").length;
   }
 
   /** Items doing work right now, by kind. */
   runningKinds(): Partial<Record<ActivityKind, number>> {
     const out: Partial<Record<ActivityKind, number>> = {};
-    for (const a of this.t.state.activity ?? []) if (a.status === "running") out[a.kind] = (out[a.kind] ?? 0) + 1;
+    for (const a of ownWork(this.t.state.activity ?? [])) if (a.status === "running") out[a.kind] = (out[a.kind] ?? 0) + 1;
     return out;
   }
 
@@ -536,7 +545,10 @@ export abstract class LiveSession {
   private endForeground() {
     this.flushActivity();
     const now = Date.now();
-    const stale = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background === false);
+    const all = this.t.state.activity ?? [];
+    const ended = all.filter((a) => isActive(a) && a.background === false);
+    // What they started ends with them (a foreground workflow's agents).
+    const stale = [...ended, ...descendants(all, new Set(ended.map((a) => a.id))).filter(isActive)];
     for (const a of stale) this.endedWithTurn.add(a.id);
     if (stale.length) this.upsertActivity(...stale.map((a) => ({ ...a, status: "stopped" as const, endedAt: now })));
   }
@@ -642,6 +654,7 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+    this.plans.disarm(); // a new message changes the plan's approval
     if (this.devCommand(text)) return;
     if (await this.goalCommand(text)) return;
     if (await this.scheduleCommand(text)) return;
@@ -682,6 +695,7 @@ export abstract class LiveSession {
   }
 
   protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean } = {}): PendingMessage {
+    this.plans.disarm();
     const now = Date.now();
     const p: PendingMessage = { id: crypto.randomUUID(), text, mode, ts: now, ...(mode === "steer" ? { readyAt: opts.now ? now : now + LiveSession.STEER_GRACE_MS } : {}) };
     const list = this.t.state.pending ?? [];
@@ -934,6 +948,34 @@ export abstract class LiveSession {
     this.pend(`I changed my earlier message. It said:\n\n${quote(was.text)}\n\nIt now says:\n\n${quote(now)}\n\nFollow the new version.${files}`, "steer");
   }
 
+  /**
+   * Force send: the message (new `text`, or the waiting message `id`) goes out now, ahead of
+   * everything waiting. A running turn is stopped first, without a "Finished" and without holding
+   * the rest; the message starts the next turn and the others follow from the top as usual.
+   */
+  async forceSend(o: { text?: string; id?: string }) {
+    this.plans.disarm();
+    const list = [...(this.t.state.pending ?? [])];
+    let p: PendingMessage;
+    if (o.id) {
+      const i = list.findIndex((x) => x.id === o.id);
+      if (i < 0) throw new Error("That message was already sent.");
+      const { readyAt: _, ...rest } = list.splice(i, 1)[0]!;
+      p = { ...rest, mode: "followUp" };
+    } else if (o.text?.trim()) p = { id: crypto.randomUUID(), text: o.text, mode: "followUp", ts: Date.now() };
+    else throw new Error("Nothing to send.");
+    clearTimeout(this.steerTimer);
+    this.setState({ pending: [p, ...list], pendingHeld: undefined });
+    if (this.t.state.status === "waiting") this.cancelWait();
+    if (this.t.state.status === "idle") {
+      await this.drainPending();
+      return;
+    }
+    this.userStopped = true;
+    this.clearJudging();
+    await this.abort();
+  }
+
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
@@ -946,6 +988,7 @@ export abstract class LiveSession {
     }
     // Your Stop ends the turn as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
+    this.plans.disarm();
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
@@ -995,6 +1038,7 @@ export abstract class LiveSession {
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
     // The harness's own goal follows Tether's again (it may still hold an older one).
     if (goal && this.mirrorGoal) void this.mirrorGoal(goal).catch(() => {});
+    this.plans.load();
   }
 
   /**
@@ -1023,7 +1067,7 @@ export abstract class LiveSession {
   /** What a restart would stop, as the agent is told after one. */
   private backgroundWork(): BackgroundTask[] {
     if (!this.t.state.activity) return this.t.state.background ?? [];
-    return this.t.state.activity.filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
+    return ownWork(this.t.state.activity).filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
   }
 
   savePrefs() {
@@ -1092,8 +1136,15 @@ export abstract class LiveSession {
   uiRespond(r: UiResponse): boolean {
     const done = this.uiWaiters.get(r.id);
     if (!done) return false;
+    if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
+  }
+
+  /** Records the person's answer on a plan part (plan review approving it from Tether). */
+  markPlan(planId: string, outcome: "approved" | "feedback") {
+    const hit = findPlan(this.t.messages, planId);
+    if (hit && hit.part.outcome !== outcome) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, outcome } : p)) } });
   }
 
   cancelAllUi() {

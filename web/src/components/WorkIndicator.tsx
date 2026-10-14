@@ -8,7 +8,7 @@ import { workLabel, type WorkInput } from "../workState";
 /**
  * A session's working state as one small mark, the same in the sidebar and on Home:
  * the main turn running (accent spinner), only background work running (grey spinner),
- * waiting on a limit (amber dot), a wakeup armed (clock), live and idle (blue dot).
+ * waiting on a limit (amber dot), a wakeup armed (clock). Idle shows nothing, live process or not.
  */
 export function WorkIndicator({ work }: { work: WorkInput }) {
   const { state, label, tooltip } = workLabel(work);
@@ -34,8 +34,6 @@ export function WorkIndicator({ work }: { work: WorkInput }) {
           <Icon icon={ClockIcon} size="sm" color="secondary" label={tooltip} />
         </Tooltip>
       );
-    case "idle":
-      return <StatusDot variant="accent" label={label} tooltip={tooltip} />;
     default:
       return null;
   }

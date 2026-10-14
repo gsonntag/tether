@@ -67,6 +67,9 @@ function onRunnerMessage(ws: ServerWebSocket<Conn>, m: RunnerToServer) {
     case "pulse":
       if (conn.runnerId) toBrowsers({ t: "pulse", runnerId: conn.runnerId, pulses: m.pulses });
       break;
+    case "viewed":
+      if (conn.runnerId) toBrowsers({ t: "viewed", runnerId: conn.runnerId, sessionId: m.sessionId, viewedAt: m.viewedAt });
+      break;
   }
 }
 

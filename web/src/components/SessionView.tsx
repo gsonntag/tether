@@ -30,11 +30,11 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, type LiveState, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { fmtClock } from "../util";
-import { ActivityButton, ActivityPanel } from "./Activity";
+import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
@@ -197,7 +197,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        composer={<Composer sessionId={sessionId} state={st} />}
+        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} />}
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
@@ -384,6 +384,7 @@ function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveSta
               metadata={
                 <HStack gap={0.5} hAlign="end" vAlign="center">
                   <Button label="Queue instead" variant="ghost" size="sm" tooltip="Send after this turn instead" onClick={() => edit(p.id, { mode: "followUp" })} />
+                  <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />
                   <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
                 </HStack>
               }
@@ -454,6 +455,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
           {p.scheduleId && <ScheduledToken id={p.scheduleId} state={state} />}
           <HStack gap={0.5} vAlign="center">
             <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
+            {state.status === "running" && <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />}
             <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
           </HStack>
         </HStack>
@@ -510,12 +512,15 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state }: { sessionId: string; state: LiveState }) {
+function Composer({ sessionId, state, messages }: { sessionId: string; state: LiveState; messages: Msg[] }) {
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
   const input = useRef<ChatComposerInputHandle>(null);
+  const historyPosition = useRef<number | null>(null);
+  const historySnapshot = useRef<string[]>([]);
+  const historyDraft = useRef("");
   const narrow = useNarrow();
   const touch = useMediaQuery("(pointer: coarse)");
   const running = state.status === "running";
@@ -552,13 +557,34 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   const cameraInput = useRef<HTMLInputElement>(null);
   const shell = text.startsWith("!");
   const canSend = (!!text.trim() || (ready.length > 0 && !shell)) && !uploading && !(shell && ready.length > 0);
+  const history = useMemo(
+    () =>
+      messages
+        .filter((m) => m.role === "user")
+        // As typed: without the attached-files block the runner adds.
+        .map((m) => splitAttachments(m.parts.filter((p) => p.type === "text").map((p) => p.text).join("")).text)
+        .filter((message) => message.trim()),
+    [messages],
+  );
 
-  const send = async (mode?: "steer" | "followUp") => {
+  const clearHistoryNavigation = () => {
+    historyPosition.current = null;
+    historySnapshot.current = [];
+    historyDraft.current = "";
+  };
+
+  /** force: stop the running turn and send this now, ahead of anything waiting */
+  const send = async (mode?: "steer" | "followUp" | "force") => {
     const t = text.trim();
-    if (!canSend) return;
+    if (!canSend || (mode === "force" && shell)) return;
     const files = ready.map((d) => d.attachment!);
+    clearHistoryNavigation();
     setText("");
-    const r = await act("prompt", { sessionId, text: t, mode: running ? (mode ?? "steer") : undefined, ...(files.length ? { attachments: files } : {}) });
+    const attach = files.length ? { attachments: files } : {};
+    const r =
+      mode === "force" && running
+        ? await act("forceSend", { sessionId, text: t, ...attach })
+        : await act("prompt", { sessionId, text: t, mode: running ? (mode === "force" ? "steer" : (mode ?? "steer")) : undefined, ...attach });
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
   };
@@ -579,12 +605,14 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
   };
 
   const pick = (name: string) => {
+    clearHistoryNavigation();
     setText(`/${name} `);
     input.current?.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (matches.length) {
+    // A recalled "/cmd" opens the menu; while stepping through history the arrows stay history's.
+    if (matches.length && historyPosition.current === null) {
       const idx = Math.min(cmdIdx, matches.length - 1);
       if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
       if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
@@ -599,8 +627,46 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
       e.preventDefault();
       rpc("takePending", { sessionId })
-        .then((r) => r.text && setText(takeBack(sessionId, r.text)))
+        .then((r) => {
+          if (!r.text) return;
+          clearHistoryNavigation();
+          setText(takeBack(sessionId, r.text));
+        })
         .catch(() => {});
+      return;
+    }
+    // Only from the first line up / the last line down, so the caret still moves inside a message.
+    const box = e.target as HTMLTextAreaElement;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
+    const onFirst = !box.value?.slice(0, box.selectionStart ?? 0).includes("\n");
+    const onLast = !box.value?.slice(box.selectionEnd ?? 0).includes("\n");
+    if (e.key === "ArrowUp" && plain && onFirst && (historyPosition.current !== null || !text) && history.length) {
+      e.preventDefault();
+      if (historyPosition.current === null) {
+        historySnapshot.current = history;
+        historyDraft.current = text;
+        historyPosition.current = historySnapshot.current.length - 1;
+      } else {
+        historyPosition.current = Math.max(0, historyPosition.current - 1);
+      }
+      setText(historySnapshot.current[historyPosition.current]!);
+      return;
+    }
+    if (e.key === "ArrowDown" && plain && onLast && historyPosition.current !== null) {
+      e.preventDefault();
+      const next = historyPosition.current + 1;
+      if (next >= historySnapshot.current.length) {
+        setText(historyDraft.current);
+        clearHistoryNavigation();
+      } else {
+        historyPosition.current = next;
+        setText(historySnapshot.current[next]!);
+      }
+      return;
+    }
+    if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey) && running && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      send("force");
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -617,7 +683,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
   const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued || drafts.length > 0;
-  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for skills and commands)";
+  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue, ⌘⇧Enter to stop and send now)" : "Message the agent… (/ for skills and commands)";
 
   const drawer = hasDrawer ? (
     <ChatComposerDrawer>
@@ -678,6 +744,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
+      <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner
           status="warning"
@@ -688,6 +755,7 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
       <ChatComposer
         value={text}
         onChange={(v) => {
+          clearHistoryNavigation();
           setText(v);
           setCmdIdx(0);
         }}
@@ -728,6 +796,9 @@ function Composer({ sessionId, state }: { sessionId: string; state: LiveState })
           <>
             {running && <Button label="Stop" variant="destructive" size="sm" icon={<Icon icon="stop" />} onClick={() => act("abort", { sessionId })} />}
             {running && !shell && <Button label="Queue" size="sm" isDisabled={!canSend} onClick={() => send("followUp")} />}
+            {running && !shell && (
+              <Button label="Force send" size="sm" isDisabled={!canSend} tooltip="Stop the agent and send this now (⌘⇧↵)" onClick={() => send("force")} />
+            )}
           </>
         }
         sendButton={

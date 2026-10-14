@@ -2,7 +2,7 @@
 // It dials out to the app (TETHER_URL) with an app service token (TETHER_TOKEN), so the
 // machine needs no inbound port.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -16,6 +16,7 @@ import type {
   ServerToRunner,
   SessionSearchResult,
   SessionEvent,
+  SessionPulse,
   SessionSummary,
 } from "../../web/src/shared/protocol";
 import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
@@ -29,7 +30,7 @@ import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
 import { getUsage } from "./usage";
-import { clearRecent, ConflictNotifier, forgetSession, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
+import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { HandoffOpts, LiveSession } from "./session";
@@ -54,6 +55,10 @@ import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { scheduleChanged, sessionScheduler, setScheduler } from "./schedule";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
+import { cloneRepo } from "./clone";
+import { createProject, githubAccount, githubRepos } from "./newProject";
+import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
+import { forgetPlans, saveStoredDraft } from "./planReview";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -101,13 +106,20 @@ function send(m: RunnerToServer) {
   else if (m.t !== "event") outbox.push(m); // events are re-synced by snapshots on reconnect
 }
 
-/** Applies runner-side overrides (archive, user title) to a summary. */
+/** Applies runner-side overrides (archive, user title) and when it was last opened to a summary. */
 function decorate(s: SessionSummary): SessionSummary {
   const cfg = config();
   const title = cfg.titles[s.id];
   // A stored review session (/review) is listed under the session it reviews, not on its own.
   const reviewOf = cfg.sessions[s.id]?.reviewOf?.sessionId;
-  return { ...s, ...(title ? { title } : {}), ...(cfg.archived.includes(s.id) ? { archived: true } : {}), ...(reviewOf && !s.reviewOf ? { reviewOf } : {}) };
+  const viewed = viewedAt(s.id);
+  return {
+    ...s,
+    ...(title ? { title } : {}),
+    ...(cfg.archived.includes(s.id) ? { archived: true } : {}),
+    ...(reviewOf && !s.reviewOf ? { reviewOf } : {}),
+    ...(viewed ? { viewedAt: viewed } : {}),
+  };
 }
 
 // ---------------- dashboard pulses ----------------
@@ -126,11 +138,24 @@ function pulseOf(id: string) {
   return buildPulse({ session: decorate(s.summary()), state: s.t.state, messages: s.t.messages, turnStartedAt: turns.turnStartedAt(id), finishedAt: turns.finishedAt(id) });
 }
 
+/**
+ * With when it was last opened and its latest notice, so Home on a device following another runner
+ * can tell a finished turn you haven't opened (closed pulses are stored copies: read these afresh).
+ */
+function withSeen(p: SessionPulse | undefined): SessionPulse | undefined {
+  if (!p) return p;
+  const at = viewedAt(p.session.id);
+  const notice = recent().find((n) => n.sessionId === p.session.id && n.kind !== "memory");
+  return { ...p, session: at ? { ...p.session, viewedAt: at } : p.session, ...(notice ? { notice } : {}) };
+}
+
 const pulses = new PulseThrottle({
-  build: pulseOf,
+  build: (id) => withSeen(pulseOf(id)),
   // Only while connected: after a reconnect browsers reload the list, and changes send afresh (resetSent).
   send: (list) => connected && send({ t: "pulse", pulses: list }),
 });
+
+noticeListeners.add((n) => n.sessionId && pulses.touch(n.sessionId));
 
 const sink: Sink = {
   emit: (sessionId: string, seq: number, event: SessionEvent) => {
@@ -303,6 +328,17 @@ function expand(path: string) {
   return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
 }
 
+async function addProject(p: string, create = false): Promise<ProjectInfo> {
+  if (create && !existsSync(p)) mkdirSync(p, { recursive: true });
+  if (!existsSync(p)) throw new Error(`${p} doesn't exist`);
+  if (!statSync(p).isDirectory()) throw new Error(`${p} is a file, not a folder`);
+  const cfg = config();
+  if (!cfg.projects.includes(p)) cfg.projects.push(p);
+  cfg.hidden = cfg.hidden.filter((h) => h !== p);
+  saveConfig();
+  return (await allProjects()).find((x) => x.path === p)!;
+}
+
 async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
   const stored = (await Promise.all(Object.values(adapters).map((a) => a.listSessions(projectPath).catch(() => [])))).flat();
   const out = new Map(stored.map((s) => [s.id, s]));
@@ -404,21 +440,33 @@ async function findSessionMatches(queryText: string): Promise<SessionSearchResul
 
 // ---------------- ops ----------------
 
-type Handlers = { [K in OpName]: (args: Ops[K]["args"]) => Promise<Ops[K]["result"]> };
+const recentCache = new Map<number, { at: number; list: Promise<SessionSummary[]> }>();
+
+type Handlers ={ [K in OpName]: (args: Ops[K]["args"]) => Promise<Ops[K]["result"]> };
 
 const ops: Handlers = {
   async listProjects() {
     return allProjects();
   },
 
-  async addProject({ path }) {
-    const p = expand(path);
-    if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`${p} is not a directory`);
-    const cfg = config();
-    if (!cfg.projects.includes(p)) cfg.projects.push(p);
-    cfg.hidden = cfg.hidden.filter((h) => h !== p);
-    saveConfig();
-    return (await allProjects()).find((x) => x.path === p)!;
+  async addProject({ path, create }) {
+    return addProject(expand(path), create);
+  },
+
+  async createProject({ name, parent, github }) {
+    return addProject(await createProject({ name, parent: expand(parent || "~"), github }));
+  },
+
+  async githubAccount() {
+    return (await githubAccount()) ?? null;
+  },
+
+  async githubRepos({ owner }) {
+    return githubRepos(owner);
+  },
+
+  async cloneProject({ repo, parent }) {
+    return addProject(await cloneRepo(repo, expand(parent || "~")));
   },
 
   async removeProject({ path }) {
@@ -439,7 +487,10 @@ const ops: Handlers = {
 
   async listDirs({ path }) {
     const p = expand(path || "~");
-    const entries = await readdir(p, { withFileTypes: true });
+    const entries = await readdir(p, { withFileTypes: true }).catch((e) => {
+      // The web app offers to create a folder that doesn't exist (and only that).
+      throw e?.code === "ENOENT" ? new Error(`${p} doesn't exist`) : e?.code === "ENOTDIR" ? new Error(`${p} is a file, not a folder`) : e;
+    });
     const dirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
       .map((e) => e.name)
@@ -516,6 +567,7 @@ const ops: Handlers = {
     // Nor any loop or schedule to run.
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined });
     forgetSession(sessionId);
+    forgetPlans(sessionId);
     saveConfig();
     scheduleChanged();
     return {};
@@ -552,6 +604,19 @@ const ops: Handlers = {
       return {};
     }
     await s.prompt(s.withShellContext(text), mode);
+    return {};
+  },
+
+  async forceSend({ sessionId, text, id, attachments }) {
+    const s = requireLive(sessionId);
+    if (id) {
+      await s.forceSend({ id });
+      return {};
+    }
+    const files = checkAttachments(attachments);
+    if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
+    if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },
 
@@ -705,7 +770,7 @@ const ops: Handlers = {
   async listPulses() {
     const out = [...live.values()].filter((s) => !s.closed).map((s) => pulseOf(s.id)!);
     for (const p of closedPulses.list()) if (!live.has(p.session.id)) out.push(p);
-    return out.filter((p) => !p.session.archived);
+    return out.filter((p) => !p.session.archived).map((p) => withSeen(p)!);
   },
 
   async guardSetup({ judgeModel, defaultMode }) {
@@ -735,6 +800,21 @@ const ops: Handlers = {
     // The picker never offers these; refuse them here too so no client can skip the guard.
     if (APPROVING_MODES.has(mode)) throw new Error(`${mode} approves tool calls without the guard; use the guard setting instead.`);
     await requireLive(sessionId).setPermissionMode(mode);
+    return {};
+  },
+
+  async setPlanDraft({ sessionId, planId, draft, base }) {
+    // A draft never starts an agent: a session that isn't running gets it in its file.
+    const s = live.get(sessionId);
+    parseId(sessionId);
+    if ((!s || s.closed) && config().archived.includes(sessionId)) throw new Error("That session was archived or removed; its drafts weren't kept.");
+    const b = typeof base === "number" ? base : undefined;
+    return s && !s.closed ? s.plans.setDraft(String(planId), draft, b) : saveStoredDraft(sessionId, String(planId), draft, b);
+  },
+
+  async planAction({ sessionId, planId, action, draft, base }) {
+    if (!["discuss", "revise", "approve"].includes(action)) throw new Error(`unknown plan action ${action}`);
+    await (await getLive(sessionId)).plans.act(String(planId), action, draft, typeof base === "number" ? base : undefined);
     return {};
   },
 
@@ -919,6 +999,31 @@ const ops: Handlers = {
   async setUiPrefs(prefs) {
     return setUiPrefs(prefs ?? {});
   },
+  async getViewed() {
+    return viewedMap();
+  },
+  async markViewed({ sessionId, projectPath }) {
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required");
+    const at = markViewed(sessionId, live.get(sessionId)?.projectPath ?? (typeof projectPath === "string" && projectPath ? projectPath : undefined));
+    // Every browser merges just this one; Home's pulse (if it has one) says it too.
+    send({ t: "viewed", sessionId, viewedAt: at });
+    pulses.touch(sessionId);
+    return { viewedAt: at };
+  },
+  async listRecent({ days }) {
+    const d = typeof days === "number" && days >= 0 ? days : 3;
+    // Several browsers load at once (a reconnect): one scan serves them all for a few seconds.
+    const hit = recentCache.get(d);
+    if (hit && Date.now() - hit.at < 10_000) return hit.list;
+    const list = (async () => {
+      const projects = recentProjects(await allProjects(), allViewed(), d);
+      const sessions = (await Promise.all(projects.map((p) => projectSessions(p.path).catch(() => [])))).flat();
+      return pickRecent(sessions, d);
+    })();
+    recentCache.set(d, { at: Date.now(), list });
+    list.catch(() => recentCache.delete(d));
+    return list;
+  },
 };
 
 // ---------------- main ----------------
@@ -930,6 +1035,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
     // on the next start picks these sessions back up.
     for (const s of live.values()) if (!s.closed) s.savePrefs();
     freezeConfig();
+    saveViewed();
     console.log(`stopping (${sig}); ${[...live.values()].filter((s) => !s.closed && s.busy).length} busy session(s) will resume on restart`);
     for (const s of live.values()) s.close();
     setTimeout(() => process.exit(0), 500);

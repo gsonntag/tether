@@ -81,6 +81,7 @@ const diffBox: CSSProperties = {
   paddingBlock: "var(--spacing-1-5)",
 };
 const diffLineBase: CSSProperties = { whiteSpace: "pre", minHeight: "1.5em", paddingInline: "var(--spacing-3)" };
+const wrapped: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
 const diffLine: Record<"add" | "del" | "ctx", CSSProperties> = {
   add: { ...diffLineBase, background: "var(--color-success-muted)", color: "var(--color-text-green)" },
   del: { ...diffLineBase, background: "var(--color-error-muted)", color: "var(--color-text-red)" },
@@ -467,7 +468,8 @@ function edits(input: any): { oldText: string; newText: string }[] {
   return [];
 }
 
-function Diff({ pairs }: { pairs: { oldText: string; newText: string }[] }) {
+/** Line diffs, one block per pair; `wrap` wraps long lines (prose, like a plan) instead of scrolling. */
+export function Diff({ pairs, wrap }: { pairs: { oldText: string; newText: string }[]; wrap?: boolean }) {
   return (
     <VStack isScrollable style={diffBox}>
       {pairs.map((e, k) => (
@@ -483,7 +485,7 @@ function Diff({ pairs }: { pairs: { oldText: string; newText: string }[] }) {
               .replace(/\n$/, "")
               .split("\n")
               .map((line, n) => (
-                <Text key={`${j}-${n}`} type="code" as="div" display="block" style={diffLine[kind]}>
+                <Text key={`${j}-${n}`} type="code" as="div" display="block" style={wrap ? { ...diffLine[kind], ...wrapped } : diffLine[kind]}>
                   {(part.added ? "+ " : part.removed ? "- " : "  ") + line}
                 </Text>
               ));
@@ -513,20 +515,32 @@ function Tool({ t }: { t: ToolPart }) {
   const name = t.name;
   const lower = name.toLowerCase();
   const input: any = t.input ?? {};
-  const isEdit = ["edit", "multiedit", "str_replace_based_edit_tool"].includes(lower) || edits(input).length > 0;
-  const isWrite = lower === "write";
-  const isShell = ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
-  const isTodo = lower === "todowrite" && Array.isArray(input.todos);
-  const [open, setOpen] = useState(isEdit || (isShell && t.status === "running") || isTodo);
+  // The runner says what the call is (t.kind); transcripts from before that are guessed from names.
+  const k = t.kind;
+  const isEdit = k ? k === "edit" : ["edit", "multiedit", "str_replace_based_edit_tool"].includes(lower) || edits(input).length > 0;
+  const isWrite = k ? k === "write" : lower === "write";
+  const isShell = k ? k === "shell" : ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
+  const isTodo = (k ? k === "todo" : lower === "todowrite") && Array.isArray(input.todos);
+  const expandShell = useStore((s) => s.ui.expandShell);
+  const failed = isShell && t.status === "error";
+  const [open, setOpen] = useState(isEdit || (isShell && expandShell) || isTodo || failed);
+  // A command that fails opens, even collapsed by default: the output is what you'd look for.
+  const [wasFailed, setWasFailed] = useState(failed);
+  if (wasFailed !== failed) {
+    setWasFailed(failed);
+    if (failed) setOpen(true);
+  }
 
   let arg = "";
   /** the file this tool read or wrote, for the open-file button */
   let filePath: string | undefined;
-  if (isShell) arg = input.command ?? input.CommandLine ?? input.cmd ?? "";
-  else if (input.file_path || input.filePath || input.path || input.AbsolutePath || input.TargetFile) {
-    const p = input.file_path ?? input.filePath ?? input.path ?? input.AbsolutePath ?? input.TargetFile;
+  const p = t.path ?? input.file_path ?? input.filePath ?? input.path ?? input.AbsolutePath ?? input.TargetFile;
+  if (isShell) arg = t.command ?? input.command ?? input.CommandLine ?? input.cmd ?? "";
+  else if (k === "search" && input.pattern) arg = `${input.pattern}${input.path ? "  in " + relPath(input.path) : ""}`;
+  else if (p) {
     arg = relPath(p);
-    if (typeof p === "string" && !input.pattern) filePath = p;
+    // With a kind, only file tools carry a path to open.
+    if (k ? t.path : typeof p === "string" && !input.pattern) filePath = k ? t.path : p;
   }
   else if (input.pattern) arg = `${input.pattern}${input.path ? "  in " + relPath(input.path) : ""}`;
   else if (input.url) arg = input.url;
@@ -534,7 +548,9 @@ function Tool({ t }: { t: ToolPart }) {
   else if (input.query) arg = input.query;
   else if (input.prompt) arg = String(input.prompt).slice(0, 120);
 
-  const pairs = isEdit ? edits(input) : isWrite ? [{ oldText: "", newText: str(input.content) }] : [];
+  // A write is its content: Antigravity's write_to_file keeps it where edits() finds it.
+  const written = isWrite ? edits(input) : [];
+  const pairs = isEdit ? edits(input) : written.length ? written : isWrite && typeof input.content === "string" ? [{ oldText: "", newText: input.content }] : [];
   const stat = pairs.length ? countDiff(pairs) : undefined;
 
   const blocked = t.guard?.decision === "deny";
