@@ -845,3 +845,23 @@ by a crash heals only when the parent is reopened (`restored`) or the subagent r
     so agy's own shell commands inherit them; not scrubbed (no per-process path).
   Same-user processes can always read each other's environment and the runner's files: this keeps
   agents from acting as another session by accident or prompt injection, not a hostile local process.
+
+#### Security re-review fixes (2026-10-14)
+
+- Tether's notes about subagents and a parent's messages to its subagent are flagged
+  (`PendingMessage.alone`) and never joined with the user's own queued messages in one turn
+  (`nextTurnSize` and steer delivery stop where who wrote them changes); text joined anyway is
+  split by paragraph (`splitAgentWritten`), so `goal()`, the goal judge's `transcriptTail` and
+  handoff briefs (`renderTranscript`) never present agent-written text as the user's (they label it
+  "Tether (about a subagent, or another agent's message; not the user)").
+- A subagent's `goal()` is the top session's user asks (when that session runs, else "not
+  available") plus its task, labelled as written by the agent that started it.
+- `agent_start` has no bridge time limit (like ask_user, with progress pings); a given-up call
+  cancels its Dangerously-skip question and frees its slot and name. The slot is also freed as soon
+  as the link exists.
+- Removing a parent removes a subagent's worktree only when `git status --untracked-files=all
+  --ignored` shows nothing and it has no commits, and then without `--force` (git refuses if that
+  changed); `--force` is used only to undo a worktree Tether just made.
+- `agent_message`: at most 20 per subagent turn (the count starts over when a turn settles), and no
+  more after 100 turns of one subagent (a runaway back-and-forth).
+- Settling is skipped while the runner stops; stale per-session bridge files are swept at start.

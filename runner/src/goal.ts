@@ -9,6 +9,7 @@
 //
 // This file is the part without a session: the command, the prompts, the budget and the check.
 
+import { splitAgentWritten } from "../../web/src/shared/subagents";
 import type { GoalBudget, GoalNote, GoalStatus, Msg, SessionGoal, SlashCommand } from "../../web/src/shared/protocol";
 import { budgetUsed, fmtDuration, fmtTokens, STATUS_LABEL } from "../../web/src/shared/goal";
 import { parseJsonReply, runBackground } from "./context/background";
@@ -207,6 +208,9 @@ export function setGoalJudge(j?: GoalJudge) {
 export const checkGoal = (c: GoalCheck) => judge(c);
 
 /** The last `max` characters' worth of conversation: user and agent text, tool calls and short results. */
+/** How agent-written user messages are labelled where a model reads the conversation. */
+export const AGENT_LABEL = "Tether (about a subagent, or another agent's message; not the user)";
+
 export function transcriptTail(messages: Msg[], max = 12_000): string {
   const out: string[] = [];
   let size = 0;
@@ -223,7 +227,13 @@ export function transcriptTail(messages: Msg[], max = 12_000): string {
       }
     }
     if (!lines.length) continue;
-    const block = `${m.role === "user" ? "User" : "Agent"}: ${lines.join("\n")}`;
+    let block = `${m.role === "user" ? "User" : "Agent"}: ${lines.join("\n")}`;
+    // Tether's notes about subagents and another agent's messages aren't the user's words.
+    if (m.role === "user") {
+      const { user, agent } = splitAgentWritten(lines.join("\n"));
+      block = [user && `User: ${user}`, agent && `${AGENT_LABEL}: ${agent}`].filter(Boolean).join("\n\n");
+      if (!block) continue;
+    }
     out.unshift(block);
     size += block.length;
   }

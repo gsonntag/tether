@@ -57,7 +57,7 @@ import {
   withNote,
   type GoalVerdict,
 } from "./goal";
-import { FROM_PARENT_PREFIX, SUBAGENT_NOTE_PREFIX } from "../../web/src/shared/subagents";
+import { splitAgentWritten, subagentTask } from "../../web/src/shared/subagents";
 import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
 import { describeFindings, fixMessage, MAX_REVIEWS, mergeReview, parseReport, parseReviewCommand, reportFromReply, REVIEW_READ_ONLY_REASON, type ReviewRequest } from "./review";
 import { PlanReviews } from "./planReview";
@@ -102,6 +102,8 @@ export interface AgentHub {
   restored(parent: LiveSession): void;
   /** the Stop button on a subagent's activity item */
   stop(parent: LiveSession, name: string): Promise<void>;
+  /** what the user asked in the top session of a subagent's tree (its goal()), when that session runs */
+  userAsk(s: LiveSession): string | undefined;
 }
 
 let counter = 0;
@@ -695,13 +697,13 @@ export abstract class LiveSession {
   private draining = false;
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
-  async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+  async prompt(text: string, mode: "steer" | "followUp" = "steer", opts: { alone?: boolean } = {}) {
     // Held open until the message has reached the agent (the idle close waits); hold() runs
     // promptNow synchronously up to its first await, so the disarm below stays synchronous.
-    return this.hold(() => this.promptNow(text, mode));
+    return this.hold(() => this.promptNow(text, mode, opts.alone));
   }
 
-  private async promptNow(text: string, mode: "steer" | "followUp") {
+  private async promptNow(text: string, mode: "steer" | "followUp", alone?: boolean) {
     // A new message changes the plan's approval: synchronously, since planReview.ts arms its
     // auto-approval right after calling this (so nothing below disarms again: keepArmed).
     this.plans.disarm();
@@ -718,7 +720,7 @@ export abstract class LiveSession {
       // Compacting: it waits, and goes on in the new session.
       // A message is on its way out (its UserPromptSubmit hooks can take a while): this goes in after it.
       if (this.planStarting || this.restarting || this.draining) {
-        this.pend(text, mode, { keepArmed: true });
+        this.pend(text, mode, { keepArmed: true, alone });
         return;
       }
       if (!this.t.state.pending?.length) {
@@ -736,12 +738,12 @@ export abstract class LiveSession {
       }
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
       // and the list goes out from the top as usual (one queued message per turn).
-      this.pend(text, mode, { keepArmed: true });
+      this.pend(text, mode, { keepArmed: true, alone });
       this.setState({ pendingHeld: undefined });
       await this.drainPending();
       return;
     }
-    this.pend(text, mode, { keepArmed: true });
+    this.pend(text, mode, { keepArmed: true, alone });
   }
 
   /** a plan the next prompt() discusses (discussPlan) */
@@ -762,10 +764,17 @@ export abstract class LiveSession {
     return await this.reviewCommand(text);
   }
 
-  protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean; keepArmed?: boolean } = {}): PendingMessage {
+  protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean; keepArmed?: boolean; alone?: boolean } = {}): PendingMessage {
     if (!opts.keepArmed) this.plans.disarm();
     const now = Date.now();
-    const p: PendingMessage = { id: crypto.randomUUID(), text, mode, ts: now, ...(mode === "steer" ? { readyAt: opts.now ? now : now + LiveSession.STEER_GRACE_MS } : {}) };
+    const p: PendingMessage = {
+      id: crypto.randomUUID(),
+      text,
+      mode,
+      ts: now,
+      ...(mode === "steer" ? { readyAt: opts.now ? now : now + LiveSession.STEER_GRACE_MS } : {}),
+      ...(opts.alone ? { alone: true } : {}),
+    };
     const list = this.t.state.pending ?? [];
     this.setPending(opts.now ? [p, ...list] : [...list, p]);
     return p;
@@ -787,7 +796,8 @@ export abstract class LiveSession {
     if (this.closed || this.draining || this.t.state.status !== "running" || this.t.state.pendingHeld) return;
     const now = Date.now();
     let n = 0;
-    while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now) n++;
+    // Tether's notes and another agent's messages are never joined with yours (who wrote them must match).
+    while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now && !!list[n]!.alone === !!list[0]!.alone) n++;
     if (!n) return this.scheduleSteers();
     const batch = list.slice(0, n);
     const text = await this.joinResolved(batch);
@@ -1012,11 +1022,11 @@ export abstract class LiveSession {
    * everything waiting. A running turn is stopped first, without a "Finished" and without holding
    * the rest; the message starts the next turn and the others follow from the top as usual.
    */
-  async forceSend(o: { text?: string; id?: string }) {
+  async forceSend(o: { text?: string; id?: string; alone?: boolean }) {
     return this.hold(() => this.forceSendNow(o));
   }
 
-  private async forceSendNow(o: { text?: string; id?: string }) {
+  private async forceSendNow(o: { text?: string; id?: string; alone?: boolean }) {
     this.plans.disarm();
     this.planDiscussed = undefined;
     const list = [...(this.t.state.pending ?? [])];
@@ -1026,7 +1036,7 @@ export abstract class LiveSession {
       if (i < 0) throw new Error("That message was already sent.");
       const { readyAt: _, ...rest } = list.splice(i, 1)[0]!;
       p = { ...rest, mode: "followUp" };
-    } else if (o.text?.trim()) p = { id: crypto.randomUUID(), text: o.text, mode: "followUp", ts: Date.now() };
+    } else if (o.text?.trim()) p = { id: crypto.randomUUID(), text: o.text, mode: "followUp", ts: Date.now(), ...(o.alone ? { alone: true } : {}) };
     else throw new Error("Nothing to send.");
     clearTimeout(this.steerTimer);
     this.setState({ pending: [p, ...list], pendingHeld: undefined });
@@ -1544,17 +1554,34 @@ export abstract class LiveSession {
 
   /** What the user asked for, for the judge: the goal when one is set, the first request and the latest ones. */
   goal(): string {
-    const asks = this.t.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim())
-      // Tether's word about a subagent quotes the subagent, and a parent's message to its subagent
-      // is another agent's: neither is what the user asked for.
-      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t) && !t.startsWith(SUBAGENT_NOTE_PREFIX) && !t.startsWith(FROM_PARENT_PREFIX));
+    const asks = this.userAsks();
     const pick = asks.length > 4 ? [asks[0]!, "…", ...asks.slice(-3)] : asks;
     const text = pick.map((t) => t.slice(0, 1500)).join("\n---\n");
     // A goal states the task outright; the latest asks still say what's happening now.
     const g = this.goalState;
-    return g ? `Goal: ${g.objective.slice(0, 1500)}${text ? `\n---\n${text}` : ""}` : text;
+    const own = g ? `Goal: ${g.objective.slice(0, 1500)}${text ? `\n---\n${text}` : ""}` : text;
+    // A subagent: what the user asked is the top session's; its task was written by another agent.
+    if (!this.t.state.startedBy) return own;
+    const task = this.t.messages.map((m) => (m.role === "user" ? subagentTask(m.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n")) : undefined)).find(Boolean);
+    const root = this.sink.agents?.userAsk(this);
+    return [
+      `What the user asked (in the session at the top of this subagent's tree):\n${root?.trim() || "(not available)"}`,
+      task ? `This session is a subagent. Its task was written by the agent that started it, not by the user:\n${task.slice(0, 1500)}` : "This session is a subagent started by another agent.",
+      own ? `In this session the user also wrote:\n${own}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n---\n");
+  }
+
+  /**
+   * The user's own messages: Tether's notes about subagents quote other agents, a parent's
+   * messages and task to its subagent are another agent's, a brief or a goal prompt is Tether's.
+   */
+  private userAsks(): string[] {
+    return this.t.messages
+      .filter((m) => m.role === "user")
+      .map((m) => splitAgentWritten(m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim()).user)
+      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t));
   }
 
   /** Every message text this session has (or will) send, attachment blocks included. */
@@ -3027,9 +3054,10 @@ export abstract class LiveSession {
    */
   async tetherNote(text: string) {
     const st = this.t.state;
-    if (st.status === "running") this.pend(text, this.steer ? "steer" : "followUp", { keepArmed: true });
-    else if (st.status === "waiting" || st.pendingHeld || this.restarting || this.planStarting) this.pend(text, "followUp", { keepArmed: true });
-    else await this.prompt(text, "followUp");
+    // Always alone: joined with your own queued message, the subagent's words would read as yours.
+    if (st.status === "running") this.pend(text, this.steer ? "steer" : "followUp", { keepArmed: true, alone: true });
+    else if (st.status === "waiting" || st.pendingHeld || this.restarting || this.planStarting) this.pend(text, "followUp", { keepArmed: true, alone: true });
+    else await this.prompt(text, "followUp", { alone: true });
   }
 
   // ---- review (/review, runner/src/review.ts) ----
@@ -3435,8 +3463,10 @@ export function editedPending(list: PendingMessage[], id: string, change: Pendin
 
 /** How many messages from the top start the next turn: the steers at the top, else one queued message. */
 export function nextTurnSize(list: PendingMessage[]): number {
+  // Tether's notes and another agent's messages are never joined with yours (either way round):
+  // a run of steers stops where who wrote them changes.
   let n = 0;
-  while (n < list.length && list[n]!.mode === "steer") n++;
+  while (n < list.length && list[n]!.mode === "steer" && !!list[n]!.alone === !!list[0]!.alone) n++;
   return n || (list.length ? 1 : 0);
 }
 

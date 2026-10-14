@@ -757,6 +757,8 @@ export interface PendingMessage {
   readyAt?: number;
   /** a run of this loop or schedule (SessionSchedule.id): one at a time waits, more collapse into it */
   scheduleId?: string;
+  /** written by Tether or another agent (a note about a subagent, a parent's message): never joined with yours in one turn */
+  alone?: boolean;
 }
 
 export interface SessionSummary {

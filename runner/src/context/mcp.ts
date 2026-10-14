@@ -277,9 +277,11 @@ async function sessionCall(tool: string, args: Record<string, unknown>, signal?:
   } catch {
     return fail(`Tether's runner isn't reachable from here, so ${what} can't be reached.`);
   }
-  const waits = tool === "ask_user";
-  // agent_wait blocks up to 100 s; agent_start makes a worktree and starts a harness; agent_result reads git.
-  const limitMs = tool === "agent_wait" ? 130_000 : tool === "agent_start" || tool === "agent_harnesses" ? 180_000 : tool.startsWith("agent_") ? 60_000 : 15_000;
+  // ask_user waits for the user; so may agent_start (Dangerously skip for a subagent needs the user's yes).
+  // Both end when the client gives up (signal), which cancels the question.
+  const waits = tool === "ask_user" || tool === "agent_start";
+  // agent_wait blocks up to 100 s; agent_harnesses asks every harness; agent_result reads git.
+  const limitMs = tool === "agent_wait" ? 130_000 : tool === "agent_harnesses" ? 180_000 : tool.startsWith("agent_") ? 60_000 : 15_000;
   const res = await fetch(`${bridge.url}/session`, {
     method: "POST",
     headers: { authorization: `Bearer ${bridge.token ?? process.env.TETHER_GUARD_TOKEN ?? ""}`, "content-type": "application/json" },

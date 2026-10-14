@@ -10,7 +10,8 @@
 // another session (start subagents as it with a looser guard, answer its questions).
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { bridgeFile, sessionBridgeFile } from "./context/launch";
 import { writeAtomic } from "./context/store";
 import type { LiveSession } from "./session";
@@ -113,6 +114,22 @@ export function guardEnv(key: string): Record<string, string> {
     TETHER_GUARD_TOKEN: tokenFor(key),
     TETHER_GUARD_KEY: key,
   };
+}
+
+/**
+ * At start: session bridge files left by an earlier run of this runner (its secret is gone, so their
+ * tokens are dead). Only files of sessions this process doesn't have; one runner per config dir.
+ */
+export function sweepBridgeFiles() {
+  const dir = dirname(sessionBridgeFile("x"));
+  const mine = new Set([...sessions.keys()].map((k) => basename(sessionBridgeFile(k))));
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names) if (!mine.has(n)) rmSync(join(dir, n), { force: true });
 }
 
 /** The live session a guard key belongs to (ties MCP memory writes to their session). */

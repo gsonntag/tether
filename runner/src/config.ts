@@ -66,7 +66,7 @@ export interface SessionPrefs {
   /** background tasks running when last saved (reported to the agent if a restart stops them) */
   background?: { id: string; description: string; type?: string }[];
   /** messages sent but not yet taken by the agent; resent after a runner restart */
-  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number; scheduleId?: string }[];
+  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number; scheduleId?: string; alone?: boolean }[];
   /** the model, effort and mode it last ran with, re-applied on resume (session.reapplyChoices) */
   model?: string;
   thinking?: string;

@@ -212,7 +212,7 @@ export async function resumeActive(getLive: (id: string, projectPath?: string) =
       } else
         for (const m of unsent)
           if (m.scheduleId) s.requeueRun(m);
-          else await s.prompt(m.text, m.mode);
+          else await s.prompt(m.text, m.mode, { alone: m.alone });
       console.log(`resumed ${id}${unsent.length ? ` (resent ${unsent.length})` : ""}`);
     } catch (e: any) {
       console.error(`could not resume ${id}: ${e?.message ?? e}`);

@@ -54,7 +54,7 @@ import { addLibraryCommand, importCommands, listLibraryCommands, setLibraryComma
 import { addSubagent, importSubagents, listSubagents, setSubagent } from "./subagents";
 import { listSecrets, setSecret } from "./secrets";
 import { untilde } from "./context/paths";
-import { sessionForKey } from "./bridge";
+import { sessionForKey, sweepBridgeFiles } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { scheduleChanged, sessionScheduler, setScheduler } from "./schedule";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
@@ -1236,6 +1236,8 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
   });
 
 console.log(`Tether runner ${VERSION} (${config().runnerId}) → ${URL_BASE}`);
+// Bridge tokens of the last run are dead (a new secret): their session files go before any session starts.
+sweepBridgeFiles();
 connect();
 scanProjects();
 context.start();

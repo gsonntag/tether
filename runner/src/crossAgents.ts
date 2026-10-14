@@ -56,8 +56,10 @@ const SAFE_ACP_MODE = /^(default|plan|planning|ask|chat|read-?only|architect)$/i
 const FULL_YES = "Allow Dangerously skip";
 const FULL_AUTO = "Use Auto instead";
 const FULL_NO = "Don't start it";
-/** agent_message calls per subagent before Tether asks the agent to involve the user (stops a runaway loop). */
+/** agent_message calls to a subagent within one of its turns before Tether asks the agent to involve the user. */
 export const MAX_MESSAGES = 20;
+/** Turns of one subagent (each a round: it reports, the parent answers) before agent_message stops: a runaway back-and-forth. */
+export const MAX_ROUNDS = 100;
 
 /** How long agent_wait may block (harness MCP clients give up on long silent calls). */
 export const MAX_WAIT_S = 100;
@@ -140,10 +142,18 @@ export async function makeWorktree(cwd: string, parentShort: string, name: strin
   return { path, cwd: dir, branch, base, dirty, repo: top, notes };
 }
 
-/** Removes a worktree and its branch (a start that didn't happen, or one with nothing on it). */
+/** Removes a worktree Tether just made and its branch (a start that didn't happen): nothing of anyone's is in it yet. */
 export async function dropWorktree(repo: string, path: string, branch: string) {
   await git(repo, ["worktree", "remove", "--force", path]);
   await git(repo, ["branch", "-D", branch]);
+}
+
+/** Removes a clean worktree and its branch, without --force (git refuses one with changes); true when it went. */
+async function removeWorktree(repo: string, path: string, branch: string): Promise<boolean> {
+  if (existsSync(path) && (await git(repo, ["worktree", "remove", path])).code) return false;
+  // Its branch holds no commits of its own (checked): nothing is lost.
+  await git(repo, ["branch", "-D", branch]);
+  return true;
 }
 
 /** The text of the agent's last reply: its assistant messages after the last user message. */
@@ -338,7 +348,7 @@ export class CrossAgents implements AgentHub {
   /** The subagent's turn is really over (no next turn of a goal, a Stop hook or a queued message, nothing of its own still working): its parent hears. */
   private async settle(child: LiveSession) {
     const outcome = this.due.get(child.id);
-    if (!outcome) return;
+    if (!outcome || this.stopping) return;
     const st = child.t.state;
     // Its own agents and workflows report back, so the turn waits for them; a shell or a monitor
     // may run for good (a dev server): it's said in the report instead. Messages held after a Stop wait for the user.
@@ -361,6 +371,8 @@ export class CrossAgents implements AgentHub {
       report: clip(reply || error || "", REPORT_KEEP) || undefined,
       ...(st.model && st.model !== "default" ? { model: st.model } : {}),
       ...(background.length ? { background } : { background: undefined }),
+      // The cap on agent_message counts per turn of the subagent: a turn that ended starts it over.
+      messages: 0,
     };
     this.put(by.parentId, link, child);
     // Someone waits for it in agent_wait: that's how the parent hears, once that call has answered
@@ -434,11 +446,23 @@ export class CrossAgents implements AgentHub {
       const repo = wt.repo ?? config().sessions[this.latestId(l.sessionId)]?.startedBy?.worktree?.repo;
       if (!repo || !existsSync(repo)) continue;
       const commits = await git(repo, ["rev-list", "--count", `${wt.base}..refs/heads/${wt.branch}`]);
-      const dirty = existsSync(wt.path) ? (await git(wt.path, ["status", "--porcelain"])).out : "";
-      if (commits.code === 0 && commits.out === "0" && !dirty) await dropWorktree(repo, wt.path, wt.branch);
-      else if (commits.code === 0 || existsSync(wt.path)) kept.push(`${wt.branch} (${wt.path})`);
+      // Every file counts, whatever the repository's settings: untracked ones (showUntrackedFiles=no
+      // hides them) and ignored ones (.env, a local database) too.
+      const status = existsSync(wt.path) ? await git(wt.path, ["status", "--porcelain", "--untracked-files=all", "--ignored"]) : { code: 0, out: "", err: "" };
+      const empty = commits.code === 0 && commits.out === "0" && status.code === 0 && !status.out;
+      // Without --force: git itself refuses if anything changed since the check.
+      if (empty && (await removeWorktree(repo, wt.path, wt.branch))) continue;
+      if (commits.code === 0 || existsSync(wt.path)) kept.push(`${wt.branch} (${wt.path})`);
     }
     return kept;
+  }
+
+  userAsk(s: LiveSession): string | undefined {
+    const by = s.t.state.startedBy;
+    if (!by) return undefined;
+    const root = this.deps.live(this.latestId(by.rootId));
+    // The top session has no startedBy, so its goal() is its user's own asks.
+    return root && root !== s && !root.t.state.startedBy ? root.goal() : undefined;
   }
 
   async stop(parent: LiveSession, name: string) {
@@ -601,18 +625,25 @@ export class CrossAgents implements AgentHub {
     names.add(name);
     this.namesTaken.set(from.id, names);
     this.startingIn.set(rootId, (this.startingIn.get(rootId) ?? 0) + 1);
-    try {
-      return await this.startReserved(from, args, signal, { task, depth, rootId, name });
-    } finally {
+    // Released once its link exists (then it counts as running, and its name is taken by the link), or on failure.
+    let held = true;
+    const release = () => {
+      if (!held) return;
+      held = false;
       names.delete(name);
       if (!names.size) this.namesTaken.delete(from.id);
       const left = (this.startingIn.get(rootId) ?? 1) - 1;
       if (left > 0) this.startingIn.set(rootId, left);
       else this.startingIn.delete(rootId);
+    };
+    try {
+      return await this.startReserved(from, args, signal, { task, depth, rootId, name, release });
+    } finally {
+      release();
     }
   }
 
-  private async startReserved(from: LiveSession, args: Record<string, unknown>, signal: AbortSignal | undefined, r: { task: string; depth: number; rootId: string; name: string }): Promise<Result> {
+  private async startReserved(from: LiveSession, args: Record<string, unknown>, signal: AbortSignal | undefined, r: { task: string; depth: number; rootId: string; name: string; release: () => void }): Promise<Result> {
     const { task, depth, rootId, name } = r;
     const gaveUp = () => fail("The call was cancelled before the subagent started; nothing was started.");
     const harness = args.harness === undefined || args.harness === "" ? from.harness : this.harnessOf(args.harness);
@@ -669,9 +700,13 @@ export class CrossAgents implements AgentHub {
     // No checks at all on an agent's say-so: the user agrees first (Needs you), else it gets Auto.
     if (guard === "full") {
       const question = `${label(from.harness)} wants to start a subagent "${name}" on ${label(harness)} with Dangerously skip: none of its tool calls would be checked. Allow that?`;
+      // The call given up on (its client timed out): the question goes too.
+      const qid = newId("q");
+      if (signal?.aborted) return gaveUp();
+      signal?.addEventListener("abort", () => from.uiRespond({ id: qid, cancelled: true }));
       const res = await from.askUi(
         {
-          id: newId("q"),
+          id: qid,
           kind: "question",
           title: "Subagent with Dangerously skip",
           questions: [{ question, options: [{ label: FULL_YES }, { label: FULL_AUTO }, { label: FULL_NO }], multiSelect: false }],
@@ -755,6 +790,7 @@ export class CrossAgents implements AgentHub {
       told: 0,
     };
     from.putSubagent(link, this.item(link, child));
+    r.release();
     const parentLabel = `${label(from.harness)}, ${entryLabel(from.currentEntry)}, in the session "${from.title}"`;
     child.notice(
       `Subagent "${name}", started by a ${label(from.harness)} session (${from.title}). ${wt ? `It works in its own worktree, ${cwd}, on the branch ${wt.branch}.` : `It works in ${cwd}, shared with that session.`} When its turn ends, the session that started it hears.`,
@@ -876,7 +912,9 @@ export class CrossAgents implements AgentHub {
     const mode = args.mode === "queue" || args.mode === "force" ? args.mode : "steer";
     // A back-and-forth that doesn't end (two agents answering each other) stops here.
     if ((link.messages ?? 0) >= MAX_MESSAGES)
-      return fail(`You've sent "${link.id}" ${MAX_MESSAGES} messages already. Stop here: tell the user where it stands and ask them how to go on (they can message it in its session).`);
+      return fail(`You've sent "${link.id}" ${MAX_MESSAGES} messages during its current turn. Stop here: tell the user where it stands and ask them how to go on (they can message it in its session).`);
+    if (link.turns >= MAX_ROUNDS)
+      return fail(`"${link.id}" has had ${MAX_ROUNDS} rounds already. Stop here: tell the user where it stands and ask them how to go on (they can message it in its session).`);
     if (!running(link)) {
       const n = this.treeRunning(this.rootOf(from));
       if (n >= MAX_RUNNING_SUBAGENTS) return fail(`${n} subagents are already running in this tree (at most ${MAX_RUNNING_SUBAGENTS}): wait for one, or stop one first.`);
@@ -884,8 +922,9 @@ export class CrossAgents implements AgentHub {
     const child = this.child(link) ?? (await this.deps.open(this.latestId(link.sessionId)));
     const body = `${FROM_PARENT_PREFIX} ${text}`;
     const busy = child.t.state.status !== "idle";
-    if (mode === "force") await child.forceSend({ text: body });
-    else await child.prompt(body, mode === "queue" ? "followUp" : "steer");
+    // Alone: never joined with the user's own messages to it (they'd read as the user's).
+    if (mode === "force") await child.forceSend({ text: body, alone: true });
+    else await child.prompt(body, mode === "queue" ? "followUp" : "steer", { alone: true });
     const cur = from.subagents.find((l) => l.id === link.id) ?? link;
     const next: SubagentLink = { ...cur, sessionId: child.id, messages: (cur.messages ?? 0) + 1, ...(running(cur) ? {} : { status: "working" as const }) };
     if (!running(cur)) delete next.endedAt;
