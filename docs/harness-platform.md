@@ -722,8 +722,10 @@ worktrees, fake sessions). Not run against live harnesses or looked at in a brow
   (`bridge.ts` `/session`) as the session whose key is in `TETHER_SESSION_KEY` (the guard key; or
   `TETHER_GUARD_KEY`), so the runner knows which parent calls. Bridge timeouts: `agent_wait` 130 s
   (it blocks ≤ 100 s), `agent_start` / `agent_harnesses` 180 s, the rest 60 s. The guard allows
-  them by rule, like every `tether-context` tool. The server's `instructions` (Claude and Codex put
-  them in context) and the tool descriptions say when to use them and how to verify.
+  them by rule, like every `tether-context` tool. The server's `instructions` (where the MCP client
+  passes them to the model) and the tool descriptions say that cross-harness subagents exist,
+  when to use them, how to pick (agent_harnesses) and how to verify; the memory preamble doesn't
+  mention them.
 - **Runner** (`runner/src/crossAgents.ts` `CrossAgents`, wired in index.ts as `sink.agents`):
   - `agent_start` validates the harness (ids, labels, `agy`/`claude`), that it's installed, the
     model against the harness's `listModels` (the picker's ids; also a case-insensitive id, a
