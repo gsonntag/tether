@@ -12,7 +12,7 @@ import { config, prefs } from "./config";
 import { sessionLaunch } from "./connectors/launch";
 import { capabilityMatrix } from "./connectors";
 import { callTool } from "./context/mcp";
-import { bridgeFile } from "./context/launch";
+import { bridgeFile, sessionBridgeFile } from "./context/launch";
 import {
   budgetHit,
   continuationPrompt,
@@ -529,9 +529,11 @@ describe("goal tools over the bridge (tether-context)", () => {
     const s = fake();
     s.setState({ status: "running" });
     await s.prompt("/goal make all tests pass");
-    const file = bridgeFile();
-    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/), token: expect.any(String) });
     const key = s.guardEnv.TETHER_GUARD_KEY;
+    // The session's own file: the address and a token good for its key only; the shared file has no token.
+    const file = sessionBridgeFile(key);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/), token: s.guardEnv.TETHER_GUARD_TOKEN });
+    expect(JSON.parse(readFileSync(bridgeFile(), "utf8")).token).toBeUndefined();
     process.env.TETHER_SESSION_KEY = key;
     process.env.TETHER_BRIDGE_FILE = file;
     try {
@@ -541,6 +543,13 @@ describe("goal tools over the bridge (tether-context)", () => {
       expect((await callTool("goal_update", { status: "sideways", note: "x" })).isError).toBe(true);
       process.env.TETHER_SESSION_KEY = "someone-else";
       expect((await callTool("goal_get", {})).isError).toBe(true);
+      // Another live session's key with this session's token: refused (no speaking for another session).
+      const other = fake();
+      await other.prompt("/goal other goal");
+      process.env.TETHER_SESSION_KEY = other.guardEnv.TETHER_GUARD_KEY;
+      const r = await callTool("goal_get", {});
+      expect(r.isError).toBe(true);
+      expect(r.content[0]!.text).not.toContain("other goal");
       delete process.env.TETHER_SESSION_KEY;
       expect((await callTool("goal_get", {})).content[0]!.text).toBe("Goals work only in sessions Tether started.");
     } finally {
@@ -552,7 +561,7 @@ describe("goal tools over the bridge (tether-context)", () => {
   test("with the master context off, a session launch still gets tether-context with only the goal tools", async () => {
     const l = await sessionLaunch("claude-code", { projectPath: process.env.HOME!, session: { id: "claude-code:x", key: "gk" } });
     const server = l.options.mcpServers["tether-context"];
-    expect(server.env).toMatchObject({ TETHER_SESSION_KEY: "gk", TETHER_CONTEXT_TOOLS: "goal", TETHER_BRIDGE_FILE: bridgeFile() });
+    expect(server.env).toMatchObject({ TETHER_SESSION_KEY: "gk", TETHER_CONTEXT_TOOLS: "goal", TETHER_BRIDGE_FILE: sessionBridgeFile("gk") });
     expect(l.options.systemPrompt).toBeUndefined();
     // No session key (Antigravity's preamble-only launch): nothing.
     expect(await sessionLaunch("antigravity", { projectPath: process.env.HOME! })).toEqual({ args: [], options: {}, env: {} });

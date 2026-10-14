@@ -269,7 +269,9 @@ async function sessionCall(tool: string, args: Record<string, unknown>, signal?:
   if (tool.startsWith("agent_") && reviewing()) return fail("A review session can't start subagents.");
   const key = process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY;
   if (!key) return fail(tool.startsWith("goal") ? "Goals work only in sessions Tether started." : "This works only in sessions Tether started.");
-  let bridge: { url: string; token: string };
+  // The session's own file (address + token); a global registration (Antigravity) reads the shared
+  // address and takes its token from the environment its harness passed through.
+  let bridge: { url: string; token?: string };
   try {
     bridge = JSON.parse(readFileSync(process.env.TETHER_BRIDGE_FILE ?? bridgeFile(), "utf8"));
   } catch {
@@ -280,7 +282,7 @@ async function sessionCall(tool: string, args: Record<string, unknown>, signal?:
   const limitMs = tool === "agent_wait" ? 130_000 : tool === "agent_start" || tool === "agent_harnesses" ? 180_000 : tool.startsWith("agent_") ? 60_000 : 15_000;
   const res = await fetch(`${bridge.url}/session`, {
     method: "POST",
-    headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${bridge.token ?? process.env.TETHER_GUARD_TOKEN ?? ""}`, "content-type": "application/json" },
     body: JSON.stringify({ key, tool, args }),
     signal: waits ? signal : AbortSignal.any([AbortSignal.timeout(limitMs), ...(signal ? [signal] : [])]),
     // Bun's own fetch timeout would end a question the user is still reading (or a long agent_wait).

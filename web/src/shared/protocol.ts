@@ -505,7 +505,7 @@ export interface SubagentLink {
   /** where it works */
   path: string;
   /** cwd "worktree": its git worktree, branch and the commit it started from */
-  worktree?: { path: string; branch: string; base: string };
+  worktree?: { path: string; branch: string; base: string; repo?: string };
   /** working: a turn is running; waiting: it waits for the user (a question or an approval) */
   status: "working" | "waiting" | "finished" | "failed" | "stopped";
   startedAt: number;
@@ -515,6 +515,10 @@ export interface SubagentLink {
   told: number;
   /** the start of its last report */
   report?: string;
+  /** what it left running when its last turn ended (a dev server, a watch) */
+  background?: string[];
+  /** agent_message calls the parent made to it */
+  messages?: number;
 }
 
 export interface StartedBy {

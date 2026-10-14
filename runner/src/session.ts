@@ -57,6 +57,7 @@ import {
   withNote,
   type GoalVerdict,
 } from "./goal";
+import { FROM_PARENT_PREFIX, SUBAGENT_NOTE_PREFIX } from "../../web/src/shared/subagents";
 import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
 import { describeFindings, fixMessage, MAX_REVIEWS, mergeReview, parseReport, parseReviewCommand, reportFromReply, REVIEW_READ_ONLY_REASON, type ReviewRequest } from "./review";
 import { PlanReviews } from "./planReview";
@@ -1546,7 +1547,9 @@ export abstract class LiveSession {
     const asks = this.t.messages
       .filter((m) => m.role === "user")
       .map((m) => m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim())
-      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t));
+      // Tether's word about a subagent quotes the subagent, and a parent's message to its subagent
+      // is another agent's: neither is what the user asked for.
+      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t) && !t.startsWith(SUBAGENT_NOTE_PREFIX) && !t.startsWith(FROM_PARENT_PREFIX));
     const pick = asks.length > 4 ? [asks[0]!, "…", ...asks.slice(-3)] : asks;
     const text = pick.map((t) => t.slice(0, 1500)).join("\n---\n");
     // A goal states the task outright; the latest asks still say what's happening now.
@@ -3300,7 +3303,14 @@ export abstract class LiveSession {
 
   close() {
     if (this.closed) return;
+    // A subagent's process going away mid-turn (removed, crashed) ends that turn as stopped; an
+    // idle one closing is just closed. A runner shutting down says nothing: it resumes after.
+    const midTurn = this.t.state.status !== "idle";
     this.closed = true;
+    if (this.t.state.startedBy && !this.t.state.handoffTo) {
+      if (midTurn) this.sink.agents?.turnEnded(this, "stopped");
+      else this.sink.agents?.changed(this);
+    }
     clearTimeout(this.waitTimer);
     clearTimeout(this.steerTimer);
     clearTimeout(this.idleTimer);

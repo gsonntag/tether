@@ -10,7 +10,7 @@ import type { Sink } from "./adapters/types";
 import { config } from "./config";
 import { capabilityMatrix } from "./connectors";
 import { callTool, handle, timing } from "./context/mcp";
-import { bridgeFile } from "./context/launch";
+import { sessionBridgeFile } from "./context/launch";
 import { runHandoff, type HandoffDeps } from "./handoffRun";
 import {
   briefSection,
@@ -585,7 +585,7 @@ describe("ask_user", () => {
     const s = fake("native");
     s.setGuard("ask");
     process.env.TETHER_SESSION_KEY = s.guardEnv.TETHER_GUARD_KEY;
-    process.env.TETHER_BRIDGE_FILE = bridgeFile();
+    process.env.TETHER_BRIDGE_FILE = sessionBridgeFile(s.guardEnv.TETHER_GUARD_KEY);
     try {
       const call = callTool("ask_user", { question: "Ship it?", options: ["Yes", "No"] });
       await until(() => s.t.state.pendingUi.length);

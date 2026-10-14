@@ -8,6 +8,9 @@ export const SUBAGENT_TASK_PREFIX = "You are a subagent:";
 /** How Tether's messages about a subagent start in the parent's conversation (finished, failed, stopped). */
 export const SUBAGENT_NOTE_PREFIX = "[Tether] Subagent";
 
+/** How a parent's agent_message reaches its subagent. */
+export const FROM_PARENT_PREFIX = "[From the agent that started you]";
+
 /** A subagent may start one more level of subagents, no deeper. */
 export const MAX_SUBAGENT_DEPTH = 2;
 

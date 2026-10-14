@@ -698,8 +698,12 @@ const ops: Handlers = {
     const cfg = config();
     // Archived first, so the closing summary already carries it.
     if (!cfg.archived.includes(sessionId)) cfg.archived.push(sessionId);
-    // Its cross-harness subagents stop with it.
+    // Its cross-harness subagents stop with it; their worktrees go unless they hold work (commits or changes).
     await agents.stopAll(sessionId).catch(() => {});
+    void agents
+      .removed(sessionId)
+      .then((kept) => kept.length && console.log(`${sessionId} removed; subagent worktrees kept (they hold work): ${kept.join(", ")}`))
+      .catch((e) => console.error(`subagent worktrees of ${sessionId}: ${e?.message ?? e}`));
     const s = live.get(sessionId);
     if (s && !s.closed) {
       // Abort a running turn cleanly, but never let a stuck harness keep the process alive.
@@ -1225,6 +1229,8 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
     freezeConfig();
     saveViewed();
     console.log(`stopping (${sig}); ${[...live.values()].filter((s) => !s.closed && s.busy).length} busy session(s) will resume on restart`);
+    // Subagents closing now aren't stopped: they resume too, and their parents hear nothing.
+    agents.shutdown();
     for (const s of live.values()) s.close();
     setTimeout(() => process.exit(0), 500);
   });
