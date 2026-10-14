@@ -38,7 +38,8 @@ import {
 import { profileProblems, profilesToSave } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setUiPref, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setUiPref, toast, toggleProject, useStore } from "../store";
+import { addModeOf, filterRepos, isMissing, isOldRunner, type AddMode } from "../addProject";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
@@ -244,37 +245,46 @@ function NewSession({ close }: { close: () => void }) {
   );
 }
 
-type AddMode = "folder" | "new" | "clone";
 type GithubRepo = Ops["githubRepos"]["result"][number];
 const DEFAULT_PARENT = "~/projects";
 
 function AddProject({ close }: { close: () => void }) {
-  const [mode, setMode] = useState<AddMode>(() => (localStorage.getItem("tether.addMode") as AddMode) || "folder");
+  const [mode, setMode] = useState<AddMode>(() => addModeOf(localStorage.getItem("tether.addMode")));
+  const narrow = useMediaQuery(NARROW);
   const [path, setPath] = useState("~");
   const [dirs, setDirs] = useState<string[]>([]);
   const [cwd, setCwd] = useState("");
   /** where new projects and clones go: remembered per device */
   const [parent, setParent] = useState(() => localStorage.getItem("tether.projectParent") || DEFAULT_PARENT);
   const [missing, setMissing] = useState(false);
-  const browse = async (p: string) => {
+  /** Opens p below and returns where that is; false: it doesn't exist (Add then offers to create it); undefined: some other failure, toasted. */
+  const browse = async (p: string): Promise<string | false | undefined> => {
     try {
       const r = await rpc("listDirs", { path: p });
       setCwd(r.path);
       setPath(r.path);
       setDirs(r.dirs);
       setMissing(false);
-    } catch {
-      // Not there yet: Add offers to create it.
+      return r.path;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (!isMissing(msg)) return void toast("error", msg);
       setMissing(true);
+      setCwd("");
+      setDirs([]);
+      return false;
     }
   };
   useEffect(() => {
     browse("~");
   }, []);
   const [account, setAccount] = useState<Ops["githubAccount"]["result"]>();
+  const [oldRunner, setOldRunner] = useState(false);
   useEffect(() => {
     // An older runner doesn't know it, or gh isn't logged in: no GitHub options.
-    rpc("githubAccount", {}).then(setAccount).catch(() => setAccount(null));
+    rpc("githubAccount", {})
+      .then(setAccount)
+      .catch((e) => (setAccount(null), setOldRunner(isOldRunner(e?.message ?? ""))));
   }, []);
 
   const [name, setName] = useState("");
@@ -282,13 +292,17 @@ function AddProject({ close }: { close: () => void }) {
   const [owner, setOwner] = useState("");
   const [isPrivate, setPrivate] = useState(true);
   const [repo, setRepo] = useState("");
-  const [repos, setRepos] = useState<GithubRepo[]>();
+  /** per owner, loaded on first look */
+  const [repos, setRepos] = useState<Record<string, GithubRepo[] | "loading" | "failed">>({});
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
+  const listOwner = owner || account?.login || "";
   useEffect(() => {
-    if (mode !== "clone" || !account || repos) return;
-    rpc("githubRepos", {}).then(setRepos).catch(() => setRepos([]));
-  }, [mode, account, repos]);
+    if (mode !== "clone" || !account || repos[listOwner]) return;
+    const put = (r: GithubRepo[] | "loading" | "failed") => setRepos((m) => ({ ...m, [listOwner]: r }));
+    put("loading");
+    rpc("githubRepos", { owner: listOwner === account.login ? undefined : listOwner }).then(put, () => put("failed"));
+  }, [mode, account, listOwner, repos]);
 
   const pickMode = (m: AddMode) => (setMode(m), localStorage.setItem("tether.addMode", m));
   const opened = async (p: ProjectInfo | undefined) => {
@@ -305,8 +319,15 @@ function AddProject({ close }: { close: () => void }) {
     setBusy(false);
     await opened(p);
   };
-  const add = () => run(() => act("addProject", { path, create: missing || undefined }));
+  const add = () =>
+    run(async () => {
+      if (missing) return act("addProject", { path, create: true });
+      // Typed, not opened with Enter: look first, so a folder that isn't there turns the button into "Create and add".
+      const there = path.trim() === cwd ? cwd : await browse(path.trim());
+      return there ? act("addProject", { path: there }) : undefined;
+    });
   const create = () =>
+    name.trim() &&
     run(() => {
       keepParent();
       return act("createProject", {
@@ -322,7 +343,24 @@ function AddProject({ close }: { close: () => void }) {
       return act("cloneProject", { repo: r.trim(), parent: parent.trim() || DEFAULT_PARENT });
     });
 
-  const shown = (repos ?? []).filter((r) => !filter || r.nameWithOwner.toLowerCase().includes(filter.toLowerCase())).slice(0, 50);
+  const list = repos[listOwner];
+  const shown = Array.isArray(list) ? filterRepos(list, filter) : [];
+  const ownerPicker = account && account.orgs.length > 0 && (
+    <Selector
+      label="Owner"
+      size="sm"
+      value={listOwner}
+      options={[account.login, ...account.orgs].map((o) => ({ value: o, label: o }))}
+      onChange={(v) => v && setOwner(v)}
+    />
+  );
+  const noGithub =
+    account === null &&
+    (oldRunner ? (
+      <Text type="supporting">For GitHub options, restart the runner: it's older than the web app.</Text>
+    ) : (
+      <Text type="supporting">For GitHub options, sign in to the GitHub CLI on the runner: gh auth login.</Text>
+    ));
   const where = tildify(parent.trim() || DEFAULT_PARENT);
   const action =
     mode === "folder" ? (
@@ -345,9 +383,9 @@ function AddProject({ close }: { close: () => void }) {
       }
     >
       <SegmentedControl label="How" value={mode} onChange={(v) => pickMode(v as AddMode)}>
-        <SegmentedControlItem value="folder" label="Existing folder" />
-        <SegmentedControlItem value="new" label="New project" />
-        <SegmentedControlItem value="clone" label="Clone a repo" />
+        <SegmentedControlItem value="folder" label={narrow ? "Folder" : "Existing folder"} />
+        <SegmentedControlItem value="new" label={narrow ? "New" : "New project"} />
+        <SegmentedControlItem value="clone" label={narrow ? "Clone" : "Clone a repo"} />
       </SegmentedControl>
       {mode === "folder" && (
         <VStack gap={2}>
@@ -375,22 +413,14 @@ function AddProject({ close }: { close: () => void }) {
       )}
       {mode === "new" && (
         <VStack gap={3}>
-          <TextInput label="Name" value={name} onChange={setName} onEnter={create} placeholder="email-reply" hasAutoFocus />
+          <TextInput label="Name" value={name} onChange={setName} onEnter={() => create()} placeholder="email-reply" hasAutoFocus />
           <TextInput label="Create it in" value={parent} onChange={setParent} description={name.trim() ? `${where}/${name.trim()}, with git init` : undefined} />
           {account ? (
             <VStack gap={2}>
               <Switch label={`Also create a GitHub repo (signed in as ${account.login})`} value={github} onChange={setGithub} />
               {github && (
                 <HStack gap={2} wrap="wrap">
-                  {account.orgs.length > 0 && (
-                    <Selector
-                      label="Owner"
-                      size="sm"
-                      value={owner || account.login}
-                      options={[account.login, ...account.orgs].map((o) => ({ value: o, label: o }))}
-                      onChange={(v) => v && setOwner(v)}
-                    />
-                  )}
+                  {ownerPicker}
                   <Group label="Visibility">
                     <SegmentedControl label="Visibility" value={isPrivate ? "private" : "public"} onChange={(v) => setPrivate(v === "private")}>
                       <SegmentedControlItem value="private" label="Private" />
@@ -400,22 +430,31 @@ function AddProject({ close }: { close: () => void }) {
                 </HStack>
               )}
             </VStack>
-          ) : account === null ? (
-            <Text type="supporting">To also create a GitHub repo, sign in to the GitHub CLI on the runner: gh auth login.</Text>
-          ) : null}
+          ) : (
+            noGithub
+          )}
         </VStack>
       )}
       {mode === "clone" && (
         <VStack gap={2}>
           <TextInput label={`Repo to clone into ${where}`} value={repo} onChange={setRepo} onEnter={() => clone()} placeholder="org/repo or git@github.com:org/repo.git" />
           <TextInput label="Into" value={parent} onChange={setParent} />
-          {account && (
+          {account ? (
             <VStack gap={1.5}>
-              <TextInput label={`Your repos (${account.login})`} size="sm" value={filter} onChange={setFilter} placeholder="Filter…" hasClear />
+              <HStack gap={2} vAlign="end" wrap="wrap">
+                {ownerPicker}
+                <StackItem size="fill">
+                  <TextInput label={ownerPicker ? "Repos" : `Your repos (${account.login})`} size="sm" value={filter} onChange={setFilter} placeholder="Filter…" hasClear />
+                </StackItem>
+              </HStack>
               <Card variant="muted" padding={0}>
                 <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
-                  {!repos ? (
+                  {!list || list === "loading" ? (
                     <Spinner size="sm" label="Loading repos…" />
+                  ) : list === "failed" || !shown.length ? (
+                    <VStack padding={3}>
+                      <Text type="supporting">{list === "failed" ? "Couldn't load your repos." : filter.trim() ? "No repos match." : "No repos yet."}</Text>
+                    </VStack>
                   ) : (
                     <List density="compact">
                       {shown.map((r) => (
@@ -432,6 +471,8 @@ function AddProject({ close }: { close: () => void }) {
                 </VStack>
               </Card>
             </VStack>
+          ) : (
+            noGithub
           )}
         </VStack>
       )}

@@ -836,6 +836,7 @@ export interface Ops {
   createProject: { args: { name: string; parent: string; github?: { owner?: string; private: boolean } }; result: ProjectInfo };
   /** the account the runner's gh CLI is logged in to (none: no gh, or logged out) */
   githubAccount: { args: {}; result: { login: string; orgs: string[] } | null };
+  /** owner's repos (default the gh account's own), up to 1000, most recently updated first */
   githubRepos: { args: { owner?: string }; result: { nameWithOwner: string; description?: string; isPrivate: boolean; updatedAt: string }[] };
   /** repo: org/repo or any git URL (GitHub goes over SSH); cloned into parent (default ~) */
   cloneProject: { args: { repo: string; parent?: string }; result: ProjectInfo };

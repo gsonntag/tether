@@ -511,7 +511,10 @@ const ops: Handlers = {
 
   async listDirs({ path }) {
     const p = expand(path || "~");
-    const entries = await readdir(p, { withFileTypes: true });
+    const entries = await readdir(p, { withFileTypes: true }).catch((e) => {
+      // The web app offers to create a folder that doesn't exist (and only that).
+      throw e?.code === "ENOENT" ? new Error(`${p} doesn't exist`) : e?.code === "ENOTDIR" ? new Error(`${p} is a file, not a folder`) : e;
+    });
     const dirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
       .map((e) => e.name)
