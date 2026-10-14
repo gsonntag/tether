@@ -654,12 +654,10 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
-    this.plans.disarm(); // a new message changes the plan's approval
-    if (this.devCommand(text)) return;
-    if (await this.goalCommand(text)) return;
-    if (await this.scheduleCommand(text)) return;
-    if (await this.compactCommand(text)) return;
-    if (await this.reviewCommand(text)) return;
+    // A new message changes the plan's approval: synchronously, since planReview.ts arms its
+    // auto-approval right after calling this (so nothing below disarms again: keepArmed).
+    this.plans.disarm();
+    if (await this.tetherCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
     if (this.t.state.status !== "running") this.fallbackAttempt = 0;
@@ -668,7 +666,7 @@ export abstract class LiveSession {
       // Compacting: it waits, and goes on in the new session.
       // A message is on its way out (its UserPromptSubmit hooks can take a while): this goes in after it.
       if (this.planStarting || this.restarting || this.draining) {
-        this.pend(text, mode);
+        this.pend(text, mode, { keepArmed: true });
         return;
       }
       if (!this.t.state.pending?.length) {
@@ -686,16 +684,25 @@ export abstract class LiveSession {
       }
       // Held after Stop: sending releases the hold; the new message joins the bottom of the list,
       // and the list goes out from the top as usual (one queued message per turn).
-      this.pend(text, mode);
+      this.pend(text, mode, { keepArmed: true });
       this.setState({ pendingHeld: undefined });
       await this.drainPending();
       return;
     }
-    this.pend(text, mode);
+    this.pend(text, mode, { keepArmed: true });
   }
 
-  protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean } = {}): PendingMessage {
-    this.plans.disarm();
+  /** Tether's own commands (/goal, /loop, /schedule, /compact, /review, dev faults): true when it was one, handled here. */
+  private async tetherCommand(text: string): Promise<boolean> {
+    if (this.devCommand(text)) return true;
+    if (await this.goalCommand(text)) return true;
+    if (await this.scheduleCommand(text)) return true;
+    if (await this.compactCommand(text)) return true;
+    return await this.reviewCommand(text);
+  }
+
+  protected pend(text: string, mode: "steer" | "followUp", opts: { now?: boolean; keepArmed?: boolean } = {}): PendingMessage {
+    if (!opts.keepArmed) this.plans.disarm();
     const now = Date.now();
     const p: PendingMessage = { id: crypto.randomUUID(), text, mode, ts: now, ...(mode === "steer" ? { readyAt: opts.now ? now : now + LiveSession.STEER_GRACE_MS } : {}) };
     const list = this.t.state.pending ?? [];
@@ -955,6 +962,8 @@ export abstract class LiveSession {
    */
   async forceSend(o: { text?: string; id?: string }) {
     this.plans.disarm();
+    // Tether's own commands aren't messages: handled as they would be when sent the usual way.
+    if (o.text && !o.id && (await this.tetherCommand(o.text))) return;
     const list = [...(this.t.state.pending ?? [])];
     let p: PendingMessage;
     if (o.id) {
@@ -967,11 +976,18 @@ export abstract class LiveSession {
     clearTimeout(this.steerTimer);
     this.setState({ pending: [p, ...list], pendingHeld: undefined });
     if (this.t.state.status === "waiting") this.cancelWait();
+    // Your own message starts a fresh run of retries.
+    this.fallbackAttempt = 0;
     if (this.t.state.status === "idle") {
+      // An approved plan's turn is starting, a compaction is under way or a message is on its way
+      // out: this one is at the top of the list and goes next.
+      if (this.planStarting || this.restarting || this.draining) return;
       await this.drainPending();
       return;
     }
     this.userStopped = true;
+    // Stopped as a stop, not as the simulated error.
+    if (this.fault && this.fault.state !== "armed") this.fault = undefined;
     this.clearJudging();
     await this.abort();
   }
@@ -2352,6 +2368,8 @@ export abstract class LiveSession {
   private planGate = false;
   /** the plan part written during the running turn, and where the turn's messages start */
   private turnPlan?: string;
+  /** a plan you're discussing (plan review's Discuss): it goes up for review again after the agent answers, unless it writes a new one */
+  private planDiscussed?: string;
   private planTurnFrom = 0;
   /** plan and todo parts recorded already: an older one sent again can't replace a newer one */
   private planParts = new Set<string>();
@@ -2435,7 +2453,10 @@ export abstract class LiveSession {
     if (this.compactTurn) return void (this.compactTurn = false);
     if (this.closed || this.userStopped || this.turnTrouble) return;
     if (!this.planning() && !this.planGate) return;
-    const id = partId ?? (this.planFromReply ? this.replyAsPlan() : undefined);
+    // Answering your comments on a plan isn't a new plan: that plan goes up for review again.
+    const discussed = this.planDiscussed && findPlan(this.t.messages, this.planDiscussed) ? this.planDiscussed : undefined;
+    this.planDiscussed = undefined;
+    const id = partId ?? discussed ?? (this.planFromReply ? this.replyAsPlan() : undefined);
     if (!id) return;
     // Up for review already (an ACP agent left plan mode by itself mid-turn): that card stays.
     if (this.planReviewId && this.planReviewPart === id) return;
@@ -2476,7 +2497,9 @@ export abstract class LiveSession {
     this.putPlan({ status: "review" });
     let res: UiResponse;
     try {
-      res = await this.askUi({ id, kind: "plan", title: `${this.harnessLabel}'s plan is ready for review`, planId: partId });
+      // Approved after a discussion, and this is that plan again, unchanged: no second ask (planReview.ts).
+      if (this.plans.autoApproves(findPlan(this.t.messages, partId)?.part.text ?? "")) res = { id, allow: true };
+      else res = await this.askUi({ id, kind: "plan", title: `${this.harnessLabel}'s plan is ready for review`, planId: partId });
     } finally {
       if (this.planReviewId === id) this.planReviewId = this.planReviewPart = undefined;
     }
@@ -2502,6 +2525,13 @@ export abstract class LiveSession {
         this.notice(`Could not leave plan mode: ${e?.message ?? e}`, "warning");
       }
       return this.implementPlan();
+    }
+    // Discuss (plan review): the plan stays under review, changes keep waiting; the agent answers
+    // your comments, then this plan (or a new one it writes) comes up for review again.
+    if (res.discuss && res.value) {
+      this.planDiscussed = partId;
+      await this.prompt(res.value);
+      return;
     }
     const feedback = res.value?.trim() || "Please revise the plan.";
     this.setPlanPart(partId, { outcome: "feedback" });
@@ -2540,7 +2570,9 @@ export abstract class LiveSession {
 
   /** You picked a mode yourself (the mode picker): out of plan mode, nothing waits for a review any more. */
   protected modeChosen(mode: string) {
-    if (!isPlanMode(mode)) this.planGate = false;
+    if (isPlanMode(mode)) return;
+    this.planGate = false;
+    this.planDiscussed = undefined;
   }
 
   /** A plan that came over in a handoff: the new session's plan, shown again (an open review starts over). */

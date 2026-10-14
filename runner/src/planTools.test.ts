@@ -323,6 +323,29 @@ describe("Tether's plan review", () => {
     expect(s.modes.at(-1)).toBe("build");
   });
 
+  test("Discuss (plan review): the answer isn't a new plan, the same plan comes up again, and approving it carries it out", async () => {
+    const s = fake("acp");
+    await s.setPermissionMode("plan");
+    await s.prompt("Add minus");
+    s.endTurn("1. Add minus to math.ts\n2. Test it");
+    await until(() => planRequest(s));
+    const plan = planParts(s)[0]!;
+    s.uiRespond({ id: planRequest(s)!.id, allow: false, value: "Why math.ts?", discuss: true });
+    await until(() => s.sent.length === 2);
+    expect(s.sent[1]).toBe("Why math.ts?");
+    expect(planParts(s)[0]!.outcome).toBeUndefined();
+    expect(s.t.state.permissionMode).toBe("plan");
+    // Its answer stays a reply; the plan under discussion goes up for review again.
+    s.endTurn("Because the other operators live there.");
+    await until(() => planRequest(s));
+    expect(planParts(s)).toHaveLength(1);
+    expect(planRequest(s)!.planId).toBe(plan.id);
+    s.uiRespond({ id: planRequest(s)!.id, allow: true });
+    await until(() => s.sent.length === 3);
+    expect(s.sent[2]).toBe(IMPLEMENT_PROMPT);
+    expect(s.modes.at(-1)).toBe("build");
+  });
+
   test("Codex: only its plan item (or plan_set) goes up for review; a plain answer in plan mode doesn't", async () => {
     const s = fake("codex");
     await s.setPermissionMode("plan");
