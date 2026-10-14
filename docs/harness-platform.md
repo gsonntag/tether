@@ -663,3 +663,46 @@ config override (a long ask_user), ACP agents' MCP call timeouts (no field), Kir
 pi's `--no-extensions` + `-e` launch on real pi sessions, Codex `thread/compact/start` with a login,
 the emulated /compact restart, and the plan review, goal line, schedule line, review card, fork
 dialog and Harness support table in a browser.
+## Phase 5: cross-harness subagents
+
+Any Tether session can start another agent on any harness and model, follow it, and get its work
+back. The user just says it ("use a Kiro subagent on Sonnet to write the tests"); the agent sees
+Tether's tools and does it. Native subagents (Claude's Task, Codex's, pi's) stay as they are; this is
+for the cross-harness case, where Tether is the only piece that can start every harness.
+
+### Tools (tether-context MCP, every harness)
+- `agent_start({ harness, model?, effort?, mode?, task, name?, cwd?: "worktree" | "shared", guard? })`
+  → `{ id, name, harness, model, worktree? }`. Granular: harness plus any model that harness lists
+  (validated against its model list, the same ids the model picker shows; `provider/model` for pi),
+  effort/thinking level, permission mode. `guard` can only be the parent's or stricter.
+  `agent_harnesses()` lists installed harnesses with their models and effort levels so the agent
+  can choose (and tell the user what's available).
+- `agent_status({ id })` → state (working/waiting/finished/failed/stopped), what it's doing now,
+  elapsed, tokens/cost when known, pending questions.
+- `agent_wait({ id | ids, timeoutSec ≤ ~100 })` → returns when one finishes or the timeout passes
+  (MCP calls block; keep under harness tool timeouts and Tether's limits).
+- `agent_message({ id, text, mode?: "steer" | "queue" | "force" })` → steer / follow up.
+- `agent_result({ id })` → final report (last assistant message), `git diff --stat` and the diff
+  (truncated sensibly) against where it started, changed files, the worktree path and branch.
+- `agent_stop({ id })`.
+- `agent_list()` → this session's subagents.
+
+### Behavior
+- A subagent is a real Tether session: listed under its parent (sidebar/Home: "started by <parent>"),
+  openable, steerable, stoppable by the user. The parent's activity strip shows each one as a
+  `subagent` item with the harness badge, model and its live "doing now" line.
+- Isolation: by default a git worktree on a new branch `tether/<parent-short>/<name>` from the
+  parent's current HEAD (uncommitted parent changes are NOT included; say so in the tool result).
+  `cwd: "shared"` runs in the parent's folder. Non-git folders: shared only.
+- Completion: when a subagent's turn ends (Finished, failed, stopped, or it asks a question the
+  parent may answer), Tether sends the parent a message: steer if the parent is running, else a
+  queued follow-up that starts a turn: "Kiro subagent 'write-tests' (claude-sonnet-…) finished:
+  <report excerpt>. Use agent_result for the full report and diff." Questions/approvals from the
+  subagent go to the user as usual (Needs you), never auto-answered by the parent.
+- Guardrails: never more permission than the parent's guard mode; depth limit 2 (a subagent may start
+  one more level); at most N (default 4) running subagents per parent tree; a stopped/archived
+  parent stops its subagents; subagent sessions survive a runner restart like any session.
+- Prompting: the tools' descriptions tell the agent when to use them; the parent's injected context
+  mentions that cross-harness subagents exist and how to verify their work (read agent_result, run
+  the tests, then merge the worktree branch or cherry-pick).
+- Idle close (5 min) must not close a parent that is waiting on subagents (they count as activity).
