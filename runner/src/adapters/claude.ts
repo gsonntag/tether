@@ -31,7 +31,7 @@ import { sessionContext } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { LimitStatus, toMs } from "../limitStatus";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
-import { claudePick, lastLineTime } from "./lastActivity";
+import { claudePick, fileStamp, lastLineTime } from "./lastActivity";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
@@ -833,6 +833,10 @@ export const claudeAdapter: Adapter = {
     let context: ContextUsage | undefined;
     const messages = await loadHistory(nativeId, projectPath, (c) => (context = c));
     return { messages, context };
+  },
+
+  async historyStamp(nativeId: string, projectPath: string) {
+    return fileStamp(join(homedir(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeId}.jsonl`));
   },
 
   modes: PERMISSION_MODES,

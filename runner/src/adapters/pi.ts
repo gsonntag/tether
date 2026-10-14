@@ -17,6 +17,7 @@ import { nativeAttachments } from "../attachments";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { fileStamp } from "./lastActivity";
 
 const PI_BIN = process.env.PI_BIN ?? "pi";
 const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(homedir(), ".pi", "agent", "sessions");
@@ -687,6 +688,11 @@ export const piAdapter: Adapter = {
   async storedHistory(nativeId: string, projectPath: string) {
     const messages = await piAdapter.readHistory!(nativeId, projectPath);
     return { messages, model: [...messages].reverse().find((m) => m.role === "assistant" && m.model)?.model };
+  },
+
+  async historyStamp(nativeId: string, projectPath: string) {
+    const f = (await scanFiles()).find((x) => x.id === nativeId && x.cwd === projectPath);
+    return f ? fileStamp(f.path) : undefined;
   },
 
   create(projectPath, opts, sink) {

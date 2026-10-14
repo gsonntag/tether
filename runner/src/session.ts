@@ -45,8 +45,8 @@ export interface SessionSink {
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-/** A fully idle agent process closes after this; the next message (or opening it) starts it again. */
-const IDLE_CLOSE_MS = 5 * 60_000;
+/** A fully idle agent process closes after this; the next message starts it again. */
+export const IDLE_CLOSE = { ms: 5 * 60_000 };
 const STALL_WARN_MS = 15 * 60_000;
 
 /**
@@ -469,6 +469,10 @@ export abstract class LiveSession {
   private shellShown = new Set<string>();
 
   async runShell(command: string) {
+    return this.hold(() => this.runShellNow(command));
+  }
+
+  private async runShellNow(command: string) {
     const id = newId("sh");
     const toolId = `${id}:bash0`;
     const guard: GuardVerdict = { decision: "allow", by: "user", reason: "Run by you directly, outside the guard" };
@@ -512,6 +516,10 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+    return this.hold(() => this.promptNow(text, mode));
+  }
+
+  private async promptNow(text: string, mode: "steer" | "followUp") {
     this.plans.disarm(); // a new message changes the plan's approval
     if (this.t.state.status === "waiting") this.cancelWait();
     if (this.t.state.status === "idle") {
@@ -698,24 +706,13 @@ export abstract class LiveSession {
   }
 
   /** Edits, reorders, cancels or sends one pending message (from any device). */
-  async editPending(id: string, change: { text?: string; mode?: "steer" | "followUp"; index?: number; remove?: boolean; now?: boolean }) {
-    const list = [...(this.t.state.pending ?? [])];
-    const i = list.findIndex((p) => p.id === id);
-    if (i < 0) throw new Error("That message was already sent.");
-    if (change.remove || change.text?.trim() === "") {
-      list.splice(i, 1);
-      return this.setPending(list);
-    }
-    const p: PendingMessage = { ...list[i]! };
-    if (change.text !== undefined) p.text = change.text;
-    if (change.mode) p.mode = change.mode;
-    if (change.now) p.mode = "steer";
-    // An edited steer gets a fresh grace period; "send now" skips it.
-    if (p.mode === "steer") p.readyAt = change.now ? Date.now() : change.text !== undefined || change.mode ? Date.now() + LiveSession.STEER_GRACE_MS : (p.readyAt ?? Date.now());
-    else delete p.readyAt;
-    list.splice(i, 1);
-    const to = change.now ? 0 : Math.max(0, Math.min(list.length, change.index ?? i));
-    list.splice(to, 0, p);
+  async editPending(id: string, change: PendingChange) {
+    return this.hold(() => this.editPendingNow(id, change));
+  }
+
+  private async editPendingNow(id: string, change: PendingChange) {
+    const list = editedPending(this.t.state.pending ?? [], id, change);
+    if (change.remove || change.text?.trim() === "") return this.setPending(list);
     if (change.now && this.t.state.status === "idle") {
       // Held after Stop (or the turn just ended): the hold is released and this message starts the
       // next turn; the rest follow from the top as usual.
@@ -751,6 +748,10 @@ export abstract class LiveSession {
    * the rest; the message starts the next turn and the others follow from the top as usual.
    */
   async forceSend(o: { text?: string; id?: string }) {
+    return this.hold(() => this.forceSendNow(o));
+  }
+
+  private async forceSendNow(o: { text?: string; id?: string }) {
     this.plans.disarm();
     const list = [...(this.t.state.pending ?? [])];
     let p: PendingMessage;
@@ -798,6 +799,8 @@ export abstract class LiveSession {
     if (p.guard) restore.guard = p.guard;
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
     if (p.context && !this.t.state.context) restore.context = p.context;
+    // Messages it hadn't taken when it stopped come back held, to send (or edit) when you choose.
+    if (p.pending?.length && !this.t.state.pending?.length) Object.assign(restore, { pending: p.pending, pendingHeld: true });
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
     // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
@@ -818,10 +821,15 @@ export abstract class LiveSession {
     const warn = (what: string) => (e: any) => this.notice(`Could not restore the ${what}: ${e?.message ?? e}`, "warning");
     if (saved.model && saved.model !== "default" && saved.model !== st.model) await this.applyModel(saved.model).catch(warn("model"));
     const levels = this.t.state.thinkingLevels;
-    if (saved.thinking && saved.thinking !== this.t.state.thinking && (!levels || levels.includes(saved.thinking))) await this.setThinking(saved.thinking).catch(warn("effort"));
+    if (saved.thinking && saved.thinking !== this.t.state.thinking) {
+      if (!levels || levels.includes(saved.thinking)) await this.setThinking(saved.thinking).catch(warn("effort"));
+      else this.notice(`Could not restore the effort: ${this.t.state.model ?? "this model"} doesn't offer “${saved.thinking}”.`, "warning");
+    }
     const mode = saved.permissionMode;
-    if (mode && mode !== this.t.state.permissionMode && this.t.state.modes?.includes(mode) && !APPROVING_MODES.has(mode))
-      await this.setPermissionMode(mode).catch(warn("mode"));
+    if (mode && mode !== this.t.state.permissionMode && !APPROVING_MODES.has(mode)) {
+      if (this.t.state.modes?.includes(mode)) await this.setPermissionMode(mode).catch(warn("mode"));
+      else this.notice(`Could not restore the mode: ${this.harness} doesn't offer “${mode}” here.`, "warning");
+    }
   }
 
   /** Whether the agent is doing anything a restart would interrupt. */
@@ -1176,6 +1184,10 @@ export abstract class LiveSession {
 
   /** "Approve & retry" on a blocked call: allow that exact call from now on and tell the agent. */
   async approveBlocked(toolId: string) {
+    return this.hold(() => this.approveBlockedNow(toolId));
+  }
+
+  private async approveBlockedNow(toolId: string) {
     for (const m of this.t.messages)
       for (const p of m.parts)
         if (p.type === "tool" && p.id === toolId) {
@@ -1303,13 +1315,33 @@ export abstract class LiveSession {
     return false;
   }
 
+  /** agent-bound work under way (a message on its way to a turn, a `!` command…): the idle close waits for it */
+  private inFlight = 0;
+
+  /**
+   * Runs work that needs the agent process, keeping it open meanwhile: a message only reaches
+   * "running" after several awaits (skills, the checkpoint, attachments), and a `!` command never does.
+   */
+  async hold<T>(work: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    clearTimeout(this.idleTimer);
+    try {
+      return await work();
+    } finally {
+      this.inFlight--;
+      this.armIdle();
+    }
+  }
+
   private armIdle() {
     clearTimeout(this.idleTimer);
+    if (this.closed) return;
     // Closing the process would also end its subagents, shells and armed wakeups.
     // Messages held after Stop stay with a live process, ready to send.
-    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0 && !this.t.state.pending?.length;
+    const idle = () =>
+      this.inFlight === 0 && this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0 && !this.t.state.pending?.length;
     if (!idle()) return;
-    this.idleTimer = setTimeout(() => idle() && this.close(), IDLE_CLOSE_MS);
+    this.idleTimer = setTimeout(() => idle() && this.close(), IDLE_CLOSE.ms);
   }
 
   close() {
@@ -1406,13 +1438,40 @@ export function storedSlashMenu(harness: HarnessId, projectPath: string): SlashC
   return menuOf(harness, projectPath, lastMenus.get(`${harness}\0${projectPath}`) ?? lastMenus.get(harness));
 }
 
+export type PendingChange = { text?: string; mode?: "steer" | "followUp"; index?: number; remove?: boolean; now?: boolean };
+
+/**
+ * The pending list after one edit (LiveSession.editPending; index.ts for a session that isn't
+ * running). Removing, or emptying its text, drops it; "send now" puts it on top as a steer.
+ */
+export function editedPending(list: PendingMessage[], id: string, change: PendingChange, now = Date.now()): PendingMessage[] {
+  const out = [...list];
+  const i = out.findIndex((p) => p.id === id);
+  if (i < 0) throw new Error("That message was already sent.");
+  if (change.remove || change.text?.trim() === "") {
+    out.splice(i, 1);
+    return out;
+  }
+  const p: PendingMessage = { ...out[i]! };
+  if (change.text !== undefined) p.text = change.text;
+  if (change.mode) p.mode = change.mode;
+  if (change.now) p.mode = "steer";
+  // An edited steer gets a fresh grace period; "send now" skips it.
+  if (p.mode === "steer") p.readyAt = change.now ? now : change.text !== undefined || change.mode ? now + LiveSession.STEER_GRACE_MS : (p.readyAt ?? now);
+  else delete p.readyAt;
+  out.splice(i, 1);
+  const to = change.now ? 0 : Math.max(0, Math.min(out.length, change.index ?? i));
+  out.splice(to, 0, p);
+  return out;
+}
+
 /** How many messages from the top start the next turn: the steers at the top, else one queued message. */
 export function nextTurnSize(list: PendingMessage[]): number {
   let n = 0;
   while (n < list.length && list[n]!.mode === "steer") n++;
   return n || (list.length ? 1 : 0);
 }
-const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
+export const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
 
 export function fmtTime(ms: number) {

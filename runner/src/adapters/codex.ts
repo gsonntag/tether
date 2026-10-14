@@ -169,6 +169,25 @@ async function withProcess<T>(fn: (p: CodexProcess) => Promise<T>): Promise<T> {
   }
 }
 
+/** Stored-history reads (opening, search) run at most this many helper processes at once. */
+const HISTORY_HELPERS = 2;
+let historyRunning = 0;
+const historyQueue: (() => void)[] = [];
+
+/** withProcess for reading a thread, a few at a time. */
+export async function withHistoryProcess<T>(fn: (p: CodexProcess) => Promise<T>, run: typeof withProcess = withProcess): Promise<T> {
+  // A finished read hands its slot straight to the next one waiting.
+  if (historyRunning >= HISTORY_HELPERS) await new Promise<void>((r) => historyQueue.push(r));
+  else historyRunning++;
+  try {
+    return await run(fn);
+  } finally {
+    const next = historyQueue.shift();
+    if (next) next();
+    else historyRunning--;
+  }
+}
+
 interface CodexModel {
   id: string;
   displayName: string;
@@ -932,7 +951,7 @@ export const codexAdapter: Adapter = {
 
   async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
     if (!Bun.which(CODEX_BIN)) return [];
-    return withProcess(async (p) => {
+    return withHistoryProcess(async (p) => {
       const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
       const thread = r.thread ?? r;
       return historyMsgs(thread.turns ?? [], projectPath, thread.model, await itemTimes(p, nativeId, thread.turns ?? []));
@@ -942,7 +961,7 @@ export const codexAdapter: Adapter = {
   // A short-lived app-server answers thread/read; the thread itself isn't resumed.
   async storedHistory(nativeId: string, projectPath: string) {
     if (!Bun.which(CODEX_BIN)) return undefined;
-    return withProcess(async (p) => {
+    return withHistoryProcess(async (p) => {
       const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
       const thread = r.thread ?? r;
       const turns = thread.turns ?? [];

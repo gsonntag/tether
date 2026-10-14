@@ -43,6 +43,9 @@ export function storedState(o: {
     handoffTo: p.handoffTo,
     guard: p.guard ?? o.defaultGuard,
     checkpoints: p.checkpoints,
+    // Messages it hadn't taken when it stopped: held, they go out when you send (which starts it).
+    pending: p.pending?.length ? p.pending : undefined,
+    pendingHeld: p.pending?.length ? true : undefined,
     diffStat: o.diffStat,
     // The model may have been changed since: the same conversation in that model's window.
     context: context && model && model !== "default" ? switchModel(context, model) : context,
@@ -107,9 +110,21 @@ export class StoredSessions {
   static MAX_CACHED = 20;
   private seqs = new Map<string, number>();
   private paths = new Map<string, string>();
-  private cache = new Map<string, { updatedAt: number; load: Promise<StoredHistory | undefined> }>();
+  private cache = new Map<string, { version: string; load: Promise<StoredHistory | undefined> }>();
 
-  constructor(private read: (s: SessionSummary) => Promise<StoredHistory | undefined>) {}
+  /**
+   * `stamp`: what else tells versions apart (a transcript file's size and time), for harnesses
+   * whose updatedAt doesn't move with every change to their store.
+   */
+  constructor(
+    private read: (s: SessionSummary) => Promise<StoredHistory | undefined>,
+    private stamp: (s: SessionSummary) => Promise<string | undefined> = async () => undefined,
+  ) {}
+
+  /** An event with this number went out for the session (running or not): later ones go on from it. */
+  saw(id: string, seq: number) {
+    if (seq > this.seq(id)) this.seqs.set(id, seq);
+  }
 
   /** The session's last event number. */
   seq(id: string): number {
@@ -135,10 +150,11 @@ export class StoredSessions {
   }
 
   /** The stored conversation, read once per version; undefined when only a running agent can show it. */
-  history(s: SessionSummary): Promise<StoredHistory | undefined> {
+  async history(s: SessionSummary): Promise<StoredHistory | undefined> {
     this.paths.set(s.id, s.projectPath);
+    const version = `${s.updatedAt}:${(await this.stamp(s).catch(() => undefined)) ?? ""}`;
     const hit = this.cache.get(s.id);
-    if (hit && hit.updatedAt === s.updatedAt) {
+    if (hit && hit.version === version) {
       this.cache.delete(s.id);
       this.cache.set(s.id, hit);
       return hit.load;
@@ -147,7 +163,7 @@ export class StoredSessions {
       if (h) tagToolParts(h.messages); // as LiveSession.emit tags a replay
       return h;
     });
-    const entry = { updatedAt: s.updatedAt, load };
+    const entry = { version, load };
     this.cache.delete(s.id);
     this.cache.set(s.id, entry);
     while (this.cache.size > StoredSessions.MAX_CACHED) this.cache.delete(this.cache.keys().next().value!);

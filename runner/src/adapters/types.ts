@@ -38,6 +38,8 @@ export interface Adapter {
    * so opening starts one.
    */
   storedHistory?(nativeId: string, projectPath: string): Promise<StoredHistory | undefined>;
+  /** What tells stored versions of a conversation apart besides its updatedAt (its file's size and time). */
+  historyStamp?(nativeId: string, projectPath: string): Promise<string | undefined>;
   /** Modes the harness always offers, for the picker before its process has run. */
   modes?: string[];
   create(projectPath: string, opts: CreateOpts, sink: Sink): LiveSession;
