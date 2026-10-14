@@ -7,6 +7,7 @@
 import type { DiffStat, HarnessId, LiveState, SessionSnapshot, SessionSummary } from "../../web/src/shared/protocol";
 import type { PlanReviewState } from "../../web/src/shared/plan";
 import { emptyState } from "../../web/src/shared/reducer";
+import { bySoonest } from "../../web/src/shared/schedule";
 import type { StoredHistory } from "./adapters/types";
 import type { SessionPrefs } from "./config";
 import { switchModel } from "./contextWindow";
@@ -51,9 +52,33 @@ export function storedState(o: {
     context: context && model && model !== "default" ? switchModel(context, model) : context,
     activity: [],
     plans: o.plans ?? {},
+    ...storedExtras(p),
   };
   for (const k of Object.keys(state) as (keyof LiveState)[]) if (state[k] === undefined) delete state[k];
   return state;
+}
+
+/**
+ * Tether's own per-session state (goal, plan and todos, loops and schedules, reviews, fork and
+ * review links), as LiveSession.loadPrefs brings it back when the session starts: an active goal
+ * nothing drives shows paused, an open plan review as a draft, a review that never started failed.
+ */
+export function storedExtras(p: SessionPrefs): Partial<LiveState> {
+  const out: Partial<LiveState> = {};
+  if (p.forkedFrom) out.forkedFrom = p.forkedFrom;
+  let goal = p.goal;
+  if (goal?.status === "active" && (!p.active || p.handoffTo)) {
+    const reason = p.handoffTo ? "Continued in another session." : "Paused when the runner restarted.";
+    goal = { ...goal, status: "paused", reason };
+  }
+  if (goal) out.goal = goal;
+  if (p.plan) out.plan = p.plan.status === "review" ? { ...p.plan, status: "draft" } : p.plan;
+  // Loops and schedules handed off went with the conversation; the rest still run (the scheduler starts it).
+  if (p.schedules?.length && !p.handoffTo) out.schedules = [...p.schedules].sort(bySoonest);
+  if (p.reviews?.length)
+    out.reviews = p.reviews.map((r) => (r.status === "starting" ? { ...r, status: "failed" as const, error: "The runner restarted before the review started." } : r));
+  if (p.reviewOf) out.reviewOf = p.reviewOf;
+  return out;
 }
 
 export function storedSnapshot(session: SessionSummary, history: StoredHistory, state: LiveState, seq: number): SessionSnapshot {

@@ -44,6 +44,33 @@ describe("storedState", () => {
     expect("pendingHeld" in storedState({ history: {}, defaultGuard: "auto" })).toBe(false);
   });
 
+  test("Tether's own state comes back as the agent would bring it back (loadPrefs)", () => {
+    const goal = { objective: "ship it", status: "active" as const, used: { turns: 1, tokens: 0, ms: 0 }, notes: [], createdAt: 1, updatedAt: 1 };
+    const sched = (id: string, nextAt: number) => ({ id, kind: "loop" as const, prompt: id, everyMs: 60_000, label: "every 1m", nextAt, runs: 0, createdAt: 1 });
+    const review = { id: "rv", status: "starting" as const, harness: "codex" as const, findings: [], sent: [], createdAt: 1, updatedAt: 1 };
+    const st = storedState({
+      prefs: {
+        goal,
+        plan: { text: "do it", todos: [], status: "review", updatedAt: 1 },
+        schedules: [sched("b", 20), sched("a", 10)],
+        reviews: [review, { ...review, id: "rv2", status: "done" }],
+        reviewOf: { sessionId: "codex:x", reviewId: "rv0" },
+        forkedFrom: { sessionId: "codex:y", reason: "at a message" },
+      },
+      history: {},
+      defaultGuard: "auto",
+    });
+    // Nothing drives an active goal of a session that isn't running: /goal resume picks it up.
+    expect(st.goal).toMatchObject({ objective: "ship it", status: "paused" });
+    expect(st.plan?.status).toBe("draft");
+    expect(st.schedules?.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(st.reviews?.map((r) => r.status)).toEqual(["failed", "done"]);
+    expect(st.reviewOf).toEqual({ sessionId: "codex:x", reviewId: "rv0" });
+    expect(st.forkedFrom?.sessionId).toBe("codex:y");
+    // Handed off: its loops went with the conversation.
+    expect(storedState({ prefs: { schedules: [sched("a", 1)], handoffTo: { sessionId: "pi:z", reason: "r" } }, history: {}, defaultGuard: "auto" }).schedules).toBeUndefined();
+  });
+
   test("defaults: the configured guard, no context when none is known", () => {
     const st = storedState({ history: {}, defaultGuard: "edits" });
     expect(st.guard).toBe("edits");
@@ -191,13 +218,13 @@ describe("a session that isn't running", () => {
   });
 
   test("its / menu has the commands its harness reported when it last ran", async () => {
-    const { s } = fake(undefined, [{ name: "compact", description: "Compact" }]);
+    const { s } = fake(undefined, [{ name: "cost", description: "Cost" }]);
     await s.start();
     await s.slashMenu();
-    expect(storedSlashMenu("claude-code", "/tmp/stored-proj").some((c) => c.name === "compact" && c.kind === "command")).toBe(true);
+    expect(storedSlashMenu("claude-code", "/tmp/stored-proj").some((c) => c.name === "cost" && c.kind === "command")).toBe(true);
     // elsewhere, what it reported anywhere
-    expect(storedSlashMenu("claude-code", "/tmp/elsewhere").some((c) => c.name === "compact")).toBe(true);
-    expect(storedSlashMenu("kiro", "/tmp/stored-proj").some((c) => c.name === "compact")).toBe(false);
+    expect(storedSlashMenu("claude-code", "/tmp/elsewhere").some((c) => c.name === "cost")).toBe(true);
+    expect(storedSlashMenu("kiro", "/tmp/stored-proj").some((c) => c.name === "cost")).toBe(false);
   });
 
   test("its changes are read from its saved checkpoints", async () => {

@@ -6,7 +6,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { userHome } from "../home";
 import { join } from "node:path";
 import type { ContextUsage, Msg, Part } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
@@ -16,7 +16,7 @@ import type { StoredHistory } from "./types";
 
 export function opencodeDbPath(): string {
   if (process.env.OPENCODE_DB) return process.env.OPENCODE_DB;
-  const data = process.env.XDG_DATA_HOME || join(process.env.HOME || homedir(), ".local", "share");
+  const data = process.env.XDG_DATA_HOME || join(userHome(), ".local", "share");
   return join(data, "opencode", "opencode.db");
 }
 
