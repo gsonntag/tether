@@ -12,6 +12,7 @@ import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector, type SelectorOptionType } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { Stack, StackItem } from "@astryxdesign/core/Stack";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
@@ -31,6 +32,7 @@ import {
   type HarnessId,
   type ModelProfile,
   type NotifyKind,
+  type Ops,
   type ProjectInfo,
 } from "../shared/protocol";
 import { profileProblems, profilesToSave } from "../shared/profiles";
@@ -242,37 +244,95 @@ function NewSession({ close }: { close: () => void }) {
   );
 }
 
+type AddMode = "folder" | "new" | "clone";
+type GithubRepo = Ops["githubRepos"]["result"][number];
+const DEFAULT_PARENT = "~/projects";
+
 function AddProject({ close }: { close: () => void }) {
+  const [mode, setMode] = useState<AddMode>(() => (localStorage.getItem("tether.addMode") as AddMode) || "folder");
   const [path, setPath] = useState("~");
   const [dirs, setDirs] = useState<string[]>([]);
   const [cwd, setCwd] = useState("");
+  /** where new projects and clones go: remembered per device */
+  const [parent, setParent] = useState(() => localStorage.getItem("tether.projectParent") || DEFAULT_PARENT);
+  const [missing, setMissing] = useState(false);
   const browse = async (p: string) => {
-    const r = await act("listDirs", { path: p });
-    if (r) {
+    try {
+      const r = await rpc("listDirs", { path: p });
       setCwd(r.path);
       setPath(r.path);
       setDirs(r.dirs);
+      setMissing(false);
+    } catch {
+      // Not there yet: Add offers to create it.
+      setMissing(true);
     }
   };
   useEffect(() => {
     browse("~");
   }, []);
+  const [account, setAccount] = useState<Ops["githubAccount"]["result"]>();
+  useEffect(() => {
+    // An older runner doesn't know it, or gh isn't logged in: no GitHub options.
+    rpc("githubAccount", {}).then(setAccount).catch(() => setAccount(null));
+  }, []);
+
+  const [name, setName] = useState("");
+  const [github, setGithub] = useState(true);
+  const [owner, setOwner] = useState("");
+  const [isPrivate, setPrivate] = useState(true);
   const [repo, setRepo] = useState("");
-  const [cloning, setCloning] = useState(false);
+  const [repos, setRepos] = useState<GithubRepo[]>();
+  const [filter, setFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (mode !== "clone" || !account || repos) return;
+    rpc("githubRepos", {}).then(setRepos).catch(() => setRepos([]));
+  }, [mode, account, repos]);
+
+  const pickMode = (m: AddMode) => (setMode(m), localStorage.setItem("tether.addMode", m));
   const opened = async (p: ProjectInfo | undefined) => {
     if (!p) return;
     await refreshProjects();
     toggleProject(p.path, true);
     useStore.setState({ dialog: "new", newSessionProject: p.path });
   };
-  const add = async () => opened(await act("addProject", { path }));
-  const clone = async () => {
-    if (!repo.trim() || cloning) return;
-    setCloning(true);
-    const p = await act("cloneProject", { repo: repo.trim(), parent: cwd || path });
-    setCloning(false);
+  const keepParent = () => localStorage.setItem("tether.projectParent", parent.trim() || DEFAULT_PARENT);
+  const run = async (f: () => Promise<ProjectInfo | undefined>) => {
+    if (busy) return;
+    setBusy(true);
+    const p = await f();
+    setBusy(false);
     await opened(p);
   };
+  const add = () => run(() => act("addProject", { path, create: missing || undefined }));
+  const create = () =>
+    run(() => {
+      keepParent();
+      return act("createProject", {
+        name: name.trim(),
+        parent: parent.trim() || DEFAULT_PARENT,
+        github: account && github ? { owner: owner && owner !== account.login ? owner : undefined, private: isPrivate } : undefined,
+      });
+    });
+  const clone = (r = repo) =>
+    r.trim() &&
+    run(() => {
+      keepParent();
+      return act("cloneProject", { repo: r.trim(), parent: parent.trim() || DEFAULT_PARENT });
+    });
+
+  const shown = (repos ?? []).filter((r) => !filter || r.nameWithOwner.toLowerCase().includes(filter.toLowerCase())).slice(0, 50);
+  const where = tildify(parent.trim() || DEFAULT_PARENT);
+  const action =
+    mode === "folder" ? (
+      <Button label={missing ? `Create and add ${tildify(path)}` : `Add ${tildify(path)}`} variant="primary" isLoading={busy} onClick={add} />
+    ) : mode === "new" ? (
+      <Button label={account && github ? "Create project and repo" : "Create project"} variant="primary" isDisabled={!name.trim()} isLoading={busy} onClick={create} />
+    ) : (
+      <Button label="Clone" variant="primary" isDisabled={!repo.trim()} isLoading={busy} onClick={() => clone()} />
+    );
+
   return (
     <Frame
       title="Add project"
@@ -280,37 +340,101 @@ function AddProject({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label={`Add ${tildify(path)}`} variant="primary" clickAction={add} />
+          {action}
         </>
       }
     >
-      <VStack gap={2}>
-        <TextInput label="Directory on the runner" value={path} onChange={setPath} onEnter={() => browse(path)} />
-        <Card variant="muted" padding={0}>
-          <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
-            <List density="compact">
-              {dirs.map((d) => (
-                <ListItem
-                  key={d}
-                  label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
-                  onClick={() => browse(d)}
-                />
-              ))}
-            </List>
-          </VStack>
-        </Card>
-        <HStack gap={2} vAlign="end">
+      <SegmentedControl label="How" value={mode} onChange={(v) => pickMode(v as AddMode)}>
+        <SegmentedControlItem value="folder" label="Existing folder" />
+        <SegmentedControlItem value="new" label="New project" />
+        <SegmentedControlItem value="clone" label="Clone a repo" />
+      </SegmentedControl>
+      {mode === "folder" && (
+        <VStack gap={2}>
           <TextInput
-            label={`Or clone a repo into ${tildify(cwd || path)}`}
-            value={repo}
-            onChange={setRepo}
-            onEnter={clone}
-            placeholder="org/repo or git@github.com:org/repo.git"
-            width="100%"
+            label="Folder on the runner"
+            value={path}
+            onChange={(v) => (setPath(v), setMissing(false))}
+            onEnter={() => browse(path)}
+            description={missing ? "This folder doesn't exist yet. Add creates it." : "Enter to open it below."}
           />
-          <Button label="Clone" isDisabled={!repo.trim()} isLoading={cloning} onClick={clone} />
-        </HStack>
-      </VStack>
+          <Card variant="muted" padding={0}>
+            <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+              <List density="compact">
+                {dirs.map((d) => (
+                  <ListItem
+                    key={d}
+                    label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
+                    onClick={() => browse(d)}
+                  />
+                ))}
+              </List>
+            </VStack>
+          </Card>
+        </VStack>
+      )}
+      {mode === "new" && (
+        <VStack gap={3}>
+          <TextInput label="Name" value={name} onChange={setName} onEnter={create} placeholder="email-reply" hasAutoFocus />
+          <TextInput label="Create it in" value={parent} onChange={setParent} description={name.trim() ? `${where}/${name.trim()}, with git init` : undefined} />
+          {account ? (
+            <VStack gap={2}>
+              <Switch label={`Also create a GitHub repo (signed in as ${account.login})`} value={github} onChange={setGithub} />
+              {github && (
+                <HStack gap={2} wrap="wrap">
+                  {account.orgs.length > 0 && (
+                    <Selector
+                      label="Owner"
+                      size="sm"
+                      value={owner || account.login}
+                      options={[account.login, ...account.orgs].map((o) => ({ value: o, label: o }))}
+                      onChange={(v) => v && setOwner(v)}
+                    />
+                  )}
+                  <Group label="Visibility">
+                    <SegmentedControl label="Visibility" value={isPrivate ? "private" : "public"} onChange={(v) => setPrivate(v === "private")}>
+                      <SegmentedControlItem value="private" label="Private" />
+                      <SegmentedControlItem value="public" label="Public" />
+                    </SegmentedControl>
+                  </Group>
+                </HStack>
+              )}
+            </VStack>
+          ) : account === null ? (
+            <Text type="supporting">To also create a GitHub repo, sign in to the GitHub CLI on the runner: gh auth login.</Text>
+          ) : null}
+        </VStack>
+      )}
+      {mode === "clone" && (
+        <VStack gap={2}>
+          <TextInput label={`Repo to clone into ${where}`} value={repo} onChange={setRepo} onEnter={() => clone()} placeholder="org/repo or git@github.com:org/repo.git" />
+          <TextInput label="Into" value={parent} onChange={setParent} />
+          {account && (
+            <VStack gap={1.5}>
+              <TextInput label={`Your repos (${account.login})`} size="sm" value={filter} onChange={setFilter} placeholder="Filter…" hasClear />
+              <Card variant="muted" padding={0}>
+                <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+                  {!repos ? (
+                    <Spinner size="sm" label="Loading repos…" />
+                  ) : (
+                    <List density="compact">
+                      {shown.map((r) => (
+                        <ListItem
+                          key={r.nameWithOwner}
+                          label={r.nameWithOwner}
+                          description={[r.isPrivate ? "Private" : "Public", r.description].filter(Boolean).join(" · ")}
+                          isSelected={repo === r.nameWithOwner}
+                          onClick={() => setRepo(r.nameWithOwner)}
+                        />
+                      ))}
+                    </List>
+                  )}
+                </VStack>
+              </Card>
+            </VStack>
+          )}
+        </VStack>
+      )}
     </Frame>
   );
 }
