@@ -12,6 +12,12 @@ import { act } from "../store";
 import { PlanRequestCard } from "./PlanReview";
 
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
+/**
+ * SelectableCard ignores a click while text inside it is selected, and a click on the option's words
+ * that moves a pixel or two selects some: the pick was dropped, and so was every click after it
+ * until the selection went away. Option text isn't selectable, so a click always picks.
+ */
+const noSelect: CSSProperties = { userSelect: "none", WebkitUserSelect: "none" };
 
 export function UiRequests({ sessionId, requests }: { sessionId: string; requests: UiRequest[] }) {
   return (
@@ -34,7 +40,7 @@ function summarizeTool(input: any): string {
 function Option({ label, description, on, onPick }: { label: string; description?: string; on: boolean; onPick: () => void }) {
   return (
     <SelectableCard label={label} isSelected={on} onChange={onPick} padding={2} width="100%">
-      <VStack gap={0.5}>
+      <VStack gap={0.5} style={noSelect}>
         <Text>{label}</Text>
         {description && <Text type="supporting">{description}</Text>}
       </VStack>

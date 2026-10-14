@@ -1,5 +1,6 @@
 // Cloning a repository into a new project. GitHub repos go over SSH (git@github.com:org/repo.git)
-// so the machine's own SSH key is what authenticates, whatever form the URL was typed in.
+// so the machine's own SSH key is what authenticates, whatever form the URL was typed in. Without
+// a key GitHub takes, a logged-in GitHub CLI clones it instead (HTTPS).
 
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -46,25 +47,48 @@ export async function cloneRepo(input: string, parent: string): Promise<string> 
     if (sameRepo(dest, url)) return dest;
     throw new Error(`${dest} already exists`);
   }
-  const proc = Bun.spawn(["git", "clone", "--", url, dest], {
+  const deadline = Date.now() + CLONE_TIMEOUT_MS;
+  let how = `git clone ${url}`;
+  let r = await spawn(["git", "clone", "--", url, dest], deadline);
+  // No SSH key GitHub takes: the GitHub CLI's login (HTTPS) may still get in.
+  const gh = url.match(/^git@github\.com:(.+)\.git$/)?.[1];
+  if (r.code !== 0 && !r.timedOut && gh && sshRefused(r.err) && (await ghLoggedIn())) {
+    rmSync(dest, { recursive: true, force: true });
+    how = `gh repo clone ${gh}`;
+    r = await spawn(["gh", "repo", "clone", gh, dest], deadline);
+  }
+  if (r.code !== 0) {
+    rmSync(dest, { recursive: true, force: true });
+    if (r.timedOut) throw new Error(`Cloning ${url} took over ${CLONE_TIMEOUT_MS / 1000} s. Clone it in a terminal, then add the folder.`);
+    const lines = r.err.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("Cloning into"));
+    throw new Error(`${how} failed: ${lines.slice(-3).join(" ") || `exit ${r.code}`}`);
+  }
+  return dest;
+}
+
+/** git's complaint when GitHub turned the SSH connection away (no key, a key without access, an unknown host). */
+export const sshRefused = (err: string) => /Permission denied \(publickey|Host key verification failed|Repository not found|Could not read from remote repository/i.test(err);
+
+async function ghLoggedIn(): Promise<boolean> {
+  if (!Bun.which("gh")) return false;
+  return (await spawn(["gh", "auth", "status"], Date.now() + 10_000)).code === 0;
+}
+
+async function spawn(cmd: string[], deadline: number): Promise<{ code: number; err: string; timedOut: boolean }> {
+  const proc = Bun.spawn(cmd, {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "pipe",
     env: {
       ...process.env,
       GIT_TERMINAL_PROMPT: "0",
+      GH_PROMPT_DISABLED: "1",
       // No passphrase or password prompts (nobody can answer them); trust a host seen for the first time.
       GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
     },
   });
-  const timer = setTimeout(() => proc.kill(), CLONE_TIMEOUT_MS);
+  const timer = setTimeout(() => proc.kill(), Math.max(0, deadline - Date.now()));
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   clearTimeout(timer);
-  if (code !== 0) {
-    rmSync(dest, { recursive: true, force: true });
-    if (proc.signalCode) throw new Error(`Cloning ${url} took over ${CLONE_TIMEOUT_MS / 1000} s. Clone it in a terminal, then add the folder.`);
-    const lines = err.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("Cloning into"));
-    throw new Error(`git clone ${url} failed: ${lines.slice(-3).join(" ") || `exit ${code}`}`);
-  }
-  return dest;
+  return { code, err, timedOut: !!proc.signalCode };
 }

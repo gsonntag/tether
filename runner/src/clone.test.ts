@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloneRepo, parseRepo } from "./clone";
+import { cloneRepo, parseRepo, sshRefused } from "./clone";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -47,5 +47,15 @@ describe("cloneRepo", () => {
     Bun.spawnSync(["git", "init", "-q", dest]);
     Bun.spawnSync(["git", "-C", dest, "remote", "add", "origin", "https://github.com/acme/widget"]);
     expect(await cloneRepo("git@github.com:acme/widget.git", parent)).toBe(dest);
+  });
+});
+
+describe("sshRefused", () => {
+  test("GitHub turning the key away falls back to gh; other failures don't", () => {
+    expect(sshRefused("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.")).toBe(true);
+    expect(sshRefused("Host key verification failed.")).toBe(true);
+    expect(sshRefused("ERROR: Repository not found.\nfatal: Could not read from remote repository.")).toBe(true);
+    expect(sshRefused("fatal: destination path 'x' already exists")).toBe(false);
+    expect(sshRefused("ssh: Could not resolve hostname github.com")).toBe(false);
   });
 });
