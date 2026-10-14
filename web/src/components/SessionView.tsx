@@ -369,6 +369,7 @@ function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveSta
               metadata={
                 <HStack gap={0.5} hAlign="end" vAlign="center">
                   <Button label="Queue instead" variant="ghost" size="sm" tooltip="Send after this turn instead" onClick={() => edit(p.id, { mode: "followUp" })} />
+                  <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />
                   <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
                 </HStack>
               }
@@ -427,6 +428,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
           </StackItem>
           <HStack gap={0.5} vAlign="center">
             <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
+            {state.status === "running" && <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />}
             <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
           </HStack>
         </HStack>
@@ -530,13 +532,18 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
     historyDraft.current = "";
   };
 
-  const send = async (mode?: "steer" | "followUp") => {
+  /** force: stop the running turn and send this now, ahead of anything waiting */
+  const send = async (mode?: "steer" | "followUp" | "force") => {
     const t = text.trim();
-    if (!canSend) return;
+    if (!canSend || (mode === "force" && shell)) return;
     const files = ready.map((d) => d.attachment!);
     clearHistoryNavigation();
     setText("");
-    const r = await act("prompt", { sessionId, text: t, mode: running ? (mode ?? "steer") : undefined, ...(files.length ? { attachments: files } : {}) });
+    const attach = files.length ? { attachments: files } : {};
+    const r =
+      mode === "force" && running
+        ? await act("forceSend", { sessionId, text: t, ...attach })
+        : await act("prompt", { sessionId, text: t, mode: running ? (mode === "force" ? "steer" : (mode ?? "steer")) : undefined, ...attach });
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
   };
@@ -616,6 +623,11 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
       }
       return;
     }
+    if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey) && running && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      send("force");
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       // Always ours: the input's own submit doesn't know steer from queue.
       e.preventDefault();
@@ -630,7 +642,7 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
 
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
   const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued || drafts.length > 0;
-  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue for after)" : "Message the agent… (/ for skills and commands)";
+  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue, ⌘⇧Enter to stop and send now)" : "Message the agent… (/ for skills and commands)";
 
   const drawer = hasDrawer ? (
     <ChatComposerDrawer>
@@ -743,6 +755,9 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
           <>
             {running && <Button label="Stop" variant="destructive" size="sm" icon={<Icon icon="stop" />} onClick={() => act("abort", { sessionId })} />}
             {running && !shell && <Button label="Queue" size="sm" isDisabled={!canSend} onClick={() => send("followUp")} />}
+            {running && !shell && (
+              <Button label="Force send" size="sm" isDisabled={!canSend} tooltip="Stop the agent and send this now (⌘⇧↵)" onClick={() => send("force")} />
+            )}
           </>
         }
         sendButton={

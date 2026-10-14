@@ -850,6 +850,8 @@ export interface Ops {
   removeSession: { args: { sessionId: string }; result: {} };
   /** attachments: files uploaded with uploadAttachment, listed at the end of the message */
   prompt: { args: { sessionId: string; text: string; mode?: "steer" | "followUp"; attachments?: Attachment[] }; result: {} };
+  /** Stops the running turn and sends now, ahead of everything waiting: a new message (`text`) or a waiting one (`id`). */
+  forceSend: { args: { sessionId: string; text?: string; id?: string; attachments?: Attachment[] }; result: {} };
   /**
    * One chunk of a file attached to a message (base64 `data` at byte `offset`). Chunks may arrive
    * in any order; the one that completes the file returns it.

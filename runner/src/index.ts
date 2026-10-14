@@ -599,6 +599,19 @@ const ops: Handlers = {
     return {};
   },
 
+  async forceSend({ sessionId, text, id, attachments }) {
+    const s = requireLive(sessionId);
+    if (id) {
+      await s.forceSend({ id });
+      return {};
+    }
+    const files = checkAttachments(attachments);
+    if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
+    if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
+    return {};
+  },
+
   async uploadAttachment(args) {
     return receiveChunk(args);
   },

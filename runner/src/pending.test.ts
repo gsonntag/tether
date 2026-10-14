@@ -250,3 +250,53 @@ describe("pending messages", () => {
     expect(() => s.amendSteer(msgId, "green")).toThrow();
   });
 });
+
+describe("force send", () => {
+  test("running: stops the turn and starts the next one with the message, ahead of what's waiting", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("later", "followUp");
+    await s.forceSend({ text: "stop, do this instead" });
+    expect(log).toEqual(["turn: go", "abort", "turn: stop, do this instead"]);
+    expect(texts()).toEqual(["followUp:later"]);
+    expect(s.t.state.pendingHeld).toBeUndefined();
+  });
+
+  test("a waiting message can be forced: it leaves its place and goes first", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("first", "followUp");
+    await s.prompt("second", "followUp");
+    const id = s.t.state.pending!.find((p) => p.text === "second")!.id;
+    await s.forceSend({ id });
+    expect(log).toEqual(["turn: go", "abort", "turn: second"]);
+    expect(texts()).toEqual(["followUp:first"]);
+  });
+
+  test("a steer that hasn't gone in yet doesn't slip into the stopped turn", async () => {
+    const { s, log } = fake();
+    await s.prompt("go");
+    await s.prompt("small steer", "steer");
+    await s.forceSend({ text: "now" });
+    await tick();
+    expect(log).toEqual(["turn: go", "abort", "turn: now", "steer: small steer"]);
+  });
+
+  test("idle after Stop: goes first and releases the hold", async () => {
+    const { s, log, texts } = fake();
+    await s.prompt("go");
+    await s.prompt("held", "followUp");
+    await s.stop();
+    expect(s.t.state.pendingHeld).toBe(true);
+    await s.forceSend({ text: "urgent" });
+    expect(log).toEqual(["turn: go", "abort", "turn: urgent"]);
+    expect(texts()).toEqual(["followUp:held"]);
+    expect(s.t.state.pendingHeld).toBeUndefined();
+  });
+
+  test("an id that was already sent is an error", async () => {
+    const { s } = fake();
+    await s.prompt("go");
+    await expect(s.forceSend({ id: "nope" })).rejects.toThrow("already sent");
+  });
+});
