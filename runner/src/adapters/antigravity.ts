@@ -21,9 +21,13 @@ import { agyUsage, knownWindow } from "../contextWindow";
 import { kindOf } from "../guard";
 import { attachmentsDir } from "../attachments";
 import { LiveSession, newId } from "../session";
-import { sessionContext, withPreamble } from "../context/inject";
+import { agyQuota } from "../fallback";
+import { agyFault, type Fault } from "../faults";
+import { sessionLaunch } from "../connectors/launch";
+import { withPreamble } from "../context/inject";
 import { AGY_MODES, AgyStream, APPROVING_MODES, cleanArgs, DEFAULT_EFFORT, effortOf, hookConfig, HookWatch, parseModels, planArtifact, planId, sessionMode, spawnArgs, transcriptPath, transcriptToMessages } from "./agy";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { agentEnv } from "../secrets";
 import { agyPick, lastLineTime } from "./lastActivity";
 
 const AGY_BIN = process.env.AGY_BIN ?? "agy";
@@ -131,6 +135,8 @@ function loadModels(): Promise<ModelRef[]> {
 // ---------------- session ----------------
 
 class AgySession extends LiveSession {
+  /** plan mode's plans go up for review before its first change (see checkTool) */
+  protected nativePlanReview = true;
   private proc?: ReturnType<typeof Bun.spawn>;
   /** the previous process, until it has exited (agy keeps the conversation open until then) */
   private exiting?: Promise<unknown>;
@@ -228,7 +234,7 @@ class AgySession extends LiveSession {
     }
     this.setState({ status: "idle", model: this.model ?? "default", modes: MODES, permissionMode: this.mode, ...this.effortState() });
     // Master context: shared memory goes ahead of the first message of a new conversation.
-    if (!this.convId) this.preamble = (await sessionContext(this.projectPath))?.prompt;
+    if (!this.convId) this.preamble = (await sessionLaunch("antigravity", { projectPath: this.projectPath })).preamble;
   }
 
   /** The attachment folders the running process was given (--add-dir). */
@@ -245,7 +251,7 @@ class AgySession extends LiveSession {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...this.guardEnv },
+      env: agentEnv(this.guardEnv),
     });
     this.proc = proc;
     this.stale = false;
@@ -293,7 +299,11 @@ class AgySession extends LiveSession {
     if (unguarded) return this.unguarded(proc, unguarded);
     const r = this.stream.event(raw);
     if (r.conversationId && r.conversationId !== this.convId) this.adopt(r.conversationId);
-    if (r.result && this.proc === proc) await this.onResult(r.error);
+    if (r.result && this.proc === proc) {
+      // A turn that ended before its simulated limit fired ends with it anyway.
+      const fault = this.takeFault();
+      await this.onResult(fault ? this.faultError(fault) : r.error);
+    }
   }
 
   /** agy is running without the guard: kill it before it does anything else. */
@@ -376,7 +386,7 @@ class AgySession extends LiveSession {
     this.save();
     if (error) {
       const hadMsg = !!this.stream.msgId;
-      if (await this.handleTurnError(error)) {
+      if (await this.handleTurnError(error, undefined, agyQuota(error))) {
         this.stream.finish();
         return;
       }
@@ -426,6 +436,25 @@ class AgySession extends LiveSession {
       if (this.exiting === done) this.exiting = undefined;
     });
     this.exiting = done;
+  }
+
+  /**
+   * A simulated limit (faults.ts): agy is stopped like Stop does (its own "interrupted" result is
+   * ignored, see stopProcess), and the turn ends with agy's own error events instead.
+   */
+  protected async faultInterrupt() {
+    const fault = this.takeFault();
+    if (!fault) return;
+    this.stopTail();
+    this.stopProcess(false);
+    await this.onResult(this.faultError(fault));
+  }
+
+  /** agy's own events for the simulated error, through the stream parser; the error it yields. */
+  private faultError(fault: Fault): string | undefined {
+    let error: string | undefined;
+    for (const raw of agyFault(fault)) error = this.stream.event(raw).error ?? error;
+    return error;
   }
 
   // Headless agy has no steering: steers wait for the end of the turn like queued messages.
@@ -676,6 +705,20 @@ export const antigravityAdapter: Adapter = {
       ts: message.ts,
     }));
   },
+
+  async storedHistory(nativeId: string, _projectPath: string) {
+    const record = records().find((r) => r.id === nativeId);
+    const entries = record?.convId ? readTranscript(record.convId) : undefined;
+    const settings = { model: record?.model ?? "default", thinking: record?.model ? undefined : record?.effort, permissionMode: sessionMode(record?.mode) };
+    if (!entries) return { messages: await antigravityAdapter.readHistory!(nativeId, _projectPath), ...settings };
+    const h = transcriptToMessages(entries, record?.model);
+    const model = record?.model;
+    const c = h.usage ? agyUsage(h.usage, model) : undefined;
+    const context = c && !model ? { ...c, max: knownWindow("gemini"), maxEstimated: true } : c;
+    return { messages: h.messages, context, ...settings };
+  },
+
+  modes: MODES,
 
   create(projectPath, opts, sink) {
     return new AgySession({ nativeId: crypto.randomUUID(), projectPath }, sink, opts);

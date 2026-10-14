@@ -15,6 +15,12 @@ export const HARNESSES: { id: HarnessId; label: string; badge: string }[] = [
   { id: "antigravity", label: "Antigravity", badge: "agy" },
 ];
 
+/**
+ * Harnesses whose sessions open only by starting their agent (it alone can replay the
+ * conversation). The others show a stored conversation without it; the agent starts when you send.
+ */
+export const STARTS_ON_OPEN: ReadonlySet<HarnessId> = new Set<HarnessId>(["kiro"]);
+
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";
@@ -46,6 +52,8 @@ export type Part =
       guard?: GuardVerdict;
       /** The guard's judge model is deciding this call; cleared by the verdict or the call ending. */
       judging?: boolean;
+      /** A blocked shell command the user ran from Tether instead ("Run it myself"). */
+      userRun?: { status: "running" | "done"; exitCode?: number; output?: string };
     }
   | {
       /**
@@ -88,7 +96,8 @@ export const GUARD_MODES: { id: GuardMode; label: string }[] = [
 
 export interface GuardVerdict {
   decision: "allow" | "deny";
-  by: "rule" | "judge" | "user" | "mode";
+  /** hook: one of your PreToolUse hooks (runner/src/hooks.ts) */
+  by: "rule" | "judge" | "user" | "mode" | "hook";
   reason?: string;
 }
 
@@ -210,6 +219,11 @@ export interface Msg {
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
+  /**
+   * notice: a button under it. "continueOn": move the session to a chain entry (continueOn op);
+   * "mcpAuth": sign in to a registry MCP server (startMcpAuth)
+   */
+  action?: { kind: "continueOn"; label: string; entry: string } | { kind: "mcpAuth"; label: string; server: string };
 }
 
 import type { Attachment } from "./attachments";
@@ -264,6 +278,134 @@ export interface UiRequest {
   planId?: string;
 }
 
+// ---------- goal (/goal, runner/src/goal.ts) ----------
+
+/** active: Tether keeps the agent going; the others stop the loop until resumed. */
+export type GoalStatus = "active" | "paused" | "done" | "blocked" | "budget";
+
+/** An optional limit the user set; a goal without one runs until it's done. */
+export interface GoalBudget {
+  turns?: number;
+  tokens?: number;
+  /** wall time while active, in ms */
+  ms?: number;
+}
+
+export interface GoalNote {
+  ts: number;
+  text: string;
+  /** agent: goal_update; tether: the loop, the guard or the done check; user: a /goal command */
+  by: "agent" | "tether" | "user";
+}
+
+export interface SessionGoal {
+  objective: string;
+  status: GoalStatus;
+  budget?: GoalBudget;
+  /** what the goal has used so far (tokens: as the harness reports them, approximate) */
+  used: { turns: number; tokens: number; ms: number };
+  /** progress notes, oldest first (capped) */
+  notes: GoalNote[];
+  /** why it stopped, for paused / blocked / budget / done */
+  reason?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** the harness's own goal mirrors it (Codex thread goals) */
+  native?: boolean;
+}
+
+// ---------- loops and schedules (/loop, /schedule, runner/src/schedule.ts) ----------
+
+/**
+ * A prompt the runner sends to the session on a timer, as a queued user message:
+ *   loop  every `everyMs` (/loop 10m …)
+ *   cron  on a 5-field cron expression in the runner's local time (/schedule 0 9 * * 1-5 …)
+ *   once  once, at `nextAt` (/schedule at 15:00 …, /schedule in 2h …)
+ */
+export interface SessionSchedule {
+  id: string;
+  kind: "loop" | "cron" | "once";
+  prompt: string;
+  everyMs?: number;
+  cron?: string;
+  /** how it was written: "every 10m", "0 9 * * 1-5", "at 15:00" */
+  label: string;
+  /** when it runs next */
+  nextAt: number;
+  lastRunAt?: number;
+  runs: number;
+  createdAt: number;
+}
+
+// ---------- plan and todos (plan_set / todo_set, runner/src/plan.ts) ----------
+
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/**
+ * The session's plan, kept by Tether so it survives a handoff: the latest plan the agent wrote
+ * (plan_set, Claude Code's ExitPlanMode, a Codex plan-mode plan, …) and its todo list.
+ *   draft     written, not (yet) up for review
+ *   review    waiting for the user's approval
+ *   approved  the user approved it
+ *   feedback  the user sent it back with comments
+ */
+export interface SessionPlan {
+  text: string;
+  todos: TodoItem[];
+  status: "draft" | "review" | "approved" | "feedback";
+  /** the transcript's plan part that shows it */
+  partId?: string;
+  updatedAt: number;
+}
+
+// ---------- review (/review, runner/src/review.ts) ----------
+
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+
+/** One finding a review reported (the tether-context tool review_report). */
+export interface ReviewFinding {
+  /** relative to the project directory */
+  file: string;
+  /** in the file as it is now */
+  line?: number;
+  severity: ReviewSeverity;
+  issue: string;
+  fix: string;
+}
+
+/**
+ * A review of the session's changes (/review), run by another harness or model in a read-only
+ * session of its own, shown as one card in the session it reviewed.
+ *   starting  the review session is being started
+ *   running   the reviewer is working
+ *   done      it reported (findings may be empty)
+ *   failed    it ended without a report, or couldn't start (`error`)
+ */
+export interface SessionReview {
+  id: string;
+  status: "starting" | "running" | "done" | "failed";
+  /** the review session, once it exists */
+  sessionId?: string;
+  harness: HarnessId;
+  model?: string;
+  focus?: string;
+  /** what was reviewed: the session's changes when the review started */
+  stat?: DiffStat;
+  findings: ReviewFinding[];
+  /** the reviewer's one-line verdict */
+  summary?: string;
+  error?: string;
+  /** findings already sent to the agent, by index */
+  sent: number[];
+  /** the card sits after this transcript message (the last one when the review started) */
+  afterMsgId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface UiResponse {
   id: string;
   cancelled?: boolean;
@@ -283,6 +425,8 @@ export interface LiveState {
   /** shown while status=waiting (quota reset, backoff) */
   waitingReason?: string;
   waitingUntil?: number;
+  /** a check running between turns, shown inline in the chat ("Checking usage on GPT-5…"); null when done (undefined doesn't survive JSON) */
+  checking?: string | null;
   model?: string;
   /** model profile the chain came from, if any */
   profile?: string;
@@ -293,6 +437,8 @@ export interface LiveState {
   /** linked sessions: where this one came from / went to */
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
+  /** a fork ("Fork from here"): the session it was forked from, and where */
+  forkedFrom?: { sessionId: string; reason: string };
   thinking?: string;
   permissionMode?: string;
   /** who approves tool calls: a person, the guard (rules + judge), or nobody */
@@ -324,8 +470,70 @@ export interface LiveState {
   contextPercent?: number;
   /** how full the model's context window is, as of its last request */
   context?: ContextUsage;
+  /** the session's goal (/goal); Tether keeps the agent working while it is active. null: cleared
+   *  (an undefined field doesn't survive JSON, so browsers would keep the old goal) */
+  goal?: SessionGoal | null;
+  /** the session's plan and todo list (null: none; see SessionGoal for why not undefined) */
+  plan?: SessionPlan | null;
+  /** Tether's loops and schedules (/loop, /schedule), soonest first; [] when none */
+  schedules?: SessionSchedule[];
+  /** reviews of this session's changes (/review), oldest first */
+  reviews?: SessionReview[];
+  /** this session is a read-only review of another one (/review): the guard holds back every change */
+  reviewOf?: { sessionId: string; reviewId: string };
   /** plan reviews by plan id (shared/plan.ts); present (maybe empty) once the runner keeps them */
   plans?: Record<string, PlanReviewState>;
+  /** cross-harness subagents this session started (agent_start, runner/src/crossAgents.ts), oldest first */
+  subagents?: SubagentLink[];
+  /** this session is a cross-harness subagent: who started it */
+  startedBy?: StartedBy;
+}
+
+/** A cross-harness subagent: a Tether session started by another one with agent_start. */
+export interface SubagentLink {
+  /** its name, unique among the parent's subagents: what the agent_* tools take as `id` */
+  id: string;
+  /** the subagent's session (the latest, if it moved on to another session since) */
+  sessionId: string;
+  harness: HarnessId;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  guard: GuardMode;
+  task: string;
+  cwd: "worktree" | "shared";
+  /** where it works */
+  path: string;
+  /** cwd "worktree": its git worktree, branch and the commit it started from */
+  worktree?: { path: string; branch: string; base: string; repo?: string };
+  /** working: a turn is running; waiting: it waits for the user (a question or an approval) */
+  status: "working" | "waiting" | "finished" | "failed" | "stopped";
+  startedAt: number;
+  endedAt?: number;
+  /** turns it has ended, and how many of those the parent was told about (agent_wait or a message) */
+  turns: number;
+  told: number;
+  /** the start of its last report */
+  report?: string;
+  /** what it left running when its last turn ended (a dev server, a watch) */
+  background?: string[];
+  /** agent_message calls the parent made to it */
+  messages?: number;
+}
+
+export interface StartedBy {
+  /** the parent session */
+  sessionId: string;
+  /** its name among the parent's subagents (SubagentLink.id) */
+  name: string;
+  /** 1: started by a top-level session, 2: by a subagent */
+  depth: number;
+  /** the top-level session of the tree */
+  rootId: string;
+  /** the parent's project folder: the session is listed there, also when it works in a worktree */
+  projectPath: string;
+  /** its own worktree (made again from the branch if it was removed), and the repository it belongs to */
+  worktree?: { path: string; branch: string; repo: string };
 }
 
 export interface ContextUsage {
@@ -368,9 +576,25 @@ export interface UsageReport {
 /** Which subscription's limits a harness/model draws on (undefined: pay-as-you-go or unknown). */
 export function usageProvider(harness: string | undefined, model?: string): ProviderUsage["provider"] | undefined {
   if (harness === "claude-code") return "claude";
-  if (harness === "codex") return "codex";
+  // A Codex model routed to another provider ("openrouter/x", "ollama/y") isn't on the ChatGPT login.
+  if (harness === "codex") return codexOnChatGpt(model) ? "codex" : undefined;
   if (model?.startsWith("openai-codex/")) return "codex";
   return undefined;
+}
+
+/** A Codex model id on the ChatGPT account: a bare id, or one routed to "openai/…". */
+export function codexOnChatGpt(model?: string): boolean {
+  const i = model?.indexOf("/") ?? -1;
+  return i <= 0 || model!.slice(0, i) === "openai";
+}
+
+/**
+ * Whether a usage limit on this chain entry moves the session down the chain on its own: Tether
+ * can confirm the limit, from the harness's own limit error (Claude Code, Codex, Antigravity) or
+ * by reading the account's usage (pi on the ChatGPT login). Anything else only offers "Continue on …".
+ */
+export function switchesAutomatically(harness: string | undefined, model?: string): boolean {
+  return !!usageProvider(harness, model) || harness === "antigravity";
 }
 
 /** Older runners' flat list (newer ones send `activity`); also what a restart reports as stopped. */
@@ -446,6 +670,9 @@ export interface ActivityItem {
   worktree?: { path?: string; branch?: string };
   /** the final report, or why it failed */
   summary?: string;
+  /** a cross-harness subagent (agent_start): its own Tether session, and the harness it runs in */
+  sessionId?: string;
+  harness?: HarnessId;
   // shell, monitor
   command?: string;
   /** the last lines of output */
@@ -528,6 +755,10 @@ export interface PendingMessage {
   ts: number;
   /** steer: when its grace period ends and it may go to the agent */
   readyAt?: number;
+  /** a run of this loop or schedule (SessionSchedule.id): one at a time waits, more collapse into it */
+  scheduleId?: string;
+  /** written by Tether or another agent (a note about a subagent, a parent's message): never joined with yours in one turn */
+  alone?: boolean;
 }
 
 export interface SessionSummary {
@@ -554,9 +785,22 @@ export interface SessionSummary {
   runningKinds?: Partial<Record<ActivityKind, number>>;
   /** of those, the ones working now (not an armed wakeup or cron job); sent with activeCount */
   workingCount?: number;
+  /** a review session (/review): the session it reviews. Listed under that one, not in the sidebar */
+  reviewOf?: string;
+  /** a cross-harness subagent: the session that started it (agent_start) */
+  startedBy?: { sessionId: string; name: string; title?: string };
+  /** the project folder it's listed in, when that isn't `projectPath` (a subagent in its own worktree) */
+  listedUnder?: string;
   /** when you last opened it, on any device (markViewed) */
   viewedAt?: number;
+  /** its goal (/goal) is active: Tether keeps it working, between turns too */
+  goalActive?: boolean;
+  /** its soonest Tether loop or schedule run (/loop, /schedule): it will work again then */
+  nextRunAt?: number;
 }
+
+/** The project folder a session is listed in: its own, or its parent's for a subagent working in a worktree. */
+export const listPath = (s: Pick<SessionSummary, "projectPath" | "listedUnder">): string => s.listedUnder ?? s.projectPath;
 
 /**
  * How session lists sort: by the time of the most recent user or agent message (`updatedAt`),
@@ -620,6 +864,8 @@ export interface SessionPulse {
   diffStat?: DiffStat;
   /** when its last turn ended */
   finishedAt?: number;
+  /** its soonest Tether loop or schedule run (/loop, /schedule) and how many it has */
+  nextRun?: { at: number; label: string; count: number };
   /** its latest notice (finished, blocked, a question), for Home on devices that follow another runner's */
   notice?: AgentNotice;
 }
@@ -765,6 +1011,8 @@ export interface ContextImportPreview {
   managedFiles: string[];
   /** MCP configs where `tether-context` will be registered */
   mcpConfigs: string[];
+  /** MCP servers in the harnesses' configs that the import adds to Tether's MCP registry (older runners: absent) */
+  mcpServers?: string[];
   /** sources that couldn't be read (shown, not fatal) */
   warnings: string[];
 }
@@ -814,15 +1062,175 @@ export type ContextEvent =
   | { type: "conflict"; conflict: MemoryConflict }
   | { type: "status"; status: ContextStatus };
 
+/** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact" | "review" | "crossAgents";
+
+/** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
+export type CapabilityLevel = "native" | "emulated" | "unsupported";
+
+export interface SlotCapability {
+  level: CapabilityLevel;
+  /** a short human note: how, or why not */
+  note: string;
+}
+
+/** The capability matrix: what each harness supports per slot. */
+export type HarnessCapabilities = Record<HarnessId, Record<SlotId, SlotCapability>>;
+
+// ---------- MCP registry (runner/src/mcp/) ----------
+
+/** How a registry MCP server is reached. */
+export type McpTransport =
+  | { type: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string }
+  | { type: "http" | "sse"; url: string; headers: Record<string, string> };
+
+/**
+ * How one harness gets a registry server:
+ *   session  injected into each Tether session at launch
+ *   global   written into the harness's own global config (no per-session path)
+ *   native   already in the harness's own config: left alone, not injected again
+ *   none     not delivered (turned off, out of scope, or the harness can't take it)
+ */
+export interface McpDelivery {
+  harness: HarnessId;
+  how: "session" | "global" | "native" | "none";
+  note: string;
+}
+
+/** Where a registry server applies: every project, or the repos it's linked to ("repo:<repo-key>"). */
+export type McpScope = "global" | string[];
+
+/** A registry server as the web app sees it: env and header values stay on the runner. */
+export interface McpServerView {
+  id: string;
+  name: string;
+  scope: McpScope;
+  enabled: boolean;
+  /** its tools are allowed by the guard without the judge or a person */
+  trusted: boolean;
+  type: McpTransport["type"];
+  /** the command line or URL */
+  summary: string;
+  envKeys: string[];
+  headerKeys: string[];
+  /** provenance: "claude:~/.claude.json", "codex:~/.codex/config.toml", "you", … */
+  sources: string[];
+  delivery: McpDelivery[];
+  /**
+   * an http/SSE server Tether can sign in to (no Authorization header of its own, and not one that
+   * answered without credentials)
+   */
+  oauth?: boolean;
+  /** its OAuth sign-in, when it has or needs one */
+  auth?: McpAuthStatus;
+}
+
+/**
+ * An MCP server's OAuth sign-in (tokens stay on the runner):
+ *   connected  Tether holds a token (refreshed at launch when it runs out)
+ *   needs      the server asks for a sign-in and there is no token
+ *   expired    the token ran out and couldn't be refreshed: sign in again
+ */
+export type McpAuthStatus = "connected" | "needs" | "expired";
+
+/** startMcpAuth: the sign-in page to open, or the authorization server can't register Tether by itself. */
+export type McpAuthStart = { url: string } | { needsClient: true; redirectUri: string };
+
+export interface McpFindResult {
+  servers: McpServerView[];
+  /** names of servers new to the registry */
+  added: string[];
+  warnings: string[];
+}
+
+// ---------- hooks (runner/src/hooks.ts) ----------
+
+/** The Claude Code hook events Tether runs for every harness. */
+export type HookEventName = "PreToolUse" | "PostToolUse" | "Stop" | "UserPromptSubmit";
+
+/** One hook as the web app sees it: Claude Code's matcher group shape, plus on/off and where it came from. */
+export interface HookView {
+  id: string;
+  event: HookEventName;
+  /** tool-name matcher (Claude-style: `Bash`, `Edit|Write`, `mcp__github__.*`); empty: every tool */
+  matcher: string;
+  hooks: { type: "command"; command: string; timeout?: number }[];
+  enabled: boolean;
+  /** "you", or the settings file it was imported from ("claude:~/.claude/settings.json") */
+  sources: string[];
+  /** Claude Code runs it itself from its own settings, so Tether doesn't run it again there */
+  claudeNative?: boolean;
+}
+
+export interface HookFindResult {
+  hooks: HookView[];
+  /** how many hooks were new */
+  added: number;
+  warnings: string[];
+}
+
+// ---------- commands, subagents, secrets (runner/src/commands.ts, subagents.ts, secrets.ts) ----------
+
+/** One of your custom `/` commands in Tether's library. */
+export interface LibraryCommandView {
+  id: string;
+  name: string;
+  description: string;
+  /** the template */
+  body: string;
+  argumentHint?: string;
+  /** whose argument rules fill it: Claude Code's ($ARGUMENTS, $0 is the first) or the shell-like ones ($1 is the first, $@) */
+  style: "claude" | "shell";
+  enabled: boolean;
+  /** "you", or the file it was imported from ("claude:~/.claude/commands/fix.md") */
+  sources: string[];
+}
+
+export interface CommandFindResult {
+  commands: LibraryCommandView[];
+  /** names new to the library */
+  added: string[];
+  warnings: string[];
+}
+
+/** One of your subagent definitions, and how each harness gets it. */
+export interface SubagentView {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  tools?: string[];
+  model?: string;
+  enabled: boolean;
+  sources: string[];
+  /** session: handed over at launch; global: written into its agent folder; native: it has its own of that name; none: can't */
+  delivery: { harness: HarnessId; how: "session" | "global" | "native" | "none"; note: string }[];
+}
+
+export interface SubagentFindResult {
+  agents: SubagentView[];
+  added: string[];
+  warnings: string[];
+}
+
+/** A secret's name (its value stays on the runner). */
+export interface SecretView {
+  name: string;
+  updatedAt: number;
+}
+
 /** An entry in the composer's `/` menu. */
 export interface SlashCommand {
   name: string;
   description?: string;
-  /** absent: a harness command (older runners send only these) */
-  kind?: "command" | "skill";
-  /** skill: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
+  /** absent: a harness command (older runners send only these); tether: Tether's own (/goal) */
+  kind?: "command" | "skill" | "tether";
+  /** a skill, or a command from your library: where it comes from ("claude", "codex", "agents", "repo", …), for badges */
   sources?: string[];
-  /** skill: the harness runs it itself; otherwise Tether sends SKILL.md along with the message */
+  /**
+   * a skill: the harness runs it itself, otherwise Tether sends SKILL.md along with the message; a
+   * library command (`sources` set): the harness runs it itself, otherwise Tether fills it in
+   */
   native?: boolean;
 }
 
@@ -885,7 +1293,24 @@ export interface Ops {
   fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
-  approveBlocked: { args: { sessionId: string; toolId: string }; result: {} };
+  /** `confirmed`: required for a call plan mode or a review held back ("by": "mode") */
+  approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
+  /**
+   * "Fork from here": a new session in the same directory with the conversation up to and including
+   * `msgId` (the harness's own fork where it can, else a brief), on `harness` and `model`. On a user
+   * message the new session answers that message again; `prompt` goes after it (or is the first
+   * message, on any other message).
+   */
+  forkSession: { args: { sessionId: string; msgId: string; harness: HarnessId; model?: string; prompt?: string }; result: SessionSummary };
+  /**
+   * A review card's "Send to agent" / "Send all": queues a message asking the agent to fix those
+   * findings (`indexes`; absent: every one not sent yet).
+   */
+  sendReviewFindings: { args: { sessionId: string; reviewId: string; indexes?: number[] }; result: {} };
+  /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
+  continueOn: { args: { sessionId: string; msgId: string }; result: {} };
+  /** runs a blocked shell command on the runner and gives the agent its output */
+  runBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */
@@ -907,6 +1332,8 @@ export interface Ops {
     result: {};
   };
   takePending: { args: { sessionId: string }; result: { text: string } };
+  /** stops a loop or deletes a schedule (/loop, /schedule) */
+  deleteSchedule: { args: { sessionId: string; id: string }; result: {} };
   /** Web Push: the runner's key, and this device's subscription if any (by endpoint) */
   pushStatus: { args: { endpoint?: string }; result: { publicKey: string; kinds?: NotifyKind[] } };
   pushSubscribe: {
@@ -939,6 +1366,8 @@ export interface Ops {
   getUsage: { args: { force?: boolean }; result: UsageReport };
   renameSession: { args: { sessionId: string; projectPath: string; title: string }; result: {} };
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };
+  /** per harness and slot: native, emulated or unsupported (runner/src/connectors/) */
+  harnessCapabilities: { args: {}; result: HarnessCapabilities };
   getProfiles: { args: {}; result: ModelProfile[] };
   setProfiles: { args: { profiles: ModelProfile[] }; result: ModelProfile[] };
   /** the `/` menu: the harness's own commands and the skills this session can run */
@@ -969,6 +1398,55 @@ export interface Ops {
    * copies). The store and its backups are kept; importing again turns it back on.
    */
   contextDisable: { args: {}; result: ContextStatus & { turnedOff?: ContextTurnedOff } };
+  // MCP registry
+  listMcpServers: { args: {}; result: McpServerView[] };
+  /**
+   * Adds servers from pasted text: a command line, a URL, or a JSON snippet (`{"mcpServers": …}`,
+   * `{"name": {…}}` or one server's object). `scope`: "global" or a project path (its repo).
+   */
+  addMcpServer: { args: { text: string; name?: string; scope?: string }; result: McpServerView[] };
+  /**
+   * turns a server on or off, marks it trusted, or removes it (and only Tether's copies in harness
+   * configs); `signOut` drops its OAuth tokens
+   */
+  setMcpServer: { args: { id: string; enabled?: boolean; trusted?: boolean; remove?: boolean; signOut?: boolean }; result: McpServerView[] };
+  /**
+   * Starts an OAuth sign-in for an http/SSE server. `redirectUri` is the app's
+   * `/api/mcp-oauth/callback`; `clientId` (and secret) when its authorization server can't
+   * register Tether by itself.
+   */
+  startMcpAuth: { args: { id: string; redirectUri: string; clientId?: string; clientSecret?: string }; result: McpAuthStart };
+  /** the app server's callback relays the authorization server's answer here */
+  finishMcpAuth: { args: { state: string; code?: string; error?: string; errorDescription?: string; iss?: string }; result: { id: string; name: string } };
+  /** "Find servers": imports every harness's MCP config into the registry */
+  findMcpServers: { args: {}; result: McpFindResult };
+  // Hooks (runner/src/hooks.ts)
+  listHooks: { args: {}; result: HookView[] };
+  /**
+   * Adds hooks from pasted JSON in Claude Code's settings shape: `{"hooks": {"PreToolUse": [...]}}`,
+   * `{"PreToolUse": [...]}`, or one `{"event", "matcher", "hooks"}` entry.
+   */
+  addHooks: { args: { text: string }; result: HookView[] };
+  /** turns a hook on or off, removes it, or replaces it with edited JSON (`{"event", "matcher", "hooks"}`) */
+  setHook: { args: { id: string; enabled?: boolean; remove?: boolean; json?: string }; result: HookView[] };
+  /** "Find hooks": imports the hooks in ~/.claude/settings.json (read only) */
+  findHooks: { args: {}; result: HookFindResult };
+  // Your commands (runner/src/commands.ts)
+  listLibraryCommands: { args: {}; result: LibraryCommandView[] };
+  /** adds a command, or replaces the one with that name: `text` is the template, front matter optional */
+  addLibraryCommand: { args: { name: string; text: string; style?: "claude" | "shell" }; result: LibraryCommandView[] };
+  setLibraryCommand: { args: { id: string; enabled?: boolean; remove?: boolean }; result: LibraryCommandView[] };
+  /** "Find commands": imports every harness's command files (read only) */
+  findLibraryCommands: { args: {}; result: CommandFindResult };
+  // Your subagents (runner/src/subagents.ts)
+  listSubagents: { args: {}; result: SubagentView[] };
+  /** adds a subagent, or replaces the one with that name: `text` is a Claude Code agent file */
+  addSubagent: { args: { text: string; name?: string }; result: SubagentView[] };
+  setSubagent: { args: { id: string; enabled?: boolean; remove?: boolean }; result: SubagentView[] };
+  findSubagents: { args: {}; result: SubagentFindResult };
+  // Env and secrets (runner/src/secrets.ts): values go in, never come back
+  listSecrets: { args: {}; result: SecretView[] };
+  setSecret: { args: { name: string; value?: string; remove?: boolean }; result: SecretView[] };
   getBackgroundModel: { args: {}; result: BackgroundModelSetting };
   setBackgroundModel: { args: { model: string }; result: BackgroundModelSetting };
   setJudgeEnabled: { args: { enabled: boolean }; result: BackgroundModelSetting };

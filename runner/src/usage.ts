@@ -4,24 +4,64 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderUsage, UsageReport, UsageWindow } from "../../web/src/shared/protocol";
+import { userHome } from "./home";
 
 const TTL = 120_000;
 let cache: { at: number; report: UsageReport } | undefined;
 let inflight: Promise<UsageReport> | undefined;
 
 export function getUsage(force = false): Promise<UsageReport> {
-  if (!force && cache && Date.now() - cache.at < TTL) return Promise.resolve(cache.report);
-  inflight ??= Promise.all([claudeUsage(), codexUsage()])
+  if (!force && cache && Date.now() - cache.at < TTL) return Promise.resolve(withSimulated(cache.report));
+  // A simulated provider isn't fetched (Claude's check spawns a process).
+  inflight ??= Promise.all([simulated.claude ? undefined : claudeUsage(), simulated.codex ? undefined : codexUsage()])
     .then((providers) => {
       const report = { providers: providers.filter((p): p is ProviderUsage => !!p), fetchedAt: Date.now() };
       cache = { at: Date.now(), report };
       return report;
     })
     .finally(() => (inflight = undefined));
-  return inflight;
+  return inflight.then(withSimulated);
+}
+
+/** Dev fault injection (faults.ts, `/tether simulate-usage`): stand-in usage per provider, until cleared. */
+const simulated: Partial<Record<ProviderUsage["provider"], ProviderUsage>> = {};
+
+export function simulateUsage(provider: ProviderUsage["provider"], usage?: ProviderUsage) {
+  if (usage) simulated[provider] = usage;
+  else delete simulated[provider];
+  cache = undefined;
+}
+
+/** The stand-in for this account, if one is set (both ChatGPT logins share Codex's). */
+export function simulatedFor(account: UsageAccount): ProviderUsage | undefined {
+  return simulated[account === "claude" ? "claude" : "codex"];
+}
+
+function withSimulated(r: UsageReport): UsageReport {
+  const sim = Object.values(simulated);
+  if (!sim.length) return r;
+  return { ...r, providers: [...r.providers.filter((p) => !simulated[p.provider]), ...sim] };
+}
+
+/**
+ * The logins whose usage Tether can read: Claude Code's, the Codex CLI's ChatGPT login, and pi's
+ * ChatGPT login (openai-codex). The two ChatGPT logins can be different accounts.
+ */
+export type UsageAccount = "claude" | "chatgpt:codex" | "chatgpt:pi";
+
+/**
+ * A fresh fetch for one account, never from the cache: what fallback checks before it marks a
+ * provider exhausted on an error that only looks like a limit.
+ */
+export async function accountUsage(account: UsageAccount): Promise<ProviderUsage | undefined> {
+  usageChanged();
+  const sim = simulatedFor(account);
+  if (sim) return sim;
+  if (account === "claude") return claudeUsage();
+  const auth = account === "chatgpt:pi" ? piAuth() : codexCliAuth();
+  return auth ? codexUsage(auth) : undefined;
 }
 
 /** Marks the cache stale (after a turn ends, usage has moved). */
@@ -39,7 +79,7 @@ async function claudeUsage(): Promise<ProviderUsage | undefined> {
   // A throwaway Claude Code process that never gets a prompt: it only answers the usage request.
   const q = query({
     prompt: idle(),
-    options: { cwd: homedir(), persistSession: false, settingSources: [], tools: [] } as any,
+    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [] } as any,
   });
   try {
     const u: any = await Promise.race([
@@ -65,21 +105,30 @@ async function claudeUsage(): Promise<ProviderUsage | undefined> {
   }
 }
 
-/** pi's ChatGPT login, else the Codex CLI's own (~/.codex/auth.json). Both are the same account kind. */
-function codexAuth(): { access: string; accountId?: string; expires?: number } | undefined {
+type CodexAuth = { access: string; accountId?: string; expires?: number };
+
+function piAuth(): CodexAuth | undefined {
   try {
-    const pi = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
+    const pi = JSON.parse(readFileSync(join(userHome(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
     if (pi?.access) return pi;
   } catch {}
+  return undefined;
+}
+
+function codexCliAuth(): CodexAuth | undefined {
   try {
-    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"), "utf8")).tokens;
+    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(userHome(), ".codex"), "auth.json"), "utf8")).tokens;
     if (t?.access_token) return { access: t.access_token, accountId: t.account_id };
   } catch {}
   return undefined;
 }
 
-async function codexUsage(): Promise<ProviderUsage | undefined> {
-  const auth = codexAuth();
+/** pi's ChatGPT login, else the Codex CLI's own (~/.codex/auth.json). Both are the same account kind. */
+function codexAuth(): CodexAuth | undefined {
+  return piAuth() ?? codexCliAuth();
+}
+
+async function codexUsage(auth = codexAuth()): Promise<ProviderUsage | undefined> {
   if (!auth) return undefined;
   // pi refreshes the token whenever it uses Codex; refreshing here would race it, so an expired
   // token just means "unknown until pi runs again".

@@ -240,3 +240,12 @@ export async function snapshot(cwd: string, ref: string, label: string, previous
   await git(top, ["update-ref", ref, commit]);
   return commit;
 }
+
+/**
+ * The working tree's content as one hash (a git tree, written to the object store like a
+ * checkpoint's, but no commit or ref), or undefined outside git. Two equal hashes: nothing changed.
+ */
+export async function treeHash(cwd: string): Promise<string | undefined> {
+  const top = await root(cwd);
+  return top ? snapshotTree(top).catch(() => undefined) : undefined;
+}

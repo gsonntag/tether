@@ -2,7 +2,7 @@
 
 import "./testenv";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextEvent } from "../../../web/src/shared/protocol";
@@ -10,7 +10,8 @@ import { CONFIG_DIR, config, migrateJudge, normalizeModelEntry } from "../config
 import { isContextTool, rules } from "../guard";
 import { put, seedHome } from "./fixtures";
 import { ContextService } from "./index";
-import { acpMcpServers, sessionContext, setInjectionEnabled, withPreamble } from "./inject";
+import { acpMcpServers } from "../connectors/acp";
+import { sessionContext, setInjectionEnabled, withPreamble } from "./inject";
 import { handle } from "./mcp";
 import type { Decider } from "./merge";
 import { harness } from "./paths";
@@ -209,7 +210,7 @@ describe("MCP server", () => {
     expect(init.result.protocolVersion).toBe("2025-03-26");
     expect(await handle({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list: any = await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get"]);
+    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get", "goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user", "agent_harnesses", "agent_start", "agent_status", "agent_wait", "agent_message", "agent_result", "agent_stop", "agent_list"]);
     const call = async (name: string, args: object) => ((await handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } })) as any).result;
     const prev = process.cwd();
     process.chdir(repo);
@@ -239,7 +240,18 @@ describe("MCP server", () => {
     await sink.end();
     const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.id)).toEqual([1, 2]);
-    expect(lines[1].result.tools.length).toBe(5);
+    expect(lines[1].result.tools.length).toBe(19);
+  });
+
+  test("with the master context off it serves only the session tools", async () => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "mcp.ts")], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, TETHER_CONTEXT_TOOLS: "goal" } });
+    const sink = p.stdin as import("bun").FileSink;
+    sink.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+    sink.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_search", arguments: { query: "x" } } }) + "\n");
+    await sink.end();
+    const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0].result.tools.map((t: any) => t.name)).toEqual(["goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user", "agent_harnesses", "agent_start", "agent_status", "agent_wait", "agent_message", "agent_result", "agent_stop", "agent_list"]);
+    expect(lines[1].result.isError).toBe(true);
   });
 });
 
@@ -329,6 +341,71 @@ describe("progress and turning off", () => {
     // The store and the backups survive.
     expect(existsSync(join(s.store.dir, "backup"))).toBe(true);
     expect(s.listSkills().map((x) => x.name)).toContain("grill");
+    s.stop();
+  });
+
+  test("a skill added to a harness dir later is imported and linked without another Import", async () => {
+    seedSkillsAndConfigs();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    expect(w).toBeDefined();
+    // Our own links (made by the import) never schedule a pass.
+    w.event(harness.agentsSkills(), "grill");
+    expect(w.pending).toBe(false);
+    put(join(harness.claudeSkills(), "later", "SKILL.md"), "---\nname: later\ndescription: later\n---\nadded after import\n");
+    w.event(harness.claudeSkills(), "later");
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "later", "SKILL.md"), "utf8")).toContain("added after import");
+    expect(lstatSync(join(harness.claudeSkills(), "later")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(harness.agentsSkills(), "later")).isSymbolicLink()).toBe(true);
+    expect(s.listSkills().map((x) => x.name)).toContain("later");
+    s.stop();
+  });
+
+  test("a skill dir made before its SKILL.md is watched until the SKILL.md is written", async () => {
+    seedSkillsAndConfigs();
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    const dir = join(harness.claudeSkills(), "slow");
+    mkdirSync(dir);
+    w.event(harness.claudeSkills(), "slow");
+    w.flush();
+    await s.idle();
+    expect(existsSync(join(s.store.skillsDir, "slow"))).toBe(false);
+    expect(w.has(dir)).toBe(true);
+    // The non-recursive skill dir watch never sees this write; the dir's own watch does.
+    put(join(dir, "SKILL.md"), "---\nname: slow\ndescription: slow\n---\nwritten later\n");
+    w.event(dir, "SKILL.md");
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "slow", "SKILL.md"), "utf8")).toContain("written later");
+    expect(lstatSync(dir).isSymbolicLink()).toBe(true);
+    expect(w.has(dir)).toBe(false);
+    s.stop();
+  });
+
+  test("a harness skill dir that appears later gets a pass for the skills already in it", async () => {
+    seedSkillsAndConfigs();
+    rmSync(harness.opencodeSkills(), { recursive: true, force: true });
+    const s = service();
+    await s.runImport();
+    await s.idle();
+    const w = (s as any).skillWatcher;
+    expect(w.has(harness.opencodeSkills())).toBe(false);
+    put(join(harness.opencodeSkills(), "oc", "SKILL.md"), "---\nname: oc\ndescription: oc\n---\nfrom opencode\n");
+    await s.sync();
+    expect(w.has(harness.opencodeSkills())).toBe(true);
+    expect(w.pending).toBe(true);
+    w.flush();
+    await s.idle();
+    expect(readFileSync(join(s.store.skillsDir, "oc", "SKILL.md"), "utf8")).toContain("from opencode");
     s.stop();
   });
 

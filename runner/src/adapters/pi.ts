@@ -2,7 +2,6 @@
 // Protocol: pi docs rpc.md, rpc-commands.md, json.md, rpc-extension-ui.md.
 
 import { open, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
@@ -12,14 +11,23 @@ import { PiActivity } from "./piActivity";
 import { fileURLToPath } from "node:url";
 import { piStats } from "../contextWindow";
 import { LiveSession, newId } from "../session";
-import { piMcpConfig, sessionContext } from "../context/inject";
+import { PLAN_HINT, PLAN_MODE, withoutPlanHint } from "../plan";
+
+/** pi has no modes of its own: "plan" is Tether's (runner/src/plan.ts), enforced by the guard. */
+export const PI_MODES = ["default", PLAN_MODE];
+import { piFault } from "../faults";
+import { sessionLaunch } from "../connectors/launch";
+import { piGoalFilter } from "../connectors/pi";
 import { nativeAttachments } from "../attachments";
 
 const PI_GUARD_EXT = fileURLToPath(new URL("../../hooks/pi-guard.ts", import.meta.url));
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { userHome } from "../home";
+import { agentEnv } from "../secrets";
+import { fileStamp } from "./lastActivity";
 
 const PI_BIN = process.env.PI_BIN ?? "pi";
-const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(homedir(), ".pi", "agent", "sessions");
+const SESSION_DIR = process.env.PI_CODING_AGENT_SESSION_DIR ?? join(userHome(), ".pi", "agent", "sessions");
 
 // ---------------- session files ----------------
 
@@ -166,12 +174,13 @@ function resultText(content: any): string {
 function convertMessage(m: any, messages: Msg[], id: string, fallbackTs = Date.now()): Msg | undefined {
   switch (m.role) {
     case "user": {
-      // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md.
+      // userParts: a `/skill:name` pi expanded shows as a skill chip, not the whole SKILL.md. The
+      // plan-mode note Tether added (send) isn't something you wrote.
       const parts: Part[] =
         typeof m.content === "string"
-          ? userParts(m.content, id)
+          ? userParts(withoutPlanHint(m.content), id)
           : (m.content ?? []).flatMap((b: any, i: number): Part[] =>
-              b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(b.text ?? "", `${id}:${i}`),
+              b.type === "image" ? [{ type: "image", mimeType: b.mimeType, data: b.data }] : userParts(withoutPlanHint(b.text ?? ""), `${id}:${i}`),
             );
       return { id, role: "user", parts, ts: msTime(m.timestamp) || fallbackTs };
     }
@@ -234,7 +243,8 @@ class PiRpc {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...env },
+      // your secrets (secrets.ts), then the guard's env
+      env: agentEnv(env),
     });
     this.readStdout();
     this.readStderr();
@@ -332,12 +342,15 @@ class PiSession extends LiveSession {
     if (this.opts.model) args.push("--model", this.opts.model);
     // Every tool call goes through the Tether guard (pi has no permission system of its own).
     args.push("-e", PI_GUARD_EXT);
-    // Master context: shared memory in the system prompt, and this session's own tether-context
-    // MCP server through pi-mcp-adapter's --mcp-config (else the global mcp.json registration).
-    const ctx = await sessionContext(this.projectPath, { key: this.guardEnv.TETHER_GUARD_KEY });
-    if (ctx) args.push("--append-system-prompt", ctx.prompt);
-    const mcpConfig = piMcpConfig(ctx, this.guardEnv.TETHER_GUARD_KEY);
-    if (mcpConfig) args.push("--mcp-config", mcpConfig);
+    // Its connector: shared memory in the system prompt, and this session's own tether-context
+    // MCP server and the MCP registry's servers through pi-mcp-adapter's --mcp-config (else the
+    // global mcp.json registrations).
+    const launch = await sessionLaunch("pi", { projectPath: this.projectPath, session: { key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+    args.push(...launch.args);
+    // A review session (/review): pi's edit and write tools are off; bash still goes through the guard.
+    if (this.isReviewSession) args.push("--exclude-tools", "edit,write");
+    // pi's own goal extension stays out: Tether's /goal drives goals here (connectors/pi.ts).
+    args.push(...(await piGoalFilter(this.projectPath)).args);
     this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);
     this.rpc.onRecord = (r) => this.onRecord(r);
     this.rpc.onExit = (code, stderr) => {
@@ -357,7 +370,10 @@ class PiSession extends LiveSession {
       status: st.isStreaming ? "running" : "idle",
       model: st.model ? `${st.model.provider}/${st.model.id}` : undefined,
       thinking: st.thinkingLevel,
+      modes: PI_MODES,
+      permissionMode: this.opts.permissionMode === PLAN_MODE ? PLAN_MODE : "default",
     });
+    this.mcpAuthNotice(launch.mcpAuth);
     this.refreshContext();
   }
 
@@ -380,9 +396,13 @@ class PiSession extends LiveSession {
       case "agent_start":
         this.setState({ status: "running" });
         break;
-      case "agent_settled":
+      case "agent_settled": {
+        // A simulated limit (faults.ts): the turn's last reply ends with pi's own provider error.
+        const fault = this.takeFault();
+        if (fault) this.onRecord(piFault(fault, this.t.state.model));
         this.onSettled();
         break;
+      }
       case "message_start":
         if (r.message?.role === "assistant") {
           this.streamingId = newId("a");
@@ -550,7 +570,9 @@ class PiSession extends LiveSession {
   protected async send(text: string) {
     if (await this.preferBest(text)) return;
     this.autoTitle(text);
-    await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
+    // pi doesn't know about Tether's plan mode: the message says so.
+    const message = this.planning() ? `${text}\n\n${PLAN_HINT}` : text;
+    await this.rpc.call("prompt", { message, ...(await piImages(text)) });
   }
 
   protected async steer(text: string) {
@@ -567,6 +589,10 @@ class PiSession extends LiveSession {
     await this.rpc.call("abort");
   }
 
+  protected async faultInterrupt() {
+    await this.rpc.call("abort");
+  }
+
   async applyModel(model: string) {
     const i = model.indexOf("/");
     if (i < 0) throw new Error(`pi models are "provider/id", got "${model}"`);
@@ -580,8 +606,21 @@ class PiSession extends LiveSession {
     this.setState({ thinking: level });
   }
 
-  async setPermissionMode() {
-    throw new Error("pi has no permission modes");
+  /** Tether's plan mode (the guard holds back changes until the plan is approved) or not. */
+  async setPermissionMode(mode: string) {
+    if (!PI_MODES.includes(mode)) throw new Error(`pi runs in ${PI_MODES.join(" or ")} mode here; the guard setting decides approvals.`);
+    this.setState({ permissionMode: mode });
+  }
+
+  protected planning() {
+    return this.t.state.permissionMode === PLAN_MODE;
+  }
+
+  /** pi has no plan item: the plan-mode turn's reply is the plan, unless plan_set wrote one. */
+  protected planFromReply = true;
+
+  protected async leavePlanMode() {
+    this.setState({ permissionMode: "default" });
   }
 
   async rename(title: string) {
@@ -603,11 +642,6 @@ class PiSession extends LiveSession {
       .map((c: any) => ({ name: c.name.replace(/^skill:/, ""), description: c.description, path: c.sourceInfo?.path }));
   }
 
-  /** pi expands `/skill:name args` itself, in the same block shape Tether uses. */
-  protected nativeSkillText(name: string, args: string) {
-    return args ? `/skill:${name} ${args}` : `/skill:${name}`;
-  }
-
   async models() {
     const [m, t] = await Promise.all([this.rpc.call("get_available_models"), this.rpc.call("get_available_thinking_levels")]);
     return {
@@ -618,6 +652,17 @@ class PiSession extends LiveSession {
 
   async continueTurn(text = "Continue where you left off.") {
     await this.rpc.call("prompt", { message: text, ...(await piImages(text)) });
+  }
+
+  /** pi's compact RPC, focus as its custom instructions; it answers once done (compaction_end reloads the transcript). */
+  protected async nativeCompact(focus?: string) {
+    this.setState({ status: "running" });
+    try {
+      await this.rpc.call("compact", focus ? { customInstructions: focus } : {});
+    } finally {
+      if (!this.closed && this.t.state.status === "running") this.setState({ status: "idle" });
+    }
+    return true;
   }
 
   protected shutdown() {
@@ -684,6 +729,16 @@ export const piAdapter: Adapter = {
     return convertAll(rows);
   },
 
+  async storedHistory(nativeId: string, projectPath: string) {
+    const messages = await piAdapter.readHistory!(nativeId, projectPath);
+    return { messages, model: [...messages].reverse().find((m) => m.role === "assistant" && m.model)?.model };
+  },
+
+  async historyStamp(nativeId: string, projectPath: string) {
+    const f = (await scanFiles()).find((x) => x.id === nativeId && x.cwd === projectPath);
+    return f ? fileStamp(f.path) : undefined;
+  },
+
   create(projectPath, opts, sink) {
     return new PiSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);
   },
@@ -699,11 +754,11 @@ export const piAdapter: Adapter = {
     if (live instanceof PiSession) {
       const d = await live.models();
       modelCache = { at: Date.now(), data: d };
-      return { ...d, permissionModes: [] };
+      return { ...d, permissionModes: PI_MODES };
     }
     if (!modelCache || Date.now() - modelCache.at > 10 * 60_000) {
       // A short-lived process just to read the model list.
-      const rpc = new PiRpc(homedir(), ["--no-session"]);
+      const rpc = new PiRpc(userHome(), ["--no-session"]);
       try {
         const [m, t] = await Promise.all([rpc.call("get_available_models"), rpc.call("get_available_thinking_levels")]);
         modelCache = {
@@ -714,6 +769,6 @@ export const piAdapter: Adapter = {
         rpc.close();
       }
     }
-    return { ...modelCache.data, permissionModes: [] };
+    return { ...modelCache.data, permissionModes: PI_MODES };
   },
 };

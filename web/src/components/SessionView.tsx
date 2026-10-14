@@ -30,21 +30,27 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, STARTS_ON_OPEN, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
-import { fmtClock } from "../util";
+import { composerHistory } from "../composerHistory";
+import { fmtClock, harnessLabel } from "../util";
+import { opensByStarting } from "../sessionStart";
 import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
+import { GoalLine } from "./GoalLine";
+import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
 import { SessionConflicts } from "./MemoryConflicts";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
+import { withReviews } from "./ReviewCard";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
+import { commandRunsHow } from "../library";
 
 /** Phones: Enter makes a new line, and the less important settings hide. */
 const NARROW = "(max-width: 760px)";
@@ -74,11 +80,17 @@ const steerBubble = (blocked: boolean): CSSProperties => ({
 /** Bash mode types in the code font: the input reads its family from this token. */
 const shellFont = { "--font-family-body": "var(--font-family-code)" } as CSSProperties;
 
+const harnessOf = (sessionId: string) => sessionId.split(":")[0] as HarnessId;
+
 export function SessionView({ sessionId }: { sessionId: string }) {
   const o = useStore((s) => s.open[sessionId]);
+  // Opening a session whose process has stopped shows its stored conversation; only harnesses that
+  // can't (STARTS_ON_OPEN) start the process for it.
+  const knownLive = useStore((s) => (s.open[sessionId]?.session ?? Object.values(s.sessions).flat().find((x) => x.id === sessionId) ?? s.recent?.find((x) => x.id === sessionId))?.live);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const narrow = useNarrow();
+  const sidebarHidden = useStore((s) => s.sidebarHidden);
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -173,7 +185,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   if (!o || o.loading || !o.session)
     return (
       <VStack style={fill} vAlign="center" hAlign="center">
-        <EmptyState title="Loading session…" icon={<Spinner />} isCompact />
+        <EmptyState title={opensByStarting(harnessOf(sessionId), knownLive) ? `Starting ${harnessLabel(harnessOf(sessionId))} process…` : "Loading session…"} icon={<Spinner />} isCompact />
       </VStack>
     );
 
@@ -182,6 +194,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const chat = (
     <VStack style={chatColumn} {...dropHandlers}>
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
+      <GoalLine goal={st.goal} inset={narrow || sidebarHidden} />
+      <ScheduleLine sessionId={sessionId} schedules={st.schedules} inset={narrow || sidebarHidden} />
       <ChatLayout
         ref={scroller}
         density="spacious"
@@ -190,21 +204,29 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} />}
+        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
-          <LinkBanner from={st.handoffFrom} />
+          <LinkBanner from={st.handoffFrom} forked={st.forkedFrom} reviewOf={st.reviewOf} startedBy={st.startedBy} />
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
           <FileRefScope value={refScope}>
             <Transcript
               messages={o.messages}
               running={st.status === "running"}
               amendable={st.amendable}
-              after={turnChangeMarkers(sessionId, o.messages, st)}
+              after={withReviews(turnChangeMarkers(sessionId, o.messages, st), sessionId, o.messages, st.reviews)}
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
+          {st.checking && (
+            <HStack gap={2} vAlign="center">
+              <Spinner size="sm" />
+              <Text type="supporting" color="secondary">
+                {st.checking}
+              </Text>
+            </HStack>
+          )}
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
           {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
           <SessionConflicts sessionId={sessionId} />
@@ -383,6 +405,17 @@ function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveSta
   );
 }
 
+/** A queued run of a loop or schedule (/loop, /schedule): which one it came from. */
+function ScheduledToken({ id, state }: { id: string; state: LiveState }) {
+  const s = state.schedules?.find((x) => x.id === id);
+  const label = !s ? "Scheduled" : s.kind === "loop" ? "Loop" : "Schedule";
+  return (
+    <Tooltip content={s ? `${label} ${s.label}; it goes when the agent is free` : "From a loop or schedule; it goes when the agent is free"}>
+      <Token size="sm" color="blue" label={label} />
+    </Tooltip>
+  );
+}
+
 /** Queued messages wait in the box and go out one per turn, top first. */
 function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const edit = usePendingEdit(sessionId);
@@ -426,6 +459,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
           <StackItem size="fill">
             <PendingText p={p} edit={edit} clamp />
           </StackItem>
+          {p.scheduleId && <ScheduledToken id={p.scheduleId} state={state} />}
           <HStack gap={0.5} vAlign="center">
             <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
             {state.status === "running" && <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />}
@@ -437,7 +471,7 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
   );
 }
 
-/** One row of the `/` menu: a skill (with where it comes from) or one of the harness's commands. */
+/** One row of the `/` menu: a skill (with where it comes from), one of Tether's commands, or one of the harness's. */
 function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highlighted: boolean; narrow: boolean; onPick: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -451,6 +485,20 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
         ))}
         {c.native === false && (
           <Tooltip content="This harness can't run it by name, so Tether sends SKILL.md along with your message">
+            <Token size="sm" color="purple" label="inline" />
+          </Tooltip>
+        )}
+      </HStack>
+    ) : c.kind === "tether" ? (
+      <Token size="sm" color="blue" label="Tether" />
+    ) : c.sources ? (
+      // One of your commands (Tether's library)
+      <HStack gap={0.5} vAlign="center">
+        {c.sources.slice(0, narrow ? 1 : 3).map((s) => (
+          <Token key={s} size="sm" label={s} />
+        ))}
+        {c.native === false && (
+          <Tooltip content={commandRunsHow(false)}>
             <Token size="sm" color="purple" label="inline" />
           </Tooltip>
         )}
@@ -471,7 +519,9 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state, messages }: { sessionId: string; state: LiveState; messages: Msg[] }) {
+function Composer({ sessionId, state, messages, harness, live, opening }: { sessionId: string; state: LiveState; messages: Msg[]; harness: HarnessId; live: boolean; opening: boolean }) {
+  /** a message went to a session whose process had stopped: it starts again first */
+  const [waking, setWaking] = useState(false);
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
@@ -516,15 +566,8 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
   const cameraInput = useRef<HTMLInputElement>(null);
   const shell = text.startsWith("!");
   const canSend = (!!text.trim() || (ready.length > 0 && !shell)) && !uploading && !(shell && ready.length > 0);
-  const history = useMemo(
-    () =>
-      messages
-        .filter((m) => m.role === "user")
-        // As typed: without the attached-files block the runner adds.
-        .map((m) => splitAttachments(m.parts.filter((p) => p.type === "text").map((p) => p.text).join("")).text)
-        .filter((message) => message.trim()),
-    [messages],
-  );
+  // What you typed, as typed (not what Tether sent for you: composerHistory.ts).
+  const history = useMemo(() => composerHistory(messages), [messages]);
 
   const clearHistoryNavigation = () => {
     historyPosition.current = null;
@@ -540,10 +583,12 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
     clearHistoryNavigation();
     setText("");
     const attach = files.length ? { attachments: files } : {};
+    if (!live) setWaking(true);
     const r =
       mode === "force" && running
         ? await act("forceSend", { sessionId, text: t, ...attach })
         : await act("prompt", { sessionId, text: t, mode: running ? (mode === "force" ? "steer" : (mode ?? "steer")) : undefined, ...attach });
+    setWaking(false);
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
   };
@@ -703,6 +748,12 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
+      {!live && (waking || opening) && (
+        <HStack gap={1.5} vAlign="center">
+          <Spinner size="sm" />
+          <Text type="supporting">{`Starting ${harnessLabel(harness)} process…`}</Text>
+        </HStack>
+      )}
       <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner

@@ -4,19 +4,22 @@
 import type { ServerWebSocket } from "bun";
 import type {
   BrowserToServer,
+  OpName,
   RunnerInfo,
   RunnerToServer,
   ServerToBrowser,
   ServerToRunner,
 } from "../../web/src/shared/protocol";
 import { DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
+import { callbackPage, runnerOfState } from "./mcpOAuth";
 
 type Conn = { kind: "browser"; viewer: Viewer } | { kind: "runner"; viewer: Viewer; runnerId?: string };
 
 const browsers = new Set<ServerWebSocket<Conn>>();
 const runners = new Map<string, { ws: ServerWebSocket<Conn>; info: RunnerInfo }>();
-/** server rpc id -> waiting browser */
-const pending = new Map<string, { ws: ServerWebSocket<Conn>; id: string; timer: ReturnType<typeof setTimeout> }>();
+type Answer = Extract<RunnerToServer, { t: "result" }>;
+/** server rpc id -> who waits for the answer: a browser's rpc, or this server itself (askRunner) */
+const pending = new Map<string, { ws?: ServerWebSocket<Conn>; reply: (m: Answer) => void; timer: ReturnType<typeof setTimeout> }>();
 let rpcSeq = 0;
 
 const RPC_TIMEOUT_MS = 120_000;
@@ -49,7 +52,7 @@ function onRunnerMessage(ws: ServerWebSocket<Conn>, m: RunnerToServer) {
       if (!p) return;
       pending.delete(m.id);
       clearTimeout(p.timer);
-      p.ws.send(JSON.stringify({ t: "result", id: p.id, ok: m.ok, data: m.data, error: m.error } satisfies ServerToBrowser));
+      p.reply(m);
       break;
     }
     case "event":
@@ -76,12 +79,28 @@ function onBrowserMessage(ws: ServerWebSocket<Conn>, m: BrowserToServer) {
   const r = runners.get(m.runnerId);
   if (!r) return ws.send(JSON.stringify({ t: "result", id: m.id, ok: false, error: "Runner is offline." } satisfies ServerToBrowser));
   const sid = `s${++rpcSeq}`;
+  const reply = (a: Pick<Answer, "ok" | "data" | "error">) => ws.send(JSON.stringify({ t: "result", id: m.id, ok: a.ok, data: a.data, error: a.error } satisfies ServerToBrowser));
   const timer = setTimeout(() => {
     pending.delete(sid);
-    ws.send(JSON.stringify({ t: "result", id: m.id, ok: false, error: "Runner did not answer in time." } satisfies ServerToBrowser));
+    reply({ ok: false, error: "Runner did not answer in time." });
   }, RPC_TIMEOUT_MS);
-  pending.set(sid, { ws, id: m.id, timer });
+  pending.set(sid, { ws, reply, timer });
   r.ws.send(JSON.stringify({ t: "rpc", id: sid, op: m.op, args: m.args } satisfies ServerToRunner));
+}
+
+/** An rpc this server makes itself (the MCP OAuth callback's relay). */
+function askRunner(runnerId: string, op: OpName, args: unknown, timeoutMs = 60_000): Promise<Pick<Answer, "ok" | "data" | "error">> {
+  const r = runners.get(runnerId);
+  if (!r) return Promise.resolve({ ok: false, error: "Its runner is offline. Start it and sign in again." });
+  return new Promise((resolve) => {
+    const sid = `s${++rpcSeq}`;
+    const timer = setTimeout(() => {
+      pending.delete(sid);
+      resolve({ ok: false, error: "The runner did not answer in time." });
+    }, timeoutMs);
+    pending.set(sid, { reply: resolve, timer });
+    r.ws.send(JSON.stringify({ t: "rpc", id: sid, op, args } satisfies ServerToRunner));
+  });
 }
 
 const port = Number(process.env.PORT ?? 8787);
@@ -104,6 +123,20 @@ const server = Bun.serve<Conn>({
       if (!isOwner(viewer)) return new Response("owners only", { status: 403 });
       if (srv.upgrade(req, { data: { kind: "browser", viewer: viewer! } })) return;
       return new Response("expected a WebSocket", { status: 426 });
+    }
+    // MCP OAuth: the authorization server sends the browser here; the code and state go to the runner
+    // the state names (it holds the PKCE verifier and checks the state), and the tab says how it went.
+    if (url.pathname === "/api/mcp-oauth/callback") {
+      if (!isOwner(viewer)) return callbackPage(403, "Not signed in", "Open Tether and start the sign-in again.");
+      const q = url.searchParams;
+      const state = q.get("state") ?? "";
+      const runnerId = runnerOfState(state);
+      if (!runnerId) return callbackPage(400, "Sign-in failed", "The sign-in page sent back no valid state.");
+      const opt = (k: string) => q.get(k) ?? undefined;
+      const r = await askRunner(runnerId, "finishMcpAuth", { state, code: opt("code"), error: opt("error"), errorDescription: opt("error_description"), iss: opt("iss") });
+      if (!r.ok) return callbackPage(400, "Sign-in failed", r.error ?? "Unknown error");
+      const done = r.data as { id: string; name: string };
+      return callbackPage(200, `Connected to ${done.name}`, "You can close this tab.", done.id);
     }
     if (url.pathname === "/api/runner") {
       if (!isRunner(viewer)) return new Response("runner service token required", { status: 403 });

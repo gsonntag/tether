@@ -6,7 +6,7 @@
 // path that comes back from a browser is checked to resolve (symlinks too) inside that folder.
 
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, rmSync, statfsSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -154,6 +154,24 @@ export async function receiveChunk(a: ChunkArgs): Promise<{ attachment?: Attachm
     // Kept a moment so a retried last chunk still gets the answer.
     setTimeout(() => uploads.get(key) === up && uploads.delete(key), 60_000);
   }
+}
+
+/**
+ * Stores an image a harness kept inline in its history (base64) as one of the session's
+ * attachments, read-only like an upload, so a message can list it as a file (a fork sends it again).
+ */
+export function storeInlineImage(sessionId: string, name: string, mimeType: string, base64: string): Attachment {
+  const data = Buffer.from(base64, "base64");
+  const type = cleanMime(mimeType, name);
+  const problem = sizeProblem(data.length, type);
+  if (problem) throw new Error(problem);
+  const dir = sessionDir(sessionId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  roomFor(dir, data.length);
+  const file = `${safeName(name).replace(/\.[A-Za-z0-9]{1,10}$/, "")}${IMAGE_EXT[type] ? `.${IMAGE_EXT[type]}` : ""}`;
+  const path = join(dir, `${randomBytes(4).toString("hex")}-${file}`);
+  writeFileSync(path, data, { mode: 0o400 });
+  return { path, name: file, mimeType: type, size: data.length };
 }
 
 /** Disk the uploads may use: each session's folder, and what's left on the disk. */

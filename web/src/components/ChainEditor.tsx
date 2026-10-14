@@ -12,7 +12,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import { formatEntry, HARNESSES, parseEntry, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
+import { formatEntry, HARNESSES, parseEntry, switchesAutomatically, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
 import { useStore } from "../store";
 import { modelDisplay } from "../models";
 import { HarnessBadge } from "./HarnessBadge";
@@ -135,7 +135,9 @@ export function ChainEditor({
             const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
             // The route tells apart one model listed twice ("openai-codex/…" and "azure/…").
             const via = em ? modelDisplay(em, eh).via : undefined;
-            const subs = [via && `via ${via}`, c.usage].filter(Boolean) as string[];
+            // Tether moves past a limit on its own only where it can confirm the limit.
+            const auto = switchesAutomatically(eh, em) ? "Switches automatically at its limit" : "Manual switch only: its usage can't be checked";
+            const subs = [via && `via ${via}`, c.usage, auto].filter(Boolean) as string[];
             return (
               <Item
                 key={raw + i}

@@ -7,11 +7,11 @@
 // sandbox when that works on this machine; each request goes to the guard. approvalsReviewer is
 // forced to "user" (the client), so Codex's own auto-reviewer from config.toml doesn't answer
 // first. Codex's "decline" carries no reason, so the guard's reason is steered into the turn.
+// MCP tool calls are approved through an MCP elicitation (see onElicitation); they go to the guard too.
 // In full: no approvals, no sandbox.
 
-import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { ActivityItem, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
+import { codexOnChatGpt, type ActivityItem, type ModelRef, type Msg, type Part, type SessionGoal, type SessionSummary } from "../../../web/src/shared/protocol";
 import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { CodexActivity } from "./codexActivity";
@@ -19,11 +19,17 @@ import { sessionSkills } from "../skillcmd";
 import { findTool } from "../../../web/src/shared/reducer";
 import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
-import { LiveSession, newId } from "../session";
-import { sessionContext } from "../context/inject";
+import { codexFault } from "../faults";
+import { CODEX_STATUS } from "../goal";
+import { LiveSession, newId, tetherOnly } from "../session";
+import { sessionLaunch } from "../connectors/launch";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
 import { codexPick, lastLineTime } from "./lastActivity";
+import { formContent, formRequest } from "./elicitation";
+import { userHome } from "../home";
+import { codexNativeKeys, hooksFor } from "../hooks";
+import { agentEnv } from "../secrets";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -44,7 +50,7 @@ function sandboxWorks(): Promise<boolean> {
   if (process.platform !== "linux" && process.platform !== "darwin") return Promise.resolve(false);
   return (sandboxProbe ??= (async () => {
     try {
-      const p = Bun.spawn([CODEX_BIN, "sandbox", "true"], { cwd: homedir(), stdout: "ignore", stderr: "ignore" });
+      const p = Bun.spawn([CODEX_BIN, "sandbox", "true"], { cwd: userHome(), stdout: "ignore", stderr: "ignore" });
       const timer = setTimeout(() => p.kill(), 20_000);
       const code = await p.exited;
       clearTimeout(timer);
@@ -64,6 +70,20 @@ export function unwrapShell(cmd: string): string {
 
 // ---------------- connection ----------------
 
+/**
+ * A failed turn's error as fallback sees it. Codex reports usageLimitExceeded for the ChatGPT
+ * plan's limit but also for a provider's quota or billing errors (insufficient_quota): it's a
+ * definite limit only for a model on the ChatGPT login. A model routed to another provider
+ * ("openrouter/…") gets a plain quota hint, so the error offers "Continue on …" and never switches.
+ */
+export function classifyCodexError(e: any, model: string | undefined, quotaReset: () => number | undefined): { status?: number; hint?: Classified } {
+  const info = e?.codexErrorInfo;
+  if (info === "usageLimitExceeded") return { hint: codexOnChatGpt(model) ? { kind: "quota", resetAt: quotaReset(), definite: true } : { kind: "quota" } };
+  if (info === "serverOverloaded" || info === "rateLimitExceeded") return { hint: { kind: "rate_limit" } };
+  const status = info && typeof info === "object" ? (Object.values(info)[0] as any)?.httpStatusCode : undefined;
+  return { status: status ?? undefined };
+}
+
 export class CodexProcess {
   proc: ReturnType<typeof Bun.spawn>;
   stderr = "";
@@ -74,8 +94,9 @@ export class CodexProcess {
   /** Server-to-client requests (approvals, questions). Returning undefined answers "unsupported". */
   onRequest?: (method: string, params: any) => Promise<unknown>;
 
-  constructor(cwd: string) {
-    const proc = Bun.spawn([CODEX_BIN, "app-server"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env });
+  /** `env`: a session's process gets your secrets (secrets.ts agentEnv); background calls run with the runner's own */
+  constructor(cwd: string, env: Record<string, string | undefined> = process.env) {
+    const proc = Bun.spawn([CODEX_BIN, "app-server"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
     this.proc = proc;
     (async () => {
       const dec = new TextDecoder();
@@ -160,12 +181,31 @@ export class CodexProcess {
 
 /** A short-lived app-server for catalog calls (thread list, models). */
 async function withProcess<T>(fn: (p: CodexProcess) => Promise<T>): Promise<T> {
-  const p = new CodexProcess(homedir());
+  const p = new CodexProcess(userHome());
   try {
     await p.init();
     return await fn(p);
   } finally {
     p.kill();
+  }
+}
+
+/** Stored-history reads (opening, search) run at most this many helper processes at once. */
+const HISTORY_HELPERS = 2;
+let historyRunning = 0;
+const historyQueue: (() => void)[] = [];
+
+/** withProcess for reading a thread, a few at a time. */
+export async function withHistoryProcess<T>(fn: (p: CodexProcess) => Promise<T>, run: typeof withProcess = withProcess): Promise<T> {
+  // A finished read hands its slot straight to the next one waiting.
+  if (historyRunning >= HISTORY_HELPERS) await new Promise<void>((r) => historyQueue.push(r));
+  else historyRunning++;
+  try {
+    return await run(fn);
+  } finally {
+    const next = historyQueue.shift();
+    if (next) next();
+    else historyRunning--;
   }
 }
 
@@ -304,12 +344,13 @@ export function imageItems(text: string): any[] {
 /**
  * A resumed thread's turns as a transcript. A message takes its item's own start time when known
  * (`times`, see itemTimes), else its turn's start (Codex keeps those in seconds); a turn without
- * one takes the time of the one before it.
+ * one takes the time of the one before it. `marks` gets each message's turn id (fork points).
  */
-export function historyMsgs(turns: any[], cwd: string, model?: string, times?: Map<string, number>): Msg[] {
+export function historyMsgs(turns: any[], cwd: string, model?: string, times?: Map<string, number>, marks?: Map<string, string>): Msg[] {
   const out: Msg[] = [];
   let last = 0;
   for (const turn of turns) {
+    const from = out.length;
     let a: Msg | undefined;
     const turnTs = (last = (turn.startedAt ?? 0) * 1000 || (turn.completedAt ?? 0) * 1000 || last);
     const at = (item: any) => times?.get(item.id) || turnTs;
@@ -331,6 +372,7 @@ export function historyMsgs(turns: any[], cwd: string, model?: string, times?: M
       a.parts.push(part);
     }
     if (a && turn.status === "failed") a.error = turn.error?.message ?? "error";
+    if (marks && turn.id) for (const m of out.slice(from)) marks.set(m.id, turn.id);
   }
   return out;
 }
@@ -386,6 +428,19 @@ export function additionalPermissions(p: any): Record<string, unknown> | undefin
 export const CODEX_MODES = ["default", "plan"];
 
 /**
+ * The guard's name for the MCP tool an approval elicitation is about (`mcp__server__tool`, as on
+ * the tool card). Codex's message reads `Allow <the X MCP server> to run tool "<name>"?`; the
+ * name in `_meta` wins when there is one.
+ */
+export function mcpApprovalTool(p: any): string {
+  const name = p?._meta?.tool_name ?? /run tool "(.+)"\?\s*$/.exec(p?.message ?? "")?.[1] ?? p?._meta?.tool_title ?? "tool";
+  return `mcp__${p?.serverName ?? "mcp"}__${name}`;
+}
+
+/** `_meta.persist` lists the remember options Codex offers (a string or an array). */
+const offers = (persist: unknown, v: string) => persist === v || (Array.isArray(persist) && persist.includes(v));
+
+/**
  * The app-server's (experimental) CollaborationMode for turn/start and thread/settings/update.
  * developer_instructions null: Codex's built-in instructions for that mode.
  */
@@ -393,7 +448,7 @@ export function collaborationMode(mode: string, model: string, effort?: string) 
   return { mode: mode === "plan" ? "plan" : "default", settings: { model, reasoning_effort: effort ?? null, developer_instructions: null } };
 }
 
-class CodexSession extends LiveSession {
+export class CodexSession extends LiveSession {
   private p!: CodexProcess;
   private turnId?: string;
   private msgId?: string;
@@ -414,7 +469,7 @@ class CodexSession extends LiveSession {
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
     sink: Sink,
-    private opts: CreateOpts & { resume?: boolean } = {},
+    private opts: CreateOpts & { resume?: boolean; fork?: { threadId: string; lastTurnId: string } } = {},
   ) {
     super("codex", init, sink);
     this.model = opts.model && opts.model !== "default" ? opts.model : undefined;
@@ -424,7 +479,12 @@ class CodexSession extends LiveSession {
   private sandboxed = false;
 
   private policy() {
-    if (this.guardMode === "full") return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+    // A review session (/review): Codex's read-only sandbox where it works, and it asks before anything else.
+    if (this.isReviewSession)
+      return { approvalPolicy: "untrusted", sandboxPolicy: this.sandboxed ? { type: "readOnly", networkAccess: false } : { type: "dangerFullAccess" } };
+    // Full access asks nothing, unless your PreToolUse hooks need to see the calls (checkTool then allows them).
+    if (this.guardMode === "full" && !hooksFor("PreToolUse", { skip: this.hookSkip }).length) return { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+    if (this.guardMode === "full") return { approvalPolicy: "untrusted", sandboxPolicy: { type: "dangerFullAccess" } };
     return {
       approvalPolicy: "untrusted",
       sandboxPolicy: this.sandboxed
@@ -434,7 +494,7 @@ class CodexSession extends LiveSession {
   }
 
   async start() {
-    this.p = new CodexProcess(this.projectPath);
+    this.p = new CodexProcess(this.projectPath, agentEnv());
     this.p.onNotify = (m, params) => this.onNotify(m, params);
     this.p.onRequest = (m, params) => this.onRequest(m, params);
     this.p.exited.then((code) => {
@@ -444,27 +504,37 @@ class CodexSession extends LiveSession {
       this.close();
     });
     [this.sandboxed] = await Promise.all([sandboxWorks(), this.p.init()]);
+    // Hooks Codex runs itself (its own trusted hook config) aren't run again by Tether.
+    this.hookSkip = await this.p
+      .call("hooks/list", { cwds: [this.projectPath] }, 10_000)
+      .then(codexNativeKeys)
+      .catch(() => undefined);
     const { approvalPolicy, sandboxPolicy } = this.policy();
-    // Master context: shared memory as developer instructions, and the tether-context MCP server.
-    const ctx = await sessionContext(this.projectPath, { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY });
+    // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
+    const launch = await sessionLaunch("codex", {
+      projectPath: this.projectPath,
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
+      resume: this.opts.resume || !!this.opts.fork,
+    });
     const params = {
       cwd: this.projectPath,
       approvalPolicy,
       approvalsReviewer: "user",
-      sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : "workspace-write",
+      sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write",
       ...(this.model ? { model: this.model } : {}),
-      ...(ctx
-        ? {
-            developerInstructions: ctx.prompt,
-            config: { "mcp_servers.tether-context": { command: ctx.mcp.command, args: ctx.mcp.args, env: ctx.mcp.env, default_tools_approval_mode: "approve" } },
-          }
-        : {}),
+      ...launch.options,
     };
     let r: any;
     if (this.opts.resume) {
       r = await this.p.call("thread/resume", { threadId: this.nativeId, ...params });
       const turns = r.thread.turns ?? [];
-      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns)) });
+      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns), this.forkMarks) });
+    } else if (this.opts.fork) {
+      // Codex's own fork: a new thread with the turns up to and including lastTurnId.
+      r = await this.p.call("thread/fork", { threadId: this.opts.fork.threadId, lastTurnId: this.opts.fork.lastTurnId, ...params });
+      this.nativeId = r.thread.id;
+      const turns = r.thread.turns ?? [];
+      this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, undefined, this.forkMarks) });
     } else {
       r = await this.p.call("thread/start", params);
       this.nativeId = r.thread.id;
@@ -477,6 +547,7 @@ class CodexSession extends LiveSession {
     modelCacheAt = Date.now();
     this.collab ??= r.collaborationMode?.mode === "plan" ? "plan" : undefined;
     this.setState({ status: "idle", model: r.model, thinking: this.effort, thinkingLevels: this.levels(), activity: [], modes: CODEX_MODES, permissionMode: this.collab ?? "default" });
+    this.mcpAuthNotice(launch.mcpAuth);
     // Codex reports token usage only as turns run; a resumed thread's last count is in its rollout.
     if (this.opts.resume && r.thread.path && !this.t.state.context)
       await Bun.file(r.thread.path)
@@ -499,8 +570,51 @@ class CodexSession extends LiveSession {
     const msg: Msg = { id: newId("a"), role: "assistant", parts: [], ts: Date.now(), model: this.t.state.model, streaming: true };
     this.msgId = msg.id;
     this.emit({ type: "msg", msg });
+    if (this.turnId) this.forkMarks.set(msg.id, this.turnId);
     return msg;
   }
+
+  /**
+   * The messages since the last one placed in a turn belong to this one (fork points): the user
+   * message that started it, steers into it, its replies.
+   */
+  private markTurn(turnId: string) {
+    for (let i = this.t.messages.length - 1; i >= 0; i--) {
+      const m = this.t.messages[i]!;
+      if (this.forkMarks.has(m.id)) break;
+      if (!tetherOnly(m)) this.forkMarks.set(m.id, turnId);
+    }
+  }
+
+  /**
+   * thread/fork keeps whole turns, through a finished one: a fork point only where a turn ends (the
+   * next message Codex has starts another turn) and not in the turn running now.
+   */
+  forkPoint(n: number) {
+    const point = this.lastMark(n);
+    if (!point || point === this.turnId) return undefined;
+    const after = this.t.messages.slice(n).find((m) => !tetherOnly(m));
+    if (after && this.forkMarks.get(after.id) === point) return undefined;
+    if (after && !this.forkMarks.has(after.id)) return undefined;
+    return point;
+  }
+
+  /** thread/compact/start; it takes no instructions, so a focus means Tether's restart on a brief. */
+  protected async nativeCompact(focus?: string) {
+    if (focus) return false;
+    this.finishMsg();
+    this.setState({ status: "running" });
+    await this.p.call("thread/compact/start", { threadId: this.nativeId });
+    // It runs as a turn (turn/started … turn/completed); if none shows up, don't stay "running".
+    // Only until that turn starts: a later turn (still waiting on turn/start) is never cut short.
+    clearTimeout(this.compactTimer);
+    this.compactTimer = setTimeout(() => !this.closed && !this.turnId && this.t.state.status === "running" && this.setState({ status: "idle" }), CodexSession.COMPACT_FALLBACK_MS);
+    return true;
+  }
+
+  static COMPACT_FALLBACK_MS = 15_000;
+  /** a compaction's way back to idle when its turn never shows up */
+  private compactTimer?: ReturnType<typeof setTimeout>;
 
   private addPart(itemId: string, part: Part) {
     const m = this.ensureMsg();
@@ -554,8 +668,11 @@ class CodexSession extends LiveSession {
     if (p.threadId && p.threadId !== this.nativeId) return; // subagent threads: their activity item shows them
     switch (method) {
       case "turn/started":
+        clearTimeout(this.compactTimer);
         this.turnId = p.turn.id;
+        this.markTurn(p.turn.id);
         if (this.t.state.status !== "running") this.setState({ status: "running" });
+        this.interruptForFault();
         break;
       case "item/started": {
         const item = p.item;
@@ -611,9 +728,15 @@ class CodexSession extends LiveSession {
         this.emit({ type: "msg", msg: { ...m, parts } });
         break;
       }
-      case "turn/completed":
-        this.onTurnCompleted(p.turn);
+      case "turn/completed": {
+        if (p.turn?.id) this.markTurn(p.turn.id);
+        // A simulated limit (faults.ts): the turn ends with Codex's own notifications for it instead.
+        const fault = this.takeFault();
+        this.faultStop = false;
+        if (fault) for (const [m, x] of codexFault(fault, this.nativeId, p.turn)) this.onNotify(m, x);
+        else this.onTurnCompleted(p.turn);
         break;
+      }
       case "error":
         if (p.willRetry) this.setRetrying(`retrying: ${p.error?.message ?? "error"}`);
         break;
@@ -626,6 +749,10 @@ class CodexSession extends LiveSession {
         break;
       case "thread/name/updated":
         if (p.threadName) this.setTitle(p.threadName);
+        break;
+      case "thread/goal/updated":
+        // Codex's own goal (mirrorGoal): what it decided, or our own change coming back.
+        if (p.goal && this.mirrored !== undefined && p.goal.objective === this.mirrored) this.nativeGoalChanged(p.goal.status, p.goal.tokensUsed);
         break;
       case "model/rerouted":
         this.notice(`Codex moved this turn from ${p.fromModel} to ${p.toModel}.`);
@@ -645,11 +772,7 @@ class CodexSession extends LiveSession {
   }
 
   private classifyError(e: any): { status?: number; hint?: Classified } {
-    const info = e?.codexErrorInfo;
-    if (info === "usageLimitExceeded") return { hint: { kind: "quota", resetAt: this.quotaReset() } };
-    if (info === "serverOverloaded") return { hint: { kind: "rate_limit" } };
-    const status = info && typeof info === "object" ? (Object.values(info)[0] as any)?.httpStatusCode : undefined;
-    return { status: status ?? undefined };
+    return classifyCodexError(e, this.model ?? this.t.state.model, () => this.quotaReset());
   }
 
   private async onTurnCompleted(turn: any) {
@@ -712,10 +835,44 @@ class CodexSession extends LiveSession {
         return { answers };
       }
       case "mcpServer/elicitation/request":
-        return { action: "decline", content: null, _meta: null };
+        return this.onElicitation(p);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * An MCP server (or Codex on its behalf) wants something from the user. Codex asks before an MCP
+   * tool call as an elicitation tagged `_meta.codex_approval_kind: "mcp_tool_call"` with an empty
+   * form; that goes to the guard like any other approval, and "always" is passed back as Codex's
+   * session-scoped `persist` when it offers one. Forms become a question card, a URL a confirm.
+   */
+  private async onElicitation(p: any): Promise<{ action: "accept" | "decline" | "cancel"; content: unknown; _meta: unknown }> {
+    const meta = p._meta && typeof p._meta === "object" ? p._meta : {};
+    if (meta.codex_approval_kind === "mcp_tool_call") {
+      const tool = mcpApprovalTool(p);
+      const v = await this.checkTool(tool, meta.tool_params ?? {});
+      if (!v.allow) {
+        this.explainDenial(`call to ${tool}`, v.reason);
+        return { action: "decline", content: null, _meta: null };
+      }
+      const persist = v.always && offers(meta.persist, "session") ? { persist: "session" } : null;
+      return { action: "accept", content: null, _meta: persist };
+    }
+    const server = p.serverName ?? "An MCP server";
+    if (p.mode === "url") {
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} wants you to open a link`, message: `${p.message ?? ""}\n\n${p.url}`.trim() });
+      return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: null, _meta: null };
+    }
+    const req = formRequest(p.message || `${server} needs your input`, p.requestedSchema);
+    if (!req) {
+      // Nothing to fill in: a plain yes/no.
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} asks`, message: p.message });
+      return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: r.confirmed ? {} : null, _meta: null };
+    }
+    const r = await this.askUi(req);
+    if (r.cancelled) return { action: "cancel", content: null, _meta: null };
+    return { action: "accept", content: formContent(p.requestedSchema, r), _meta: null };
   }
 
   /** Codex's "decline" tells the model nothing; pass the guard's reason along. */
@@ -728,8 +885,23 @@ class CodexSession extends LiveSession {
 
   // ---- turns ----
 
+  /** a simulated limit wants the turn interrupted as soon as it has an id */
+  private faultStop = false;
+
+  protected faultInterrupt() {
+    this.faultStop = true;
+    this.interruptForFault();
+  }
+
+  private interruptForFault() {
+    if (!this.faultStop || !this.turnId) return;
+    this.faultStop = false;
+    this.p.call("turn/interrupt", { threadId: this.nativeId, turnId: this.turnId }).catch(() => {});
+  }
+
   /** `skills`: a `/name` paragraph for a skill Codex has goes as a skill item (not for briefs). */
   private async startTurn(text: string, skills = true) {
+    clearTimeout(this.compactTimer);
     this.finishMsg();
     this.setState({ status: "running" });
     try {
@@ -743,6 +915,8 @@ class CodexSession extends LiveSession {
         ...this.collabParam(),
       });
       this.turnId ??= r.turn?.id;
+      if (r.turn?.id) this.markTurn(r.turn.id);
+      this.interruptForFault();
     } catch (e: any) {
       if (await this.handleTurnError(e?.message)) return;
       this.notice(e?.message || "Could not start the turn.", "error");
@@ -791,6 +965,40 @@ class CodexSession extends LiveSession {
     await this.startTurn(text, false);
   }
 
+  /** the objective Codex's thread goal was last given; undefined: not mirrored (yet) */
+  private mirrored?: string;
+
+  /**
+   * Codex thread goals (app-server thread/goal/*, the `goals` feature): Tether's goal mirrored in,
+   * so Codex's own goal tools and continuation work on it, and its status comes back through
+   * thread/goal/updated (nativeGoalChanged). Tether's copy stays the source of truth. A Codex
+   * without the API (or with goals off) leaves the loop to Tether alone.
+   */
+  protected async mirrorGoal(g: SessionGoal | null) {
+    if (!this.p || this.closed) return;
+    const threadId = this.nativeId;
+    try {
+      if (!g) {
+        this.mirrored = undefined;
+        this.nativeGoal = false;
+        await this.p.call("thread/goal/clear", { threadId, origin: "user" });
+        return;
+      }
+      // One goal per thread: a new objective replaces the old one (after a restart, ask Codex what it has).
+      const cur = this.mirrored ?? ((await this.p.call("thread/goal/get", { threadId })) as any)?.goal?.objective;
+      if (cur !== undefined && cur !== g.objective) await this.p.call("thread/goal/clear", { threadId, origin: "user" });
+      this.mirrored = g.objective;
+      await this.p.call("thread/goal/set", { threadId, origin: "user", objective: g.objective, status: CODEX_STATUS[g.status], tokenBudget: g.budget?.tokens ?? null });
+      this.nativeGoal = true;
+      const now = this.t.state.goal;
+      if (now && now.objective === g.objective && !now.native) this.setState({ goal: { ...now, native: true } });
+    } catch (e) {
+      this.mirrored = undefined;
+      this.nativeGoal = false;
+      throw e;
+    }
+  }
+
   async abort() {
     if (this.cancelWait()) return;
     this.cancelAllUi();
@@ -834,6 +1042,16 @@ class CodexSession extends LiveSession {
     this.setState({ permissionMode: mode });
   }
 
+  /** Plan mode: its `plan` item goes up for Tether's review when the turn ends (the app-server has no review step). */
+  protected planning() {
+    return this.collab === "plan";
+  }
+
+  /** Approved: Default mode from the next turn, as the Codex TUI's "Yes, implement this plan" does. */
+  protected async leavePlanMode() {
+    if (this.collab === "plan") await this.setPermissionMode("default");
+  }
+
   async rename(title: string) {
     await this.p.call("thread/name/set", { threadId: this.nativeId, name: title }).catch(() => {});
     this.setTitle(title);
@@ -844,6 +1062,7 @@ class CodexSession extends LiveSession {
   }
 
   protected shutdown() {
+    clearTimeout(this.compactTimer);
     this.p?.kill();
   }
 }
@@ -932,16 +1151,45 @@ export const codexAdapter: Adapter = {
 
   async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
     if (!Bun.which(CODEX_BIN)) return [];
-    return withProcess(async (p) => {
+    return withHistoryProcess(async (p) => {
       const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
       const thread = r.thread ?? r;
       return historyMsgs(thread.turns ?? [], projectPath, thread.model, await itemTimes(p, nativeId, thread.turns ?? []));
     });
   },
 
+  // A short-lived app-server answers thread/read; the thread itself isn't resumed.
+  async storedHistory(nativeId: string, projectPath: string) {
+    if (!Bun.which(CODEX_BIN)) return undefined;
+    return withHistoryProcess(async (p) => {
+      const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
+      const thread = r.thread ?? r;
+      const turns = thread.turns ?? [];
+      const messages = historyMsgs(turns, projectPath, thread.model, await itemTimes(p, nativeId, turns));
+      const model: string | undefined = thread.model ?? [...messages].reverse().find((m) => m.model)?.model;
+      // Codex reports token usage only as turns run; the last count is in the rollout.
+      const context =
+        typeof thread.path === "string"
+          ? await Bun.file(thread.path)
+              .slice(-4_000_000)
+              .text()
+              .then((text) => codexRollout(text, model))
+              .catch(() => undefined)
+          : undefined;
+      return { messages, context, model };
+    });
+  },
+
+  modes: CODEX_MODES,
+
   create(projectPath, opts, sink) {
     listCache = undefined;
     return new CodexSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);
+  },
+
+  async fork(from, opts, sink) {
+    listCache = undefined;
+    return new CodexSession({ nativeId: "pending-" + newId(""), projectPath: from.projectPath }, sink, { ...opts, fork: { threadId: from.nativeId, lastTurnId: from.point } });
   },
 
   async resume(nativeId, projectPath, sink) {

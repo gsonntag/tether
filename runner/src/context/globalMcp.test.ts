@@ -12,11 +12,13 @@ import { put, seedHome } from "./fixtures";
 import { exportAll } from "./export";
 import { editJson, lockConfig, registerGlobalMcp, unregisterGlobalMcp, writeConfigAtomic } from "./globalMcp";
 import { ContextService } from "./index";
-import { piMcpConfig, sessionContext, setInjectionEnabled } from "./inject";
+import { piMcpConfig } from "../connectors/pi";
+import { sessionContext, setInjectionEnabled } from "./inject";
 import { MCP_SCRIPT } from "./launch";
 import { handle } from "./mcp";
 import { harness } from "./paths";
 import { inboxEntries } from "./sources";
+import { setServer, views as mcpViews } from "../mcp/registry";
 import { Store } from "./store";
 
 if (!CONFIG_DIR.startsWith(tmpdir())) throw new Error(`refusing to run: runner config dir ${CONFIG_DIR} is not a temp dir`);
@@ -241,6 +243,16 @@ describe("service: only the user's import writes them; disabling undoes", () => 
     expect(readFileSync(harness.codexConfig(), "utf8")).toContain("[mcp_servers.tether-context]");
     expect(readFileSync(harness.piMcp(), "utf8")).toContain("tether-context");
     expect(readFileSync(harness.agyMcp(), "utf8")).toContain("tether-context");
+    // The import also brought opencode's own `docs` server into the MCP registry, which exports it
+    // to the other harnesses (not back into opencode's config, which has it already).
+    const docs = mcpViews().find((v) => v.name === "docs")!;
+    expect(docs.sources).toEqual(["opencode:~/.config/opencode/opencode.jsonc"]);
+    expect(JSON.parse(readFileSync(harness.claudeJson(), "utf8")).mcpServers.docs).toEqual({ type: "http", url: "https://example.com/mcp" });
+    expect(readFileSync(join(harness.opencodeDir(), "opencode.jsonc"), "utf8").match(/"docs"/g)).toHaveLength(1);
+    // The registry is the MCP section's, not shared memory's: deleting the server takes Tether's
+    // copies out again, then turning shared memory off undoes the rest.
+    await setServer(docs.id, { remove: true });
+    expect(readFileSync(harness.claudeJson(), "utf8")).not.toContain('"docs"');
 
     const st = await s.disable();
     expect(st.enabled).toBe(false);

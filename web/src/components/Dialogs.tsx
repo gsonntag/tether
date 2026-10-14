@@ -34,6 +34,7 @@ import {
   type NotifyKind,
   type Ops,
   type ProjectInfo,
+  type SecretView,
 } from "../shared/protocol";
 import { profileProblems, profilesToSave } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
@@ -57,6 +58,7 @@ export function Dialogs() {
       {dialog === "addProject" && <AddProject close={close} />}
       {dialog === "settings" && <Settings close={close} />}
       {dialog === "notify" && <NotifyPrompt close={close} />}
+      {dialog === "fork" && <ForkSession close={close} />}
     </Dialog>
   );
 }
@@ -241,6 +243,79 @@ function NewSession({ close }: { close: () => void }) {
       )}
       <TextInput label="Name" value={name} onChange={setName} placeholder="Optional: named from the first message otherwise" />
       <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do? (⌘↵ to start)" />
+    </Frame>
+  );
+}
+
+/**
+ * "Fork from here": a new session with the conversation up to the picked message, on any harness
+ * and model. On one of your messages the new session answers it again (with anything added here).
+ */
+function ForkSession({ close }: { close: () => void }) {
+  const target = useStore((s) => s.forkTarget);
+  const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
+  const [harness, setHarness] = useState<HarnessId>(target?.harness ?? "claude-code");
+  const [model, setModel] = useState(target?.model ?? "");
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const models = useModels([harness]);
+  if (!target) return null;
+  const available = HARNESSES.filter((h) => !runner || runner.harnesses.includes(h.id));
+  const pickHarness = (h: HarnessId) => {
+    setHarness(h);
+    setModel(h === target.harness ? (target.model ?? "") : "");
+  };
+  const listed = models[harness] ?? [];
+  const modelOptions: SelectorOptionType[] = [
+    { value: DEFAULT_CHOICE, label: "Default" },
+    ...listed
+      .filter((m) => m.id !== "default")
+      .map((m) => {
+        const d = modelDisplay(m.id, harness);
+        return { value: m.id, label: d.name, description: m.id, icon: modelIcon(d) };
+      }),
+    // The session's own model, even when the list doesn't have it (an alias).
+    ...(model && !listed.some((m) => m.id === model) ? [{ value: model, label: modelDisplay(model, harness).name, description: model }] : []),
+  ];
+  const fork = async () => {
+    if (busy) return;
+    setBusy(true);
+    const s = await act("forkSession", { sessionId: target.sessionId, msgId: target.msgId, harness, model: model || undefined, prompt: prompt.trim() || undefined });
+    setBusy(false);
+    if (!s) return;
+    close();
+    selectSession(s.id);
+  };
+  const at = target.excerpt ? `“${target.excerpt}”` : target.atUser ? "your message" : "this reply";
+  return (
+    <Frame
+      title="Fork from here"
+      subtitle={target.atUser ? `A new session with the conversation before ${at}, which it answers again.` : `A new session with the conversation up to ${at}.`}
+      close={close}
+      actions={
+        <>
+          <Button label="Cancel" onClick={close} />
+          <Button label="Fork" variant="primary" isLoading={busy} onClick={fork} />
+        </>
+      }
+    >
+      <Group label="Harness">
+        <SegmentedControl label="Harness" value={harness} onChange={(v) => pickHarness(v as HarnessId)}>
+          {available.map((h) => (
+            <SegmentedControlItem key={h.id} value={h.id} label={h.label} />
+          ))}
+        </SegmentedControl>
+      </Group>
+      <Selector label="Model" width="100%" hasSearch options={modelOptions} value={model || DEFAULT_CHOICE} onChange={(v) => setModel(v === DEFAULT_CHOICE ? "" : v)} />
+      <VStack onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && fork()}>
+        <TextArea
+          label={target.atUser ? "Add to your message" : "First message"}
+          rows={3}
+          value={prompt}
+          onChange={setPrompt}
+          placeholder={target.atUser ? "Optional" : "Optional: without one, the agent catches up and waits for you"}
+        />
+      </VStack>
     </Frame>
   );
 }
@@ -725,6 +800,93 @@ function BackgroundModelPicker({ narrow }: { narrow: boolean }) {
   );
 }
 
+/**
+ * The runner's env and secrets (runner/src/secrets.ts): names only come back; a value is typed in
+ * to set or replace it.
+ */
+function SecretsSettings({ narrow }: { narrow: boolean }) {
+  const runnerId = useStore((s) => s.runnerId);
+  const [secrets, setSecrets] = useState<SecretView[]>();
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [replacing, setReplacing] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    rpc("listSecrets", {})
+      .then(setSecrets)
+      .catch(() => setSecrets([]));
+  }, [runnerId]);
+  const save = async (n: string, v: string) => {
+    setBusy(n);
+    setError(undefined);
+    try {
+      setSecrets(await rpc("setSecret", { name: n, value: v }));
+      setName("");
+      setValue("");
+      setReplacing(undefined);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  const remove = async (n: string) => {
+    setBusy(n);
+    const next = await act("setSecret", { name: n, remove: true });
+    setBusy(undefined);
+    if (next) setSecrets(next);
+  };
+  return (
+    <SettingsCard title="Env and secrets">
+      <SettingsRow
+        title="Environment for agents"
+        description={`Every agent gets these as environment variables, and so do the MCP servers Tether starts for it. In an MCP server's env or headers, write \${NAME} to use one. Values stay on this runner.`}
+      />
+      {(secrets ?? []).map((sec) => (
+        <SettingsRow
+          key={sec.name}
+          title={sec.name}
+          description={sec.updatedAt ? `Set ${new Date(sec.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : undefined}
+          control={
+            <HStack gap={2}>
+              <Button label="Replace" size="sm" variant="ghost" isDisabled={!!busy} onClick={() => (setValue(""), setReplacing(replacing === sec.name ? undefined : sec.name))} />
+              <Button label="Remove" size="sm" variant="ghost" isLoading={busy === sec.name && replacing !== sec.name} isDisabled={!!busy} onClick={() => remove(sec.name)} />
+            </HStack>
+          }
+        >
+          {replacing === sec.name && (
+            <HStack gap={2}>
+              <StackItem size="fill">
+                <TextInput label={`New value for ${sec.name}`} isLabelHidden type="password" autoComplete="off" size="sm" placeholder="New value" value={value} onChange={setValue} />
+              </StackItem>
+              <Button label="Save" size="sm" variant="primary" isLoading={busy === sec.name} isDisabled={!value} onClick={() => save(sec.name, value)} />
+            </HStack>
+          )}
+        </SettingsRow>
+      ))}
+      <VStack padding={4} gap={2}>
+        <Stack direction={narrow ? "vertical" : "horizontal"} gap={2} align={narrow ? "stretch" : "end"}>
+          <StackItem size="fill">
+            <TextInput label="Name" size="sm" placeholder="GITHUB_TOKEN" autoComplete="off" value={name} onChange={(v) => (setName(v), setError(undefined))} />
+          </StackItem>
+          <StackItem size="fill">
+            <TextInput label="Value" type="password" autoComplete="off" size="sm" value={replacing ? "" : value} isDisabled={!!replacing} onChange={(v) => (setValue(v), setError(undefined))} />
+          </StackItem>
+          <StackItem size="static">
+            <Button label="Add" size="sm" variant="primary" isLoading={!!busy && busy === name.trim()} isDisabled={!name.trim() || !value || !!replacing} onClick={() => save(name.trim(), value)} />
+          </StackItem>
+        </Stack>
+        {error && (
+          <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
+            {error}
+          </Text>
+        )}
+      </VStack>
+    </SettingsCard>
+  );
+}
+
 function Settings({ close }: { close: () => void }) {
   const narrow = useMediaQuery(NARROW);
   const runnerId = useStore((s) => s.runnerId);
@@ -823,6 +985,7 @@ function Settings({ close }: { close: () => void }) {
           }
         />
       </SettingsCard>
+      <SecretsSettings narrow={narrow} />
       <Collapsible trigger={<Text type="label">Advanced</Text>}>
         <VStack gap={4} paddingBlockStart={2}>
           <SettingsCard title="Background model and safety">

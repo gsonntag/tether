@@ -1,11 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
+import { userHome } from "./home";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
 // back to the account's real home through the password database.
-export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(process.env.HOME || homedir(), ".config", "tether");
+export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR ?? join(userHome(), ".config", "tether");
 const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
 
 export interface RunnerConfig {
@@ -39,9 +40,9 @@ export interface RunnerConfig {
   /** master context: off until the first import is run from the UI. `handoffCapture: false` skips
    *  the fact capture before a cross-harness handoff (memory is still carried). */
   context?: { enabled?: boolean; importedAt?: number; handoffCapture?: boolean };
-  /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   /** web app preferences shared by every device (getUiPrefs / setUiPrefs) */
   ui?: Partial<UiPrefs>;
+  /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
 
@@ -51,23 +52,44 @@ export interface SessionPrefs {
   preferEarlier?: boolean;
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
+  forkedFrom?: { sessionId: string; reason: string };
   guard?: import("./guard").GuardMode;
   checkpoints?: import("../../web/src/shared/protocol").Checkpoint[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */
   diffBaseSha?: string;
   /** a turn was in progress (running or waiting): resume it after a runner restart */
   active?: boolean;
+  /** fallback was waiting on a usage limit or a backoff until then: re-armed after a restart */
+  waitingUntil?: number;
+  waitingReason?: string;
   projectPath?: string;
   /** background tasks running when last saved (reported to the agent if a restart stops them) */
   background?: { id: string; description: string; type?: string }[];
   /** messages sent but not yet taken by the agent; resent after a runner restart */
-  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number }[];
+  pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number; scheduleId?: string; alone?: boolean }[];
   /** the model, effort and mode it last ran with, re-applied on resume (session.reapplyChoices) */
   model?: string;
   thinking?: string;
   permissionMode?: string;
+  /** the modes and effort levels the harness offered when it last ran (pickers of a session that isn't running) */
+  modes?: string[];
+  thinkingLevels?: string[];
   /** last known context-window fill, for harnesses that can't report it again on resume */
   context?: import("../../web/src/shared/protocol").ContextUsage;
+  /** the session's goal (/goal, runner/src/goal.ts) */
+  goal?: import("../../web/src/shared/protocol").SessionGoal;
+  /** the session's plan and todo list (plan_set / todo_set, runner/src/plan.ts) */
+  plan?: import("../../web/src/shared/protocol").SessionPlan;
+  /** Tether's loops and schedules (/loop, /schedule, runner/src/schedule.ts) */
+  schedules?: import("../../web/src/shared/protocol").SessionSchedule[];
+  /** reviews of this session's changes (/review, runner/src/review.ts) */
+  reviews?: import("../../web/src/shared/protocol").SessionReview[];
+  /** this session is a read-only review of another one */
+  reviewOf?: { sessionId: string; reviewId: string };
+  /** cross-harness subagents it started (agent_start, runner/src/crossAgents.ts) */
+  subagents?: import("../../web/src/shared/protocol").SubagentLink[];
+  /** it is a cross-harness subagent: who started it */
+  startedBy?: import("../../web/src/shared/protocol").StartedBy;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

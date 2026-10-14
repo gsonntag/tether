@@ -35,8 +35,12 @@ import { setInjectionEnabled } from "./inject";
 import { conflictsToNotify, Merger, modelDecider, type Decider } from "./merge";
 import { contextDir, tilde } from "./paths";
 import { repoKey } from "./repokey";
-import { applySkillPlan, disabledSet, listSkills, planSkills, readMeta, unlinkAll, unlinkSkill, writeMeta } from "./skills";
+import { applySkillPlan, awaitsSkillMd, disabledSet, isOwnSkillEvent, listSkills, planSkills, readMeta, skillWatchTargets, unlinkAll, unlinkSkill, writeMeta } from "./skills";
 import { scanSources, watchTargets } from "./sources";
+import { importServers as importMcpServers, previewImport as previewMcpImport } from "../mcp/registry";
+import { importHooks } from "../hooks";
+import { importCommands } from "../commands";
+import { importSubagents } from "../subagents";
 import { Store } from "./store";
 import { Watcher } from "./watch";
 
@@ -47,6 +51,8 @@ export interface ContextOptions {
   sessionForKey?: (key: string) => string | undefined;
   /** project paths, for repo-scoped skills */
   projects?: () => string[];
+  /** every project the runner knows (with sessions too), for the MCP import's .mcp.json files */
+  allProjects?: () => Promise<string[]>;
   /** the fact extractor run before a handoff (default: the background model) */
   extractor?: Extractor;
   /** a sync pass ended with new open conflicts (merge.ts conflictsToNotify): push notifications */
@@ -59,6 +65,10 @@ export class ContextService {
   readonly store: Store;
   private merger: Merger;
   private watcher?: Watcher;
+  /** the harness skill dirs: a skill added there is imported and linked without another Import */
+  private skillWatcher?: Watcher;
+  /** skill dirs seen without a SKILL.md: watched themselves until it appears (or they go) */
+  private awaitingSkillMd = new Set<string>();
   private busy = false;
   private again = false;
   private importing = false;
@@ -95,12 +105,37 @@ export class ContextService {
   stop() {
     this.watcher?.stop();
     this.watcher = undefined;
+    this.skillWatcher?.stop();
+    this.skillWatcher = undefined;
+    this.awaitingSkillMd.clear();
     clearTimeout(this.exportTimer);
   }
 
   private watch() {
     this.watcher ??= new Watcher(() => this.sync(), { debounceMs: 5_000, pollMs: 10 * 60_000, isOwn: isOwnWrite });
     this.watcher.add([...watchTargets(), join(this.store.dir, "inbox")]);
+    this.skillWatcher ??= new Watcher(() => this.syncSkills().catch((e) => this.act({ kind: "error", text: `Skill sync failed: ${e?.message ?? e}` })), {
+      debounceMs: 5_000,
+      pollMs: 10 * 60_000, // backs up missed events (planSkills is cheap; an idle pass writes nothing)
+      isOwn: (p) => {
+        if (isOwnSkillEvent(p, this.store.skillsDir)) return true;
+        if (!this.awaitingSkillMd.has(p) && awaitsSkillMd(p)) {
+          this.awaitingSkillMd.add(p);
+          this.skillWatcher?.add([join(p, "SKILL.md")]);
+        }
+        return false;
+      },
+    });
+    this.addSkillDirs(!this.importing); // the import itself just synced them
+  }
+
+  /** Watches the harness skill dirs; ones that appeared since get a pass for the skills already in them. */
+  private addSkillDirs(catchUp = true) {
+    const w = this.skillWatcher;
+    if (!w) return;
+    const fresh = skillWatchTargets().filter((d) => !w.has(d));
+    w.add(fresh);
+    if (fresh.length && catchUp) w.schedule();
   }
 
   status(): ContextStatus {
@@ -145,7 +180,8 @@ export class ContextService {
     const meta = this.meta();
     const plan = planSkills(this.store.skillsDir, join(this.store.dir, "backup", today()), disabledSet(meta), meta);
     const exp = await exportAll(this.store, { dryRun: true, globalMcp: true });
-    scan.warnings.push(...(plan.warnings ?? []));
+    const mcp = await previewMcpImport(await this.mcpProjects()).catch((e: any) => ({ names: [], warnings: [`MCP servers: ${e?.message ?? e}`] }));
+    scan.warnings.push(...(plan.warnings ?? []), ...mcp.warnings);
     return {
       memories: scan.entries.map((e) => ({ harness: e.harness, path: tilde(e.path), title: e.title, scope: e.scope ?? "decided on import" })),
       skills: plan.skills.map((s) => ({ name: s.name, from: s.from ? tilde(s.from.path) : "library", drift: s.drift, exposedAs: s.exposedAs })),
@@ -153,6 +189,7 @@ export class ContextService {
       symlinks: plan.symlinks.map((l) => ({ path: tilde(l.path), target: tilde(l.target) })),
       managedFiles: exp.written.map(tilde),
       mcpConfigs: exp.mcpConfigs.map(tilde),
+      mcpServers: mcp.names,
       warnings: [...scan.warnings, ...exp.warnings],
     };
   }
@@ -175,10 +212,13 @@ export class ContextService {
         await this.harnessLock.run(async () => {
           if (!this.enabled) return;
           const g: ExportResult = { written: [], mcpConfigs: [], warnings: [] };
-          registerNativeMcp(this.store, g);
+          await registerNativeMcp(this.store, g);
           for (const w of g.warnings) this.act({ kind: "error", text: w });
           if (g.written.length) this.act({ kind: "export", text: `Registered tether-context in ${g.written.map(tilde).join(", ")}` });
         });
+        await this.importMcpServers();
+        await this.importHooks();
+        await this.importLibraries();
         if (this.enabled) this.watch();
         this.act({ kind: "import", text: "Import finished" });
       } finally {
@@ -187,6 +227,44 @@ export class ContextService {
       }
     })().catch((e) => this.act({ kind: "error", text: `Import failed: ${e?.message ?? e}` }));
     return this.status();
+  }
+
+  private async mcpProjects(): Promise<string[]> {
+    return (await this.opts.allProjects?.().catch(() => undefined)) ?? this.opts.projects?.() ?? [];
+  }
+
+  /** The user's own MCP servers, from every harness's config into Tether's MCP registry (runner/src/mcp/). */
+  private async importMcpServers() {
+    try {
+      const r = await importMcpServers(await this.mcpProjects());
+      for (const w of r.warnings) this.act({ kind: "error", text: w });
+      if (r.added.length) this.act({ kind: "import", text: `Added ${r.added.length === 1 ? "1 MCP server" : `${r.added.length} MCP servers`} to Tether: ${r.added.join(", ")}` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `MCP servers weren't imported: ${e?.message ?? e}` });
+    }
+  }
+
+  /** Your Claude Code hooks (~/.claude/settings.json, read only) into Tether's hooks (runner/src/hooks.ts). */
+  private async importHooks() {
+    try {
+      // Events Tether doesn't run (Notification, SessionStart…) are listed by Find hooks, not here.
+      const r = await importHooks();
+      if (r.added) this.act({ kind: "import", text: `Added ${r.added === 1 ? "1 hook" : `${r.added} hooks`} to Tether from Claude Code's settings` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `Hooks weren't imported: ${e?.message ?? e}` });
+    }
+  }
+
+  /** Your custom commands and subagent definitions, from every harness (read only), into Tether's libraries. */
+  private async importLibraries() {
+    try {
+      const c = await importCommands();
+      if (c.added.length) this.act({ kind: "import", text: `Added ${c.added.length === 1 ? "1 command" : `${c.added.length} commands`} to Tether: ${c.added.map((n) => `/${n}`).join(", ")}` });
+      const a = await importSubagents();
+      if (a.added.length) this.act({ kind: "import", text: `Added ${a.added.length === 1 ? "1 subagent" : `${a.added.length} subagents`} to Tether: ${a.added.join(", ")}` });
+    } catch (e: any) {
+      this.act({ kind: "error", text: `Commands and subagents weren't imported: ${e?.message ?? e}` });
+    }
   }
 
   /** Resolves when the import started by runImport() (if any) and any sync pass are done. */
@@ -220,6 +298,7 @@ export class ContextService {
         if (force || changed || entries.some((e) => e.consume)) await this.exportNow();
         force = false;
         this.watcher?.add(watchTargets());
+        this.addSkillDirs(); // skill dirs created since (the poll comes through here)
       } while (this.again);
     } finally {
       this.busy = false;
@@ -240,6 +319,12 @@ export class ContextService {
   /** Imports skills found in harness dirs (backing up what they replace) and installs symlinks. */
   async syncSkills(): Promise<void> {
     await this.harnessLock.run(() => this.syncSkillsLocked());
+    // Dirs that now have their SKILL.md (imported and linked) or are gone need no watch of their own.
+    for (const d of this.awaitingSkillMd) {
+      if (awaitsSkillMd(d)) continue;
+      this.awaitingSkillMd.delete(d);
+      this.skillWatcher?.remove(d);
+    }
   }
 
   private async syncSkillsLocked(): Promise<void> {
@@ -293,6 +378,11 @@ export class ContextService {
     pendingPrompt?: string;
     budgetTokens?: number;
     timeoutMs?: number;
+    /**
+     * false: carry memories only, capture nothing. A fork's `messages` are a prefix of the source
+     * session: capturing over them would re-read what was captured and move its watermark back.
+     */
+    capture?: boolean;
   }): Promise<HandoffMemory | undefined> {
     if (!this.enabled || !this.store.exists()) return undefined;
     try {
@@ -300,7 +390,7 @@ export class ContextService {
       let captured: CapturedFact[] = [];
       let captureNote: string | undefined;
       let settle: (() => void) | undefined;
-      if (config().context?.handoffCapture !== false) {
+      if (o.capture !== false && config().context?.handoffCapture !== false) {
         const cap = await captureLearnings(this.store, { sessionId: o.sessionId, repoKey: key, messages: o.messages, extractor: this.opts.extractor, timeoutMs: o.timeoutMs });
         captured = cap.facts;
         if (cap.skipped === "timeout") captureNote = "the background model is still extracting facts; they'll be merged when it finishes";

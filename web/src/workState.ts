@@ -20,18 +20,28 @@ export interface WorkInput {
   running?: Partial<Record<ActivityKind, number>>;
   /** armed wakeups and cron jobs */
   armed?: number;
+  /** its goal (/goal) is active: between the goal's turns it is still working */
+  goalActive?: boolean;
+  /** its soonest Tether loop or schedule run (/loop, /schedule), which runs even when it's closed */
+  nextRunAt?: number;
 }
 
 const total = (r?: Partial<Record<ActivityKind, number>>) => Object.values(r ?? {}).reduce((n, x) => n + (x ?? 0), 0);
 
 export function workState(w: WorkInput): WorkState {
-  if (!w.live) return "closed";
-  if (w.status === "running") return "working";
+  // Tether opens a closed session when one of its loops or schedules is due.
+  if (!w.live) return w.nextRunAt ? "scheduled" : "closed";
+  if (w.status === "running" || (w.status === "idle" && w.goalActive)) return "working";
   if (w.status === "waiting") return "waiting";
   if (total(w.running) > 0) return "background";
-  if ((w.armed ?? 0) > 0) return "scheduled";
+  if ((w.armed ?? 0) > 0 || w.nextRunAt) return "scheduled";
   return "idle";
 }
+
+const tetherWork = (s: SessionSummary): Pick<WorkInput, "goalActive" | "nextRunAt"> => ({
+  ...(s.goalActive ? { goalActive: true } : {}),
+  ...(s.nextRunAt ? { nextRunAt: s.nextRunAt } : {}),
+});
 
 /** From a sidebar summary: `activeCount` is running + armed, `runningKinds` the running ones. */
 export function summaryWork(s: SessionSummary): WorkInput {
@@ -39,7 +49,7 @@ export function summaryWork(s: SessionSummary): WorkInput {
   // An older runner sends only the counts: count what it says works (else all of it) as running.
   const working = s.workingCount ?? active;
   const running = s.runningKinds ?? (working ? { other: working } : undefined);
-  return { live: s.live, status: s.status, running, armed: Math.max(0, active - total(running)) };
+  return { live: s.live, status: s.status, running, armed: Math.max(0, active - total(running)), ...tetherWork(s) };
 }
 
 /**
@@ -54,7 +64,9 @@ export function staleFinished(s: SessionSummary, noticeTs: number): boolean {
 
 /** From a Home pulse. */
 export function pulseWork(p: SessionPulse): WorkInput {
-  return { live: p.session.live, status: p.session.status, running: p.activity, armed: p.armed };
+  const t = tetherWork(p.session);
+  const nextRunAt = p.nextRun?.at ?? t.nextRunAt;
+  return { live: p.session.live, status: p.session.status, running: p.activity, armed: p.armed, ...t, ...(nextRunAt ? { nextRunAt } : {}) };
 }
 
 /** "2 agents, 1 shell": running items, by kind. */
@@ -72,7 +84,7 @@ export function workLabel(w: WorkInput): { state: WorkState; label: string; tool
   const state = workState(w);
   switch (state) {
     case "working":
-      return { state, label: "Working", tooltip: "Main agent is working" };
+      return { state, label: "Working", tooltip: w.status === "running" ? "Main agent is working" : "Working on its goal" };
     case "waiting":
       return { state, label: "Waiting", tooltip: "Waiting (usage limit or retry)" };
     case "background": {
@@ -80,6 +92,7 @@ export function workLabel(w: WorkInput): { state: WorkState; label: string; tool
       return { state, label: "Working in background", tooltip: `Main agent is idle · ${what ? `${what} still running` : "background work still running"}` };
     }
     case "scheduled":
+      if (!w.armed) return { state, label: "Scheduled", tooltip: "Waiting for its next loop or scheduled run" };
       return { state, label: "Scheduled", tooltip: w.armed === 1 ? "Waiting for a scheduled wakeup" : `Waiting for ${w.armed} scheduled wakeups` };
     default:
       return { state, label: "", tooltip: "" };

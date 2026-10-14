@@ -3,6 +3,7 @@
 // (dashboard.test.ts).
 
 import { ACTIVITY_KINDS, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import { fmtWhen } from "./shared/schedule";
 
 /** runnerId -> sessionId -> latest pulse */
 export type PulseMap = Record<string, Record<string, SessionPulse>>;
@@ -26,13 +27,14 @@ export interface NeedRow extends PulseRow {
   request: UiRequest;
 }
 
-/** "2 agents · 1 shell · 1 scheduled" */
-export function activityLine(p: SessionPulse): string {
+/** "2 agents · 1 shell · 1 scheduled · Next run 14:20" (the last: Tether's loops and schedules) */
+export function activityLine(p: SessionPulse, now = Date.now()): string {
   const parts = ACTIVITY_KINDS.filter((k) => p.activity?.[k.id]).map((k) => {
     const n = p.activity![k.id]!;
     return `${n} ${n === 1 ? k.label : k.plural}`;
   });
   if (p.armed) parts.push(`${p.armed} scheduled`);
+  if (p.nextRun) parts.push(`Next run ${fmtWhen(p.nextRun.at, now)}`);
   return parts.join(" · ");
 }
 

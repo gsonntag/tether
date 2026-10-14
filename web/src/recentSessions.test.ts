@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
-import type { AgentNotice, SessionSummary } from "./shared/protocol";
+import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, nestSubagents, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
+import { listPath, type AgentNotice, type SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 11, 12);
@@ -30,6 +30,18 @@ const notice = (sessionId: string, ts: number, kind: AgentNotice["kind"] = "fini
 const ctx = (c: Partial<RecentContext> = {}): RecentContext => ({ now: NOW, days: 3, notices: [], noticesSeen: 0, noticesRead: [], ...c });
 
 describe("showInSidebar", () => {
+  test("a review session only while it's open, working or asking you something; not for its notices", () => {
+    const r = session("r", 0, { reviewOf: "a" });
+    expect(showInSidebar(r, ctx())).toBe(false);
+    expect(showInSidebar(r, ctx({ selected: "r" }))).toBe(true);
+    expect(showInSidebar({ ...r, live: true, status: "running" }, ctx())).toBe(true);
+    expect(showInSidebar({ ...r, live: true, needsInput: true }, ctx())).toBe(true);
+    expect(showInSidebar(r, ctx({ notices: [notice("r", NOW)] }))).toBe(false);
+    const g = groupSessions([{ session: { ...r, live: true, needsInput: true } }, { session: r }], ctx({ notices: [notice("r", NOW)] }));
+    expect(g.needs.map((e) => e.session.id)).toEqual(["r"]);
+    expect(groupSessions([{ session: r }], ctx({ notices: [notice("r", NOW)] })).needs).toEqual([]);
+  });
+
   test("by the time of the latest message, inside the window", () => {
     expect(showInSidebar(session("a", 2 * DAY), ctx())).toBe(true);
     expect(showInSidebar(session("a", 3 * DAY), ctx())).toBe(true); // the edge counts
@@ -278,4 +290,17 @@ describe("review fixes", () => {
     expect(needCount(e(session("a", 0, { live: true }), { pulse: { session: session("a", 0), pendingUi: [perm("1"), perm("2")] } }))).toBe(2);
     expect(needCount(e(session("a", 0)))).toBe(1);
   });
+});
+
+describe("nestSubagents", () => {
+  test("subagents follow the session that started them; ones whose parent isn't listed stay put", () => {
+    const by = (sessionId: string, name: string) => ({ startedBy: { sessionId, name } });
+    const list = [session("a", 1), session("x", 2, by("gone", "x")), session("b", 3), session("a1", 4, by("a", "one")), session("a1a", 5, by("a1", "deep")), session("b1", 6, by("b", "two"))];
+    expect(nestSubagents(list).map((r) => `${r.session.id}:${r.depth}`)).toEqual(["a:0", "a1:1", "a1a:2", "x:0", "b:0", "b1:1"]);
+  });
+});
+
+test("listPath: a subagent in its own worktree is listed in its parent's project", () => {
+  expect(listPath(session("a", 1))).toBe("/p");
+  expect(listPath(session("a", 1, { projectPath: "/home/u/.tether/worktrees/p-1/x", listedUnder: "/p" }))).toBe("/p");
 });

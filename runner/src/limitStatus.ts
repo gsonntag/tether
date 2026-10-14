@@ -7,10 +7,23 @@ export interface RateLimitInfo {
   resetsAt?: number;
   rateLimitType?: string;
   utilization?: number;
+  overageStatus?: "allowed" | "allowed_warning" | "rejected" | string;
+  isUsingOverage?: boolean;
 }
 
 /** Seconds or milliseconds since the epoch → milliseconds. */
 export const toMs = (t: number) => (t < 1e12 ? t * 1000 : t);
+
+/**
+ * A rejected event that really blocks the account: not one the turn rides out on extra usage
+ * (overage allowed or in use). Its reset, when still ahead. Undefined for anything else.
+ */
+export function hardLimit(info: RateLimitInfo | undefined, now = Date.now()): { resetAt?: number } | undefined {
+  if (info?.status !== "rejected") return undefined;
+  if (info.isUsingOverage || info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") return undefined;
+  const r = info.resetsAt ? toMs(info.resetsAt) : undefined;
+  return { resetAt: r && r > now ? r : undefined };
+}
 
 export class LimitStatus {
   private windows = new Map<string, { pct: number; resetAt?: number }>();

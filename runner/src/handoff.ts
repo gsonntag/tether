@@ -3,8 +3,10 @@
 // we render the harness-neutral transcript plus the repository state. Files are shared: the
 // new agent works in the same directory.
 
+import { splitAgentWritten } from "../../web/src/shared/subagents";
 import { withAttachments } from "../../web/src/shared/attachments";
-import type { Msg, Part } from "../../web/src/shared/protocol";
+import type { ActivityItem, Msg, Part, UiRequest } from "../../web/src/shared/protocol";
+import { commandOf } from "./guard";
 
 const MAX_CHARS = 60_000;
 const ASSISTANT_TEXT_MAX = 4_000;
@@ -35,7 +37,10 @@ export function renderTranscript(messages: Msg[]): string {
         .join("\n")
         .trim();
       const all = withAttachments(text, files.map(({ type: _, ...f }) => f));
-      if (all) blocks.push(`### User\n${all}`);
+      // Tether's notes about subagents and another agent's messages aren't the user's.
+      const { user, agent } = splitAgentWritten(all);
+      if (user) blocks.push(`### User\n${user}`);
+      if (agent) blocks.push(`### Tether (about a subagent, or another agent's message; not the user)\n${agent}`);
     } else if (m.role === "assistant") {
       const lines: string[] = [];
       for (const p of m.parts) {
@@ -93,6 +98,26 @@ export async function repoState(cwd: string): Promise<string> {
     .join("\n\n");
 }
 
+/** One cancelled approval or question, as the brief lists it. */
+export function describeRequest(r: UiRequest): string {
+  if (r.kind === "permission" && r.tool) {
+    const what = commandOf(r.tool.input) ?? JSON.stringify(r.tool.input ?? {});
+    return `Approval for ${r.tool.name}: ${clip(what, 300)}`;
+  }
+  if (r.kind === "question" && r.questions?.length) return `Question: ${r.questions.map((q) => q.question).join(" / ")}`;
+  if (r.kind === "plan") return "Review of its plan";
+  return [r.title, r.message].filter(Boolean).map((t) => clip(t!, 300)).join(": ");
+}
+
+/** One background task of the old session, as the brief lists it. */
+export function describeTask(a: ActivityItem): string {
+  const kind = a.kind === "subagent" ? `subagent${a.agentType ? ` (${a.agentType})` : ""}` : a.kind;
+  const what = a.command ?? a.watching ?? a.title;
+  const extra = a.description && a.description !== what ? ` — ${clip(a.description, 300)}` : "";
+  const when = a.schedule ? ` (${a.schedule})` : "";
+  return `${kind}: ${clip(what, 300)}${when}${extra}`;
+}
+
 /** How every brief starts. Some harnesses show the brief (or its start) as a user message. */
 export const BRIEF_PREFIX = "You are taking over an in-progress coding session";
 export const isBrief = (m: Msg) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text.trimStart().startsWith(BRIEF_PREFIX));
@@ -105,23 +130,78 @@ export async function buildBrief(opts: {
   pendingPrompt?: string;
   /** the master context's memory section (context/handoff.ts); absent when the context is off */
   memory?: string;
+  /** the previous agent stopped in the middle of its task (a usage limit or an error) */
+  interrupted?: boolean;
+  /** approvals and questions that were open on the old session and got cancelled */
+  cancelled?: UiRequest[];
+  /** the old session's background tasks; `stopped` false: Tether couldn't stop it */
+  tasks?: { item: ActivityItem; stopped: boolean }[];
+  /** the session's active goal (goal.ts briefSection), which carries over */
+  goal?: string;
+  /** the session's plan and todo list (plan.ts briefSection), which carry over */
+  plan?: string;
+  /**
+   * handoff (default): another agent takes the conversation over. fork: a new conversation that
+   * branches off at the last message given (fork.ts). compact: the same conversation restarted to
+   * free up context (`/compact` where the harness can't compact itself).
+   */
+  kind?: "handoff" | "fork" | "compact";
+  /** fork: the original conversation went on after the point it was forked at */
+  later?: boolean;
+  /** compact: what the user asked to keep in focus */
+  focus?: string;
 }): Promise<string> {
   const transcript = renderTranscript(opts.messages);
   const repo = await repoState(opts.cwd);
   const memory = opts.memory?.trim() ? `\n## Memory\n${opts.memory.trim()}\n` : "";
-  return `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.
-You are in the same working directory (${opts.cwd}); every change it made is already on disk. Its tool outputs below are truncated, so re-read files before editing them.
+  const open: string[] = [];
+  if (opts.interrupted)
+    open.push(
+      "The previous agent was interrupted in the middle of its task, possibly halfway through an edit or a command. Before you continue, inspect the working tree (`git status`, `git diff`) and check that the files it was changing are complete and consistent.",
+    );
+  if (opts.cancelled?.length)
+    open.push(
+      `These requests were still open on the old session and have been cancelled, unanswered:\n${opts.cancelled.map((r) => `- ${describeRequest(r)}`).join("\n")}\nAsk again if you still need them.`,
+    );
+  const stopped = opts.tasks?.filter((t) => t.stopped) ?? [];
+  const running = opts.tasks?.filter((t) => !t.stopped) ?? [];
+  if (stopped.length)
+    open.push(`These background tasks of the previous agent were stopped:\n${stopped.map((t) => `- ${describeTask(t.item)}`).join("\n")}\nRestart the ones that are still needed.`);
+  if (running.length)
+    open.push(
+      `These background tasks of the previous agent could not be stopped and may still be running:\n${running.map((t) => `- ${describeTask(t.item)}`).join("\n")}\nCheck on them before starting the same work again.`,
+    );
+  const interrupted = open.length ? `\n## Interrupted work\n${open.join("\n\n")}\n` : "";
+  const goal = opts.goal?.trim() ? `\n## Goal\n${opts.goal.trim()}\n` : "";
+  const plan = opts.plan?.trim() ? `\n## Plan\n${opts.plan.trim()}\n` : "";
+  const kind = opts.kind ?? "handoff";
+  const focus = opts.focus?.trim() ? `\n## Focus\nThe user asked to keep this in focus: ${opts.focus.trim()}\n` : "";
+  const head =
+    kind === "fork"
+      ? `${BRIEF_PREFIX}, forked from a conversation with another agent (${opts.fromLabel}): ${opts.reason}. The conversation below ends at the point the user forked it.${
+          opts.later ? " The original conversation went on after that point, so the files on disk may include changes made later: check the repository state below and re-read files before you rely on them." : ""
+        }`
+      : kind === "compact"
+        ? `${BRIEF_PREFIX} from an earlier session of your own (${opts.fromLabel}), restarted to free up context. You are the same agent, continuing the same work with a fresh context.`
+        : `${BRIEF_PREFIX} from another agent (${opts.fromLabel}). It stopped because: ${opts.reason}.`;
+  const next = opts.pendingPrompt
+    ? `The user's new message:\n\n${opts.pendingPrompt}`
+    : opts.interrupted
+      ? "Inspect the working tree first, then continue the task from where the previous agent stopped. Don't redo finished work."
+      : kind === "fork"
+        ? "Don't start any work yet. Say in a sentence or two where the conversation stands, then wait for the user's next message."
+        : kind === "compact"
+          ? `Don't start new work. Sum up where things stand in a few lines${opts.focus?.trim() ? ", with the focus above in mind" : ""}, then wait for the user's next message.`
+          : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure.";
+  return `${head}
+You are in the same working directory (${opts.cwd}); every change made so far is already on disk. Tool outputs below are truncated, so re-read files before editing them.
 ${memory}
 ## Conversation so far
 ${transcript || "(empty)"}
 
 ## Repository state now
 ${repo}
-
+${interrupted}${goal}${plan}${focus}
 ## What to do
-${
-  opts.pendingPrompt
-    ? `The user's new message:\n\n${opts.pendingPrompt}`
-    : "Continue the task from exactly where the previous agent stopped. Don't redo finished work; check the repository state first if unsure."
-}`;
+${next}`;
 }

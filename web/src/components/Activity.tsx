@@ -26,11 +26,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { Timer } from "@astryxdesign/core/Timer";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { CheckCircleIcon, ClockIcon, CommandLineIcon, CpuChipIcon, EyeIcon, QueueListIcon, Squares2X2Icon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
+import { ArrowTopRightOnSquareIcon, CheckCircleIcon, ClockIcon, CommandLineIcon, CpuChipIcon, EyeIcon, QueueListIcon, Squares2X2Icon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { modelDisplay } from "../models";
 import { activityOf, childrenOf, currentPhase, historyItems, nowLine, phaseLabel, STRIP_ROWS, stripModel, waitingLabel } from "../activity";
 import { isActive, type ActivityItem, type ActivityKind, type ActivityStatus, type LiveState } from "../shared/protocol";
-import { act, setActivityOpen, useStore } from "../store";
+import { act, selectSession, setActivityOpen, useStore } from "../store";
+import { HarnessBadge } from "./HarnessBadge";
 import { fmtClock } from "../util";
 
 const NARROW = "(max-width: 767px)";
@@ -149,14 +150,15 @@ export function ActivityStrip({ sessionId, state }: { sessionId: string; state: 
 function LiveRow({ item: a, harness, isOpen, onToggle }: { item: ActivityItem; harness?: string; isOpen: boolean; onToggle: () => void }) {
   const step = a.kind === "workflow" ? phaseLabel(a) : undefined;
   const now = nowLine(a);
-  const line = step ? (now && !now.startsWith(currentPhase(a)!.title) ? `${step} · ${now}` : step) : (now ?? what(a, harness));
+  const line = step ? (now && !now.startsWith(currentPhase(a)!.title) ? `${step} · ${now}` : step) : a.harness ? [a.model && modelDisplay(a.model, a.harness).name, now].filter(Boolean).join(" · ") : (now ?? what(a, harness));
   return (
     <Item
       density="compact"
       layout="inline"
       isSelected={isOpen}
       onClick={onToggle}
-      startContent={<Icon icon={KIND_ICON[a.kind]} size="sm" color="accent" />}
+      // A cross-harness subagent shows which harness it runs in.
+      startContent={a.harness ? <HarnessBadge harness={a.harness} /> : <Icon icon={KIND_ICON[a.kind]} size="sm" color="accent" />}
       // An inline Item never shrinks its label: cap it so a long title leaves room for the rest.
       label={
         <Text maxLines={1} style={titleCap}>
@@ -296,11 +298,11 @@ function ActivityDetails({ sessionId, item: a, all, harness }: { sessionId: stri
   useEffect(() => {
     if (!live) setStopping(false);
   }, [live]);
-  const model = a.model ? modelDisplay(a.model, harness) : undefined;
+  const model = a.model ? modelDisplay(a.model, a.harness ?? harness) : undefined;
   const parent = a.parentId ? all.find((p) => p.id === a.parentId)?.title : undefined;
   const children = childrenOf(all, a.id);
   const facts: [string, string][] = [];
-  if (a.agentType) facts.push(["Agent", a.agentType]);
+  if (a.agentType) facts.push([a.harness ? "Harness" : "Agent", a.agentType]);
   if (model) facts.push(["Model", model.name]);
   if (a.toolUses) facts.push(["Tool uses", String(a.toolUses)]);
   if (a.tokens) facts.push(["Tokens", tokens(a.tokens)]);
@@ -313,11 +315,14 @@ function ActivityDetails({ sessionId, item: a, all, harness }: { sessionId: stri
   facts.push(["Started", fmtClock(a.startedAt)]);
   return (
     <VStack gap={2} paddingInlineStart={6} paddingBlock={1.5} paddingInlineEnd={1}>
-      {live && a.stoppable && (
-        <HStack>
-          <Button label={`Stop ${a.title}`} size="sm" icon={<Icon icon="stop" />} isLoading={stopping} onClick={() => stopItem(sessionId, a, setStopping)}>
-            Stop
-          </Button>
+      {((live && a.stoppable) || a.sessionId) && (
+        <HStack gap={1.5}>
+          {a.sessionId && <Button label={`Open ${a.title}'s session`} size="sm" icon={<Icon icon={ArrowTopRightOnSquareIcon} />} onClick={() => selectSession(a.sessionId)}>Open session</Button>}
+          {live && a.stoppable && (
+            <Button label={`Stop ${a.title}`} size="sm" icon={<Icon icon="stop" />} isLoading={stopping} onClick={() => stopItem(sessionId, a, setStopping)}>
+              Stop
+            </Button>
+          )}
         </HStack>
       )}
       {a.phases?.length ? <PhaseTrack sessionId={sessionId} item={a} kids={children} all={all} harness={harness} /> : null}

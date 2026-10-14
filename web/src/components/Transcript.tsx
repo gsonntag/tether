@@ -18,18 +18,26 @@ import {
   ArrowUpLeftIcon,
   ArrowUturnLeftIcon,
   ChevronRightIcon,
+  ClipboardDocumentCheckIcon,
   Cog6ToothIcon,
+  CpuChipIcon,
   EnvelopeIcon,
   LightBulbIcon,
   NoSymbolIcon,
   PencilSquareIcon,
   SparklesIcon,
+  Square2StackIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
-import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
+import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
 import { act, selectSession, useStore } from "../store";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
+import { REVIEW_PREFIX } from "../shared/review";
+import { SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX } from "../shared/subagents";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
 import { MsgTime } from "./MsgTime";
@@ -146,6 +154,29 @@ function SkillChip({ p }: { p: SkillPart }) {
   );
 }
 
+/** "Fork from here": opens the fork dialog for this message (the session's harness and model as defaults). */
+function ForkButton({ m }: { m: Msg }) {
+  const open = () => {
+    const o = useStore.getState().open[sessionId];
+    if (!o?.session) return;
+    useStore.setState({ dialog: "fork", forkTarget: forkTarget(sessionId, m, o.session.harness, o.state.model) });
+  };
+  return <IconButton label="Fork from here" tooltip="Fork from here" variant="ghost" size="sm" icon={<Icon icon={Square2StackIcon} />} onClick={open} />;
+}
+
+/** A message's time and actions, in its metadata row. */
+function Meta({ m, time, children }: { m: Msg; time?: ReactNode; children?: ReactNode }) {
+  const fork = canFork(m);
+  if (!fork && !children) return <>{time}</>;
+  return (
+    <HStack hAlign={m.role === "user" ? "end" : "start"} vAlign="center" gap={1}>
+      {time}
+      {children}
+      {fork && <ForkButton m={m} />}
+    </HStack>
+  );
+}
+
 function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Msg; text: string; chips?: ReactNode; attached?: ReactNode; typed?: string; time?: ReactNode }) {
   const [draft, setDraft] = useState<string>();
   const save = async () => {
@@ -157,8 +188,7 @@ function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Ms
       <ChatMessage sender="user">
         <ChatMessageBubble
           metadata={
-            <HStack hAlign="end" vAlign="center" gap={2}>
-              {time}
+            <Meta m={m} time={time}>
               <Button
                 label="Edit"
                 variant="ghost"
@@ -167,7 +197,7 @@ function AmendableUser({ m, text, chips, attached, typed = text, time }: { m: Ms
                 tooltip="The agent already has this message. Editing sends the change as a correction."
                 onClick={() => setDraft(typed)}
               />
-            </HStack>
+            </Meta>
           }
         >
           <VStack gap={1.5}>
@@ -220,13 +250,40 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
       .flatMap((p) => (p.type === "text" ? [p.text] : []))
       .join("\n")
       .trimEnd();
-    if (text.startsWith(BRIEF_PREFIX))
+    // Tether's word about a subagent (finished, failed, stopped), and a subagent's task with its instructions.
+    if (text.startsWith(SUBAGENT_NOTE_PREFIX) || text.startsWith(SUBAGENT_TASK_PREFIX)) {
+      const note = text.startsWith(SUBAGENT_NOTE_PREFIX);
+      const head = note ? text.slice("[Tether] ".length).split("\n")[0]! : "Task from the agent that started this subagent";
+      return (
+        <Card width="100%" padding={3} variant="transparent">
+          <Collapsible
+            defaultIsOpen={!note}
+            chevronPosition="start"
+            trigger={
+              <HStack gap={1.5} vAlign="center">
+                <Icon icon={CpuChipIcon} color="secondary" size="sm" />
+                <Text type="supporting" maxLines={2}>
+                  {head}
+                </Text>
+              </HStack>
+            }
+          >
+            <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
+          </Collapsible>
+        </Card>
+      );
+    }
+    if (text.startsWith(BRIEF_PREFIX) || text.startsWith(REVIEW_PREFIX))
       return (
         <Card width="100%" padding={3} variant="transparent">
           <Collapsible
             defaultIsOpen={false}
             chevronPosition="start"
-            trigger={<Text type="supporting">Handoff brief given to this agent (conversation + repository state)</Text>}
+            trigger={
+              <Text type="supporting">
+                {text.startsWith(REVIEW_PREFIX) ? "What this reviewer was asked (instructions + the session's changes)" : "Brief given to this agent (conversation + repository state)"}
+              </Text>
+            }
           >
             <CodeBlock code={text} isWrapped width="100%" size="sm" maxHeight="50vh" container="section" />
           </Collapsible>
@@ -248,7 +305,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
         )}
         {visible && !amendable && (
           <ChatMessage sender="user">
-            <ChatMessageBubble metadata={time}>
+            <ChatMessageBubble metadata={<Meta m={m} time={time} />}>
               <VStack gap={1.5}>
                 {chips}
                 {text.trim() && <Text style={preWrap}>{text}</Text>}
@@ -285,14 +342,21 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
         );
       return <EventCard title={m.title} icon={icon} text={text} agent={m.source === "agent"} collapsed={!!m.collapsed} time={time} />;
     }
+    const action = m.action;
     return (
       <NoticeCard level={m.level ?? "info"} time={time}>
-        {<Markdown density="compact" contentWidth="100%">{text}</Markdown>}
+        <VStack gap={1.5}>
+          <Markdown density="compact" contentWidth="100%">
+            {text}
+          </Markdown>
+          {action?.kind === "continueOn" && <ContinueOnAction label={action.label} msgId={m.id} />}
+          {action?.kind === "mcpAuth" && <McpAuthAction label={action.label} server={action.server} />}
+        </VStack>
       </NoticeCard>
     );
   }
   return (
-    <ChatMessage sender="assistant" metadata={time}>
+    <ChatMessage sender="assistant" metadata={<Meta m={m} time={time} />}>
       <VStack gap={2} width="100%">
         {m.parts.map((p, i) => {
           const tail = last && i === m.parts.length - 1 && m.streaming;
@@ -465,8 +529,8 @@ function countDiff(pairs: { oldText: string; newText: string }[]) {
   return { add, del };
 }
 
-const GUARD_LABEL = { rule: "auto", judge: "judged ✓", user: "you ✓" } as const;
-const GUARD_COLOR = { rule: "gray", judge: "blue", user: "green" } as const;
+const GUARD_LABEL = { rule: "auto", judge: "judged ✓", user: "you ✓", hook: "hook ✓" } as const;
+const GUARD_COLOR = { rule: "gray", judge: "blue", user: "green", hook: "gray" } as const;
 
 function Tool({ t }: { t: ToolPart }) {
   const name = t.name;
@@ -479,7 +543,11 @@ function Tool({ t }: { t: ToolPart }) {
   const isShell = k ? k === "shell" : ["bash", "shell", "exec", "run_terminal_cmd", "run_command"].includes(lower);
   const isTodo = (k ? k === "todo" : lower === "todowrite") && Array.isArray(input.todos);
   const expandShell = useStore((s) => s.ui.expandShell);
-  const failed = isShell && t.status === "error";
+  // A blocked command the user ran themselves shows that run's result instead of the agent's.
+  const run = t.userRun;
+  const status = run ? (run.status === "running" ? "running" : run.exitCode ? "error" : "done") : t.status;
+  const output = run ? run.output : t.output;
+  const failed = isShell && status === "error";
   const [open, setOpen] = useState(isEdit || (isShell && expandShell) || isTodo || failed);
   // A command that fails opens, even collapsed by default: the output is what you'd look for.
   const [wasFailed, setWasFailed] = useState(failed);
@@ -511,16 +579,21 @@ function Tool({ t }: { t: ToolPart }) {
   const stat = pairs.length ? countDiff(pairs) : undefined;
 
   const blocked = t.guard?.decision === "deny";
+  // Plan mode or a review held this back on purpose: running it anyway takes a second click.
+  const held = blocked && t.guard!.by === "mode";
+  const [confirming, setConfirming] = useState(false);
+  // "Run it myself" is for shell commands only, not an MCP tool that happens to take a `command`.
+  const command = isShell && (typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string");
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
-  ) : t.status === "running" ? (
+  ) : status === "running" ? (
     <Spinner size="sm" aria-label="Running" />
-  ) : t.status === "error" ? (
+  ) : status === "error" ? (
     <Icon icon="error" color="error" size="sm" label="Failed" />
   ) : (
     <Icon icon="success" color="success" size="sm" label="Done" />
   );
-  const lines = t.output ? t.output.trimEnd().split("\n").length : 0;
+  const lines = output ? output.trimEnd().split("\n").length : 0;
   const guard = t.guard && !blocked && t.guard.by !== "mode" ? t.guard : undefined;
 
   const header = (
@@ -599,7 +672,7 @@ function Tool({ t }: { t: ToolPart }) {
                   {!isShell && !pairs.length && !isTodo && Object.keys(input).length > 0 && (
                     <CodeBlock code={str(input)} language="json" isWrapped width="100%" size="sm" maxHeight="50vh" hasLanguageLabel={false} />
                   )}
-                  {t.output && (!pairs.length || t.status === "error") && <ToolOutput text={t.output} />}
+                  {output && (!pairs.length || status === "error") && <ToolOutput text={output} />}
                 </VStack>
               )}
             </Collapsible>
@@ -610,11 +683,37 @@ function Tool({ t }: { t: ToolPart }) {
           <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
             <StackItem size="fill" style={minZero}>
               <Text type="supporting" style={blockText}>
-                Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : "the safety rules"}:{" "}
-                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
+                {confirming
+                  ? `Plan mode or a review held this back. ${command ? "Run" : "Allow"} it anyway? `
+                  : held
+                    ? "Held back: "
+                    : null}
+                {held ? (confirming ? null : (t.guard!.reason ?? "")) : <>Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
+                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}</>}
               </Text>
             </StackItem>
-            {t.guard!.by !== "user" && <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id })} />}
+            {t.guard!.by !== "user" &&
+              (held && !confirming ? (
+                <Button label={command ? "Run it myself" : "Approve & retry"} size="sm" onClick={() => setConfirming(true)} />
+              ) : command ? (
+                <Button
+                  label={confirming ? "Run anyway" : "Run it myself"}
+                  variant={confirming ? "destructive" : undefined}
+                  size="sm"
+                  onClick={() => {
+                    setOpen(true);
+                    act("runBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined });
+                  }}
+                />
+              ) : (
+                <Button
+                  label={confirming ? "Approve anyway" : "Approve & retry"}
+                  variant={confirming ? "destructive" : undefined}
+                  size="sm"
+                  onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined })}
+                />
+              ))}
+            {confirming && <Button label="Cancel" variant="ghost" size="sm" onClick={() => setConfirming(false)} />}
           </HStack>
         )}
       </VStack>
@@ -622,9 +721,64 @@ function Tool({ t }: { t: ToolPart }) {
   );
 }
 
-export function LinkBanner({ from, to }: { from?: { sessionId: string; reason: string }; to?: { sessionId: string; reason: string } }) {
+/** "Continue on …" after an error: only while the agent that hit it still runs (a stopped one goes on with your next message). */
+function ContinueOnAction({ label, msgId }: { label: string; msgId: string }) {
+  const live = useStore((s) => s.open[sessionId]?.session?.live !== false);
+  if (!live) return null;
+  return (
+    <HStack>
+      <Button label={label} size="sm" onClick={() => act("continueOn", { sessionId, msgId })} />
+    </HStack>
+  );
+}
+
+type Link = { sessionId: string; reason: string };
+
+export function LinkBanner({
+  from,
+  to,
+  forked,
+  reviewOf,
+  startedBy,
+}: {
+  from?: Link;
+  to?: Link;
+  forked?: Link;
+  reviewOf?: { sessionId: string };
+  startedBy?: { sessionId: string; name: string };
+}) {
   return (
     <>
+      {startedBy && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={CpuChipIcon} color="secondary" size="sm" />
+            <Text type="supporting">{`Subagent "${startedBy.name}", started by`}</Text>
+            <Button label={`${startedBy.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(startedBy.sessionId)} />
+            <Text type="supporting">That session hears when its turns end.</Text>
+          </HStack>
+        </Card>
+      )}
+      {reviewOf && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={ClipboardDocumentCheckIcon} color="secondary" size="sm" />
+            <Text type="supporting">Read-only review of</Text>
+            <Button label={`${reviewOf.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(reviewOf.sessionId)} />
+            <Text type="supporting">Its findings show there.</Text>
+          </HStack>
+        </Card>
+      )}
+      {forked && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={Square2StackIcon} color="secondary" size="sm" />
+            <Text type="supporting">Forked from</Text>
+            <Button label={`${forked.sessionId.split(":")[0]} session`} size="sm" onClick={() => selectSession(forked.sessionId)} />
+            <Text type="supporting">{forked.reason}</Text>
+          </HStack>
+        </Card>
+      )}
       {from && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">
@@ -645,5 +799,47 @@ export function LinkBanner({ from, to }: { from?: { sessionId: string; reason: s
         </Card>
       )}
     </>
+  );
+}
+
+/** A session's "Authorize <server>" button: opens the MCP server's sign-in, then says how it went, in place. */
+function McpAuthAction({ label, server }: { label: string; server: string }) {
+  const [state, setState] = useState<{ busy?: boolean; done?: boolean; url?: string; note?: string }>({});
+  useEffect(() => onMcpAuthorized((id) => id === server && setState({ done: true })), [server]);
+  if (state.done)
+    return (
+      <Text type="supporting" color="secondary">
+        Connected.
+      </Text>
+    );
+  const go = async () => {
+    setState({ busy: true });
+    try {
+      const { start, opened } = await authorizeMcp(server);
+      if ("needsClient" in start) setState({ note: "Its sign-in server needs a client ID: add one under MCP servers on the Memory & Skills page." });
+      else setState(opened ? {} : { url: start.url });
+    } catch (e: any) {
+      setState({ note: e?.message ?? String(e) });
+    }
+  };
+  return (
+    <VStack gap={1}>
+      <HStack>
+        <Button label={label} size="sm" isLoading={state.busy} onClick={go} />
+      </HStack>
+      {state.url && (
+        <Text type="supporting">
+          The browser blocked the sign-in tab:{" "}
+          <a href={state.url} target="_blank" rel="noopener noreferrer">
+            open the sign-in page
+          </a>
+        </Text>
+      )}
+      {state.note && (
+        <Text type="supporting" color="secondary">
+          {state.note}
+        </Text>
+      )}
+    </VStack>
   );
 }

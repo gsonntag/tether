@@ -96,19 +96,34 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   from the installed Codex CLI's entitlement-aware catalog. Each
   session gets its own copy, which you can edit or reorder.
   - **Quota exhausted:** the runner marks that provider as out until its reset time and moves
-    to the next entry.
-  - **Rate limited:** the runner backs off and retries the same entry indefinitely.
+    to the next entry, but only on a definite signal: the harness's own limit error (Claude
+    Code, Codex, Antigravity), or an error that looks like a limit plus a fresh usage check of
+    that account (Claude, or ChatGPT for Codex and pi on `openai-codex`) showing a window at
+    100%. There is no switching ahead of a limit.
+  - **Entries Tether can't check** (pi on other providers, opencode, Kiro) never switch on their
+    own; the chain editor marks them. Their errors, like any other error in a chain, show a
+    "Continue on …" button that moves the session on by hand.
+  - **Rate limited / overloaded:** the runner backs off and retries the same entry indefinitely.
   - **Earlier entry resets:** the next turn goes back to it. A per-session toggle turns this off.
-  - **Every entry exhausted:** the session waits for the earliest reset, then continues.
+  - **Every entry exhausted:** the session waits for the earliest reset, then continues. The
+    wait survives a runner restart.
 - **Cross-harness handoff.** Moving to an entry in another harness starts a linked session in
   the same directory. It's seeded with the conversation and the git state of the repository.
+  After a mid-task switch, the old session's open approvals and questions are cancelled and its
+  background tasks stopped where the harness allows it (Claude Code tasks, Codex subagents); the
+  new agent is told about both and to check the working tree first.
   The UI follows the link automatically.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.
   - A watchdog warns when a running session has been silent for 15 minutes with nothing
     running: a shell command, tool call or subagent that's still going isn't a stall.
-  - Idle agent processes close after 30 minutes and reopen from disk on demand, unless they
+  - Idle agent processes close after 5 minutes and reopen from disk on demand, unless they
     still have subagents, shells or scheduled wakeups going.
+  - Opening a session that isn't running only shows it: the transcript is read from the
+    harness's own store (opencode's from its SQLite database, read-only) with the settings
+    Tether keeps for it, and the agent starts when you send or do something that needs it.
+    Model, effort, mode, chain and guard changes made meanwhile are saved and applied when it
+    starts. Kiro still starts its process to show a session.
 - **Activity.** Everything a session has going on besides the transcript: subagents (with
   their model, tool calls, tokens, latest action and report), background shells and monitors
   (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
@@ -128,6 +143,18 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   | pi | pi-subagents' foreground agents and async runs, when that package is installed | no |
   | opencode, Kiro | `task` subagents (start, end, report; no steps over ACP) | no |
   | Antigravity | nothing beyond its tool cards | no |
+- **Cross-harness subagents.** Any agent can start another agent on any installed harness and
+  model through Tether ("use a Kiro subagent on Sonnet to write the tests"): `tether-context`'s
+  `agent_harnesses` lists what's installed (models, effort levels), `agent_start` starts it,
+  `agent_status` / `agent_wait` follow it, `agent_message` steers it, `agent_result` returns its
+  report, diff and branch, `agent_stop` stops it. The subagent is a Tether session of its own,
+  listed under the session that started it and shown in that one's activity strip (harness
+  badge, model, what it's doing now); by default it works in a git worktree on a new branch
+  `tether/<parent>/<name>` from the parent's HEAD (under `~/.tether/worktrees/`), or in the same
+  folder on request. When its turn ends, the parent is told (a steer, or a message that starts a
+  turn). Its questions and approvals come to you. Its guard is never looser than the parent's;
+  at most 2 levels deep and 4 running per tree; stopping, archiving or removing the parent stops
+  them. Details: `docs/harness-platform.md`, Phase 5.
 - **Home.** The landing screen (and the 🏠 in the sidebar header) shows every connected runner's
   sessions at a glance, labeled by runner when there are several:
   - **Needs you:** permission prompts (Approve / Deny right there), questions with a few choices
@@ -196,7 +223,7 @@ Each session has an approvals mode that applies to every harness:
 | Mode | Behavior |
 |---|---|
 | **Ask** | Safe actions run on their own; anything else waits for you (from any device) |
-| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason, and you can **Approve & retry** it later |
+| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason. You can then run a blocked command yourself with **Run it myself** (the agent gets its output), or **Approve & retry** any other blocked call |
 | **Full** | Everything is allowed |
 
 The rules (`runner/src/guard.ts`, covered by `guard.test.ts`):
@@ -226,6 +253,10 @@ reads its diffs from these checkpoints.
 Without `FOLIATION_ISSUER` the server runs in dev mode. Every browser is treated as the
 owner, and runners authenticate with `Authorization: Bearer dev`
 (`TETHER_DEV_RUNNER_TOKEN`).
+
+A runner started with `TETHER_DEV=1` also takes `/tether simulate-limit …` and
+`/tether simulate-usage …` in the message box, for testing fallback against real harnesses
+(`docs/fallback-testing.md`).
 
 ## Production (Foliation)
 

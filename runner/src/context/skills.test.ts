@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSy
 import { join } from "node:path";
 import { put } from "./fixtures";
 import { harness } from "./paths";
-import { applySkillPlan, isOurLink, listSkills, planSkills, unlinkAll, type SkillMeta } from "./skills";
+import { applySkillPlan, isOurLink, isOwnSkillEvent, listSkills, planSkills, skillWatchTargets, unlinkAll, type SkillMeta } from "./skills";
 
 let home: string;
 let registry: string;
@@ -162,5 +162,33 @@ describe("skill registry", () => {
     expect(existsSync(join(harness.agentsSkills(), "grill"))).toBe(false);
     expect(r.errors).toEqual([]);
     expect(readFileSync(join(harness.claudeSkills(), "synced", "abc", "SKILL.md"), "utf8")).toBe("synced");
+  });
+
+  test("Kiro: its skills are imported, and it gets links once ~/.kiro exists", () => {
+    expect(planSkills(registry, backup).symlinks.some((l) => l.path.startsWith(harness.kiroSkills()))).toBe(false); // no Kiro: no ~/.kiro made
+    skill(harness.kiroSkills(), "kiro-only", "from kiro");
+    const meta: SkillMeta = {};
+    applySkillPlan(registry, planSkills(registry, backup), meta);
+    expect(readFileSync(join(registry, "kiro-only", "SKILL.md"), "utf8")).toContain("from kiro");
+    expect(meta["kiro-only"]!.sources).toEqual([{ harness: "kiro", path: "~/.kiro/skills/kiro-only" }]);
+    expect(isOurLink(join(harness.kiroSkills(), "kiro-only"), registry)).toBe(true);
+    expect(isOurLink(join(harness.kiroSkills(), "grill"), registry)).toBe(true); // installed like the others
+    expect(isOurLink(join(harness.claudeSkills(), "kiro-only"), registry)).toBe(true);
+  });
+
+  test("watcher events: a new skill counts; our links, temp dirs, skip-listed and removed entries don't", () => {
+    const meta: SkillMeta = {};
+    applySkillPlan(registry, planSkills(registry, backup), meta);
+    expect(skillWatchTargets()).toContain(harness.claudeSkills());
+    expect(skillWatchTargets()).not.toContain(harness.kiroSkills()); // not there yet
+    const own = (dir: string, n: string) => isOwnSkillEvent(join(dir, n), registry);
+    expect(own(harness.claudeSkills(), "grill")).toBe(true); // our link replaced the copy
+    expect(own(harness.agentsSkills(), "grill")).toBe(true); // our install link
+    expect(own(harness.claudeSkills(), "synced")).toBe(true);
+    expect(own(harness.claudeSkills(), `grill.tether-tmp-${process.pid}`)).toBe(true);
+    expect(own(harness.claudeSkills(), ".DS_Store")).toBe(true);
+    expect(own(harness.claudeSkills(), "gone")).toBe(true); // removed: nothing to import
+    skill(harness.claudeSkills(), "fresh", "new by hand");
+    expect(own(harness.claudeSkills(), "fresh")).toBe(false);
   });
 });

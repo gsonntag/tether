@@ -3,20 +3,24 @@
 // so the session stays open between turns and later prompts can be queued while it runs.
 
 import {
+  forkSession,
   getSessionMessages,
   listSessions,
   query,
   renameSession,
   resolveSettings,
   type CanUseTool,
+  type HookCallbackMatcher,
+  type HookEvent,
+  type HookInput,
   type PermissionResult,
+  type SyncHookJSONOutput,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ActivityItem, ContextUsage, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { tail } from "./activity";
@@ -25,17 +29,25 @@ import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
-import { LiveSession, newId } from "../session";
+import { LiveSession, newId, NOBODY_ANSWERED } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
-import { sessionContext } from "../context/inject";
+import { sessionLaunch } from "../connectors/launch";
+import { argvSafeMcp } from "../connectors/claude";
+import { onTokens } from "../mcp/oauth";
 import { nativeAttachments } from "../attachments";
-import { LimitStatus, toMs } from "../limitStatus";
+import { hardLimit, LimitStatus } from "../limitStatus";
+import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
-import { claudePick, lastLineTime } from "./lastActivity";
+import { claudePick, fileStamp, lastLineTime } from "./lastActivity";
+import { userHome } from "../home";
+import { claudeNativeKeys, HOOK_EVENTS, hooksFor, runHooks } from "../hooks";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? Bun.which("claude") ?? undefined;
 /** The modes Tether offers: only those that keep asking the guard (acceptEdits, auto, bypass… don't). */
 export const PERMISSION_MODES = ["default", "plan"];
+
+/** Claude Code's tools that change files, left out of a review session (/review). */
+export const READ_ONLY_DISALLOWED = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 /** Claude permission modes that still ask canUseTool (so the guard) before acting. */
 export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
@@ -189,7 +201,7 @@ function applyUser(content: unknown, messages: Msg[], id: string, ts: number, fl
 
 /** The session's JSONL under ~/.claude/projects (the SDK encodes the cwd by replacing non-alphanumerics). */
 function transcriptFile(sessionId: string, dir: string): string | undefined {
-  const base = join(homedir(), ".claude", "projects");
+  const base = join(userHome(), ".claude", "projects");
   const direct = join(base, dir.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
   if (existsSync(direct)) return direct;
   try {
@@ -229,14 +241,22 @@ async function entries(sessionId: string, dir: string) {
 }
 
 /** `onContext`: the context as of the last stored reply (a resumed process reports nothing until prompted). */
-export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void): Promise<Msg[]> {
+export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void, marks?: Map<string, string>): Promise<Msg[]> {
   const [list, meta] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entries(sessionId, dir)]);
   onContext?.(claudeHistoryContext(list));
-  return historyMessages(list, meta);
+  return historyMessages(list, meta, marks);
 }
 
-/** The SDK's history entries as a transcript, each message at the time Claude Code wrote it. */
-export function historyMessages(list: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }[], meta: ReturnType<typeof entryMeta>): Msg[] {
+/**
+ * The SDK's history entries as a transcript, each message at the time Claude Code wrote it.
+ * `marks` gets, per message, the uuid of its last entry (its tool results included): where a fork
+ * that keeps it cuts (forkSession's upToMessageId).
+ */
+export function historyMessages(
+  list: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }[],
+  meta: ReturnType<typeof entryMeta>,
+  marks?: Map<string, string>,
+): Msg[] {
   const out: Msg[] = [];
   const byApiId = new Map<string, Msg>();
   // An entry without a recorded time (none should lack one) takes the one before it.
@@ -257,15 +277,30 @@ export function historyMessages(list: { type: string; uuid: string; message: unk
         byApiId.set(apiId, nm);
         out.push(nm);
       }
+      marks?.set((prev ?? byApiId.get(apiId)!).id, m.uuid);
     } else if (m.type === "user" && msg) {
       const u = applyUser(msg.content, out, m.uuid, ts, meta.flags.get(m.uuid));
       if (u) out.push(u);
+      const owner = u?.id ?? resultOwner(msg.content, out);
+      if (owner) marks?.set(owner, m.uuid);
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
       out.push({ id: m.uuid, role: "notice", level: "info", parts: [{ type: "text", text: "Context compacted." }], ts });
+      marks?.set(m.uuid, m.uuid);
     }
   }
   for (const m of out) for (const p of m.parts) if (p.type === "tool" && p.status === "running") p.status = "error";
   return out;
+}
+
+/** The message whose tool calls these tool_result blocks answer (their entry belongs to it), if any. */
+function resultOwner(content: unknown, messages: Msg[]): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const b of content as any[]) {
+    if (b?.type !== "tool_result") continue;
+    const hit = findTool(messages, b.tool_use_id) ?? findPlan(messages, b.tool_use_id);
+    if (hit) return hit.msg.id;
+  }
+  return undefined;
 }
 
 // ---------------- input queue ----------------
@@ -274,6 +309,12 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private items: SDKUserMessage[] = [];
   private wake?: () => void;
   private ended = false;
+  private gate?: Promise<unknown>;
+
+  /** Nothing goes to the process until `p` settles (the MCP headers arriving over the control channel). */
+  hold(p: Promise<unknown>) {
+    this.gate = p;
+  }
 
   push(m: SDKUserMessage) {
     this.items.push(m);
@@ -284,6 +325,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     this.wake?.();
   }
   async *[Symbol.asyncIterator]() {
+    await this.gate?.catch(() => {});
     for (;;) {
       while (this.items.length) yield this.items.shift()!;
       if (this.ended) return;
@@ -295,19 +337,27 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 
 // ---------------- live session ----------------
 
-class ClaudeSession extends LiveSession {
+export class ClaudeSession extends LiveSession {
+  /** plan mode reviews its own plans (ExitPlanMode, see reviewPlan) */
+  protected nativePlanReview = true;
+  /** Your hooks run through the SDK's hook callbacks (sdkHooks), not Tether's emulation. */
+  protected nativeHooks = true;
   private q?: Query;
   private input = new InputQueue();
   private resumeId?: string;
   /** API message id -> transcript message id, for streaming + final blocks */
   private current?: { apiId: string; msgId: string; finalCount: number };
-  private rejected?: { resetAt?: number };
+  private rejected?: { resetAt?: number; type?: string };
   private limits = new LimitStatus();
   private limitTimer?: ReturnType<typeof setTimeout>;
   private lastError?: { text?: string; status?: number | null; kind?: string };
   /** subagents, shells, monitors, cron jobs, wakeups (claudeActivity.ts) */
   private act = new ClaudeActivity();
   private pollTimer?: ReturnType<typeof setInterval>;
+  /** the SDK MCP servers this process has (JSON), and the token listener that swaps them */
+  private mcpApplied?: string;
+  private offTokens?: () => void;
+  private mcpSwap?: ReturnType<typeof setTimeout>;
 
   constructor(
     init: { nativeId: string; projectPath: string; title?: string; createdAt?: number; updatedAt?: number },
@@ -320,7 +370,7 @@ class ClaudeSession extends LiveSession {
 
   async start() {
     if (this.resumeId) {
-      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath, (c) => this.setContext(c)) });
+      this.emit({ type: "reset", messages: await loadHistory(this.resumeId, this.projectPath, (c) => this.setContext(c), this.forkMarks) });
     }
     // Your own settings (user, project, local) decide model, effort and permission mode unless
     // this session explicitly chose something else.
@@ -335,8 +385,10 @@ class ClaudeSession extends LiveSession {
     const settingsMode = eff.permissions?.defaultMode === "plan" ? "plan" : "default";
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
-    // Master context: shared memory in the system prompt, and the tether-context MCP server.
-    const ctx = await sessionContext(this.projectPath, { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY });
+    // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
+    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+    // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
+    const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
     this.q = query({
       prompt: this.input,
       options: {
@@ -348,9 +400,13 @@ class ClaudeSession extends LiveSession {
         // A one-line "what it's doing" for running subagents, every ~30 s (forks reuse their cache).
         agentProgressSummaries: true,
         settingSources: ["user", "project", "local"],
-        systemPrompt: { type: "preset", preset: "claude_code", ...(ctx ? { append: ctx.prompt } : {}) },
-        ...(ctx ? { mcpServers: { "tether-context": { type: "stdio" as const, ...ctx.mcp } } } : {}),
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        ...launch.options,
+        ...(mcp.full ? { mcpServers: mcp.launch } : {}),
+        // A review session (/review): its edit tools are gone; Bash and the rest still go through the guard.
+        ...(this.isReviewSession ? { disallowedTools: [...(launch.options.disallowedTools ?? []), ...READ_ONLY_DISALLOWED] } : {}),
         canUseTool,
+        hooks: this.sdkHooks(),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (d) => process.env.DEBUG && process.stderr.write(d),
       },
@@ -364,8 +420,45 @@ class ClaudeSession extends LiveSession {
       // A new process has no tasks yet; they arrive as it starts them.
       activity: [],
     });
+    this.mcpAuthNotice(launch.mcpAuth, true);
+    this.mcpApplied = JSON.stringify(mcp.launch);
+    if (mcp.full) this.input.hold(this.applyMcp(mcp.full));
+    this.offTokens?.();
+    this.offTokens = onTokens(() => {
+      clearTimeout(this.mcpSwap);
+      this.mcpSwap = setTimeout(() => void this.swapMcp(), 500);
+    });
     this.pump();
     this.refreshContext();
+  }
+
+  /**
+   * An MCP sign-in or a refreshed token: the registry servers' Authorization headers change, and
+   * the SDK takes the new set without a restart (setMcpServers). Unchanged servers stay connected.
+   */
+  private async swapMcp() {
+    if (this.closed || !this.q) return;
+    try {
+      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+      await this.applyMcp(launch.options.mcpServers ?? {});
+    } catch (e: any) {
+      console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);
+    }
+  }
+
+  /** setMcpServers when the set changed; at launch the first message waits for it (at most 15 s). */
+  private async applyMcp(servers: Record<string, any>) {
+    const next = JSON.stringify(servers);
+    if (next === this.mcpApplied || this.closed || !this.q) return;
+    try {
+      const q = this.q;
+      const set = q.initializationResult().then(() => q.setMcpServers(servers));
+      const r = await Promise.race([set, Bun.sleep(15_000).then(() => Promise.reject(new Error("timed out")))]);
+      this.mcpApplied = next;
+      for (const [name, err] of Object.entries(r.errors ?? {})) console.error(`claude ${this.id}: MCP server ${name}: ${err}`);
+    } catch (e: any) {
+      console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);
+    }
   }
 
   /** Claude Code's own /context estimate: the window, and (resumed) how full it was. */
@@ -388,7 +481,37 @@ class ClaudeSession extends LiveSession {
     }
   }
 
+  /** a simulated limit wants the turn stopped once Claude Code is working on it (see faultInterrupt) */
+  private faultStop?: "pending" | "sent";
+  /** Claude Code has sent something for the turn started last */
+  private turnSeen = false;
+
+  protected faultInterrupt() {
+    // Interrupting before Claude Code has taken the message could miss the turn: wait for its first sign.
+    this.faultStop = "pending";
+    if (this.turnSeen) this.interruptForFault();
+  }
+
+  private interruptForFault() {
+    if (this.faultStop !== "pending") return;
+    this.faultStop = "sent";
+    this.q?.interrupt().catch(() => {});
+  }
+
   private onMessage(m: SDKMessage) {
+    if (m.type !== "rate_limit_event") {
+      this.turnSeen = true;
+      if (this.faultStop === "pending") this.interruptForFault();
+    }
+    // A simulated limit (faults.ts): the turn ends with Claude's own messages for it instead.
+    if (m.type === "result" && !(m as any).parent_tool_use_id) {
+      const fault = this.takeFault();
+      this.faultStop = undefined;
+      if (fault) {
+        for (const x of claudeFault(fault, this.nativeId)) this.onMessage(x);
+        return;
+      }
+    }
     this.upsertActivity(...this.act.onMessage(m));
     this.pollOutputs();
     // Subagent internals feed its activity item (steps, latest action); the Agent tool card shows the result.
@@ -404,6 +527,8 @@ class ClaudeSession extends LiveSession {
         const msg: any = m.message;
         if ((m as any).error) this.lastError = { kind: (m as any).error, text: blockText(msg?.content) };
         this.onAssistant(msg);
+        // Claude Code writes an entry per content block: the last one so far ends this message.
+        if (this.current && (m as any).uuid) this.forkMarks.set(this.current.msgId, (m as any).uuid);
         break;
       }
       case "user": {
@@ -414,6 +539,7 @@ class ClaudeSession extends LiveSession {
         if (!um.isReplay && (um.origin && um.origin.kind !== "human" || um.isSynthetic)) {
           const msg = applyUser(content, this.t.messages, um.uuid ?? newId("i"), Date.now(), { origin: um.origin, isMeta: um.isMeta ?? um.isSynthetic });
           if (msg) this.emit({ type: "msg", msg });
+          if (msg && um.uuid) this.forkMarks.set(msg.id, um.uuid);
         }
         if (Array.isArray(content))
           for (const b of content) {
@@ -421,6 +547,8 @@ class ClaudeSession extends LiveSession {
             const hit = findTool(this.t.messages, b.tool_use_id);
             if (hit)
               this.emit({ type: "tool", msgId: hit.msg.id, toolId: b.tool_use_id, patch: { status: b.is_error ? "error" : "done", output: blockText(b.content) } });
+            // The result's entry ends the message that made the call (a fork keeping it keeps the result).
+            if (hit && um.uuid && !um.isReplay) this.forkMarks.set(hit.msg.id, um.uuid);
           }
         break;
       }
@@ -429,10 +557,11 @@ class ClaudeSession extends LiveSession {
         break;
       case "rate_limit_event": {
         const info = (m as any).rate_limit_info;
-        if (info?.status === "rejected") {
-          const r = info.resetsAt;
-          this.rejected = { resetAt: r ? toMs(r) : undefined };
-        } else if (this.limits.update(info)) this.showLimit();
+        // A later event for the same window (allowed, or rejected but covered by extra usage) clears it.
+        const hard = hardLimit(info);
+        if (hard) this.rejected = { ...hard, type: info?.rateLimitType };
+        else if (this.rejected && (!info?.rateLimitType || info.rateLimitType === this.rejected.type)) this.rejected = undefined;
+        if (info?.status !== "rejected" && this.limits.update(info)) this.showLimit();
         break;
       }
     }
@@ -509,7 +638,7 @@ class ClaudeSession extends LiveSession {
         break;
       case "compact_boundary":
         this.contextCompacted(m.compact_metadata?.post_tokens);
-        loadHistory(this.nativeId, this.projectPath)
+        loadHistory(this.nativeId, this.projectPath, undefined, this.forkMarks)
           .then((messages) => this.emit({ type: "reset", messages }))
           .catch(() => {});
         break;
@@ -594,12 +723,13 @@ class ClaudeSession extends LiveSession {
     const isErr = r.is_error || (r.subtype && r.subtype !== "success");
     if (isErr) {
       const text = [r.result, this.lastError?.text, this.lastError?.kind].filter(Boolean).join(" ");
-      const hint =
-        this.rejected || this.lastError?.kind === "billing_error"
-          ? { kind: "quota" as const, resetAt: this.rejected?.resetAt }
-          : this.lastError?.kind === "rate_limit" || this.lastError?.kind === "overloaded"
-            ? { kind: "rate_limit" as const }
-            : undefined;
+      // A rejected rate_limit_event is Claude's definite limit signal. billing_error isn't one: it
+      // goes through classify() and a usage check like any other text.
+      const hint = this.rejected
+        ? { kind: "quota" as const, resetAt: this.rejected.resetAt, definite: true }
+        : this.lastError?.kind === "rate_limit" || this.lastError?.kind === "overloaded"
+          ? { kind: "rate_limit" as const }
+          : undefined;
       this.rejected = undefined;
       this.lastError = undefined;
       if (r.subtype !== "error_during_execution" || hint) {
@@ -609,9 +739,62 @@ class ClaudeSession extends LiveSession {
     } else {
       this.turnSucceeded();
     }
+    this.rejected = undefined;
     this.lastError = undefined;
     if (await this.drainPending()) return;
     this.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined });
+  }
+
+  /**
+   * Tether's hooks (hooks.ts) as SDK hook callbacks, one per event. Claude Code passes its own
+   * input (already Claude's shape); the hooks it runs itself from its settings files are left out.
+   */
+  private sdkHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    const out: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {};
+    for (const event of HOOK_EVENTS)
+      out[event] = [{ hooks: [(input, toolUseID, { signal }) => this.runSdkHook(input, toolUseID, signal)], timeout: 86_400 }];
+    return out;
+  }
+
+  private async runSdkHook(input: HookInput, toolUseID: string | undefined, signal: AbortSignal): Promise<SyncHookJSONOutput> {
+    const event = input.hook_event_name;
+    if (!(HOOK_EVENTS as string[]).includes(event)) return {};
+    const tool = "tool_name" in input ? (input.tool_name as string) : undefined;
+    const runs = hooksFor(event as (typeof HOOK_EVENTS)[number], { tool, skip: claudeNativeKeys(this.projectPath) });
+    if (!runs.length) return {};
+    // "Approve & retry" on a call a hook blocked lets that exact call through.
+    if (event === "PreToolUse" && tool && this.isApproved(tool, (input as any).tool_input)) return {};
+    const o = await runHooks(event as (typeof HOOK_EVENTS)[number], { ...input, tether: { harness: "claude-code", session_id: this.id } }, { cwd: this.projectPath, runs, signal, env: { TETHER_HARNESS: "claude-code", TETHER_SESSION_ID: this.id } });
+    const r: SyncHookJSONOutput = {};
+    if (o.messages.length) r.systemMessage = o.messages.join("\n");
+    if (o.stop) {
+      r.continue = false;
+      r.stopReason = o.stop;
+    }
+    const context = o.context.length ? o.context.join("\n\n") : undefined;
+    if (event === "PreToolUse") {
+      // An allow isn't passed on: Claude would then skip canUseTool, and with it plan mode, a
+      // review's hold and the guard's deny rules. The guard takes it as the hook's allow instead.
+      if (o.decision === "allow" && toolUseID) {
+        // Calls Claude allows by itself (reads) never reach canUseTool: don't keep theirs forever.
+        if (this.hookAllows.size > 200) this.hookAllows.clear();
+        this.hookAllows.set(toolUseID, o.reason ?? "");
+      }
+      if (o.decision === "deny" || o.decision === "ask" || context)
+        r.hookSpecificOutput = {
+          hookEventName: "PreToolUse",
+          ...(o.decision === "deny" || o.decision === "ask" ? { permissionDecision: o.decision, permissionDecisionReason: o.reason } : {}),
+          ...(context ? { additionalContext: context } : {}),
+        };
+      if (o.decision === "deny") this.hookDenied(tool!, toolUseID, o.reason ?? "Blocked by a PreToolUse hook.");
+    } else {
+      if (o.decision === "block") {
+        r.decision = "block";
+        r.reason = o.reason;
+      }
+      if (context && (event === "PostToolUse" || event === "UserPromptSubmit")) r.hookSpecificOutput = { hookEventName: event, additionalContext: context };
+    }
+    return r;
   }
 
   private async permission(
@@ -625,10 +808,8 @@ class ClaudeSession extends LiveSession {
       const id = newId("q");
       signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
       // Unattended (auto/full guard): don't stall forever on a question nobody is there to answer.
-      const timeout = this.guardMode === "ask" || this.guardMode === "edits" ? undefined : 15 * 60_000;
-      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, timeout);
-      if (res.cancelled || !res.answers)
-        return { behavior: "deny", message: "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue." };
+      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, this.questionTimeout());
+      if (res.cancelled || !res.answers) return { behavior: "deny", message: NOBODY_ANSWERED };
       return { behavior: "allow", updatedInput: { ...input, answers: res.answers } };
     }
     if (toolName === "ExitPlanMode") return this.reviewPlan(input, signal, toolUseID);
@@ -681,11 +862,34 @@ class ClaudeSession extends LiveSession {
   }
 
   protected async send(text: string) {
+    this.rejected = undefined;
     if (await this.preferBest(text)) return;
+    this.turnSeen = false;
     this.autoTitle(text);
-    this.addUserMessage(text);
-    this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
+    this.pushUser(text, await claudeContent(text));
     this.setState({ status: "running" });
+  }
+
+  /** A user message in the transcript and to Claude Code under one uuid: its own entry's, so a fork can cut there. */
+  private pushUser(text: string, content: SDKUserMessage["message"]["content"]) {
+    const uuid = randomUUID();
+    this.addUserMessage(text, uuid);
+    this.forkMarks.set(uuid, uuid);
+    this.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid } as SDKUserMessage);
+  }
+
+  /** forkSession cuts after any entry: the last one of the last message kept. */
+  forkPoint(n: number) {
+    return this.lastMark(n);
+  }
+
+  /** Claude Code's own /compact, focus and all (its compact_boundary reloads the transcript). */
+  protected async nativeCompact(focus?: string) {
+    this.turnSeen = false;
+    const text = focus ? `/compact ${focus}` : "/compact";
+    this.pushUser(text, text);
+    this.setState({ status: "running" });
+    return true;
   }
 
   /** Priority "next": Claude Code folds it in at its next step. */
@@ -751,6 +955,8 @@ class ClaudeSession extends LiveSession {
   }
 
   async continueTurn(text = "Continue where you left off.") {
+    this.rejected = undefined;
+    this.turnSeen = false;
     this.input.push({ type: "user", message: { role: "user", content: await claudeContent(text) }, parent_tool_use_id: null } as SDKUserMessage);
     this.setState({ status: "running" });
   }
@@ -770,6 +976,8 @@ class ClaudeSession extends LiveSession {
 
   protected shutdown() {
     clearTimeout(this.limitTimer);
+    clearTimeout(this.mcpSwap);
+    this.offTokens?.();
     clearInterval(this.pollTimer);
     this.input.end();
     try {
@@ -784,7 +992,7 @@ let modelCache: ModelRef[] | undefined;
 
 /** When a stored session's last message was written (the file's mtime also moves on titles, modes, …). */
 async function lastMessageAt(s: { sessionId: string; lastModified: number; fileSize?: number }, projectPath: string): Promise<number> {
-  const file = join(homedir(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
+  const file = join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
   const known = s.fileSize !== undefined ? { mtime: s.lastModified, size: s.fileSize } : undefined;
   return (await lastLineTime(file, claudePick, known)) ?? s.lastModified;
 }
@@ -829,8 +1037,26 @@ export const claudeAdapter: Adapter = {
     return loadHistory(nativeId, projectPath);
   },
 
+  async storedHistory(nativeId: string, projectPath: string) {
+    let context: ContextUsage | undefined;
+    const messages = await loadHistory(nativeId, projectPath, (c) => (context = c));
+    return { messages, context };
+  },
+
+  async historyStamp(nativeId: string, projectPath: string) {
+    return fileStamp(join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeId}.jsonl`));
+  },
+
+  modes: PERMISSION_MODES,
+
   create(projectPath, opts, sink) {
     return new ClaudeSession({ nativeId: randomUUID(), projectPath }, sink, opts);
+  },
+
+  async fork(from, opts, sink) {
+    // A copy of the transcript up to that entry (fresh uuids, no undo history), resumed as a new session.
+    const { sessionId } = await forkSession(from.nativeId, { dir: from.projectPath, upToMessageId: from.point });
+    return new ClaudeSession({ nativeId: sessionId, projectPath: from.projectPath }, sink, { ...opts, resume: true });
   },
 
   async resume(nativeId, projectPath, sink) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LimitStatus } from "./limitStatus";
+import { hardLimit, LimitStatus } from "./limitStatus";
 
 const T0 = 1_800_000_000_000;
 
@@ -37,5 +37,22 @@ describe("Claude rate-limit status", () => {
     expect(l.text()).toBe("50% of five_hour");
     expect(l.update({ status: "rejected", rateLimitType: "five_hour" }, T0)).toBe(false);
     expect(l.update(undefined)).toBe(false);
+  });
+});
+
+describe("hardLimit (Claude's definite limit signal)", () => {
+  test("a plain rejection blocks, with its reset when still ahead", () => {
+    expect(hardLimit({ status: "rejected", resetsAt: (T0 + 3_600_000) / 1000 }, T0)).toEqual({ resetAt: T0 + 3_600_000 });
+    expect(hardLimit({ status: "rejected", resetsAt: (T0 - 1000) / 1000 }, T0)).toEqual({ resetAt: undefined });
+    expect(hardLimit({ status: "rejected" }, T0)).toEqual({ resetAt: undefined });
+  });
+
+  test("a rejection extra usage covers, or anything not rejected, doesn't", () => {
+    expect(hardLimit({ status: "rejected", overageStatus: "allowed" }, T0)).toBeUndefined();
+    expect(hardLimit({ status: "rejected", overageStatus: "allowed_warning" }, T0)).toBeUndefined();
+    expect(hardLimit({ status: "rejected", isUsingOverage: true }, T0)).toBeUndefined();
+    expect(hardLimit({ status: "rejected", overageStatus: "rejected" }, T0)).toEqual({ resetAt: undefined });
+    expect(hardLimit({ status: "allowed" }, T0)).toBeUndefined();
+    expect(hardLimit(undefined, T0)).toBeUndefined();
   });
 });

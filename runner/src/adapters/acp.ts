@@ -13,7 +13,6 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { randomBytes } from "node:crypto";
-import { homedir } from "node:os";
 import type { HarnessId, ModelRef, Msg, Part, SessionSummary } from "../../../web/src/shared/protocol";
 import { checklistMarkdown } from "../../../web/src/shared/plan";
 import { findTool } from "../../../web/src/shared/reducer";
@@ -21,10 +20,17 @@ import { acpUsage } from "../contextWindow";
 import { AcpActivity } from "./acpActivity";
 import { ACP_KINDS } from "../toolKind";
 import { LiveSession, newId } from "../session";
-import { acpMcpServers, sessionContext, withPreamble } from "../context/inject";
+import { isPlanMode } from "../plan";
+import { acpFault } from "../faults";
+import { processLaunch, sessionLaunch } from "../connectors/launch";
+import { withPreamble } from "../context/inject";
 import { nativeAttachments } from "../attachments";
 import { userParts } from "../../../web/src/shared/bash";
-import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import type { Adapter, CreateOpts, Sink, StoredHistory, StoredProject } from "./types";
+import { readOpencodeSession } from "./opencodeDb";
+import { userHome } from "../home";
+import { withOpencodeConfig } from "../connectors/acp";
+import { agentEnv } from "../secrets";
 
 const SEARCH_SINK: Sink = { emit() {}, summary() {}, async handoff() {} };
 
@@ -41,6 +47,8 @@ export interface AcpSpec {
    * user, so it is bound to loopback and locked with a per-process random password (httpServer).
    */
   httpPermissionReply?: boolean;
+  /** Reads a stored session without the agent (opencode's database); undefined: replay it through the agent. */
+  storedHistory?: (nativeId: string) => StoredHistory | undefined;
 }
 
 /** Where and how to reach the agent's own HTTP API. */
@@ -112,9 +120,14 @@ export class AcpProcess {
   /** the agent's own HTTP API (spec.httpPermissionReply) */
   http?: HttpApi;
 
-  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean } = {}) {
+  /**
+   * `env`: a session's additions (your secrets, connectors/launch.ts processLaunch); `opencodeConfig`:
+   * merged into OPENCODE_CONFIG_CONTENT (your subagents and commands), under what's already there.
+   */
+  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean; env?: Record<string, string>; opencodeConfig?: Record<string, unknown> } = {}) {
     const args = [...spec.args];
-    let env: Record<string, string | undefined> = { ...process.env, ...spec.env };
+    let env: Record<string, string | undefined> = opts.env ? { ...agentEnv(opts.env), ...spec.env } : { ...process.env, ...spec.env };
+    if (opts.opencodeConfig) env.OPENCODE_CONFIG_CONTENT = withOpencodeConfig(env.OPENCODE_CONFIG_CONTENT, opts.opencodeConfig);
     if (spec.httpPermissionReply) {
       const server = httpServer(opts.http ? freePort() : undefined);
       args.push(...server.args);
@@ -288,7 +301,8 @@ class AcpSession extends LiveSession {
   }
 
   async start() {
-    this.p = new AcpProcess(this.spec, this.projectPath, { http: true });
+    // Your secrets in its environment; opencode also gets your subagents and commands inline.
+    this.p = new AcpProcess(this.spec, this.projectPath, { http: true, ...processLaunch(this.spec.id, this.projectPath) });
     this.p.exited.then((code) => {
       if (!this.closed) {
         this.notice(`${this.spec.id} exited (code ${code}). ${this.p.stderr.trim().split("\n").slice(-3).join("\n")}`, "error");
@@ -298,10 +312,16 @@ class AcpSession extends LiveSession {
     });
     this.p.permission = (r) => this.onPermission(r);
     await this.p.init();
-    // Master context: the tether-context MCP server, and shared memory as a first-message preamble.
-    const ctx = await sessionContext(this.projectPath, { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY });
-    const mcpServers = acpMcpServers(ctx);
-    if (!this.opts.resume) this.preamble = ctx?.prompt;
+    // Its connector: the MCP registry's servers (HTTP/SSE ones only if the agent takes them) and
+    // the tether-context MCP server, and shared memory as a first-message preamble.
+    const launch = await sessionLaunch(this.spec.id, {
+      projectPath: this.projectPath,
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
+      resume: this.opts.resume,
+      mcpCapabilities: this.p.caps?.mcpCapabilities,
+    });
+    const mcpServers = launch.options.mcpServers ?? [];
+    if (!this.opts.resume) this.preamble = launch.preamble;
     let res: any;
     if (this.opts.resume) {
       this.p.handlers.set(this.nativeId, (n) => this.onUpdate(n));
@@ -328,6 +348,7 @@ class AcpSession extends LiveSession {
       this.setState({ modes: this.modeIds, permissionMode: modes.current });
     }
     this.setState({ status: "idle" });
+    this.mcpAuthNotice(launch.mcpAuth);
     if (this.opts.model) await this.applyModel(this.opts.model).catch((e) => this.notice(`Could not set model: ${e.message}`, "warning"));
     if (this.opts.permissionMode && this.modeIds.includes(this.opts.permissionMode)) await this.setPermissionMode(this.opts.permissionMode);
   }
@@ -449,7 +470,7 @@ class AcpSession extends LiveSession {
         break;
       }
       case "current_mode_update":
-        this.setState({ permissionMode: u.currentModeId });
+        this.modeChanged(u.currentModeId);
         break;
       case "config_option_update":
         this.applyConfig(u.configOptions);
@@ -515,11 +536,19 @@ class AcpSession extends LiveSession {
       const note = denied.length ? `Earlier tool calls were blocked:\n${denied.map((d) => `- ${d}`).join("\n")}` : undefined;
       const first = withPreamble(this.preamble, withPreamble(note, text));
       this.preamble = undefined;
-      const r = await this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }, ...(await acpImages(text, this.p.caps))] });
+      const call = this.p.conn.prompt({ sessionId: this.nativeId, prompt: [{ type: "text", text: first }, ...(await acpImages(text, this.p.caps))] });
+      this.inPrompt = true;
+      if (this.faultStop) this.cancelForFault();
+      const r = await call.finally(() => (this.inPrompt = false));
+      // A simulated limit (faults.ts): the prompt fails with the agent's own JSON-RPC error instead.
+      const fault = this.takeFault();
+      if (fault) throw acpFault(fault);
       this.finishStreaming();
       if (r.stopReason === "refusal") this.notice("The agent refused this request.", "warning");
       this.turnSucceeded();
-    } catch (e: any) {
+    } catch (err: any) {
+      const fault = this.takeFault();
+      const e = fault ? acpFault(fault) : err;
       this.finishStreaming();
       const msg = errText(e);
       if (await this.handleTurnError(msg)) return;
@@ -532,6 +561,29 @@ class AcpSession extends LiveSession {
   async continueTurn(text = "Continue where you left off.") {
     this.addUserMessage(text.length > 300 ? text.slice(0, 300) + "…" : text);
     this.runTurn(text);
+  }
+
+  /** ACP has no compaction request: only an agent that offers a `compact` command (opencode's) compacts itself. */
+  protected async nativeCompact(focus?: string) {
+    if (!this.commands.some((c) => c.name === "compact")) return false;
+    const text = focus ? `/compact ${focus}` : "/compact";
+    this.addUserMessage(text);
+    this.runTurn(text);
+    return true;
+  }
+
+  /** a prompt request is out (session/cancel ends it) / a simulated limit waits for one */
+  private inPrompt = false;
+  private faultStop = false;
+
+  protected faultInterrupt() {
+    this.faultStop = true;
+    if (this.inPrompt) this.cancelForFault();
+  }
+
+  private cancelForFault() {
+    this.faultStop = false;
+    this.p.conn.cancel({ sessionId: this.nativeId }).catch(() => {});
   }
 
   async abort() {
@@ -557,11 +609,48 @@ class AcpSession extends LiveSession {
 
   async setPermissionMode(mode: string) {
     const opt = configOption(this.configOptions, "mode");
-    if (opt) {
-      const r: any = await this.p.conn.setSessionConfigOption({ sessionId: this.nativeId, configId: opt.id, value: mode } as any);
-      this.applyConfig(r?.configOptions);
-    } else await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
+    const was = this.t.state.permissionMode;
+    this.settingMode = mode;
+    try {
+      if (opt) {
+        const r: any = await this.p.conn.setSessionConfigOption({ sessionId: this.nativeId, configId: opt.id, value: mode } as any);
+        this.applyConfig(r?.configOptions);
+      } else await this.p.conn.setSessionMode({ sessionId: this.nativeId, modeId: mode });
+    } finally {
+      this.settingMode = undefined;
+    }
+    if (isPlanMode(mode) && was && !isPlanMode(was)) this.beforePlan = was;
     this.setState({ permissionMode: mode });
+    this.modeChosen(mode);
+  }
+
+  /** a mode change Tether asked for (the agent's current_mode_update for it isn't the agent's own) */
+  private settingMode?: string;
+  /** the mode before plan mode, to go back to once the plan is approved */
+  private beforePlan?: string;
+
+  /** The agent switched modes: leaving plan mode by itself, its plan still waits for the user's review. */
+  private modeChanged(mode: string) {
+    const was = this.t.state.permissionMode;
+    if (mode === was) return;
+    if (isPlanMode(mode) && was && !isPlanMode(was)) this.beforePlan = was;
+    this.setState({ permissionMode: mode });
+    if (isPlanMode(was) && !isPlanMode(mode) && this.settingMode !== mode && !this.loadingHistory) this.leftPlanMode();
+  }
+
+  /** Its plan mode (opencode's plan agent, …) has no review step: Tether's card stands in when the turn ends. */
+  protected planning() {
+    return isPlanMode(this.t.state.permissionMode);
+  }
+
+  /** ACP plans are checklists, not a plan to approve: the plan-mode turn's reply is the plan (unless plan_set wrote one). */
+  protected planFromReply = true;
+
+  /** Approved: back to the mode it planned from, else the agent's first mode that isn't a plan mode. */
+  protected async leavePlanMode() {
+    if (!this.planning()) return;
+    const to = this.beforePlan && this.modeIds.includes(this.beforePlan) ? this.beforePlan : this.modeIds.find((m) => !isPlanMode(m));
+    if (to) await this.setPermissionMode(to);
   }
 
   async rename(title: string) {
@@ -600,7 +689,7 @@ export function acpAdapter(spec: AcpSpec): Adapter {
   /** One short-lived agent process to list sessions (and learn models). */
   async function catalog() {
     if (listCache && Date.now() - listCache.at < 20_000) return listCache.sessions;
-    const p = new AcpProcess(spec, homedir());
+    const p = new AcpProcess(spec, userHome());
     try {
       await p.init();
       const sessions: any[] = [];
@@ -662,7 +751,16 @@ export function acpAdapter(spec: AcpSpec): Adapter {
         });
     },
 
+    // The modes it reported last (listModels), for a session that hasn't run in Tether yet.
+    get modes() {
+      return modelCache?.modes.length ? modelCache.modes : undefined;
+    },
+
+    ...(spec.storedHistory ? { storedHistory: async (nativeId: string) => spec.storedHistory!(nativeId) } : {}),
+
     async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
+      const stored = spec.storedHistory?.(nativeId);
+      if (stored) return stored.messages;
       const session = new AcpSession(spec, { nativeId, projectPath }, SEARCH_SINK, { resume: true });
       try {
         await session.start();
@@ -689,10 +787,10 @@ export function acpAdapter(spec: AcpSpec): Adapter {
       }
       if (!modelCache && Bun.which(spec.bin)) {
         // Learn the model list from a throwaway session in the home directory.
-        const p = new AcpProcess(spec, homedir());
+        const p = new AcpProcess(spec, userHome());
         try {
           await p.init();
-          const r: any = await withTimeout(p.conn.newSession({ cwd: homedir(), mcpServers: [] }), 30_000, () => "session/new timed out");
+          const r: any = await withTimeout(p.conn.newSession({ cwd: userHome(), mcpServers: [] }), 30_000, () => "session/new timed out");
           const m = configOption(r.configOptions, "model");
           const t = configOption(r.configOptions, "thought");
           modelCache = {
@@ -728,6 +826,7 @@ export const opencodeAdapter = acpAdapter({
   args: ["acp"],
   env: OPENCODE_ENV,
   httpPermissionReply: true,
+  storedHistory: (nativeId) => readOpencodeSession(nativeId),
 });
 
 // Kiro CLI V3 engine: model/effort through session config options, CLI-side auth.

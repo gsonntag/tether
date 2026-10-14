@@ -8,6 +8,14 @@
 
 import { open, stat } from "node:fs/promises";
 
+/** A file's size and modification time, as one string (undefined: it isn't there). */
+export async function fileStamp(path: string): Promise<string | undefined> {
+  return stat(path).then(
+    (s) => `${s.size}:${s.mtimeMs}`,
+    () => undefined,
+  );
+}
+
 const cache = new Map<string, { mtime: number; size: number; at: number | undefined }>();
 const MAX_CACHED = 20_000;
 /** The chunks read from the end of the file, each further back than the last. */

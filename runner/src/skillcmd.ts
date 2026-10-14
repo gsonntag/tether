@@ -11,8 +11,12 @@ import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdi
 import { dirname, join, resolve } from "node:path";
 import type { ContextSkill, HarnessId, SlashCommand } from "../../web/src/shared/protocol";
 import { isSkillName, parseInvocation, skillBlock } from "../../web/src/shared/skill";
+import { libraryCommands, resolveCommand, type StoredCommand } from "./commands";
 import { splitFrontMatter } from "./context/format";
-import { harness as H, home, untilde } from "./context/paths";
+import { harness as H, untilde } from "./context/paths";
+import { connectorFor } from "./connectors";
+import { upward } from "./connectors/shared";
+import type { HarnessSkillDir as SkillDir } from "./connectors/types";
 
 export interface SkillInfo {
   /** the name typed after `/` */
@@ -106,52 +110,9 @@ export function rememberClaudeBuiltins(names: Iterable<string>) {
   for (const n of names) claudeBuiltins.add(n);
 }
 
-/** The project folder and its parents up to the repo root (or /), nearest first. */
-function upward(projectPath: string): string[] {
-  const out: string[] = [];
-  let d = resolve(projectPath);
-  for (;;) {
-    out.push(d);
-    if (existsSync(join(d, ".git"))) break;
-    const up = dirname(d);
-    if (up === d) break;
-    d = up;
-  }
-  return out;
-}
-
-/** Each harness's own skill dirs, nearest first, with a badge. Read only. */
+/** Each harness's own skill dirs, nearest first, with a badge (its connector's). Read only. */
 export function harnessSkillDirs(harness: HarnessId, projectPath: string): SkillDir[] {
-  const up = upward(projectPath);
-  const repo = (sub: string) => up.map((d) => ({ dir: join(d, sub), source: "repo", root: up[up.length - 1] }));
-  switch (harness) {
-    case "claude-code":
-      return [...repo(".claude/skills"), { dir: H.claudeSkills(), source: "claude" }];
-    case "codex":
-      return [...repo(".agents/skills"), ...repo(".codex/skills"), { dir: H.codexSkills(), source: "codex" }, { dir: H.agentsSkills(), source: "agents" }];
-    case "pi":
-      return [{ dir: join(projectPath, ".pi/skills"), source: "repo", root: up[up.length - 1] }, ...repo(".agents/skills"), { dir: H.piSkills(), source: "pi" }, { dir: H.agentsSkills(), source: "agents" }];
-    case "opencode":
-      return [
-        ...repo(".opencode/skills"),
-        ...repo(".claude/skills"),
-        ...repo(".agents/skills"),
-        { dir: H.opencodeSkills(), source: "opencode" },
-        { dir: H.claudeSkills(), source: "claude" },
-        { dir: H.agentsSkills(), source: "agents" },
-      ];
-    case "antigravity":
-      return [{ dir: H.agySkills(), source: "antigravity" }, { dir: H.geminiSkills(), source: "gemini" }];
-    case "kiro":
-      return [{ dir: join(projectPath, ".kiro/skills"), source: "repo", root: up[up.length - 1] }, { dir: join(home(), ".kiro", "skills"), source: "kiro" }];
-  }
-}
-
-interface SkillDir {
-  dir: string;
-  source: string;
-  /** repo dirs: the repo root its skills must stay inside */
-  root?: string;
+  return connectorFor(harness).skills.dirs(projectPath);
 }
 
 function scan(dirs: SkillDir[], out: Map<string, SkillInfo>, hidden: Set<string>) {
@@ -242,7 +203,7 @@ const under = (p: string, dir: string) => {
 export function decide(harness: HarnessId, skill: Pick<SkillInfo, "name" | "dir" | "installed">, native: Set<string> | undefined, projectPath: string): Resolution {
   if (native) return native.has(skill.name) ? "native" : "expand";
   // No live answer: only harnesses with a native skill syntax, and only for skills in their dirs.
-  if (harness !== "claude-code" && harness !== "codex" && harness !== "pi") return "expand";
+  if (!connectorFor(harness).skills.offline) return "expand";
   // Claude Code runs its own command of that name instead.
   if (harness === "claude-code" && claudeBuiltins.has(skill.name)) return "expand";
   if (skill.installed) return "native";
@@ -307,6 +268,9 @@ export interface ResolveContext {
   native: Set<string> | undefined;
   /** the harness's own syntax for running one of its skills (undefined: expand it instead) */
   nativeText: (name: string, args: string) => string | undefined;
+  /** your library commands (commands.ts), and the names the harness runs itself (those pass through) */
+  commands?: StoredCommand[];
+  commandNative?: Set<string>;
 }
 
 /**
@@ -327,7 +291,8 @@ export function resolveMessage(text: string, c: ResolveContext): string {
     return readsSlash && runs ? text : inv.literal;
   }
   const skill = c.skills.find((s) => s.name === inv.name);
-  if (!skill) return text;
+  // Not a skill: one of your commands the harness doesn't have is filled in here.
+  if (!skill) return (c.commands && resolveCommand(inv.name, inv.args, c.commands, c.commandNative ?? new Set())) ?? text;
   if (decide(c.harness, skill, c.native, c.projectPath) === "native") {
     const native = c.nativeText(skill.name, inv.args);
     if (native !== undefined) return native;
@@ -344,7 +309,7 @@ export function resolveMessage(text: string, c: ResolveContext): string {
  * of the message, so no harness would run it natively. A skill the new session has is expanded.
  */
 export function resolveForBrief(harness: HarnessId, projectPath: string, text: string): string {
-  return resolveMessage(text, { harness, projectPath, skills: skillsFor(harness, projectPath), native: new Set(), nativeText: () => undefined });
+  return resolveMessage(text, { harness, projectPath, skills: skillsFor(harness, projectPath), native: new Set(), nativeText: () => undefined, commands: libraryCommands(), commandNative: new Set() });
 }
 
 /**
@@ -359,12 +324,18 @@ export function slashMenu(
   harness: HarnessId,
   projectPath: string,
   hidden: Set<string> = new Set(),
+  library: StoredCommand[] = [],
 ): SlashCommand[] {
   const names = new Set(skills.map((s) => s.name));
+  const own = new Set(commands.map((c) => c.name));
+  const mine = library.filter((c) => !names.has(c.name));
+  for (const c of mine) names.add(c.name);
   return [
     ...skills.map(
       (s): SlashCommand => ({ name: s.name, description: s.description, kind: "skill", sources: s.sources, native: decide(harness, s, native, projectPath) === "native" }),
     ),
+    // Your commands: run by the harness when it lists them, else filled in by Tether.
+    ...mine.map((c): SlashCommand => ({ name: c.name, description: c.description, kind: "command", sources: [...new Set(c.sources.map((s) => s.split(":")[0]!))], native: own.has(c.name) })),
     ...commands.filter((c) => !names.has(c.name) && !hidden.has(c.name)).map((c): SlashCommand => ({ ...c, kind: "command" })),
   ];
 }

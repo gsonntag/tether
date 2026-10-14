@@ -21,7 +21,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { BellAlertIcon, BoltIcon, CheckCircleIcon, ClockIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
-import type { MemoryConflict, SessionPulse, UiRequest, UiResponse } from "../shared/protocol";
+import { listPath, type MemoryConflict, type SessionPulse, type UiRequest, type UiResponse } from "../shared/protocol";
 import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
 import { touched, type Entry } from "../recentSessions";
 import { useNeedsCount, useSessionGroups } from "../sessionLists";
@@ -287,8 +287,13 @@ function Where({ p, runnerId, ctx, extra }: { p: SessionPulse; runnerId: string;
   return (
     <HStack gap={1.5} vAlign="center" wrap="wrap">
       <Text type="supporting" maxLines={1}>
-        {project(p.session.projectPath)}
+        {project(listPath(p.session))}
       </Text>
+      {p.session.startedBy && (
+        <Text type="supporting" maxLines={1}>
+          {`subagent of ${p.session.startedBy.title ? `“${p.session.startedBy.title}”` : "another session"}`}
+        </Text>
+      )}
       {ctx.multi && <Token size="sm" color="gray" label={runnerId} />}
       {p.model && (
         <Text type="supporting">

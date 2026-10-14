@@ -108,6 +108,15 @@ function inWindow(e: Entry, c: RecentContext): boolean {
   return touched(e.session, foreign(e, c) ? {} : c) >= c.now - c.days * DAY;
 }
 
+/**
+ * A review session (/review) is opened from its card in the session it reviews: it's listed on its
+ * own only while open, working, or asking you something (not for its notices, which its card shows).
+ */
+function reviewHidden(e: Entry, st: SessionState, c: Pick<RecentContext, "selected">): boolean {
+  if (!e.session.reviewOf || e.session.id === c.selected) return false;
+  return st === "recent" || (st === "needs" && !asking(e));
+}
+
 export interface Groups<T> {
   needs: T[];
   working: T[];
@@ -125,6 +134,7 @@ export function groupSessions<T extends Entry>(entries: T[], c: RecentContext & 
   for (const e of entries) {
     if (e.session.archived) continue;
     let st = stateOf(e, c);
+    if (reviewHidden(e, st, c)) continue;
     if (st === "recent" && !foreign(e, c) && e.session.id === c.selected && c.wasNeeds?.has(e.session.id)) st = "needs";
     if (st === "recent" && !inWindow(e, c)) continue;
     g[st].push(e);
@@ -153,11 +163,36 @@ export function mergeEntries(runnerId: string | undefined, summaries: Iterable<S
 /**
  * Whether a session belongs in its project's sidebar list: touched inside the window, or working,
  * waiting on you, scheduled to work again, or the one open. Done (archived) sessions never do;
- * search still finds them.
+ * search still finds them. Review sessions only while open.
  */
 export function showInSidebar(s: SessionSummary, c: RecentContext): boolean {
   if (s.archived) return false;
+  if (s.reviewOf) return !reviewHidden({ session: s }, sessionState(s, c), c);
   return isBusy(s, c) || inWindow({ session: s }, c);
+}
+
+/**
+ * Cross-harness subagents right under the session that started them (theirs under them), the rest
+ * in the list's order. `depth`: how far in a row is (0 for a session whose parent isn't listed).
+ */
+export function nestSubagents(list: SessionSummary[]): { session: SessionSummary; depth: number }[] {
+  const ids = new Set(list.map((s) => s.id));
+  const kids = new Map<string, SessionSummary[]>();
+  for (const s of list) {
+    const p = s.startedBy?.sessionId;
+    if (p && ids.has(p) && p !== s.id) kids.set(p, [...(kids.get(p) ?? []), s]);
+  }
+  const out: { session: SessionSummary; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (s: SessionSummary, depth: number) => {
+    if (seen.has(s.id)) return;
+    seen.add(s.id);
+    out.push({ session: s, depth });
+    for (const k of kids.get(s.id) ?? []) walk(k, depth + 1);
+  };
+  for (const s of list) if (!s.startedBy?.sessionId || !ids.has(s.startedBy.sessionId)) walk(s, 0);
+  for (const s of list) walk(s, 0); // a cycle (shouldn't happen): still listed
+  return out;
 }
 
 /**

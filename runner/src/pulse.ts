@@ -100,6 +100,8 @@ export function buildPulse(p: { session: SessionSummary; state: LiveState; messa
   }
   const c = state.context;
   const live = session.live;
+  // Tether's loops and schedules (sorted soonest first).
+  const next = state.schedules?.[0];
   const action = live ? currentAction(state, messages) : undefined;
   return {
     session,
@@ -113,6 +115,7 @@ export function buildPulse(p: { session: SessionSummary; state: LiveState; messa
     lastText: lastLine(messages),
     ...(state.diffStat ? { diffStat: state.diffStat } : {}),
     ...(p.finishedAt ? { finishedAt: p.finishedAt } : {}),
+    ...(next ? { nextRun: { at: next.nextAt, label: clip(next.prompt, 80), count: state.schedules!.length } } : {}),
   };
 }
 
