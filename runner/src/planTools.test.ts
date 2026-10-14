@@ -346,6 +346,71 @@ describe("Tether's plan review", () => {
     expect(s.modes.at(-1)).toBe("build");
   });
 
+  test("a discussion stopped mid-answer: the next plan-mode turn's own plan goes up, not the one discussed", async () => {
+    const s = fake("pi");
+    await s.setPermissionMode("plan");
+    await s.prompt("Add minus");
+    s.endTurn("1. Add minus");
+    await until(() => planRequest(s));
+    const a = planParts(s)[0]!;
+    s.uiRespond({ id: planRequest(s)!.id, allow: false, value: "Why?", discuss: true });
+    await until(() => s.sent.length === 2);
+    await s.stop();
+    s.endTurn("Because");
+    await s.prompt("Plan a multiply operator instead");
+    s.endTurn("1. Add multiply");
+    await until(() => planRequest(s));
+    expect(planRequest(s)!.planId).not.toBe(a.id);
+    expect(planParts(s).at(-1)!.text).toBe("1. Add multiply");
+  });
+
+  test("plan review with no approval waiting: Discuss isn't taken as a new plan, Approve leaves Tether's plan mode", async () => {
+    const s = fake("pi");
+    await s.setPermissionMode("plan");
+    await s.prompt("Add minus");
+    s.endTurn("1. Add minus");
+    await until(() => planRequest(s));
+    const a = planParts(s)[0]!;
+    // The review card dismissed: nothing waits for an answer, the plan is held.
+    s.uiRespond({ id: planRequest(s)!.id, cancelled: true });
+    await until(() => !planRequest(s));
+    (s.plans as any).patch(a.id, (p: any) => ({ ...p, held: Date.now() }));
+    await s.plans.act(a.id, "discuss", { comments: [], general: "Why minus?" });
+    expect(s.sent.at(-1)).toContain("Why minus?");
+    s.endTurn("Because the user asked.");
+    await until(() => planRequest(s));
+    expect(planParts(s)).toHaveLength(1);
+    expect(planRequest(s)!.planId).toBe(a.id);
+    s.uiRespond({ id: planRequest(s)!.id, cancelled: true });
+    await until(() => !planRequest(s));
+    await s.plans.act(a.id, "approve", { comments: [], general: "" });
+    expect(s.modes.at(-1)).toBe("default");
+    expect(s.sent.at(-1)).toBe(IMPLEMENT_PROMPT);
+    expect(planParts(s)[0]!.outcome).toBe("approved");
+  });
+
+  test("force send during an ACP plan-gate review: changes keep waiting, and the plan comes up again", async () => {
+    const s = fake("acp");
+    await s.setPermissionMode("plan");
+    await s.prompt("Add minus");
+    await s.sessionTool("plan_set", { markdown: "1. Add minus" });
+    s.agentMode("build");
+    await until(() => planRequest(s));
+    const plan = planRequest(s)!.planId;
+    // The fake's abort doesn't end the turn: cancel the review the way an adapter's abort does.
+    (s as any).abort = async () => s.cancelAllUi();
+    await s.forceSend({ text: "Also handle zero" });
+    await until(() => !planRequest(s));
+    expect((await s.checkTool("edit", { path: "math.ts" })).allow).toBe(false);
+    s.endTurn("Done.");
+    // The adapter's turn end sends what waits.
+    await (s as any).drainPending();
+    expect(s.sent.at(-1)).toBe("Also handle zero");
+    s.endTurn("Zero is handled too.");
+    await until(() => planRequest(s));
+    expect(planRequest(s)!.planId).toBe(plan);
+  });
+
   test("Codex: only its plan item (or plan_set) goes up for review; a plain answer in plan mode doesn't", async () => {
     const s = fake("codex");
     await s.setPermissionMode("plan");

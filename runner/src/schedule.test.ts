@@ -565,7 +565,8 @@ describe("the dashboard pulse, the / menu and the capability matrix", () => {
     await s.prompt("/schedule in 2h later");
     await s.prompt("/schedule in 1h sooner");
     const p = buildPulse({ session: s.summary(), state: s.t.state, messages: s.t.messages });
-    expect(p.nextRun).toEqual({ at: s.schedules[0]!.nextAt, label: "sooner", count: 2 });
+    expect(p.nextRun).toEqual({ at: s.schedules[0]!.nextAt, label: "sooner", count: 2 });    // The lists show it as scheduled too (the summary's nextRunAt).
+    expect(s.summary().nextRunAt).toBe(s.schedules[0]!.nextAt);
   });
 
   test("Tether's /loop and /schedule on every harness, in place of the harness's own", async () => {

@@ -107,5 +107,10 @@ describe("Run it myself on a blocked command", () => {
     const b = fake("idle");
     b.addCard({ file_path: "/etc/hosts" });
     expect(b.s.runBlocked("t1")).rejects.toThrow("Shell command not found");
+    // An MCP tool that takes a `command` isn't a shell command to run here.
+    const c = fake("idle");
+    const guard = { decision: "deny", by: "judge", reason: "Blocked" } as const;
+    c.s.emit({ type: "msg", msg: { id: "a1", role: "assistant", parts: [{ type: "tool", id: "t1", name: "mcp__ops__run", input: { command: "deploy" }, status: "error", guard }], ts: 0 } });
+    expect(c.s.runBlocked("t1")).rejects.toThrow("Shell command not found");
   });
 });

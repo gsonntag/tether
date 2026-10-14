@@ -113,12 +113,16 @@ function decorate(s: SessionSummary): SessionSummary {
   // A stored review session (/review) is listed under the session it reviews, not on its own.
   const reviewOf = cfg.sessions[s.id]?.reviewOf?.sessionId;
   const viewed = viewedAt(s.id);
+  // A stored session's loops and schedules still run (the scheduler opens it when one is due).
+  const runs = cfg.sessions[s.id]?.schedules;
+  const nextRunAt = !s.nextRunAt && !s.live && runs?.length ? Math.min(...runs.map((r) => r.nextAt)) : undefined;
   return {
     ...s,
     ...(title ? { title } : {}),
     ...(cfg.archived.includes(s.id) ? { archived: true } : {}),
     ...(reviewOf && !s.reviewOf ? { reviewOf } : {}),
     ...(viewed ? { viewedAt: viewed } : {}),
+    ...(nextRunAt ? { nextRunAt } : {}),
   };
 }
 
@@ -616,6 +620,8 @@ const ops: Handlers = {
     const files = checkAttachments(attachments);
     if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
     if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    // Tether's own commands (/goal, /compact…) first, as typed, like prompt: no shell output rides along.
+    if (!files.length && text && (await s.tetherCommand(text))) return {};
     await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },

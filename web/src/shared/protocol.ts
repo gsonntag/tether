@@ -727,6 +727,10 @@ export interface SessionSummary {
   reviewOf?: string;
   /** when you last opened it, on any device (markViewed) */
   viewedAt?: number;
+  /** its goal (/goal) is active: Tether keeps it working, between turns too */
+  goalActive?: boolean;
+  /** its soonest Tether loop or schedule run (/loop, /schedule): it will work again then */
+  nextRunAt?: number;
 }
 
 /**

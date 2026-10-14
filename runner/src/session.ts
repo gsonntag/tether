@@ -214,6 +214,8 @@ export abstract class LiveSession {
       // browsers read their absence as an older runner that doesn't say.
       ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
       ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
+      ...(this.goalState?.status === "active" ? { goalActive: true } : {}),
+      ...(this.schedules.length ? { nextRunAt: Math.min(...this.schedules.map((x) => x.nextAt)) } : {}),
     };
   }
 
@@ -294,7 +296,8 @@ export abstract class LiveSession {
       if (s.pendingUi && !s.pendingUi.length && this.t.state.pending?.[0]?.scheduleId) setTimeout(() => this.sendRunNow(), 0);
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
-      if (s.status !== undefined || s.pendingUi !== undefined) {
+      // The goal and loops/schedules are in the summary too (goalActive, nextRunAt): the lists show them.
+      if (s.status !== undefined || s.pendingUi !== undefined || s.goal !== undefined || s.schedules !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.reviews !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
@@ -657,6 +660,10 @@ export abstract class LiveSession {
     // A new message changes the plan's approval: synchronously, since planReview.ts arms its
     // auto-approval right after calling this (so nothing below disarms again: keepArmed).
     this.plans.disarm();
+    // A plan under discussion comes up for review again after this turn only when this message is
+    // that discussion (discussPlan); any other message may change the plan.
+    this.planDiscussed = this.discussNext;
+    this.discussNext = undefined;
     if (await this.tetherCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
@@ -692,8 +699,17 @@ export abstract class LiveSession {
     this.pend(text, mode, { keepArmed: true });
   }
 
+  /** a plan the next prompt() discusses (discussPlan) */
+  private discussNext?: string;
+
+  /** Sends your comments on a plan (plan review's Discuss): the agent's answer isn't a new plan, and that plan comes up for review again. */
+  async discussPlan(planId: string, text: string, mode: "steer" | "followUp" = "followUp") {
+    this.discussNext = findPlan(this.t.messages, planId) ? planId : undefined;
+    await this.prompt(text, mode);
+  }
+
   /** Tether's own commands (/goal, /loop, /schedule, /compact, /review, dev faults): true when it was one, handled here. */
-  private async tetherCommand(text: string): Promise<boolean> {
+  async tetherCommand(text: string): Promise<boolean> {
     if (this.devCommand(text)) return true;
     if (await this.goalCommand(text)) return true;
     if (await this.scheduleCommand(text)) return true;
@@ -962,8 +978,7 @@ export abstract class LiveSession {
    */
   async forceSend(o: { text?: string; id?: string }) {
     this.plans.disarm();
-    // Tether's own commands aren't messages: handled as they would be when sent the usual way.
-    if (o.text && !o.id && (await this.tetherCommand(o.text))) return;
+    this.planDiscussed = undefined;
     const list = [...(this.t.state.pending ?? [])];
     let p: PendingMessage;
     if (o.id) {
@@ -988,6 +1003,8 @@ export abstract class LiveSession {
     this.userStopped = true;
     // Stopped as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
+    // Not a dismissal: a plan review the abort cancels keeps holding changes back (tetherPlanReview).
+    this.forcedReview = this.planReviewId;
     this.clearJudging();
     await this.abort();
   }
@@ -1005,6 +1022,7 @@ export abstract class LiveSession {
     // Your Stop ends the turn as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
     this.plans.disarm();
+    this.planDiscussed = this.planReraise = undefined;
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
@@ -1627,7 +1645,8 @@ export abstract class LiveSession {
    */
   async runBlocked(toolId: string, confirmed = false) {
     const hit = this.findCall("", toolId);
-    const command = hit && commandOf(hit.part.input);
+    // Shell commands only: an MCP or other tool with a `command` argument isn't one to run here.
+    const command = hit?.part.kind === "shell" ? commandOf(hit.part.input) : undefined;
     if (!hit || !command) throw new Error("Shell command not found");
     if (this.runningBlocked.has(toolId) || hit.part.userRun) return;
     if (hit.part.guard?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
@@ -2370,6 +2389,10 @@ export abstract class LiveSession {
   private turnPlan?: string;
   /** a plan you're discussing (plan review's Discuss): it goes up for review again after the agent answers, unless it writes a new one */
   private planDiscussed?: string;
+  /** a review force send cancelled while changes waited for it (planGate): it comes up again after that turn */
+  private planReraise?: string;
+  /** the review open when force send aborted the turn */
+  private forcedReview?: string;
   private planTurnFrom = 0;
   /** plan and todo parts recorded already: an older one sent again can't replace a newer one */
   private planParts = new Set<string>();
@@ -2449,14 +2472,18 @@ export abstract class LiveSession {
   private planTurnOver() {
     const partId = this.turnPlan;
     this.turnPlan = undefined;
-    // A compaction's turn writes no plan, whatever mode the session is in.
-    if (this.compactTurn) return void (this.compactTurn = false);
-    if (this.closed || this.userStopped || this.turnTrouble) return;
-    if (!this.planning() && !this.planGate) return;
-    // Answering your comments on a plan isn't a new plan: that plan goes up for review again.
+    // Answering your comments on a plan isn't a new plan: that plan goes up for review again. Only
+    // after this turn's answer: a stopped or failed one leaves nothing to come back to.
     const discussed = this.planDiscussed && findPlan(this.t.messages, this.planDiscussed) ? this.planDiscussed : undefined;
     this.planDiscussed = undefined;
-    const id = partId ?? discussed ?? (this.planFromReply ? this.replyAsPlan() : undefined);
+    // A compaction's turn writes no plan, whatever mode the session is in.
+    if (this.compactTurn) return void (this.compactTurn = false);
+    // (A review force send cancelled waits for the forced message's turn, not this stopped one.)
+    if (this.closed || this.userStopped || this.turnTrouble) return;
+    const reraise = this.planGate && this.planReraise && findPlan(this.t.messages, this.planReraise) ? this.planReraise : undefined;
+    this.planReraise = undefined;
+    if (!this.planning() && !this.planGate) return;
+    const id = partId ?? discussed ?? reraise ?? (this.planFromReply ? this.replyAsPlan() : undefined);
     if (!id) return;
     // Up for review already (an ACP agent left plan mode by itself mid-turn): that card stays.
     if (this.planReviewId && this.planReviewPart === id) return;
@@ -2508,6 +2535,14 @@ export abstract class LiveSession {
     if (res.cancelled) {
       // Replaced by a newer review: that one has the plan now.
       if (this.planReviewId) return;
+      // Force send stopped the turn: not a dismissal. Changes keep waiting, and the plan comes up
+      // for review again after the forced message's turn (unless that turn writes a new one).
+      const forced = this.forcedReview === id;
+      if (forced) this.forcedReview = undefined;
+      if (forced && this.planGate) {
+        this.planReraise = partId;
+        return;
+      }
       if (current && this.planState?.status === "review") this.putPlan({ status: "draft" });
       // Dismissed or stopped: you chose not to wait for it, so changes no longer do either.
       this.planGate = false;
@@ -2529,8 +2564,7 @@ export abstract class LiveSession {
     // Discuss (plan review): the plan stays under review, changes keep waiting; the agent answers
     // your comments, then this plan (or a new one it writes) comes up for review again.
     if (res.discuss && res.value) {
-      this.planDiscussed = partId;
-      await this.prompt(res.value);
+      await this.discussPlan(partId, res.value, "steer");
       return;
     }
     const feedback = res.value?.trim() || "Please revise the plan.";
@@ -2544,22 +2578,45 @@ export abstract class LiveSession {
     if (hit) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, ...patch } : p)) } });
   }
 
+  /**
+   * Plan review approving a plan no request waits for (planReview.ts): where Tether reviews this
+   * harness's plans and its plan mode (or a plan gate) is still on, the approval goes through here,
+   * like Approve on the review card: out of plan mode, then the plan is carried out (with `notes`).
+   * False where a message does it (Claude Code, Antigravity, or no longer planning).
+   */
+  async approvePlan(planId: string, notes?: string): Promise<boolean> {
+    if (this.nativePlanReview || (!this.planning() && !this.planGate)) return false;
+    this.planDiscussed = this.planReraise = undefined;
+    this.planStarting = true;
+    this.setPlanPart(planId, { outcome: "approved" });
+    if (this.planState?.partId === planId) this.putPlan({ status: "approved" });
+    this.planGate = false;
+    try {
+      await this.leavePlanMode();
+    } catch (e: any) {
+      this.notice(`Could not leave plan mode: ${e?.message ?? e}`, "warning");
+    }
+    await this.implementPlan(notes);
+    return true;
+  }
+
   /** After an approval: the agent carries the plan out (in the running turn, if there is one). */
-  private async implementPlan() {
+  private async implementPlan(notes?: string) {
+    const text = notes ? `${IMPLEMENT_PROMPT}\n\nNotes for the work:\n\n${notes}` : IMPLEMENT_PROMPT;
     if (this.t.state.handoffTo || this.closed) {
       this.planStarting = false;
       return;
     }
     if (this.t.state.status !== "idle") {
       this.planStarting = false;
-      this.pend(IMPLEMENT_PROMPT, "steer", { now: true });
+      this.pend(text, "steer", { now: true });
       return;
     }
     this.planStarting = true;
     try {
-      await this.checkpoint(IMPLEMENT_PROMPT);
+      await this.checkpoint(text);
       this.turnStarting = true;
-      await this.continueTurn(IMPLEMENT_PROMPT);
+      await this.continueTurn(text);
     } catch (e: any) {
       this.planStarting = this.turnStarting = false;
       this.notice(`Could not start on the plan: ${e?.message ?? e}`, "error");
@@ -2572,7 +2629,7 @@ export abstract class LiveSession {
   protected modeChosen(mode: string) {
     if (isPlanMode(mode)) return;
     this.planGate = false;
-    this.planDiscussed = undefined;
+    this.planDiscussed = this.planReraise = undefined;
   }
 
   /** A plan that came over in a handoff: the new session's plan, shown again (an open review starts over). */
@@ -3064,8 +3121,10 @@ export abstract class LiveSession {
 
   private armIdle() {
     clearTimeout(this.idleTimer);
-    // Closing the process would also end its subagents, shells and armed wakeups.
-    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0;
+    // Closing the process would also end its subagents, shells and armed wakeups; an active goal or
+    // an armed Tether loop or schedule keeps it open too (it will work again).
+    const idle = () =>
+      this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0 && this.goalState?.status !== "active" && !this.schedules.length;
     if (!idle()) return;
     // A review still under way keeps it open, so its result lands on the card live and pushes (a
     // review whose session went away without reporting holds it at most REVIEW_KEEP_OPEN_MS).

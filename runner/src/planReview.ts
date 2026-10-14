@@ -40,6 +40,10 @@ export interface PlanHost {
   uiRespond(r: UiResponse): boolean;
   /** records the person's answer on the plan part */
   markPlan(planId: string, outcome: "approved"): void;
+  /** sends comments on a plan: its answer isn't a new plan, and that plan comes up for review again (Tether's own review) */
+  discussPlan?(planId: string, text: string, mode?: "steer" | "followUp"): Promise<void>;
+  /** approves a plan through Tether's own review (out of plan mode, then carried out); false where a message does it */
+  approvePlan?(planId: string, notes?: string): Promise<boolean>;
 }
 
 export type PlanAction = "discuss" | "revise" | "approve";
@@ -214,7 +218,8 @@ export class PlanReviews {
         held: waiting ? Date.now() : p.held,
       }));
       // Declining a waiting approval this way keeps the plan under review (the adapters see `discuss`).
-      if (!this.answer(planId, { allow: false, value: text, discuss: true })) await this.s.prompt(text, "followUp");
+      if (!this.answer(planId, { allow: false, value: text, discuss: true }))
+        await (this.s.discussPlan ? this.s.discussPlan(planId, text, "followUp") : this.s.prompt(text, "followUp"));
       return;
     }
     if (action === "revise") {
@@ -257,6 +262,18 @@ export class PlanReviews {
     // Settled before anything is awaited, so nothing else can act on it meanwhile.
     this.patch(planId, (p) => ({ ...done(p), approved: Date.now() }));
     this.s.markPlan(planId, "approved");
+    // Tether reviews this harness's plans and its plan mode is still on: approved like on the
+    // review card (out of plan mode, then carried out), not by a message plan mode would hold back.
+    if (!claude && this.s.approvePlan) {
+      let done: boolean;
+      try {
+        done = await this.s.approvePlan(planId, notes);
+      } catch (e) {
+        this.patch(planId, (p) => ({ ...p, held: review.held, approved: undefined }));
+        throw e;
+      }
+      if (done) return;
+    }
     const sending = this.s.prompt(message); // a new message disarms, synchronously: armed right after
     // Armed, but live only once this message reaches the agent (queued behind others, it waits).
     if (text) this.approveNext = { planId, text, message, live: false };
