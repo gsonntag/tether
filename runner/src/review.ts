@@ -33,7 +33,7 @@ export interface ReviewRequest {
 }
 
 /** Names a harness goes by in /review. */
-const ALIASES: Record<string, HarnessId> = {
+export const ALIASES: Record<string, HarnessId> = {
   "claude-code": "claude-code",
   claude: "claude-code",
   codex: "codex",

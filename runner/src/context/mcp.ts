@@ -10,7 +10,8 @@
 // The session tools act on the calling session: goal_get / goal_update on its goal (/goal,
 // runner/src/goal.ts), plan_get / plan_set / todo_set on its plan (runner/src/plan.ts), and
 // ask_user puts a question card in front of the user and waits for the answer; in a review
-// session (/review, TETHER_CONTEXT_REVIEW=1) review_report hands in the findings. They go to the
+// session (/review, TETHER_CONTEXT_REVIEW=1) review_report hands in the findings; everywhere else
+// the agent_* tools start and follow cross-harness subagents (runner/src/crossAgents.ts). They go to the
 // runner over its loopback bridge (bridge.ts), as the session whose key is in the environment.
 // With the master context off a session still gets this server, with only the session tools
 // (TETHER_CONTEXT_TOOLS=goal, the name from when they were only the goal tools).
@@ -168,17 +169,91 @@ export const REVIEW_TOOLS = [
   },
 ];
 
+const agentId = { type: "string", description: "The subagent's id (its name, as agent_start returned it)" };
+
+/**
+ * Cross-harness subagents (runner/src/crossAgents.ts): start another coding agent on any installed
+ * harness and model as a Tether session of its own, follow it, and take its work. Not in a review session.
+ */
+export const AGENT_TOOLS = [
+  {
+    name: "agent_harnesses",
+    description:
+      "List the coding agents (harnesses) installed on this machine that you can start as subagents through Tether, with each one's models (the exact ids agent_start takes), effort levels and modes, plus the guard levels you may give them. Call it before agent_start when the user names a harness or model, or asks what's available.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "agent_start",
+    description:
+      "Start a subagent: another coding agent on any installed harness (claude-code, codex, pi, opencode, kiro, antigravity) and model, as its own Tether session the user can watch. Use it when the user asks for a specific agent or model (\"use a Kiro subagent on Sonnet to write the tests\"), or to run independent work in parallel on a different harness. (For a quick helper in your own harness, your own subagent tool is fine.) The subagent doesn't see your conversation: give it a self-contained task (goal, files, constraints, how to check its work). By default it works in its own git worktree on a new branch from your HEAD (your uncommitted changes are not in it); cwd \"shared\" runs it in your folder. Tether messages you when its turn ends; then use agent_result to read its report and diff, verify (run the tests), and merge its branch or cherry-pick.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        harness: { type: "string", description: "claude-code, codex, pi, opencode, kiro or antigravity (default: your own). See agent_harnesses." },
+        model: { type: "string", description: "A model id that harness lists (agent_harnesses), e.g. pi's provider/model. Default: the harness's default." },
+        effort: { type: "string", description: "Effort / thinking level, one the harness lists" },
+        mode: { type: "string", description: "The harness's mode (e.g. plan), one it lists" },
+        task: { type: "string", description: "What to do, self-contained" },
+        name: { type: "string", description: "A short name (becomes its id and branch name), e.g. write-tests" },
+        cwd: { type: "string", enum: ["worktree", "shared"], description: "worktree (default in git repos): its own worktree and branch; shared: your folder" },
+        guard: { type: "string", enum: ["ask", "edits", "auto", "full"], description: "Who approves its tool calls; default and loosest allowed: yours" },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "agent_status",
+    description: "A subagent's state (working, waiting for the user, finished, failed, stopped), what it's doing now, how long it has run, tokens and cost when known, and questions it's waiting on.",
+    inputSchema: { type: "object", properties: { id: agentId } },
+  },
+  {
+    name: "agent_wait",
+    description:
+      "Wait until one of your subagents finishes its turn (or needs the user), for at most timeoutSec (100 at most). With no id or ids, waits for any working one. Returns its state and the start of its report. You don't have to wait: Tether messages you when one finishes, so you can keep working or end your turn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: agentId,
+        ids: { type: "array", items: { type: "string" }, description: "Several subagents: returns when the first one is done" },
+        timeoutSec: { type: "number", description: "Seconds to wait, 1-100 (default 100)" },
+      },
+    },
+  },
+  {
+    name: "agent_message",
+    description:
+      "Send a subagent a message: steer (default) folds it into its running turn, or starts a turn if it's idle; queue waits until its turn ends; force interrupts it and sends this now. Use it to correct course, answer what it reported, or give it follow-up work. Its questions to the user are for the user: don't answer them for them.",
+    inputSchema: {
+      type: "object",
+      properties: { id: agentId, text: { type: "string" }, mode: { type: "string", enum: ["steer", "queue", "force"] } },
+      required: ["text"],
+    },
+  },
+  {
+    name: "agent_result",
+    description:
+      "A subagent's work: its final report (its last reply), the files it changed with a diff (cut short when long) against where it started, the commits on its branch, its worktree and branch, and how to take its work (merge or cherry-pick). Verify before you rely on it: read the diff and run the tests.",
+    inputSchema: { type: "object", properties: { id: agentId } },
+  },
+  {
+    name: "agent_stop",
+    description: "Stop a subagent's running turn (and its own subagents). Its session and worktree stay.",
+    inputSchema: { type: "object", properties: { id: agentId } },
+  },
+  { name: "agent_list", description: "Your subagents and their states.", inputSchema: { type: "object", properties: {} } },
+];
+
 const reviewing = () => process.env.TETHER_CONTEXT_REVIEW === "1";
 const sessionHint = () =>
-  `its goal (/goal) with goal_get and goal_update; its plan and todo list with plan_get, plan_set and todo_set; questions to the user with ask_user${reviewing() ? "; your review's findings with review_report" : ""}.`;
+  `its goal (/goal) with goal_get and goal_update; its plan and todo list with plan_get, plan_set and todo_set; questions to the user with ask_user${reviewing() ? "; your review's findings with review_report" : "; cross-harness subagents with agent_harnesses and agent_start (any installed coding agent and model, e.g. a Kiro or Codex subagent, in its own worktree), followed with agent_status / agent_wait and taken with agent_result: verify its work (read the diff, run the tests) before you merge its branch or cherry-pick"}.`;
 
 /** Tools that act on the calling session (through the runner), offered even while the master context is off. */
 export const SESSION_TOOLS = [...GOAL_TOOLS, ...PLAN_TOOLS, ...ASK_TOOLS];
-const SESSION_NAMES = new Set([...SESSION_TOOLS, ...REVIEW_TOOLS].map((t) => t.name));
+const SESSION_NAMES = new Set([...SESSION_TOOLS, ...REVIEW_TOOLS, ...AGENT_TOOLS].map((t) => t.name));
 
-/** The tools this server lists: only the session tools while the master context is off; review_report only in a review session. */
+/** The tools this server lists: only the session tools while the master context is off; review_report only in a review session, the agent tools everywhere else. */
 export const tools = () => {
-  const session = reviewing() ? [...SESSION_TOOLS, ...REVIEW_TOOLS] : SESSION_TOOLS;
+  const session = reviewing() ? [...SESSION_TOOLS, ...REVIEW_TOOLS] : [...SESSION_TOOLS, ...AGENT_TOOLS];
   return process.env.TETHER_CONTEXT_TOOLS === "goal" ? session : [...TOOLS, ...session];
 };
 
@@ -190,7 +265,8 @@ export const timing = { progressMs: 30_000 };
  * takes (or `signal` says the client gave up); the others answer at once.
  */
 async function sessionCall(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Result> {
-  const what = tool.startsWith("goal") ? "the goal" : tool === "ask_user" ? "the question" : tool === "review_report" ? "the review" : "the plan";
+  const what = tool.startsWith("goal") ? "the goal" : tool === "ask_user" ? "the question" : tool === "review_report" ? "the review" : tool.startsWith("agent_") ? "the subagent" : "the plan";
+  if (tool.startsWith("agent_") && reviewing()) return fail("A review session can't start subagents.");
   const key = process.env.TETHER_SESSION_KEY ?? process.env.TETHER_GUARD_KEY;
   if (!key) return fail(tool.startsWith("goal") ? "Goals work only in sessions Tether started." : "This works only in sessions Tether started.");
   let bridge: { url: string; token: string };
@@ -200,13 +276,15 @@ async function sessionCall(tool: string, args: Record<string, unknown>, signal?:
     return fail(`Tether's runner isn't reachable from here, so ${what} can't be reached.`);
   }
   const waits = tool === "ask_user";
+  // agent_wait blocks up to 100 s; agent_start makes a worktree and starts a harness; agent_result reads git.
+  const limitMs = tool === "agent_wait" ? 130_000 : tool === "agent_start" || tool === "agent_harnesses" ? 180_000 : tool.startsWith("agent_") ? 60_000 : 15_000;
   const res = await fetch(`${bridge.url}/session`, {
     method: "POST",
     headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
     body: JSON.stringify({ key, tool, args }),
-    signal: waits ? signal : AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
-    // Bun's own fetch timeout would end a question the user is still reading.
-    ...(waits ? { timeout: false } : {}),
+    signal: waits ? signal : AbortSignal.any([AbortSignal.timeout(limitMs), ...(signal ? [signal] : [])]),
+    // Bun's own fetch timeout would end a question the user is still reading (or a long agent_wait).
+    ...(waits || limitMs > 15_000 ? { timeout: false } : {}),
   } as RequestInit).catch(() => undefined);
   if (!res?.ok) return fail(`Tether's runner didn't answer; ${what} is unchanged.`);
   const r: any = await res.json().catch(() => ({}));

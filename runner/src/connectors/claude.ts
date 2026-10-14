@@ -176,5 +176,6 @@ export const claudeConnector: Connector = {
   // Agent SDK 0.3.293: forkSession(sessionId, { upToMessageId }) copies the transcript up to any entry.
   fork: slot("native", "Its own fork (forkSession) at any message, into Claude Code; into another harness, a new session on a brief"),
   compact: slot("native", "Its own /compact, focus included"),
+  crossAgents: slot("emulated", "agent_start / agent_wait / agent_result in tether-context (SDK mcpServers): starts any installed harness and model as a Tether session in its own worktree; its own Task subagents stay native for Claude helpers"),
   review: slot("emulated", "Tether's review session: without its edit tools (disallowedTools), Bash through the guard, findings through review_report"),
 };

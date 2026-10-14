@@ -169,6 +169,8 @@ export interface Connector {
   compact: Slot;
   /** /review (runner/src/review.ts): a read-only review session on this harness, findings through review_report */
   review: Slot;
+  /** cross-harness subagents (runner/src/crossAgents.ts): the agent_* tools in tether-context */
+  crossAgents: Slot;
 }
 
-export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact", "review"];
+export const SLOTS: SlotId[] = ["mcp", "skills", "memory", "commands", "agents", "hooks", "env", "goal", "plan", "todos", "ask_user", "schedules", "fork", "compact", "review", "crossAgents"];

@@ -36,7 +36,7 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   const cancelled = from.cancelOpenUi();
   const tasks = opts.interrupted
     ? await from.stopBackground()
-    : (from.t.state.activity ?? []).filter((x) => isActive(x) && x.background !== false && !x.parentId).map((item) => ({ item, stopped: false }));
+    : (from.t.state.activity ?? []).filter((x) => isActive(x) && x.background !== false && !x.parentId && !x.sessionId).map((item) => ({ item, stopped: false }));
   // The prompt comes as typed: `/skill args` is resolved for the new harness, not the old one.
   const prompt = pendingPrompt === undefined ? undefined : resolveForBrief(to.harness, from.projectPath, pendingPrompt);
   // Master context on: carry the relevant memories and capture what this session learned first.
@@ -69,6 +69,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   // A review session stays one (before start: the launch narrows the harness's tools), never Dangerously skip.
   next.inheritReview(from);
   if (next.t.state.reviewOf) next.t.state.guard = "auto";
+  // A cross-harness subagent stays one: its parent follows it to the new session.
+  next.inheritStartedBy(from);
   try {
     await next.start();
   } finally {
@@ -86,6 +88,7 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     handoffFrom: { sessionId: from.id, reason },
     guard: next.t.state.reviewOf ? "auto" : from.guardMode,
     ...(next.t.state.reviewOf ? { reviewOf: next.t.state.reviewOf } : {}),
+    ...(next.t.state.startedBy ? { startedBy: next.t.state.startedBy } : {}),
   });
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   const goal = from.goalState;
@@ -102,6 +105,11 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   }
   // Review cards come along (findings can be sent to the new agent); a running review's result reaches both.
   if (from.reviews.length) next.adoptReviews(from.reviews);
+  // Cross-harness subagents it started report to the new session (their parent link follows handoffTo).
+  if (from.subagents.length) {
+    next.adoptSubagents(from.subagents);
+    from.handOverSubagents();
+  }
   from.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined, handoffTo: { sessionId: next.id, reason } });
   const left = [
     cancelled.length ? `${cancelled.length} open ${cancelled.length === 1 ? "request was" : "requests were"} cancelled` : "",

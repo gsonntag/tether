@@ -29,9 +29,10 @@ import { availableProfiles, config, freezeConfig, saveConfig, setUiPrefs, uiPref
 import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
+import { CrossAgents, isWorktreePath, listedUnder, startedByOf } from "./crossAgents";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, byRecent, isActive, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import type { HandoffOpts, LiveSession } from "./session";
 import { ContextService } from "./context";
@@ -113,12 +114,18 @@ function decorate(s: SessionSummary): SessionSummary {
   // A stored review session (/review) is listed under the session it reviews, not on its own.
   const reviewOf = cfg.sessions[s.id]?.reviewOf?.sessionId;
   const viewed = viewedAt(s.id);
+  // A cross-harness subagent: listed with the session that started it, in that one's project.
+  const by = startedByOf(s.id);
+  const parentId = s.startedBy?.sessionId ?? by?.sessionId;
+  const parentTitle = parentId ? (cfg.titles[parentId] ?? live.get(parentId)?.title) : undefined;
   return {
     ...s,
     ...(title ? { title } : {}),
     ...(cfg.archived.includes(s.id) ? { archived: true } : {}),
     ...(reviewOf && !s.reviewOf ? { reviewOf } : {}),
     ...(viewed ? { viewedAt: viewed } : {}),
+    ...(parentId ? { startedBy: { sessionId: parentId, name: s.startedBy?.name ?? by!.name, ...(parentTitle ? { title: parentTitle } : {}) } } : {}),
+    ...(by && by.projectPath !== s.projectPath ? { listedUnder: by.projectPath } : {}),
   };
 }
 
@@ -164,7 +171,8 @@ const sink: Sink = {
     pulses.touch(sessionId);
   },
   summary: (s: SessionSummary) => {
-    send({ t: "sessions", projectPath: s.projectPath, session: decorate(s) });
+    const d = decorate(s);
+    send({ t: "sessions", projectPath: listPath(d), session: d });
     if (live.has(s.id)) pulses.touch(s.id);
   },
   handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
@@ -172,6 +180,9 @@ const sink: Sink = {
   review: async (from, req) => void (await runReview({ adapters, sink, track }, from, req)),
   reviewResult: (sessionId, reviewId, patch) => applyReview((id) => live.get(id), sessionId, reviewId, patch),
 };
+// Cross-harness subagents (agent_start… in tether-context): sessions that start sessions.
+const agents = new CrossAgents({ adapters, sink, track, live: (id) => live.get(id), open: (id) => getLive(id), archived: () => config().archived });
+sink.agents = agents;
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
   return runHandoff({ adapters, sink, context, track }, from, to, reason, pendingPrompt, opts).then(() => {});
@@ -263,7 +274,10 @@ function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> 
 
 async function openLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
   const { harness, nativeId } = parseId(sessionId);
-  let path = projectPath;
+  // A subagent works in its own worktree, which isn't a project of its own in the lists.
+  const stored = config().sessions[sessionId];
+  let path = stored?.startedBy && stored.projectPath && existsSync(stored.projectPath) ? stored.projectPath : projectPath;
+  if (!path && stored?.projectPath && existsSync(stored.projectPath)) path = stored.projectPath;
   if (!path) {
     for (const p of await allProjects()) {
       if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) {
@@ -317,9 +331,14 @@ async function allProjects(): Promise<ProjectInfo[]> {
     cur.pinned = true;
     by.set(path, cur);
   }
-  for (const s of live.values()) if (!s.closed) by.get(s.projectPath)?.live.push(decorate(s.summary()));
+  for (const s of live.values())
+    if (!s.closed) {
+      const d = decorate(s.summary());
+      by.get(listPath(d))?.live.push(d);
+    }
   return [...by.values()]
-    .filter((p) => existsSync(p.path))
+    // Subagents' worktrees are listed with the project they came from.
+    .filter((p) => existsSync(p.path) && !isWorktreePath(p.path))
     .map((p) => (cfg.hidden.includes(p.path) ? { ...p, archived: true } : p))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 }
@@ -341,8 +360,14 @@ async function addProject(p: string, create = false): Promise<ProjectInfo> {
 
 async function projectSessions(projectPath: string): Promise<SessionSummary[]> {
   const stored = (await Promise.all(Object.values(adapters).map((a) => a.listSessions(projectPath).catch(() => [])))).flat();
+  // Subagents started from here that work in their own worktrees are listed here too.
+  const away = listedUnder(projectPath);
+  for (const dir of new Set(away.map((x) => x.projectPath))) {
+    const ids = new Set(away.filter((x) => x.projectPath === dir).map((x) => x.id));
+    for (const a of Object.values(adapters)) for (const s of await a.listSessions(dir).catch(() => [])) if (ids.has(s.id)) stored.push(s);
+  }
   const out = new Map(stored.map((s) => [s.id, s]));
-  for (const s of live.values()) if (s.projectPath === projectPath && !s.closed) out.set(s.id, s.summary());
+  for (const s of live.values()) if (!s.closed && (s.projectPath === projectPath || s.t.state.startedBy?.projectPath === projectPath)) out.set(s.id, s.summary());
   return [...out.values()].map(decorate).sort(byRecent);
 }
 
@@ -536,6 +561,8 @@ const ops: Handlers = {
     cfg.archived = cfg.archived.filter((id) => id !== sessionId);
     if (archived) {
       cfg.archived.push(sessionId);
+      // Its cross-harness subagents stop with it.
+      await agents.stopAll(sessionId).catch(() => {});
       const s = live.get(sessionId);
       if (s && s.t.state.status === "idle") s.close();
     }
@@ -549,6 +576,8 @@ const ops: Handlers = {
     const cfg = config();
     // Archived first, so the closing summary already carries it.
     if (!cfg.archived.includes(sessionId)) cfg.archived.push(sessionId);
+    // Its cross-harness subagents stop with it.
+    await agents.stopAll(sessionId).catch(() => {});
     const s = live.get(sessionId);
     if (s && !s.closed) {
       // Abort a running turn cleanly, but never let a stuck harness keep the process alive.

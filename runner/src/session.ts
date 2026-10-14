@@ -36,7 +36,7 @@ import { advance, bySoonest, describeList, describeOne, fmtWhen, MAX_SCHEDULES, 
 import { sessionTrust } from "./mcp/registry";
 import { load as loadMcpRegistry } from "./mcp/store";
 import { hookTool, hooksFor, runHooks, type HookOutcome } from "./hooks";
-import { descendants, HARNESSES, isActive, ownWork, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
+import { descendants, HARNESSES, isActive, ownWork, type StartedBy, type SubagentLink, type ActivityItem, type ActivityKind, type BackgroundTask, type Checkpoint, type ContextUsage, type GoalNote, type GoalStatus, type GuardVerdict, type Part, type PendingMessage, type SessionDiff, type SessionGoal, type SessionPlan, type SessionReview, type SessionSchedule, type SlashCommand, type TodoItem } from "../../web/src/shared/protocol";
 import { displayText, invocationText, parseInvocation } from "../../web/src/shared/skill";
 import {
   budgetHit,
@@ -83,6 +83,24 @@ export interface SessionSink {
   review?: (from: LiveSession, req: ReviewRequest) => Promise<void>;
   /** A review session's result, for the session it reviews (review.ts applyReview), live or not. */
   reviewResult?: (sessionId: string, reviewId: string, patch: Partial<SessionReview>) => void;
+  /** Cross-harness subagents (crossAgents.ts): the agent_* tools, and what a subagent's parent hears. Absent: not offered. */
+  agents?: AgentHub;
+}
+
+/** What sessions tell the cross-harness subagent manager (runner/src/crossAgents.ts), and ask it. */
+export interface AgentHub {
+  /** agent_harnesses, agent_start, agent_status, agent_wait, agent_message, agent_result, agent_stop, agent_list */
+  tool(from: LiveSession, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: boolean; text: string }>;
+  /** a subagent changed (status, what it's doing, a question): its parent's activity item follows */
+  changed(s: LiveSession): void;
+  /** a subagent's turn ended; once it has settled, its parent hears */
+  turnEnded(s: LiveSession, outcome: "finished" | "failed" | "stopped"): void;
+  /** the parent was stopped, archived or removed: its subagents stop too */
+  stopAll(parent: LiveSession | string): Promise<void>;
+  /** a parent's stored subagents came back (loadPrefs, a new process): its activity items are rebuilt */
+  restored(parent: LiveSession): void;
+  /** the Stop button on a subagent's activity item */
+  stop(parent: LiveSession, name: string): Promise<void>;
 }
 
 let counter = 0;
@@ -214,6 +232,7 @@ export abstract class LiveSession {
       // browsers read their absence as an older runner that doesn't say.
       ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
       ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
+      ...(this.t.state.startedBy ? { startedBy: { sessionId: this.t.state.startedBy.sessionId, name: this.t.state.startedBy.name } } : {}),
     };
   }
 
@@ -285,6 +304,11 @@ export abstract class LiveSession {
       if (s.status === "idle" && before !== "idle") this.goalTurnOver();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.planTurnOver();
       if (s.status === "idle" && before !== "idle") this.reviewTurnOver();
+      // A cross-harness subagent's turn ended: its parent hears once it has settled (crossAgents.ts).
+      if (s.status === "idle" && before !== "idle" && this.t.state.startedBy && !this.t.state.handoffTo && !this.closed)
+        this.sink.agents?.turnEnded(this, this.userStopped ? "stopped" : this.turnTrouble ? "failed" : "finished");
+      // A new process starts with no activity: the subagents this session started are still out there.
+      if (s.activity && this.t.state.subagents?.length) this.sink.agents?.restored(this);
       // An approval or question the goal loop waited on was answered after the turn had ended.
       if (s.pendingUi && !s.pendingUi.length && this.goalHeld) {
         this.goalHeld = false;
@@ -298,7 +322,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.reviews !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules", "reviews", "reviewOf"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -325,6 +349,8 @@ export abstract class LiveSession {
         } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
     this.plans.observe(event);
+    // A subagent's parent shows what it's doing now (throttled there).
+    if (this.t.state.startedBy) this.sink.agents?.changed(this);
   }
 
   setState(state: Partial<LiveState>) {
@@ -442,6 +468,8 @@ export abstract class LiveSession {
     if (loopTurn) return;
     // A review session: the session it reviews says when the review is in.
     if (this.t.state.reviewOf) return;
+    // A cross-harness subagent: the session that started it hears, and says when it's all done.
+    if (this.t.state.startedBy) return;
     // Only when truly done: nothing the agent started is still working (armed wakeups and cron
     // jobs don't count). The last one to finish sends it (activityChanged).
     if (this.workingCount) {
@@ -584,6 +612,11 @@ export abstract class LiveSession {
     const item = this.activity(id);
     if (!item) throw new Error("That item is no longer listed.");
     if (!isActive(item)) return;
+    // A cross-harness subagent: its own session stops.
+    if (item.sessionId && this.t.state.subagents?.some((l) => `xa:${l.id}` === item.id)) {
+      if (!this.sink.agents) throw new Error("This runner can't stop subagents.");
+      return this.sink.agents.stop(this, item.id.slice(3));
+    }
     if (!item.stoppable || !this.stopActivityItem) throw new Error(`${this.harness} can't stop this from Tether.`);
     this.stoppedByUser.add(id);
     await this.stopActivityItem(item);
@@ -1008,6 +1041,8 @@ export abstract class LiveSession {
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
+    // Its cross-harness subagents stop with it.
+    if (this.t.state.subagents?.some((l) => l.status === "working" || l.status === "waiting")) void this.sink.agents?.stopAll(this).catch(() => {});
     await this.abort();
   }
 
@@ -1048,8 +1083,12 @@ export abstract class LiveSession {
       restore.reviewOf = p.reviewOf;
       this.reviewSettled = !p.active;
     }
+    // Cross-harness subagents it started (handed off: they went with the conversation), and who started it.
+    if (p.subagents?.length && !p.handoffTo) restore.subagents = p.subagents;
+    if (p.startedBy && !this.t.state.startedBy) restore.startedBy = p.startedBy;
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
+    if (restore.subagents) this.sink.agents?.restored(this);
     if (restore.schedules) scheduleChanged();
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
     // The harness's own goal follows Tether's again (it may still hold an older one).
@@ -1077,13 +1116,15 @@ export abstract class LiveSession {
 
   /** Whether the agent is doing anything a restart would interrupt. */
   get busy(): boolean {
-    return this.t.state.status !== "idle" || this.workingCount > 0 || (!this.t.state.activity && !!this.t.state.background?.length);
+    // Cross-harness subagents are sessions of their own: they resume by themselves after a restart.
+    const working = ownWork(this.t.state.activity ?? []).filter((a) => a.status === "running" && !a.sessionId).length;
+    return this.t.state.status !== "idle" || working > 0 || (!this.t.state.activity && !!this.t.state.background?.length);
   }
 
   /** What a restart would stop, as the agent is told after one. */
   private backgroundWork(): BackgroundTask[] {
     if (!this.t.state.activity) return this.t.state.background ?? [];
-    return ownWork(this.t.state.activity).filter((a) => a.status === "running").map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
+    return ownWork(this.t.state.activity).filter((a) => a.status === "running" && !a.sessionId).map((a) => ({ id: a.id, description: a.title, type: a.agentType ? `${a.kind}: ${a.agentType}` : a.kind }));
   }
 
   savePrefs() {
@@ -1111,6 +1152,8 @@ export abstract class LiveSession {
       schedules: s.schedules?.length ? s.schedules : undefined,
       reviews: s.reviews?.length ? s.reviews : undefined,
       reviewOf: s.reviewOf,
+      subagents: s.subagents?.length ? s.subagents : undefined,
+      startedBy: s.startedBy,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -1181,7 +1224,8 @@ export abstract class LiveSession {
    */
   async stopBackground(timeoutMs = 5_000): Promise<{ item: ActivityItem; stopped: boolean }[]> {
     this.flushActivity();
-    const active = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background !== false);
+    // Not cross-harness subagents: they are sessions of their own, and go on.
+    const active = (this.t.state.activity ?? []).filter((a) => isActive(a) && a.background !== false && !a.sessionId);
     const ids = new Set(active.map((a) => a.id));
     const out: { item: ActivityItem; stopped: boolean }[] = [];
     for (const item of active.filter((a) => !a.parentId || !ids.has(a.parentId))) {
@@ -2627,6 +2671,10 @@ export abstract class LiveSession {
       case "review_report":
         return this.reviewReport(args);
     }
+    if (tool.startsWith("agent_")) {
+      if (!this.sink.agents) return { ok: false, text: "This Tether runner can't start subagents." };
+      return this.sink.agents.tool(this, tool, args, signal);
+    }
     return { ok: false, text: `Unknown tool "${tool}".` };
   }
 
@@ -2836,6 +2884,57 @@ export abstract class LiveSession {
   /** They went over to the new session in a handoff: none run here any more. */
   handOverSchedules() {
     if (this.schedules.length) this.putSchedules([]);
+  }
+
+  // ---- cross-harness subagents (agent_start…, runner/src/crossAgents.ts) ----
+  // The parent keeps one link per subagent (`subagents`, saved in prefs) and shows each as an
+  // activity item; the subagent has `startedBy`. The manager in crossAgents.ts does the rest.
+
+  get subagents(): SubagentLink[] {
+    return this.t.state.subagents ?? [];
+  }
+
+  /** A subagent's link changed (or is new): kept here and shown as its activity item. */
+  putSubagent(link: SubagentLink, item?: ActivityItem) {
+    const list = this.subagents;
+    const i = list.findIndex((l) => l.id === link.id);
+    this.setState({ subagents: i >= 0 ? list.map((l) => (l.id === link.id ? link : l)) : [...list, link] });
+    if (item) this.upsertActivity(item);
+  }
+
+  /** Subagents that came over in a handoff: this session follows them from now on. */
+  adoptSubagents(list: SubagentLink[]) {
+    const mine = new Set(this.subagents.map((l) => l.id));
+    const add = list.filter((l) => !mine.has(l.id));
+    if (add.length) this.setState({ subagents: [...this.subagents, ...add] });
+    this.sink.agents?.restored(this);
+  }
+
+  /** Handed off: the subagents are followed by the new session (their items leave this one). */
+  handOverSubagents() {
+    if (!this.subagents.length) return;
+    this.setState({ subagents: [], activity: (this.t.state.activity ?? []).filter((a) => !(a.sessionId && a.id.startsWith("xa:"))) });
+  }
+
+  /** This session moved on from `from` (a fallback, /compact): it is the same subagent. Before start. */
+  inheritStartedBy(from: LiveSession) {
+    if (from.t.state.startedBy) this.t.state.startedBy = from.t.state.startedBy;
+  }
+
+  /** Whether changes are held back here (a review session, plan mode or a plan awaiting review): no subagents start. */
+  get holdsChanges(): boolean {
+    return !!this.t.state.reviewOf || this.planning() || !!this.planGate;
+  }
+
+  /**
+   * A note from Tether about a subagent: into the running turn (a steer where the harness takes
+   * them, else queued); idle, it starts a turn. Waiting on a limit, or held after your Stop, it waits.
+   */
+  async tetherNote(text: string) {
+    const st = this.t.state;
+    if (st.status === "running") this.pend(text, this.steer ? "steer" : "followUp", { keepArmed: true });
+    else if (st.status === "waiting" || st.pendingHeld || this.restarting || this.planStarting) this.pend(text, "followUp", { keepArmed: true });
+    else await this.prompt(text, "followUp");
   }
 
   // ---- review (/review, runner/src/review.ts) ----

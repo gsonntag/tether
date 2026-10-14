@@ -16,6 +16,7 @@ export const SLOT_LABEL: Record<SlotId, string> = {
   fork: "Fork from a message",
   compact: "Compact (/compact)",
   review: "Review (/review)",
+  crossAgents: "Cross-harness subagents",
   commands: "Custom commands",
   agents: "Subagents",
   hooks: "Hooks",

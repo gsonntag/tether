@@ -477,6 +477,51 @@ export interface LiveState {
   reviewOf?: { sessionId: string; reviewId: string };
   /** plan reviews by plan id (shared/plan.ts); present (maybe empty) once the runner keeps them */
   plans?: Record<string, PlanReviewState>;
+  /** cross-harness subagents this session started (agent_start, runner/src/crossAgents.ts), oldest first */
+  subagents?: SubagentLink[];
+  /** this session is a cross-harness subagent: who started it */
+  startedBy?: StartedBy;
+}
+
+/** A cross-harness subagent: a Tether session started by another one with agent_start. */
+export interface SubagentLink {
+  /** its name, unique among the parent's subagents: what the agent_* tools take as `id` */
+  id: string;
+  /** the subagent's session (the latest, if it moved on to another session since) */
+  sessionId: string;
+  harness: HarnessId;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  guard: GuardMode;
+  task: string;
+  cwd: "worktree" | "shared";
+  /** where it works */
+  path: string;
+  /** cwd "worktree": its git worktree, branch and the commit it started from */
+  worktree?: { path: string; branch: string; base: string };
+  /** working: a turn is running; waiting: it waits for the user (a question or an approval) */
+  status: "working" | "waiting" | "finished" | "failed" | "stopped";
+  startedAt: number;
+  endedAt?: number;
+  /** turns it has ended, and how many of those the parent was told about (agent_wait or a message) */
+  turns: number;
+  told: number;
+  /** the start of its last report */
+  report?: string;
+}
+
+export interface StartedBy {
+  /** the parent session */
+  sessionId: string;
+  /** its name among the parent's subagents (SubagentLink.id) */
+  name: string;
+  /** 1: started by a top-level session, 2: by a subagent */
+  depth: number;
+  /** the top-level session of the tree */
+  rootId: string;
+  /** the parent's project folder: the session is listed there, also when it works in a worktree */
+  projectPath: string;
 }
 
 export interface ContextUsage {
@@ -613,6 +658,9 @@ export interface ActivityItem {
   worktree?: { path?: string; branch?: string };
   /** the final report, or why it failed */
   summary?: string;
+  /** a cross-harness subagent (agent_start): its own Tether session, and the harness it runs in */
+  sessionId?: string;
+  harness?: HarnessId;
   // shell, monitor
   command?: string;
   /** the last lines of output */
@@ -725,9 +773,16 @@ export interface SessionSummary {
   workingCount?: number;
   /** a review session (/review): the session it reviews. Listed under that one, not in the sidebar */
   reviewOf?: string;
+  /** a cross-harness subagent: the session that started it (agent_start) */
+  startedBy?: { sessionId: string; name: string; title?: string };
+  /** the project folder it's listed in, when that isn't `projectPath` (a subagent in its own worktree) */
+  listedUnder?: string;
   /** when you last opened it, on any device (markViewed) */
   viewedAt?: number;
 }
+
+/** The project folder a session is listed in: its own, or its parent's for a subagent working in a worktree. */
+export const listPath = (s: Pick<SessionSummary, "projectPath" | "listedUnder">): string => s.listedUnder ?? s.projectPath;
 
 /**
  * How session lists sort: by the time of the most recent user or agent message (`updatedAt`),
@@ -990,7 +1045,7 @@ export type ContextEvent =
   | { type: "status"; status: ContextStatus };
 
 /** A part of a harness's setup that Tether maps its own config onto (runner/src/connectors/). */
-export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact" | "review";
+export type SlotId = "mcp" | "skills" | "memory" | "commands" | "agents" | "hooks" | "env" | "goal" | "plan" | "todos" | "ask_user" | "schedules" | "fork" | "compact" | "review" | "crossAgents";
 
 /** native: the harness does it itself; emulated: Tether stands in for it; unsupported: neither. */
 export type CapabilityLevel = "native" | "emulated" | "unsupported";

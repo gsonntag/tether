@@ -210,7 +210,7 @@ describe("MCP server", () => {
     expect(init.result.protocolVersion).toBe("2025-03-26");
     expect(await handle({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list: any = await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get", "goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user"]);
+    expect(list.result.tools.map((t: any) => t.name)).toEqual(["memory_search", "memory_get", "memory_write", "skill_list", "skill_get", "goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user", "agent_harnesses", "agent_start", "agent_status", "agent_wait", "agent_message", "agent_result", "agent_stop", "agent_list"]);
     const call = async (name: string, args: object) => ((await handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } })) as any).result;
     const prev = process.cwd();
     process.chdir(repo);
@@ -240,7 +240,7 @@ describe("MCP server", () => {
     await sink.end();
     const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.id)).toEqual([1, 2]);
-    expect(lines[1].result.tools.length).toBe(11);
+    expect(lines[1].result.tools.length).toBe(19);
   });
 
   test("with the master context off it serves only the session tools", async () => {
@@ -250,7 +250,7 @@ describe("MCP server", () => {
     sink.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_search", arguments: { query: "x" } } }) + "\n");
     await sink.end();
     const lines = (await new Response(p.stdout).text()).trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines[0].result.tools.map((t: any) => t.name)).toEqual(["goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user"]);
+    expect(lines[0].result.tools.map((t: any) => t.name)).toEqual(["goal_get", "goal_update", "plan_get", "plan_set", "todo_set", "ask_user", "agent_harnesses", "agent_start", "agent_status", "agent_wait", "agent_message", "agent_result", "agent_stop", "agent_list"]);
     expect(lines[1].result.isError).toBe(true);
   });
 });

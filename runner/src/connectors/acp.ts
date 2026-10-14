@@ -110,6 +110,7 @@ export const opencodeConnector: Connector = {
   // ACP 1.7: the unstable session/fork copies a whole session, with no message point.
   fork: slot("emulated", "A new session on a brief; ACP has no fork at a message"),
   compact: slot("native", "Its own /compact command, where it lists one; else the conversation restarts on a brief" + UNVERIFIED),
+  crossAgents: slot("emulated", "agent_start / agent_wait / agent_result in tether-context (ACP session MCP servers): starts any installed harness and model as a Tether session in its own worktree" + UNVERIFIED),
   review: slot("emulated", "Tether's review session, every change held back by the guard, findings through review_report" + UNVERIFIED),
 };
 
@@ -171,6 +172,7 @@ export const kiroConnector: Connector = {
   schedules: slot("emulated", "Tether's /loop and /schedule, run by the runner"),
   fork: slot("emulated", "A new session on a brief; ACP has no fork at a message"),
   compact: slot("emulated", "The conversation restarts as a new session on a brief, unless it lists a /compact command of its own" + UNVERIFIED),
+  crossAgents: slot("emulated", "agent_start / agent_wait / agent_result in tether-context (ACP session MCP servers): starts any installed harness and model as a Tether session in its own worktree" + UNVERIFIED),
   review: slot("emulated", "Tether's review session, every change held back by the guard, findings through review_report" + UNVERIFIED),
 };
 

@@ -83,6 +83,10 @@ export interface SessionPrefs {
   reviews?: import("../../web/src/shared/protocol").SessionReview[];
   /** this session is a read-only review of another one */
   reviewOf?: { sessionId: string; reviewId: string };
+  /** cross-harness subagents it started (agent_start, runner/src/crossAgents.ts) */
+  subagents?: import("../../web/src/shared/protocol").SubagentLink[];
+  /** it is a cross-harness subagent: who started it */
+  startedBy?: import("../../web/src/shared/protocol").StartedBy;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

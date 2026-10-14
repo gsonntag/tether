@@ -115,5 +115,6 @@ export const codexConnector: Connector = {
   compact: slot("native", "Its own compaction (thread/compact/start); it takes no focus, so /compact with a focus restarts the conversation on a brief"),
   // codex-cli 0.162 review/start reviews uncommitted changes, a branch, a commit or custom
   // instructions and returns its findings as text only (exitedReviewMode.review).
+  crossAgents: slot("emulated", "agent_start / agent_wait / agent_result in tether-context (thread config): starts any installed harness and model as a Tether session in its own worktree; its own multi-agent tools stay for Codex helpers"),
   review: slot("emulated", "Tether's review session in its read-only sandbox, findings through review_report; its own review/start can't take the session's diff and returns its findings as text only"),
 };
