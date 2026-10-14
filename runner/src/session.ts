@@ -45,7 +45,8 @@ export interface SessionSink {
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-const IDLE_CLOSE_MS = 30 * 60_000;
+/** A fully idle agent process closes after this; the next message (or opening it) starts it again. */
+const IDLE_CLOSE_MS = 5 * 60_000;
 const STALL_WARN_MS = 15 * 60_000;
 
 /**
@@ -202,7 +203,7 @@ export abstract class LiveSession {
       if (s.status !== undefined || s.pendingUi !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
-      }
+      } else if (s.pending !== undefined) this.armIdle();
       if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
@@ -1301,7 +1302,8 @@ export abstract class LiveSession {
   private armIdle() {
     clearTimeout(this.idleTimer);
     // Closing the process would also end its subagents, shells and armed wakeups.
-    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0;
+    // Messages held after Stop stay with a live process, ready to send.
+    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0 && !this.t.state.pending?.length;
     if (!idle()) return;
     this.idleTimer = setTimeout(() => idle() && this.close(), IDLE_CLOSE_MS);
   }
