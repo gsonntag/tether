@@ -9,6 +9,14 @@ Antigravity, and `splitModelRoute` (Phase 0; it is in uncommitted work in the ma
 was built, emulated or left unsupported per harness is in "Implementation notes" at the end; the
 Decisions section overrides the plan text above it.
 
+Synced with master on 2026-10-14 (merge of `origin/master` at 686017d: plan review v2, sessions
+model, uiPrefs, tool kinds, force send, Add project). Master's plan review (`LiveState.plans`,
+`planReview.ts`, `~/.config/tether/plans/`) sits beside this branch's session plan
+(`LiveState.plan`, saved in the session's prefs); Tether's own review card takes its Discuss (the
+plan stays under review and comes up again after the agent answers) and auto-approval. Review
+sessions stay out of the Working / Needs you / Recent lists; Tether's loops and schedules count as
+"Scheduled" on Home. Force send runs Tether's commands like a normal send.
+
 ## Goal
 
 The user configures things once, in Tether, and every harness gets them. Linking an MCP server,
@@ -337,6 +345,8 @@ finds it done), and runs every 5 goal turns in any case (done / continue / block
   itself gets the same hold until its plan is approved. Approve leaves plan mode (Codex Default, the
   ACP mode it came from or its first non-plan mode, pi Default) and sends "Implement the plan."
   (Codex's own words); "Send feedback" sends the comments as a message and stays in plan mode.
+  Plan review's Discuss sends the comments as a message without a verdict: the agent's answer is
+  not taken as a plan, and the plan being discussed goes up for review again when the turn ends.
 - ask_user: the existing question card on every harness, blocking until answered; with the guard
   on Auto or Dangerously skip it gives up after 15 minutes like Claude's AskUserQuestion ("Nobody
   answered…"). Harness MCP timeouts raised for `tether-context`: Claude `timeout` 24 h, Codex
