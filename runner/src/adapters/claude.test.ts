@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,4 +18,16 @@ test("only modes that still ask canUseTool survive a handoff or a guard change",
   expect(keepsGuard("plan")).toBe(true);
   // Claude's approving modes would answer before the guard is asked; other harnesses' modes mean nothing here
   for (const m of ["acceptEdits", "auto", "bypassPermissions", "dontAsk", "build", "", undefined]) expect(keepsGuard(m)).toBe(false);
+});
+
+describe("resuming a session that never got a message", () => {
+  test("nothing on disk: it starts fresh under the same id instead of resuming", async () => {
+    const { claudeAdapter } = await import("./claude");
+    const dir = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "tether-claude-empty-"));
+    const id = crypto.randomUUID();
+    const s = await claudeAdapter.resume(id, dir, { emit: () => {}, summary: () => {}, handoff: async () => {} } as any);
+    expect(s.nativeId).toBe(id);
+    expect((s as any).resumeId).toBeUndefined();
+    s.close();
+  });
 });

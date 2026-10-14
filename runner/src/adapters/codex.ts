@@ -526,7 +526,11 @@ export class CodexSession extends LiveSession {
     };
     let r: any;
     if (this.opts.resume) {
-      r = await this.p.call("thread/resume", { threadId: this.nativeId, ...params });
+      r = await this.p.call("thread/resume", { threadId: this.nativeId, ...params }).catch((e: any) => {
+        // Codex writes a thread only with its first turn, and gives a new one its own id.
+        if (/no rollout found/i.test(String(e?.message ?? e))) throw new Error("This Codex session never got a message, so Codex has nothing to reopen. Start a new session instead.");
+        throw e;
+      });
       const turns = r.thread.turns ?? [];
       this.emit({ type: "reset", messages: historyMsgs(turns, this.projectPath, r.model, await itemTimes(this.p, this.nativeId, turns), this.forkMarks) });
     } else if (this.opts.fork) {
