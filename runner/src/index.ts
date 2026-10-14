@@ -2,7 +2,7 @@
 // It dials out to the app (TETHER_URL) with an app service token (TETHER_TOKEN), so the
 // machine needs no inbound port.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -42,6 +42,7 @@ import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
 import { checkAttachments, discard, readChunk, receiveChunk, sweepAttachments, sweepUploads } from "./attachments";
 import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
+import { createProject, githubAccount, githubRepos } from "./newProject";
 import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
 import { forgetPlans, saveStoredDraft } from "./planReview";
 
@@ -351,8 +352,10 @@ function expand(path: string) {
   return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
 }
 
-async function addProject(p: string): Promise<ProjectInfo> {
-  if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`${p} is not a directory`);
+async function addProject(p: string, create = false): Promise<ProjectInfo> {
+  if (create && !existsSync(p)) mkdirSync(p, { recursive: true });
+  if (!existsSync(p)) throw new Error(`${p} doesn't exist`);
+  if (!statSync(p).isDirectory()) throw new Error(`${p} is a file, not a folder`);
   const cfg = config();
   if (!cfg.projects.includes(p)) cfg.projects.push(p);
   cfg.hidden = cfg.hidden.filter((h) => h !== p);
@@ -470,8 +473,20 @@ const ops: Handlers = {
     return allProjects();
   },
 
-  async addProject({ path }) {
-    return addProject(expand(path));
+  async addProject({ path, create }) {
+    return addProject(expand(path), create);
+  },
+
+  async createProject({ name, parent, github }) {
+    return addProject(await createProject({ name, parent: expand(parent || "~"), github }));
+  },
+
+  async githubAccount() {
+    return (await githubAccount()) ?? null;
+  },
+
+  async githubRepos({ owner }) {
+    return githubRepos(owner);
   },
 
   async cloneProject({ repo, parent }) {
@@ -496,7 +511,10 @@ const ops: Handlers = {
 
   async listDirs({ path }) {
     const p = expand(path || "~");
-    const entries = await readdir(p, { withFileTypes: true });
+    const entries = await readdir(p, { withFileTypes: true }).catch((e) => {
+      // The web app offers to create a folder that doesn't exist (and only that).
+      throw e?.code === "ENOENT" ? new Error(`${p} doesn't exist`) : e?.code === "ENOTDIR" ? new Error(`${p} is a file, not a folder`) : e;
+    });
     const dirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
       .map((e) => e.name)
@@ -596,6 +614,19 @@ const ops: Handlers = {
       return {};
     }
     await s.prompt(s.withShellContext(text), mode);
+    return {};
+  },
+
+  async forceSend({ sessionId, text, id, attachments }) {
+    const s = requireLive(sessionId);
+    if (id) {
+      await s.forceSend({ id });
+      return {};
+    }
+    const files = checkAttachments(attachments);
+    if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
+    if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },
 

@@ -12,6 +12,7 @@ import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector, type SelectorOptionType } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { Stack, StackItem } from "@astryxdesign/core/Stack";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
@@ -31,12 +32,14 @@ import {
   type HarnessId,
   type ModelProfile,
   type NotifyKind,
+  type Ops,
   type ProjectInfo,
 } from "../shared/protocol";
 import { profileProblems, profilesToSave } from "../shared/profiles";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setUiPref, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, selectSession, setUiPref, toast, toggleProject, useStore } from "../store";
+import { addModeOf, filterRepos, isMissing, isOldRunner, type AddMode } from "../addProject";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { ChainEditor } from "./ChainEditor";
@@ -242,37 +245,132 @@ function NewSession({ close }: { close: () => void }) {
   );
 }
 
+type GithubRepo = Ops["githubRepos"]["result"][number];
+const DEFAULT_PARENT = "~/projects";
+
 function AddProject({ close }: { close: () => void }) {
+  const [mode, setMode] = useState<AddMode>(() => addModeOf(localStorage.getItem("tether.addMode")));
+  const narrow = useMediaQuery(NARROW);
   const [path, setPath] = useState("~");
   const [dirs, setDirs] = useState<string[]>([]);
   const [cwd, setCwd] = useState("");
-  const browse = async (p: string) => {
-    const r = await act("listDirs", { path: p });
-    if (r) {
+  /** where new projects and clones go: remembered per device */
+  const [parent, setParent] = useState(() => localStorage.getItem("tether.projectParent") || DEFAULT_PARENT);
+  const [missing, setMissing] = useState(false);
+  /** Opens p below and returns where that is; false: it doesn't exist (Add then offers to create it); undefined: some other failure, toasted. */
+  const browse = async (p: string): Promise<string | false | undefined> => {
+    try {
+      const r = await rpc("listDirs", { path: p });
       setCwd(r.path);
       setPath(r.path);
       setDirs(r.dirs);
+      setMissing(false);
+      return r.path;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (!isMissing(msg)) return void toast("error", msg);
+      setMissing(true);
+      setCwd("");
+      setDirs([]);
+      return false;
     }
   };
   useEffect(() => {
     browse("~");
   }, []);
+  const [account, setAccount] = useState<Ops["githubAccount"]["result"]>();
+  const [oldRunner, setOldRunner] = useState(false);
+  useEffect(() => {
+    // An older runner doesn't know it, or gh isn't logged in: no GitHub options.
+    rpc("githubAccount", {})
+      .then(setAccount)
+      .catch((e) => (setAccount(null), setOldRunner(isOldRunner(e?.message ?? ""))));
+  }, []);
+
+  const [name, setName] = useState("");
+  const [github, setGithub] = useState(true);
+  const [owner, setOwner] = useState("");
+  const [isPrivate, setPrivate] = useState(true);
   const [repo, setRepo] = useState("");
-  const [cloning, setCloning] = useState(false);
+  /** per owner, loaded on first look */
+  const [repos, setRepos] = useState<Record<string, GithubRepo[] | "loading" | "failed">>({});
+  const [filter, setFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const listOwner = owner || account?.login || "";
+  useEffect(() => {
+    if (mode !== "clone" || !account || repos[listOwner]) return;
+    const put = (r: GithubRepo[] | "loading" | "failed") => setRepos((m) => ({ ...m, [listOwner]: r }));
+    put("loading");
+    rpc("githubRepos", { owner: listOwner === account.login ? undefined : listOwner }).then(put, () => put("failed"));
+  }, [mode, account, listOwner, repos]);
+
+  const pickMode = (m: AddMode) => (setMode(m), localStorage.setItem("tether.addMode", m));
   const opened = async (p: ProjectInfo | undefined) => {
     if (!p) return;
     await refreshProjects();
     toggleProject(p.path, true);
     useStore.setState({ dialog: "new", newSessionProject: p.path });
   };
-  const add = async () => opened(await act("addProject", { path }));
-  const clone = async () => {
-    if (!repo.trim() || cloning) return;
-    setCloning(true);
-    const p = await act("cloneProject", { repo: repo.trim(), parent: cwd || path });
-    setCloning(false);
+  const keepParent = () => localStorage.setItem("tether.projectParent", parent.trim() || DEFAULT_PARENT);
+  const run = async (f: () => Promise<ProjectInfo | undefined>) => {
+    if (busy) return;
+    setBusy(true);
+    const p = await f();
+    setBusy(false);
     await opened(p);
   };
+  const add = () =>
+    run(async () => {
+      if (missing) return act("addProject", { path, create: true });
+      // Typed, not opened with Enter: look first, so a folder that isn't there turns the button into "Create and add".
+      const there = path.trim() === cwd ? cwd : await browse(path.trim());
+      return there ? act("addProject", { path: there }) : undefined;
+    });
+  const create = () =>
+    name.trim() &&
+    run(() => {
+      keepParent();
+      return act("createProject", {
+        name: name.trim(),
+        parent: parent.trim() || DEFAULT_PARENT,
+        github: account && github ? { owner: owner && owner !== account.login ? owner : undefined, private: isPrivate } : undefined,
+      });
+    });
+  const clone = (r = repo) =>
+    r.trim() &&
+    run(() => {
+      keepParent();
+      return act("cloneProject", { repo: r.trim(), parent: parent.trim() || DEFAULT_PARENT });
+    });
+
+  const list = repos[listOwner];
+  const shown = Array.isArray(list) ? filterRepos(list, filter) : [];
+  const ownerPicker = account && account.orgs.length > 0 && (
+    <Selector
+      label="Owner"
+      size="sm"
+      value={listOwner}
+      options={[account.login, ...account.orgs].map((o) => ({ value: o, label: o }))}
+      onChange={(v) => v && setOwner(v)}
+    />
+  );
+  const noGithub =
+    account === null &&
+    (oldRunner ? (
+      <Text type="supporting">For GitHub options, restart the runner: it's older than the web app.</Text>
+    ) : (
+      <Text type="supporting">For GitHub options, sign in to the GitHub CLI on the runner: gh auth login.</Text>
+    ));
+  const where = tildify(parent.trim() || DEFAULT_PARENT);
+  const action =
+    mode === "folder" ? (
+      <Button label={missing ? `Create and add ${tildify(path)}` : `Add ${tildify(path)}`} variant="primary" isLoading={busy} onClick={add} />
+    ) : mode === "new" ? (
+      <Button label={account && github ? "Create project and repo" : "Create project"} variant="primary" isDisabled={!name.trim()} isLoading={busy} onClick={create} />
+    ) : (
+      <Button label="Clone" variant="primary" isDisabled={!repo.trim()} isLoading={busy} onClick={() => clone()} />
+    );
+
   return (
     <Frame
       title="Add project"
@@ -280,37 +378,104 @@ function AddProject({ close }: { close: () => void }) {
       actions={
         <>
           <Button label="Cancel" onClick={close} />
-          <Button label={`Add ${tildify(path)}`} variant="primary" clickAction={add} />
+          {action}
         </>
       }
     >
-      <VStack gap={2}>
-        <TextInput label="Directory on the runner" value={path} onChange={setPath} onEnter={() => browse(path)} />
-        <Card variant="muted" padding={0}>
-          <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
-            <List density="compact">
-              {dirs.map((d) => (
-                <ListItem
-                  key={d}
-                  label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
-                  onClick={() => browse(d)}
-                />
-              ))}
-            </List>
-          </VStack>
-        </Card>
-        <HStack gap={2} vAlign="end">
+      <SegmentedControl label="How" value={mode} onChange={(v) => pickMode(v as AddMode)}>
+        <SegmentedControlItem value="folder" label={narrow ? "Folder" : "Existing folder"} />
+        <SegmentedControlItem value="new" label={narrow ? "New" : "New project"} />
+        <SegmentedControlItem value="clone" label={narrow ? "Clone" : "Clone a repo"} />
+      </SegmentedControl>
+      {mode === "folder" && (
+        <VStack gap={2}>
           <TextInput
-            label={`Or clone a repo into ${tildify(cwd || path)}`}
-            value={repo}
-            onChange={setRepo}
-            onEnter={clone}
-            placeholder="org/repo or git@github.com:org/repo.git"
-            width="100%"
+            label="Folder on the runner"
+            value={path}
+            onChange={(v) => (setPath(v), setMissing(false))}
+            onEnter={() => browse(path)}
+            description={missing ? "This folder doesn't exist yet. Add creates it." : "Enter to open it below."}
           />
-          <Button label="Clone" isDisabled={!repo.trim()} isLoading={cloning} onClick={clone} />
-        </HStack>
-      </VStack>
+          <Card variant="muted" padding={0}>
+            <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+              <List density="compact">
+                {dirs.map((d) => (
+                  <ListItem
+                    key={d}
+                    label={d === cwd.replace(/\/[^/]+\/?$/, "") || d.length < cwd.length ? "↑ .." : d.slice(cwd.length).replace(/^\//, "") + "/"}
+                    onClick={() => browse(d)}
+                  />
+                ))}
+              </List>
+            </VStack>
+          </Card>
+        </VStack>
+      )}
+      {mode === "new" && (
+        <VStack gap={3}>
+          <TextInput label="Name" value={name} onChange={setName} onEnter={() => create()} placeholder="email-reply" hasAutoFocus />
+          <TextInput label="Create it in" value={parent} onChange={setParent} description={name.trim() ? `${where}/${name.trim()}, with git init` : undefined} />
+          {account ? (
+            <VStack gap={2}>
+              <Switch label={`Also create a GitHub repo (signed in as ${account.login})`} value={github} onChange={setGithub} />
+              {github && (
+                <HStack gap={2} wrap="wrap">
+                  {ownerPicker}
+                  <Group label="Visibility">
+                    <SegmentedControl label="Visibility" value={isPrivate ? "private" : "public"} onChange={(v) => setPrivate(v === "private")}>
+                      <SegmentedControlItem value="private" label="Private" />
+                      <SegmentedControlItem value="public" label="Public" />
+                    </SegmentedControl>
+                  </Group>
+                </HStack>
+              )}
+            </VStack>
+          ) : (
+            noGithub
+          )}
+        </VStack>
+      )}
+      {mode === "clone" && (
+        <VStack gap={2}>
+          <TextInput label={`Repo to clone into ${where}`} value={repo} onChange={setRepo} onEnter={() => clone()} placeholder="org/repo or git@github.com:org/repo.git" />
+          <TextInput label="Into" value={parent} onChange={setParent} />
+          {account ? (
+            <VStack gap={1.5}>
+              <HStack gap={2} vAlign="end" wrap="wrap">
+                {ownerPicker}
+                <StackItem size="fill">
+                  <TextInput label={ownerPicker ? "Repos" : `Your repos (${account.login})`} size="sm" value={filter} onChange={setFilter} placeholder="Filter…" hasClear />
+                </StackItem>
+              </HStack>
+              <Card variant="muted" padding={0}>
+                <VStack isScrollable style={{ maxHeight: "calc(var(--spacing-12) * 5)" }}>
+                  {!list || list === "loading" ? (
+                    <Spinner size="sm" label="Loading repos…" />
+                  ) : list === "failed" || !shown.length ? (
+                    <VStack padding={3}>
+                      <Text type="supporting">{list === "failed" ? "Couldn't load your repos." : filter.trim() ? "No repos match." : "No repos yet."}</Text>
+                    </VStack>
+                  ) : (
+                    <List density="compact">
+                      {shown.map((r) => (
+                        <ListItem
+                          key={r.nameWithOwner}
+                          label={r.nameWithOwner}
+                          description={[r.isPrivate ? "Private" : "Public", r.description].filter(Boolean).join(" · ")}
+                          isSelected={repo === r.nameWithOwner}
+                          onClick={() => setRepo(r.nameWithOwner)}
+                        />
+                      ))}
+                    </List>
+                  )}
+                </VStack>
+              </Card>
+            </VStack>
+          ) : (
+            noGithub
+          )}
+        </VStack>
+      )}
     </Frame>
   );
 }

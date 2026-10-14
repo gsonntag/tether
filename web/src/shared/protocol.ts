@@ -830,7 +830,14 @@ export interface SlashCommand {
 
 export interface Ops {
   listProjects: { args: {}; result: ProjectInfo[] };
-  addProject: { args: { path: string }; result: ProjectInfo };
+  /** create: make the folder (and its parents) when it doesn't exist yet */
+  addProject: { args: { path: string; create?: boolean }; result: ProjectInfo };
+  /** a new folder `parent/name` with git init; github: also a GitHub repo of that name as its origin (gh CLI) */
+  createProject: { args: { name: string; parent: string; github?: { owner?: string; private: boolean } }; result: ProjectInfo };
+  /** the account the runner's gh CLI is logged in to (none: no gh, or logged out) */
+  githubAccount: { args: {}; result: { login: string; orgs: string[] } | null };
+  /** owner's repos (default the gh account's own), up to 1000, most recently updated first */
+  githubRepos: { args: { owner?: string }; result: { nameWithOwner: string; description?: string; isPrivate: boolean; updatedAt: string }[] };
   /** repo: org/repo or any git URL (GitHub goes over SSH); cloned into parent (default ~) */
   cloneProject: { args: { repo: string; parent?: string }; result: ProjectInfo };
   removeProject: { args: { path: string }; result: {} };
@@ -850,6 +857,8 @@ export interface Ops {
   removeSession: { args: { sessionId: string }; result: {} };
   /** attachments: files uploaded with uploadAttachment, listed at the end of the message */
   prompt: { args: { sessionId: string; text: string; mode?: "steer" | "followUp"; attachments?: Attachment[] }; result: {} };
+  /** Stops the running turn and sends now, ahead of everything waiting: a new message (`text`) or a waiting one (`id`). */
+  forceSend: { args: { sessionId: string; text?: string; id?: string; attachments?: Attachment[] }; result: {} };
   /**
    * One chunk of a file attached to a message (base64 `data` at byte `offset`). Chunks may arrive
    * in any order; the one that completes the file returns it.

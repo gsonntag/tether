@@ -744,6 +744,34 @@ export abstract class LiveSession {
     this.pend(`I changed my earlier message. It said:\n\n${quote(was.text)}\n\nIt now says:\n\n${quote(now)}\n\nFollow the new version.${files}`, "steer");
   }
 
+  /**
+   * Force send: the message (new `text`, or the waiting message `id`) goes out now, ahead of
+   * everything waiting. A running turn is stopped first, without a "Finished" and without holding
+   * the rest; the message starts the next turn and the others follow from the top as usual.
+   */
+  async forceSend(o: { text?: string; id?: string }) {
+    this.plans.disarm();
+    const list = [...(this.t.state.pending ?? [])];
+    let p: PendingMessage;
+    if (o.id) {
+      const i = list.findIndex((x) => x.id === o.id);
+      if (i < 0) throw new Error("That message was already sent.");
+      const { readyAt: _, ...rest } = list.splice(i, 1)[0]!;
+      p = { ...rest, mode: "followUp" };
+    } else if (o.text?.trim()) p = { id: crypto.randomUUID(), text: o.text, mode: "followUp", ts: Date.now() };
+    else throw new Error("Nothing to send.");
+    clearTimeout(this.steerTimer);
+    this.setState({ pending: [p, ...list], pendingHeld: undefined });
+    if (this.t.state.status === "waiting") this.cancelWait();
+    if (this.t.state.status === "idle") {
+      await this.drainPending();
+      return;
+    }
+    this.userStopped = true;
+    this.clearJudging();
+    await this.abort();
+  }
+
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
