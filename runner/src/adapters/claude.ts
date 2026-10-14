@@ -38,7 +38,7 @@ import { nativeAttachments } from "../attachments";
 import { hardLimit, LimitStatus } from "../limitStatus";
 import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
-import { claudePick, lastLineTime } from "./lastActivity";
+import { claudePick, fileStamp, lastLineTime } from "./lastActivity";
 import { userHome } from "../home";
 import { claudeNativeKeys, HOOK_EVENTS, hooksFor, runHooks } from "../hooks";
 
@@ -1036,6 +1036,18 @@ export const claudeAdapter: Adapter = {
   async readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
     return loadHistory(nativeId, projectPath);
   },
+
+  async storedHistory(nativeId: string, projectPath: string) {
+    let context: ContextUsage | undefined;
+    const messages = await loadHistory(nativeId, projectPath, (c) => (context = c));
+    return { messages, context };
+  },
+
+  async historyStamp(nativeId: string, projectPath: string) {
+    return fileStamp(join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeId}.jsonl`));
+  },
+
+  modes: PERMISSION_MODES,
 
   create(projectPath, opts, sink) {
     return new ClaudeSession({ nativeId: randomUUID(), projectPath }, sink, opts);

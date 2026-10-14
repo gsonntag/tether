@@ -78,6 +78,13 @@ function writePlans(sessionId: string, plans: Plans) {
   }
 }
 
+/** A session's plan reviews as saved, for showing it while its agent isn't running (a check cut short shows plain). */
+export function storedPlans(sessionId: string): Plans {
+  const plans = readPlans(sessionId);
+  for (const p of Object.values(plans)) if (p.check?.status === "checking") delete p.check;
+  return plans;
+}
+
 /** A removed session's plan reviews go with it. */
 export const forgetPlans = (sessionId: string) => rmSync(fileOf(sessionId), { force: true });
 

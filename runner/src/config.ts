@@ -71,6 +71,9 @@ export interface SessionPrefs {
   model?: string;
   thinking?: string;
   permissionMode?: string;
+  /** the modes and effort levels the harness offered when it last ran (pickers of a session that isn't running) */
+  modes?: string[];
+  thinkingLevels?: string[];
   /** last known context-window fill, for harnesses that can't report it again on resume */
   context?: import("../../web/src/shared/protocol").ContextUsage;
   /** the session's goal (/goal, runner/src/goal.ts) */

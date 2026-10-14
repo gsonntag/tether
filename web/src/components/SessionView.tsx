@@ -30,11 +30,12 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, STARTS_ON_OPEN, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { composerHistory } from "../composerHistory";
-import { fmtClock } from "../util";
+import { fmtClock, harnessLabel } from "../util";
+import { opensByStarting } from "../sessionStart";
 import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
@@ -79,8 +80,13 @@ const steerBubble = (blocked: boolean): CSSProperties => ({
 /** Bash mode types in the code font: the input reads its family from this token. */
 const shellFont = { "--font-family-body": "var(--font-family-code)" } as CSSProperties;
 
+const harnessOf = (sessionId: string) => sessionId.split(":")[0] as HarnessId;
+
 export function SessionView({ sessionId }: { sessionId: string }) {
   const o = useStore((s) => s.open[sessionId]);
+  // Opening a session whose process has stopped shows its stored conversation; only harnesses that
+  // can't (STARTS_ON_OPEN) start the process for it.
+  const knownLive = useStore((s) => (s.open[sessionId]?.session ?? Object.values(s.sessions).flat().find((x) => x.id === sessionId) ?? s.recent?.find((x) => x.id === sessionId))?.live);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const narrow = useNarrow();
@@ -179,7 +185,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   if (!o || o.loading || !o.session)
     return (
       <VStack style={fill} vAlign="center" hAlign="center">
-        <EmptyState title="Loading session…" icon={<Spinner />} isCompact />
+        <EmptyState title={opensByStarting(harnessOf(sessionId), knownLive) ? `Starting ${harnessLabel(harnessOf(sessionId))} process…` : "Loading session…"} icon={<Spinner />} isCompact />
       </VStack>
     );
 
@@ -198,7 +204,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} />}
+        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
@@ -513,7 +519,9 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state, messages }: { sessionId: string; state: LiveState; messages: Msg[] }) {
+function Composer({ sessionId, state, messages, harness, live, opening }: { sessionId: string; state: LiveState; messages: Msg[]; harness: HarnessId; live: boolean; opening: boolean }) {
+  /** a message went to a session whose process had stopped: it starts again first */
+  const [waking, setWaking] = useState(false);
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
@@ -575,10 +583,12 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
     clearHistoryNavigation();
     setText("");
     const attach = files.length ? { attachments: files } : {};
+    if (!live) setWaking(true);
     const r =
       mode === "force" && running
         ? await act("forceSend", { sessionId, text: t, ...attach })
         : await act("prompt", { sessionId, text: t, mode: running ? (mode === "force" ? "steer" : (mode ?? "steer")) : undefined, ...attach });
+    setWaking(false);
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
   };
@@ -738,6 +748,12 @@ function Composer({ sessionId, state, messages }: { sessionId: string; state: Li
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
+      {!live && (waking || opening) && (
+        <HStack gap={1.5} vAlign="center">
+          <Spinner size="sm" />
+          <Text type="supporting">{`Starting ${harnessLabel(harness)} process…`}</Text>
+        </HStack>
+      )}
       <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner

@@ -123,7 +123,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   // Messages still waiting on the old session move over and wait on the new one.
   const carry = from.t.state.pending ?? [];
   if (carry.length) from.setState({ pending: [], pendingHeld: undefined });
-  await next.continueTurn(brief);
+  // Held open until the brief has reached the agent (the idle close waits).
+  await next.hold(() => next.continueTurn(brief));
   // Merged with runs queued on the new session meanwhile (its schedules were armed above); a run
   // of the same loop or schedule in both collapses into the carried one.
   if (carry.length) {
@@ -163,11 +164,15 @@ export async function runCompact(deps: HandoffDeps, from: LiveSession, focus?: s
 export async function resumeActive(getLive: (id: string, projectPath?: string) => Promise<LiveSession>) {
   // Copy what was saved now: opening a session re-saves its prefs (as idle), overwriting these.
   const saved = Object.entries(config().sessions).map(([id, p]) => [id, structuredClone(p)] as const);
+  const archived = new Set(config().archived);
   for (const [id, p] of saved) {
-    const unsent = p.pending ?? [];
+    // A session marked done keeps its waiting messages held (shown when opened) instead of sending them.
+    const unsent = archived.has(id) ? [] : (p.pending ?? []);
     if (!p.active && !unsent.length) continue;
     try {
       const s = await getLive(id, p.projectPath);
+      // Starting brought them back held (loadPrefs); they're sent again (or wait on) below, in order.
+      if (unsent.length) s.setState({ pending: [], pendingHeld: undefined });
       if (p.active && p.waitingUntil) {
         // It was waiting on a usage limit or a backoff: wait on, then continue as it would have.
         const bg = p.background ?? [];
@@ -183,12 +188,14 @@ export async function resumeActive(getLive: (id: string, projectPath?: string) =
         if (bg.length) parts.push(`Stopped background work: ${bg.map((b) => b.description).join("; ")}.`);
         if (unsent.length) parts.push(`Resending ${unsent.length} message${unsent.length > 1 ? "s" : ""} it had not received.`);
         s.notice(parts.join(" "), "warning");
-        await s.continueTurn(
-          bg.length
-            ? `The session was interrupted by a restart, which also stopped these background tasks: ${bg
-                .map((b) => `"${b.description}"${b.type ? ` (${b.type})` : ""}`)
-                .join(", ")}. Check what they had finished, restart the ones still needed, and continue where you left off.`
-            : "The session was interrupted by a restart. Continue where you left off.",
+        await s.hold(() =>
+          s.continueTurn(
+            bg.length
+              ? `The session was interrupted by a restart, which also stopped these background tasks: ${bg
+                  .map((b) => `"${b.description}"${b.type ? ` (${b.type})` : ""}`)
+                  .join(", ")}. Check what they had finished, restart the ones still needed, and continue where you left off.`
+              : "The session was interrupted by a restart. Continue where you left off.",
+          ),
         );
       }
       // Sending would end the wait (a message while waiting means "go now"): they wait with it.
