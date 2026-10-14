@@ -86,6 +86,9 @@ interface State {
   recent: SessionSummary[];
 }
 
+// Above useStore: its initial state reads it (cachedViewed), and a const used before its line throws.
+const VIEW_KEYS = { runner: "tether.viewedBy", here: "tether.viewedHereBy" } as const;
+
 export const useStore = create<State>(() => ({
   connected: false,
   runners: [],
@@ -658,8 +661,7 @@ export async function setUiPref(p: Partial<UiPrefs>) {
 
 // This device keeps the last map each runner gave (by runner id), so lists sort right on load, and
 // its own views (by its own clock), which are all there is with an older runner that doesn't know
-// markViewed. (A function: the initial state uses it.)
-const VIEW_KEYS = { runner: "tether.viewedBy", here: "tether.viewedHereBy" } as const;
+// markViewed. (A function, and VIEW_KEYS is defined above useStore: the initial state uses them.)
 function cachedViewed(runnerId: string | undefined, which: keyof typeof VIEW_KEYS = "runner"): Record<string, number> {
   return (runnerId && loadJSON<Record<string, Record<string, number>>>(VIEW_KEYS[which], {})[runnerId]) || {};
 }
