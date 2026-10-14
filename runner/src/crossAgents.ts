@@ -20,7 +20,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import type { ActivityItem, GuardMode, HarnessId, LiveState, Msg, SessionDiff, StartedBy, SubagentLink } from "../../web/src/shared/protocol";
 import { APPROVING_MODES, GUARD_MODES, HARNESSES } from "../../web/src/shared/protocol";
-import { guardWithin, MAX_RUNNING_SUBAGENTS, MAX_SUBAGENT_DEPTH, SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX } from "../../web/src/shared/subagents";
+import { guardWithin, MAX_RUNNING_SUBAGENTS, MAX_SUBAGENT_DEPTH, SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX, subagentItem } from "../../web/src/shared/subagents";
 import type { Adapter, Sink } from "./adapters/types";
 import { computeDiff, root } from "./checkpoint";
 import { config, saveConfig, saveConfigSoon } from "./config";
@@ -40,6 +40,8 @@ export interface AgentDeps {
   open: (id: string) => Promise<LiveSession>;
   /** sessions the user marked done or removed */
   archived?: () => string[];
+  /** a stopped session's saved state changed: browsers showing its stored copy hear it */
+  storedChanged?: (id: string, state: Partial<LiveState>) => void;
 }
 
 type Result = { ok: boolean; text: string };
@@ -89,6 +91,8 @@ export interface Worktree {
   base: string;
   /** the parent's folder has uncommitted changes (they aren't in the worktree) */
   dirty: boolean;
+  /** the repository's top directory (the parent's checkout) */
+  repo: string;
 }
 
 /**
@@ -112,7 +116,7 @@ export async function makeWorktree(cwd: string, parentShort: string, name: strin
   const add = await git(top, ["worktree", "add", "-b", branch, path, base]);
   if (add.code) return `git worktree add failed: ${add.err || add.out}`;
   const sub = relative(top, cwd);
-  return { path, cwd: sub && !sub.startsWith("..") ? join(path, sub) : path, branch, base, dirty };
+  return { path, cwd: sub && !sub.startsWith("..") ? join(path, sub) : path, branch, base, dirty, repo: top };
 }
 
 /** The text of the agent's last reply: its assistant messages after the last user message. */
@@ -216,33 +220,14 @@ export class CrossAgents implements AgentHub {
     if (!p) return;
     p.subagents = (p.subagents ?? []).some((l) => l.id === link.id) ? p.subagents!.map((l) => (l.id === link.id ? link : l)) : [...(p.subagents ?? []), link];
     saveConfigSoon();
+    this.deps.storedChanged?.(parentId, { subagents: p.subagents, activity: p.subagents.map((l) => subagentItem(l)) });
   }
 
   /** The subagent's activity item in its parent's strip. */
   private item(link: SubagentLink, child?: LiveSession): ActivityItem {
     const c = child && !child.closed ? child : undefined;
     const st = c?.t.state;
-    const status: ActivityItem["status"] = running(link) ? "running" : link.status === "finished" ? "done" : link.status === "failed" ? "failed" : "stopped";
-    const latest = c && running(link) ? currentAction(c.t.state, c.t.messages) : undefined;
-    return {
-      id: ITEM(link.id),
-      kind: "subagent",
-      title: link.id,
-      description: link.task,
-      status,
-      startedAt: link.startedAt,
-      ...(running(link) ? {} : { endedAt: link.endedAt ?? Date.now() }),
-      background: true,
-      stoppable: true,
-      agentType: label(link.harness),
-      harness: link.harness,
-      sessionId: link.sessionId,
-      ...(st?.model && st.model !== "default" ? { model: st.model } : link.model ? { model: link.model } : {}),
-      ...(st?.context?.used ? { tokens: st.context.used } : {}),
-      ...(latest ? { latest: link.status === "waiting" ? `Waiting for you: ${latest}` : latest } : link.status === "waiting" ? { latest: "Waiting for you" } : {}),
-      ...(link.worktree ? { worktree: { path: link.worktree.path, branch: link.worktree.branch } } : {}),
-      ...(link.report && !running(link) ? { summary: clip(link.report, 2_000) } : {}),
-    };
+    return subagentItem(link, c && { model: st!.model, tokens: st!.context?.used, doing: running(link) ? currentAction(c.t.state, c.t.messages) : undefined });
   }
 
   // ---------------- AgentHub ----------------
@@ -343,7 +328,8 @@ export class CrossAgents implements AgentHub {
     }
     const told = { ...(parent.subagents.find((l) => l.id === link.id) ?? link), told: link.turns };
     parent.putSubagent(told, this.item(told, child));
-    await parent.tetherNote(this.note(told, error));
+    const note = this.note(told, error);
+    await parent.hold(() => parent!.tetherNote(note));
   }
 
   /** The parent's message about a subagent's turn. */
@@ -591,7 +577,14 @@ export class CrossAgents implements AgentHub {
     }
     const cwd = wt?.cwd ?? from.projectPath;
 
-    const startedBy: StartedBy = { sessionId: from.id, name, depth, rootId, projectPath: from.t.state.startedBy?.projectPath ?? from.projectPath };
+    const startedBy: StartedBy = {
+      sessionId: from.id,
+      name,
+      depth,
+      rootId,
+      projectPath: from.t.state.startedBy?.projectPath ?? from.projectPath,
+      ...(wt ? { worktree: { path: wt.path, branch: wt.branch, repo: wt.repo } } : {}),
+    };
     const child = this.deps.adapters[harness].create(cwd, { model, permissionMode: mode }, this.deps.sink);
     child.t.state.guard = guard;
     child.t.state.startedBy = startedBy;
@@ -807,6 +800,21 @@ export class CrossAgents implements AgentHub {
     await this.stopOne(from.id, link);
     return ok(`Stopped "${link.id}". Its session stays: agent_result shows what it did${link.worktree ? `, and its worktree ${link.worktree.path} stays as it is` : ""}.`);
   }
+}
+
+/**
+ * Where a stored subagent session starts (index.ts startLive): its own folder, never the parent's
+ * checkout instead. A removed worktree is made again from its branch; without one, it can't start.
+ */
+export async function subagentPath(sessionId: string, path: string | undefined): Promise<string> {
+  const by = config().sessions[sessionId]?.startedBy;
+  if (path && existsSync(path)) return path;
+  const wt = by?.worktree;
+  if (!wt || !path) throw new Error(`This subagent's folder (${path ?? "unknown"}) is gone, so it can't start again.`);
+  await git(wt.repo, ["worktree", "prune"]);
+  const add = await git(wt.repo, ["worktree", "add", wt.path, wt.branch]);
+  if (add.code || !existsSync(path)) throw new Error(`This subagent's worktree ${wt.path} was removed, and making it again from ${wt.branch} failed: ${add.err || add.out || "the folder isn't there"}`);
+  return path;
 }
 
 /** For index.ts: the subagent sessions listed under `projectPath` that work elsewhere (their own worktrees). */

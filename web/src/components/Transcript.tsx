@@ -349,11 +349,7 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
           <Markdown density="compact" contentWidth="100%">
             {text}
           </Markdown>
-          {action?.kind === "continueOn" && (
-            <HStack>
-              <Button label={action.label} size="sm" onClick={() => act("continueOn", { sessionId, msgId: m.id })} />
-            </HStack>
-          )}
+          {action?.kind === "continueOn" && <ContinueOnAction label={action.label} msgId={m.id} />}
           {action?.kind === "mcpAuth" && <McpAuthAction label={action.label} server={action.server} />}
         </VStack>
       </NoticeCard>
@@ -586,7 +582,8 @@ function Tool({ t }: { t: ToolPart }) {
   // Plan mode or a review held this back on purpose: running it anyway takes a second click.
   const held = blocked && t.guard!.by === "mode";
   const [confirming, setConfirming] = useState(false);
-  const command = typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string";
+  // "Run it myself" is for shell commands only, not an MCP tool that happens to take a `command`.
+  const command = isShell && (typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string");
   const icon = blocked ? (
     <Icon icon={NoSymbolIcon} color="error" size="sm" label="Blocked" />
   ) : status === "running" ? (
@@ -721,6 +718,17 @@ function Tool({ t }: { t: ToolPart }) {
         )}
       </VStack>
     </Card>
+  );
+}
+
+/** "Continue on …" after an error: only while the agent that hit it still runs (a stopped one goes on with your next message). */
+function ContinueOnAction({ label, msgId }: { label: string; msgId: string }) {
+  const live = useStore((s) => s.open[sessionId]?.session?.live !== false);
+  if (!live) return null;
+  return (
+    <HStack>
+      <Button label={label} size="sm" onClick={() => act("continueOn", { sessionId, msgId })} />
+    </HStack>
   );
 }
 

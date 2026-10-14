@@ -15,6 +15,12 @@ export const HARNESSES: { id: HarnessId; label: string; badge: string }[] = [
   { id: "antigravity", label: "Antigravity", badge: "agy" },
 ];
 
+/**
+ * Harnesses whose sessions open only by starting their agent (it alone can replay the
+ * conversation). The others show a stored conversation without it; the agent starts when you send.
+ */
+export const STARTS_ON_OPEN: ReadonlySet<HarnessId> = new Set<HarnessId>(["kiro"]);
+
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";
@@ -522,6 +528,8 @@ export interface StartedBy {
   rootId: string;
   /** the parent's project folder: the session is listed there, also when it works in a worktree */
   projectPath: string;
+  /** its own worktree (made again from the branch if it was removed), and the repository it belongs to */
+  worktree?: { path: string; branch: string; repo: string };
 }
 
 export interface ContextUsage {
@@ -779,6 +787,10 @@ export interface SessionSummary {
   listedUnder?: string;
   /** when you last opened it, on any device (markViewed) */
   viewedAt?: number;
+  /** its goal (/goal) is active: Tether keeps it working, between turns too */
+  goalActive?: boolean;
+  /** its soonest Tether loop or schedule run (/loop, /schedule): it will work again then */
+  nextRunAt?: number;
 }
 
 /** The project folder a session is listed in: its own, or its parent's for a subagent working in a worktree. */

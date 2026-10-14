@@ -106,8 +106,9 @@ export interface AgentHub {
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-const IDLE_CLOSE_MS = 30 * 60_000;
-/** How long a review under way keeps the session it reviews open past IDLE_CLOSE_MS. */
+/** A fully idle agent process closes after this; the next message starts it again. */
+export const IDLE_CLOSE = { ms: 5 * 60_000 };
+/** How long a review under way keeps the session it reviews open past IDLE_CLOSE. */
 const REVIEW_KEEP_OPEN_MS = 3 * 60 * 60_000;
 const STALL_WARN_MS = 15 * 60_000;
 /** how long "Continue on …" keeps this session off the entry it left, when the error gave no reset */
@@ -233,6 +234,8 @@ export abstract class LiveSession {
       ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
       ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
       ...(this.t.state.startedBy ? { startedBy: { sessionId: this.t.state.startedBy.sessionId, name: this.t.state.startedBy.name } } : {}),
+      ...(this.goalState?.status === "active" ? { goalActive: true } : {}),
+      ...(this.schedules.length ? { nextRunAt: Math.min(...this.schedules.map((x) => x.nextAt)) } : {}),
     };
   }
 
@@ -296,7 +299,7 @@ export abstract class LiveSession {
       if (s.status === "idle" && before !== "idle") this.endForeground();
       if (s.status === "idle" && before !== "idle" && !s.handoffTo) this.turnOver();
       if (s.status === "idle" && before !== "idle" && !this.t.state.handoffTo && !this.nativeHooks && !this.userStopped && !this.turnTrouble && !this.closed && !this.restarting && hooksFor("Stop", { skip: this.hookSkip }).length) {
-        const run = this.stopHooks().catch((e) => console.error(`hooks: Stop for ${this.id} failed: ${e?.message ?? e}`));
+        const run = this.hold(() => this.stopHooks()).catch((e) => console.error(`hooks: Stop for ${this.id} failed: ${e?.message ?? e}`));
         this.stopHookRun = run.finally(() => {
           if (this.stopHookRun === run) this.stopHookRun = undefined;
         });
@@ -318,11 +321,12 @@ export abstract class LiveSession {
       if (s.pendingUi && !s.pendingUi.length && this.t.state.pending?.[0]?.scheduleId) setTimeout(() => this.sendRunNow(), 0);
       if (s.status === "idle" && before !== "idle") void this.refreshDiffStats();
       if (s.status === "running" || s.pending) this.scheduleSteers();
-      if (s.status !== undefined || s.pendingUi !== undefined) {
+      // The goal and loops/schedules are in the summary too (goalActive, nextRunAt): the lists show them.
+      if (s.status !== undefined || s.pendingUi !== undefined || s.goal !== undefined || s.schedules !== undefined) {
         this.sink.summary(this.summary());
         this.armIdle();
-      } else if (s.reviews !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
+      } else if (s.reviews !== undefined || s.pending !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -644,6 +648,10 @@ export abstract class LiveSession {
   private shellShown = new Set<string>();
 
   async runShell(command: string) {
+    return this.hold(() => this.runShellNow(command));
+  }
+
+  private async runShellNow(command: string) {
     const id = newId("sh");
     const toolId = `${id}:bash0`;
     const guard: GuardVerdict = { decision: "allow", by: "user", reason: "Run by you directly, outside the guard" };
@@ -687,9 +695,19 @@ export abstract class LiveSession {
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer") {
+    // Held open until the message has reached the agent (the idle close waits); hold() runs
+    // promptNow synchronously up to its first await, so the disarm below stays synchronous.
+    return this.hold(() => this.promptNow(text, mode));
+  }
+
+  private async promptNow(text: string, mode: "steer" | "followUp") {
     // A new message changes the plan's approval: synchronously, since planReview.ts arms its
     // auto-approval right after calling this (so nothing below disarms again: keepArmed).
     this.plans.disarm();
+    // A plan under discussion comes up for review again after this turn only when this message is
+    // that discussion (discussPlan); any other message may change the plan.
+    this.planDiscussed = this.discussNext;
+    this.discussNext = undefined;
     if (await this.tetherCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
@@ -725,8 +743,17 @@ export abstract class LiveSession {
     this.pend(text, mode, { keepArmed: true });
   }
 
+  /** a plan the next prompt() discusses (discussPlan) */
+  private discussNext?: string;
+
+  /** Sends your comments on a plan (plan review's Discuss): the agent's answer isn't a new plan, and that plan comes up for review again. */
+  async discussPlan(planId: string, text: string, mode: "steer" | "followUp" = "followUp") {
+    this.discussNext = findPlan(this.t.messages, planId) ? planId : undefined;
+    await this.prompt(text, mode);
+  }
+
   /** Tether's own commands (/goal, /loop, /schedule, /compact, /review, dev faults): true when it was one, handled here. */
-  private async tetherCommand(text: string): Promise<boolean> {
+  async tetherCommand(text: string): Promise<boolean> {
     if (this.devCommand(text)) return true;
     if (await this.goalCommand(text)) return true;
     if (await this.scheduleCommand(text)) return true;
@@ -796,6 +823,11 @@ export abstract class LiveSession {
 
   /** Adapter: the turn is over. Pending messages (unless held after Stop) start the next turn; true if they did. */
   protected async drainPending(): Promise<boolean> {
+    // Held open until the next turn has been sent (the idle close waits).
+    return this.hold(() => this.drainPendingNow());
+  }
+
+  private async drainPendingNow(): Promise<boolean> {
     clearTimeout(this.steerTimer);
     if (this.steered.size) {
       this.steered.clear();
@@ -926,11 +958,8 @@ export abstract class LiveSession {
   /** The composer's `/` menu: Tether's commands, the skills this session can run, then the harness's own commands. */
   async slashMenu(): Promise<SlashCommand[]> {
     const [commands, native] = await Promise.all([this.listCommands().catch(() => []), this.nativeNow(true)]);
-    const skills = skillsFor(this.harness, this.projectPath, native);
-    const menu = slashMenu(skills, commands, native && new Set(native.map((n) => n.name)), this.harness, this.projectPath, hiddenSkills(), libraryCommands());
-    // Tether handles these before the harness sees the message, so its own of the same name never runs.
-    const own = new Set(TETHER_COMMANDS.map((c) => c.name));
-    return [...TETHER_COMMANDS, ...menu.filter((c) => !own.has(c.name))];
+    if (commands.length || native) rememberMenu(this.harness, this.projectPath, { commands, native });
+    return menuOf(this.harness, this.projectPath, { commands, native });
   }
 
   private takeAllPending(): string | undefined {
@@ -941,24 +970,13 @@ export abstract class LiveSession {
   }
 
   /** Edits, reorders, cancels or sends one pending message (from any device). */
-  async editPending(id: string, change: { text?: string; mode?: "steer" | "followUp"; index?: number; remove?: boolean; now?: boolean }) {
-    const list = [...(this.t.state.pending ?? [])];
-    const i = list.findIndex((p) => p.id === id);
-    if (i < 0) throw new Error("That message was already sent.");
-    if (change.remove || change.text?.trim() === "") {
-      list.splice(i, 1);
-      return this.setPending(list);
-    }
-    const p: PendingMessage = { ...list[i]! };
-    if (change.text !== undefined) p.text = change.text;
-    if (change.mode) p.mode = change.mode;
-    if (change.now) p.mode = "steer";
-    // An edited steer gets a fresh grace period; "send now" skips it.
-    if (p.mode === "steer") p.readyAt = change.now ? Date.now() : change.text !== undefined || change.mode ? Date.now() + LiveSession.STEER_GRACE_MS : (p.readyAt ?? Date.now());
-    else delete p.readyAt;
-    list.splice(i, 1);
-    const to = change.now ? 0 : Math.max(0, Math.min(list.length, change.index ?? i));
-    list.splice(to, 0, p);
+  async editPending(id: string, change: PendingChange) {
+    return this.hold(() => this.editPendingNow(id, change));
+  }
+
+  private async editPendingNow(id: string, change: PendingChange) {
+    const list = editedPending(this.t.state.pending ?? [], id, change);
+    if (change.remove || change.text?.trim() === "") return this.setPending(list);
     if (change.now && this.t.state.status === "idle") {
       // Held after Stop (or the turn just ended): the hold is released and this message starts the
       // next turn; the rest follow from the top as usual.
@@ -994,9 +1012,12 @@ export abstract class LiveSession {
    * the rest; the message starts the next turn and the others follow from the top as usual.
    */
   async forceSend(o: { text?: string; id?: string }) {
+    return this.hold(() => this.forceSendNow(o));
+  }
+
+  private async forceSendNow(o: { text?: string; id?: string }) {
     this.plans.disarm();
-    // Tether's own commands aren't messages: handled as they would be when sent the usual way.
-    if (o.text && !o.id && (await this.tetherCommand(o.text))) return;
+    this.planDiscussed = undefined;
     const list = [...(this.t.state.pending ?? [])];
     let p: PendingMessage;
     if (o.id) {
@@ -1021,6 +1042,8 @@ export abstract class LiveSession {
     this.userStopped = true;
     // Stopped as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
+    // Not a dismissal: a plan review the abort cancels keeps holding changes back (tetherPlanReview).
+    this.forcedReview = this.planReviewId;
     this.clearJudging();
     await this.abort();
   }
@@ -1038,6 +1061,7 @@ export abstract class LiveSession {
     // Your Stop ends the turn as a stop, not as the simulated error.
     if (this.fault && this.fault.state !== "armed") this.fault = undefined;
     this.plans.disarm();
+    this.planDiscussed = this.planReraise = undefined;
     clearTimeout(this.steerTimer);
     if (this.t.state.pending?.length) this.setState({ pendingHeld: true });
     this.clearJudging();
@@ -1086,8 +1110,12 @@ export abstract class LiveSession {
     // Cross-harness subagents it started (handed off: they went with the conversation), and who started it.
     if (p.subagents?.length && !p.handoffTo) restore.subagents = p.subagents;
     if (p.startedBy && !this.t.state.startedBy) restore.startedBy = p.startedBy;
+    // Messages it hadn't taken when it stopped come back held, to send (or edit) when you choose.
+    if (p.pending?.length && !this.t.state.pending?.length) Object.assign(restore, { pending: p.pending, pendingHeld: true });
     this.diffBaseSha = p.diffBaseSha;
     if (Object.keys(restore).length) this.setState(restore);
+    // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
+    else this.savePrefs();
     if (restore.subagents) this.sink.agents?.restored(this);
     if (restore.schedules) scheduleChanged();
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
@@ -1108,10 +1136,15 @@ export abstract class LiveSession {
     const warn = (what: string) => (e: any) => this.notice(`Could not restore the ${what}: ${e?.message ?? e}`, "warning");
     if (saved.model && saved.model !== "default" && saved.model !== st.model) await this.applyModel(saved.model).catch(warn("model"));
     const levels = this.t.state.thinkingLevels;
-    if (saved.thinking && saved.thinking !== this.t.state.thinking && (!levels || levels.includes(saved.thinking))) await this.setThinking(saved.thinking).catch(warn("effort"));
+    if (saved.thinking && saved.thinking !== this.t.state.thinking) {
+      if (!levels || levels.includes(saved.thinking)) await this.setThinking(saved.thinking).catch(warn("effort"));
+      else this.notice(`Could not restore the effort: ${this.t.state.model ?? "this model"} doesn't offer “${saved.thinking}”.`, "warning");
+    }
     const mode = saved.permissionMode;
-    if (mode && mode !== this.t.state.permissionMode && this.t.state.modes?.includes(mode) && !APPROVING_MODES.has(mode))
-      await this.setPermissionMode(mode).catch(warn("mode"));
+    if (mode && mode !== this.t.state.permissionMode && !APPROVING_MODES.has(mode)) {
+      if (this.t.state.modes?.includes(mode)) await this.setPermissionMode(mode).catch(warn("mode"));
+      else this.notice(`Could not restore the mode: ${this.harness} doesn't offer “${mode}” here.`, "warning");
+    }
   }
 
   /** Whether the agent is doing anything a restart would interrupt. */
@@ -1144,6 +1177,8 @@ export abstract class LiveSession {
       model: s.model,
       thinking: s.thinking,
       permissionMode: s.permissionMode,
+      modes: s.modes,
+      thinkingLevels: s.thinkingLevels,
       diffBaseSha: this.diffBaseSha,
       pending: s.pending?.length ? s.pending : undefined,
       background: bg.length ? bg : undefined,
@@ -1650,6 +1685,10 @@ export abstract class LiveSession {
 
   /** "Approve & retry" on a blocked call: allow that exact call from now on and tell the agent. */
   async approveBlocked(toolId: string, confirmed = false) {
+    return this.hold(() => this.approveBlockedNow(toolId, confirmed));
+  }
+
+  private async approveBlockedNow(toolId: string, confirmed: boolean) {
     for (const m of this.t.messages)
       for (const p of m.parts)
         if (p.type === "tool" && p.id === toolId) {
@@ -1670,8 +1709,14 @@ export abstract class LiveSession {
    * `!` shell mode, shows the output on the card and hands it to the agent, which doesn't run it again.
    */
   async runBlocked(toolId: string, confirmed = false) {
+    // Held open while the command runs and its output reaches the agent (the idle close waits).
+    return this.hold(() => this.runBlockedNow(toolId, confirmed));
+  }
+
+  private async runBlockedNow(toolId: string, confirmed: boolean) {
     const hit = this.findCall("", toolId);
-    const command = hit && commandOf(hit.part.input);
+    // Shell commands only: an MCP or other tool with a `command` argument isn't one to run here.
+    const command = hit?.part.kind === "shell" ? commandOf(hit.part.input) : undefined;
     if (!hit || !command) throw new Error("Shell command not found");
     if (this.runningBlocked.has(toolId) || hit.part.userRun) return;
     if (hit.part.guard?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
@@ -1798,6 +1843,10 @@ export abstract class LiveSession {
 
   /** Feedback for the agent: into the running turn where it can take it, else with its next turn. */
   private async hookFeedback(text: string) {
+    return this.hold(() => this.hookFeedbackNow(text));
+  }
+
+  private async hookFeedbackNow(text: string) {
     if (this.closed || this.t.state.handoffTo) return;
     if (this.t.state.status === "running" && this.steer) this.pend(text, "steer", { now: true });
     else if (this.t.state.status === "running") this.pend(text, "followUp");
@@ -1921,13 +1970,14 @@ export abstract class LiveSession {
     }
   }
 
+  /** Its changes and files: what the Changes view and file references read (see sessionFiles). */
+  get files() {
+    return sessionFiles({ projectPath: this.projectPath, diffBase: this.diffBaseSha, checkpoints: this.t.state.checkpoints });
+  }
+
   /** The whole session's changes, or with a checkpoint id the changes of the turn that started there. */
-  async diff(checkpointId?: string): Promise<SessionDiff> {
-    const list = this.t.state.checkpoints ?? [];
-    if (!checkpointId) return computeDiff(this.projectPath, this.diffBaseSha ?? list[0]?.sha);
-    const i = list.findIndex((c) => c.id === checkpointId);
-    if (i < 0) throw new Error("That turn's checkpoint is no longer kept.");
-    return computeDiff(this.projectPath, list[i]!.sha, list[i + 1]?.sha);
+  diff(checkpointId?: string): Promise<SessionDiff> {
+    return this.files.diff(checkpointId);
   }
 
   get diffBase() {
@@ -1937,16 +1987,15 @@ export abstract class LiveSession {
   // ---- file references (runner/src/files.ts): read-only, inside the project ----
 
   checkPaths(paths: string[]) {
-    return checkPaths(this.projectPath, paths, this.diffBaseSha ?? this.t.state.checkpoints?.[0]?.sha);
+    return this.files.checkPaths(paths);
   }
 
   fileDiff(path: string, checkpointId?: string, reveal?: boolean) {
-    const list = this.t.state.checkpoints ?? [];
-    return fileDiff(this.projectPath, path, this.diffBaseSha ?? list[0]?.sha, list, checkpointId, reveal === true);
+    return this.files.fileDiff(path, checkpointId, reveal);
   }
 
   readFile(path: string, maxBytes?: number, reveal?: boolean) {
-    return readProjectFile(this.projectPath, path, maxBytes, reveal === true);
+    return this.files.readFile(path, maxBytes, reveal);
   }
 
   inheritDiffBase(sha?: string) {
@@ -2355,7 +2404,7 @@ export abstract class LiveSession {
   private continueGoal(opts: { check?: string; kickoff?: boolean } = {}) {
     clearTimeout(this.goalTimer);
     const wait = this.nativeGoal && !opts.check ? LiveSession.GOAL_NATIVE_SETTLE_MS : 0;
-    this.goalTimer = setTimeout(() => void this.sendGoalTurn(opts), wait);
+    this.goalTimer = setTimeout(() => void this.hold(() => this.sendGoalTurn(opts)), wait);
   }
 
   private async sendGoalTurn(opts: { check?: string; kickoff?: boolean }) {
@@ -2414,6 +2463,10 @@ export abstract class LiveSession {
   private turnPlan?: string;
   /** a plan you're discussing (plan review's Discuss): it goes up for review again after the agent answers, unless it writes a new one */
   private planDiscussed?: string;
+  /** a review force send cancelled while changes waited for it (planGate): it comes up again after that turn */
+  private planReraise?: string;
+  /** the review open when force send aborted the turn */
+  private forcedReview?: string;
   private planTurnFrom = 0;
   /** plan and todo parts recorded already: an older one sent again can't replace a newer one */
   private planParts = new Set<string>();
@@ -2493,14 +2546,18 @@ export abstract class LiveSession {
   private planTurnOver() {
     const partId = this.turnPlan;
     this.turnPlan = undefined;
-    // A compaction's turn writes no plan, whatever mode the session is in.
-    if (this.compactTurn) return void (this.compactTurn = false);
-    if (this.closed || this.userStopped || this.turnTrouble) return;
-    if (!this.planning() && !this.planGate) return;
-    // Answering your comments on a plan isn't a new plan: that plan goes up for review again.
+    // Answering your comments on a plan isn't a new plan: that plan goes up for review again. Only
+    // after this turn's answer: a stopped or failed one leaves nothing to come back to.
     const discussed = this.planDiscussed && findPlan(this.t.messages, this.planDiscussed) ? this.planDiscussed : undefined;
     this.planDiscussed = undefined;
-    const id = partId ?? discussed ?? (this.planFromReply ? this.replyAsPlan() : undefined);
+    // A compaction's turn writes no plan, whatever mode the session is in.
+    if (this.compactTurn) return void (this.compactTurn = false);
+    // (A review force send cancelled waits for the forced message's turn, not this stopped one.)
+    if (this.closed || this.userStopped || this.turnTrouble) return;
+    const reraise = this.planGate && this.planReraise && findPlan(this.t.messages, this.planReraise) ? this.planReraise : undefined;
+    this.planReraise = undefined;
+    if (!this.planning() && !this.planGate) return;
+    const id = partId ?? discussed ?? reraise ?? (this.planFromReply ? this.replyAsPlan() : undefined);
     if (!id) return;
     // Up for review already (an ACP agent left plan mode by itself mid-turn): that card stays.
     if (this.planReviewId && this.planReviewPart === id) return;
@@ -2552,6 +2609,14 @@ export abstract class LiveSession {
     if (res.cancelled) {
       // Replaced by a newer review: that one has the plan now.
       if (this.planReviewId) return;
+      // Force send stopped the turn: not a dismissal. Changes keep waiting, and the plan comes up
+      // for review again after the forced message's turn (unless that turn writes a new one).
+      const forced = this.forcedReview === id;
+      if (forced) this.forcedReview = undefined;
+      if (forced && this.planGate) {
+        this.planReraise = partId;
+        return;
+      }
       if (current && this.planState?.status === "review") this.putPlan({ status: "draft" });
       // Dismissed or stopped: you chose not to wait for it, so changes no longer do either.
       this.planGate = false;
@@ -2573,8 +2638,7 @@ export abstract class LiveSession {
     // Discuss (plan review): the plan stays under review, changes keep waiting; the agent answers
     // your comments, then this plan (or a new one it writes) comes up for review again.
     if (res.discuss && res.value) {
-      this.planDiscussed = partId;
-      await this.prompt(res.value);
+      await this.discussPlan(partId, res.value, "steer");
       return;
     }
     const feedback = res.value?.trim() || "Please revise the plan.";
@@ -2588,22 +2652,50 @@ export abstract class LiveSession {
     if (hit) this.emit({ type: "msg", msg: { ...hit.msg, parts: hit.msg.parts.map((p) => (p === hit.part ? { ...hit.part, ...patch } : p)) } });
   }
 
+  /**
+   * Plan review approving a plan no request waits for (planReview.ts): where Tether reviews this
+   * harness's plans and its plan mode (or a plan gate) is still on, the approval goes through here,
+   * like Approve on the review card: out of plan mode, then the plan is carried out (with `notes`).
+   * False where a message does it (Claude Code, Antigravity, or no longer planning).
+   */
+  async approvePlan(planId: string, notes?: string): Promise<boolean> {
+    if (this.nativePlanReview || (!this.planning() && !this.planGate)) return false;
+    this.planDiscussed = this.planReraise = undefined;
+    this.planStarting = true;
+    this.setPlanPart(planId, { outcome: "approved" });
+    if (this.planState?.partId === planId) this.putPlan({ status: "approved" });
+    this.planGate = false;
+    try {
+      await this.leavePlanMode();
+    } catch (e: any) {
+      this.notice(`Could not leave plan mode: ${e?.message ?? e}`, "warning");
+    }
+    await this.implementPlan(notes);
+    return true;
+  }
+
   /** After an approval: the agent carries the plan out (in the running turn, if there is one). */
-  private async implementPlan() {
+  private async implementPlan(notes?: string) {
+    // Held open until the plan's turn has started (the idle close waits).
+    return this.hold(() => this.implementPlanNow(notes));
+  }
+
+  private async implementPlanNow(notes?: string) {
+    const text = notes ? `${IMPLEMENT_PROMPT}\n\nNotes for the work:\n\n${notes}` : IMPLEMENT_PROMPT;
     if (this.t.state.handoffTo || this.closed) {
       this.planStarting = false;
       return;
     }
     if (this.t.state.status !== "idle") {
       this.planStarting = false;
-      this.pend(IMPLEMENT_PROMPT, "steer", { now: true });
+      this.pend(text, "steer", { now: true });
       return;
     }
     this.planStarting = true;
     try {
-      await this.checkpoint(IMPLEMENT_PROMPT);
+      await this.checkpoint(text);
       this.turnStarting = true;
-      await this.continueTurn(IMPLEMENT_PROMPT);
+      await this.continueTurn(text);
     } catch (e: any) {
       this.planStarting = this.turnStarting = false;
       this.notice(`Could not start on the plan: ${e?.message ?? e}`, "error");
@@ -2616,7 +2708,7 @@ export abstract class LiveSession {
   protected modeChosen(mode: string) {
     if (isPlanMode(mode)) return;
     this.planGate = false;
-    this.planDiscussed = undefined;
+    this.planDiscussed = this.planReraise = undefined;
   }
 
   /** A plan that came over in a handoff: the new session's plan, shown again (an open review starts over). */
@@ -2840,7 +2932,7 @@ export abstract class LiveSession {
     const failed = (e: any) => this.notice(`Could not send the scheduled prompt: ${e?.message ?? e}`, "error");
     if (st.pendingHeld) {
       const run = fired ? st.pending?.find((p) => p.scheduleId === fired) : undefined;
-      if (run) void this.sendHeldRun(run).catch(failed);
+      if (run) void this.hold(() => this.sendHeldRun(run)).catch(failed);
       return;
     }
     if (st.pending?.[0]?.scheduleId) void this.drainPending().catch(failed);
@@ -3162,20 +3254,48 @@ export abstract class LiveSession {
     return false;
   }
 
+  /** agent-bound work under way (a message on its way to a turn, a `!` command…): the idle close waits for it */
+  private inFlight = 0;
+
+  /**
+   * Runs work that needs the agent process, keeping it open meanwhile: a message only reaches
+   * "running" after several awaits (skills, the checkpoint, attachments), and a `!` command never does.
+   */
+  async hold<T>(work: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    clearTimeout(this.idleTimer);
+    try {
+      return await work();
+    } finally {
+      this.inFlight--;
+      this.armIdle();
+    }
+  }
+
   private armIdle() {
     clearTimeout(this.idleTimer);
-    // Closing the process would also end its subagents, shells and armed wakeups.
-    const idle = () => this.t.state.status === "idle" && this.t.state.pendingUi.length === 0 && this.activeCount === 0;
+    if (this.closed) return;
+    // Closing the process would also end its subagents, shells and armed wakeups; an active goal or
+    // an armed Tether loop or schedule keeps it open too (it will work again). Messages held after
+    // Stop stay with a live process, ready to send; agent-bound work under way (hold) keeps it open.
+    const idle = () =>
+      this.inFlight === 0 &&
+      this.t.state.status === "idle" &&
+      this.t.state.pendingUi.length === 0 &&
+      this.activeCount === 0 &&
+      !this.t.state.pending?.length &&
+      this.goalState?.status !== "active" &&
+      !this.schedules.length;
     if (!idle()) return;
     // A review still under way keeps it open, so its result lands on the card live and pushes (a
     // review whose session went away without reporting holds it at most REVIEW_KEEP_OPEN_MS).
     const reviewing = () => this.reviews.some((r) => (r.status === "starting" || r.status === "running") && Date.now() - r.updatedAt < REVIEW_KEEP_OPEN_MS);
     const fire = () => {
       if (!idle()) return;
-      if (reviewing()) this.idleTimer = setTimeout(fire, IDLE_CLOSE_MS);
+      if (reviewing()) this.idleTimer = setTimeout(fire, IDLE_CLOSE.ms);
       else this.close();
     };
-    this.idleTimer = setTimeout(fire, IDLE_CLOSE_MS);
+    this.idleTimer = setTimeout(fire, IDLE_CLOSE.ms);
   }
 
   close() {
@@ -3222,6 +3342,87 @@ export abstract class LiveSession {
   protected abstract shutdown(): void;
 }
 
+/** What a session's changes and file references are measured against; a session that isn't running has it from its saved settings. */
+export interface FilesView {
+  projectPath: string;
+  /** first working-tree snapshot (SessionPrefs.diffBaseSha) */
+  diffBase?: string;
+  checkpoints?: Checkpoint[];
+}
+
+/** The Changes view and file references, for a running session or one that isn't (index.ts). */
+export function sessionFiles(v: FilesView) {
+  const list = v.checkpoints ?? [];
+  const base = v.diffBase ?? list[0]?.sha;
+  return {
+    async diff(checkpointId?: string): Promise<SessionDiff> {
+      if (!checkpointId) return computeDiff(v.projectPath, base);
+      const i = list.findIndex((c) => c.id === checkpointId);
+      if (i < 0) throw new Error("That turn's checkpoint is no longer kept.");
+      return computeDiff(v.projectPath, list[i]!.sha, list[i + 1]?.sha);
+    },
+    checkPaths: (paths: string[]) => checkPaths(v.projectPath, paths, base),
+    fileDiff: (path: string, checkpointId?: string, reveal?: boolean) => fileDiff(v.projectPath, path, base, list, checkpointId, reveal === true),
+    readFile: (path: string, maxBytes?: number, reveal?: boolean) => readProjectFile(v.projectPath, path, maxBytes, reveal === true),
+  };
+}
+
+// ---- the `/` menu of a session that isn't running ----
+
+type MenuSource = { commands: { name: string; description?: string }[]; native?: NativeSkill[] };
+/** what each harness last reported (its commands, the skills it runs itself), by project and overall */
+const lastMenus = new Map<string, MenuSource>();
+
+function rememberMenu(harness: HarnessId, projectPath: string, src: MenuSource) {
+  lastMenus.delete(`${harness}\0${projectPath}`);
+  lastMenus.set(`${harness}\0${projectPath}`, src);
+  lastMenus.set(harness, src);
+  while (lastMenus.size > 200) lastMenus.delete(lastMenus.keys().next().value!);
+}
+
+function menuOf(harness: HarnessId, projectPath: string, src: MenuSource | undefined): SlashCommand[] {
+  const native = src?.native;
+  const menu = slashMenu(skillsFor(harness, projectPath, native), src?.commands ?? [], native && new Set(native.map((n) => n.name)), harness, projectPath, hiddenSkills(), libraryCommands());
+  // Tether handles these before the harness sees the message, so its own of the same name never runs.
+  const own = new Set(TETHER_COMMANDS.map((c) => c.name));
+  return [...TETHER_COMMANDS, ...menu.filter((c) => !own.has(c.name))];
+}
+
+/**
+ * The `/` menu without starting the agent: the skills as they are now, with the commands the
+ * harness reported when it last ran here (else anywhere); none before it ever has.
+ */
+export function storedSlashMenu(harness: HarnessId, projectPath: string): SlashCommand[] {
+  return menuOf(harness, projectPath, lastMenus.get(`${harness}\0${projectPath}`) ?? lastMenus.get(harness));
+}
+
+export type PendingChange = { text?: string; mode?: "steer" | "followUp"; index?: number; remove?: boolean; now?: boolean };
+
+/**
+ * The pending list after one edit (LiveSession.editPending; index.ts for a session that isn't
+ * running). Removing, or emptying its text, drops it; "send now" puts it on top as a steer.
+ */
+export function editedPending(list: PendingMessage[], id: string, change: PendingChange, now = Date.now()): PendingMessage[] {
+  const out = [...list];
+  const i = out.findIndex((p) => p.id === id);
+  if (i < 0) throw new Error("That message was already sent.");
+  if (change.remove || change.text?.trim() === "") {
+    out.splice(i, 1);
+    return out;
+  }
+  const p: PendingMessage = { ...out[i]! };
+  if (change.text !== undefined) p.text = change.text;
+  if (change.mode) p.mode = change.mode;
+  if (change.now) p.mode = "steer";
+  // An edited steer gets a fresh grace period; "send now" skips it.
+  if (p.mode === "steer") p.readyAt = change.now ? now : change.text !== undefined || change.mode ? now + LiveSession.STEER_GRACE_MS : (p.readyAt ?? now);
+  else delete p.readyAt;
+  out.splice(i, 1);
+  const to = change.now ? 0 : Math.max(0, Math.min(out.length, change.index ?? i));
+  out.splice(to, 0, p);
+  return out;
+}
+
 /** How many messages from the top start the next turn: the steers at the top, else one queued message. */
 export function nextTurnSize(list: PendingMessage[]): number {
   let n = 0;
@@ -3252,7 +3453,7 @@ export function finishedTools(event: SessionEvent, messages: Msg[]): string[] {
 }
 /** A transcript message only Tether has (a notice, a `!` run): no harness keeps it, so no fork point is in it. */
 export const tetherOnly = (m: Msg) => m.role === "notice" || (m.role === "user" && m.parts.every((p) => p.type === "tool"));
-const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
+export const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
 
 /** "Opus 5.5", or "GPT-6 Luna in Codex" when it runs in another harness than `harness`. */

@@ -25,16 +25,19 @@ import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
-import { availableProfiles, config, freezeConfig, saveConfig, setUiPrefs, uiPrefs } from "./config";
+import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
-import { CrossAgents, isWorktreePath, listedUnder, startedByOf } from "./crossAgents";
+import { CrossAgents, isWorktreePath, listedUnder, startedByOf, subagentPath } from "./crossAgents";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type SessionActivity } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
+import type { SessionPrefs } from "./config";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
-import type { HandoffOpts, LiveSession } from "./session";
+import { editedPending, joinPending, sessionFiles, storedSlashMenu, type HandoffOpts, type LiveSession } from "./session";
+import { settingChange, storedSnapshot, storedState, StoredSessions, type StoredSetting } from "./stored";
+import { workingTreeStats } from "./checkpoint";
 import { ContextService } from "./context";
 import { useContextSkills } from "./skillcmd";
 import { capabilityMatrix } from "./connectors";
@@ -59,7 +62,7 @@ import { withAttachments } from "../../web/src/shared/attachments";
 import { cloneRepo } from "./clone";
 import { createProject, githubAccount, githubRepos } from "./newProject";
 import { allViewed, markViewed, pickRecent, recentProjects, saveViewed, viewedAt, viewedMap } from "./viewed";
-import { forgetPlans, saveStoredDraft } from "./planReview";
+import { forgetPlans, saveStoredDraft, storedPlans } from "./planReview";
 
 const VERSION = "0.1.0";
 const URL_BASE = process.env.TETHER_URL ?? "http://localhost:8787";
@@ -74,6 +77,13 @@ const adapters: Record<HarnessId, Adapter> = {
   antigravity: antigravityAdapter,
 };
 const live = new Map<string, LiveSession>();
+/** sessions whose agent is starting (getLive): everyone asking waits for the same one */
+const starting = new Map<string, Promise<LiveSession>>();
+/** sessions that aren't running: their stored conversations, paths and event numbers (stored.ts) */
+const stored = new StoredSessions(
+  async (s) => adapters[s.harness].storedHistory?.(s.nativeId, s.projectPath),
+  async (s) => adapters[s.harness].historyStamp?.(s.nativeId, s.projectPath),
+);
 // Master context: inert until the first import is run from the UI (contextImport).
 const context = new ContextService({
   emit: (event) => send({ t: "context", event }),
@@ -118,6 +128,9 @@ function decorate(s: SessionSummary): SessionSummary {
   const by = startedByOf(s.id);
   const parentId = s.startedBy?.sessionId ?? by?.sessionId;
   const parentTitle = parentId ? (cfg.titles[parentId] ?? live.get(parentId)?.title) : undefined;
+  // A stored session's loops and schedules still run (the scheduler opens it when one is due).
+  const runs = cfg.sessions[s.id]?.schedules;
+  const nextRunAt = !s.nextRunAt && !s.live && runs?.length ? Math.min(...runs.map((r) => r.nextAt)) : undefined;
   return {
     ...s,
     ...(title ? { title } : {}),
@@ -126,14 +139,16 @@ function decorate(s: SessionSummary): SessionSummary {
     ...(viewed ? { viewedAt: viewed } : {}),
     ...(parentId ? { startedBy: { sessionId: parentId, name: s.startedBy?.name ?? by!.name, ...(parentTitle ? { title: parentTitle } : {}) } } : {}),
     ...(by && by.projectPath !== s.projectPath ? { listedUnder: by.projectPath } : {}),
+    ...(nextRunAt ? { nextRunAt } : {}),
   };
 }
 
 // ---------------- dashboard pulses ----------------
 
 const turns = new TurnClock();
-// Per-session pulse state lives as long as the session is live or among the recently finished.
-const closedPulses = new ClosedPulses(20, (id) => {
+// Per-session pulse state lives as long as the session is live or among the recently finished
+// (idle processes close after a few minutes, so many sessions pass through here).
+const closedPulses = new ClosedPulses(50, (id) => {
   if (live.has(id)) return;
   turns.forget(id);
   pulses.forget(id);
@@ -166,6 +181,8 @@ noticeListeners.add((n) => n.sessionId && pulses.touch(n.sessionId));
 
 const sink: Sink = {
   emit: (sessionId: string, seq: number, event: SessionEvent) => {
+    // Whatever a session sends, even after its process ended, is where its next events go on from.
+    stored.saw(sessionId, seq);
     send({ t: "event", sessionId, seq, event });
     if (event.type === "state" && event.state.status) turns.update(sessionId, event.state.status);
     pulses.touch(sessionId);
@@ -178,10 +195,21 @@ const sink: Sink = {
   handoff: (from, to, reason, pendingPrompt, opts) => handoff(from, to, reason, pendingPrompt, opts),
   compact: async (from, focus) => void (await runCompact({ adapters, sink, context, track }, from, focus)),
   review: async (from, req) => void (await runReview({ adapters, sink, track }, from, req)),
-  reviewResult: (sessionId, reviewId, patch) => applyReview((id) => live.get(id), sessionId, reviewId, patch),
+  // A session that isn't running gets it in its saved settings; browsers on it hear it as a state event.
+  reviewResult: (sessionId, reviewId, patch) =>
+    applyReview((id) => live.get(id), sessionId, reviewId, patch, (id, reviews) => send({ t: "event", sessionId: id, seq: stored.nextSeq(id), event: { type: "state", state: { reviews } } })),
 };
 // Cross-harness subagents (agent_start… in tether-context): sessions that start sessions.
-const agents = new CrossAgents({ adapters, sink, track, live: (id) => live.get(id), open: (id) => getLive(id), archived: () => config().archived });
+const agents = new CrossAgents({
+  adapters,
+  sink,
+  track,
+  live: (id) => live.get(id),
+  // A parent or subagent that isn't running starts when it's needed (a message, a note).
+  open: (id) => getLive(id),
+  archived: () => config().archived,
+  storedChanged: (id, state) => send({ t: "event", sessionId: id, seq: stored.nextSeq(id), event: { type: "state", state } }),
+});
 sink.agents = agents;
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
@@ -241,6 +269,8 @@ function track(s: LiveSession) {
   live.set(s.id, s);
   closedPulses.delete(s.id);
   s.onClose = () => {
+    // Browsers keep counting its events: a new process (or a change while closed) goes on from here.
+    stored.closed(s.id, s.seq, s.projectPath);
     // Its last pulse stays for "Recently finished" (a removed session is archived: browsers drop it).
     const last = pulseOf(s.id);
     if (live.get(s.id) === s) live.delete(s.id);
@@ -258,49 +288,129 @@ function parseId(sessionId: string): { harness: HarnessId; nativeId: string } {
   return { harness, nativeId: sessionId.slice(i + 1) };
 }
 
-/** sessions being opened: a second caller (a browser, a schedule run) waits for the same process */
-const opening = new Map<string, Promise<LiveSession>>();
-
-function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
-  const existing = live.get(sessionId);
-  if (existing && !existing.closed) return Promise.resolve(existing);
-  let p = opening.get(sessionId);
-  if (!p) {
-    p = openLive(sessionId, projectPath).finally(() => opening.delete(sessionId));
-    opening.set(sessionId, p);
+/** Where a session is, without starting it: known, else searched for in every project. */
+async function sessionPath(sessionId: string, projectPath?: string): Promise<string> {
+  const { harness, nativeId } = parseId(sessionId);
+  const known = projectPath ?? live.get(sessionId)?.projectPath ?? stored.path(sessionId) ?? config().sessions[sessionId]?.projectPath;
+  if (known) return known;
+  for (const p of await allProjects()) {
+    if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) return p.path;
   }
+  throw new Error(`session ${sessionId} not found`);
+}
+
+/** The session's agent, started (resumed) if it isn't running: for whatever needs the agent itself. */
+async function getLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
+  // One still starting is handed out only once its saved choices are back (it's tracked before that).
+  const pending = starting.get(sessionId);
+  if (pending) return pending;
+  const existing = live.get(sessionId);
+  if (existing && !existing.closed) return existing;
+  const p = startLive(sessionId, projectPath).finally(() => starting.delete(sessionId));
+  starting.set(sessionId, p);
   return p;
 }
 
-async function openLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
+async function startLive(sessionId: string, projectPath?: string): Promise<LiveSession> {
   const { harness, nativeId } = parseId(sessionId);
-  // A subagent works in its own worktree, which isn't a project of its own in the lists.
-  const stored = config().sessions[sessionId];
-  let path = stored?.startedBy && stored.projectPath && existsSync(stored.projectPath) ? stored.projectPath : projectPath;
-  if (!path && stored?.projectPath && existsSync(stored.projectPath)) path = stored.projectPath;
-  if (!path) {
-    for (const p of await allProjects()) {
-      if ((await adapters[harness].listSessions(p.path)).some((s) => s.nativeId === nativeId)) {
-        path = p.path;
-        break;
-      }
-    }
-  }
-  if (!path) throw new Error(`session ${sessionId} not found`);
-  // Read before starting: a starting session saves its (default) model over these.
+  // A subagent works in its own worktree: never in the parent's checkout instead (crossAgents.ts).
+  const by = config().sessions[sessionId]?.startedBy;
+  const path = by ? await subagentPath(sessionId, config().sessions[sessionId]?.projectPath) : await sessionPath(sessionId, projectPath);
+  const s = await adapters[harness].resume(nativeId, path, sink);
+  // Its events go on from where browsers left off.
+  s.seq = stored.seq(sessionId);
+  // Harnesses that take the guard as a launch setting see the saved one (loadPrefs restores the rest).
+  const guard = config().sessions[sessionId]?.guard;
+  if (guard) s.t.state.guard = guard;
+  await s.start();
+  // Read just before loadPrefs (in track) saves what it started on over them; nothing saves before.
   const saved = config().sessions[sessionId];
   const choices = saved && { model: saved.model, thinking: saved.thinking, permissionMode: saved.permissionMode };
-  const s = await adapters[harness].resume(nativeId, path, sink);
-  await s.start();
   track(s);
   await s.reapplyChoices(choices);
   return s;
 }
 
-function requireLive(sessionId: string): LiveSession {
+/** The session's agent if it's running, or the one starting; undefined (synchronously) when neither. */
+function current(sessionId: string): LiveSession | Promise<LiveSession | undefined> | undefined {
+  const p = starting.get(sessionId);
+  if (p) return p.catch(() => undefined);
   const s = live.get(sessionId);
-  if (!s || s.closed) throw new Error("Session is not running. Open it again.");
-  return s;
+  return s && !s.closed ? s : undefined;
+}
+
+/** The session's agent if it's running (or starting); undefined when it isn't. */
+async function runningLive(sessionId: string): Promise<LiveSession | undefined> {
+  return current(sessionId);
+}
+
+/** What opening a session that isn't running shows, without starting it; undefined when only its agent can show it. */
+async function storedSessionSnapshot(sessionId: string, projectPath?: string): Promise<SessionSnapshot | undefined> {
+  const { harness, nativeId } = parseId(sessionId);
+  const a = adapters[harness];
+  if (!a.storedHistory) return undefined;
+  const path = await sessionPath(sessionId, projectPath);
+  const summary = (await a.listSessions(path)).find((x) => x.nativeId === nativeId);
+  if (!summary) return undefined;
+  const history = await stored.history(summary);
+  if (!history) return undefined;
+  const p = config().sessions[sessionId];
+  // What the whole session changed, measured now (a running session measures it after each turn).
+  const base = p?.diffBaseSha ?? p?.checkpoints?.[0]?.sha;
+  const diffStat = base ? await totalChanges(path, base) : undefined;
+  const state = storedState({ prefs: p, history, modes: a.modes, plans: storedPlans(sessionId), defaultGuard: config().guard?.defaultMode ?? "auto", diffStat });
+  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId));
+}
+
+/** What a session changed since its first snapshot, measured at most every few seconds (several devices open it at once). */
+const changesCache = new Map<string, { at: number; stat: Promise<DiffStat | undefined> }>();
+function totalChanges(path: string, base: string): Promise<DiffStat | undefined> {
+  const key = `${path}\0${base}`;
+  const hit = changesCache.get(key);
+  if (hit && Date.now() - hit.at < 5_000) return hit.stat;
+  const stat = workingTreeStats(path, [base]).then(([total]) => total).catch(() => undefined);
+  changesCache.set(key, { at: Date.now(), stat });
+  for (const [k, v] of changesCache) if (Date.now() - v.at >= 5_000) changesCache.delete(k);
+  return stat;
+}
+
+/** Saves a change to a session that isn't running; browsers on it hear it as a state event. */
+function writeStored(sessionId: string, saved: Partial<SessionPrefs>, state: Partial<LiveState>, path?: string) {
+  Object.assign(prefs(sessionId), saved, path ? { projectPath: path } : {});
+  saveConfig();
+  send({ t: "event", sessionId, seq: stored.nextSeq(sessionId), event: { type: "state", state } });
+}
+
+/**
+ * A setting: on the running (or starting) agent, else saved with its other settings and applied
+ * when it starts (startLive: reapplyChoices, loadPrefs). Nothing is awaited between checking
+ * whether it runs and saving, so a start can't read the old value in between.
+ */
+async function changeSetting(sessionId: string, setting: StoredSetting, onLive: (s: LiveSession) => unknown) {
+  const { harness } = parseId(sessionId);
+  const path = await sessionPath(sessionId).catch(() => undefined);
+  const now = current(sessionId);
+  const s = now instanceof Promise ? await now : now;
+  if (s) return void (await onLive(s));
+  const change = settingChange(harness, setting);
+  writeStored(sessionId, change as Partial<SessionPrefs>, change, path);
+}
+
+/** Messages held on a session that isn't running (shown held; sending starts it). */
+function storedPending(sessionId: string) {
+  return config().sessions[sessionId]?.pending ?? [];
+}
+
+function setStoredPending(sessionId: string, list: PendingMessage[]) {
+  writeStored(sessionId, { pending: list.length ? list : undefined }, { pending: list, pendingHeld: list.length ? true : undefined });
+}
+
+/** A running session's changes and files, else the ones its saved settings describe: never starts it. */
+async function filesOf(sessionId: string) {
+  const s = await runningLive(sessionId);
+  if (s) return s.files;
+  const p = config().sessions[sessionId];
+  return sessionFiles({ projectPath: await sessionPath(sessionId), diffBase: p?.diffBaseSha, checkpoints: p?.checkpoints });
 }
 
 // Scanning every harness's session store takes seconds; serve a cached copy and refresh it behind.
@@ -548,7 +658,19 @@ const ops: Handlers = {
   },
 
   async openSession({ sessionId, projectPath }) {
-    return (await getLive(sessionId, projectPath)).snapshot();
+    // Opening only shows the conversation: the agent starts when something needs it.
+    const running = await runningLive(sessionId);
+    if (running) return running.snapshot();
+    const snap = await storedSessionSnapshot(sessionId, projectPath).catch((e) => {
+      console.error(`reading ${sessionId} without its agent failed: ${e?.message ?? e}`);
+      return undefined;
+    });
+    // It started while the stored copy was read (a message from another device): what it has now
+    // wins, or the browser would take the stored copy (not running) over the events it dropped meanwhile.
+    const started = await runningLive(sessionId);
+    if (started) return started.snapshot();
+    // Harnesses that can't show a conversation without their agent (Kiro), or a store that couldn't be read.
+    return snap ?? (await getLive(sessionId, projectPath)).snapshot();
   },
 
   async closeSession({ sessionId }) {
@@ -597,6 +719,7 @@ const ops: Handlers = {
     if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined });
     forgetSession(sessionId);
     forgetPlans(sessionId);
+    stored.forget(sessionId);
     saveConfig();
     scheduleChanged();
     return {};
@@ -618,15 +741,11 @@ const ops: Handlers = {
       scheduleChanged();
       sink.summary(s.summary());
     }
-    // `/tether …` (dev only) is the runner's own: no shell output rides along on it.
-    if (s.devCommand(text)) return {};
-    // `/goal …` too (goal.ts): Tether's own command, on every harness; so are /loop and /schedule (schedule.ts).
-    if (await s.goalCommand(text)) return {};
-    if (await s.scheduleCommand(text)) return {};
-    // `/compact [focus]`: the harness's own compaction, or a restart on a brief (fork.ts, handoffRun.ts).
-    if (await s.compactCommand(text)) return {};
-    // `/review …`: a read-only review session on another harness (review.ts).
-    if (await s.reviewCommand(text)) return {};
+    // Tether's own commands, before the shell output rides along: `/tether …` (dev only), `/goal …`
+    // (goal.ts), /loop and /schedule (schedule.ts), `/compact [focus]` (the harness's own compaction,
+    // or a restart on a brief: fork.ts, handoffRun.ts), `/review …` (a read-only review session on
+    // another harness: review.ts). Held open meanwhile (the idle close waits).
+    if (await s.hold(() => s.tetherCommand(text))) return {};
     if (text.startsWith("!")) {
       const command = text.slice(1).trim();
       if (command) void s.runShell(command).catch((e) => s.notice(`Shell command failed: ${e?.message ?? e}`, "error"));
@@ -637,14 +756,21 @@ const ops: Handlers = {
   },
 
   async forceSend({ sessionId, text, id, attachments }) {
-    const s = requireLive(sessionId);
     if (id) {
+      // A message held on a session that isn't running: starting it brings the message back (loadPrefs).
+      let s = await runningLive(sessionId);
+      if (!s && !storedPending(sessionId).some((p) => p.id === id)) throw new Error("That message was already sent.");
+      s ??= await getLive(sessionId);
       await s.forceSend({ id });
       return {};
     }
     const files = checkAttachments(attachments);
     if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
     if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
+    // Not running: nothing to stop, it just starts with this message.
+    const s = await getLive(sessionId);
+    // Tether's own commands (/goal, /compact…) first, as typed, like prompt: no shell output rides along.
+    if (!files.length && text && (await s.hold(() => s.tetherCommand(text)))) return {};
     await s.forceSend({ text: s.withShellContext(files.length ? withAttachments(text ?? "", files) : (text ?? "")) });
     return {};
   },
@@ -663,33 +789,51 @@ const ops: Handlers = {
   },
 
   async abort({ sessionId }) {
-    await requireLive(sessionId).stop();
+    // Not running: nothing to stop.
+    await (await runningLive(sessionId))?.stop();
     return {};
   },
 
   async deleteSchedule({ sessionId, id }) {
-    const s = live.get(sessionId);
-    if (s && !s.closed) {
+    // Never starts the agent: a session that isn't running has it removed from its saved list.
+    const now = current(sessionId);
+    const s = now instanceof Promise ? await now : now;
+    if (s) {
       s.deleteSchedule(id);
       return {};
     }
     const p = config().sessions[sessionId];
     if (p?.schedules) {
-      p.schedules = p.schedules.filter((x) => x.id !== id);
-      if (!p.schedules.length) p.schedules = undefined;
-      saveConfig();
+      const left = p.schedules.filter((x) => x.id !== id);
+      // Browsers on it hear the shorter list (writeStored saves it).
+      writeStored(sessionId, { schedules: left.length ? left : undefined }, { schedules: left });
       scheduleChanged();
     }
     return {};
   },
 
   async editPending({ sessionId, id, ...change }) {
-    await requireLive(sessionId).editPending(id, change);
+    const now = current(sessionId);
+    let s = now instanceof Promise ? await now : now;
+    if (!s && !change.now) {
+      // Held on a session that isn't running: edited in its saved list (throws when it's gone).
+      setStoredPending(sessionId, editedPending(storedPending(sessionId), id, change));
+      return {};
+    }
+    // "Send now" starts it; the held messages come back with it (loadPrefs).
+    if (!s && !storedPending(sessionId).some((p) => p.id === id)) throw new Error("That message was already sent.");
+    s ??= await getLive(sessionId);
+    await s.editPending(id, change);
     return {};
   },
 
   async takePending({ sessionId }) {
-    return { text: requireLive(sessionId).takePending() };
+    const now = current(sessionId);
+    const s = now instanceof Promise ? await now : now;
+    if (s) return { text: s.takePending() };
+    const list = storedPending(sessionId);
+    if (list.length) setStoredPending(sessionId, []);
+    return { text: list.length ? joinPending(list) : "" };
   },
 
   async pushStatus({ endpoint }) {
@@ -722,35 +866,37 @@ const ops: Handlers = {
   },
 
   async amendSteer({ sessionId, msgId, text }) {
-    requireLive(sessionId).amendSteer(msgId, text);
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("That message can't be changed any more: the turn it went into has ended.");
+    s.amendSteer(msgId, text);
     return {};
   },
 
   async setModel({ sessionId, model, profile }) {
-    await requireLive(sessionId).setModelOrProfile(model, profile);
+    await changeSetting(sessionId, { op: "model", model, profile }, (s) => s.setModelOrProfile(model, profile));
     return {};
   },
 
   async setGuard({ sessionId, mode }) {
-    requireLive(sessionId).setGuard(mode);
+    await changeSetting(sessionId, { op: "guard", mode }, (s) => s.setGuard(mode));
     return {};
   },
 
   async getSessionDiff({ sessionId, checkpoint }) {
-    return (await getLive(sessionId)).diff(checkpoint);
+    return (await filesOf(sessionId)).diff(checkpoint);
   },
 
   async checkPaths({ sessionId, paths }) {
     if (!Array.isArray(paths)) throw new Error("paths must be a list");
-    return (await getLive(sessionId)).checkPaths(paths);
+    return (await filesOf(sessionId)).checkPaths(paths);
   },
 
   async fileDiff({ sessionId, path, checkpoint, reveal }) {
-    return (await getLive(sessionId)).fileDiff(String(path ?? ""), typeof checkpoint === "string" ? checkpoint : undefined, reveal === true);
+    return (await filesOf(sessionId)).fileDiff(String(path ?? ""), typeof checkpoint === "string" ? checkpoint : undefined, reveal === true);
   },
 
   async readFile({ sessionId, path, maxBytes, reveal }) {
-    return (await getLive(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
+    return (await filesOf(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
   },
 
   async approveBlocked({ sessionId, toolId, confirmed }) {
@@ -766,12 +912,17 @@ const ops: Handlers = {
 
   async sendReviewFindings({ sessionId, reviewId, indexes }) {
     if (indexes !== undefined && !Array.isArray(indexes)) throw new Error("indexes must be a list");
+    // Starts it when it isn't running (its reviews come back with its saved settings, loadPrefs).
     await (await getLive(sessionId)).sendReviewFindings(reviewId, indexes);
     return {};
   },
 
   async continueOn({ sessionId, msgId }) {
-    await requireLive(sessionId).continueOn(msgId);
+    // The offer lives with the process that hit the error: once it has closed, a message goes on
+    // (on the model the session's settings pick; they can be changed while it's stopped).
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("This session's agent has stopped since that error. Send a message to go on, after changing the model if you like.");
+    await s.hold(() => s.continueOn(msgId));
     return {};
   },
 
@@ -781,7 +932,9 @@ const ops: Handlers = {
   },
 
   async stopActivity({ sessionId, id }) {
-    await requireLive(sessionId).stopActivity(id);
+    const s = await runningLive(sessionId);
+    if (!s) throw new Error("That item is no longer listed.");
+    await s.stopActivity(id);
     return {};
   },
 
@@ -816,19 +969,19 @@ const ops: Handlers = {
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
-    await requireLive(sessionId).setChain(chain, preferEarlier, undefined);
+    await changeSetting(sessionId, { op: "chain", chain, preferEarlier }, (s) => s.setChain(chain, preferEarlier, undefined));
     return {};
   },
 
   async setThinking({ sessionId, level }) {
-    await requireLive(sessionId).setThinking(level);
+    await changeSetting(sessionId, { op: "thinking", level }, (s) => s.setThinking(level));
     return {};
   },
 
   async setPermissionMode({ sessionId, mode }) {
     // The picker never offers these; refuse them here too so no client can skip the guard.
     if (APPROVING_MODES.has(mode)) throw new Error(`${mode} approves tool calls without the guard; use the guard setting instead.`);
-    await requireLive(sessionId).setPermissionMode(mode);
+    await changeSetting(sessionId, { op: "mode", mode }, (s) => s.setPermissionMode(mode));
     return {};
   },
 
@@ -843,13 +996,16 @@ const ops: Handlers = {
 
   async planAction({ sessionId, planId, action, draft, base }) {
     if (!["discuss", "revise", "approve"].includes(action)) throw new Error(`unknown plan action ${action}`);
-    await (await getLive(sessionId)).plans.act(String(planId), action, draft, typeof base === "number" ? base : undefined);
+    const s = await getLive(sessionId);
+    // Held open until the action has reached the agent (the idle close waits).
+    await s.hold(() => s.plans.act(String(planId), action, draft, typeof base === "number" ? base : undefined));
     return {};
   },
 
   async uiRespond({ sessionId, response }) {
-    // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop)
-    return requireLive(sessionId).uiRespond(response) ? {} : { stale: true };
+    // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop or the process ending)
+    const s = await runningLive(sessionId);
+    return s?.uiRespond(response) ? {} : { stale: true };
   },
 
   async getUsage({ force }) {
@@ -895,7 +1051,10 @@ const ops: Handlers = {
   },
 
   async listCommands({ sessionId }) {
-    return requireLive(sessionId).slashMenu();
+    const s = await runningLive(sessionId);
+    if (s) return s.slashMenu();
+    // Not running: the skills, and the commands its harness reported when it last ran.
+    return storedSlashMenu(parseId(sessionId).harness, await sessionPath(sessionId));
   },
 
   // ---- master context (runner/src/context) ----

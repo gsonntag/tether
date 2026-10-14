@@ -108,6 +108,15 @@ function inWindow(e: Entry, c: RecentContext): boolean {
   return touched(e.session, foreign(e, c) ? {} : c) >= c.now - c.days * DAY;
 }
 
+/**
+ * A review session (/review) is opened from its card in the session it reviews: it's listed on its
+ * own only while open, working, or asking you something (not for its notices, which its card shows).
+ */
+function reviewHidden(e: Entry, st: SessionState, c: Pick<RecentContext, "selected">): boolean {
+  if (!e.session.reviewOf || e.session.id === c.selected) return false;
+  return st === "recent" || (st === "needs" && !asking(e));
+}
+
 export interface Groups<T> {
   needs: T[];
   working: T[];
@@ -124,9 +133,8 @@ export function groupSessions<T extends Entry>(entries: T[], c: RecentContext & 
   const g: Groups<T> = { needs: [], working: [], recent: [] };
   for (const e of entries) {
     if (e.session.archived) continue;
-    // A review session (/review) is listed under the session it reviews, not on its own.
-    if (e.session.reviewOf && e.session.id !== c.selected) continue;
     let st = stateOf(e, c);
+    if (reviewHidden(e, st, c)) continue;
     if (st === "recent" && !foreign(e, c) && e.session.id === c.selected && c.wasNeeds?.has(e.session.id)) st = "needs";
     if (st === "recent" && !inWindow(e, c)) continue;
     g[st].push(e);
@@ -159,8 +167,7 @@ export function mergeEntries(runnerId: string | undefined, summaries: Iterable<S
  */
 export function showInSidebar(s: SessionSummary, c: RecentContext): boolean {
   if (s.archived) return false;
-  // A review session (/review) is opened from its card in the session it reviews.
-  if (s.reviewOf) return s.id === c.selected;
+  if (s.reviewOf) return !reviewHidden({ session: s }, sessionState(s, c), c);
   return isBusy(s, c) || inWindow({ session: s }, c);
 }
 

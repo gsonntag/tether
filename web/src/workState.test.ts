@@ -56,6 +56,14 @@ describe("from a summary", () => {
     const w = summaryWork(s({ activeCount: 1, runningKinds: {} }));
     expect(workState(w)).toBe("scheduled");
   });
+
+  test("an active goal is working between its turns; a Tether loop or schedule is scheduled, closed too", () => {
+    expect(workState(summaryWork(s({ goalActive: true })))).toBe("working");
+    expect(workLabel(summaryWork(s({ goalActive: true }))).tooltip).toBe("Working on its goal");
+    expect(workState(summaryWork(s({ goalActive: true, live: false })))).toBe("closed");
+    expect(workState(summaryWork(s({ nextRunAt: 1 })))).toBe("scheduled");
+    expect(workState(summaryWork(s({ nextRunAt: 1, live: false })))).toBe("scheduled");
+  });
 });
 
 describe("staleFinished", () => {

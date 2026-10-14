@@ -180,6 +180,8 @@ describe("the loop", () => {
     expect(s.sent[1]).toStartWith("[Tether goal] Continue working toward the goal: make all tests pass");
     expect(s.goalState!.used.turns).toBe(1);
     expect(s.goalState!.status).toBe("active");
+    // The lists keep it under Working between the goal's turns.
+    expect(s.summary().goalActive).toBe(true);
     // No "Finished" for each turn of a goal.
     expect(pushes(s).filter((n) => n.kind === "finished")).toEqual([]);
   });

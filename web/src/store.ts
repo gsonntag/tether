@@ -19,6 +19,7 @@ import type {
 import { byRecent, DEFAULT_UI_PREFS, listPath, type UiPrefs } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
+import { processStarted } from "./sessionStart";
 import { applyEvent, type Transcript } from "./shared/reducer";
 import type { ForkTarget } from "./fork";
 
@@ -332,6 +333,9 @@ function onEvent(sessionId: string, seq: number, event: SessionEvent) {
 function upsertSummary(sum: SessionSummary) {
   // A subagent in its own worktree is listed in its parent's project.
   const key = listPath(sum);
+  // An open session whose process starts: the new process's state replaces the stored copy (its
+  // events go on from the same number, but a fresh snapshot is what it really has).
+  if (processStarted(get().open[sum.id], sum)) queueMicrotask(() => loadSession(sum.id));
   set((s) => {
     const list = s.sessions[key] ?? [];
     const i = list.findIndex((x) => x.id === sum.id);

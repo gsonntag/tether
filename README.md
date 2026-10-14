@@ -117,8 +117,13 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Turns that were in progress resume after a runner restart.
   - A watchdog warns when a running session has been silent for 15 minutes with nothing
     running: a shell command, tool call or subagent that's still going isn't a stall.
-  - Idle agent processes close after 30 minutes and reopen from disk on demand, unless they
+  - Idle agent processes close after 5 minutes and reopen from disk on demand, unless they
     still have subagents, shells or scheduled wakeups going.
+  - Opening a session that isn't running only shows it: the transcript is read from the
+    harness's own store (opencode's from its SQLite database, read-only) with the settings
+    Tether keeps for it, and the agent starts when you send or do something that needs it.
+    Model, effort, mode, chain and guard changes made meanwhile are saved and applied when it
+    starts. Kiro still starts its process to show a session.
 - **Activity.** Everything a session has going on besides the transcript: subagents (with
   their model, tool calls, tokens, latest action and report), background shells and monitors
   (with their latest output), workflows, cron jobs and wakeups, plus the last 20 that finished.
