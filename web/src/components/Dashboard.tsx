@@ -20,12 +20,12 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
-import { BellAlertIcon, BoltIcon, CheckCircleIcon, ClockIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
+import { BellAlertIcon, BoltIcon, ChatBubbleLeftRightIcon, CheckCircleIcon, ClockIcon, PlusIcon, StopIcon } from "@heroicons/react/24/outline";
 import { listPath, type MemoryConflict, type SessionPulse, type UiRequest, type UiResponse } from "../shared/protocol";
 import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, oneTapQuestion, requestLine, type NeedRow, type PulseRow } from "../dashboard";
 import { touched, type Entry } from "../recentSessions";
 import { useNeedsCount, useSessionGroups } from "../sessionLists";
-import { openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useStore } from "../store";
+import { openLeader, openOnRunner, openPage, patchPulse, resolveConflict, rpcTo, toast, useStore } from "../store";
 import { ago } from "../util";
 import { HarnessBadge } from "./HarnessBadge";
 import { ModelName } from "./ModelName";
@@ -177,14 +177,24 @@ export function Dashboard({ focus }: { focus?: "running" }) {
                 </Text>
               </HStack>
             </VStack>
-            <Button
-              label="New session"
-              variant="primary"
-              size={phone ? "lg" : "md"}
-              icon={<Icon icon={PlusIcon} />}
-              isIconOnly={phone}
-              onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })}
-            />
+            <HStack gap={2} vAlign="center">
+              <Button
+                label="Leader"
+                tooltip="Ask your leader where things are at, or tell it what to pass on"
+                size={phone ? "lg" : "md"}
+                icon={<Icon icon={ChatBubbleLeftRightIcon} />}
+                isIconOnly={phone}
+                onClick={openLeader}
+              />
+              <Button
+                label="New session"
+                variant="primary"
+                size={phone ? "lg" : "md"}
+                icon={<Icon icon={PlusIcon} />}
+                isIconOnly={phone}
+                onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })}
+              />
+            </HStack>
           </HStack>
         </LayoutHeader>
       }

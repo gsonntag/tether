@@ -18,9 +18,9 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { BookOpenIcon, ChatBubbleLeftRightIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { listPath, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
-import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, goHome, openLeader, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { byListOrder, nestSubagents, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
@@ -169,6 +169,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
       ) : (
         <>
         <HomeNavItem />
+        <LeaderNavItem />
         <MemoryNavItem />
         <NeedsYouSection />
         <RecentSection />
@@ -285,6 +286,24 @@ function HomeNavItem() {
           </HStack>
         ) : undefined
       }
+    />
+  );
+}
+
+/**
+ * The leader agent's chat (runner/src/leader.ts): one agent that follows every session and passes
+ * on what you tell it. It isn't in the lists below (but for its own questions, under Needs you).
+ */
+function LeaderNavItem() {
+  const on = useStore((s) => !!s.selected && !!s.open[s.selected]?.session?.leader);
+  const working = useStore((s) => Object.values(s.sessions).some((list) => list.some((x) => x.leader && x.live && x.status === "running")));
+  return (
+    <SideNavItem
+      label="Leader"
+      icon={ChatBubbleLeftRightIcon}
+      isSelected={on}
+      onClick={openLeader}
+      endContent={working ? <StatusDot variant="accent" isPulsing label="Working" /> : undefined}
     />
   );
 }

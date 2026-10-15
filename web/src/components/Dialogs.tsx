@@ -24,12 +24,14 @@ import {
   formatEntry,
   GUARD_MODES,
   HARNESSES,
+  LEADER_UPDATES,
   NOTIFY_KINDS,
   parseEntry,
   SIDEBAR_DAYS,
   type BackgroundModelSetting,
   type GuardMode,
   type HarnessId,
+  type LeaderUpdates,
   type ModelProfile,
   type NotifyKind,
   type Ops,
@@ -59,6 +61,7 @@ export function Dialogs() {
       {dialog === "settings" && <Settings close={close} />}
       {dialog === "notify" && <NotifyPrompt close={close} />}
       {dialog === "fork" && <ForkSession close={close} />}
+      {dialog === "leader" && <StartLeader close={close} />}
     </Dialog>
   );
 }
@@ -316,6 +319,65 @@ function ForkSession({ close }: { close: () => void }) {
           placeholder={target.atUser ? "Optional" : "Optional: without one, the agent catches up and waits for you"}
         />
       </VStack>
+    </Frame>
+  );
+}
+
+/**
+ * "Start your leader": the runner's leader agent (runner/src/leader.ts), on any harness and model.
+ * It starts on your last New session choice for that harness.
+ */
+function StartLeader({ close }: { close: () => void }) {
+  const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
+  // Antigravity gets Tether's tools from its global config, without the leader's.
+  const available = HARNESSES.filter((h) => h.id !== "antigravity" && (!runner || runner.harnesses.includes(h.id)));
+  const [harness, setHarness] = useState<HarnessId>(() => {
+    const last = localStorage.getItem("tether.harness") as HarnessId | null;
+    return last && available.some((h) => h.id === last) ? last : (available[0]?.id ?? "claude-code");
+  });
+  const last = useMemo(() => loadLast(harness)?.choice, [harness]);
+  const [model, setModel] = useState("");
+  useEffect(() => setModel(last && !last.startsWith("profile:") ? last : ""), [last]);
+  const [busy, setBusy] = useState(false);
+  const models = useModels([harness]);
+  const listed = (models[harness] ?? []).filter((m) => m.id !== "default");
+  const modelOptions: SelectorOptionType[] = [
+    { value: DEFAULT_CHOICE, label: "Default" },
+    ...listed.map((m) => {
+      const d = modelDisplay(m.id, harness);
+      return { value: m.id, label: d.name, description: m.id, icon: modelIcon(d) };
+    }),
+    ...(model && !listed.some((m) => m.id === model) ? [{ value: model, label: modelDisplay(model, harness).name, description: model }] : []),
+  ];
+  const start = async () => {
+    if (busy) return;
+    setBusy(true);
+    const s = await act("createLeader", { harness, model: model || undefined });
+    setBusy(false);
+    if (!s) return;
+    close();
+    selectSession(s.id);
+  };
+  return (
+    <Frame
+      title="Start your leader"
+      subtitle="One agent that follows every session on this runner: ask it where things are at, and tell it what to pass on. It acts only on what you tell it, and tool approvals stay your click."
+      close={close}
+      actions={
+        <>
+          <Button label="Cancel" onClick={close} />
+          <Button label="Start your leader" variant="primary" isLoading={busy} onClick={start} />
+        </>
+      }
+    >
+      <Group label="Harness">
+        <SegmentedControl label="Harness" value={harness} onChange={(v) => setHarness(v as HarnessId)}>
+          {available.map((h) => (
+            <SegmentedControlItem key={h.id} value={h.id} label={h.label} />
+          ))}
+        </SegmentedControl>
+      </Group>
+      <Selector label="Model" width="100%" hasSearch options={modelOptions} value={model || DEFAULT_CHOICE} onChange={(v) => setModel(v === DEFAULT_CHOICE ? "" : v)} />
     </Frame>
   );
 }
@@ -964,6 +1026,24 @@ function Settings({ close }: { close: () => void }) {
           title="Expand shell commands by default"
           description="Show a command's output without clicking it."
           control={<Switch label="Expand shell commands by default" isLabelHidden value={ui.expandShell} onChange={(v) => setUiPref({ expandShell: v })} />}
+        />
+      </SettingsCard>
+      <SettingsCard title="Leader">
+        <SettingsRow
+          title="Leader updates"
+          description="What your leader hears about by itself. Updates: questions and approvals within a minute, the rest batched every few minutes. Each one is a turn of the leader's model."
+          isControlWide
+          control={
+            <Selector
+              label="Leader updates"
+              isLabelHidden
+              size="sm"
+              width={controlWidth}
+              value={ui.leaderUpdates}
+              options={LEADER_UPDATES.map((u) => ({ value: u.id, label: u.label }))}
+              onChange={(v) => v && setUiPref({ leaderUpdates: v as LeaderUpdates })}
+            />
+          }
         />
       </SettingsCard>
       <SettingsCard title="New sessions">

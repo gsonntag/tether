@@ -304,3 +304,19 @@ test("listPath: a subagent in its own worktree is listed in its parent's project
   expect(listPath(session("a", 1))).toBe("/p");
   expect(listPath(session("a", 1, { projectPath: "/home/u/.tether/worktrees/p-1/x", listedUnder: "/p" }))).toBe("/p");
 });
+
+describe("the leader agent", () => {
+  test("is kept out of the lists, working or with an unread notice, but shows under Needs you while it asks you something", () => {
+    const working = session("claude-code:L", 0, { leader: true, live: true, status: "running" });
+    const finished = session("claude-code:L", 0, { leader: true, live: true });
+    const asking = session("claude-code:L", 0, { leader: true, live: true, needsInput: true });
+    const unread = ctx({ notices: [notice("claude-code:L", NOW)] });
+    for (const s of [working, finished]) {
+      const g = groupSessions([{ session: s }], unread);
+      expect(g.needs.length + g.working.length + g.recent.length).toBe(0);
+      expect(showInSidebar(s, unread)).toBe(false);
+    }
+    expect(groupSessions([{ session: asking }], ctx()).needs.map((e) => e.session.id)).toEqual(["claude-code:L"]);
+    expect(showInSidebar(asking, ctx())).toBe(true);
+  });
+});
