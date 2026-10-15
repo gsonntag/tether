@@ -27,7 +27,7 @@ import { describeGoal, transcriptTail } from "./goal";
 import { userHome } from "./home";
 import { describePlan } from "./plan";
 import { compactUi } from "./pulse";
-import { newId, type LeaderHub, type LiveSession } from "./session";
+import { leaderMayAnswer, newId, type LeaderHub, type LiveSession } from "./session";
 
 /** When updates reach the leader: questions, approvals and blocks soon; everything else batched. */
 export const LEADER_TIMING = {
@@ -37,6 +37,12 @@ export const LEADER_TIMING = {
   digestMs: 5 * 60_000,
   /** the leader was busy (working, or asking the user): the batch tries again after this */
   retryMs: 30_000,
+  /** one session's questions and blocks hurry a batch at most this often (after that they wait for the next batch) */
+  sessionCooldownMs: 5 * 60_000,
+  /** batches (leader turns Tether starts) per hour at most */
+  maxPerHour: 12,
+  /** the leader didn't start: tries again after retryMs, doubling up to this */
+  maxBackoffMs: 30 * 60_000,
 };
 
 /** session_message and session_answer calls per leader turn: a runaway loop stops here. */
@@ -78,6 +84,8 @@ export interface LeaderDeps {
   archived: () => string[];
   /** Settings → Leader updates */
   updates: () => LeaderUpdates;
+  /** Settings → Show sessions from the last (days, 0: all): the overview's window */
+  days: () => number;
   /** a stopped session's saved state changed */
   storedChanged?: (id: string, state: Partial<LiveState>) => void;
 }
@@ -151,42 +159,69 @@ export class Leader implements LeaderHub {
   }
 
   /**
-   * The user's latest message the leader has received, as they typed it: the newest user message
-   * in the leader's transcript that the user wrote (not a Tether note or update), matched to what
-   * they sent from the app. A string: why there's none to relay.
+   * The user edited a message still waiting for the leader (editPending), or one it already has
+   * (amendSteer): its record follows, so a relay never sends the words they took back.
+   * `now` undefined: removed.
+   */
+  askEdited(sessionId: string, was: string, now: string | undefined) {
+    const asks = config().leader?.asks;
+    if (!this.isLeader(sessionId) || !asks) return;
+    for (let i = asks.length - 1; i >= 0; i--)
+      if (asks[i]!.text === was) {
+        if (now?.trim()) asks[i] = { ...asks[i]!, text: now, sentTo: undefined };
+        else asks.splice(i, 1);
+        saveConfig();
+        return;
+      }
+  }
+
+  /**
+   * The user's message that the leader is answering now, exactly as they sent it from the app. Only
+   * the newest message in the leader's conversation counts, whoever wrote it: when that's Tether's
+   * (an update, a note, a brief, a goal prompt, a correction), there's nothing to relay, so a turn
+   * an update started can never pass on an older message. It must match what the app recorded,
+   * as sent or with only what Tether adds after it (`!` output, the attachment list). While the
+   * user has messages waiting for the leader, nothing is relayed either (the newest isn't read yet).
+   * A string: why there's none.
    */
   latestAsk(leader: LiveSession): LeaderAsk | string {
+    if ((leader.t.state.pending ?? []).some((p) => !p.alone) || leader.delivering)
+      return "The user has sent you more that you haven't read yet: answer that first, then pass on what they want.";
     const asks = config().leader?.asks ?? [];
     let last: string | undefined;
     for (let i = leader.t.messages.length - 1; i >= 0 && last === undefined; i--) {
       const m = leader.t.messages[i]!;
       if (m.role !== "user") continue;
-      // Tether's updates and notes (all agent-written) aren't the user's; the rest is matched whole below.
       const text = textOf(m);
-      if (splitAgentWritten(text).user) last = text;
+      if (text) last = text;
     }
     if (last === undefined) return "The user hasn't written to you yet, so there's nothing of theirs to pass on.";
-    // As sent, or with what Tether adds after it (attachments, `!` output), or last of a batch of steers.
-    const sent = (a: string) => !!a && (last === a || last.startsWith(`${a}\n`) || last.endsWith(`\n\n${a}`) || last.includes(`\n\n${a}\n\n`));
+    const none = "The newest message in your conversation isn't one the user sent you (it's Tether's, an update, or it changed), so nothing can be passed on as their words. Send your own note (text, without relay), or ask the user to say it again.";
+    // Exactly what the app recorded: Tether's own messages (prefixed or not) never are.
+    const sent = (a: string) => !!a && (last === a || (last!.startsWith(`${a}\n\n`) && /^(<bash-input>|Attached files \()/.test(last!.slice(a.length + 2))));
     for (let i = asks.length - 1; i >= 0; i--) if (sent(asks[i]!.text.trim())) return asks[i]!;
-    return "Tether couldn't match the user's latest message to one they sent from the app, so it can't be passed on as theirs. Send your own note (text, without relay), or ask the user to send their message again.";
+    return none;
   }
 
-  private markSent(ask: LeaderAsk, target: string) {
-    const cfg = config();
-    const a = cfg.leader?.asks?.find((x) => x.id === ask.id);
-    if (!a) return;
+  /** Marks the ask sent to `target` (before anything is awaited, so two calls can't both send it); the returned function takes it back. */
+  private reserve(ask: LeaderAsk, target: string): () => void {
+    const a = config().leader?.asks?.find((x) => x.id === ask.id);
+    if (!a) return () => {};
     a.sentTo = [...new Set([...(a.sentTo ?? []), target])];
     saveConfig();
+    return () => {
+      a.sentTo = a.sentTo?.filter((x) => x !== target);
+      saveConfig();
+    };
   }
 
   // ---------------- the tools ----------------
 
-  /** session_message / session_answer calls in the leader's current turn (by its count of user messages). */
+  /** session_message / session_answer calls for the user's current message (Tether's updates don't start a new count). */
   private actions = { turn: -1, n: 0 };
 
   private spend(leader: LiveSession): string | undefined {
-    const turn = leader.t.messages.filter((m) => m.role === "user").length;
+    const turn = leader.t.messages.filter((m) => m.role === "user" && splitAgentWritten(textOf(m)).user).length;
     if (this.actions.turn !== turn) this.actions = { turn, n: 0 };
     if (this.actions.n >= MAX_ACTIONS_PER_TURN) return `You've sent ${MAX_ACTIONS_PER_TURN} messages and answers this turn. Stop here and tell the user where things stand.`;
     this.actions.n++;
@@ -245,7 +280,9 @@ export class Leader implements LeaderHub {
 
   private async overview(args: Record<string, unknown>): Promise<Result> {
     const all = args.include === "all";
-    const list = await this.deps.sessions(all ? 7 : 3);
+    // The user's own window (Settings → Show sessions from the last).
+    const days = this.deps.days();
+    const list = await this.deps.sessions(days);
     const pulses = new Map((await this.deps.pulses()).map((p) => [p.session.id, p]));
     const proj = typeof args.project === "string" ? args.project.trim().toLowerCase() : "";
     const entries: Entry[] = [];
@@ -260,7 +297,7 @@ export class Leader implements LeaderHub {
       if (proj && !where.endsWith(`/${proj}`) && where !== proj && !basename(where).includes(proj)) continue;
       entries.push({ session: s, pulse: pulses.get(s.id) });
     }
-    const g = groupSessions(entries, { notices: this.deps.notices(), noticesSeen: 0, noticesRead: [], viewed: this.deps.viewed(), now: Date.now(), days: all ? 7 : 3 });
+    const g = groupSessions(entries, { notices: this.deps.notices(), noticesSeen: 0, noticesRead: [], viewed: this.deps.viewed(), now: Date.now(), days });
     const recent = all ? g.recent.slice(0, 40) : g.recent.slice(0, 8);
     if (!g.needs.length && !g.working.length && !recent.length) return ok(proj ? `No recent sessions in “${args.project}”.` : "No recent sessions.");
     const out = [
@@ -308,19 +345,20 @@ export class Leader implements LeaderHub {
   private describeRequest(r0: UiRequest): string {
     const r = compactUi(r0);
     const id = `[request ${r.id}]`;
+    const userOnly = leaderMayAnswer(r0) ? "" : " (only the user can answer: session_escalate)";
     if (r.kind === "permission") {
       const i: any = r.tool?.input ?? {};
       const what = i.command ?? i.file_path ?? i.summary ?? "";
-      return `${id} tool approval: ${r.tool?.name ?? r.title}${what ? ` ${quoted(String(what), 200)}` : ""} (only the user can answer: session_escalate)`;
+      return `${id} tool approval: ${r.tool?.name ?? r.title}${what ? ` ${quoted(String(what), 200)}` : ""}${userOnly}`;
     }
     if (r.kind === "plan") return `${id} plan review (its plan waits for approval: approve, revise or discuss)`;
     if (r.kind === "question" && r.questions?.length)
-      return `${id} question${r.userOnly ? " (only the user can answer: session_escalate)" : ""}: ${r.questions
+      return `${id} question${userOnly}: ${r.questions
         .map((q) => `${quoted(q.question, 300)}${q.options.length ? ` options: ${q.options.map((o) => quoted(o.label, 80)).join(", ")}` : ""}${q.multiSelect ? " (several may be picked)" : ""}`)
         .join(" / ")}`;
-    if (r.kind === "select") return `${id} choice: ${quoted(r.title, 200)} options: ${(r.options ?? []).map((o) => quoted(o, 80)).join(", ")}`;
-    if (r.kind === "confirm") return `${id} yes/no: ${quoted([r.title, r.message].filter(Boolean).join(": "), 300)}`;
-    return `${id} ${r.kind}: ${quoted([r.title, r.message].filter(Boolean).join(": "), 300)}`;
+    if (r.kind === "select") return `${id} choice${userOnly}: ${quoted(r.title, 200)} options: ${(r.options ?? []).map((o) => quoted(o, 80)).join(", ")}`;
+    if (r.kind === "confirm") return `${id} yes/no${userOnly}: ${quoted([r.title, r.message].filter(Boolean).join(": "), 300)}`;
+    return `${id} ${r.kind}${userOnly}: ${quoted([r.title, r.message].filter(Boolean).join(": "), 300)}`;
   }
 
   // ---- session_read ----
@@ -352,7 +390,7 @@ export class Leader implements LeaderHub {
     const d = state?.diffStat;
     if (d) out.push("", `## Changes`, `${d.files} ${d.files === 1 ? "file" : "files"}, +${d.additions} -${d.deletions}`);
     if (messages) {
-      const tail = defang(transcriptTail(messages, max)).replaceAll("</session-transcript", "</ session-transcript");
+      const tail = defang(transcriptTail(messages, max)).replace(/<\/\s*session-transcript/gi, "</ session-transcript");
       out.push("", `## The end of its conversation`, `<session-transcript id="${t.id}">`, tail || "(empty)", "</session-transcript>");
     } else out.push("", "Its conversation can't be read without starting it (its harness keeps no copy Tether can read). Ask the user before you message it.");
     return ok(out.join("\n"));
@@ -378,13 +416,20 @@ export class Leader implements LeaderHub {
     const limit = this.spend(from);
     if (limit) return fail(limit);
     const mode = args.mode === "queue" || args.mode === "force" ? args.mode : "steer";
-    const s = this.deps.live(t.id);
-    const target = s && !s.closed ? s : await this.deps.open(t.id);
-    const busy = target.t.state.status !== "idle";
-    // Alone: never joined with the user's own messages to it (who wrote what must stay clear).
-    if (mode === "force") await target.forceSend({ text: body, alone: true });
-    else await target.prompt(body, mode === "queue" ? "followUp" : "steer", { alone: true });
-    if (ask) this.markSent(ask, target.id);
+    // Taken before anything is awaited: a second call at once can't send it again; given back if this fails.
+    const release = ask ? this.reserve(ask, t.id) : () => {};
+    let busy = false;
+    try {
+      const s = this.deps.live(t.id);
+      const target = s && !s.closed ? s : await this.deps.open(t.id);
+      busy = target.t.state.status !== "idle";
+      // Alone: never joined with the user's own messages to it (who wrote what must stay clear).
+      if (mode === "force") await target.forceSend({ text: body, alone: true });
+      else await target.prompt(body, mode === "queue" ? "followUp" : "steer", { alone: true });
+    } catch (e) {
+      release();
+      throw e;
+    }
     const how = mode === "force" ? "It was interrupted and got it as its next turn." : busy ? (mode === "queue" ? "Queued: it gets it once its current turn ends." : "Steered into its running turn.") : "It started a turn with it.";
     return ok(`Sent to ${quoted(t.title, 80)}${ask ? " (the user's message, verbatim" + (note ? ", then your note)" : ")") : " (as your note)"}. ${how}`);
   }
@@ -402,10 +447,11 @@ export class Leader implements LeaderHub {
     const asks = s.t.state.pendingUi;
     const req = asks.find((r) => r.id === wanted) ?? (asks.length === 1 && !wanted ? asks[0] : undefined);
     if (!req) return fail(asks.length ? `No waiting request “${wanted}”. Waiting: ${asks.map((r) => this.describeRequest(r)).join("; ")}` : `${quoted(t.title, 80)} waits on nothing right now.`);
-    // Tool approvals (and what lifts an agent's checks) are the user's click: in front of them, never answered here.
-    if (req.kind === "permission" || req.userOnly) {
+    // An allowlist: the agent's questions (ask_user, AskUserQuestion, requestUserInput) and plans.
+    // Tool approvals, MCP forms, extension dialogs and anything else are the user's click.
+    if (!leaderMayAnswer(req)) {
       const r = this.escalate(from, s, req);
-      return ok(`Only the user can answer that (${req.kind === "permission" ? "a tool approval" : "it lifts an agent's checks"}): ${r} Tell them it's waiting for their click.`);
+      return ok(`Only the user can answer that (${req.kind === "permission" ? "a tool approval" : "it may give an agent more permission"}): ${r} Tell them it's waiting for their click.`);
     }
     const limit = this.spend(from);
     if (limit) return fail(limit);
@@ -432,26 +478,6 @@ export class Leader implements LeaderHub {
         if (!respond({ answers })) return gone();
         return done(Object.entries(answers).map(([q, a]) => `${quoted(q, 120)} → ${quoted(a, 200)}`).join("; "));
       }
-      case "select": {
-        const want = (choice || value).toLowerCase();
-        const pick = (req.options ?? []).find((o) => o.toLowerCase() === want);
-        if (!pick) return fail(`choice must be one of: ${(req.options ?? []).join(", ")}`);
-        if (!respond({ value: pick })) return gone();
-        return done(quoted(pick, 120));
-      }
-      case "confirm": {
-        const v = (choice || value).toLowerCase();
-        const yes = ["yes", "y", "true", "ok", "confirm"].includes(v);
-        if (!yes && !["no", "n", "false", "cancel"].includes(v)) return fail("choice must be yes or no.");
-        if (!respond({ confirmed: yes })) return gone();
-        return done(yes ? "yes" : "no");
-      }
-      case "input": {
-        const v = value || choice;
-        if (!v) return fail("value is required.");
-        if (!respond({ value: defang(v) })) return gone();
-        return done(quoted(v, 200));
-      }
       case "plan": {
         const action = choice.toLowerCase();
         if (action === "approve") {
@@ -473,8 +499,12 @@ export class Leader implements LeaderHub {
         const note = typeof args.text === "string" ? args.text.trim() : "";
         const body = leaderMessage({ relay: ask?.text, note });
         if (!body) return fail(`${action === "revise" ? "Revise" : "Discuss"} needs the feedback: relay the user's message (relay: true) and/or write text.`);
-        if (!respond({ allow: false, value: body, ...(action === "discuss" ? { discuss: true } : {}) })) return gone();
-        return done(action === "revise" ? "sent the plan back for revision" : "asked about the plan", () => ask && this.markSent(ask, s.id));
+        const release = ask ? this.reserve(ask, s.id) : () => {};
+        if (!respond({ allow: false, value: body, ...(action === "discuss" ? { discuss: true } : {}) })) {
+          release();
+          return gone();
+        }
+        return done(action === "revise" ? "sent the plan back for revision" : "asked about the plan");
       }
     }
     return fail(`Tether can't answer a ${req.kind} request from here.`);
@@ -555,19 +585,20 @@ export class Leader implements LeaderHub {
 
   // ---------------- updates ----------------
 
-  /** Delivers a batch to the leader; false when it's busy (the feed tries again later). */
-  private async deliver(text: string): Promise<boolean> {
+  /** Delivers a batch to the leader: "busy" (the feed tries again later), "failed" (it didn't start: the feed backs off). */
+  private async deliver(text: string): Promise<Delivery> {
     const id = this.leaderId();
-    if (!id) return true; // nobody to tell
+    if (!id) return "sent"; // nobody to tell
     let s = this.deps.live(id);
     // A stopped leader starts for its updates (like a message from the user would).
     if (!s || s.closed) s = await this.deps.open(id).catch(() => undefined);
-    if (!s) return false;
+    if (!s) return "failed";
     const st = s.t.state;
-    // Never while it's working with the user, asking them something, or has messages waiting.
-    if (st.status !== "idle" || st.pendingUi.length || st.pending?.length || st.handoffTo) return false;
+    // Never while it's working or has messages waiting. Cards it shows you (escalated approvals,
+    // which wait for your click) don't hold updates back.
+    if (st.status !== "idle" || st.pending?.length || st.handoffTo) return "busy";
     await s.hold(() => s!.tetherNote(text));
-    return true;
+    return "sent";
   }
 }
 
@@ -579,9 +610,11 @@ export interface FeedDeps {
   updates: () => LeaderUpdates;
   /** whether a session still waits on the user (undefined: it isn't running) */
   stillAsking: (id: string) => boolean | undefined;
-  deliver: (text: string) => Promise<boolean>;
+  deliver: (text: string) => Promise<Delivery>;
   now?: () => number;
 }
+
+export type Delivery = "sent" | "busy" | "failed";
 
 const URGENT: AgentNotice["kind"][] = ["question", "blocked"];
 
@@ -590,12 +623,20 @@ const URGENT: AgentNotice["kind"][] = ["question", "blocked"];
  * failed, a goal or review result), batched for the leader: questions and blocks within
  * LEADER_TIMING.urgentMs, the rest every digestMs, one note per batch. The only thing that starts a
  * leader turn by itself; Settings → Leader updates narrows it to questions, or turns it off.
+ * Bounded: one session hurries a batch at most every sessionCooldownMs, at most maxPerHour batches
+ * an hour, and a leader that doesn't start is retried less and less often.
  */
 export class LeaderFeed {
   private items = new Map<string, AgentNotice>();
   private timer?: ReturnType<typeof setTimeout>;
   private dueAt = Infinity;
   private flushing = false;
+  /** session -> when its question or block last hurried a batch */
+  private hurried = new Map<string, number>();
+  /** when the batches of the last hour went out */
+  private sent: number[] = [];
+  /** deliveries in a row that failed (the leader didn't start) */
+  private failures = 0;
 
   constructor(private d: FeedDeps) {}
 
@@ -613,7 +654,11 @@ export class LeaderFeed {
     const urgent = URGENT.includes(n.kind);
     if (mode === "questions" && !urgent) return;
     this.items.set(`${n.sessionId}\n${n.kind}`, n);
-    this.arm(this.now() + (urgent ? LEADER_TIMING.urgentMs : LEADER_TIMING.digestMs));
+    // A session that keeps asking (or stalling) doesn't keep starting leader turns.
+    const now = this.now();
+    const hurry = urgent && now - (this.hurried.get(n.sessionId) ?? -Infinity) >= LEADER_TIMING.sessionCooldownMs;
+    if (hurry) this.hurried.set(n.sessionId, now);
+    this.arm(now + (hurry ? LEADER_TIMING.urgentMs : LEADER_TIMING.digestMs));
   }
 
   /** Items waiting to go out (tests). */
@@ -640,20 +685,27 @@ export class LeaderFeed {
     for (const [k, n] of this.items)
       if (archived.has(n.sessionId) || n.sessionId === leader || (n.kind === "question" && this.d.stillAsking(n.sessionId) === false)) this.items.delete(k);
     if (!this.items.size) return;
+    // At most maxPerHour batches an hour: the next waits for the oldest to leave the hour.
+    const now = this.now();
+    this.sent = this.sent.filter((t) => now - t < 60 * 60_000);
+    if (this.sent.length >= LEADER_TIMING.maxPerHour) return this.arm(this.sent[0]! + 60 * 60_000);
     const list = [...this.items.values()].sort((a, b) => a.ts - b.ts);
     this.flushing = true;
-    let sent = false;
+    let r: Delivery = "failed";
     try {
-      sent = await this.d.deliver(digestText(list));
+      r = await this.d.deliver(digestText(list));
     } catch (e: any) {
       console.error(`leader updates: ${e?.message ?? e}`);
     } finally {
       this.flushing = false;
     }
-    if (sent) {
+    if (r === "sent") {
+      this.failures = 0;
+      this.sent.push(this.now());
       for (const n of list) if (this.items.get(`${n.sessionId}\n${n.kind}`) === n) this.items.delete(`${n.sessionId}\n${n.kind}`);
       if (this.items.size) this.arm(this.now() + LEADER_TIMING.urgentMs);
-    } else this.arm(this.now() + LEADER_TIMING.retryMs);
+    } else if (r === "busy") this.arm(this.now() + LEADER_TIMING.retryMs);
+    else this.arm(this.now() + Math.min(LEADER_TIMING.maxBackoffMs, LEADER_TIMING.retryMs * 2 ** this.failures++));
   }
 
   stop() {

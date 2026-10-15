@@ -71,17 +71,42 @@ export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT
 
 /** Markers that say who wrote a message: none may appear as written inside text that's passed on. */
 const MARKERS = [LEADER_RELAY_PREFIX, ...AGENT_WRITTEN, "[Tether]"];
-const loose = (p: string) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-const MARKER_RE = new RegExp(MARKERS.map(loose).join("|"), "gi");
+/** Brackets, and what passes for one to a reader (full-width, lenticular, white square). */
+const OPEN = "[\\[［【〔⟦〚]";
+const CLOSE = "[\\]］】〕⟧〛]";
+/** Invisible characters a marker could be split with. */
+const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
+/** Full-width forms of ASCII (U+FF01-FF5E) read as the same letters. */
+const wide = (c: string) => String.fromCharCode(c.charCodeAt(0) + 0xfee0);
+/** One marker as a pattern: any case, full-width letters and punctuation, any spacing. */
+function loose(p: string): string {
+  let out = "";
+  for (const c of p) {
+    if (c === "[") out += OPEN;
+    else if (c === "]") out += CLOSE;
+    else if (/\s/.test(c)) out += "[\\s\\u3000]+";
+    else if (/[a-z]/i.test(c)) out += `[${c.toLowerCase()}${c.toUpperCase()}${wide(c.toLowerCase())}${wide(c.toUpperCase())}]`;
+    else if (c.charCodeAt(0) > 0x20 && c.charCodeAt(0) < 0x7f) out += `[${esc(c)}${esc(wide(c))}]`;
+    else out += esc(c);
+  }
+  return out;
+}
+const MARKER_RE = new RegExp(MARKERS.map(loose).join("|"), "g");
+const OPEN_RE = new RegExp(OPEN, "g");
+const CLOSE_RE = new RegExp(CLOSE, "g");
+const STARTS_OPEN = new RegExp(`^${OPEN}`);
 
 /**
  * Text passed from one writer to another (the user's words relayed, the leader's note, another
  * session's report) with every authorship marker defused: "[From your leader]" becomes
- * "(From your leader)", "You are a subagent:" is quoted. Then nothing in it can pass for a block
- * someone else wrote (a forged relay of the user's words, a forged Tether note).
+ * "(From your leader)", "You are a subagent:" is quoted, also when written in another case, with
+ * full-width or look-alike brackets, or split by invisible characters (which are dropped). Then
+ * nothing in it can pass for a block someone else wrote (a forged relay of the user's words, a
+ * forged Tether note).
  */
 export function defang(text: string): string {
-  return text.replace(MARKER_RE, (m) => (m.startsWith("[") ? m.replace(/\[/g, "(").replace(/\]/g, ")") : `“${m}”`));
+  return text.replace(ZERO_WIDTH, "").replace(MARKER_RE, (m) => (STARTS_OPEN.test(m) ? m.replace(OPEN_RE, "(").replace(CLOSE_RE, ")") : `“${m}”`));
 }
 
 /**

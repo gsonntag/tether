@@ -959,3 +959,29 @@ updates rather than kept open while they wait.
 Not done / unverified: live runs on each harness (the MCP env reaching the leader's server, the
 instructions reaching the model); Antigravity as the leader; attachments in a relayed message (the
 words go, the files don't); look-alike brackets (full-width) aren't defused; the browser views.
+
+#### Review fixes (2026-10-15)
+
+- **Relay bound to the user's message.** Only the newest message in the leader's conversation can
+  be relayed, whoever wrote it, and only when it is exactly what the app recorded the user
+  sending (or that plus Tether's `!` output / attachment list): after an update, a brief, a goal
+  prompt or a correction, nothing is relayable until the user writes again, so an update-started
+  turn can't pass on an older message to another session. Nothing is relayed while the user has
+  messages waiting for the leader (or one is on its way). Editing a waiting message
+  (`editPending`) or a steer (`amendSteer`) updates the record; the relay to a session is
+  reserved before anything is awaited and given back if sending fails.
+- **Answers are an allowlist.** The leader may answer only questions marked `leaderMay`
+  (Tether's `ask_user`, Claude's AskUserQuestion, Codex's requestUserInput) and plans; MCP
+  elicitations (forms, yes/no, links) and pi extension dialogs are `userOnly`, and everything else
+  is escalated as a card. Answers the leader gives Claude and Codex questions say so
+  (`leaderAnswers`); Antigravity's plan feedback says the leader sent it back. A leader plan
+  approval never falls through to a message in the user's name, and "Implement the plan." isn't
+  counted as the user's ask.
+- **Budgets.** The 30-action cap counts per user message (updates don't reset it). Updates: one
+  session hurries a batch at most every 5 min (`sessionCooldownMs`), at most 12 batches an hour
+  (`maxPerHour`), a leader that doesn't start is retried with doubling backoff up to 30 min;
+  escalated cards waiting for the user don't hold updates back.
+- `createLeader` from two devices at once starts one leader. `defang` also catches full-width and
+  look-alike brackets, full-width letters and invisible characters; a transcript can't close its
+  `<session-transcript>` wrapper in any case. The overview uses Settings → Show sessions from the
+  last.

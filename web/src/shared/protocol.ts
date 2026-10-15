@@ -278,6 +278,11 @@ export interface UiRequest {
   planId?: string;
   /** only the user's own click answers it, never the leader agent (it gives an agent more permission) */
   userOnly?: boolean;
+  /**
+   * a question the leader agent may answer as the user tells it (Tether's ask_user, Claude's
+   * AskUserQuestion, Codex's requestUserInput); plans too. Nothing else is (an allowlist).
+   */
+  leaderMay?: boolean;
 }
 
 // ---------- goal (/goal, runner/src/goal.ts) ----------

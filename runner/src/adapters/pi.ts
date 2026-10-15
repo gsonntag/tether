@@ -551,6 +551,8 @@ class PiSession extends LiveSession {
             message: r.message ?? r.prefill,
             options: r.options,
             placeholder: r.placeholder,
+            // An extension's dialog can be an approval in disguise: the user's own answer.
+            userOnly: true,
           },
           r.timeout,
         ).then((res) => {

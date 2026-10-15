@@ -252,7 +252,8 @@ export class PlanReviews {
       if (notes) await this.s.prompt(notes, "steer");
       return;
     }
-    if (!review.held) throw new Error("The plan isn't waiting for approval any more.");
+    // The leader approves only the waiting review: never through a message in the user's name.
+    if (by || !review.held) throw new Error("The plan isn't waiting for approval any more.");
     const text = squash(this.planText(planId));
     const others = this.s.t.state.pendingUi.filter((r) => r.kind === "plan" && r.planId !== planId);
     if (others.length) {

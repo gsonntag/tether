@@ -231,6 +231,7 @@ const leader = new Leader({
   viewed: () => viewedMap(),
   archived: () => config().archived,
   updates: () => uiPrefs().leaderUpdates,
+  days: () => uiPrefs().sidebarDays,
 });
 sink.leader = leader;
 // What happens in the sessions reaches the leader as batched updates (its only automatic trigger).
@@ -847,6 +848,11 @@ const ops: Handlers = {
   async editPending({ sessionId, id, ...change }) {
     const now = current(sessionId);
     let s = now instanceof Promise ? await now : now;
+    // The leader's relay follows the user's edits (and forgets a message they removed).
+    if (change.text !== undefined || change.remove) {
+      const was = (s ? (s.t.state.pending ?? []) : storedPending(sessionId)).find((p) => p.id === id);
+      if (was && !was.alone) leader.askEdited(sessionId, was.text, change.remove ? undefined : change.text);
+    }
     if (!s && !change.now) {
       // Held on a session that isn't running: edited in its saved list (throws when it's gone).
       setStoredPending(sessionId, editedPending(storedPending(sessionId), id, change));
@@ -900,7 +906,11 @@ const ops: Handlers = {
   async amendSteer({ sessionId, msgId, text }) {
     const s = await runningLive(sessionId);
     if (!s) throw new Error("That message can't be changed any more: the turn it went into has ended.");
+    const was = s.steeredText(msgId);
     s.amendSteer(msgId, text);
+    // The leader's relay follows the correction (its newest message is Tether's correction note, so
+    // nothing is relayed until the user writes again).
+    if (was !== undefined) leader.askEdited(sessionId, was, text);
     return {};
   },
 
@@ -1250,33 +1260,42 @@ const ops: Handlers = {
     return id ? { session: await leaderSummary(id) } : {};
   },
   async createLeader({ harness, model }) {
-    // One per runner: the one there is (it may have moved on to another session) is it.
+    // One per runner: the one there is (it may have moved on to another session) is it, and so is
+    // one starting right now (two devices pressing at once get the same leader).
     const have = leader.leaderId();
     if (have) return leaderSummary(have);
-    const a = adapters[harness];
-    if (!a) throw new Error(`unknown harness ${harness}`);
-    // Antigravity reads Tether's tools from its global config, which has no leader tools.
-    if (harness === "antigravity") throw new Error("Antigravity can't be the leader: it can't get the leader's tools. Pick another harness.");
-    const s = a.create(ensureLeaderDir(), { model, permissionMode: harness === "claude-code" ? "default" : undefined }, sink);
-    // It changes no code: any file or shell tool it tries asks you. Marked before start: its launch adds the leader's tools.
-    s.t.state.guard = "ask";
-    s.t.state.leader = true;
-    await s.start();
-    track(s);
-    leader.setLeader(s.id);
-    s.setState({ guard: "ask", leader: true });
-    config().titles[s.id] = "Leader";
-    saveConfig();
-    s.setTitle("Leader");
-    s.notice(
-      "Your leader: ask it where your sessions are at, or tell it what to pass on to one. It acts only on what you say here; tool approvals stay your click (they show up here as cards). Settings → Leader updates sets what it hears about by itself.",
-      "info",
-      { source: "leader" },
-    );
-    sink.summary(s.summary());
-    return decorate(s.summary());
+    leaderStarting ??= startLeader(harness, model).finally(() => (leaderStarting = undefined));
+    return leaderStarting;
   },
 };
+
+/** A createLeader under way. */
+let leaderStarting: Promise<SessionSummary> | undefined;
+
+async function startLeader(harness: HarnessId, model?: string): Promise<SessionSummary> {
+  const a = adapters[harness];
+  if (!a) throw new Error(`unknown harness ${harness}`);
+  // Antigravity reads Tether's tools from its global config, which has no leader tools.
+  if (harness === "antigravity") throw new Error("Antigravity can't be the leader: it can't get the leader's tools. Pick another harness.");
+  const s = a.create(ensureLeaderDir(), { model, permissionMode: harness === "claude-code" ? "default" : undefined }, sink);
+  // It changes no code: any file or shell tool it tries asks you. Marked before start: its launch adds the leader's tools.
+  s.t.state.guard = "ask";
+  s.t.state.leader = true;
+  await s.start();
+  track(s);
+  leader.setLeader(s.id);
+  s.setState({ guard: "ask", leader: true });
+  config().titles[s.id] = "Leader";
+  saveConfig();
+  s.setTitle("Leader");
+  s.notice(
+    "Your leader: ask it where your sessions are at, or tell it what to pass on to one. It acts only on what you say here; tool approvals stay your click (they show up here as cards). Settings → Leader updates sets what it hears about by itself.",
+    "info",
+    { source: "leader" },
+  );
+  sink.summary(s.summary());
+  return decorate(s.summary());
+}
 
 /** The leader's summary, running or not (a new one its harness doesn't list yet included). */
 async function leaderSummary(id: string): Promise<SessionSummary> {

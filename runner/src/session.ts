@@ -129,6 +129,18 @@ const UNVERIFIED_BACKOFFS = 3;
 /** ask_user's answer when nobody answered (the same as Claude Code's AskUserQuestion gets) */
 export const NOBODY_ANSWERED = "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue.";
 
+/** Whether the leader agent may answer this request for the user: a question marked leaderMay, or a plan; never anything userOnly. */
+export const leaderMayAnswer = (r: UiRequest | undefined): boolean => !!r && !r.userOnly && (r.kind === "plan" || (r.kind === "question" && !!r.leaderMay));
+
+/**
+ * A question's answers as the agent gets them: the leader's say so, so the model doesn't take
+ * them for the user's own click (Claude's AskUserQuestion, Codex's requestUserInput).
+ */
+export function leaderAnswers(r: UiResponse): Record<string, string> | undefined {
+  if (!r.answers || r.by !== "leader") return r.answers;
+  return Object.fromEntries(Object.entries(r.answers).map(([q, a]) => [q, `(answered by the user's leader agent, passing on what the user told it) ${a}`]));
+}
+
 /**
  * One live agent session. The runner keeps the authoritative transcript here; every change goes
  * through emit(), which applies it locally and forwards it to the server with a sequence number,
@@ -704,6 +716,10 @@ export abstract class LiveSession {
   private steered = new Map<string, string>();
   /** a turn is being started from the pending list: steers wait until it has been sent */
   private draining = false;
+  /** A waiting message is on its way to the agent right now (it left the list but isn't in the conversation yet). */
+  get delivering(): boolean {
+    return this.draining;
+  }
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer", opts: { alone?: boolean } = {}) {
@@ -1014,6 +1030,11 @@ export abstract class LiveSession {
   }
 
   /** Editing a steer the agent already has: it can't be taken back, so the change goes in as a correction. */
+  /** A steer the agent already has, as typed (amendSteer can change it). */
+  steeredText(msgId: string): string | undefined {
+    return this.steered.get(msgId);
+  }
+
   amendSteer(msgId: string, text: string) {
     const before = this.steered.get(msgId);
     if (before === undefined) throw new Error("That message can't be changed any more: the turn it went into has ended.");
@@ -1261,7 +1282,8 @@ export abstract class LiveSession {
     // A tool approval (or anything that gives an agent more permission) is the user's own click,
     // never the leader's: whatever the leader manager does, it can't answer one here.
     const req = this.t.state.pendingUi.find((u) => u.id === r.id);
-    if (r.by === "leader" && (!req || req.kind === "permission" || req.userOnly)) return false;
+    // An allowlist: only questions marked leaderMay (ask_user, AskUserQuestion, requestUserInput) and plans.
+    if (r.by === "leader" && !leaderMayAnswer(req)) return false;
     if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
@@ -1602,7 +1624,8 @@ export abstract class LiveSession {
     return this.t.messages
       .filter((m) => m.role === "user")
       .map((m) => splitAgentWritten(m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim()).user)
-      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t));
+      // "Implement the plan." is Tether's (an approval, maybe the leader's), not the user's ask.
+      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t) && t !== IMPLEMENT_PROMPT);
   }
 
   /** Every message text this session has (or will) send, attachment blocks included. */
@@ -2872,7 +2895,7 @@ export abstract class LiveSession {
     if (signal?.aborted) return { ok: false, text: "The question was cancelled." };
     signal?.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
     const res = await this.askUi(
-      { id, kind: "question", title: `${this.harnessLabel} has a question`, questions: [{ question, options, multiSelect: args.multiSelect === true }] },
+      { id, kind: "question", title: `${this.harnessLabel} has a question`, questions: [{ question, options, multiSelect: args.multiSelect === true }], leaderMay: true },
       this.questionTimeout(),
     );
     const answer = res.answers?.[question]?.trim();
