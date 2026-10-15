@@ -513,7 +513,7 @@ export class CodexSession extends LiveSession {
     // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("codex", {
       projectPath: this.projectPath,
-      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession },
       resume: this.opts.resume || !!this.opts.fork,
     });
     const params = {

@@ -14,7 +14,7 @@ import { config } from "./config";
 import { tools } from "./context/mcp";
 import { CrossAgents, lastReport, MAX_MESSAGES, slug, subagentPath, worktreesRoot } from "./crossAgents";
 import { LiveSession, newId, nextTurnSize } from "./session";
-import { transcriptTail } from "./goal";
+import { AGENT_LABEL, transcriptTail } from "./goal";
 import { renderTranscript } from "./handoff";
 import { sweepBridgeFiles } from "./bridge";
 import { sessionBridgeFile } from "./context/launch";
@@ -751,7 +751,7 @@ describe("security re-review", () => {
     // Where models read the conversation (the goal judge, handoff briefs) it's labelled as not the user's.
     expect(transcriptTail(p.t.messages)).toContain("not the user): [Tether] Subagent");
     expect(transcriptTail(p.t.messages)).not.toMatch(/User: [^\n]*\[Tether\] Subagent/);
-    expect(renderTranscript(p.t.messages)).toContain("### Tether (about a subagent, or another agent's message; not the user)\n[Tether] Subagent");
+    expect(renderTranscript(p.t.messages)).toContain(`### ${AGENT_LABEL}\n[Tether] Subagent`);
   });
 
   test("a subagent's goal is the top session's user asks, and its task is labelled as another agent's", async () => {

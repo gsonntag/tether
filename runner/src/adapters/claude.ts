@@ -386,7 +386,7 @@ export class ClaudeSession extends LiveSession {
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
-    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession } });
     // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
     const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
     this.q = query({
@@ -439,7 +439,7 @@ export class ClaudeSession extends LiveSession {
   private async swapMcp() {
     if (this.closed || !this.q) return;
     try {
-      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession } });
       await this.applyMcp(launch.options.mcpServers ?? {});
     } catch (e: any) {
       console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);

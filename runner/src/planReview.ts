@@ -196,13 +196,15 @@ export class PlanReviews {
   /** the actions in progress, one at a time (two devices pressing at once see each other's result) */
   private acting: Promise<unknown> = Promise.resolve();
 
-  act(planId: string, action: PlanAction, draft: PlanDraft, base?: number): Promise<void> {
-    const run = this.acting.then(() => this.actNow(planId, action, draft, base));
+  /** `by: "leader"`: the leader agent approving a waiting plan as the user told it (only a waiting one, never by a message in the user's name). */
+  act(planId: string, action: PlanAction, draft: PlanDraft, base?: number, by?: "leader"): Promise<void> {
+    const run = this.acting.then(() => this.actNow(planId, action, draft, base, by));
     this.acting = run.catch(() => {});
     return run;
   }
 
-  private async actNow(planId: string, action: PlanAction, draft: PlanDraft, base?: number) {
+  private async actNow(planId: string, action: PlanAction, draft: PlanDraft, base?: number, by?: "leader") {
+    if (by && (action !== "approve" || !this.request(planId))) throw new Error("The plan isn't waiting for approval any more.");
     this.disarm();
     const d = cleanDraft(draft) ?? EMPTY_DRAFT;
     const review = this.all[planId] ?? {};
@@ -245,7 +247,7 @@ export class PlanReviews {
     }
     const notes = approveNotes(d);
     const done = (p: PlanReviewState): PlanReviewState => ({ ...p, draft: undefined, held: undefined, discussing: undefined });
-    if (this.answer(planId, { allow: true })) {
+    if (this.answer(planId, { allow: true, ...(by ? { by } : {}) })) {
       this.patch(planId, done);
       if (notes) await this.s.prompt(notes, "steer");
       return;

@@ -24,13 +24,22 @@ test("sidebar window: 3 days by default, saved in runner.json, unknown values re
 
 test("expand shell: off by default, saved alongside the other prefs, one bad value refuses the whole change", () => {
   delete config().ui;
-  expect(uiPrefs()).toEqual({ sidebarDays: 3, expandShell: false });
-  expect(setUiPrefs({ expandShell: true })).toEqual({ sidebarDays: 3, expandShell: true });
-  expect(setUiPrefs({ sidebarDays: 7 })).toEqual({ sidebarDays: 7, expandShell: true });
+  expect(uiPrefs()).toEqual({ sidebarDays: 3, expandShell: false, leaderUpdates: "digest" });
+  expect(setUiPrefs({ expandShell: true })).toEqual({ sidebarDays: 3, expandShell: true, leaderUpdates: "digest" });
+  expect(setUiPrefs({ sidebarDays: 7 })).toEqual({ sidebarDays: 7, expandShell: true, leaderUpdates: "digest" });
   expect(() => setUiPrefs({ expandShell: "yes" as any, sidebarDays: 1 })).toThrow();
-  expect(uiPrefs()).toEqual({ sidebarDays: 7, expandShell: true });
+  expect(uiPrefs()).toEqual({ sidebarDays: 7, expandShell: true, leaderUpdates: "digest" });
   // Keys from a newer web app are ignored, not stored.
-  expect(setUiPrefs({ nope: 1 } as any)).toEqual({ sidebarDays: 7, expandShell: true });
+  expect(setUiPrefs({ nope: 1 } as any)).toEqual({ sidebarDays: 7, expandShell: true, leaderUpdates: "digest" });
   expect(JSON.parse(readFileSync(join(CONFIG_DIR, "runner.json"), "utf8")).ui).toEqual({ sidebarDays: 7, expandShell: true });
+  delete config().ui;
+});
+
+test("leader updates: digest by default; questions and off are kept; anything else is refused", () => {
+  delete config().ui;
+  expect(uiPrefs().leaderUpdates).toBe("digest");
+  expect(setUiPrefs({ leaderUpdates: "questions" }).leaderUpdates).toBe("questions");
+  expect(() => setUiPrefs({ leaderUpdates: "always" as any })).toThrow();
+  expect(setUiPrefs({ leaderUpdates: "off" }).leaderUpdates).toBe("off");
   delete config().ui;
 });
