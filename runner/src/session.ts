@@ -20,7 +20,7 @@ import { applyEvent, emptyState, findPlan, findTool, type Transcript } from "../
 import { tagToolParts, tagToolPatch } from "./toolKind";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
-import { checkPaths, fileDiff, readProjectFile } from "./files";
+import { checkPaths, fileDiff, readProjectFile, readProjectFileChunk } from "./files";
 import { config, prefs, saveConfig, saveConfigSoon } from "./config";
 import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
@@ -3464,6 +3464,7 @@ export function sessionFiles(v: FilesView) {
     checkPaths: (paths: string[]) => checkPaths(v.projectPath, paths, base),
     fileDiff: (path: string, checkpointId?: string, reveal?: boolean) => fileDiff(v.projectPath, path, base, list, checkpointId, reveal === true),
     readFile: (path: string, maxBytes?: number, reveal?: boolean) => readProjectFile(v.projectPath, path, maxBytes, reveal === true),
+    readFileChunk: (path: string, offset?: number, length?: number, reveal?: boolean) => readProjectFileChunk(v.projectPath, path, offset, length, reveal === true),
   };
 }
 

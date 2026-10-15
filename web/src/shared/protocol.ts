@@ -197,6 +197,21 @@ export interface FileContents {
   withheld?: boolean;
 }
 
+/** A piece of a project file's raw bytes (base64), for previews and downloads. */
+export interface FileChunk {
+  path: string;
+  size: number;
+  offset: number;
+  data: string;
+  mimeType: string;
+  sensitive?: boolean;
+  /** a secrets file the user hasn't asked to see: nothing sent (ask again with `reveal`) */
+  withheld?: boolean;
+}
+
+/** Downloads and previews of project files: the largest file, and how much one request carries. */
+export const FILE_DOWNLOAD_LIMITS = { bytes: 100 * 1024 * 1024, chunk: 256 * 1024 };
+
 /** Caps for the file panel's File tab. */
 export const FILE_VIEW_LIMITS = { bytes: 1024 * 1024, lines: 20_000 };
 
@@ -1314,6 +1329,8 @@ export interface Ops {
   fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
+  /** raw bytes of a project file, a piece at a time (see FILE_DOWNLOAD_LIMITS); a secrets file's only with `reveal` */
+  readFileChunk: { args: { sessionId: string; path: string; offset?: number; length?: number; reveal?: boolean }; result: FileChunk };
   /** `confirmed`: required for a call plan mode or a review held back ("by": "mode") */
   approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
   /**
