@@ -84,9 +84,6 @@ export function defang(text: string): string {
   return text.replace(MARKER_RE, (m) => (m.startsWith("[") ? m.replace(/\[/g, "(").replace(/\]/g, ")") : `“${m}”`));
 }
 
-/** Whether `text` holds a marker defang() would change. */
-export const hasMarker = (text: string) => new RegExp(MARKER_RE.source, "i").test(text);
-
 /**
  * What the leader sends a session: the user's words (copied by the runner, never by the model)
  * under LEADER_RELAY_PREFIX, then the leader's own note under LEADER_NOTE_PREFIX. Both defused, so
