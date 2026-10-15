@@ -2838,6 +2838,8 @@ export abstract class LiveSession {
         return this.reviewReport(args);
     }
     if (tool.startsWith("agent_")) {
+      // The leader starts no subagents (its MCP server doesn't list them; the runner refuses them too).
+      if (this.isLeaderSession) return { ok: false, text: "The leader agent doesn't start subagents." };
       if (!this.sink.agents) return { ok: false, text: "This Tether runner can't start subagents." };
       return this.sink.agents.tool(this, tool, args, signal);
     }

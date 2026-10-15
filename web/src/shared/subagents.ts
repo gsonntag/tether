@@ -71,23 +71,41 @@ export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT
 
 /** Markers that say who wrote a message: none may appear as written inside text that's passed on. */
 const MARKERS = [LEADER_RELAY_PREFIX, ...AGENT_WRITTEN, "[Tether]"];
-/** Brackets, and what passes for one to a reader (full-width, lenticular, white square). */
-const OPEN = "[\\[［【〔⟦〚]";
-const CLOSE = "[\\]］】〕⟧〛]";
-/** Invisible characters a marker could be split with. */
-const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+/** Brackets, and what passes for one to a reader. */
+const OPEN = "[\\[［【〔⟦〚〖﹝❲⁅〘⦋⦍⦏]";
+const CLOSE = "[\\]］】〕⟧〛〗﹞❳⁆〙⦌⦎⦐]";
+/**
+ * Characters a reader doesn't see (zero-width, bidi controls, invisible operators, the combining
+ * grapheme joiner, Hangul fillers, variation selectors, tag characters): a marker could be split
+ * or disguised with them. They are dropped from any text passed on.
+ */
+const INVISIBLE = /[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁤⁦-⁯ㅤ︀-️﻿ﾠ\u{1D173}-\u{1D17A}\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
+/** Cyrillic and Greek letters that read as the Latin ones of the marker words. */
+const CONFUSABLE: Record<string, string> = {
+  а: "a", А: "a", в: "b", В: "b", с: "c", С: "c", ԁ: "d", е: "e", Е: "e", ё: "e", һ: "h", Н: "h", і: "i", І: "i", ј: "j", Ј: "j", к: "k", К: "k",
+  м: "m", М: "m", о: "o", О: "o", р: "p", Р: "p", ԛ: "q", ѕ: "s", Ѕ: "s", т: "t", Т: "t", у: "y", У: "y", ԝ: "w", х: "x", Х: "x", ү: "y",
+  α: "a", Α: "a", β: "b", Β: "b", ε: "e", Ε: "e", Ζ: "z", η: "n", Η: "h", ι: "i", Ι: "i", κ: "k", Κ: "k", Μ: "m", ν: "v", Ν: "n", ο: "o", Ο: "o",
+  ρ: "p", Ρ: "p", τ: "t", Τ: "t", υ: "u", Υ: "y", χ: "x", Χ: "x", ϲ: "c", Ϲ: "c", ı: "i",
+};
+/** A string of the same length that reads like `t`: confusables and case folded to ASCII lower case where one character stays one. */
+function skeleton(t: string): string {
+  let out = "";
+  for (const c of t) {
+    const m = CONFUSABLE[c] ?? c.toLowerCase();
+    // Same length as the input, so positions carry over (astral characters stay as they are).
+    out += m.length === c.length ? m : c;
+  }
+  return out;
+}
 const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
-/** Full-width forms of ASCII (U+FF01-FF5E) read as the same letters. */
-const wide = (c: string) => String.fromCharCode(c.charCodeAt(0) + 0xfee0);
-/** One marker as a pattern: any case, full-width letters and punctuation, any spacing. */
+/** One marker as a pattern over the skeleton: any spacing (none too), the comma optional. */
 function loose(p: string): string {
   let out = "";
-  for (const c of p) {
-    if (c === "[") out += OPEN;
-    else if (c === "]") out += CLOSE;
-    else if (/\s/.test(c)) out += "[\\s\\u3000]+";
-    else if (/[a-z]/i.test(c)) out += `[${c.toLowerCase()}${c.toUpperCase()}${wide(c.toLowerCase())}${wide(c.toUpperCase())}]`;
-    else if (c.charCodeAt(0) > 0x20 && c.charCodeAt(0) < 0x7f) out += `[${esc(c)}${esc(wide(c))}]`;
+  for (const c of p.toLowerCase()) {
+    if (c === "[") out += `${OPEN}\\s*`;
+    else if (c === "]") out += `\\s*${CLOSE}`;
+    else if (/\s/.test(c)) out += "\\s*";
+    else if (c === ",") out += ",?";
     else out += esc(c);
   }
   return out;
@@ -100,13 +118,30 @@ const STARTS_OPEN = new RegExp(`^${OPEN}`);
 /**
  * Text passed from one writer to another (the user's words relayed, the leader's note, another
  * session's report) with every authorship marker defused: "[From your leader]" becomes
- * "(From your leader)", "You are a subagent:" is quoted, also when written in another case, with
- * full-width or look-alike brackets, or split by invisible characters (which are dropped). Then
- * nothing in it can pass for a block someone else wrote (a forged relay of the user's words, a
- * forged Tether note).
+ * "(From your leader)", "You are a subagent:" is quoted. Also when written in another case,
+ * without spaces, with full-width, compatibility or Cyrillic / Greek look-alike letters, with
+ * look-alike brackets, or split by invisible characters (always dropped). Text that holds a
+ * disguised marker is passed on in its compatibility form (NFKC), so what's left reads as it is;
+ * other text stays as written. Then nothing in it can pass for a block someone else wrote.
  */
 export function defang(text: string): string {
-  return text.replace(ZERO_WIDTH, "").replace(MARKER_RE, (m) => (STARTS_OPEN.test(m) ? m.replace(OPEN_RE, "(").replace(CLOSE_RE, ")") : `“${m}”`));
+  const visible = text.replace(INVISIBLE, "");
+  const norm = visible.normalize("NFKC");
+  const skel = skeleton(norm);
+  // (matchAll starts at the pattern's lastIndex.)
+  MARKER_RE.lastIndex = 0;
+  const found = [...skel.matchAll(MARKER_RE)];
+  // Most text: no marker even in disguise, kept exactly as written.
+  if (!found.length) return visible;
+  let out = "";
+  let at = 0;
+  for (const m of found) {
+    const i = m.index!;
+    const raw = norm.slice(i, i + m[0].length);
+    out += norm.slice(at, i) + (STARTS_OPEN.test(raw) ? raw.replace(OPEN_RE, "(").replace(CLOSE_RE, ")") : `“${raw}”`);
+    at = i + m[0].length;
+  }
+  return out + norm.slice(at);
 }
 
 /**

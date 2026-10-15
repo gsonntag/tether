@@ -916,7 +916,7 @@ approvals stay the user's click.
 
 ### Phase 6: status (2026-10-15, branch `leader-agent`)
 
-Built; tested with stub harnesses only (runner `leader.test.ts`, 39 tests; web
+Built; tested with stub harnesses only (runner `leader.test.ts`, 45 tests; web
 `recentSessions.test.ts`). Not run against live harnesses or looked at in a browser.
 
 - **Verbatim relay, unforgeable.** The runner records each message the user sends the leader from
@@ -986,3 +986,19 @@ words go, the files don't); the browser views; a relay of a batch of several ste
   look-alike brackets, full-width letters and invisible characters; a transcript can't close its
   `<session-transcript>` wrapper in any case. The overview uses Settings → Show sessions from the
   last.
+
+#### Security re-review fixes (2026-10-15)
+
+- The relay takes the newest user-role message whatever it holds (files only, a skill or a `!`
+  run have no words, so nothing older gets through), and only once the leader has replied after
+  it: a message the user steered in while the leader was replying isn't relayed on a decision
+  made about the one before.
+- A correction that changes nothing keeps where the message was already sent; edits of waiting
+  messages are matched without the `!` output and attachment list Tether added to them.
+- The runner refuses `agent_*` tools to the leader session too (not only its MCP server).
+- Naming a session by title looks in the same window as the overview (Settings → Show sessions
+  from the last); ids of live sessions always work.
+- `defang` also drops bidi controls, LRM/RLM, invisible operators, the combining grapheme joiner,
+  variation selectors and tag characters, and matches the marker words on a skeleton (NFKC, case,
+  Cyrillic / Greek look-alikes, any spacing, none too, more bracket shapes). Text holding a
+  disguised marker is passed on in its NFKC form; other text stays as written.

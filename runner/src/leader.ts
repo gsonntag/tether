@@ -19,6 +19,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AgentNotice, LeaderUpdates, LiveState, Msg, SessionPulse, SessionSnapshot, SessionSummary, UiRequest, UiResponse } from "../../web/src/shared/protocol";
 import { HARNESSES } from "../../web/src/shared/protocol";
+import { splitAttachments } from "../../web/src/shared/attachments";
 import { EMPTY_DRAFT } from "../../web/src/shared/plan";
 import { groupSessions, type Entry } from "../../web/src/shared/recentSessions";
 import { defang, LEADER_DIGEST_PREFIX, leaderMessage, splitAgentWritten } from "../../web/src/shared/subagents";
@@ -166,8 +167,14 @@ export class Leader implements LeaderHub {
   askEdited(sessionId: string, was: string, now: string | undefined) {
     const asks = config().leader?.asks;
     if (!this.isLeader(sessionId) || !asks) return;
+    // As typed: what Tether adds to a waiting message (`!` output, the attachment list) isn't part of it.
+    const typed = (t: string) => splitAttachments(t.split("\n\n<bash-input>")[0]!).text.trim();
+    was = typed(was);
+    if (now !== undefined) now = typed(now);
+    // Unchanged (a correction that changed nothing): the record, and where it was sent, stay.
+    if (now === was) return;
     for (let i = asks.length - 1; i >= 0; i--)
-      if (asks[i]!.text === was) {
+      if (asks[i]!.text.trim() === was) {
         if (now?.trim()) asks[i] = { ...asks[i]!, text: now, sentTo: undefined };
         else asks.splice(i, 1);
         saveConfig();
@@ -188,17 +195,18 @@ export class Leader implements LeaderHub {
     if ((leader.t.state.pending ?? []).some((p) => !p.alone) || leader.delivering)
       return "The user has sent you more that you haven't read yet: answer that first, then pass on what they want.";
     const asks = config().leader?.asks ?? [];
-    let last: string | undefined;
-    for (let i = leader.t.messages.length - 1; i >= 0 && last === undefined; i--) {
-      const m = leader.t.messages[i]!;
-      if (m.role !== "user") continue;
-      const text = textOf(m);
-      if (text) last = text;
-    }
-    if (last === undefined) return "The user hasn't written to you yet, so there's nothing of theirs to pass on.";
+    // The newest user-role message, whatever it holds (files only, a skill, a `!` run: no words to relay).
+    const at = leader.t.messages.findLastIndex((m) => m.role === "user");
+    if (at < 0) return "The user hasn't written to you yet, so there's nothing of theirs to pass on.";
     const none = "The newest message in your conversation isn't one the user sent you (it's Tether's, an update, or it changed), so nothing can be passed on as their words. Send your own note (text, without relay), or ask the user to say it again.";
+    const last = textOf(leader.t.messages[at]!);
+    if (!last) return none;
+    // You've answered it (this call is part of your reply): a message the user steered in after your
+    // reply began hasn't been read yet, and what you decided was about the one before.
+    if (!leader.t.messages.slice(at + 1).some((m) => m.role === "assistant"))
+      return "The user's newest message came in while you were replying: read it first, then pass on what they want.";
     // Exactly what the app recorded: Tether's own messages (prefixed or not) never are.
-    const sent = (a: string) => !!a && (last === a || (last!.startsWith(`${a}\n\n`) && /^(<bash-input>|Attached files \()/.test(last!.slice(a.length + 2))));
+    const sent = (a: string) => !!a && (last === a || (last.startsWith(`${a}\n\n`) && /^(<bash-input>|Attached files \()/.test(last.slice(a.length + 2))));
     for (let i = asks.length - 1; i >= 0; i--) if (sent(asks[i]!.text.trim())) return asks[i]!;
     return none;
   }
@@ -256,7 +264,8 @@ export class Leader implements LeaderHub {
   private async resolve(from: LiveSession, arg: unknown): Promise<{ id: string; title: string; summary?: SessionSummary } | string> {
     const want = String(arg ?? "").trim();
     if (!want) return "session is required: an id from sessions_overview.";
-    const list = await this.deps.sessions(7);
+    // The same window as the overview (Settings → Show sessions from the last); live ones by id too.
+    const list = await this.deps.sessions(this.deps.days());
     const known = (id: string) => list.find((s) => s.id === id);
     let id: string | undefined;
     if (want.includes(":") && (known(want) || this.deps.live(want) || config().sessions[want])) id = this.latestId(want);
