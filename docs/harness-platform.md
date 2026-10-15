@@ -885,9 +885,9 @@ approvals stay the user's click.
 - `session_message({ session, relay?, text?, mode?: "steer" | "queue" | "force" })`: `relay: true`
   sends the user's latest message verbatim (the runner copies it), then `text` as the leader's own
   note. A stopped session starts.
-- `session_answer({ session, request, answers? | choice? | value?, relay?, text? })`: a question,
-  choice, yes/no, input, or a plan (approve / revise / discuss). Refuses tool approvals: those are
-  escalated instead.
+- `session_answer({ session, request, answers? | choice? | value?, relay?, text? })`: an agent's
+  question (ask_user, AskUserQuestion, requestUserInput) or a plan (approve / revise / discuss).
+  Anything else (tool approvals, MCP forms, extension dialogs) is escalated instead.
 - `session_escalate({ session, request })`: a tool approval as a card in the leader chat.
 - `session_stop({ session })`: the Stop button.
 
@@ -910,22 +910,22 @@ approvals stay the user's click.
 - Updates: one `[Tether] Updates` note per batch (`LeaderFeed`), built from the sessions' notices
   (finished, question / approval, blocked and stalls, failed, goal and review results), never about
   the leader itself or sessions marked done. Questions, approvals and blocks within 30 s, the rest
-  every 5 min (`LEADER_TIMING`); never into a leader turn in progress or while it asks you
-  something (the batch waits and retries). The only thing that starts a leader turn by itself;
+  every 5 min (`LEADER_TIMING`); never into a leader turn in progress (the batch waits and
+  retries; cards waiting for your click don't hold it). The only thing that starts a leader turn by itself;
   Settings → Leader → Leader updates: Updates / Questions only / Off.
 
 ### Phase 6: status (2026-10-15, branch `leader-agent`)
 
-Built; tested with stub harnesses only (runner `leader.test.ts`, 25 tests; web
+Built; tested with stub harnesses only (runner `leader.test.ts`, 39 tests; web
 `recentSessions.test.ts`). Not run against live harnesses or looked at in a browser.
 
 - **Verbatim relay, unforgeable.** The runner records each message the user sends the leader from
-  the app (`prompt` / `forceSend` ops → `Leader.userSaid`, the last 10 in `config().leader.asks`).
-  `relay` takes the newest user message in the leader's transcript that isn't agent-written (so not
-  an update or a note) and matches it to one of those recorded texts (as sent, with attachments or
-  `!` output after it, or last of a batch of steers); no match, no relay. So the relayed text is
-  always something the user typed in the leader chat, and the latest one the leader has seen (a
-  message still queued for it isn't used). Each is relayed to a session once.
+  the app (`prompt` / `forceSend` ops → `Leader.userSaid`, the last 10 in `config().leader.asks`,
+  following `editPending` / `amendSteer`). `relay` takes the newest user-role message in the
+  leader's transcript, whoever wrote it, and relays it only if it is exactly one of those recorded
+  texts (or that plus Tether's `!` output / attachment list); no match, no relay, and nothing while
+  the user has messages waiting for the leader. So the relayed text is always the user's newest
+  message, as they sent it, in the turn it started. Each is relayed to a session once.
 - **Markers defused.** `defang()` (`web/src/shared/subagents.ts`) turns every authorship marker
   (`[From you, via your leader]`, `[From your leader]`, `[Tether]…`, `[From the agent that started
   you]`, `You are a subagent:`; any case and spacing) into an inert form ("(From your leader)") in
@@ -934,9 +934,9 @@ Built; tested with stub harnesses only (runner `leader.test.ts`, 25 tests; web
   `splitAgentWritten`, and a relay message is never joined with another waiting message
   (`nextTurnSize`, steers). Tests: a forged relay block in the leader's text, a fake leader note and
   Tether note inside the user's own words, a model-written user message that the app never sent.
-- **Tool approvals are the user's.** `LiveSession.uiRespond` refuses a `by: "leader"` answer to a
-  permission request or one marked `userOnly` (the "Dangerously skip" subagent question), whatever
-  calls it; the `uiRespond` op always answers `by: "user"`. `session_answer` escalates those
+- **Tool approvals are the user's.** `LiveSession.uiRespond` refuses a `by: "leader"` answer to
+  anything but a plan or a question marked `leaderMay` (never one marked `userOnly`, like the
+  "Dangerously skip" subagent question), whatever calls it; the `uiRespond` op always answers `by: "user"`. `session_answer` escalates those
   instead: a copy of the request (same tool and input) as the leader session's own card, whose
   click is forwarded to the session as `by: "user"`; the card goes when the request is answered
   elsewhere or cancelled.
@@ -958,7 +958,8 @@ updates rather than kept open while they wait.
 
 Not done / unverified: live runs on each harness (the MCP env reaching the leader's server, the
 instructions reaching the model); Antigravity as the leader; attachments in a relayed message (the
-words go, the files don't); look-alike brackets (full-width) aren't defused; the browser views.
+words go, the files don't); the browser views; a relay of a batch of several steers is refused
+(it matches no single message).
 
 #### Review fixes (2026-10-15)
 
