@@ -903,6 +903,10 @@ const ops: Handlers = {
     return (await filesOf(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
   },
 
+  async readFileChunk({ sessionId, path, offset, length, reveal }) {
+    return (await filesOf(sessionId)).readFileChunk(String(path ?? ""), offset, length, reveal === true);
+  },
+
   async approveBlocked({ sessionId, toolId, confirmed }) {
     await (await getLive(sessionId)).approveBlocked(toolId, confirmed === true);
     return {};
