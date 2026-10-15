@@ -30,7 +30,7 @@ import {
   Square2StackIcon,
 } from "@heroicons/react/24/outline";
 import { diffLines } from "diff";
-import { memo, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
 import { act, selectSession, useStore } from "../store";
@@ -104,16 +104,60 @@ export const Transcript = memo(function Transcript({
   after?: Map<string, ReactNode>;
 }) {
   const timed = useMemo(() => timedMessages(messages), [messages]);
+  // A long conversation renders its end first; earlier messages are added as the reader nears the
+  // top, keeping what's on screen in place (rendering hundreds of rows at once froze the page).
+  const [count, setCount] = useState(FIRST_ROWS);
+  const start = Math.max(0, messages.length - count);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const grew = useRef<{ el: HTMLElement; height: number }>(undefined);
+  const more = () => {
+    const el = scrollParent(sentinel.current);
+    if (el) grew.current = { el, height: el.scrollHeight };
+    setCount((c) => c + MORE_ROWS);
+  };
+  useLayoutEffect(() => {
+    const g = grew.current;
+    grew.current = undefined;
+    if (g) g.el.scrollTop += g.el.scrollHeight - g.height;
+  }, [count]);
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !start) return;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && more(), { root: scrollParent(node), rootMargin: "800px 0px 0px 0px" });
+    io.observe(node);
+    return () => io.disconnect();
+  }, [start]);
   return (
-    <ChatMessageList align="top" isStreaming={running} style={listStyle}>
-      {messages.flatMap((m, i) => {
-        const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} timed={timed.has(m.id)} />;
-        const extra = after?.get(m.id);
-        return extra ? [row, extra] : [row];
-      })}
-    </ChatMessageList>
+    <>
+      {start > 0 && (
+        <HStack ref={sentinel} hAlign="center">
+          <Button label={`Show ${start} earlier ${start === 1 ? "message" : "messages"}`} variant="ghost" size="sm" onClick={more} />
+        </HStack>
+      )}
+      <ChatMessageList align="top" isStreaming={running} style={listStyle}>
+        {messages.slice(start).flatMap((m, j) => {
+          const i = start + j;
+          const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} timed={timed.has(m.id)} />;
+          const extra = after?.get(m.id);
+          return extra ? [row, extra] : [row];
+        })}
+      </ChatMessageList>
+    </>
   );
 });
+
+/** Messages a session first renders, and how many more each step up adds. */
+const FIRST_ROWS = 40;
+const MORE_ROWS = 60;
+
+/** The nearest ancestor that scrolls vertically. */
+function scrollParent(node: Element | null): HTMLElement | null {
+  for (let el = node?.parentElement; el; el = el.parentElement) {
+    const oy = getComputedStyle(el).overflowY;
+    if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight) return el;
+  }
+  return null;
+}
 
 /**
  * Open state that follows `want` whenever it changes (like `<details open={...}>`
