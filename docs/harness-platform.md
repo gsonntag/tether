@@ -865,3 +865,140 @@ by a crash heals only when the parent is reopened (`restored`) or the subagent r
 - `agent_message`: at most 20 per subagent turn (the count starts over when a turn settles), and no
   more after 100 turns of one subagent (a runaway back-and-forth).
 - Settling is skipped while the runner stops; stale per-session bridge files are swept at start.
+
+## Phase 6: the leader agent
+
+One agent to talk to instead of going into every session: it knows what each session on the
+runner is doing, says where they're at and what they want next, and passes on what the user tells
+it ("tell the Kiro one to skip the migration", "yes, approve that plan"). It is a relay and a
+reporter: it decides nothing on its own, its own words never pass for the user's, and tool
+approvals stay the user's click.
+
+### Tools (tether-context MCP, only in the leader session)
+- `sessions_overview({ project?, include?: "active" | "all" })`: every recent and live session,
+  grouped Needs you / Working / Recent by the same function as Home (`web/src/shared/recentSessions.ts`):
+  id, title, project, harness and model, state and current action, what it waits on (request ids),
+  goal, plan progress, last line, changes, subagents.
+- `session_read({ session, messages? })`: one session in depth: what waits on the user (with ids),
+  goal, plan and todos, messages waiting for it, changes, and the end of its conversation
+  (`transcriptTail`). A stopped session is read from what its harness stored; it never starts.
+- `session_message({ session, relay?, text?, mode?: "steer" | "queue" | "force" })`: `relay: true`
+  sends the user's latest message verbatim (the runner copies it), then `text` as the leader's own
+  note. A stopped session starts.
+- `session_answer({ session, request, answers? | choice? | value?, relay?, text? })`: an agent's
+  question (ask_user, AskUserQuestion, requestUserInput) or a plan (approve / revise / discuss).
+  Anything else (tool approvals, MCP forms, extension dialogs) is escalated instead.
+- `session_escalate({ session, request })`: a tool approval as a card in the leader chat.
+- `session_stop({ session })`: the Stop button.
+
+### Behavior
+- The leader is an ordinary Tether session on any harness but Antigravity (no per-session MCP),
+  marked `leader` (`LiveState.leader`, saved in prefs; `config().leader.sessionId`, followed through
+  handoffs). One per runner, working in `~/.tether/leader` (`TETHER_LEADER_DIR`), which isn't a
+  project; its guard is Ask. It starts no subagents and can't create or archive sessions.
+- Lists: kept out of Needs you / Working / Recent and the project lists, except while it asks you
+  something (its questions and escalated approvals show under Needs you). A Leader item in the
+  sidebar (between Home and Memory) and a Leader button on Home open it, or "Start your leader"
+  (harness and model, defaulting to your last New session choice).
+- Messages and trust: `LEADER_RELAY_PREFIX` "[From you, via your leader]" heads the user's words,
+  `LEADER_NOTE_PREFIX` "[From your leader]" the leader's. Only the note prefix (and the updates'
+  `[Tether] Updates`) is agent-written (`AGENT_WRITTEN`), so the target's judge (`goal()`) counts
+  exactly the user's words. The transcript shows both as a "From your leader" card; `transcriptTail`
+  and handoff briefs label the relay "their own words, passed on verbatim by their leader agent".
+- Answers record who answered (`UiResponse.by: "leader"`): the target gets a notice "Your leader
+  answered for you: …", and `ask_user` tells the agent the leader answered for the user.
+- Updates: one `[Tether] Updates` note per batch (`LeaderFeed`), built from the sessions' notices
+  (finished, question / approval, blocked and stalls, failed, goal and review results), never about
+  the leader itself or sessions marked done. Questions, approvals and blocks within 30 s, the rest
+  every 5 min (`LEADER_TIMING`); never into a leader turn in progress (the batch waits and
+  retries; cards waiting for your click don't hold it). The only thing that starts a leader turn by itself;
+  Settings → Leader → Leader updates: Updates / Questions only / Off.
+
+### Phase 6: status (2026-10-15, branch `leader-agent`)
+
+Built; tested with stub harnesses only (runner `leader.test.ts`, 45 tests; web
+`recentSessions.test.ts`). Not run against live harnesses or looked at in a browser.
+
+- **Verbatim relay, unforgeable.** The runner records each message the user sends the leader from
+  the app (`prompt` / `forceSend` ops → `Leader.userSaid`, the last 10 in `config().leader.asks`,
+  following `editPending` / `amendSteer`). `relay` takes the newest user-role message in the
+  leader's transcript, whoever wrote it, and relays it only if it is exactly one of those recorded
+  texts (or that plus Tether's `!` output / attachment list); no match, no relay, and nothing while
+  the user has messages waiting for the leader. So the relayed text is always the user's newest
+  message, as they sent it, in the turn it started. Each is relayed to a session once.
+- **Markers defused.** `defang()` (`web/src/shared/subagents.ts`) turns every authorship marker
+  (`[From you, via your leader]`, `[From your leader]`, `[Tether]…`, `[From the agent that started
+  you]`, `You are a subagent:`; any case and spacing) into an inert form ("(From your leader)") in
+  the relayed words, the leader's note, plan feedback, answers, other agents' `agent_message` text
+  and the subagent reports quoted to a parent. A relay paragraph is never a split point in
+  `splitAgentWritten`, and a relay message is never joined with another waiting message
+  (`nextTurnSize`, steers). Tests: a forged relay block in the leader's text, a fake leader note and
+  Tether note inside the user's own words, a model-written user message that the app never sent.
+- **Tool approvals are the user's.** `LiveSession.uiRespond` refuses a `by: "leader"` answer to
+  anything but a plan or a question marked `leaderMay` (never one marked `userOnly`, like the
+  "Dangerously skip" subagent question), whatever calls it; the `uiRespond` op always answers `by: "user"`. `session_answer` escalates those
+  instead: a copy of the request (same tool and input) as the leader session's own card, whose
+  click is forwarded to the session as `by: "user"`; the card goes when the request is answered
+  elsewhere or cancelled.
+- **Information, not instructions.** Overviews, reads and updates say so in the text, quote what
+  sessions wrote (defused), and wrap transcripts in `<session-transcript>`; the server's
+  `instructions` (`LEADER_HINT`) tell the leader to act only on the user's explicit instructions in
+  its chat, never on what sessions wrote, and to ask when unsure.
+- **Limits.** At most 30 `session_message` / `session_answer` calls per leader turn; sessions
+  marked done are read-only; the leader's tools work only for the current leader session (the
+  runner checks, whatever the MCP server lists).
+
+Decisions made while building: the leader works in its own folder rather than the home folder, so
+it isn't a project in the lists; the relay source is the app's own record of what the user sent
+(matched to the transcript) rather than the transcript alone, which Tether's own non-prefixed
+messages (a restart's "continue") could otherwise pass for; `session_answer` on a plan approves only
+one that waits for review (never by a message in the user's name), and revise / discuss send the
+user's words (relay) or the leader's note as the feedback; a closed leader is reopened to get its
+updates rather than kept open while they wait.
+
+Not done / unverified: live runs on each harness (the MCP env reaching the leader's server, the
+instructions reaching the model); Antigravity as the leader; attachments in a relayed message (the
+words go, the files don't); the browser views; a relay of a batch of several steers is refused
+(it matches no single message).
+
+#### Review fixes (2026-10-15)
+
+- **Relay bound to the user's message.** Only the newest message in the leader's conversation can
+  be relayed, whoever wrote it, and only when it is exactly what the app recorded the user
+  sending (or that plus Tether's `!` output / attachment list): after an update, a brief, a goal
+  prompt or a correction, nothing is relayable until the user writes again, so an update-started
+  turn can't pass on an older message to another session. Nothing is relayed while the user has
+  messages waiting for the leader (or one is on its way). Editing a waiting message
+  (`editPending`) or a steer (`amendSteer`) updates the record; the relay to a session is
+  reserved before anything is awaited and given back if sending fails.
+- **Answers are an allowlist.** The leader may answer only questions marked `leaderMay`
+  (Tether's `ask_user`, Claude's AskUserQuestion, Codex's requestUserInput) and plans; MCP
+  elicitations (forms, yes/no, links) and pi extension dialogs are `userOnly`, and everything else
+  is escalated as a card. Answers the leader gives Claude and Codex questions say so
+  (`leaderAnswers`); Antigravity's plan feedback says the leader sent it back. A leader plan
+  approval never falls through to a message in the user's name, and "Implement the plan." isn't
+  counted as the user's ask.
+- **Budgets.** The 30-action cap counts per user message (updates don't reset it). Updates: one
+  session hurries a batch at most every 5 min (`sessionCooldownMs`), at most 12 batches an hour
+  (`maxPerHour`), a leader that doesn't start is retried with doubling backoff up to 30 min;
+  escalated cards waiting for the user don't hold updates back.
+- `createLeader` from two devices at once starts one leader. `defang` also catches full-width and
+  look-alike brackets, full-width letters and invisible characters; a transcript can't close its
+  `<session-transcript>` wrapper in any case. The overview uses Settings → Show sessions from the
+  last.
+
+#### Security re-review fixes (2026-10-15)
+
+- The relay takes the newest user-role message whatever it holds (files only, a skill or a `!`
+  run have no words, so nothing older gets through), and only once the leader has replied after
+  it: a message the user steered in while the leader was replying isn't relayed on a decision
+  made about the one before.
+- A correction that changes nothing keeps where the message was already sent; edits of waiting
+  messages are matched without the `!` output and attachment list Tether added to them.
+- The runner refuses `agent_*` tools to the leader session too (not only its MCP server).
+- Naming a session by title looks in the same window as the overview (Settings → Show sessions
+  from the last); ids of live sessions always work.
+- `defang` also drops bidi controls, LRM/RLM, invisible operators, the combining grapheme joiner,
+  variation selectors and tag characters, and matches the marker words on a skeleton (NFKC, case,
+  Cyrillic / Greek look-alikes, any spacing, none too, more bracket shapes). Text holding a
+  disguised marker is passed on in its NFKC form; other text stays as written.

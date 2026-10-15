@@ -51,6 +51,7 @@ import { withReviews } from "./ReviewCard";
 import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
 import { commandRunsHow } from "../library";
+import { create } from "zustand";
 
 /** Phones: Enter makes a new line, and the less important settings hide. */
 const NARROW = "(max-width: 760px)";
@@ -212,6 +213,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
           <FileRefScope value={refScope}>
             <Transcript
+              key={sessionId}
               messages={o.messages}
               running={st.status === "running"}
               amendable={st.amendable}
@@ -219,6 +221,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
+          <Sending sessionId={sessionId} starting={!o.session.live ? harnessLabel(o.session.harness) : undefined} />
           {st.checking && (
             <HStack gap={2} vAlign="center">
               <Spinner size="sm" />
@@ -372,6 +375,43 @@ function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending;
 }
 
 const usePendingEdit = (sessionId: string): EditPending => (id, change) => act("editPending", { sessionId, id, ...change });
+
+/** Messages sent from this device that the runner hasn't confirmed yet, by session. */
+const useSending = create<Record<string, { id: string; text: string }[]>>(() => ({}));
+let sendingSeq = 0;
+function addSending(sessionId: string, text: string): string {
+  const id = `sending-${++sendingSeq}`;
+  useSending.setState((s) => ({ [sessionId]: [...(s[sessionId] ?? []), { id, text }] }));
+  return id;
+}
+function dropSending(sessionId: string, id: string) {
+  useSending.setState((s) => ({ [sessionId]: (s[sessionId] ?? []).filter((x) => x.id !== id) }));
+}
+
+/** What you just sent, until the runner confirms it: no wait for the server (or a starting agent). */
+function Sending({ sessionId, starting }: { sessionId: string; starting?: string }) {
+  const list = useSending((s) => s[sessionId]);
+  if (!list?.length) return null;
+  return (
+    <>
+      {list.map((m) => (
+        <ChatMessage key={m.id} sender="user">
+          <ChatMessageBubble
+            style={steerBubble(false)}
+            metadata={
+              <HStack gap={1} hAlign="end" vAlign="center">
+                <Spinner size="sm" />
+                <Text type="supporting">{starting ? `Starting ${starting} process…` : "Sending…"}</Text>
+              </HStack>
+            }
+          >
+            <Text style={preWrap}>{m.text}</Text>
+          </ChatMessageBubble>
+        </ChatMessage>
+      ))}
+    </>
+  );
+}
 
 /**
  * Steers that haven't reached the agent yet: dashed user bubbles at the end of the chat. They go into
@@ -584,10 +624,14 @@ function Composer({ sessionId, state, messages, harness, live, opening }: { sess
     setText("");
     const attach = files.length ? { attachments: files } : {};
     if (!live) setWaking(true);
+    // Shown at once; the real message (or its place in the waiting list) replaces it when the
+    // runner has it, which can take seconds while the agent's process starts.
+    const id = addSending(sessionId, t);
     const r =
       mode === "force" && running
         ? await act("forceSend", { sessionId, text: t, ...attach })
         : await act("prompt", { sessionId, text: t, mode: running ? (mode === "force" ? "steer" : (mode ?? "steer")) : undefined, ...attach });
+    dropSending(sessionId, id);
     setWaking(false);
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
@@ -748,7 +792,8 @@ function Composer({ sessionId, state, messages, harness, live, opening }: { sess
 
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
-      {!live && (waking || opening) && (
+      {/* While sending, the message's own bubble says the agent is starting. */}
+      {!live && opening && !waking && (
         <HStack gap={1.5} vAlign="center">
           <Spinner size="sm" />
           <Text type="supporting">{`Starting ${harnessLabel(harness)} process…`}</Text>

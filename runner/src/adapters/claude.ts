@@ -29,7 +29,7 @@ import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
-import { LiveSession, newId, NOBODY_ANSWERED } from "../session";
+import { leaderAnswers, LiveSession, newId, NOBODY_ANSWERED } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionLaunch } from "../connectors/launch";
 import { argvSafeMcp } from "../connectors/claude";
@@ -386,7 +386,7 @@ export class ClaudeSession extends LiveSession {
     const permissionMode = keepsGuard(this.opts.permissionMode) ? this.opts.permissionMode : settingsMode;
     const canUseTool: CanUseTool = (toolName, input, { signal, suggestions, toolUseID }) => this.permission(toolName, input, signal, suggestions, toolUseID);
     // Its connector: shared memory in the system prompt, the tether-context MCP server and the MCP registry's servers.
-    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+    const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession } });
     // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
     const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
     this.q = query({
@@ -439,7 +439,7 @@ export class ClaudeSession extends LiveSession {
   private async swapMcp() {
     if (this.closed || !this.q) return;
     try {
-      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
+      const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession } });
       await this.applyMcp(launch.options.mcpServers ?? {});
     } catch (e: any) {
       console.error(`claude ${this.id}: couldn't update its MCP servers: ${e?.message ?? e}`);
@@ -808,9 +808,9 @@ export class ClaudeSession extends LiveSession {
       const id = newId("q");
       signal.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
       // Unattended (auto/full guard): don't stall forever on a question nobody is there to answer.
-      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions }, this.questionTimeout());
+      const res = await this.askUi({ id, kind: "question", title: "Claude has a question", questions: (input as any).questions, leaderMay: true }, this.questionTimeout());
       if (res.cancelled || !res.answers) return { behavior: "deny", message: NOBODY_ANSWERED };
-      return { behavior: "allow", updatedInput: { ...input, answers: res.answers } };
+      return { behavior: "allow", updatedInput: { ...input, answers: leaderAnswers(res) } };
     }
     if (toolName === "ExitPlanMode") return this.reviewPlan(input, signal, toolUseID);
     const v = await this.checkTool(toolName, input, toolUseID);

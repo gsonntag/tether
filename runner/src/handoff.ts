@@ -4,6 +4,7 @@
 // new agent works in the same directory.
 
 import { splitAgentWritten } from "../../web/src/shared/subagents";
+import { AGENT_LABEL, userLabel } from "./goal";
 import { withAttachments } from "../../web/src/shared/attachments";
 import type { ActivityItem, Msg, Part, UiRequest } from "../../web/src/shared/protocol";
 import { commandOf } from "./guard";
@@ -39,8 +40,8 @@ export function renderTranscript(messages: Msg[]): string {
       const all = withAttachments(text, files.map(({ type: _, ...f }) => f));
       // Tether's notes about subagents and another agent's messages aren't the user's.
       const { user, agent } = splitAgentWritten(all);
-      if (user) blocks.push(`### User\n${user}`);
-      if (agent) blocks.push(`### Tether (about a subagent, or another agent's message; not the user)\n${agent}`);
+      if (user) blocks.push(`### ${userLabel(user)}\n${user}`);
+      if (agent) blocks.push(`### ${AGENT_LABEL}\n${agent}`);
     } else if (m.role === "assistant") {
       const lines: string[] = [];
       for (const p of m.parts) {

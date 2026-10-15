@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
+import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, LEADER_UPDATES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
 import { userHome } from "./home";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
@@ -42,8 +42,22 @@ export interface RunnerConfig {
   context?: { enabled?: boolean; importedAt?: number; handoffCapture?: boolean };
   /** web app preferences shared by every device (getUiPrefs / setUiPrefs) */
   ui?: Partial<UiPrefs>;
+  /**
+   * The leader agent (runner/src/leader.ts): its session (the conversation may have moved on since:
+   * follow handoffTo), and the user's latest messages to it, which `relay` copies verbatim.
+   */
+  leader?: { sessionId: string; asks?: LeaderAsk[] };
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
+}
+
+/** A message the user sent the leader from the app (prompt / forceSend): the only text `relay` passes on. */
+export interface LeaderAsk {
+  id: string;
+  text: string;
+  at: number;
+  /** sessions it has been relayed to (once each) */
+  sentTo?: string[];
 }
 
 export interface SessionPrefs {
@@ -90,6 +104,8 @@ export interface SessionPrefs {
   subagents?: import("../../web/src/shared/protocol").SubagentLink[];
   /** it is a cross-harness subagent: who started it */
   startedBy?: import("../../web/src/shared/protocol").StartedBy;
+  /** it is the runner's leader agent (runner/src/leader.ts) */
+  leader?: boolean;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */
@@ -171,6 +187,7 @@ export function migrateJudge(cfg: RunnerConfig): boolean {
 const UI_PREF_CHECKS: { [K in keyof UiPrefs]: [(v: unknown) => boolean, string] } = {
   sidebarDays: [(v) => (SIDEBAR_DAYS as readonly unknown[]).includes(v), `one of ${SIDEBAR_DAYS.join(", ")}`],
   expandShell: [(v) => typeof v === "boolean", "true or false"],
+  leaderUpdates: [(v) => LEADER_UPDATES.some((u) => u.id === v), `one of ${LEADER_UPDATES.map((u) => u.id).join(", ")}`],
 };
 const uiKeys = Object.keys(UI_PREF_CHECKS) as (keyof UiPrefs)[];
 

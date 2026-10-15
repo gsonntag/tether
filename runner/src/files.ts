@@ -5,7 +5,8 @@
 
 import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync, constants } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { FILE_VIEW_LIMITS, type Checkpoint, type FileContents, type FileDiffResult, type PathCheck } from "../../web/src/shared/protocol";
+import { FILE_DOWNLOAD_LIMITS, FILE_VIEW_LIMITS, type Checkpoint, type FileChunk, type FileContents, type FileDiffResult, type PathCheck } from "../../web/src/shared/protocol";
+import { mimeFromName } from "../../web/src/shared/attachments";
 import { changedPaths, computeDiff, pathTurnStats, root } from "./checkpoint";
 import { isSensitive } from "./guard";
 
@@ -179,6 +180,43 @@ const isBinary = (b: Buffer) => b.subarray(0, 8192).includes(0);
  * A project file's contents now, cut at `maxBytes` (at most 1 MB) and 20,000 lines. Binary files
  * come back without content, and so do secrets files unless `reveal` (the user asked to see one).
  */
+/**
+ * A piece of a project file's raw bytes, for viewing what isn't text (a PDF, an image) or
+ * downloading any file: the same checks as readProjectFile (in the project, a regular file, the
+ * one the path names now; a secrets file only with `reveal`), up to FILE_DOWNLOAD_LIMITS.
+ */
+export function readProjectFileChunk(projectPath: string, path: string, offset = 0, length: number = FILE_DOWNLOAD_LIMITS.chunk, reveal = false): FileChunk {
+  const r = resolveInProject(projectPath, path);
+  if (!r) throw new Error("That file isn't in this project.");
+  if (!r.exists) throw new Error("That file no longer exists.");
+  const before = lstatSync(r.real, { throwIfNoEntry: false });
+  if (!before?.isFile()) throw new Error(before ? "That's not a regular file." : "That file no longer exists.");
+  const mimeType = mimeFromName(r.rel);
+  if (r.sensitive && !reveal) return { path: r.rel, size: before.size, offset: 0, data: "", mimeType, sensitive: true, withheld: true };
+  if (before.size > FILE_DOWNLOAD_LIMITS.bytes) throw new Error(`That file is over ${Math.round(FILE_DOWNLOAD_LIMITS.bytes / 1024 / 1024)} MB, too big to send through Tether.`);
+  const at = Math.max(0, Math.floor(Number(offset) || 0));
+  const want = Math.max(0, Math.min(Math.floor(Number(length) || FILE_DOWNLOAD_LIMITS.chunk), FILE_DOWNLOAD_LIMITS.chunk));
+  const fd = openSync(r.real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error("That's not a regular file.");
+    const again = resolveInProject(projectPath, path);
+    const now = again?.exists ? statSync(again.real, { throwIfNoEntry: false }) : undefined;
+    if (!now || now.dev !== st.dev || now.ino !== st.ino) throw new Error("That file changed while it was being opened; try again.");
+    const n = Math.max(0, Math.min(want, st.size - at));
+    const buf = Buffer.alloc(n);
+    let got = 0;
+    while (got < n) {
+      const k = readSync(fd, buf, got, n - got, at + got);
+      if (!k) break;
+      got += k;
+    }
+    return { path: r.rel, size: st.size, offset: at, data: buf.subarray(0, got).toString("base64"), mimeType, ...(r.sensitive ? { sensitive: true } : {}) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function readProjectFile(projectPath: string, path: string, maxBytes: number = FILE_VIEW_LIMITS.bytes, reveal = false): FileContents {
   const r = resolveInProject(projectPath, path);
   if (!r) throw new Error("That file isn't in this project.");

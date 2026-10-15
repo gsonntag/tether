@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { snapshot } from "./checkpoint";
-import { checkPaths, fileDiff, readProjectFile, resolveInProject } from "./files";
+import { checkPaths, fileDiff, readProjectFile, readProjectFileChunk, resolveInProject } from "./files";
 import type { Checkpoint } from "../../web/src/shared/protocol";
 
 const dirs: string[] = [];
@@ -298,5 +298,27 @@ describe("fileDiff", () => {
     writeFileSync(join(dir, ":(glob)x.ts"), "x\n");
     const d = await fileDiff(dir, ":(glob)x.ts", cps[0]!.sha, cps);
     expect(d.file).toMatchObject({ path: ":(glob)x.ts", status: "added" });
+  });
+});
+
+describe("readProjectFileChunk", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "tether-chunk-")));
+  const bytes = Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256));
+  writeFileSync(join(dir, "doc.pdf"), bytes);
+  writeFileSync(join(dir, ".env"), "TOKEN=secret\n");
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("raw bytes a piece at a time, with the type from the name", () => {
+    const a = readProjectFileChunk(dir, "doc.pdf", 0, 600);
+    const b = readProjectFileChunk(dir, "doc.pdf", 600, 600);
+    expect(a).toMatchObject({ path: "doc.pdf", size: 1000, offset: 0, mimeType: "application/pdf" });
+    expect(Buffer.concat([Buffer.from(a.data, "base64"), Buffer.from(b.data, "base64")])).toEqual(bytes);
+    expect(readProjectFileChunk(dir, "doc.pdf", 5000).data).toBe("");
+  });
+
+  test("a secrets file only with reveal; nothing outside the project", () => {
+    expect(readProjectFileChunk(dir, ".env")).toMatchObject({ withheld: true, data: "" });
+    expect(Buffer.from(readProjectFileChunk(dir, ".env", 0, undefined, true).data, "base64").toString()).toBe("TOKEN=secret\n");
+    expect(() => readProjectFileChunk(dir, "../../etc/passwd")).toThrow();
   });
 });

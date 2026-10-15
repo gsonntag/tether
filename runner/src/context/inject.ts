@@ -32,7 +32,7 @@ const INSTRUCTIONS = `You share a long-term memory with the user's other coding 
 - When you learn something durable (a user preference, a correction to how you work, a non-obvious project fact), save it with memory_write: one fact per call, written so it stands alone. Don't save secrets or things obvious from the code.
 - Shared skills are listed by skill_list and read with skill_get.`;
 
-export async function sessionContext(projectPath: string, session?: { id?: string; key?: string; review?: boolean }): Promise<SessionContext | undefined> {
+export async function sessionContext(projectPath: string, session?: { id?: string; key?: string; review?: boolean; leader?: boolean }): Promise<SessionContext | undefined> {
   if (!enabled) return undefined;
   try {
     const dir = contextDir();

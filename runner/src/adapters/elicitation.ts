@@ -51,6 +51,8 @@ export function formRequest(title: string, schema: unknown): UiRequest | undefin
     id: newId("q"),
     kind: "question",
     title,
+    // An MCP server's form can be an approval in disguise: the user's own answer.
+    userOnly: true,
     questions: fs.map((f) => {
       const options = f.type === "boolean" ? ["Yes", "No"] : [...(f.values?.keys() ?? [])];
       if (!f.required) options.push(SKIP);
