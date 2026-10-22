@@ -4,7 +4,7 @@
 //
 //   /tether simulate-limit <quota|rate|other> [after <n> tools] [reset <dur>] [now]
 //   /tether simulate-limit off
-//   /tether simulate-usage <claude|codex> <pct> [reset <dur>]
+//   /tether simulate-usage <claude|codex|kiro> <pct> [reset <dur>]
 //   /tether simulate-usage clear
 //   /tether exhausted <chain entry> <dur>
 //   /tether exhausted clear
@@ -42,7 +42,7 @@ export type DevCommand =
 
 export const devMode = () => process.env.TETHER_DEV === "1";
 
-const USAGE = "Usage: /tether simulate-limit <quota|rate|other> [after <n> tools] [reset <dur>] [now], /tether simulate-limit off, /tether simulate-usage <claude|codex> <pct> [reset <dur>], /tether simulate-usage clear, /tether exhausted <chain entry> <dur>, /tether exhausted clear";
+const USAGE = "Usage: /tether simulate-limit <quota|rate|other> [after <n> tools] [reset <dur>] [now], /tether simulate-limit off, /tether simulate-usage <claude|codex|kiro> <pct> [reset <dur>], /tether simulate-usage clear, /tether exhausted <chain entry> <dur>, /tether exhausted clear";
 
 /** "2h", "90m", "1h30m", "45s", "1d" → ms; undefined when it isn't a duration. */
 export function parseDuration(s: string): number | undefined {
@@ -83,7 +83,7 @@ export function parseDevCommand(text: string, dev = devMode()): DevCommand | und
   if (verb === "simulate-usage") {
     if (rest[0] === "clear" || rest[0] === "off") return { cmd: "usage-clear" };
     const provider = rest[0];
-    if (provider !== "claude" && provider !== "codex") return bad(`Unknown usage source "${provider ?? ""}".`);
+    if (provider !== "claude" && provider !== "codex" && provider !== "kiro") return bad(`Unknown usage source "${provider ?? ""}".`);
     const percent = Number(rest[1]?.replace(/%$/, ""));
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) return bad("The percentage must be 0 to 100.");
     let resetMs: number | undefined;
@@ -106,14 +106,15 @@ export function parseDevCommand(text: string, dev = devMode()): DevCommand | und
 const RESET_MS: Record<FaultKind, number> = { quota: 60 * 60_000, rate: 20_000, other: 0 };
 export const resetOf = (f: Fault, now = Date.now()) => now + (f.resetMs ?? RESET_MS[f.kind]);
 
-/** A stand-in usage report: one 5-hour window at `percent`. */
+/** A stand-in usage report: one window at `percent` (Kiro's a credit pool, the others a 5-hour window). */
 export function simulatedUsage(provider: ProviderUsage["provider"], percent: number, resetMs = 60 * 60_000, now = Date.now()): ProviderUsage {
   const p = Math.round(percent);
+  const label = provider === "claude" ? "Claude" : provider === "kiro" ? "Kiro" : "Codex";
   return {
     provider,
-    label: `${provider === "claude" ? "Claude" : "Codex"} (simulated)`,
-    windows: [{ label: "5h", percent: p, resetsAt: now + resetMs }],
-    ...(provider === "codex" && p >= 100 ? { limited: true } : {}),
+    label: `${label} (simulated)`,
+    windows: [{ label: provider === "kiro" ? "Credits" : "5h", percent: p, resetsAt: now + resetMs, ...(provider === "kiro" ? { used: p * 10, limit: 1000 } : {}) }],
+    ...((provider === "codex" || provider === "kiro") && p >= 100 ? { limited: true } : {}),
   };
 }
 

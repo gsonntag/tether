@@ -16,6 +16,10 @@ type Level = "ok" | "warn" | "crit";
 const level = (p?: number): Level => (p === undefined ? "ok" : p >= 90 ? "crit" : p >= 70 ? "warn" : "ok");
 const barVariant = { ok: "accent", warn: "warning", crit: "error" } as const;
 const short = (l: string) => (l === "Weekly" ? "wk" : l);
+/** A credit amount, trimmed: 106.36 → "106.36", 1000 → "1,000". */
+const fmtNum = (n: number) => (Number.isInteger(n) ? n.toLocaleString() : (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+/** A window carrying raw amounts (Kiro's credit pool) shows "used / limit"; others show a percent. */
+const hasAmounts = (w: UsageWindow): w is UsageWindow & { used: number; limit: number } => w.used != null && w.limit != null;
 
 function Bar({ w }: { w: UsageWindow }) {
   return (
@@ -24,7 +28,7 @@ function Bar({ w }: { w: UsageWindow }) {
         label={w.label}
         value={w.percent ?? 0}
         hasValueLabel
-        formatValueLabel={(v) => (w.percent === undefined ? "–" : `${Math.round(v)}%`)}
+        formatValueLabel={(v) => (hasAmounts(w) ? `${fmtNum(w.used)} / ${fmtNum(w.limit)}` : w.percent === undefined ? "–" : `${Math.round(v)}%`)}
         variant={barVariant[level(w.percent)]}
       />
       {w.resetsAt && <Text type="supporting">resets {fmtClock(w.resetsAt)}</Text>}
@@ -52,7 +56,7 @@ function AllUsage() {
       {!usage ? (
         <Text type="supporting">Loading usage…</Text>
       ) : usage.providers.length === 0 ? (
-        <Text type="supporting">No subscription logins found (Claude, or Codex via pi).</Text>
+        <Text type="supporting">No subscription logins found (Claude, Codex via pi, or Kiro).</Text>
       ) : (
         usage.providers.map((p) => <ProviderBlock key={p.provider} p={p} />)
       )}
@@ -71,9 +75,11 @@ export function UsagePill({ harness, model }: { harness?: string; model?: string
   const prov = usageProvider(harness, model);
   const p = prov && usage?.providers.find((x) => x.provider === prov);
   if (!p || p.error || !p.windows.length) return null;
-  const main = p.windows.filter((w) => w.label === "5h" || w.label === "Weekly");
+  // Claude/Codex collapse to their 5h/weekly windows; providers without them (Kiro's credit pool) show all.
+  const windowed = p.windows.filter((w) => w.label === "5h" || w.label === "Weekly");
+  const main = windowed.length ? windowed : p.windows;
   const worst = level(Math.max(...main.map((w) => w.percent ?? 0)));
-  const text = main.map((w) => `${short(w.label)} ${w.percent ?? "–"}%`).join(" · ");
+  const text = main.map((w) => (hasAmounts(w) ? `${short(w.label)} ${fmtNum(w.used)}/${fmtNum(w.limit)}` : `${short(w.label)} ${w.percent ?? "–"}%`)).join(" · ");
   return (
     <Popover label={`${p.label} plan usage`} content={<AllUsage />} isOpen={open} onOpenChange={setOpen} placement="above" alignment="end" width={300}>
       <Button

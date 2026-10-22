@@ -1,9 +1,11 @@
-// Plan usage limits (5-hour and weekly windows) for the subscriptions the harnesses run on:
-// Claude (Claude Code's /usage data, via the Agent SDK) and ChatGPT/Codex (the endpoint the Codex
-// CLI uses, with pi's or the Codex CLI's login). Cached briefly; one fetch serves every browser.
+// Plan usage limits for the subscriptions the harnesses run on: Claude (Claude Code's /usage data,
+// via the Agent SDK, 5-hour and weekly windows), ChatGPT/Codex (the endpoint the Codex CLI uses,
+// with pi's or the Codex CLI's login) and Kiro (its monthly credit pool, from the same
+// GetUsageLimits call kiro-cli's own /usage makes). Cached briefly; one fetch serves every browser.
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { readFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderUsage, UsageReport, UsageWindow } from "../../web/src/shared/protocol";
 import { userHome } from "./home";
@@ -15,7 +17,7 @@ let inflight: Promise<UsageReport> | undefined;
 export function getUsage(force = false): Promise<UsageReport> {
   if (!force && cache && Date.now() - cache.at < TTL) return Promise.resolve(withSimulated(cache.report));
   // A simulated provider isn't fetched (Claude's check spawns a process).
-  inflight ??= Promise.all([simulated.claude ? undefined : claudeUsage(), simulated.codex ? undefined : codexUsage()])
+  inflight ??= Promise.all([simulated.claude ? undefined : claudeUsage(), simulated.codex ? undefined : codexUsage(), simulated.kiro ? undefined : kiroUsage()])
     .then((providers) => {
       const report = { providers: providers.filter((p): p is ProviderUsage => !!p), fetchedAt: Date.now() };
       cache = { at: Date.now(), report };
@@ -36,7 +38,7 @@ export function simulateUsage(provider: ProviderUsage["provider"], usage?: Provi
 
 /** The stand-in for this account, if one is set (both ChatGPT logins share Codex's). */
 export function simulatedFor(account: UsageAccount): ProviderUsage | undefined {
-  return simulated[account === "claude" ? "claude" : "codex"];
+  return simulated[account === "claude" ? "claude" : account === "kiro" ? "kiro" : "codex"];
 }
 
 function withSimulated(r: UsageReport): UsageReport {
@@ -49,7 +51,7 @@ function withSimulated(r: UsageReport): UsageReport {
  * The logins whose usage Tether can read: Claude Code's, the Codex CLI's ChatGPT login, and pi's
  * ChatGPT login (openai-codex). The two ChatGPT logins can be different accounts.
  */
-export type UsageAccount = "claude" | "chatgpt:codex" | "chatgpt:pi";
+export type UsageAccount = "claude" | "chatgpt:codex" | "chatgpt:pi" | "kiro";
 
 /**
  * A fresh fetch for one account, never from the cache: what fallback checks before it marks a
@@ -60,6 +62,7 @@ export async function accountUsage(account: UsageAccount): Promise<ProviderUsage
   const sim = simulatedFor(account);
   if (sim) return sim;
   if (account === "claude") return claudeUsage();
+  if (account === "kiro") return kiroUsage();
   const auth = account === "chatgpt:pi" ? piAuth() : codexCliAuth();
   return auth ? codexUsage(auth) : undefined;
 }
@@ -154,5 +157,100 @@ async function codexUsage(auth = codexAuth()): Promise<ProviderUsage | undefined
     return { provider: "codex", label: "Codex", plan: j.plan_type ?? undefined, windows, limited: !!rl.limit_reached };
   } catch (e: any) {
     return { provider: "codex", label: "Codex", windows: [], error: e?.message ?? String(e) };
+  }
+}
+
+// ---------------- Kiro ----------------
+// kiro-cli (Amazon Q Developer CLI lineage) keeps its login and CodeWhisperer profile in a local
+// SQLite store (~/.local/share/kiro-cli/data.sqlite3). Usage is a monthly credit pool, read from
+// the GetUsageLimits operation (GET https://management.{region}.kiro.dev/Get-Usage-Limits with the
+// profile ARN and the login's bearer token) — the same call kiro-cli's own `/usage` makes. The
+// token is read in-process and never logged. KIRO_DB and KIRO_USAGE_URL override the defaults.
+
+type KiroAuth = { access: string; region: string; profileArn?: string; expires?: number };
+
+const regionOfArn = (arn?: string) => arn?.match(/^arn:aws:codewhisperer:([a-z0-9-]+):/)?.[1];
+
+const dbText = (v: unknown): string | undefined => (typeof v === "string" ? v : v instanceof Uint8Array ? Buffer.from(v).toString("utf8") : undefined);
+
+/** The kiro-cli login's bearer token, region and profile ARN, or undefined when it isn't signed in. */
+function kiroAuth(): KiroAuth | undefined {
+  const path = process.env.KIRO_DB ?? join(userHome(), ".local", "share", "kiro-cli", "data.sqlite3");
+  if (!existsSync(path)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new Database(path, { readonly: true });
+    // One token per auth method; social, Builder ID and IdC logins all land under kirocli:*:token.
+    // The stored record is snake_case (access_token, expires_at, profile_arn); camelCase is kept as
+    // a fallback in case a future kiro-cli changes it.
+    let token: { access: string; arn?: string; region?: string; expiresAt?: unknown } | undefined;
+    for (const r of db.query("select value from auth_kv where key like 'kirocli:%:token'").all() as { value: unknown }[]) {
+      try {
+        const j: any = JSON.parse(dbText(r.value) ?? "");
+        const access = j?.access_token ?? j?.accessToken;
+        if (access) {
+          token = { access, arn: j?.profile_arn ?? j?.profileArn, region: j?.region, expiresAt: j?.expires_at ?? j?.expiresAt };
+          break;
+        }
+      } catch {}
+    }
+    if (!token) return undefined;
+    let profileArn = token.arn;
+    if (!profileArn)
+      try {
+        const prof = JSON.parse(dbText((db.query("select value from state where key = 'api.codewhisperer.profile'").get() as { value: unknown } | null)?.value) ?? "");
+        if (typeof prof?.arn === "string") profileArn = prof.arn;
+      } catch {}
+    const region = token.region || regionOfArn(profileArn) || "us-east-1";
+    const expires = typeof token.expiresAt === "number" ? token.expiresAt : typeof token.expiresAt === "string" ? Date.parse(token.expiresAt) || undefined : undefined;
+    return { access: token.access, region, profileArn, expires };
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+
+/** `nextDateReset` over JSON: epoch seconds, epoch ms, or an ISO string. */
+function kiroReset(v: unknown): number | undefined {
+  if (typeof v === "number") return v > 1e12 ? v : v * 1000;
+  if (typeof v === "string") return Date.parse(v) || undefined;
+  return undefined;
+}
+
+/**
+ * A GetUsageLimits response as the usage page's shape: one window per limited breakdown (its
+ * `currentUsage`/`usageLimit` kept as raw amounts and as a percent), the subscription title as the
+ * plan, `nextDateReset` as the reset. Exported for the test.
+ */
+export function parseKiroUsage(j: any): ProviderUsage {
+  const resetsAt = kiroReset(j?.nextDateReset);
+  const plan = j?.subscriptionInfo?.subscriptionTitle;
+  const windows: UsageWindow[] = [];
+  for (const b of j?.usageBreakdownList ?? []) {
+    const used = b?.currentUsageWithPrecision ?? b?.currentUsage ?? 0;
+    const limit = b?.usageLimitWithPrecision ?? b?.usageLimit ?? 0;
+    if (!(limit > 0)) continue; // an unlimited breakdown has no percentage to show
+    windows.push({ label: b?.displayNamePlural ?? b?.displayName ?? b?.resourceType ?? "Credits", percent: pct((used / limit) * 100), resetsAt, used, limit });
+  }
+  const limited = windows.some((w) => (w.percent ?? 0) >= 100);
+  return { provider: "kiro", label: "Kiro", plan: plan && plan !== "Unknown" ? plan : undefined, windows, ...(limited ? { limited: true } : {}) };
+}
+
+async function kiroUsage(): Promise<ProviderUsage | undefined> {
+  const auth = kiroAuth();
+  if (!auth) return undefined; // not signed in: no Kiro row on the page
+  if (auth.expires && auth.expires < Date.now())
+    return { provider: "kiro", label: "Kiro", windows: [], error: "Login expired; sign in again with `kiro-cli login`." };
+  try {
+    const base = process.env.KIRO_USAGE_URL ?? `https://management.${auth.region}.kiro.dev`;
+    const url = `${base}/Get-Usage-Limits${auth.profileArn ? `?profileArn=${encodeURIComponent(auth.profileArn)}` : ""}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${auth.access}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return parseKiroUsage(await r.json());
+  } catch (e: any) {
+    return { provider: "kiro", label: "Kiro", windows: [], error: e?.message ?? String(e) };
   }
 }

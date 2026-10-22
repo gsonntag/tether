@@ -2107,11 +2107,12 @@ export abstract class LiveSession {
       }
       case "usage":
         simulateUsage(c.provider, simulatedUsage(c.provider, c.percent, c.resetMs));
-        this.notice(`Simulated ${c.provider === "claude" ? "Claude" : "Codex"} usage: ${Math.round(c.percent)}%${c.resetMs ? `, resetting in ${fmtSpan(c.resetMs)}` : ""}. It stands in for the real usage until cleared.`);
+        this.notice(`Simulated ${c.provider === "claude" ? "Claude" : c.provider === "kiro" ? "Kiro" : "Codex"} usage: ${Math.round(c.percent)}%${c.resetMs ? `, resetting in ${fmtSpan(c.resetMs)}` : ""}. It stands in for the real usage until cleared.`);
         break;
       case "usage-clear":
         simulateUsage("claude");
         simulateUsage("codex");
+        simulateUsage("kiro");
         this.notice("Simulated usage cleared.");
         break;
       case "exhausted": {

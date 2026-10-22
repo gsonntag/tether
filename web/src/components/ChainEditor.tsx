@@ -97,9 +97,12 @@ export function ChainEditor({
       return { warn: `Not in ${HARNESSES.find((x) => x.id === eh)?.label}'s model list (an alias may still work)` };
     const prov = usageProvider(eh, em);
     const u = prov && usage?.providers.find((p) => p.provider === prov);
-    const w5 = u?.windows.find((w) => w.label === "5h");
-    const wk = u?.windows.find((w) => w.label === "Weekly");
-    return { usage: u && !u.error ? `${u.label}: 5h ${w5?.percent ?? "–"}% · wk ${wk?.percent ?? "–"}%` : undefined };
+    if (!u || u.error) return { usage: undefined };
+    const w5 = u.windows.find((w) => w.label === "5h");
+    const wk = u.windows.find((w) => w.label === "Weekly");
+    // Kiro and other providers without 5h/weekly windows show whatever windows they have (its credit pool).
+    const note = w5 || wk ? `5h ${w5?.percent ?? "–"}% · wk ${wk?.percent ?? "–"}%` : u.windows.map((w) => `${w.label} ${w.percent ?? "–"}%`).join(" · ");
+    return { usage: note ? `${u.label}: ${note}` : undefined };
   };
 
   const all = useMemo(() => {

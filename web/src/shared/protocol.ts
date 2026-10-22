@@ -578,15 +578,18 @@ export interface ContextUsage {
 }
 
 export interface UsageWindow {
-  /** "5h", "Weekly", "Weekly · Opus", … */
+  /** "5h", "Weekly", "Weekly · Opus", "Credits", … */
   label: string;
   /** percent of the window used, 0-100 */
   percent?: number;
   resetsAt?: number;
+  /** raw amounts for a credit-style pool (Kiro): the UI shows "used / limit" */
+  used?: number;
+  limit?: number;
 }
 
 export interface ProviderUsage {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "kiro";
   label: string;
   plan?: string;
   windows: UsageWindow[];
@@ -605,6 +608,7 @@ export function usageProvider(harness: string | undefined, model?: string): Prov
   // A Codex model routed to another provider ("openrouter/x", "ollama/y") isn't on the ChatGPT login.
   if (harness === "codex") return codexOnChatGpt(model) ? "codex" : undefined;
   if (model?.startsWith("openai-codex/")) return "codex";
+  if (harness === "kiro") return "kiro";
   return undefined;
 }
 
@@ -620,6 +624,10 @@ export function codexOnChatGpt(model?: string): boolean {
  * by reading the account's usage (pi on the ChatGPT login). Anything else only offers "Continue on …".
  */
 export function switchesAutomatically(harness: string | undefined, model?: string): boolean {
+  // Kiro's usage is shown on the page, but Tether can't confirm a Kiro limit (no structured
+  // limit error, and its usage is a monthly credit pool, not a reset window), so it never
+  // switches on its own: its chain entries stay "Continue on …" like opencode's.
+  if (harness === "kiro") return false;
   return !!usageProvider(harness, model) || harness === "antigravity";
 }
 
