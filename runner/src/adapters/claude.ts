@@ -29,7 +29,7 @@ import { userParts } from "../../../web/src/shared/bash";
 import { displayText } from "../../../web/src/shared/skill";
 import { findPlan, findTool } from "../../../web/src/shared/reducer";
 import { anthropicUsage, claudeContextUsage, claudeHistoryContext, claudeWindow } from "../contextWindow";
-import { leaderAnswers, LiveSession, newId, NOBODY_ANSWERED } from "../session";
+import { LEADER_BARRED_TOOLS, leaderAnswers, LiveSession, newId, NOBODY_ANSWERED } from "../session";
 import { rememberClaudeBuiltins } from "../skillcmd";
 import { sessionLaunch } from "../connectors/launch";
 import { argvSafeMcp } from "../connectors/claude";
@@ -48,6 +48,15 @@ export const PERMISSION_MODES = ["default", "plan"];
 
 /** Claude Code's tools that change files, left out of a review session (/review). */
 export const READ_ONLY_DISALLOWED = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+/**
+ * Tools Claude never sees: a review session's edit tools, and the leader's subagents and workflows.
+ * Spread into its options (nothing when neither applies, so the connector's list stays as it is).
+ */
+export function disallowed(base: string[] | undefined, s: { review?: boolean; leader?: boolean }): { disallowedTools?: string[] } {
+  if (!s.review && !s.leader) return {};
+  return { disallowedTools: [...(base ?? []), ...(s.review ? READ_ONLY_DISALLOWED : []), ...(s.leader ? LEADER_BARRED_TOOLS : [])] };
+}
 
 /** Claude permission modes that still ask canUseTool (so the guard) before acting. */
 export function keepsGuard(mode: string | undefined): mode is "default" | "plan" {
@@ -404,7 +413,8 @@ export class ClaudeSession extends LiveSession {
         ...launch.options,
         ...(mcp.full ? { mcpServers: mcp.launch } : {}),
         // A review session (/review): its edit tools are gone; Bash and the rest still go through the guard.
-        ...(this.isReviewSession ? { disallowedTools: [...(launch.options.disallowedTools ?? []), ...READ_ONLY_DISALLOWED] } : {}),
+        // The leader: no subagents or workflows (it delegates with session_create); the guard refuses them too.
+        ...disallowed(launch.options.disallowedTools, { review: this.isReviewSession, leader: this.isLeaderSession }),
         canUseTool,
         hooks: this.sdkHooks(),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
