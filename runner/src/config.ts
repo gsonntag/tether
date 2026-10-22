@@ -106,6 +106,8 @@ export interface SessionPrefs {
   startedBy?: import("../../web/src/shared/protocol").StartedBy;
   /** it is the runner's leader agent (runner/src/leader.ts) */
   leader?: boolean;
+  /** the leader started it for the user (session_create) */
+  createdBy?: import("../../web/src/shared/protocol").CreatedBy;
 }
 
 /** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */

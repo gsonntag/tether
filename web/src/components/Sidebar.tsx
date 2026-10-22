@@ -606,6 +606,11 @@ const SessionRow = memo(function SessionRow({ s, withProject, needsYou, depth = 
               <Icon icon={CpuChipIcon} size="sm" color="secondary" />
             </Tooltip>
           )}
+          {s.createdBy && (
+            <Tooltip content="Started by your leader, at your request">
+              <Icon icon={ChatBubbleLeftRightIcon} size="sm" color="secondary" />
+            </Tooltip>
+          )}
           {withProject && (
             <Text type="supporting" maxLines={1} style={{ maxWidth: "calc(var(--spacing-12) * 2)" }}>
               {projectName(listPath(s))}

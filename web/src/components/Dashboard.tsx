@@ -304,6 +304,11 @@ function Where({ p, runnerId, ctx, extra }: { p: SessionPulse; runnerId: string;
           {`subagent of ${p.session.startedBy.title ? `“${p.session.startedBy.title}”` : "another session"}`}
         </Text>
       )}
+      {p.session.createdBy && (
+        <Text type="supporting" maxLines={1}>
+          started by your leader
+        </Text>
+      )}
       {ctx.multi && <Token size="sm" color="gray" label={runnerId} />}
       {p.model && (
         <Text type="supporting">
@@ -557,7 +562,12 @@ function NeedItem({ row, ctx }: { row: NeedRow; ctx: RowCtx }) {
   else if (r.kind === "confirm")
     actions = (
       <>
-        <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => run("yes", { confirmed: true })} />
+        {/* One that lets an agent do more (a new session the leader starts): confirmed in its session, read in full. */}
+        {r.userOnly ? (
+          <Button label="Review" variant="primary" size={size} isDisabled={!!busy} onClick={open} />
+        ) : (
+          <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => run("yes", { confirmed: true })} />
+        )}
         <Button label="No" variant="secondary" size={size} {...state("no")} onClick={() => run("no", { confirmed: false })} />
       </>
     );
