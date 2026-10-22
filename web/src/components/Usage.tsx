@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { Button } from "@astryxdesign/core/Button";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Popover } from "@astryxdesign/core/Popover";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
@@ -101,6 +102,8 @@ const wrapCode: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word
 export function UsagePill({ harness, model, statuses, cost }: { harness?: string; model?: string; statuses?: Record<string, string>; cost?: number }) {
   const usage = useStore((s) => s.usage);
   const [open, setOpen] = useState(false);
+  // No tooltip on touch: focus coming back after the popover closes would leave it on screen.
+  const touch = useMediaQuery("(hover: none)");
   const prov = usageProvider(harness, model);
   const found = prov && usage?.providers.find((x) => x.provider === prov);
   const p = found && !found.error && found.windows.length ? found : undefined;
@@ -129,7 +132,7 @@ export function UsagePill({ harness, model, statuses, cost }: { harness?: string
         label={`${name}: ${text}`}
         variant="ghost"
         size="sm"
-        tooltip={name}
+        tooltip={touch ? undefined : name}
         icon={worst === "ok" ? undefined : <StatusDot variant={worst === "crit" ? "error" : "warning"} label={worst === "crit" ? "Near the limit" : "Getting close to the limit"} />}
       >
         <Text type="inherit" hasTabularNumbers>

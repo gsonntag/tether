@@ -641,6 +641,31 @@ function useReveal() {
 const shown = (on: boolean): CSSProperties => ({ opacity: on ? 1 : 0 });
 
 /**
+ * A long press opens the context menu's sheet while the finger is still down; lifting it can then
+ * land a click on the sheet's backdrop, which closes it at once. On touch screens the click right
+ * after that lift is swallowed.
+ */
+function keepSheetOpenAfterLongPress() {
+  if (!window.matchMedia("(hover: none)").matches) return;
+  let liftedAt = 0;
+  const lift = () => void (liftedAt = Date.now());
+  const click = (e: MouseEvent) => {
+    if (liftedAt && Date.now() - liftedAt < 400) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    done();
+  };
+  const done = () => {
+    window.removeEventListener("touchend", lift, true);
+    window.removeEventListener("click", click, true);
+  };
+  window.addEventListener("touchend", lift, true);
+  window.addEventListener("click", click, true);
+  setTimeout(done, 3000);
+}
+
+/**
  * Steers that haven't reached the agent yet: dashed user bubbles at the end of the chat. They go into
  * the running turn at its next step (one behind a queued message waits for that message's turn).
  * At rest: the text, when it goes, and ×. Hover adds "Queue instead"; right-click or a long press
@@ -699,7 +724,7 @@ function SteerBubble({ sessionId, state, p, behindQueued, steerable }: { session
           </HStack>
         }
       >
-        <ContextMenu items={items} presentation="adaptive" label="Waiting message" menuWidth={200}>
+        <ContextMenu items={items} presentation="adaptive" label="Waiting message" menuWidth={200} onOpenChange={(on) => on && keepSheetOpenAfterLongPress()}>
           <PendingText p={p} edit={edit} editAsk={editAsk} />
         </ContextMenu>
       </ChatMessageBubble>
@@ -1080,7 +1105,9 @@ function Composer({
   };
 
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
-  const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued || drafts.length > 0;
+  // Steers wait in the chat, not here: only queued messages (or the held row) open the drawer.
+  const hasQueued = !!state.pending?.some((p) => p.mode === "followUp") || (!!state.pendingHeld && !!state.pending?.length);
+  const hasDrawer = matches.length > 0 || !!menuNote || hasQueued || legacyQueued || drafts.length > 0;
   const placeholder = shell ? "" : running && steerable ? "Steer the agent" : "Message the agent";
   // Pending requests (approvals, questions, plans) wait here, above the box, so they never scroll away.
   const requests = syncing ? [] : state.pendingUi;
@@ -1119,7 +1146,7 @@ function Composer({
             </Text>
           </HStack>
         )}
-        {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
+        {hasQueued && <QueuedList sessionId={sessionId} state={state} />}
         {drafts.length > 0 && <DraftChips sessionId={sessionId} drafts={drafts} />}
         {legacyQueued && (
           <HStack gap={1.5} wrap="wrap">
@@ -1145,30 +1172,26 @@ function Composer({
   // The primary button: Send, Steer (into the running turn) or Run (bash mode). Its tooltip carries the keys.
   const primaryLabel = shell ? "Run" : running && steerable ? "Steer" : "Send";
   const why = uploading ? "Waiting for attachments to upload" : shell && ready.length ? "Bash mode can't take attachments" : undefined;
-  const primaryTip = why ?? (
-    <KeyHints
-      rows={
-        narrow
-          ? [[shell ? "Run on the runner" : running && steerable ? "Goes into the running turn" : running ? "Goes in when this turn ends" : "Send"]]
-          : shell
-            ? [["Run on the runner", "enter"]]
-            : running
-              ? [
-                  [steerable ? "Steer into this turn" : "Goes in when this turn ends", "enter"],
-                  ...(canQueue ? [["Queue for after this turn", "tab"] as KeyHint] : []),
-                  ["Stop and send now", "mod+enter"],
-                  ["New line", "shift+enter"],
-                ]
-              : [
-                  ["Send", "enter"],
-                  ["New line", "shift+enter"],
-                  ["Bash mode", "!"],
-                ]
-      }
-    />
-  );
+  const keyRows: KeyHint[] = shell
+    ? [["Run on the runner", "enter"]]
+    : running
+      ? [
+          [steerable ? "Steer into this turn" : "Goes in when this turn ends", "enter"],
+          ...(canQueue ? [["Queue for after this turn", "tab"] as KeyHint] : []),
+          ["Stop and send now", "mod+enter"],
+          ["New line", "shift+enter"],
+        ]
+      : [
+          ["Send", "enter"],
+          ["New line", "shift+enter"],
+          ["Bash mode", "!"],
+        ];
+  // Narrow windows: Enter is a new line there, so no key list.
+  const narrowTip = running && !shell ? (steerable ? "Goes into the running turn" : "Goes in when this turn ends") : undefined;
+  const primaryTip = why ?? (narrow ? narrowTip : <KeyHints rows={keyRows} />);
   const primary = (
-    <Tooltip content={primaryTip}>
+    // Touch screens get no key tooltips (no keys, and a tooltip can stick after a tap).
+    <Tooltip content={primaryTip} isEnabled={!!primaryTip && (!touch || !!why)}>
       <Button label={narrow ? primaryLabel : `${primaryLabel} ↵`} variant="primary" size="sm" isDisabled={!canSend} onClick={() => send("steer")} />
     </Tooltip>
   );
@@ -1237,7 +1260,7 @@ function Composer({
         footerActions={shell ? undefined : attach}
         sendActions={
           running ? (
-            <Tooltip content={narrow ? "Stop the agent" : <KeyHints rows={[["Stop the agent (from an empty box)", "esc"]]} />}>
+            <Tooltip content={<KeyHints rows={[["Stop the agent (from an empty box)", "esc"]]} />} isEnabled={!touch}>
               <Button label="Stop" variant="secondary" size="sm" icon={<Icon icon="stop" />} onClick={stop} />
             </Tooltip>
           ) : undefined
