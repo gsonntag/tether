@@ -189,9 +189,9 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
     and monitors can run for good (a dev server), so once only they are left it waits 3 minutes
     at most and names what's still running. Not when you pressed Stop, stopped the last running
     item yourself, or the turn failed.
-  - **Blocked:** every model is at its usage limit, the agent went quiet for 15 minutes with
-    nothing running, or it failed. (A call the guard denies isn't a notification; the verdict
-    shows on its tool card.)
+  - **Blocked:** the judge denied a call in Auto (a ticket you can approve, see the Guard
+    section), every model is at its usage limit, the agent went quiet for 15 minutes with
+    nothing running, or it failed.
   - **Memory conflicts:** a new memory contradicted an older one and the newest was kept. One
     merge pass sends at most one ("3 memory conflicts"), later ones within a minute wait and go
     out together, and a pass that ends back where it started sends nothing. Tapping it opens the
@@ -231,10 +231,43 @@ Each session has an approvals mode that applies to every harness:
 | Mode | Behavior |
 |---|---|
 | **Ask** | Safe actions run on their own; anything else waits for you (from any device) |
-| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason. You can then run a blocked command yourself with **Run it myself** (the agent gets its output), or **Approve & retry** any other blocked call |
-| **Full** | Everything is allowed |
+| **Accept edits** | Like Ask, but edits inside the project run on their own |
+| **Auto** (default) | Safety rules decide what they can, and a small judge model (Claude Haiku by default) decides the rest against your task. Never waits for a person. A blocked call goes back to the agent with the reason, and you get a ticket for it (below) |
+| **Full access** | Everything is allowed. **Full access for 15 minutes** (the approvals picker, or ⋯ on an approval card) goes back to the previous mode by itself, with one line in the chat ("Full access ended · back to Auto"); it survives a runner restart, and picking any mode ends it |
 
-The rules (`runner/src/guard.ts`, covered by `guard.test.ts`):
+**Approvals.** A waiting approval says who wants to do what ("Claude Code wants to run", "wants
+to edit src/a.ts", "wants to call github"), how long it has waited, the command or a preview of
+the edit, and the guard's note when a rule flagged it. **Approve**, **Always allow**, and at the
+far end **Deny**; ⋯ has **Deny with a reason…**, **Run it myself** (shell commands: the runner
+runs it and hands the agent the output) and **Full access for 15 minutes**. The push names the
+call ("Approve git push origin main? · Fix login") and, on Android and desktop Chrome, has
+**Approve** / **Deny** buttons that answer it without opening the app (iPhone opens the card).
+An answer that comes too late (answered elsewhere) says "Already answered".
+
+**Blocked tickets.** In Auto nothing waits for you. When the judge denies a call, the agent gets
+the reason and carries on, and you get a Blocked notice with the call and the judge's reason
+(Home, the bell, a push: "Blocked git push origin main · Fix login"). A session's denials within
+a minute of a push go out as one ("3 calls blocked · Fix login"). **Approve & retry** (any call)
+or **Run it myself** (shell commands) on the tool card, Home, the bell or the push's **Approve**
+lets it through and clears the ticket. The rules' own blocks (below) aren't tickets: they are
+never right.
+
+**Always allow is a rule for the project.** Besides what the harness does with it, Always allow
+stores a rule for that project: a shell command's program and first subcommand (`git push`,
+`docker compose`, `npm run`), an MCP server's tool, or a tool by name. Commands with
+substitutions, pipes, `;`, `&&`, `||`, redirections or `sudo` aren't remembered (that one call
+is still allowed, and the chat says so). Rules apply after the guard's own rules and before the
+judge or you, never over a rule's block (a `git push` rule doesn't allow `git push --force`),
+and an edit rule only covers edits inside the project. Settings → Approvals lists them per
+project; × removes one.
+
+**Precedent.** Your verdicts on calls the judge decides are kept per project (the last 20):
+Approve & retry and Run it myself count as allowed, a Deny on an approval card for a call the
+judge would have decided counts as denied. The judge sees them with every call in that project
+("The owner allowed `git push origin feature/x` here on 2026-10-22") and follows them for the
+same kind of call.
+
+The rules (`runner/src/guard.ts`, covered by `guard.test.ts`; your rules and precedent by `approvals.test.ts`, tickets and timed access by `blocked.test.ts`):
 - **Always allowed:** reads, edits inside the project, and ordinary dev commands (tests, builds, git status/diff/commit, installing the lockfile).
 - **Always blocked:** `sudo`, deleting outside the project, force pushes, `curl | sh`, publishing packages, and touching credentials (`~/.ssh`, `.env`, cloud configs, agent auth files).
 - **Sent to the judge:** everything else, including new dependencies, pushes, network calls, Docker/kubectl, writes outside the project, and command substitution.
