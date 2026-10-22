@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findMessageIndices, messageText } from "./find";
+import { countIn, findMatches, findMessageIndices, latestUnmounted, messageText, nearestIndex } from "./find";
 import type { Msg } from "./shared/protocol";
 
 const msgs: Msg[] = [
@@ -46,5 +46,63 @@ describe("findMessageIndices", () => {
     expect(messageText(msgs[5]!)).toBe("");
     expect(messageText({ id: "e", role: "assistant", ts: 7, parts: [], error: "rate limited" })).toBe("rate limited");
     expect(messageText({ id: "e", role: "assistant", ts: 7, parts: [], error: "aborted" })).toBe("");
+  });
+
+  test("messageText is built once per message object", () => {
+    let serialised = 0;
+    const input = { toJSON: () => (serialised++, { command: "ls" }) };
+    const m: Msg = { id: "t", role: "assistant", ts: 1, parts: [{ type: "tool", id: "x", name: "Bash", input, status: "done" }] };
+    expect(messageText(m)).toContain('"command":"ls"');
+    messageText(m);
+    findMessageIndices([m], "ls");
+    expect(serialised).toBe(1);
+    // A changed message is a new object (the store copies it), so it is read again.
+    findMessageIndices([{ ...m }], "ls");
+    expect(serialised).toBe(2);
+  });
+});
+
+describe("findMatches", () => {
+  test("counts every occurrence, not just messages", () => {
+    expect(countIn("the theme of the day", "the")).toBe(3);
+    expect(countIn("aaaa", "aa")).toBe(2);
+    expect(findMatches(msgs, "the")).toEqual({ indices: [0, 1, 3], total: 3 });
+    expect(findMatches(msgs, "")).toEqual({ indices: [], total: 0 });
+  });
+});
+
+describe("latestUnmounted", () => {
+  const indices = [2, 10, 40, 55];
+  test("the latest match before the first mounted message", () => {
+    expect(latestUnmounted(indices, 50)).toBe(40);
+    expect(latestUnmounted(indices, 41)).toBe(40);
+    expect(latestUnmounted(indices, 40)).toBe(10);
+  });
+  test("nothing once every match is mounted", () => {
+    expect(latestUnmounted(indices, 2)).toBeUndefined();
+    expect(latestUnmounted(indices, 0)).toBeUndefined();
+    expect(latestUnmounted([], 100)).toBeUndefined();
+  });
+  test("walking back steps one matching message at a time", () => {
+    let start = 100;
+    const steps: number[] = [];
+    for (let i = latestUnmounted(indices, start); i !== undefined; i = latestUnmounted(indices, start)) {
+      steps.push(i);
+      start = i;
+    }
+    expect(steps).toEqual([55, 40, 10, 2]);
+  });
+});
+
+describe("nearestIndex", () => {
+  test("the last match above the bottom edge of the view", () => {
+    expect(nearestIndex([-500, -20, 100, 300, 900, 1400], 800)).toBe(3);
+    expect(nearestIndex([-500, -20], 800)).toBe(1);
+  });
+  test("the first match below when none is above", () => {
+    expect(nearestIndex([900, 1400], 800)).toBe(0);
+  });
+  test("none", () => {
+    expect(nearestIndex([], 800)).toBe(-1);
   });
 });

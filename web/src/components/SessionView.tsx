@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import {
@@ -40,8 +40,8 @@ import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
-import { FindBar, type FindBarHandle } from "./FindBar";
-import { findMessageIndices } from "../find";
+import { FindBar, modalOpen, type FindBarHandle } from "./FindBar";
+import { findMatches, latestUnmounted, MIN_TERM } from "../find";
 import { GoalLine } from "./GoalLine";
 import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
@@ -114,16 +114,34 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const narrow = useNarrow();
   const sidebarHidden = useStore((s) => s.sidebarHidden);
 
-  // Find in this session (Cmd/Ctrl+F): the bar is open while `find` is a string. The transcript
-  // mounts back to its earliest matching message, and says when it has (`revealed`).
+  // Find in this session (Cmd/Ctrl+F): the bar is open while `find` is a string. The conversation
+  // (not the page) says how many matches there are. The transcript mounts back to one more matching
+  // message (`revealFrom`, the latest it hasn't got) only when the bar asks: it has nothing to show
+  // for the term, or the reader walked back past the first match on the page. A new term withdraws
+  // the wish, so the window stops growing.
   const [find, setFind] = useState<string>();
+  const [revealFrom, setRevealFrom] = useState<number>();
   const [revealed, setRevealed] = useState(true);
   const findBar = useRef<FindBarHandle>(null);
   const composerInput = useRef<ChatComposerInputHandle>(null);
+  const term = find && find.length >= MIN_TERM ? find : "";
+  const messages = o?.messages;
+  const matches = useMemo(() => (term && messages ? findMatches(messages, term) : { indices: [], total: 0 }), [term, messages]);
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
+  const startRef = useRef(0);
+  const onStart = useCallback((start: number) => void (startRef.current = start), []);
+  const earlier = useCallback(() => {
+    const at = latestUnmounted(matchesRef.current.indices, startRef.current);
+    if (at === undefined) return false;
+    setRevealFrom(at);
+    return true;
+  }, []);
+  useEffect(() => setRevealFrom(undefined), [term]);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "f") return;
-      if (useStore.getState().dialog) return;
+      if (modalOpen()) return;
       e.preventDefault();
       setFind((f) => f ?? "");
       findBar.current?.focus();
@@ -135,8 +153,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     setFind(undefined);
     composerInput.current?.focus();
   };
-  const messages = o?.messages;
-  const revealFrom = useMemo(() => (find && messages ? findMessageIndices(messages, find)[0] : undefined), [find, messages]);
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -214,7 +230,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       anchor = node && node !== el && el.contains(node) ? { node, top: node.getBoundingClientRect().top } : undefined;
     };
     let width = el.clientWidth;
+    let height = el.clientHeight;
     const ro = new ResizeObserver(() => {
+      // A shorter scroller (the keyboard, a smaller window) leaves a gap under the end unless re-pinned.
+      if (el.clientHeight !== height) {
+        height = el.clientHeight;
+        if (stick.current) toBottom();
+      }
       if (el.clientWidth === width) return;
       width = el.clientWidth;
       const a = takeScrollAnchor() ?? anchor;
@@ -282,9 +304,10 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onTerm={setFind}
           onClose={closeFind}
           scrollTo={scrollTo}
+          total={matches.total}
           pending={!revealed}
+          onEarlier={earlier}
           inset={narrow || sidebarHidden}
-          messages={o.messages}
         />
       )}
       <ChatLayout
@@ -314,6 +337,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               after={withReviews(turnChangeMarkers(sessionId, o.messages, st), sessionId, o.messages, st.reviews)}
               revealFrom={revealFrom}
               onRevealed={setRevealed}
+              onStart={onStart}
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />

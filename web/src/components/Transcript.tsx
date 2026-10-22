@@ -98,16 +98,19 @@ export const Transcript = memo(function Transcript({
   after,
   revealFrom,
   onRevealed,
+  onStart,
 }: {
   messages: Msg[];
   running: boolean;
   amendable?: string[];
   /** extra rows after a message, by message id (e.g. the end of a turn that changed files) */
   after?: Map<string, ReactNode>;
-  /** mount at least the messages from this index on (the find bar's earliest match) */
+  /** mount the messages from this index on (the find bar's next earlier match); lowering it stops the growth */
   revealFrom?: number;
   /** told whether the messages from `revealFrom` on are all mounted, whenever that changes */
   onRevealed?: (revealed: boolean) => void;
+  /** told the index of the first mounted message whenever it changes */
+  onStart?: (start: number) => void;
 }) {
   const timed = useMemo(() => timedMessages(messages), [messages]);
   // A long conversation renders its end first, then earlier messages a few at a time between
@@ -120,7 +123,9 @@ export const Transcript = memo(function Transcript({
     const len = messages.length;
     setWin((w) => (w.len === len ? w : { ...w, count: w.len && len > w.len && len - w.len <= LIVE_ADDS ? w.count + len - w.len : w.count, len }));
   }
-  const { count, target } = win;
+  const { count } = win;
+  // The find bar's wish is not part of the window's own target: a new term withdraws it.
+  const target = Math.max(win.target, revealFrom === undefined ? 0 : messages.length - revealFrom);
   const start = Math.max(0, messages.length - count);
   const sentinel = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -143,13 +148,7 @@ export const Transcript = memo(function Transcript({
   const pending = start > 0 && count < target;
   const revealed = revealFrom === undefined || start <= revealFrom;
   useEffect(() => onRevealed?.(revealed), [revealed, onRevealed]);
-  // The find bar wants an earlier message on the page: raise the window's target to it and let the
-  // same frame-paced steps mount the rows in between.
-  useEffect(() => {
-    if (revealFrom === undefined) return;
-    const need = messages.length - revealFrom;
-    setWin((w) => (w.target >= need ? w : { ...w, target: need }));
-  }, [revealFrom, messages.length]);
+  useEffect(() => onStart?.(start), [start, onStart]);
   useEffect(() => {
     if (!pending) return;
     // After the frame paints, so input and scrolling get their turn between steps.
@@ -160,7 +159,7 @@ export const Transcript = memo(function Transcript({
         const row = list.current?.querySelector(".astryx-chat-message") ?? null;
         const bottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 2;
         grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now(), bottom };
-        setWin((w) => ({ ...w, count: Math.min(w.target, w.count + step.current) }));
+        setWin((w) => ({ ...w, count: Math.min(target, w.count + step.current) }));
       });
     });
     return () => {
@@ -168,7 +167,7 @@ export const Transcript = memo(function Transcript({
       clearTimeout(timer);
       grew.current = undefined;
     };
-  }, [pending, count]);
+  }, [pending, count, target]);
   useEffect(() => {
     const node = sentinel.current;
     if (!node || !start || pending) return;
