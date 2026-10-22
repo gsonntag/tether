@@ -19,6 +19,7 @@ import type {
 import { byRecent, DEFAULT_UI_PREFS, listPath, type UiPrefs } from "./shared/protocol";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
+import { byId, reuseSame } from "./reuse";
 import { processStarted } from "./sessionStart";
 import { applyEvent, type Transcript } from "./shared/reducer";
 import type { ForkTarget } from "./fork";
@@ -370,7 +371,7 @@ document.addEventListener("visibilitychange", () => document.visibilityState ===
 export async function refreshProjects() {
   const projects = await rpc("listProjects", {}).catch(() => undefined);
   if (!projects) return;
-  set({ projects, projectsLoaded: true });
+  set((s) => ({ projects: reuseSame(s.projects, projects, (p) => p.path), projectsLoaded: true }));
   const exp = get().expanded;
   const sel = get().open[get().selected ?? ""]?.session?.projectPath;
   for (const p of projects) if (exp[p.path] || p.path === sel) refreshSessions(p.path);
@@ -378,7 +379,7 @@ export async function refreshProjects() {
 
 export async function refreshSessions(projectPath: string) {
   const list = await rpc("listSessions", { projectPath }).catch(() => undefined);
-  if (list) set((s) => ({ sessions: { ...s.sessions, [projectPath]: list } }));
+  if (list) set((s) => ({ sessions: { ...s.sessions, [projectPath]: reuseSame(s.sessions[projectPath], list, byId) } }));
 }
 
 export function toggleProject(path: string, open?: boolean) {
@@ -435,7 +436,7 @@ async function doLoad(sessionId: string) {
     get().open[sessionId]?.session?.projectPath ?? Object.values(get().sessions).flat().find((x) => x.id === sessionId)?.projectPath;
   try {
     const snap: SessionSnapshot = await rpc("openSession", { sessionId, projectPath });
-    set((s) => ({ open: { ...s.open, [sessionId]: { ...snap, loading: false, syncing: false } } }));
+    set((s) => ({ open: { ...s.open, [sessionId]: { ...snap, messages: reuseSame(s.open[sessionId]?.messages, snap.messages, byId), loading: false, syncing: false } } }));
     upsertSummary(snap.session);
     putCached(runnerKey(), snap);
   } catch (e: any) {

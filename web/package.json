@@ -27,5 +27,8 @@
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.3"
+  },
+  "patchedDependencies": {
+    "@astryxdesign/core@0.6.6": "patches/@astryxdesign%2Fcore@0.6.6.patch"
   }
 }
