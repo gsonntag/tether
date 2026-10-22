@@ -94,6 +94,8 @@ function SessionDetails({ statuses, spent }: { statuses: [string, string][]; spe
   );
 }
 const wrapCode: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
+/** Several plans plus the session's lines can be taller than a phone: the popover scrolls. */
+const popoverBody: CSSProperties = { maxHeight: "70vh", overflowY: "auto" };
 
 /**
  * Settings-bar pill: the 5h / weekly usage of the subscription this session runs on. Its popover
@@ -121,7 +123,7 @@ export function UsagePill({ harness, model, statuses, cost }: { harness?: string
   }
   const name = p ? `${p.label} plan usage` : "Session cost and status";
   const content = (
-    <VStack gap={3}>
+    <VStack gap={3} style={popoverBody}>
       {(spent || extra.length > 0) && <SessionDetails statuses={extra} spent={spent} />}
       {p && <AllUsage />}
     </VStack>
