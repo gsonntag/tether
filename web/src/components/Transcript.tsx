@@ -96,12 +96,18 @@ export const Transcript = memo(function Transcript({
   running,
   amendable,
   after,
+  revealFrom,
+  onRevealed,
 }: {
   messages: Msg[];
   running: boolean;
   amendable?: string[];
   /** extra rows after a message, by message id (e.g. the end of a turn that changed files) */
   after?: Map<string, ReactNode>;
+  /** mount at least the messages from this index on (the find bar's earliest match) */
+  revealFrom?: number;
+  /** told whether the messages from `revealFrom` on are all mounted, whenever that changes */
+  onRevealed?: (revealed: boolean) => void;
 }) {
   const timed = useMemo(() => timedMessages(messages), [messages]);
   // A long conversation renders its end first, then earlier messages a few at a time between
@@ -135,6 +141,15 @@ export const Transcript = memo(function Transcript({
     step.current = Math.min(MAX_STEP, Math.max(1, Math.round((step.current * FRAME_MS) / Math.max(took, 1))));
   }, [count]);
   const pending = start > 0 && count < target;
+  const revealed = revealFrom === undefined || start <= revealFrom;
+  useEffect(() => onRevealed?.(revealed), [revealed, onRevealed]);
+  // The find bar wants an earlier message on the page: raise the window's target to it and let the
+  // same frame-paced steps mount the rows in between.
+  useEffect(() => {
+    if (revealFrom === undefined) return;
+    const need = messages.length - revealFrom;
+    setWin((w) => (w.target >= need ? w : { ...w, target: need }));
+  }, [revealFrom, messages.length]);
   useEffect(() => {
     if (!pending) return;
     // After the frame paints, so input and scrolling get their turn between steps.

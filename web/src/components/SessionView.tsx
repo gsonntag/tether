@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import {
@@ -40,6 +40,8 @@ import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
+import { FindBar, type FindBarHandle } from "./FindBar";
+import { findMessageIndices } from "../find";
 import { GoalLine } from "./GoalLine";
 import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
@@ -111,6 +113,30 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   };
   const narrow = useNarrow();
   const sidebarHidden = useStore((s) => s.sidebarHidden);
+
+  // Find in this session (Cmd/Ctrl+F): the bar is open while `find` is a string. The transcript
+  // mounts back to its earliest matching message, and says when it has (`revealed`).
+  const [find, setFind] = useState<string>();
+  const [revealed, setRevealed] = useState(true);
+  const findBar = useRef<FindBarHandle>(null);
+  const composerInput = useRef<ChatComposerInputHandle>(null);
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "f") return;
+      if (useStore.getState().dialog) return;
+      e.preventDefault();
+      setFind((f) => f ?? "");
+      findBar.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const closeFind = () => {
+    setFind(undefined);
+    composerInput.current?.focus();
+  };
+  const messages = o?.messages;
+  const revealFrom = useMemo(() => (find && messages ? findMessageIndices(messages, find)[0] : undefined), [find, messages]);
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -248,6 +274,19 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
       <GoalLine goal={st.goal} inset={narrow || sidebarHidden} />
       <ScheduleLine sessionId={sessionId} schedules={st.schedules} inset={narrow || sidebarHidden} />
+      {find !== undefined && (
+        <FindBar
+          ref={findBar}
+          scroller={scroller}
+          term={find}
+          onTerm={setFind}
+          onClose={closeFind}
+          scrollTo={scrollTo}
+          pending={!revealed}
+          inset={narrow || sidebarHidden}
+          messages={o.messages}
+        />
+      )}
       <ChatLayout
         ref={scroller}
         density="spacious"
@@ -258,7 +297,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           else if (el.scrollTop < lastTop.current - 1) stick.current = false;
           lastTop.current = el.scrollTop;
         }}
-        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
+        composer={
+          <Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} inputRef={composerInput} />
+        }
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
@@ -271,6 +312,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               running={st.status === "running"}
               amendable={st.amendable}
               after={withReviews(turnChangeMarkers(sessionId, o.messages, st), sessionId, o.messages, st.reviews)}
+              revealFrom={revealFrom}
+              onRevealed={setRevealed}
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
@@ -612,14 +655,30 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state, messages, harness, live, opening }: { sessionId: string; state: LiveState; messages: Msg[]; harness: HarnessId; live: boolean; opening: boolean }) {
+function Composer({
+  sessionId,
+  state,
+  messages,
+  harness,
+  live,
+  opening,
+  inputRef: input,
+}: {
+  sessionId: string;
+  state: LiveState;
+  messages: Msg[];
+  harness: HarnessId;
+  live: boolean;
+  opening: boolean;
+  /** the message box, so the session view can put focus back in it */
+  inputRef: RefObject<ChatComposerInputHandle | null>;
+}) {
   /** a message went to a session whose process had stopped: it starts again first */
   const [waking, setWaking] = useState(false);
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
-  const input = useRef<ChatComposerInputHandle>(null);
   const historyPosition = useRef<number | null>(null);
   const historySnapshot = useRef<string[]>([]);
   const historyDraft = useRef("");
