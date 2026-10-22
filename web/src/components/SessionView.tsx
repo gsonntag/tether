@@ -137,7 +137,12 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     setRevealFrom(at);
     return true;
   }, []);
-  useEffect(() => setRevealFrom(undefined), [term]);
+  // A new term withdraws the wish at once (not in an effect: the bar's own effects may ask again in
+  // the same commit, and that request must stand).
+  const onTerm = (t: string) => {
+    setFind(t);
+    setRevealFrom(undefined);
+  };
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "f") return;
@@ -151,6 +156,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }, []);
   const closeFind = () => {
     setFind(undefined);
+    setRevealFrom(undefined);
     composerInput.current?.focus();
   };
 
@@ -301,7 +307,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           ref={findBar}
           scroller={scroller}
           term={find}
-          onTerm={setFind}
+          onTerm={onTerm}
           onClose={closeFind}
           scrollTo={scrollTo}
           total={matches.total}

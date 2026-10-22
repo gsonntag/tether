@@ -69,8 +69,12 @@ export function FindBar({
   // every DOM change, and the transcript changes a lot.
   const buckets = useRef(new Map<Element, StaticRange[]>());
   const hits = useRef<{ flat: StaticRange[]; current: number }>({ flat: [], current: 0 });
-  /** what the next collection should do: start a new term near the reader, or step to a match that mounts earlier */
-  const want = useRef<"nearest" | "earlier">(undefined);
+  /**
+   * What the next collection should do: start a new term on the match nearest the reader
+   * ("nearest"; "requested" once it has asked for an earlier message to be mounted for that), or
+   * step to a match that mounts earlier ("earlier").
+   */
+  const want = useRef<"nearest" | "requested" | "earlier">(undefined);
   const [view, setView] = useState({ n: 0 });
 
   /** Shows and scrolls to match `i` (wrapping); `ifHidden` leaves a match already in view where it is. */
@@ -121,13 +125,14 @@ export function FindBar({
     if (flat.length > MAX_RANGES) flat = flat.slice(-MAX_RANGES);
     let current = was ? flat.findIndex((r) => r.startContainer === was.startContainer && r.startOffset === was.startOffset) : -1;
     const el = scroller.current;
-    if (current < 0 && want.current === "nearest" && el) {
+    const starting = want.current === "nearest" || want.current === "requested";
+    if (current < 0 && starting && el) {
       const bottom = el.getBoundingClientRect().bottom;
       current = nearestIndex(flat.map((r) => toRange(r)?.getBoundingClientRect().top ?? Infinity), bottom);
     }
     if (current < 0) current = Math.min(hits.current.current, Math.max(0, flat.length - 1));
     hits.current = { flat, current };
-    if (want.current === "nearest" && flat.length) {
+    if (starting && flat.length) {
       want.current = undefined;
       go(current, true);
     } else if (want.current === "earlier" && current > 0) {
@@ -137,9 +142,9 @@ export function FindBar({
       if (!needle) want.current = undefined;
       setView({ n: flat.length });
       paint(flat, current);
-      // Nothing on the page for a term the conversation does have: ask for its latest earlier message.
+      // Nothing on the page for a term the conversation does have: ask once for its latest earlier message.
       const l = latest.current;
-      if (want.current === "nearest" && !flat.length && l.total && !l.pending && !l.onEarlier()) want.current = undefined;
+      if (want.current === "nearest" && !flat.length && l.total && !l.pending) want.current = l.onEarlier() ? "requested" : undefined;
     }
   };
   const latestCollect = useRef(collect);
@@ -187,20 +192,15 @@ export function FindBar({
     mo.observe(root, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["hidden", "style", "class"] });
     return () => mo.disconnect();
   }, []);
-  // An earlier message finished mounting for a step that is still waiting: the step completes, or
-  // asks for the next one when that message showed nothing (its match is folded away).
+  // An earlier message finished mounting for a step that is still waiting: the step completes. When
+  // that message shows nothing (its match is folded away in a tool's output), the step ends there:
+  // one message per press, and the next press asks for the next one.
   useEffect(() => {
     if (pending || !want.current) return;
+    const before = want.current;
     flush();
-    const w = want.current;
-    if (!w) return;
-    const { flat, current } = hits.current;
-    if (w === "earlier" ? current === 0 : !flat.length) {
-      if (!latest.current.onEarlier()) {
-        want.current = undefined;
-        if (w === "earlier" && flat.length) go(flat.length - 1);
-      }
-    }
+    // Unless that collection moved on (to a match, or to a request of its own), the step ends here.
+    if (want.current === before) want.current = undefined;
   }, [pending]);
   useEffect(() => {
     input.current?.focus();
