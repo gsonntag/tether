@@ -423,9 +423,21 @@ export function shellPrefix(cmd: string): { prefix: string } | { refused: string
   if (COMPOUND.test(c)) return { refused: "Commands with substitutions, pipes, ;, &&, ||, redirections or sudo aren't remembered." };
   const t = c.split(/\s+/);
   if (!t[0] || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) return { refused: "Commands that set variables first aren't remembered." };
+  if (isWrapper(t[0])) return { refused: `\`${t[0]}\` runs whatever it is given, so it isn't remembered.` };
+  // A flag, path or quoted script where the subcommand goes ("rm -f a", "git -C sub push"): the
+  // bare program would allow every use of it.
   const sub = t[1] && /^[A-Za-z][\w.:-]*$/.test(t[1]) ? t[1] : undefined;
+  if (t[1] && !sub) return { refused: "Only a program and its subcommand are remembered (\"git push\"), and this has neither after the program." };
   return { prefix: sub ? `${t[0]} ${sub}` : t[0] };
 }
+
+/** Shells, interpreters and wrappers: their "subcommand" is code or another command. */
+const WRAPPERS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "node", "bun", "deno", "perl", "ruby", "php", "lua", "env", "xargs", "eval", "exec", "nohup", "timeout", "nice", "ionice", "find", "command", "builtin", "time", "watch", "ssh", "su", "sudo", "doas", "stdbuf", "setsid", "chroot", "busybox"]);
+
+const isWrapper = (program: string) => {
+  const b = program.slice(program.lastIndexOf("/") + 1);
+  return WRAPPERS.has(b) || /^(python|pypy)[\d.]*$/.test(b);
+};
 
 const mcpParts = (tool: string) => tool.match(/^mcp__(.+?)__(.+)$/);
 
@@ -461,7 +473,8 @@ export function matchRule(list: ApprovalRule[], call: ToolCall, ruled?: Verdict)
         if (r.tool === call.tool && cmd === undefined) return r;
         continue;
       }
-      if (!words || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) continue;
+      // A wrapper's rule (stored before they were refused) never matches: it would allow any command.
+      if (!words || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "") || isWrapper(r.prefix.split(" ")[0]!)) continue;
       if (r.prefix.split(" ").every((w, i) => words[i] === w)) return r;
       continue;
     }
