@@ -296,7 +296,8 @@ function Where({ s, runnerId, ctx, verb }: { s: SessionSummary; runnerId: string
   return (
     <HStack gap={1.5} vAlign="center" wrap="wrap">
       <Text type="supporting" maxLines={1}>
-        {[project(listPath(s)), harnessLabel(s.harness), verb].join(" · ")}
+        {/* One the leader started for you (session_create) says so. */}
+        {[project(listPath(s)), harnessLabel(s.harness), s.createdBy && "started by your leader", verb].filter(Boolean).join(" · ")}
       </Text>
       {ctx.multi && <Token size="sm" color="gray" label={runnerId} />}
     </HStack>
@@ -428,7 +429,12 @@ function InboxItem({ row, ctx }: { row: InboxRow; ctx: RowCtx }) {
     else if (r.kind === "confirm")
       actions = (
         <>
-          <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => answer("yes", { confirmed: true })} />
+          {/* One that lets an agent do more (a new session the leader starts): confirmed in its session, read in full. */}
+          {r.userOnly ? (
+            <Button label="Review" variant="primary" size={size} isDisabled={!!busy} onClick={open} />
+          ) : (
+            <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => answer("yes", { confirmed: true })} />
+          )}
           <Button label="No" variant="secondary" size={size} {...state("no")} onClick={() => answer("no", { confirmed: false })} />
         </>
       );

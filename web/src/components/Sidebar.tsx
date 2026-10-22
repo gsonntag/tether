@@ -631,6 +631,11 @@ const SessionRow = memo(function SessionRow({ s, at, withProject, needsYou, dept
               <Icon icon={CpuChipIcon} size="xsm" color="secondary" />
             </Tooltip>
           )}
+          {s.createdBy && (
+            <Tooltip content="Started by your leader, at your request">
+              <Icon icon={ChatBubbleLeftRightIcon} size="xsm" color="secondary" />
+            </Tooltip>
+          )}
           <HarnessGlyph harness={s.harness} />
           {project && (
             <Text type="supporting" maxLines={1}>
