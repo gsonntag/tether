@@ -331,7 +331,11 @@ function MemoryNavItem() {
 /** A session row's menu (right-click, long-press): Rename, Mark done, Stop the agent process; a done one from search: Bring back. */
 function sessionMenu(id: string, hits: SessionSearchResult[], rename: (id: string) => void): RowMenuItems | undefined {
   const st = useStore.getState();
-  const s = st.open[id]?.session ?? knownSessions(st.projects, st.sessions, st.recent).get(id) ?? hits.find((h) => h.session.id === id)?.session;
+  const s =
+    st.open[id]?.session ??
+    knownSessions(st.projects, st.sessions, st.recent).get(id) ??
+    st.pulses[st.runnerId ?? ""]?.[id]?.session ??
+    hits.find((h) => h.session.id === id)?.session;
   if (!s) return undefined;
   if (s.archived) return { title: s.title, items: [{ label: "Bring back", onClick: () => void archive(s, false) }] };
   return {

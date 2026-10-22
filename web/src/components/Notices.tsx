@@ -91,7 +91,7 @@ export function NoticeBell() {
 }
 
 function NoticeRow({ n, read, close }: { n: AgentNotice; read: boolean; close: () => void }) {
-  const title = useStore((st) => (n.kind === "memory" ? undefined : (st.open[n.sessionId]?.session ?? knownSessions(st.projects, st.sessions, st.recent).get(n.sessionId))?.title));
+  const title = useStore((st) => (n.kind === "memory" ? undefined : (st.open[n.sessionId]?.session ?? knownSessions(st.projects, st.sessions, st.recent).get(n.sessionId) ?? st.pulses[st.runnerId ?? ""]?.[n.sessionId]?.session)?.title));
   const [busy, setBusy] = useState(false);
   const link = useRef<HTMLButtonElement>(null);
   const kind = KIND[n.kind];

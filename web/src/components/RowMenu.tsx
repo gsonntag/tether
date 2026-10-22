@@ -4,7 +4,7 @@
 import { useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 import { ContextMenu, type ContextMenuOption } from "@astryxdesign/core/ContextMenu";
 import { useContainerReveal, useMediaQuery } from "@astryxdesign/core/hooks";
-import { HStack } from "@astryxdesign/core/Layout";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 
 export type RowMenuItems = { title: string; items: ContextMenuOption[] };
@@ -14,8 +14,7 @@ export const rowMenuKey = (key: string) => ({ "data-row-menu": key });
 
 /**
  * One ContextMenu for a whole list: right-click (desktop) or long-press (touch, as a sheet) on a
- * row marked with rowMenuKey opens that row's actions. The tap that ends a long press doesn't
- * also open the row.
+ * row marked with rowMenuKey opens that row's actions.
  */
 export function RowMenus({ itemsFor, children }: { itemsFor: (key: string) => RowMenuItems | undefined; children: ReactNode }) {
   const [key, setKey] = useState<string>();
@@ -32,32 +31,40 @@ export function RowMenus({ itemsFor, children }: { itemsFor: (key: string) => Ro
     if (e.type === "contextmenu" && (!k || !itemsFor(k))) e.stopPropagation();
   };
   const menu = key ? itemsFor(key) : undefined;
-  const capture = {
-    onContextMenuCapture: pick,
-    onPointerDownCapture: pick,
+  // The tap that ends a long press: the browser may still send its click, onto the row (opening it)
+  // or the sheet's backdrop (closing it at once). A click with no press since the menu opened is that one.
+  const pressedSinceOpen = useRef(true);
+  const guard = {
+    onPointerDownCapture: () => {
+      if (open.current) pressedSinceOpen.current = true;
+    },
     onClickCapture: (e: SyntheticEvent) => {
-      // The menu's own rows are inside this tree (React portals bubble here) and must still work.
-      if (touch.current && Date.now() - openedAt.current < 700 && !(e.target as HTMLElement).closest?.('[role="menu"], [role="dialog"]')) {
+      if (touch.current && !pressedSinceOpen.current && Date.now() - openedAt.current < 1500) {
         e.stopPropagation();
         e.preventDefault();
       }
     },
   };
   return (
-    <ContextMenu
-      label={menu?.title ?? "Session actions"}
-      presentation="adaptive"
-      size="md"
-      menuWidth="calc(var(--spacing-12) * 4)"
-      items={menu?.items ?? []}
-      onOpenChange={(o) => {
-        open.current = o;
-        if (o) openedAt.current = Date.now();
-      }}
-      {...(capture as {})}
-    >
-      {children}
-    </ContextMenu>
+    <VStack {...(guard as {})}>
+      <ContextMenu
+        label={menu?.title ?? "Session actions"}
+        presentation="adaptive"
+        size="md"
+        menuWidth="calc(var(--spacing-12) * 4)"
+        items={menu?.items ?? []}
+        onOpenChange={(o) => {
+          open.current = o;
+          if (o) {
+            openedAt.current = Date.now();
+            pressedSinceOpen.current = false;
+          }
+        }}
+        {...({ onContextMenuCapture: pick, onPointerDownCapture: pick } as {})}
+      >
+        {children}
+      </ContextMenu>
+    </VStack>
   );
 }
 

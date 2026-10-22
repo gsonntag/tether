@@ -251,7 +251,7 @@ export function Dashboard({ focus }: { focus?: "running" }) {
               )}
               {working.length > 0 && (
                 <VStack id="home-working">
-                  <Collapsible defaultIsOpen={!phone || focus === "running"} trigger={<Text type="label">{`Working · ${working.length}`}</Text>}>
+                  <Collapsible defaultIsOpen={!phone || focus === "running"} trigger={<SectionLabel phone={phone}>{`Working · ${working.length}`}</SectionLabel>}>
                     <List density="compact" hasDividers>
                       {working.map((e) => (
                         <WorkingItem key={rowKey(e)} entry={e} ctx={ctx} />
@@ -261,7 +261,7 @@ export function Dashboard({ focus }: { focus?: "running" }) {
                 </VStack>
               )}
               {continueRows.length > 0 && (
-                <Collapsible trigger={<Text type="label">Continue</Text>}>
+                <Collapsible trigger={<SectionLabel phone={phone}>Continue</SectionLabel>}>
                   <List density="compact" hasDividers>
                     {continueRows.map((e) => (
                       <ContinueItem key={rowKey(e)} entry={e} ctx={ctx} />
@@ -274,6 +274,15 @@ export function Dashboard({ focus }: { focus?: "running" }) {
         </LayoutContent>
       }
     />
+  );
+}
+
+/** A collapsible group's label; on a phone, in line with the rows' text. */
+function SectionLabel({ phone, children }: { phone: boolean; children: ReactNode }) {
+  return (
+    <HStack paddingInlineStart={phone ? 2 : 0}>
+      <Text type="label">{children}</Text>
+    </HStack>
   );
 }
 
@@ -552,11 +561,8 @@ function WorkingItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
       {...rowMenuKey(rowKey(entry))}
       onClick={() => openOnRunner(entry.runnerId!, s)}
       startContent={<WorkIndicator work={pulseWork(p)} />}
-      label={s.title}
-      // ListItem hands it on to Item: title and description share the one line.
-      {...({ layout: "inline" } as {})}
-      description={
-        <>
+      label={
+        <OneLine title={s.title}>
           {[project(listPath(s)), statusLine(p)].join(" · ")}
           {busy && (
             <>
@@ -564,7 +570,7 @@ function WorkingItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
               <Timer startTime={p.turnStartedAt} type="inherit" color="inherit" />
             </>
           )}
-        </>
+        </OneLine>
       }
       endContent={
         <HStack gap={2} vAlign="center">
@@ -576,6 +582,21 @@ function WorkingItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
   );
 }
 
+const ellipsis = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
+
+/** A one-line row's text: the title, then quieter detail; the detail gives way first, then the title truncates. */
+function OneLine({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <HStack gap={1.5} vAlign="center" style={{ minWidth: 0 }}>
+      {/* Truncated by style, not maxLines: its tooltip would stick after a long press on touch. */}
+      <Text display="block" style={{ ...ellipsis, flex: "0 1 auto", minWidth: "calc(var(--spacing-12) * 2)" }}>{title}</Text>
+      <Text type="supporting" display="block" style={{ ...ellipsis, flex: "0 100 auto", minWidth: 0 }}>
+        {children}
+      </Text>
+    </HStack>
+  );
+}
+
 /** title · project · ago */
 function ContinueItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
   const s = entry.session;
@@ -584,10 +605,7 @@ function ContinueItem({ entry, ctx }: { entry: Entry; ctx: RowCtx }) {
       {...rowMenuKey(rowKey(entry))}
       onClick={() => openOnRunner(entry.runnerId!, s)}
       startContent={<HarnessGlyph harness={s.harness} />}
-      label={s.title}
-      // ListItem hands it on to Item: title and description share the one line.
-      {...({ layout: "inline" } as {})}
-      description={project(listPath(s))}
+      label={<OneLine title={s.title}>{project(listPath(s))}</OneLine>}
       endContent={
         <HStack gap={2} vAlign="center">
           {ctx.multi && <Token size="sm" color="gray" label={entry.runnerId!} />}
