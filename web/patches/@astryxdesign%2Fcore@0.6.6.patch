@@ -1,0 +1,33 @@
+diff --git a/dist/Text/useTruncation.js b/dist/Text/useTruncation.js
+index 75d33acdc1514fea1cc066457aa9589882ca2c59..2f026681af61263de24941b24ca0488b7cd96dd5 100644
+--- a/dist/Text/useTruncation.js
++++ b/dist/Text/useTruncation.js
+@@ -86,7 +86,14 @@ export function useTruncation(options) {
+       // observeResize fires the callback once on registration,
+       // so no separate initial check is needed.
+       if (typeof ResizeObserver !== 'undefined') {
++        // Tether patch: skip the synchronous first call (it forces a layout per line as a long
++        // list mounts); the observer's own first report, after layout, measures them all at once.
++        let initial = true;
+         unobserveRef.current = observeResize(element, () => {
++          if (initial) {
++            initial = false;
++            return;
++          }
+           checkTruncation(element);
+         });
+       } else {
+diff --git a/dist/Tooltip/useTooltip.js b/dist/Tooltip/useTooltip.js
+index fe9e59f6fa09e66ee1ac928ef220fe0fd20c6247..d599a0c41aa9f933d398d5520857ac35f0ff7add 100644
+--- a/dist/Tooltip/useTooltip.js
++++ b/dist/Tooltip/useTooltip.js
+@@ -110,6 +110,9 @@ export function useTooltip(options = {}) {
+   } = options;
+   const layer = useLayer({
+     mode: 'context',
++    // Tether patch: find the portal target on first show, not as each tooltip mounts (it reads
++    // computed styles, forcing a style recalc per tooltip while a long list mounts).
++    lazyMount: true,
+     onShow,
+     onHide
+   });

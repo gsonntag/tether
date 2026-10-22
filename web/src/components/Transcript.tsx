@@ -104,29 +104,60 @@ export const Transcript = memo(function Transcript({
   after?: Map<string, ReactNode>;
 }) {
   const timed = useMemo(() => timedMessages(messages), [messages]);
-  // A long conversation renders its end first; earlier messages are added as the reader nears the
-  // top, keeping what's on screen in place (rendering hundreds of rows at once froze the page).
-  const [count, setCount] = useState(FIRST_ROWS);
+  // A long conversation renders its end first, then earlier messages a few at a time between
+  // frames, and more as the reader nears the top, keeping what's on screen in place. Rows are
+  // costly to mount (tooltips and truncated lines measure the page as they attach), so no single
+  // step mounts more than fits in a frame on this device: the page never freezes, however long.
+  const [win, setWin] = useState({ count: FIRST_STEP, target: FIRST_ROWS, len: messages.length });
+  // A message or two arriving live joins the window rather than pushing its top row out.
+  if (win.len !== messages.length) {
+    const len = messages.length;
+    setWin((w) => (w.len === len ? w : { ...w, count: w.len && len > w.len && len - w.len <= LIVE_ADDS ? w.count + len - w.len : w.count, len }));
+  }
+  const { count, target } = win;
   const start = Math.max(0, messages.length - count);
   const sentinel = useRef<HTMLDivElement>(null);
-  const grew = useRef<{ el: HTMLElement; height: number }>(undefined);
-  const more = () => {
-    const el = scrollParent(sentinel.current);
-    if (el) grew.current = { el, height: el.scrollHeight };
-    setCount((c) => c + MORE_ROWS);
-  };
+  const list = useRef<HTMLDivElement>(null);
+  // The row on screen before a step, and where it was: the step moves the view back by however far
+  // it went (nothing where the browser already anchored it, and growth at the bottom doesn't count).
+  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number }>(undefined);
+  const step = useRef(FIRST_STEP);
+  const more = () => setWin((w) => ({ ...w, target: Math.max(w.target, w.count + MORE_ROWS) }));
   useLayoutEffect(() => {
     const g = grew.current;
     grew.current = undefined;
-    if (g) g.el.scrollTop += g.el.scrollHeight - g.height;
+    if (!g) return;
+    if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
+    // Size the next step to what this one cost.
+    const took = performance.now() - g.at;
+    step.current = Math.min(MAX_STEP, Math.max(1, Math.round((step.current * FRAME_MS) / Math.max(took, 1))));
   }, [count]);
+  const pending = start > 0 && count < target;
+  useEffect(() => {
+    if (!pending) return;
+    // After the frame paints, so input and scrolling get their turn between steps.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        const el = scrollParent(sentinel.current);
+        const row = list.current?.querySelector(".astryx-chat-message") ?? null;
+        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now() };
+        setWin((w) => ({ ...w, count: Math.min(w.target, w.count + step.current) }));
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      grew.current = undefined;
+    };
+  }, [pending, count]);
   useEffect(() => {
     const node = sentinel.current;
-    if (!node || !start) return;
+    if (!node || !start || pending) return;
     const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && more(), { root: scrollParent(node), rootMargin: "800px 0px 0px 0px" });
     io.observe(node);
     return () => io.disconnect();
-  }, [start]);
+  }, [start, pending]);
   return (
     <>
       {start > 0 && (
@@ -134,7 +165,7 @@ export const Transcript = memo(function Transcript({
           <Button label={`Show ${start} earlier ${start === 1 ? "message" : "messages"}`} variant="ghost" size="sm" onClick={more} />
         </HStack>
       )}
-      <ChatMessageList align="top" isStreaming={running} style={listStyle}>
+      <ChatMessageList ref={list} align="top" isStreaming={running} style={listStyle}>
         {messages.slice(start).flatMap((m, j) => {
           const i = start + j;
           const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} timed={timed.has(m.id)} />;
@@ -146,9 +177,15 @@ export const Transcript = memo(function Transcript({
   );
 });
 
-/** Messages a session first renders, and how many more each step up adds. */
+/** Messages a session first mounts at once; how many it fills in to soon after, and how many more nearing the top adds. */
+const FIRST_STEP = 3;
 const FIRST_ROWS = 40;
 const MORE_ROWS = 60;
+/** Each later step aims to fit in this much of a frame, mounting at most MAX_STEP messages. */
+const FRAME_MS = 12;
+const MAX_STEP = 12;
+/** More messages than this arriving at once is a new copy of the transcript, not live replies. */
+const LIVE_ADDS = 4;
 
 /** The nearest ancestor that scrolls vertically. */
 function scrollParent(node: Element | null): HTMLElement | null {
