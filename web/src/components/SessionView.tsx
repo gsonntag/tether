@@ -59,6 +59,8 @@ import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
 import { commandRunsHow } from "../library";
 import { create } from "zustand";
+// opencode, Kiro and Antigravity can't take a message mid-turn: what you send waits for the turn's end (README, "Steer and queue").
+import { canSteer, completesSlash, composerKeyAction, fullAccessLeft } from "../composerKeys";
 
 /** Phones: Enter makes a new line, and the less important settings hide. */
 const NARROW = "(max-width: 760px)";
@@ -72,7 +74,7 @@ const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word"
 const composerDock: CSSProperties ={ paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
 /** Docked requests stay reachable without taking the whole screen (a long plan scrolls inside). */
-const dockedRequests: CSSProperties = { maxHeight: "50vh", overflowY: "auto" };
+const dockedRequests: CSSProperties = { maxHeight: "50dvh", overflowY: "auto" };
 /** Fills the drawer's row without letting long menu rows widen it (they truncate instead). */
 const drawerBody: CSSProperties = { flex: "1 1 100%", width: 0, minWidth: 0 };
 const queuedRow = (dragging: boolean): CSSProperties => ({
@@ -90,9 +92,6 @@ const steerBubble = (blocked: boolean): CSSProperties => ({
 const shellFont = { "--font-family-body": "var(--font-family-code)" } as CSSProperties;
 
 const harnessOf = (sessionId: string) => sessionId.split(":")[0] as HarnessId;
-/** opencode, Kiro and Antigravity can't take a message mid-turn: what you send waits for the turn's end (README, "Steer and queue"). */
-const CANT_STEER: ReadonlySet<HarnessId> = new Set<HarnessId>(["opencode", "kiro", "antigravity"]);
-const canSteer = (h: HarnessId) => !CANT_STEER.has(h);
 
 export function SessionView({ sessionId }: { sessionId: string }) {
   const o = useStore((s) => s.open[sessionId]);
@@ -431,8 +430,8 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
 const GUARD_LABEL: Record<GuardMode, string> = { ask: "Ask", edits: "Accept edits", auto: "Auto", full: "Full access" };
 const TIMED_FULL_MINUTES = 15;
 
-/** Re-renders when the whole-minute count of the time left before `until` changes. */
-function useMinutesLeft(until: number | undefined): number | undefined {
+/** The time left before `until`; re-renders at each whole minute left and once more at `until`. */
+function useTimeLeft(until: number | undefined): number | undefined {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!until) return;
@@ -441,15 +440,15 @@ function useMinutesLeft(until: number | undefined): number | undefined {
     const t = setTimeout(() => setNow(Date.now()), (left % 60_000) + 50);
     return () => clearTimeout(t);
   }, [until, now]);
-  return until ? Math.max(0, Math.ceil((until - Date.now()) / 60_000)) : undefined;
+  return until ? Math.max(0, until - Date.now()) : undefined;
 }
 
 /** Who approves tool calls; "Full access for 15 minutes" counts down in the trigger ("Full · 12m"). */
 function GuardMenu({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const mode = state.guard ?? "auto";
   const timed = !!state.guardUntil && mode === "full";
-  const left = useMinutesLeft(timed ? state.guardUntil : undefined);
-  const shown = timed ? `Full · ${left ? `${left}m` : "<1m"}` : GUARD_LABEL[mode];
+  const left = useTimeLeft(timed ? state.guardUntil : undefined);
+  const shown = timed ? `Full · ${fullAccessLeft(left ?? 0)}` : GUARD_LABEL[mode];
   const set = (args: Omit<Ops["setGuard"]["args"], "sessionId">) => act("setGuard", { sessionId, ...args });
   return (
     <DropdownMenu
@@ -464,16 +463,21 @@ function GuardMenu({ sessionId, state }: { sessionId: string; state: LiveState }
           endContent: g.id === mode && !timed ? <Icon icon="check" size="sm" color="accent" /> : undefined,
           onClick: () => (g.id !== mode || timed) && set({ mode: g.id }),
         })),
-        { type: "divider" as const },
-        timed
+        // Untimed full access has nothing to go back to: no timed item then.
+        ...(timed
           ? // The runner puts back the mode from before; "auto" when it can't tell.
-            { id: "end", label: "End full access", onClick: () => set({ mode: "auto" }) }
-          : {
-              id: "timed",
-              label: `Full access for ${TIMED_FULL_MINUTES} minutes`,
-              description: `Then back to ${GUARD_LABEL[mode === "full" ? "auto" : mode]}`,
-              onClick: () => set({ mode: "full", minutes: TIMED_FULL_MINUTES }),
-            },
+            [{ type: "divider" as const }, { id: "end", label: "End full access", onClick: () => set({ mode: "auto" }) }]
+          : mode === "full"
+            ? []
+            : [
+                { type: "divider" as const },
+                {
+                  id: "timed",
+                  label: `Full access for ${TIMED_FULL_MINUTES} minutes`,
+                  description: `Then back to ${GUARD_LABEL[mode]}`,
+                  onClick: () => set({ mode: "full", minutes: TIMED_FULL_MINUTES }),
+                },
+              ]),
       ]}
     />
   );
@@ -510,23 +514,46 @@ function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harnes
   const levels = state.thinkingLevels ?? fetched;
   if (!levels.length) return null;
   const noun = harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "effort" : "thinking";
-  return <PickMenu label="" value={state.thinking ?? "default"} options={levels} format={(l) => `${effortLabel(l)} ${noun}`} onPick={(level) => act("setThinking", { sessionId, level })} />;
+  return <PickMenu label="" value={state.thinking ?? "default"} options={levels} format={effortLabel} formatValue={(l) => `${effortLabel(l)} ${noun}`} onPick={(level) => act("setThinking", { sessionId, level })} />;
 }
 
 type EditPending = (id: string, change: Omit<Ops["editPending"]["args"], "sessionId" | "id">) => void;
 
 /** A waiting message's text; click it (or Enter on it) to edit it until it goes out. `editAsk`
  *  changing (a menu's "Edit") opens the editor too. */
-function PendingText({ p, edit, clamp, editAsk }: { p: PendingMessage; edit: EditPending; clamp?: boolean; editAsk?: number }) {
+function PendingText({
+  p,
+  edit,
+  clamp,
+  editAsk,
+  onEditingChange,
+}: {
+  p: PendingMessage;
+  edit: EditPending;
+  clamp?: boolean;
+  editAsk?: number;
+  onEditingChange?: (editing: boolean) => void;
+}) {
   const [draft, setDraft] = useState<string>();
   // Only the words are edited; the attached files stay with the message.
   const { text: body, files } = useMemo(() => splitAttachments(p.text), [p.text]);
+  const box = useRef<HTMLTextAreaElement>(null);
   const asked = useRef(editAsk);
   useEffect(() => {
     if (editAsk === asked.current) return;
     asked.current = editAsk;
     setDraft(body);
+    // A menu's sheet or popover hands focus back to its trigger as it closes, after the editor
+    // mounted: take it back once the menu is gone, so the editor can be typed in (and blurs to save).
+    const timers = [0, 150, 400].map((ms) =>
+      setTimeout(() => {
+        if (box.current && document.activeElement !== box.current) box.current.focus();
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
   }, [editAsk, body]);
+  const editing = draft !== undefined;
+  useEffect(() => onEditingChange?.(editing), [editing]);
   const save = () => {
     if (draft !== undefined && draft !== body) edit(p.id, { text: withAttachments(draft, files) });
     setDraft(undefined);
@@ -560,6 +587,7 @@ function PendingText({ p, edit, clamp, editAsk }: { p: PendingMessage; edit: Edi
     );
   return (
     <TextArea
+      ref={box}
       label="Edit message"
       isLabelHidden
       size="sm"
@@ -643,12 +671,16 @@ const shown = (on: boolean): CSSProperties => ({ opacity: on ? 1 : 0 });
 /**
  * A long press opens the context menu's sheet while the finger is still down; lifting it can then
  * land a click on the sheet's backdrop, which closes it at once. On touch screens the click right
- * after that lift is swallowed.
+ * after that lift (the first one only, within 400 ms) is swallowed.
  */
 function keepSheetOpenAfterLongPress() {
   if (!window.matchMedia("(hover: none)").matches) return;
   let liftedAt = 0;
-  const lift = () => void (liftedAt = Date.now());
+  const lift = () => {
+    liftedAt = Date.now();
+    window.removeEventListener("touchend", lift, true);
+    setTimeout(done, 400);
+  };
   const click = (e: MouseEvent) => {
     if (liftedAt && Date.now() - liftedAt < 400) {
       e.preventDefault();
@@ -688,6 +720,7 @@ function SteerBubble({ sessionId, state, p, behindQueued, steerable }: { session
   const touch = useMediaQuery("(hover: none)");
   const [hover, reveal] = useReveal();
   const [editAsk, setEditAsk] = useState(0);
+  const [editing, setEditing] = useState(false);
   const running = state.status === "running";
   const secs = useSecondsLeft(steerable && running && !behindQueued && !state.pendingHeld ? p.readyAt : undefined);
   const when = state.pendingHeld
@@ -724,8 +757,16 @@ function SteerBubble({ sessionId, state, p, behindQueued, steerable }: { session
           </HStack>
         }
       >
-        <ContextMenu items={items} presentation="adaptive" label="Waiting message" menuWidth={200} onOpenChange={(on) => on && keepSheetOpenAfterLongPress()}>
-          <PendingText p={p} edit={edit} editAsk={editAsk} />
+        {/* Off while editing: a long press or right-click in the editor gets the native select/paste menu. */}
+        <ContextMenu
+          items={items}
+          presentation="adaptive"
+          label="Waiting message"
+          menuWidth={200}
+          isDisabled={editing}
+          onOpenChange={(on) => on && keepSheetOpenAfterLongPress()}
+        >
+          <PendingText p={p} edit={edit} editAsk={editAsk} onEditingChange={setEditing} />
         </ContextMenu>
       </ChatMessageBubble>
     </ChatMessage>
@@ -997,6 +1038,8 @@ function Composer({
   // A pasted screenshot or copied file is attached; rich content (a spreadsheet's cells, a web
   // page) pastes as text even when the clipboard also carries a picture of it.
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    // A request's own fields (a deny reason, an answer) keep their paste.
+    if ((e.target as Element).closest?.("[data-docked-requests]")) return;
     const files = [...e.clipboardData.files];
     if (!files.length || e.clipboardData.types.includes("text/html")) return;
     e.preventDefault();
@@ -1027,7 +1070,7 @@ function Composer({
       if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
       if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
       if (e.key === "Escape") return (e.preventDefault(), setMenuClosed(true));
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && `/${matches[idx]!.name}` !== text)) {
+      if (completesSlash({ key: e.key, shift: e.shiftKey }, `/${matches[idx]!.name}` === text)) {
         e.preventDefault();
         setText(`/${matches[idx]!.name} `);
         return;
@@ -1041,8 +1084,6 @@ function Composer({
         clearHistoryNavigation();
         return;
       }
-      if (running && !text) return (e.preventDefault(), void stop());
-      return;
     }
     if (e.key === "ArrowUp" && !text && state.pending?.length) {
       // Like the Claude Code CLI: pull everything still waiting back into the box to rewrite.
@@ -1085,23 +1126,17 @@ function Composer({
       }
       return;
     }
-    // Tab queues only with words to queue; otherwise it moves focus as usual.
-    if (e.key === "Tab" && plain && canQueue && text.trim()) {
-      e.preventDefault();
-      send("followUp");
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey && !composing) {
-      // Always ours: the input's own submit doesn't know steer from queue.
-      e.preventDefault();
-      if (e.metaKey || e.ctrlKey) return void send(running && !shell ? "force" : "steer");
-      if (narrow) {
-        // Phones: Enter is a new line; the button sends.
-        if (!document.execCommand("insertLineBreak")) input.current?.insertText("\n");
-        return;
-      }
-      send(e.altKey && canQueue ? "followUp" : "steer");
-    }
+    // Enter is always ours (the input's own submit doesn't know steer from queue); Tab only when it queues.
+    const action = composerKeyAction(
+      { key: e.key, shift: e.shiftKey, alt: e.altKey, mod: e.metaKey || e.ctrlKey, composing },
+      { running, steerable, shell, narrow, text },
+    );
+    if (!action) return;
+    e.preventDefault();
+    if (action === "stop") return void stop();
+    // Phones: Enter is a new line; the button sends.
+    if (action === "newline") return void (document.execCommand("insertLineBreak") || input.current?.insertText("\n"));
+    send(action);
   };
 
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
@@ -1221,7 +1256,7 @@ function Composer({
         </HStack>
       )}
       {requests.length > 0 && (
-        <VStack gap={2} style={dockedRequests}>
+        <VStack gap={2} style={dockedRequests} data-docked-requests>
           <UiRequests sessionId={sessionId} requests={requests} />
         </VStack>
       )}

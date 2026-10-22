@@ -37,6 +37,7 @@ export function PickMenu({
   onPick,
   describe,
   format = (v) => v,
+  formatValue = format,
 }: {
   label: string;
   value: string;
@@ -45,8 +46,10 @@ export function PickMenu({
   describe?: Record<string, string>;
   /** display text for a value (options and value stay raw) */
   format?: (v: string) => string;
+  /** the trigger's text for the value, when it says more than the options do (default: format) */
+  formatValue?: (v: string) => string;
 }) {
-  const shown = format(value);
+  const shown = formatValue(value);
   return (
     <DropdownMenu
       button={{
