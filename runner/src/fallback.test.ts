@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { switchesAutomatically } from "../../web/src/shared/protocol";
 import { config } from "./config";
-import { accountOf, agyQuota, classify, limitReached, nextEntry, providerOf } from "./fallback";
+import { accountOf, agyQuota, classify, limitReached, nextEntry, providerOf, stableQuotaReset } from "./fallback";
 
 beforeEach(() => {
   resetHome();
@@ -21,6 +21,15 @@ describe("classify", () => {
     expect(classify("overloaded_error", 529).kind).toBe("rate_limit");
     expect(classify("x", 429).kind).toBe("rate_limit");
     expect(classify("x").definite).toBeUndefined();
+  });
+});
+
+describe("stable quota reset", () => {
+  test("past and imminent resets use the one-hour cooldown", () => {
+    const now = Date.now();
+    expect(stableQuotaReset(now - 1, now)).toBe(now + 60 * 60_000);
+    expect(stableQuotaReset(now + 30_000, now)).toBe(now + 60 * 60_000);
+    expect(stableQuotaReset(now + 5 * 60_000, now)).toBe(now + 5 * 60_000);
   });
 });
 

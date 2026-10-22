@@ -41,8 +41,9 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
-function fake(harness: HarnessId = "claude-code", model = "opus") {
+function fake(harness: HarnessId = "claude-code", model = "opus", nativeId = crypto.randomUUID()) {
   const log: string[] = [];
+  const continued: (string | undefined)[] = [];
   const handoffs: { to: ChainEntry; reason: string; prompt?: string; interrupted?: boolean }[] = [];
   const sink = {
     emit: () => {},
@@ -70,8 +71,9 @@ function fake(harness: HarnessId = "claude-code", model = "opus") {
     async listCommands() {
       return [];
     }
-    async continueTurn() {
+    async continueTurn(text?: string) {
       log.push("continue");
+      continued.push(text);
     }
     protected shutdown() {}
     turnError(text: string | undefined, status?: number | null, hint?: Classified) {
@@ -85,24 +87,95 @@ function fake(harness: HarnessId = "claude-code", model = "opus") {
     }
   }
   // No .git: checkpoints are skipped.
-  const s = new Fake(harness, { nativeId: crypto.randomUUID(), projectPath: process.env.HOME! }, sink);
+  const s = new Fake(harness, { nativeId, projectPath: process.env.HOME! }, sink);
   s.t.state.status = "idle";
   s.t.state.model = model;
   sessions.push(s);
   const notices = () => s.t.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text as string);
   const actions = () => s.t.messages.flatMap((m) => (m.action?.kind === "continueOn" ? [{ id: m.id, ...m.action }] : []));
-  return { s, log, handoffs, notices, actions };
+  return { s, log, continued, handoffs, notices, actions };
 }
 
 describe("handleTurnError", () => {
-  test("without a chain, or for an error that isn't a limit, the adapter reports it itself", async () => {
+  test("without a chain, an unconfirmed limit or unrelated error is reported by the adapter", async () => {
     const { s, log } = fake();
     expect(await s.turnError("usage limit reached", 429)).toBe(false);
     s.t.state.chain = ["opus", "sonnet"];
     expect(await s.turnError("ENOENT: no such file")).toBe(false);
     expect(log).toEqual([]);
     expect(config().exhausted).toEqual({});
-    expect(asked).toEqual([]);
+    expect(asked).toEqual(["claude"]); // possible limits are checked even without a model chain
+  });
+
+  test("without a chain, a confirmed quota waits and sends a continuation prompt at reset", async () => {
+    jest.useFakeTimers();
+    const { s, log, notices, continued } = fake();
+    const reset = Date.now() + 5 * 60_000;
+    usage.claude = full("claude", reset);
+
+    expect(await s.turnError("usage limit reached", 429)).toBe(true);
+    expect(s.t.state.status).toBe("waiting");
+    expect(s.t.state.waitingUntil).toBe(reset);
+    expect(config().exhausted["claude-code:opus"]).toBe(reset);
+
+    jest.advanceTimersByTime(5 * 60_000);
+    await settle();
+
+    expect(log).toEqual(["continue"]);
+    expect(continued).toEqual(["The usage limit has reset. Continue the task where you stopped."]);
+    expect(notices()).toContain("Usage limit reset. Continuing on Opus.");
+    expect(s.t.state.waitingUntil).toBeUndefined();
+  });
+
+  test("without a chain, a past reset uses the one-hour cooldown", async () => {
+    jest.useFakeTimers();
+    const { s } = fake();
+    usage.claude = full("claude", Date.now() - 5_000);
+
+    expect(await s.turnError("usage limit reached", 429)).toBe(true);
+    expect(config().exhausted["claude-code:opus"]).toBe(Date.now() + 60 * 60_000);
+    expect(s.t.state.waitingUntil).toBe(Date.now() + 60 * 60_000);
+  });
+
+  test("a user message or Stop during a no-chain wait cancels the automatic continuation", async () => {
+    jest.useFakeTimers();
+    const first = fake();
+    usage.claude = full("claude", Date.now() + 5 * 60_000);
+    await first.s.turnError("usage limit reached", 429);
+    await first.s.prompt("try a different approach");
+    expect(first.s.t.state.status).toBe("idle");
+    expect(first.log).toEqual(["turn: try a different approach"]);
+
+    usage.claude = full("claude", Date.now() + 5 * 60_000);
+    const second = fake();
+    await second.s.turnError("usage limit reached", 429);
+    await second.s.stop();
+    expect(second.s.t.state.waitingUntil).toBeUndefined();
+    jest.advanceTimersByTime(5 * 60_000);
+    await settle();
+    expect(first.continued).toEqual([]);
+    expect(second.continued).toEqual([]);
+  });
+
+  test("a no-chain usage-limit wait is restored after a runner restart", async () => {
+    jest.useFakeTimers();
+    const nativeId = crypto.randomUUID();
+    const first = fake("claude-code", "opus", nativeId);
+    first.s.loadPrefs();
+    usage.claude = full("claude", Date.now() + 5 * 60_000);
+    await first.s.turnError("usage limit reached", 429);
+    const saved = { ...prefs(first.s.id) };
+    expect(saved).toMatchObject({ waitingUsageLimitResume: true, usageLimitResumeAttempts: 1 });
+
+    await first.s.abort();
+    const resumed = fake("claude-code", "opus", nativeId);
+    resumed.s.loadPrefs();
+    resumed.s.resumeWait(saved.waitingUntil!, saved.waitingReason!, undefined, saved.waitingUsageLimitResume);
+    jest.advanceTimersByTime(saved.waitingUntil! - Date.now());
+    await settle();
+
+    expect(resumed.continued).toEqual(["The usage limit has reset. Continue the task where you stopped."]);
+    expect(resumed.notices()).toContain("Usage limit reset. Continuing on Opus.");
   });
 
   test("a structured limit signal: the provider is marked exhausted and the next model of the same harness takes over", async () => {

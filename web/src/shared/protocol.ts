@@ -1105,10 +1105,10 @@ export interface ContextProgress {
   total: number;
 }
 
-/** Background model shared by the safety judge and the memory merge: "harness:model". */
+/** Background model for memory merges and other tool-less work: "harness:model". */
 export interface BackgroundModelSetting {
   model: string;
-  /** the Auto-mode safety judge runs on this model; false: turned off */
+  /** the Auto-mode safety judge is enabled; it normally follows each active session's harness and login. */
   judge: boolean;
   /** harnesses that can run background work on this runner */
   harnesses: HarnessId[];
@@ -1381,7 +1381,7 @@ export interface Ops {
     /** judgeModel is legacy: "off" turns the judge off, anything else turns it on (setJudgeEnabled) */
     /** `install` is ignored: runners pass the Antigravity hook to each agy process themselves */
     args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode };
-    /** judgeModel: the background model when the judge is on, else "off" */
+    /** legacy field: "session" when enabled, otherwise "off"; judge routing follows the active session */
     result: { antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode };
   };
   setChain: { args: { sessionId: string; chain: string[]; preferEarlier?: boolean }; result: {} };

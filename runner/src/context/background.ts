@@ -1,6 +1,7 @@
-// The background model: one setting ("harness:model") for the small, tool-less model calls the
-// runner makes on its own (the guard's safety judge, the memory merge pass). It runs through the
-// harness's own login, so it draws on the same plan as sessions:
+// The background model: one setting ("harness:model") for tool-less background work such as the
+// memory merge pass. The safety judge normally follows the active session's harness and login,
+// using a cheaper model where available; this setting is its fallback for unsupported harnesses.
+// Background work runs through the harness's own login, so it draws on the same plan as sessions:
 //   claude-code  Claude Agent SDK, one turn, no tools          (default: claude-code:haiku)
 //   codex        `codex exec`, read-only sandbox, ephemeral
 //   pi           `pi -p`, no tools, extensions or session

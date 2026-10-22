@@ -192,6 +192,7 @@ export async function resumeActive(getLive: (id: string, projectPath?: string) =
           p.waitingUntil,
           p.waitingReason ?? "Waiting on usage limits",
           bg.length ? `The session was interrupted by a restart, which also stopped these background tasks: ${bg.map((b) => `"${b.description}"`).join(", ")}. Restart the ones still needed, and continue where you left off.` : undefined,
+          p.waitingUsageLimitResume,
         );
       } else if (p.active) {
         const bg = p.background ?? [];

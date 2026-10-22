@@ -154,7 +154,7 @@ export function briefSection(g: SessionGoal): string {
   ].join("\n");
 }
 
-// ---------------- the done check (the background model, shared with the guard judge) ----------------
+// ---------------- the done check (the shared background model) ----------------
 
 export interface GoalCheck {
   goal: SessionGoal;

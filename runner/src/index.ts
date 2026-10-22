@@ -1000,11 +1000,11 @@ const ops: Handlers = {
       cfg.guard = { ...cfg.guard, defaultMode };
       saveConfig();
     }
-    // Legacy clients: "off" turns the judge off, any model turns it on. The model itself is the
-    // shared background model (setBackgroundModel); it is not changed here.
+    // Legacy clients: "off" turns the judge off, any model turns it on. The judge's model follows
+    // each active session; the legacy response says "session" while it is enabled.
     if (judgeModel) context.setJudgeEnabled(judgeModel !== "off");
     const bg = context.backgroundModel();
-    return { antigravityHook: agyHookInstalled(), judgeModel: bg.judge ? bg.model : "off", judgeEnabled: bg.judge, defaultMode: cfg.guard?.defaultMode ?? "auto" };
+    return { antigravityHook: agyHookInstalled(), judgeModel: bg.judge ? "session" : "off", judgeEnabled: bg.judge, defaultMode: cfg.guard?.defaultMode ?? "auto" };
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {

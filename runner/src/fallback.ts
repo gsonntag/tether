@@ -98,9 +98,16 @@ export function providerOf(model: string, harness: string): string {
 }
 
 const DEFAULT_QUOTA_COOLDOWN = 60 * 60_000;
+const MIN_RESET_LEAD = 60_000;
+
+/** A missing, stale, or imminent reset should cool down instead of creating a rapid retry loop. */
+export function stableQuotaReset(resetAt?: number, now = Date.now()): number {
+  return resetAt && resetAt > now + MIN_RESET_LEAD ? resetAt : now + DEFAULT_QUOTA_COOLDOWN;
+}
 
 export function markExhausted(provider: string, resetAt?: number): number {
-  const until = resetAt ?? Date.now() + DEFAULT_QUOTA_COOLDOWN;
+  const now = Date.now();
+  const until = stableQuotaReset(resetAt, now);
   config().exhausted[provider] = until;
   saveConfig();
   return until;

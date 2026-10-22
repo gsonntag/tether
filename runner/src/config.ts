@@ -25,7 +25,7 @@ export interface RunnerConfig {
   /** per-session settings that must survive runner restarts */
   sessions: Record<string, SessionPrefs>;
   guard?: {
-    /** the Auto-mode judge; on unless false. It runs on `backgroundModel`. */
+    /** the Auto-mode safety judge; on unless false. It follows the active session's harness and login. */
     judge?: boolean;
     /**
      * Legacy: older versions kept the judge's Claude model here ("haiku", sometimes "harness:model",
@@ -35,7 +35,7 @@ export interface RunnerConfig {
     judgeModel?: string;
     defaultMode?: import("./guard").GuardMode;
   };
-  /** "harness:model" for the judge and the memory merge (runner/src/context/background.ts) */
+  /** "harness:model" for background work such as memory merges; also the safety judge fallback on unsupported harnesses. */
   backgroundModel?: string;
   /** master context: off until the first import is run from the UI. `handoffCapture: false` skips
    *  the fact capture before a cross-harness handoff (memory is still carried). */
@@ -76,6 +76,10 @@ export interface SessionPrefs {
   /** fallback was waiting on a usage limit or a backoff until then: re-armed after a restart */
   waitingUntil?: number;
   waitingReason?: string;
+  /** a no-chain usage-limit wait resumes with a prompt after its reset */
+  waitingUsageLimitResume?: boolean;
+  /** no-chain automatic resumes since the last successful turn or user message */
+  usageLimitResumeAttempts?: number;
   projectPath?: string;
   /** background tasks running when last saved (reported to the agent if a restart stops them) */
   background?: { id: string; description: string; type?: string }[];

@@ -274,6 +274,40 @@ describe("cross-harness handoff mid-turn", () => {
   });
 });
 
+describe("no-chain quota wait", () => {
+  test("resumes with its continuation after a runner restart", async () => {
+    jest.useFakeTimers();
+    const w = world();
+    const s = setup(makeClaude(process.env.HOME!, {}, w.sink), "opus", []);
+    await s.prompt("/tether simulate-limit quota reset 10m");
+    await s.prompt("finish the task");
+    s.feed(start("m1"));
+    s.feed(interruptedResult);
+    await micro();
+
+    expect(s.t.state.status).toBe("waiting");
+    expect(prefs(s.id)).toMatchObject({ waitingUsageLimitResume: true });
+    s.savePrefs();
+    s.close();
+    jest.advanceTimersByTime(2 * 60_000);
+
+    let back!: Claude;
+    await resumeActive(async (id) => {
+      back = makeClaude(process.env.HOME!, {}, w.sink);
+      (back as any).nativeId = id.slice("claude-code:".length);
+      back.t.state.model = "opus";
+      back.loadPrefs();
+      return back;
+    });
+    expect(back.t.state.status).toBe("waiting");
+    jest.advanceTimersByTime(8 * 60_000);
+    await micro();
+
+    expect(back.inputs()).toEqual(["The usage limit has reset. Continue the task where you stopped."]);
+    expect(notices(back)).toContain("Usage limit reset. Continuing on Opus.");
+  });
+});
+
 describe("whole chain exhausted", () => {
   test("wait → reset → continue, across a runner restart; then preferBest moves back up once the first entry resets", async () => {
     jest.useFakeTimers();

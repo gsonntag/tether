@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { rules } from "./guard";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { config } from "./config";
+import { judgeCacheKey, judgeModelFor, judgeQuotaBlock, rules } from "./guard";
 
 const cwd = "/home/u/proj";
 const sh = (command: string, tool = "Bash") => rules({ tool, input: { command }, cwd })?.decision ?? "judge";
@@ -124,5 +125,31 @@ describe("agent hooks and plugins", () => {
   test("ordinary commands that merely contain 'agents' stay routine", () => {
     expect(sh("ls src/agents")).toBe("allow");
     expect(sh("cat agents.md")).toBe("allow");
+  });
+});
+
+describe("safety judge routing", () => {
+  beforeEach(() => {
+    config().guard = { judge: true };
+    config().exhausted = {};
+    config().backgroundModel = "claude-code:haiku";
+  });
+  test("routes to a cheaper session model, keys the cache by model, and denies an exhausted provider", () => {
+    const call = { cwd, tool: "Bash", input: { command: "git push origin feature" } };
+    const claudeModel = judgeModelFor({ harness: "claude-code", model: "opus" });
+    const codexModel = judgeModelFor({ harness: "codex", model: "gpt-6-sol" });
+
+    expect(claudeModel).toBe("claude-code:haiku");
+    expect(codexModel).toBe("codex:gpt-6-luna");
+    expect(judgeCacheKey(call, claudeModel)).not.toBe(judgeCacheKey(call, codexModel));
+    expect(judgeModelFor({ harness: "pi", model: "openai-codex/gpt-6-astra" })).toBe("pi:openai-codex/gpt-6-luna");
+    config().backgroundModel = "codex:gpt-6-sol";
+    expect(judgeModelFor({ harness: "opencode", model: "anthropic/claude-sonnet-5-5" })).toBe("codex:gpt-6-sol");
+    config().exhausted.codex = Date.now() + 60_000;
+
+    const verdict = judgeQuotaBlock({ harness: "codex", model: "gpt-6-sol" });
+
+    expect(verdict).toMatchObject({ decision: "deny", by: "judge" });
+    expect(verdict?.reason ?? "").toContain("gpt-6-luna is at its usage limit");
   });
 });

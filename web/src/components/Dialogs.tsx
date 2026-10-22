@@ -1071,7 +1071,7 @@ function Settings({ close }: { close: () => void }) {
           <SettingsCard title="Background model and safety">
             <SettingsRow
               title="Background model"
-              description="Runs Tether's own small jobs: reviewing actions in Auto mode and merging memories. It uses that harness's login and plan."
+              description="Runs memory merges and other background jobs. The Auto mode reviewer follows the active session's harness and login, with this model as a fallback for unsupported harnesses."
             >
               <BackgroundModelPicker narrow={narrow} />
             </SettingsRow>
@@ -1080,7 +1080,7 @@ function Settings({ close }: { close: () => void }) {
               description={
                 guard && !guard.judgeEnabled
                   ? "Off: in Auto mode, actions the built-in safety rules don't cover are blocked."
-                  : "In Auto mode, the background model decides on actions the built-in safety rules don't cover."
+                  : "In Auto mode, a cheaper model on the active session's harness and login reviews actions the built-in safety rules don't cover. Unsupported harnesses use the background model."
               }
               control={
                 <Switch
@@ -1089,7 +1089,7 @@ function Settings({ close }: { close: () => void }) {
                   isDisabled={!guard}
                   value={!!guard?.judgeEnabled}
                   onChange={async (on) => {
-                    // The reviewer always runs on the background model; this only turns it on or off.
+                    // This setting only turns the reviewer on or off; model routing follows each session.
                     const r = await act("setJudgeEnabled", { enabled: on });
                     if (r && guard) setGuardInfo({ ...guard, judgeEnabled: r.judge, judgeModel: r.judge ? r.model : "off" });
                   }}

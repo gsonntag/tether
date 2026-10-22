@@ -26,7 +26,7 @@ import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { notify } from "./notify";
-import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified, type UsageCheck } from "./fallback";
+import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, stableQuotaReset, type Classified, type UsageCheck } from "./fallback";
 import { modelDisplay } from "../../web/src/models";
 import { attachmentWrite, commandOf, isContextTool, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
@@ -187,6 +187,7 @@ export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[],
 /** Held back by plan mode or a review session (not a safety block): running it anyway needs a second yes. */
 const held = (g: GuardVerdict | undefined) => g?.decision === "deny" && g.by === "mode";
 const HELD_CONFIRM = "This call was held back by plan mode or a review. Confirm to run it anyway.";
+const MAX_NO_CHAIN_LIMIT_RESUMES = 3;
 
 export abstract class LiveSession {
   readonly harness: HarnessId;
@@ -208,6 +209,8 @@ export abstract class LiveSession {
 
   private fallbackAttempt = 0;
   private waitTimer?: ReturnType<typeof setTimeout>;
+  private waitUsageLimitResume = false;
+  private usageLimitResumeAttempts = 0;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private watchdog?: ReturnType<typeof setInterval>;
   private lastActivity = Date.now();
@@ -740,7 +743,10 @@ export abstract class LiveSession {
     if (await this.tetherCommand(text)) return;
     if (this.t.state.status === "waiting") this.cancelWait();
     // Your own message starts a fresh run of retries.
-    if (this.t.state.status !== "running") this.fallbackAttempt = 0;
+    if (this.t.state.status !== "running") {
+      this.fallbackAttempt = 0;
+      this.usageLimitResumeAttempts = 0;
+    }
     if (this.t.state.status === "idle") {
       // An approved plan's turn is starting: this goes in after it, not as a second turn alongside.
       // Compacting: it waits, and goes on in the new session.
@@ -1093,6 +1099,7 @@ export abstract class LiveSession {
   /** The Stop button: aborts the turn. Pending messages stay, held until you send them. */
   async stop() {
     this.userStopped = true;
+    this.cancelWait();
     // Your Stop pauses the goal: the loop would otherwise start the next turn.
     const g = this.goalState;
     if (g?.status === "active") {
@@ -1157,6 +1164,7 @@ export abstract class LiveSession {
     // Messages it hadn't taken when it stopped come back held, to send (or edit) when you choose.
     if (p.pending?.length && !this.t.state.pending?.length) Object.assign(restore, { pending: p.pending, pendingHeld: true });
     this.diffBaseSha = p.diffBaseSha;
+    this.usageLimitResumeAttempts = p.usageLimitResumeAttempts ?? 0;
     if (Object.keys(restore).length) this.setState(restore);
     // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
     else this.savePrefs();
@@ -1246,6 +1254,8 @@ export abstract class LiveSession {
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
       waitingUntil: this.waitTimer ? s.waitingUntil : undefined,
       waitingReason: this.waitTimer ? s.waitingReason : undefined,
+      waitingUsageLimitResume: this.waitTimer && this.waitUsageLimitResume ? true : undefined,
+      usageLimitResumeAttempts: this.usageLimitResumeAttempts || undefined,
       projectPath: this.projectPath,
     });
     saveConfigSoon();
@@ -1392,8 +1402,10 @@ export abstract class LiveSession {
    */
   protected async handleTurnError(errorText: string | undefined, status?: number | null, hint?: Classified): Promise<boolean> {
     const chain = this.chain;
-    if (!chain) return false;
     const c = hint ?? classify(errorText, status);
+    // A definite or usage-confirmed quota can resume on the same model even without a profile.
+    // Other errors still need a chain before Tether retries or moves the session.
+    if (!chain && c.kind !== "quota") return false;
     const current = this.currentEntry;
     let verifiable = !!accountOf(current);
     // A possible limit, rate-limit wording included (pi's "You have hit your ChatGPT usage limit …
@@ -1409,6 +1421,7 @@ export abstract class LiveSession {
     }
     const transient = c.kind === "rate_limit" || (c.kind === "quota" && !c.definite && !this.userStopped && !this.closed && isTransient(errorText, status));
     if (!limit && transient) {
+      if (!chain) return false;
       // Not a confirmed limit: back off and retry on the same model; never a switch. On an entry
       // whose usage can't be checked the backoff could go on forever on a real limit, so after
       // UNVERIFIED_BACKOFFS failed tries the error shows, with "Continue on …".
@@ -1422,6 +1435,7 @@ export abstract class LiveSession {
       return true;
     }
     if (!limit) {
+      if (!chain) return false;
       this.offerContinue(errorText);
       return false;
     }
@@ -1429,6 +1443,18 @@ export abstract class LiveSession {
     this.notice(`Usage limit reached on ${entryLabel(current)} (resets ${fmtTime(until)}).`, "warning");
     // Stopped (or closed) while the usage check ran: the limit stands, but nothing moves on.
     if (this.userStopped || this.closed) return false;
+    if (!chain) {
+      if (this.usageLimitResumeAttempts >= MAX_NO_CHAIN_LIMIT_RESUMES) {
+        const detail = `Automatic resumes stopped after ${MAX_NO_CHAIN_LIMIT_RESUMES} usage-limit attempts. Send a message to try again.`;
+        this.notice(detail, "warning");
+        this.alert("blocked", "Usage limit still reached", detail);
+        return false;
+      }
+      this.usageLimitResumeAttempts++;
+      this.alert("blocked", "Waiting on usage limits", `${entryLabel(current)} is at its usage limit; it continues at ${fmtTime(until)}.`);
+      this.waitThenContinue(until, `Waiting on usage limit for ${entryLabel(current)}`, undefined, true);
+      return true;
+    }
     const pick = pickEntry(chain, this.harness);
     if ("waitUntil" in pick) {
       this.alert("blocked", "Waiting on usage limits", `Every model in the chain is at its limit; it continues at ${fmtTime(pick.waitUntil)}.`);
@@ -1437,7 +1463,7 @@ export abstract class LiveSession {
     }
     if (this.sameEntry(pick.entry, current)) {
       // Outside the chain's keys (shouldn't happen): wait for the reset rather than loop.
-      this.waitThenContinue(until, `Waiting on ${entryLabel(current)}`);
+      this.waitThenContinue(until, `Waiting on usage limit for ${entryLabel(current)}`);
       return true;
     }
     this.fallbackAttempt = 0;
@@ -1508,12 +1534,14 @@ export abstract class LiveSession {
   }
 
   /** After a runner restart: picks a saved wait back up (a past time continues right away). */
-  resumeWait(until: number, reason: string, text?: string) {
-    this.waitThenContinue(until, reason, text);
+  resumeWait(until: number, reason: string, text?: string, usageLimitResume = false) {
+    this.waitThenContinue(until, reason, text, usageLimitResume);
   }
 
-  private waitThenContinue(until: number, reason: string, text?: string) {
+  private waitThenContinue(until: number, reason: string, text?: string, usageLimitResume = false) {
     clearTimeout(this.waitTimer);
+    this.waitUsageLimitResume = usageLimitResume;
+    const waitUntil = usageLimitResume ? stableQuotaReset(until) : until;
     // The timer goes first: savePrefs (on the status change) persists the wait only while it's armed.
     this.waitTimer = setTimeout(async () => {
       this.waitTimer = undefined;
@@ -1521,9 +1549,10 @@ export abstract class LiveSession {
       const chain = this.chain;
       if (chain) {
         const pick = pickEntry(chain, this.harness);
-        if ("waitUntil" in pick) return this.waitThenContinue(pick.waitUntil, reason, text);
+        if ("waitUntil" in pick) return this.waitThenContinue(pick.waitUntil, reason, text, usageLimitResume);
         if (pick.entry.harness !== this.harness) {
           this.setState({ waitingReason: undefined, waitingUntil: undefined });
+          this.waitUsageLimitResume = false;
           return this.sink.handoff(this, pick.entry, `${entryLabel(pick.entry)} has reset`, undefined, { interrupted: true });
         }
         if (pick.entry.model !== this.t.state.model) {
@@ -1532,10 +1561,15 @@ export abstract class LiveSession {
         }
       }
       this.setState({ waitingReason: undefined, waitingUntil: undefined });
+      this.waitUsageLimitResume = false;
+      if (usageLimitResume) this.notice(`Usage limit reset. Continuing on ${entryLabel(this.currentEntry)}.`);
       this.turnStarting = true;
-      await this.continueTurn(text);
-    }, Math.max(1_000, until - Date.now()));
-    this.setState({ status: "waiting", waitingReason: reason, waitingUntil: until });
+      const continuation = usageLimitResume
+        ? [text, "The usage limit has reset. Continue the task where you stopped."].filter(Boolean).join("\n\n")
+        : text;
+      await this.continueTurn(continuation);
+    }, Math.max(1_000, waitUntil - Date.now()));
+    this.setState({ status: "waiting", waitingReason: reason, waitingUntil: waitUntil });
   }
 
   /**
@@ -1555,12 +1589,14 @@ export abstract class LiveSession {
   /** Clears fallback state after a successful turn. */
   protected turnSucceeded() {
     this.fallbackAttempt = 0;
+    this.usageLimitResumeAttempts = 0;
   }
 
   protected cancelWait(): boolean {
     if (!this.waitTimer) return false;
     clearTimeout(this.waitTimer);
     this.waitTimer = undefined;
+    this.waitUsageLimitResume = false;
     this.setState({ status: "idle", waitingReason: undefined, waitingUntil: undefined });
     return true;
   }
@@ -1712,7 +1748,7 @@ export abstract class LiveSession {
         toolId = this.findCall(tool, toolId)?.part.id ?? toolId;
         if (toolId) this.setJudging(toolId, true);
         try {
-          v = await judge(call, this.goal());
+          v = await judge(call, this.goal(), this.currentEntry);
         } catch (e) {
           if (toolId) this.setJudging(toolId, false);
           throw e;

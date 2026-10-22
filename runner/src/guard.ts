@@ -13,9 +13,11 @@ import { realpathSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { attachmentsDir, isAttachmentPath } from "./attachments";
 import { config } from "./config";
-import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
+import { BACKGROUND_HARNESSES, backgroundModel, judgeEnabled, parseJsonReply, runBackground } from "./context/background";
+import { exhaustedUntil, providerOf } from "./fallback";
 import { trustedServerFor, type McpTrust } from "./mcp/registry";
 import { userHome } from "./home";
+import { formatEntry, parseEntry, type ChainEntry } from "../../web/src/shared/protocol";
 
 export type GuardMode = "ask" | "edits" | "auto" | "full";
 export const GUARD_MODES: GuardMode[] = ["ask", "edits", "auto", "full"];
@@ -413,15 +415,65 @@ When denying, say what the agent should do instead if there is a safer way.`;
 
 const cache = new Map<string, Verdict>();
 
-export async function judge(call: ToolCall, goal: string): Promise<Verdict> {
+const PI_CHEAP_MODELS: Record<string, string> = {
+  anthropic: "anthropic/claude-haiku-5-5",
+  "openai-codex": "openai-codex/gpt-6-luna",
+  openai: "openai/gpt-5-mini",
+  azure: "azure/gpt-6-luna",
+  google: "google/gemini-flash-lite-latest",
+};
+
+/** A low-cost judge model on the session's harness and login, or the shared background model. */
+export function judgeModelFor(entry: ChainEntry): string {
+  if (!BACKGROUND_HARNESSES.includes(entry.harness)) return backgroundModel();
+  const model =
+    entry.harness === "claude-code"
+      ? "haiku"
+      : entry.harness === "codex"
+        ? "gpt-6-luna"
+        : (() => {
+            const provider = entry.model.split("/", 1)[0]!;
+            return PI_CHEAP_MODELS[provider] ?? entry.model;
+          })();
+  return formatEntry({ harness: entry.harness, model });
+}
+
+function judgeRoute(sessionEntry: ChainEntry): { model: string; quotaBlock?: Verdict } {
+  const model = judgeModelFor(sessionEntry);
+  const entry = parseEntry(model, "claude-code");
+  const quota = exhaustedUntil(providerOf(entry.model, entry.harness));
+  return {
+    model,
+    quotaBlock: quota
+      ? {
+          decision: "deny",
+          by: "judge",
+          reason: `Safety judge blocked this call because ${formatEntry(entry)} is at its usage limit until ${new Date(quota).toLocaleTimeString()}.`,
+        }
+      : undefined,
+  };
+}
+
+/** Exposed separately so the fail-closed quota behavior can be tested without a model process. */
+export function judgeQuotaBlock(sessionEntry: ChainEntry): Verdict | undefined {
+  return judgeRoute(sessionEntry).quotaBlock;
+}
+
+/** The model is part of the verdict identity: the same tool call can be reviewed on another login. */
+export function judgeCacheKey(call: ToolCall, model: string): string {
+  return JSON.stringify([call.cwd, call.tool, call.input, model]);
+}
+
+export async function judge(call: ToolCall, goal: string, sessionEntry: ChainEntry): Promise<Verdict> {
   if (!judgeEnabled()) return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
-  const key = JSON.stringify([call.cwd, call.tool, call.input]);
+  const { model, quotaBlock } = judgeRoute(sessionEntry);
+  if (quotaBlock) return quotaBlock;
+  const key = judgeCacheKey(call, model);
   const hit = cache.get(key);
   if (hit) return hit;
   const prompt = `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\nFiles the user attached to their messages: ${attachedFolders(call)} (reading them serves the user's task; they are read-only; other sessions' attachments are off limits)\n\nTool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
   try {
-    // The shared background model (Settings → Background model), Haiku via Claude by default.
-    const text = await runBackground({ system: JUDGE_SYSTEM, prompt, cwd: call.cwd, timeoutMs: 60_000 });
+    const text = await runBackground({ system: JUDGE_SYSTEM, prompt, cwd: call.cwd, timeoutMs: 60_000 }, model);
     const json = parseJsonReply(text);
     const v: Verdict = { decision: json.decision === "allow" ? "allow" : "deny", by: "judge", reason: String(json.reason ?? "").slice(0, 400) };
     if (cache.size > 2000) cache.clear();
