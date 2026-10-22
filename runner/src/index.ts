@@ -440,11 +440,11 @@ const CLEARED = null as unknown as undefined;
  */
 function timedGuard(mode: GuardMode, minutes: number | undefined) {
   return (p: SessionPrefs): [Partial<SessionPrefs>, Partial<LiveState>] => {
-    if (mode !== "full" || !minutes || minutes <= 0) return [{ guardUntil: undefined, guardBefore: undefined }, p.guardUntil ? { guardUntil: CLEARED } : {}];
+    if (mode !== "full" || !minutes || minutes <= 0) return [{ guardUntil: undefined, guardBefore: undefined, guardEnded: undefined }, p.guardUntil ? { guardUntil: CLEARED } : {}];
     const cur = p.guard ?? config().guard?.defaultMode ?? "auto";
     const before = p.guardUntil ? p.guardBefore : cur;
     const until = Date.now() + Math.min(minutes, 24 * 60) * 60_000;
-    return [{ guardUntil: until, guardBefore: before && before !== "full" ? before : "auto" }, { guardUntil: until }];
+    return [{ guardUntil: until, guardBefore: before && before !== "full" ? before : "auto", guardEnded: undefined }, { guardUntil: until }];
   };
 }
 
@@ -454,7 +454,8 @@ function sweepTimedGuards() {
   for (const [id, p] of Object.entries(config().sessions)) {
     if (!p.guardUntil || p.guardUntil > now || current(id)) continue;
     const back = p.guardBefore && p.guardBefore !== "full" ? p.guardBefore : (config().guard?.defaultMode ?? "auto");
-    writeStored(id, { guard: back, guardUntil: undefined, guardBefore: undefined }, { guard: back, guardUntil: CLEARED });
+    // The inline "Full access ended" waits for it to open again (loadPrefs).
+    writeStored(id, { guard: back, guardUntil: undefined, guardBefore: undefined, guardEnded: back }, { guard: back, guardUntil: CLEARED });
   }
 }
 setInterval(sweepTimedGuards, 30_000);
@@ -784,7 +785,7 @@ const ops: Handlers = {
     // Nothing to resume or resend after a runner restart.
     const p = cfg.sessions[sessionId];
     // Nor any loop or schedule to run.
-    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined });
+    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined, blocked: undefined });
     forgetSession(sessionId);
     denials.forget(sessionId);
     forgetPlans(sessionId);

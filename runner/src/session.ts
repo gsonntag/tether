@@ -186,6 +186,8 @@ export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[],
 
 /** Held back by plan mode or a review session (not a safety block): running it anyway needs a second yes. */
 const held = (g: GuardVerdict | undefined) => g?.decision === "deny" && g.by === "mode";
+/** Blocked tickets kept per session for acting on after a restart (SessionPrefs.blocked). */
+const BLOCKED_KEPT = 20;
 const HELD_CONFIRM = "This call was held back by plan mode or a review. Confirm to run it anyway.";
 
 /** Blocked-call pushes, batched per session for a minute (Home and the bell get each one at once). */
@@ -384,6 +386,8 @@ export abstract class LiveSession {
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { guard } });
         } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
+    if (event.type === "reset") this.restoreBlockedVerdicts(this.t.messages);
+    else if (event.type === "msg") this.restoreBlockedVerdicts([event.msg]);
     this.plans.observe(event);
     // A subagent's parent shows what it's doing now (throttled there).
     if (this.t.state.startedBy) this.sink.agents?.changed(this);
@@ -1175,6 +1179,9 @@ export abstract class LiveSession {
     // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
     else this.savePrefs();
     if (restore.guardUntil) this.armGuardTimer(restore.guardUntil);
+    // Or it ended while the session wasn't running (index.ts sweepTimedGuards): said now, once.
+    accessEnded ??= p.guardEnded;
+    if (p.guardEnded) p.guardEnded = undefined;
     if (accessEnded) {
       this.notice(`Full access ended · back to ${GUARD_NAMES[accessEnded]}`);
       this.savePrefs();
@@ -1751,7 +1758,8 @@ export abstract class LiveSession {
         v = res.allow ? { decision: "allow", by: "user", reason: "You allowed it." } : { decision: "deny", by: "user", reason: res.value || "You denied it." };
         always = !!res.always;
         // A call the judge would have decided in Auto: your answer is precedent for it.
-        if (!res.allow && !res.cancelled && !r && !hook?.decision) recordPrecedent(this.projectPath, callLine(tool, input, this.projectPath), "deny");
+        // "Run it myself" is the owner letting it run (as runBlocked counts it), not a denial.
+        if (!res.allow && !res.cancelled && !r && !hook?.decision) recordPrecedent(this.projectPath, callLine(tool, input, this.projectPath), res.runMyself ? "allow" : "deny");
         if (res.allow && res.always) this.rememberAlways(tool, input);
         if (!res.allow && res.runMyself) {
           v = { decision: "deny", by: "user", reason: "The user is running this command themselves; its output follows. Don't run it." };
@@ -1806,6 +1814,38 @@ export abstract class LiveSession {
     };
     recordDenial(d);
     denials.add(d);
+    if (toolId) {
+      const p = prefs(this.id);
+      p.blocked = [...(p.blocked ?? []).filter((b) => b.toolId !== toolId), { toolId, name: tool, input, reason, at: Date.now() }].slice(-BLOCKED_KEPT);
+      saveConfigSoon();
+    }
+  }
+
+  /** A stored ticket for this call (see SessionPrefs.blocked). */
+  private storedBlocked(toolId: string) {
+    return prefs(this.id).blocked?.find((b) => b.toolId === toolId);
+  }
+
+  /** The ticket was approved or run: its notice and its stored call go. */
+  private settleBlocked(toolId: string) {
+    clearBlocked(this.id, toolId);
+    const p = prefs(this.id);
+    if (!p.blocked?.some((b) => b.toolId === toolId)) return;
+    const rest = p.blocked.filter((b) => b.toolId !== toolId);
+    p.blocked = rest.length ? rest : undefined;
+    saveConfigSoon();
+  }
+
+  /** History read back (a new process, a restart) has no verdicts: the stored tickets' cards get theirs again. */
+  private restoreBlockedVerdicts(msgs: { id: string; parts: Part[] }[]) {
+    const list = prefs(this.id).blocked;
+    if (!list?.length) return;
+    for (const m of msgs)
+      for (const p of m.parts)
+        if (p.type === "tool" && !p.guard && !p.userRun) {
+          const b = list.find((x) => x.toolId === p.id);
+          if (b) this.emit({ type: "tool", msgId: m.id, toolId: p.id, patch: { guard: { decision: "deny", by: "judge", reason: b.reason } } });
+        }
   }
 
   /** The card for this call: by id, or else the newest running one of that tool still undecided. */
@@ -1847,24 +1887,27 @@ export abstract class LiveSession {
   }
 
   private async approveBlockedNow(toolId: string, confirmed: boolean): Promise<{ stale?: boolean }> {
-    for (const m of this.t.messages)
-      for (const p of m.parts)
-        if (p.type === "tool" && p.id === toolId) {
-          // Approved or run already (another device, a second tap, a notification's button).
-          if (p.guard?.decision !== "deny") {
-            clearBlocked(this.id, toolId);
-            return { stale: true };
-          }
-          if (held(p.guard) && !confirmed) throw new Error(HELD_CONFIRM);
-          if (p.guard.by === "judge") recordPrecedent(this.projectPath, callLine(p.name, p.input, this.projectPath), "allow");
-          clearBlocked(this.id, toolId);
-          this.approved.add(JSON.stringify([p.name, p.input]));
-          this.emit({ type: "tool", msgId: m.id, toolId, patch: { guard: { decision: "allow", by: "user", reason: "Approved after it was blocked." } } });
-          const what = commandOf(p.input) ?? JSON.stringify(p.input).slice(0, 300);
-          await this.tellAgent(`The user approved your earlier blocked ${p.name} call (${what}). Run it now if it is still needed, then continue.`);
-          return {};
-        }
-    throw new Error("Tool call not found");
+    const hit = this.findCall("", toolId);
+    const p = hit?.part;
+    // The stored ticket stands in for a card whose verdict went with an earlier process.
+    const stored = p?.guard ? undefined : this.storedBlocked(toolId);
+    if (!p && !stored) throw new Error("Tool call not found");
+    // Approved or run already (another device, a second tap, a notification's button).
+    if (p?.userRun || (p?.guard && p.guard.decision !== "deny") || (p && !p.guard && !stored)) {
+      this.settleBlocked(toolId);
+      return { stale: true };
+    }
+    const guard: GuardVerdict = p?.guard ?? { decision: "deny", by: "judge", reason: stored!.reason };
+    const name = p?.name ?? stored!.name;
+    const input = p ? p.input : stored!.input;
+    if (held(guard) && !confirmed) throw new Error(HELD_CONFIRM);
+    if (guard.by === "judge") recordPrecedent(this.projectPath, callLine(name, input, this.projectPath), "allow");
+    this.settleBlocked(toolId);
+    this.approved.add(JSON.stringify([name, input]));
+    if (hit) this.emit({ type: "tool", msgId: hit.msg.id, toolId, patch: { guard: { decision: "allow", by: "user", reason: "Approved after it was blocked." } } });
+    const what = commandOf(input) ?? JSON.stringify(input).slice(0, 300);
+    await this.tellAgent(`The user approved your earlier blocked ${name} call (${what}). Run it now if it is still needed, then continue.`);
+    return {};
   }
 
   private runningBlocked = new Set<string>();
@@ -1880,27 +1923,35 @@ export abstract class LiveSession {
 
   private async runBlockedNow(toolId: string, confirmed: boolean): Promise<{ stale?: boolean }> {
     const hit = this.findCall("", toolId);
+    // The stored ticket stands in for a card whose verdict went with an earlier process.
+    const stored = hit?.part.guard ? undefined : this.storedBlocked(toolId);
+    const name = hit?.part.name ?? stored?.name ?? "";
+    const input: any = hit ? hit.part.input : stored?.input;
     // Shell commands only: an MCP or other tool with a `command` argument isn't one to run here.
-    const command = hit?.part.kind === "shell" ? commandOf(hit.part.input) : undefined;
-    if (!hit || !command) throw new Error("Shell command not found");
-    if (this.runningBlocked.has(toolId) || hit.part.userRun) return { stale: true };
-    if (hit.part.guard?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
-    if (held(hit.part.guard) && !confirmed) throw new Error(HELD_CONFIRM);
-    if (hit.part.guard.by === "judge") recordPrecedent(this.projectPath, callLine(hit.part.name, hit.part.input, this.projectPath), "allow");
-    clearBlocked(this.id, toolId);
+    const command = (hit ? hit.part.kind : kindOf(name)) === "shell" ? commandOf(input) : undefined;
+    if ((!hit && !stored) || !command) throw new Error("Shell command not found");
+    // Approved or run already (another device, a second tap): the owner's own allow.
+    if (this.runningBlocked.has(toolId) || hit?.part.userRun || (hit?.part.guard?.decision === "allow" && hit.part.guard.by === "user")) {
+      this.settleBlocked(toolId);
+      return { stale: true };
+    }
+    const blocked: GuardVerdict | undefined = hit?.part.guard ?? (stored ? { decision: "deny", by: "judge", reason: stored.reason } : undefined);
+    if (blocked?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
+    if (held(blocked) && !confirmed) throw new Error(HELD_CONFIRM);
+    if (blocked.by === "judge") recordPrecedent(this.projectPath, callLine(name, input, this.projectPath), "allow");
+    this.settleBlocked(toolId);
     this.runningBlocked.add(toolId);
-    const { msg } = hit;
+    const msg = hit?.msg;
     try {
       const guard: GuardVerdict = { decision: "allow", by: "user", reason: "Run by you directly, outside the guard" };
-      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { guard, userRun: { status: "running" } } });
-      const input: any = hit.part.input;
+      if (msg) this.emit({ type: "tool", msgId: msg.id, toolId, patch: { guard, userRun: { status: "running" } } });
       const dir = typeof input?.cwd === "string" ? input.cwd : typeof input?.workdir === "string" ? input.workdir : undefined;
       const cwd = dir ? resolve(this.projectPath, dir) : this.projectPath;
       const proc = Bun.spawn(["bash", "-lc", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10 * 60_000 });
       const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
       const cap = (s: string) => (s.length > 30_000 ? s.slice(0, 30_000) + "\n…(truncated)" : s.trimEnd());
       const output = [cap(stdout), cap(stderr)].filter(Boolean).join("\n").trim();
-      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { userRun: { status: "done", exitCode: code, output } } });
+      if (msg) this.emit({ type: "tool", msgId: msg.id, toolId, patch: { userRun: { status: "done", exitCode: code, output } } });
       await this.tellAgent(
         `Your blocked command was run by the user instead, so don't run it again:\n<bash-input>${command}</bash-input>\n` +
           `<bash-stdout>${cap(stdout)}</bash-stdout><bash-stderr>${cap(stderr)}${code ? `\n(exit code ${code})` : ""}</bash-stderr>\nContinue from there.`,

@@ -75,6 +75,13 @@ export interface SessionPrefs {
   /** timed full access: when it ends (epoch ms), and the mode it goes back to then */
   guardUntil?: number;
   guardBefore?: import("./guard").GuardMode;
+  /** timed full access ended while the session wasn't running: said inline when it next opens */
+  guardEnded?: import("./guard").GuardMode;
+  /**
+   * The judge's denials still waiting on the owner (blocked tickets): what "Approve & retry" and
+   * "Run it myself" act on once the process that saw them has closed or the runner restarted.
+   */
+  blocked?: { toolId: string; name: string; input: unknown; reason: string; at: number }[];
   checkpoints?: import("../../web/src/shared/protocol").Checkpoint[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */
   diffBaseSha?: string;

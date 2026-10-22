@@ -29,7 +29,7 @@ const sent: { payload: any; options: any }[] = [];
 
 const sessions: InstanceType<typeof LiveSession>[] = [];
 
-function fake(guardMode: "auto" | "ask" = "auto") {
+function fake(guardMode: "auto" | "ask" = "auto", nativeId: string = crypto.randomUUID()) {
   const browser: Transcript = { messages: [], state: emptyState() };
   const sink = { emit: (_id: string, _seq: number, e: SessionEvent) => applyEvent(browser, structuredClone(e)), summary: () => {}, handoff: async () => {} };
   const continued: string[] = [];
@@ -50,7 +50,7 @@ function fake(guardMode: "auto" | "ask" = "auto") {
     protected shutdown() {}
   }
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "tether-blocked-proj-")));
-  const s = new Fake("pi", { nativeId: crypto.randomUUID(), projectPath: dir, title: "Ship it" }, sink);
+  const s = new Fake("pi", { nativeId, projectPath: dir, title: "Ship it" }, sink);
   s.t.state.status = "running";
   s.t.state.guard = guardMode;
   sessions.push(s);
@@ -104,6 +104,10 @@ describe("the notice for blocked calls", () => {
     const n = denialNotice([d("git push"), d("npm i left-pad"), d("curl x")]);
     expect(n.title).toBe("3 calls blocked · Ship it");
     expect(n.body).toBe("web · git push");
+    // A batch's push is a plain tap: no Approve / Deny that would answer only the first call.
+    expect(n.toolId).toBeUndefined();
+    expect(n.call).toBeUndefined();
+    expect(denialNotice([d("git push", "t1")]).toolId).toBe("t1");
   });
 });
 
@@ -190,6 +194,52 @@ describe("Auto mode: a judge's denial is a ticket", () => {
     expect(prec).toEqual([expect.objectContaining({ call: "git push origin feature/x", decision: "allow" })]);
   });
 
+  test("the same call denied again within the throttle is a ticket of its own", async () => {
+    const { s, addCard } = fake();
+    addCard("t1", "git push origin main");
+    await s.checkTool("Bash", { command: "git push origin main" }, "t1");
+    addCard("t2", "git push origin main");
+    await s.checkTool("Bash", { command: "git push origin main" }, "t2");
+    expect(recent().filter((n) => n.kind === "blocked").map((n) => n.toolId)).toEqual(["t2", "t1"]);
+  });
+
+  test("a ticket still works after the process closed: history comes back with no verdict", async () => {
+    const id = crypto.randomUUID();
+    const first = fake("auto", id);
+    first.addCard("t1", "git push origin feature/x");
+    await first.s.checkTool("Bash", { command: "git push origin feature/x" }, "t1");
+    first.s.close();
+    // A new process reads the conversation back from the harness: the card has no guard.
+    const { s, card, continued } = fake("auto", id);
+    s.t.state.status = "idle";
+    const bare: Msg = { id: "m-t1", role: "assistant", parts: [{ type: "tool", id: "t1", name: "Bash", input: { command: "git push origin feature/x" }, status: "error", kind: "shell" }], ts: 0 };
+    s.emit({ type: "reset", messages: [bare] });
+    expect(card().guard).toMatchObject({ decision: "deny", by: "judge" });
+    expect(await s.approveBlocked("t1")).toEqual({});
+    expect(card().guard).toMatchObject({ decision: "allow", by: "user" });
+    expect(recent().filter((n) => n.kind === "blocked")).toEqual([]);
+    expect(continued[0]).toContain("git push origin feature/x");
+    expect(prefs(s.id).blocked).toBeUndefined();
+    // The agent's retry goes through without the judge.
+    expect((s as any).isApproved("Bash", { command: "git push origin feature/x" })).toBe(true);
+    expect(await s.approveBlocked("t1")).toEqual({ stale: true });
+  });
+
+  test("and with no card at all (history not read yet): Run it myself still runs it", async () => {
+    const id = crypto.randomUUID();
+    const first = fake("auto", id);
+    const cmd = "command -v true && printf ran-it";
+    first.addCard("t1", cmd);
+    await first.s.checkTool("Bash", { command: cmd }, "t1");
+    first.s.close();
+    const { s, continued } = fake("auto", id);
+    s.t.state.status = "idle";
+    expect(await s.runBlocked("t1")).toEqual({});
+    expect(continued[0]).toContain("ran-it</bash-stdout>");
+    expect(recent().filter((n) => n.kind === "blocked")).toEqual([]);
+    expect(guard.precedentsFor(s.projectPath)).toEqual([expect.objectContaining({ call: cmd, decision: "allow" })]);
+  });
+
   test("Run it myself clears it too", async () => {
     const { s, addCard } = fake();
     s.t.state.status = "idle";
@@ -257,6 +307,8 @@ describe("Ask mode", () => {
     await tick();
     // The turn is running: it goes in as a message the agent takes next.
     expect(JSON.stringify([s.t.state.pending, continued])).toContain("<bash-stdout>from-runner");
+    // Running it is the owner letting it run: precedent says allowed, not denied.
+    expect(guard.precedentsFor(s.projectPath)).toEqual([expect.objectContaining({ call: "printf from-runner; exit 1", decision: "allow" })]);
   });
 });
 
@@ -300,5 +352,13 @@ describe("timed full access", () => {
     t.loadPrefs();
     expect(t.t.state.guard).toBe("edits");
     expect(t.t.messages.at(-1)!.parts[0]).toEqual({ type: "text", text: "Full access ended · back to Accept edits" });
+  });
+
+  test("ended while the session wasn't running (the sweep): the notice when it next opens, once", () => {
+    const { s } = fake("auto");
+    Object.assign(prefs(s.id), { guard: "edits", guardEnded: "edits" });
+    s.loadPrefs();
+    expect(s.t.messages.at(-1)!.parts[0]).toEqual({ type: "text", text: "Full access ended · back to Accept edits" });
+    expect(prefs(s.id).guardEnded).toBeUndefined();
   });
 });

@@ -107,10 +107,10 @@ const last = new Map<string, number>();
 export const noticeListeners = new Set<(n: AgentNotice) => void>();
 
 /** Records a notice and pushes it to the devices that want this kind. */
-export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">, opts: { push?: boolean } = {}): AgentNotice | undefined {
+export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">, opts: { push?: boolean; throttle?: boolean } = {}): AgentNotice | undefined {
   const key = `${n.sessionId}:${n.kind}:${n.title}`;
   const now = Date.now();
-  if (now - (last.get(key) ?? 0) < THROTTLE_MS[n.kind]) return undefined;
+  if (opts.throttle !== false && now - (last.get(key) ?? 0) < THROTTLE_MS[n.kind]) return undefined;
   last.set(key, now);
   const st = store();
   const notice: AgentNotice = { ...n, id: crypto.randomUUID(), ts: now, project: basename(n.projectPath) };
@@ -284,10 +284,9 @@ export function denialNotice(list: Denial[]): Omit<AgentNotice, "id" | "ts" | "p
     body: body.slice(0, 300),
     sessionId: first.sessionId,
     projectPath: first.projectPath,
-    toolId: first.toolId,
-    call: first.call,
-    by: "judge",
-    reason,
+    // A batch is a plain tap into the session, where every card has its own button: its push gets
+    // no Approve / Deny that could answer only the first call.
+    ...(list.length === 1 ? { toolId: first.toolId, call: first.call, by: "judge" as const, reason } : {}),
   };
 }
 
@@ -347,7 +346,8 @@ export class DenialNotifier {
 
 /** Records one denial for Home and the bell (no push: DenialNotifier pushes, batched). */
 export function recordDenial(d: Denial): AgentNotice | undefined {
-  return notify(denialNotice([d]), { push: false });
+  // Each denial is a ticket of its own (a retried call has a new id), so no throttle.
+  return notify(denialNotice([d]), { push: false, throttle: false });
 }
 
 /** Pushes a batch of denials (already recorded one by one). */
