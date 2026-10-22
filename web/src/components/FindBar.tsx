@@ -135,9 +135,11 @@ export function FindBar({
     if (starting && flat.length) {
       want.current = undefined;
       go(current, true);
-    } else if (want.current === "earlier" && current > 0) {
+    } else if (want.current === "earlier" && flat.length && (current > 0 || !was)) {
+      // The step back: to the match before the current one, or, when nothing was on the page
+      // before the message mounted ("0 of N"), to the match that just arrived.
       want.current = undefined;
-      go(current - 1);
+      go(was ? current - 1 : current);
     } else {
       if (!needle) want.current = undefined;
       setView({ n: flat.length });
