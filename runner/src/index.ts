@@ -386,7 +386,7 @@ async function storedSessionSnapshot(sessionId: string, projectPath?: string): P
   const diffStat = base ? await totalChanges(path, base) : undefined;
   const state = storedState({ prefs: p, history, modes: a.modes, plans: storedPlans(sessionId), defaultGuard: config().guard?.defaultMode ?? "auto", diffStat });
   if (p?.guardUntil && p.guard === "full" && p.guardUntil > Date.now()) state.guardUntil = p.guardUntil;
-  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId));
+  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId), p?.blocked);
 }
 
 /** What a session changed since its first snapshot, measured at most every few seconds (several devices open it at once). */
