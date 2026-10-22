@@ -237,6 +237,7 @@ const leader = new Leader({
   days: () => uiPrefs().sidebarDays,
   // The New session dialog's own path (launch.ts): same guard, modes, hooks and lists.
   create: (args, extra) => launchSession({ adapters, sink, track }, args, extra),
+  available: (h) => adapters[h]?.available() ?? Promise.resolve(false),
 });
 sink.leader = leader;
 // What happens in the sessions reaches the leader as batched updates (its only automatic trigger).

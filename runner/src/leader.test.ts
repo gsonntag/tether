@@ -971,6 +971,7 @@ describe("session_create", () => {
       expect(r.text).toContain(msg);
     }
     expect((await ask(l, { cwd: project("q") })).text).toContain("prompt is required");
+    expect((await ask(l, { cwd: project("q"), prompt: "x".repeat(4_001) })).text).toContain("too long");
     expect(l.t.state.pendingUi.length).toBe(0);
     expect(w.created.length).toBe(0);
   });
@@ -992,7 +993,7 @@ describe("session_create", () => {
     try {
       const pending = ask(l, { cwd: dir, prompt: "Go." });
       await until(() => card(l));
-      expect(card(l)!.message).toContain("guard: ask");
+      expect(card(l)!.message).toContain("guard: Ask permission");
       l.uiRespond({ id: card(l)!.id, confirmed: true, by: "user" });
       expect((await pending).ok).toBe(true);
       const made = w.created[0]!;
@@ -1022,6 +1023,7 @@ describe("session_create", () => {
     await Bun.sleep(20);
     expect(done).toBe(false);
     expect(w.created.length).toBe(0);
+    expect(leaderMayAnswer(card(l))).toBe(false);
     expect(l.uiRespond({ id: card(l)!.id, confirmed: true, by: "leader" })).toBe(false);
     expect((await call(l, "session_answer", { session: l.id, request: card(l)!.id, choice: "yes" })).ok).toBe(false);
     expect(w.created.length).toBe(0);
@@ -1064,6 +1066,23 @@ describe("session_create", () => {
     const r = await ask(l, { cwd: dir, prompt: "Deploy." });
     expect(r.ok).toBe(false);
     expect(l.t.state.pendingUi.length).toBe(0);
+    expect(w.created.length).toBe(0);
+  });
+
+  test("the card shows the whole prompt; a stopped leader turn starts nothing", async () => {
+    const w = world();
+    const l = w.makeLeader();
+    const dir = project("long");
+    await w.userSays(l, "start a new session in long");
+    const prompt = `${"a".repeat(3_990)} TAIL-END`;
+    const pending = ask(l, { cwd: dir, prompt });
+    await until(() => card(l));
+    expect(card(l)!.message).toContain(prompt);
+    // Stopped while the card waits (a harness whose stop leaves it open): the Yes starts nothing.
+    l.setState({ status: "idle" });
+    l.uiRespond({ id: card(l)!.id, confirmed: true, by: "user" });
+    const r = await pending;
+    expect(r.ok).toBe(false);
     expect(w.created.length).toBe(0);
   });
 

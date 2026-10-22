@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import type { AgentNotice, LeaderUpdates, LiveState, Msg, SessionPulse, SessionSnapshot, SessionSummary, UiRequest, UiResponse } from "../../web/src/shared/protocol";
-import { HARNESSES } from "../../web/src/shared/protocol";
+import { GUARD_MODES, HARNESSES } from "../../web/src/shared/protocol";
 import { splitAttachments } from "../../web/src/shared/attachments";
 import { EMPTY_DRAFT } from "../../web/src/shared/plan";
 import { groupSessions, type Entry } from "../../web/src/shared/recentSessions";
@@ -95,7 +95,12 @@ export interface LeaderDeps {
   storedChanged?: (id: string, state: Partial<LiveState>) => void;
   /** starts a new session the way the New session dialog does (launch.ts launchSession) */
   create?: (args: LaunchArgs, extra: LaunchExtra) => Promise<LiveSession>;
+  /** whether a harness is installed on this machine */
+  available?: (harness: LaunchArgs["harness"]) => Promise<boolean>;
 }
+
+/** session_create's prompt at most: all of it fits on the card the user confirms. */
+export const MAX_CREATE_PROMPT = 4_000;
 
 /** What session_create takes: nothing that sets a guard or mode (a new session gets the runner's default). */
 const CREATE_ARGS = new Set(["cwd", "prompt", "name", "harness", "model"]);
@@ -630,10 +635,12 @@ export class Leader implements LeaderHub {
     if (isLeaderDir(cwd)) return fail("That's your own folder: a new session needs a project folder.");
     const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
     if (!prompt) return fail("prompt is required: the first message the new session gets.");
-    if (prompt.length > 50_000) return fail("The prompt is too long (50,000 characters at most).");
+    // The user sees all of it before they click Yes: nothing longer than the card shows.
+    if (prompt.length > MAX_CREATE_PROMPT) return fail(`The prompt is too long (${MAX_CREATE_PROMPT.toLocaleString("en")} characters at most): keep the first message short; you can send more with session_message once it runs.`);
     const name = typeof args.name === "string" ? oneLine(args.name, 120) : "";
     const harness = typeof args.harness === "string" && args.harness.trim() ? (args.harness.trim() as LaunchArgs["harness"]) : from.harness;
-    if (!HARNESSES.some((h) => h.id === harness)) return fail(`No harness “${harness}”: one of ${HARNESSES.map((h) => h.id).join(", ")}.`);
+    if (!HARNESSES.some((h) => h.id === harness)) return fail(`No harness “${oneLine(harness, 40)}”: one of ${HARNESSES.map((h) => h.id).join(", ")}.`);
+    if (this.deps.available && !(await this.deps.available(harness).catch(() => false))) return fail(`${label(harness)} isn't installed on this machine.`);
     const model = typeof args.model === "string" && args.model.trim() ? args.model.trim() : undefined;
     // Only for something the user just asked for: never on a turn an update (or a session's words) started.
     const ask = this.latestAsk(from);
@@ -642,6 +649,7 @@ export class Leader implements LeaderHub {
     if (limit) return fail(limit);
 
     const guard = defaultGuard();
+    const guardLabel = GUARD_MODES.find((m) => m.id === guard)?.label ?? guard;
     const body = leaderMessage({ note: prompt });
     const cardId = newId("new");
     const card: UiRequest = {
@@ -649,9 +657,10 @@ export class Leader implements LeaderHub {
       kind: "confirm",
       title: `Start a new ${label(harness)} session${name ? ` “${name}”` : ""}?`,
       message: [
-        `Your leader wants to start a session in ${cwd} (${label(harness)}${model ? `, ${model}` : ""}; guard: ${guard}, the runner's default).`,
+        `Your leader wants to start a session in ${cwd} (${label(harness)}${model ? `, ${model}` : ""}; guard: ${guardLabel}, the runner's default).`,
+        ...(guard === "full" ? ["Warning: with Dangerously skip none of its tool calls are checked."] : []),
         "It starts working on this right away, as a message from your leader:",
-        clip(prompt, 4_000),
+        prompt,
       ].join("\n\n"),
       // It starts an agent that runs tools: the user's own click, never the leader's.
       userOnly: true,
@@ -662,6 +671,8 @@ export class Leader implements LeaderHub {
     if (res.cancelled || res.confirmed !== true) return fail("The user didn't confirm: no session was started. Don't ask again unless they tell you to.");
     if (res.by === "leader") return fail("Only the user can confirm a new session.");
     if (signal?.aborted) return fail("The call was given up on: no session was started.");
+    // The leader's turn was stopped meanwhile (a harness that left the card open): nothing starts.
+    if (from.closed || from.t.state.status === "idle") return fail("Your turn was stopped: no session was started.");
 
     const harnessMode = harness === "claude-code" ? "default" : undefined;
     const s = await this.deps.create(

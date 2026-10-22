@@ -562,7 +562,12 @@ function NeedItem({ row, ctx }: { row: NeedRow; ctx: RowCtx }) {
   else if (r.kind === "confirm")
     actions = (
       <>
-        <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => run("yes", { confirmed: true })} />
+        {/* One that lets an agent do more (a new session the leader starts): confirmed in its session, read in full. */}
+        {r.userOnly ? (
+          <Button label="Review" variant="primary" size={size} isDisabled={!!busy} onClick={open} />
+        ) : (
+          <Button label="Yes" variant="primary" size={size} {...state("yes")} onClick={() => run("yes", { confirmed: true })} />
+        )}
         <Button label="No" variant="secondary" size={size} {...state("no")} onClick={() => run("no", { confirmed: false })} />
       </>
     );

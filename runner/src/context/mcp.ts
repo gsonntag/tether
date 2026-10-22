@@ -324,7 +324,7 @@ export const LEADER_TOOLS = [
       type: "object",
       properties: {
         cwd: { type: "string", description: "Absolute path of the existing folder it works in" },
-        prompt: { type: "string", description: "Its first message: a self-contained task" },
+        prompt: { type: "string", description: "Its first message: a self-contained task, 4000 characters at most (the user reads all of it before confirming)" },
         name: { type: "string", description: "A short label, shown in sessions_overview" },
         harness: { type: "string", enum: HARNESS_IDS, description: "Which coding agent (default: your own)" },
         model: { type: "string", description: "A model that harness offers (default: its default)" },
