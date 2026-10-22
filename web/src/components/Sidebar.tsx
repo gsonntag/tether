@@ -24,7 +24,7 @@ import { act, goHome, openLeader, openPage, rpc, selectSession, switchRunner, to
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { byListOrder, nestSubagents, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
-import { knownSessions, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
+import { knownSessions, useMinute, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
 import { runningLine, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -557,6 +557,8 @@ const projectName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() 
 /** `withProject`: in the cross-project lists (Needs you, Recent), the project's name, subtly. */
 const SessionRow = memo(function SessionRow({ s, withProject, needsYou, depth = 0 }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean; depth?: number }) {
   const at = useStore((st) => touched(s, st));
+  // Memoized, the row redraws on its own each minute so "ago" moves on.
+  useMinute();
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
   const [removing, setRemoving] = useState(false);

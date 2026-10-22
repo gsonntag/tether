@@ -31,3 +31,12 @@ test("nothing on screen: the copy as it is", () => {
   expect(reuseSame(undefined, next, byId)).toBe(next);
   expect(reuseSame([], next, byId)).toBe(next);
 });
+
+test("with a tail, only the last items are compared", () => {
+  const prev = [msg("a", "one"), msg("b", "two"), msg("c", "three")];
+  const out = reuseSame(prev, structuredClone(prev), byId, 2);
+  expect(out).not.toBe(prev);
+  expect(out[0]).not.toBe(prev[0]!);
+  expect(out[1]).toBe(prev[1]!);
+  expect(out[2]).toBe(prev[2]!);
+});

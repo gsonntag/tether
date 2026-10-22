@@ -111,20 +111,23 @@ export const Transcript = memo(function Transcript({
   const [win, setWin] = useState({ count: FIRST_STEP, target: FIRST_ROWS, len: messages.length });
   // A message or two arriving live joins the window rather than pushing its top row out.
   if (win.len !== messages.length) {
-    const added = messages.length - win.len;
-    setWin({ ...win, count: win.len && added > 0 && added <= LIVE_ADDS ? win.count + added : win.count, len: messages.length });
+    const len = messages.length;
+    setWin((w) => (w.len === len ? w : { ...w, count: w.len && len > w.len && len - w.len <= LIVE_ADDS ? w.count + len - w.len : w.count, len }));
   }
   const { count, target } = win;
   const start = Math.max(0, messages.length - count);
   const sentinel = useRef<HTMLDivElement>(null);
-  const grew = useRef<{ el: HTMLElement | null; height: number; at: number }>(undefined);
+  const list = useRef<HTMLDivElement>(null);
+  // The row on screen before a step, and where it was: the step moves the view back by however far
+  // it went (nothing where the browser already anchored it, and growth at the bottom doesn't count).
+  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number }>(undefined);
   const step = useRef(FIRST_STEP);
   const more = () => setWin((w) => ({ ...w, target: Math.max(w.target, w.count + MORE_ROWS) }));
   useLayoutEffect(() => {
     const g = grew.current;
     grew.current = undefined;
     if (!g) return;
-    if (g.el) g.el.scrollTop += g.el.scrollHeight - g.height;
+    if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
     // Size the next step to what this one cost.
     const took = performance.now() - g.at;
     step.current = Math.min(MAX_STEP, Math.max(1, Math.round((step.current * FRAME_MS) / Math.max(took, 1))));
@@ -137,13 +140,15 @@ export const Transcript = memo(function Transcript({
     const frame = requestAnimationFrame(() => {
       timer = setTimeout(() => {
         const el = scrollParent(sentinel.current);
-        grew.current = { el, height: el?.scrollHeight ?? 0, at: performance.now() };
+        const row = list.current?.querySelector(".astryx-chat-message") ?? null;
+        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now() };
         setWin((w) => ({ ...w, count: Math.min(w.target, w.count + step.current) }));
       });
     });
     return () => {
       cancelAnimationFrame(frame);
       clearTimeout(timer);
+      grew.current = undefined;
     };
   }, [pending, count]);
   useEffect(() => {
@@ -160,7 +165,7 @@ export const Transcript = memo(function Transcript({
           <Button label={`Show ${start} earlier ${start === 1 ? "message" : "messages"}`} variant="ghost" size="sm" onClick={more} />
         </HStack>
       )}
-      <ChatMessageList align="top" isStreaming={running} style={listStyle}>
+      <ChatMessageList ref={list} align="top" isStreaming={running} style={listStyle}>
         {messages.slice(start).flatMap((m, j) => {
           const i = start + j;
           const row = <Message key={m.id} m={m} last={running && i === messages.length - 1} amendable={!!amendable?.includes(m.id)} timed={timed.has(m.id)} />;

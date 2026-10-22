@@ -436,7 +436,7 @@ async function doLoad(sessionId: string) {
     get().open[sessionId]?.session?.projectPath ?? Object.values(get().sessions).flat().find((x) => x.id === sessionId)?.projectPath;
   try {
     const snap: SessionSnapshot = await rpc("openSession", { sessionId, projectPath });
-    set((s) => ({ open: { ...s.open, [sessionId]: { ...snap, messages: reuseSame(s.open[sessionId]?.messages, snap.messages, byId), loading: false, syncing: false } } }));
+    set((s) => ({ open: { ...s.open, [sessionId]: { ...snap, messages: reuseSame(s.open[sessionId]?.messages, snap.messages, byId, 200), loading: false, syncing: false } } }));
     upsertSummary(snap.session);
     putCached(runnerKey(), snap);
   } catch (e: any) {
