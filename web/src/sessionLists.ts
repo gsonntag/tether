@@ -3,7 +3,8 @@
 
 import { useMemo, useRef, useSyncExternalStore } from "react";
 import type { AgentNotice, ProjectInfo, SessionSummary } from "./shared/protocol";
-import { groupSessions, mergeEntries, needCount, type Entry, type Groups, type RecentContext } from "./recentSessions";
+import { buildInbox, isBlocking, type InboxRow } from "./dashboard";
+import { groupSessions, mergeEntries, type Entry, type Groups, type RecentContext } from "./recentSessions";
 import { useStore } from "./store";
 
 /**
@@ -11,12 +12,19 @@ import { useStore } from "./store";
  * listProjects, then loaded lists (pushed live by the runner, so they win). A notice for one we
  * have no summary for yet is enough to show and open it.
  */
-export function knownSessions(projects: ProjectInfo[], sessions: Record<string, SessionSummary[]>, recent: SessionSummary[] = [], notices: AgentNotice[] = []) {
+export function knownSessions(
+  projects: ProjectInfo[],
+  sessions: Record<string, SessionSummary[]>,
+  recent: SessionSummary[] = [],
+  notices: AgentNotice[] = [],
+  /** sessions this runner's pulses know: a notice's stand-in mustn't hide the real one */
+  pulsed?: Record<string, unknown>,
+) {
   const by = new Map(recent.map((s) => [s.id, s] as const));
   for (const p of projects) for (const s of p.live) by.set(s.id, s);
   for (const s of Object.values(sessions).flat()) by.set(s.id, s);
   for (const n of notices)
-    if (!by.has(n.sessionId) && n.kind !== "memory")
+    if (!by.has(n.sessionId) && !pulsed?.[n.sessionId] && n.kind !== "memory")
       by.set(n.sessionId, {
         id: n.sessionId,
         harness: n.sessionId.split(":")[0] as SessionSummary["harness"],
@@ -68,11 +76,37 @@ export function useRecentContext(): RecentContext {
   );
 }
 
-/** Home's and the Home item's count of what waits on you: one per request to answer, one per other session, and memory conflicts. */
-export function useNeedsCount(needs: Entry[]): number {
-  const conflicts = useStore((s) => s.conflicts.length);
-  return needs.reduce((n, e) => n + needCount(e), conflicts);
+// When this page first saw each waiting request (runner, session, request id): how long it has
+// waited, for the inbox's order and its "waiting 4m". Requests that go are forgotten.
+const firstSeen = new Map<string, number>();
+const since = (key: string, fallback: number) => {
+  const at = firstSeen.get(key);
+  if (at !== undefined) return at;
+  firstSeen.set(key, fallback);
+  return fallback;
+};
+
+/**
+ * Home's inbox (dashboard.ts buildInbox): every waiting request, blocked call, memory conflict and
+ * finished turn you haven't opened, ranked. Takes the "all" groups.
+ */
+export function useInbox(needs: Entry[]): InboxRow[] {
+  const notices = useStore((s) => s.notices);
+  const runnerId = useStore((s) => s.runnerId);
+  const conflicts = useStore((s) => s.conflicts);
+  return useMemo(() => {
+    // Its latest notice: the sidebar's runner's list, else what another runner's pulse carries.
+    const noticeOf = (e: Entry): AgentNotice | undefined =>
+      (e.runnerId === runnerId ? notices.find((n) => n.sessionId === e.session.id) : undefined) ?? e.pulse?.notice;
+    const rows = buildInbox(needs, runnerId ? conflicts.map((conflict) => ({ runnerId, conflict })) : [], noticeOf, since, Date.now());
+    const live = new Set(rows.filter((r) => r.request).map((r) => r.key));
+    for (const k of firstSeen.keys()) if (!live.has(k)) firstSeen.delete(k);
+    return rows;
+  }, [needs, notices, runnerId, conflicts]);
 }
+
+/** The Home item's count: what an agent waits on (requests, blocked calls, memory conflicts); finished turns don't count. */
+export const blockingCount = (rows: InboxRow[]) => rows.filter(isBlocking).length;
 
 /**
  * The three groups. "runner": the sidebar's runner only; "all": Home, every connected runner
@@ -87,7 +121,7 @@ export function useSessionGroups(scope: "runner" | "all"): Groups<Entry> {
   const c = useRecentContext();
   const wasNeeds = useRef(new Set<string>());
   const groups = useMemo(() => {
-    const known = knownSessions(projects, sessions, recent, c.notices).values();
+    const known = knownSessions(projects, sessions, recent, c.notices, runnerId ? pulses[runnerId] : undefined).values();
     const forPulses = scope === "all" ? pulses : runnerId && pulses[runnerId] ? { [runnerId]: pulses[runnerId] } : {};
     return groupSessions(mergeEntries(runnerId, known, forPulses), { ...c, wasNeeds: wasNeeds.current });
   }, [projects, sessions, recent, pulses, runnerId, c, scope]);

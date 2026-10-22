@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionPulse, SessionSummary } from "./shared/protocol";
-import { activityLine, answerRequest, blockedLine, buildInbox, contextPercent, diffLabel, elapsed, guardNote, inboxTitle, isBlocking, isShellCall, mergePulses, oneTapQuestion, permissionVerb, rankInbox, requestCall, requestLine, requestTruncated, type InboxKind } from "./dashboard";
+import { activityLine, answerRequest, blockedLine, buildInbox, contextPercent, diffLabel, elapsed, guardNote, inboxTitle, isBlocking, latestPerSession, isShellCall, mergePulses, oneTapQuestion, permissionVerb, rankInbox, requestCall, requestLine, requestTruncated, type InboxKind } from "./dashboard";
 import type { AgentNotice, MemoryConflict, UiRequest } from "./shared/protocol";
 import { pulseWork, workState } from "./workState";
 
@@ -196,4 +196,10 @@ describe("row text", () => {
     const q = { id: "1", kind: "question" as const, title: "Q", questions: [{ question: "Which?", options: [{ label: "A".repeat(40) }] }] };
     expect(oneTapQuestion(q)).toBeUndefined();
   });
+});
+
+test("latestPerSession: the bell shows each session once, by its newest notice", () => {
+  const n = (id: string, sessionId: string, kind: AgentNotice["kind"] = "finished", conflictId?: string): AgentNotice => ({ id, kind, title: "", body: "", sessionId, projectPath: "/p", project: "p", ts: 0, conflictId });
+  const list = [n("3", "a"), n("2", "b", "question"), n("1", "a", "blocked"), n("m2", "", "memory", "c1"), n("m1", "", "memory", "c2")];
+  expect(latestPerSession(list).map((x) => x.id)).toEqual(["3", "2", "m2", "m1"]);
 });

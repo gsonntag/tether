@@ -59,7 +59,6 @@ export function Dialogs() {
       {dialog === "new" && <NewSession close={close} />}
       {dialog === "addProject" && <AddProject close={close} />}
       {dialog === "settings" && <Settings close={close} />}
-      {dialog === "notify" && <NotifyPrompt close={close} />}
       {dialog === "fork" && <ForkSession close={close} />}
       {dialog === "leader" && <StartLeader close={close} />}
     </Dialog>
@@ -613,37 +612,6 @@ function AddProject({ close }: { close: () => void }) {
           )}
         </VStack>
       )}
-    </Frame>
-  );
-}
-
-/** Asked once per device, on the first visit. */
-function NotifyPrompt({ close }: { close: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string>();
-  const turnOn = async () => {
-    setBusy(true);
-    try {
-      await enablePush(NOTIFY_KINDS.map((k) => k.id));
-      close();
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-      setBusy(false);
-    }
-  };
-  return (
-    <Frame
-      title="Turn on notifications?"
-      subtitle="Get a push when an agent has a question, finishes or gets blocked. You can change this in Settings."
-      close={close}
-      actions={
-        <>
-          <Button label="Not now" onClick={close} />
-          <Button label="Turn on" variant="primary" isLoading={busy} onClick={turnOn} />
-        </>
-      }
-    >
-      {err && <Banner status="error" title={err} collapsible={false} />}
     </Frame>
   );
 }

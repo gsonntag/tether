@@ -225,3 +225,14 @@ export function buildInbox(
   for (const { runnerId, conflict } of conflicts) rows.push({ kind: "memory", key: `${runnerId}:memory:${conflict.id}`, at: conflict.ts, runnerId, conflict });
   return rankInbox(rows);
 }
+
+/** The bell's rows: one per session, its latest notice (the list is newest first), so a busy session doesn't flood it. */
+export function latestPerSession(notices: AgentNotice[]): AgentNotice[] {
+  const seen = new Set<string>();
+  return notices.filter((n) => {
+    const k = n.kind === "memory" || !n.sessionId ? `memory:${n.conflictId ?? n.id}` : n.sessionId;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}

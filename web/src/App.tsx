@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { VStack } from "@astryxdesign/core/Layout";
@@ -10,8 +11,8 @@ import { Dialogs } from "./components/Dialogs";
 import { MemoryPage } from "./components/MemoryPage";
 import { SessionView } from "./components/SessionView";
 import { Dashboard } from "./components/Dashboard";
-import { Sidebar } from "./components/Sidebar";
-import { listenForOpen, pushOnHere, pushSupported } from "./push";
+import { keys, Sidebar } from "./components/Sidebar";
+import { listenForOpen } from "./push";
 import { goHome, NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
 import { useDrawerSwipe } from "./swipe";
 
@@ -46,8 +47,8 @@ function Shell() {
   const selected = useStore((s) => s.selected);
   const page = useStore((s) => s.page);
   const connected = useStore((s) => s.connected);
-  const runnerId = useStore((s) => s.runnerId);
   const narrow = useNarrow();
+  const touch = useMediaQuery("(hover: none)");
   useDrawerSwipe(narrow, swipeIsOpen, swipeSetOpen);
 
   // Deep links: #/ (Home), #/s/<id>, #/memory[?conflict=<id>], #/running, and from notifications
@@ -99,14 +100,6 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // First visit with no answer yet on this device: offer push notifications once.
-  useEffect(() => {
-    if (!runnerId || !pushSupported() || Notification.permission === "denied") return;
-    if (localStorage.getItem("tether.notifyAsked") || pushOnHere(runnerId)) return;
-    localStorage.setItem("tether.notifyAsked", "1");
-    if (!useStore.getState().dialog) useStore.setState({ dialog: "notify" });
-  }, [runnerId]);
-
   const showSide = narrow || !sidebarHidden;
   const banner = !connected ? (
     <Banner status="error" container="section" collapsible={false} title={navigator.onLine ? "Disconnected · reconnecting…" : "Offline · reconnecting…"} />
@@ -123,7 +116,8 @@ function Shell() {
         {(narrow || sidebarHidden) && (
           <IconButton
             label="Show sidebar"
-            tooltip="Show sidebar (⌘B)"
+            // Not on touch: a tap leaves the tooltip stuck on screen.
+            tooltip={touch ? undefined : `Show sidebar (${keys("B")})`}
             variant="secondary"
             size="sm"
             icon={<Icon icon={Bars3Icon} />}
