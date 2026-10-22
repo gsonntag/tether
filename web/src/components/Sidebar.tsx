@@ -248,6 +248,7 @@ function SearchHit({ result }: { result: SessionSearchResult }) {
   const selected = useStore((s) => s.selected === session.id);
   return (
     <Item
+      {...rowMenuKey(session.id)}
       density="compact"
       isSelected={selected}
       startContent={<HarnessBadge harness={session.harness} />}

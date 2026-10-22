@@ -211,7 +211,7 @@ export function Dashboard({ focus }: { focus?: "running" }) {
           <LayoutContent padding={6} role="main">
             <EmptyState
               title="No runner connected"
-              description="Start the runner on a machine (systemctl --user start tether-runner) and its sessions show here; the README's “Production” section sets one up."
+              description="Start the runner on one of your machines and its sessions show here. The README's “Production” section sets one up."
             />
           </LayoutContent>
         }
