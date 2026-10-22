@@ -94,6 +94,22 @@ export const GUARD_MODES: { id: GuardMode; label: string }[] = [
   { id: "full", label: "Dangerously skip" },
 ];
 
+/**
+ * "Always allow" on an approval, remembered for the project: a shell command prefix ("git push"),
+ * an MCP server's tool, or a tool by name. The guard's own deny rules still win over it.
+ */
+export interface ApprovalRule {
+  id: string;
+  /** the project's path */
+  project: string;
+  tool: string;
+  /** shell: program and first subcommand ("git push", "docker compose") */
+  prefix?: string;
+  /** MCP: the server; `tool` is the tool's full name */
+  server?: string;
+  addedAt: number;
+}
+
 export interface GuardVerdict {
   decision: "allow" | "deny";
   /** hook: one of your PreToolUse hooks (runner/src/hooks.ts) */
@@ -287,6 +303,10 @@ export interface UiRequest {
   placeholder?: string;
   /** permission: tool name and input */
   tool?: { name: string; input: unknown };
+  /** permission: the transcript's card for this call ("Run it myself" runs it there) */
+  toolId?: string;
+  /** when it started waiting (epoch ms), for "waiting 2m" */
+  at?: number;
   /** question (AskUserQuestion): one or more questions */
   questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[];
   /** plan: the agent waits for approval of this plan part; deny (allow: false) with `value` as feedback */
@@ -436,6 +456,8 @@ export interface UiResponse {
   /** permission */
   allow?: boolean;
   always?: boolean;
+  /** permission, with allow: false: the runner runs the shell command itself and hands the agent its output */
+  runMyself?: boolean;
   /** question: question text -> answer label(s) */
   answers?: Record<string, string>;
   /** plan, with allow: false: `value` asks to talk the plan over, not to revise it (it stays under review) */
@@ -467,6 +489,8 @@ export interface LiveState {
   permissionMode?: string;
   /** who approves tool calls: a person, the guard (rules + judge), or nobody */
   guard?: GuardMode;
+  /** timed full access: when it ends and the guard goes back to its previous mode (epoch ms) */
+  guardUntil?: number;
   /** git snapshots of the working tree taken before each turn */
   checkpoints?: Checkpoint[];
   /** what the whole session changed (first checkpoint to the working tree), as of the last turn end */
@@ -779,6 +803,15 @@ export interface AgentNotice {
   ts: number;
   /** kind "memory": the (newest) conflict it is about, for the Memory page link */
   conflictId?: string;
+  /** blocked: the denied tool call this notice is about (Approve & retry / Run it myself act on it) */
+  toolId?: string;
+  /** question/blocked: the call in one line ("git push origin main", "Edit src/a.ts") */
+  call?: string;
+  /** blocked: who denied it, and why (one sentence) */
+  by?: "rule" | "judge" | "hook";
+  reason?: string;
+  /** question: the open permission request it is about (answered with uiRespond) */
+  requestId?: string;
 }
 
 export interface PendingMessage {
@@ -1325,7 +1358,7 @@ export interface Ops {
   readAttachment: { args: { path: string; offset?: number; length?: number }; result: { data: string; size: number; mimeType: string } };
   abort: { args: { sessionId: string }; result: {} };
   setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };
-  setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };
+  setGuard: { args: { sessionId: string; mode: GuardMode; minutes?: number }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
   /**
@@ -1340,7 +1373,7 @@ export interface Ops {
   /** raw bytes of a project file, a piece at a time (see FILE_DOWNLOAD_LIMITS); a secrets file's only with `reveal` */
   readFileChunk: { args: { sessionId: string; path: string; offset?: number; length?: number; reveal?: boolean }; result: FileChunk };
   /** `confirmed`: required for a call plan mode or a review held back ("by": "mode") */
-  approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
+  approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: { stale?: boolean } };
   /**
    * "Fork from here": a new session in the same directory with the conversation up to and including
    * `msgId` (the harness's own fork where it can, else a brief), on `harness` and `model`. On a user
@@ -1356,7 +1389,11 @@ export interface Ops {
   /** the "Continue on …" button of an error notice (msgId): moves the session to that chain entry */
   continueOn: { args: { sessionId: string; msgId: string }; result: {} };
   /** runs a blocked shell command on the runner and gives the agent its output */
-  runBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
+  runBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: { stale?: boolean } };
+  /** "Always allow" rules, every project's (runner config `approvals`) */
+  listApprovalRules: { args: {}; result: ApprovalRule[] };
+  /** removes one rule (by id, or by its index in listApprovalRules); returns the rules left */
+  removeApprovalRule: { args: { id?: string; index?: number }; result: ApprovalRule[] };
   /** stops one activity item (a subagent, shell, monitor…) where the harness can */
   stopActivity: { args: { sessionId: string; id: string }; result: {} };
   /** live sessions with activity, running items first; `recentMs` also keeps items that ended that recently */
