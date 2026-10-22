@@ -513,6 +513,8 @@ export interface LiveState {
   startedBy?: StartedBy;
   /** this session is the runner's leader agent (runner/src/leader.ts) */
   leader?: boolean;
+  /** the leader started this session for the user (session_create, runner/src/leader.ts) */
+  createdBy?: CreatedBy;
 }
 
 /** A cross-harness subagent: a Tether session started by another one with agent_start. */
@@ -545,6 +547,16 @@ export interface SubagentLink {
   background?: string[];
   /** agent_message calls the parent made to it */
   messages?: number;
+}
+
+/** Who started a session other than the user by hand: the leader agent, on the user's say-so (session_create). */
+export interface CreatedBy {
+  by: "leader";
+  /** the leader session that asked for it */
+  sessionId: string;
+  /** the user clicked Yes on the leader's card */
+  onBehalfOf: "user";
+  at: number;
 }
 
 export interface StartedBy {
@@ -833,6 +845,8 @@ export interface SessionSummary {
   nextRunAt?: number;
   /** the runner's leader agent: kept out of the lists (but for its own questions); the Leader item opens it */
   leader?: boolean;
+  /** the leader started it for the user (session_create) */
+  createdBy?: CreatedBy;
 }
 
 /** The project folder a session is listed in: its own, or its parent's for a subagent working in a worktree. */

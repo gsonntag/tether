@@ -33,7 +33,7 @@ import { diffLines } from "diff";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
-import { act, selectSession, useStore } from "../store";
+import { act, openLeader, selectSession, useStore } from "../store";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
@@ -857,15 +857,27 @@ export function LinkBanner({
   forked,
   reviewOf,
   startedBy,
+  createdBy,
 }: {
   from?: Link;
   to?: Link;
   forked?: Link;
   reviewOf?: { sessionId: string };
   startedBy?: { sessionId: string; name: string };
+  createdBy?: { by: "leader" };
 }) {
   return (
     <>
+      {createdBy && (
+        <Card width="100%" padding={2} variant="transparent">
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Icon icon={ChatBubbleLeftRightIcon} color="secondary" size="sm" />
+            <Text type="supporting">Started by your</Text>
+            <Button label="Leader" size="sm" onClick={openLeader} />
+            <Text type="supporting">at your request.</Text>
+          </HStack>
+        </Card>
+      )}
       {startedBy && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">

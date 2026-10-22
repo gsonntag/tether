@@ -304,6 +304,11 @@ function Where({ p, runnerId, ctx, extra }: { p: SessionPulse; runnerId: string;
           {`subagent of ${p.session.startedBy.title ? `“${p.session.startedBy.title}”` : "another session"}`}
         </Text>
       )}
+      {p.session.createdBy && (
+        <Text type="supporting" maxLines={1}>
+          started by your leader
+        </Text>
+      )}
       {ctx.multi && <Token size="sm" color="gray" label={runnerId} />}
       {p.model && (
         <Text type="supporting">
