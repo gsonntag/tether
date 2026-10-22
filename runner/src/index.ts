@@ -31,6 +31,7 @@ import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
 import { CrossAgents, isWorktreePath, listedUnder, startedByOf, subagentPath } from "./crossAgents";
 import { ensureLeaderDir, isLeaderDir, Leader } from "./leader";
+import { expandPath, launchSession } from "./launch";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
@@ -144,6 +145,8 @@ function decorate(s: SessionSummary): SessionSummary {
     ...(nextRunAt ? { nextRunAt } : {}),
     // The leader agent (leader.ts): kept out of the lists, opened from the Leader item.
     ...(!s.leader && cfg.sessions[s.id]?.leader ? { leader: true } : {}),
+    // Started by the leader for the user (session_create): the lists say so.
+    ...(!s.createdBy && cfg.sessions[s.id]?.createdBy ? { createdBy: cfg.sessions[s.id]!.createdBy } : {}),
   };
 }
 
@@ -233,6 +236,9 @@ const leader = new Leader({
   archived: () => config().archived,
   updates: () => uiPrefs().leaderUpdates,
   days: () => uiPrefs().sidebarDays,
+  // The New session dialog's own path (launch.ts): same guard, modes, hooks and lists.
+  create: (args, extra) => launchSession({ adapters, sink, track }, args, extra),
+  available: (h) => adapters[h]?.available() ?? Promise.resolve(false),
 });
 sink.leader = leader;
 // What happens in the sessions reaches the leader as batched updates (its only automatic trigger).
@@ -518,9 +524,7 @@ async function allProjects(): Promise<ProjectInfo[]> {
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 }
 
-function expand(path: string) {
-  return resolve(untilde(path)); // $HOME, like every context path (context/paths.ts)
-}
+const expand = expandPath;
 
 async function addProject(p: string, create = false): Promise<ProjectInfo> {
   if (create && !existsSync(p)) mkdirSync(p, { recursive: true });
@@ -707,19 +711,8 @@ const ops: Handlers = {
     return clean ? findSessionMatches(clean) : [];
   },
 
-  async createSession({ projectPath, harness, model, profile, prompt, permissionMode, guard }) {
-    const a = adapters[harness];
-    if (!a) throw new Error(`unknown harness ${harness}`);
-    const s = a.create(expand(projectPath), { model: profile ? undefined : model, permissionMode: permissionMode && !APPROVING_MODES.has(permissionMode) ? permissionMode : undefined }, sink);
-    // Set before start() so harnesses that take it as a launch flag (Antigravity) see it.
-    s.t.state.guard = guard ?? config().guard?.defaultMode ?? "auto";
-    await s.start();
-    track(s);
-    s.setState({ guard: s.t.state.guard });
-    if (profile) await s.setModelOrProfile(undefined, profile);
-    if (prompt) await s.prompt(prompt);
-    sink.summary(s.summary());
-    return s.summary();
+  async createSession(args) {
+    return (await launchSession({ adapters, sink, track }, args)).summary();
   },
 
   async openSession({ sessionId, projectPath }) {

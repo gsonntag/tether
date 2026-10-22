@@ -92,7 +92,7 @@ export interface SessionSink {
 
 /** What the leader session asks the leader manager (runner/src/leader.ts). */
 export interface LeaderHub {
-  /** sessions_overview, session_read, session_message, session_answer, session_escalate, session_stop */
+  /** sessions_overview, session_read, session_message, session_answer, session_escalate, session_stop, session_create */
   tool(from: LiveSession, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: boolean; text: string }>;
 }
 
@@ -268,6 +268,7 @@ export abstract class LiveSession {
       ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
       ...(this.t.state.startedBy ? { startedBy: { sessionId: this.t.state.startedBy.sessionId, name: this.t.state.startedBy.name } } : {}),
       ...(this.t.state.leader ? { leader: true } : {}),
+      ...(this.t.state.createdBy ? { createdBy: this.t.state.createdBy } : {}),
       ...(this.goalState?.status === "active" ? { goalActive: true } : {}),
       ...(this.schedules.length ? { nextRunAt: Math.min(...this.schedules.map((x) => x.nextAt)) } : {}),
     };
@@ -360,7 +361,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.reviews !== undefined || s.pending !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy", "leader"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy", "leader", "createdBy"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -1172,6 +1173,7 @@ export abstract class LiveSession {
     if (p.subagents?.length && !p.handoffTo) restore.subagents = p.subagents;
     if (p.startedBy && !this.t.state.startedBy) restore.startedBy = p.startedBy;
     if (p.leader && !this.t.state.leader) restore.leader = true;
+    if (p.createdBy && !this.t.state.createdBy) restore.createdBy = p.createdBy;
     // Messages it hadn't taken when it stopped come back held, to send (or edit) when you choose.
     if (p.pending?.length && !this.t.state.pending?.length) Object.assign(restore, { pending: p.pending, pendingHeld: true });
     this.diffBaseSha = p.diffBaseSha;
@@ -1268,6 +1270,7 @@ export abstract class LiveSession {
       subagents: s.subagents?.length ? s.subagents : undefined,
       startedBy: s.startedBy,
       leader: s.leader || undefined,
+      createdBy: s.createdBy,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -3273,6 +3276,8 @@ export abstract class LiveSession {
   /** This session moved on from `from` (a fallback, /compact): it is the same subagent. Before start. */
   inheritStartedBy(from: LiveSession) {
     if (from.t.state.startedBy) this.t.state.startedBy = from.t.state.startedBy;
+    // Started by the leader: still so after a fallback or /compact.
+    if (from.t.state.createdBy) this.t.state.createdBy = from.t.state.createdBy;
   }
 
   /** Whether this is the leader agent's session, also before its prefs are loaded (its launch adds the leader tools). */

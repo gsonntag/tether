@@ -209,7 +209,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
-          <LinkBanner from={st.handoffFrom} forked={st.forkedFrom} reviewOf={st.reviewOf} startedBy={st.startedBy} />
+          <LinkBanner from={st.handoffFrom} forked={st.forkedFrom} reviewOf={st.reviewOf} startedBy={st.startedBy} createdBy={st.createdBy} />
           {o.messages.length === 0 && <Text type="supporting">No messages yet.</Text>}
           <FileRefScope value={refScope}>
             <Transcript
