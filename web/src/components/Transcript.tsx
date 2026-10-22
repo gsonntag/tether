@@ -120,14 +120,16 @@ export const Transcript = memo(function Transcript({
   const list = useRef<HTMLDivElement>(null);
   // The row on screen before a step, and where it was: the step moves the view back by however far
   // it went (nothing where the browser already anchored it, and growth at the bottom doesn't count).
-  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number }>(undefined);
+  // A reader at the bottom stays at the bottom instead: the rows that mounted are history.
+  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number; bottom: boolean }>(undefined);
   const step = useRef(FIRST_STEP);
   const more = () => setWin((w) => ({ ...w, target: Math.max(w.target, w.count + MORE_ROWS) }));
   useLayoutEffect(() => {
     const g = grew.current;
     grew.current = undefined;
     if (!g) return;
-    if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
+    if (g.el && g.bottom) g.el.scrollTop = g.el.scrollHeight;
+    else if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
     // Size the next step to what this one cost.
     const took = performance.now() - g.at;
     step.current = Math.min(MAX_STEP, Math.max(1, Math.round((step.current * FRAME_MS) / Math.max(took, 1))));
@@ -141,7 +143,8 @@ export const Transcript = memo(function Transcript({
       timer = setTimeout(() => {
         const el = scrollParent(sentinel.current);
         const row = list.current?.querySelector(".astryx-chat-message") ?? null;
-        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now() };
+        const bottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 2;
+        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now(), bottom };
         setWin((w) => ({ ...w, count: Math.min(w.target, w.count + step.current) }));
       });
     });

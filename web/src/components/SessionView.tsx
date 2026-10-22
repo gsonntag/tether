@@ -89,7 +89,26 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   // can't (STARTS_ON_OPEN) start the process for it.
   const knownLive = useStore((s) => (s.open[sessionId]?.session ?? Object.values(s.sessions).flat().find((x) => x.id === sessionId) ?? s.recent?.find((x) => x.id === sessionId))?.live);
   const scroller = useRef<HTMLDivElement>(null);
+  // Following the end of the conversation. SessionView alone decides this: `stick` turns off only
+  // when a scroll lands above the last position we set or saw (the reader went up), and on again
+  // when one lands at the bottom. Our own downward writes never turn it off.
   const stick = useRef(true);
+  const lastTop = useRef(0);
+  const atBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 2;
+  /** Moves the scroller and keeps the follow state in step with where it landed. */
+  const scrollTo = (top: number) => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = top;
+    lastTop.current = el.scrollTop;
+    stick.current = atBottom(el);
+  };
+  const toBottom = () => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
+  };
   const narrow = useNarrow();
   const sidebarHidden = useStore((s) => s.sidebarHidden);
 
@@ -108,12 +127,45 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return () => void (document.title = "Tether");
   }, [title]);
 
-  // Stay pinned to the bottom unless the reader scrolled up. ChatLayout follows growth of the
-  // transcript on its own; this also covers what sits after it (pending steers, prompts, the dock).
+  // Stay pinned to the bottom unless the reader scrolled up: after every render of this view…
   useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (stick.current) toBottom();
   });
+  // …and whenever the message area changes size without one (earlier rows mounting, an image
+  // decoding, a bubble from another store). ChatLayout's own hook springs toward the bottom from
+  // the position it read in its observer callback, which ran before ours; its next frames would
+  // write that stale position back, so the bottom is asserted again each frame until nothing else
+  // has moved the scroller for two frames. A reader's wheel still wins: its scroll event fires
+  // before that frame's animation callbacks and turns `stick` off first.
+  const loaded = !!o && !o.loading && !!o.session;
+  useEffect(() => {
+    const el = scroller.current;
+    const area = el?.firstElementChild;
+    if (!el || !area) return;
+    let frame = 0;
+    let settled = 0;
+    const hold = () => {
+      frame = 0;
+      if (!stick.current) return;
+      if (atBottom(el)) settled++;
+      else {
+        toBottom();
+        settled = 0;
+      }
+      if (settled < 2) frame = requestAnimationFrame(hold);
+    };
+    const ro = new ResizeObserver(() => {
+      if (!stick.current) return;
+      toBottom();
+      settled = 0;
+      if (!frame) frame = requestAnimationFrame(hold);
+    });
+    ro.observe(area);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [loaded, sessionId]);
 
   // File references in the transcript belong to this session; they're checked again when a turn ends.
   const refScope = useMemo(() => ({ sessionId }), [sessionId]);
@@ -126,7 +178,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
 
   // The file panel narrows the chat and the transcript reflows: keep what was on screen in place
   // (the clicked reference, else the line at the top), or the bottom when following the end.
-  const loaded = !!o && !o.loading && !!o.session;
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -141,8 +192,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       if (el.clientWidth === width) return;
       width = el.clientWidth;
       const a = takeScrollAnchor() ?? anchor;
-      if (stick.current) el.scrollTop = el.scrollHeight;
-      else if (a?.node.isConnected) el.scrollTop += a.node.getBoundingClientRect().top - a.top;
+      if (stick.current) toBottom();
+      else if (a?.node.isConnected) scrollTo(el.scrollTop + a.node.getBoundingClientRect().top - a.top);
       capture();
     });
     capture();
@@ -203,7 +254,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         style={{ overscrollBehavior: "contain" }}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          if (atBottom(el)) stick.current = true;
+          else if (el.scrollTop < lastTop.current - 1) stick.current = false;
+          lastTop.current = el.scrollTop;
         }}
         composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
       >
