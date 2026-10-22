@@ -247,16 +247,20 @@ An answer that comes too late (answered elsewhere) says "Already answered".
 **Blocked tickets.** In Auto nothing waits for you. When the judge denies a call, the agent gets
 the reason and carries on, and you get a Blocked notice with the call and the judge's reason
 (Home, the bell, a push: "Blocked git push origin main · Fix login"). A session's denials within
-a minute of a push go out as one ("3 calls blocked · Fix login"). **Approve & retry** (any call)
-or **Run it myself** (shell commands) on the tool card, Home, the bell or the push's **Approve**
-lets it through and clears the ticket. The rules' own blocks (below) aren't tickets: they are
+a minute of a push go out as one ("3 calls blocked · Fix login"); that push has no buttons and
+opens the session, where each call has its own. **Approve & retry** (any call) or **Run it
+myself** (shell commands) on the tool card, Home, the bell or a single call's push **Approve**
+lets it through and clears the ticket. Tickets are kept with the session, so they still work
+after its agent has closed or the runner has restarted. The rules' own blocks (below) aren't tickets: they are
 never right.
 
 **Always allow is a rule for the project.** Besides what the harness does with it, Always allow
 stores a rule for that project: a shell command's program and first subcommand (`git push`,
 `docker compose`, `npm run`), an MCP server's tool, or a tool by name. Commands with
-substitutions, pipes, `;`, `&&`, `||`, redirections or `sudo` aren't remembered (that one call
-is still allowed, and the chat says so). Rules apply after the guard's own rules and before the
+substitutions, pipes, `;`, `&&`, `||`, redirections or `sudo` aren't remembered, nor ones with a
+flag, path or script where the subcommand goes (`rm -f a`, `git -C sub push`, `curl https://…`),
+nor shells, interpreters and wrappers (`bash`, `python3`, `node`, `env`, `xargs`, `find`…): a
+bare program would allow every use of it. That one call is still allowed, and the chat says so. Rules apply after the guard's own rules and before the
 judge or you, never over a rule's block (a `git push` rule doesn't allow `git push --force`),
 and an edit rule only covers edits inside the project. Settings → Approvals lists them per
 project; × removes one.
