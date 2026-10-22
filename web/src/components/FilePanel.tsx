@@ -18,10 +18,11 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
-import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
+import { ArrowDownTrayIcon, ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { create } from "zustand";
 import { FILE_VIEW_LIMITS, type FileContents, type FileDiffResult, type LiveState, type SessionFileDiff } from "../shared/protocol";
-import { rpc } from "../store";
+import { rpc, toast } from "../store";
+import { fetchFileBlob, previewKind, saveBlob } from "../fileBytes";
 import { fmtClock } from "../util";
 import { openChanges, Patch, StatText } from "./Changes";
 
@@ -229,6 +230,21 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
     </Button>
   );
 
+  const [saving, setSaving] = useState(false);
+  const download = async () => {
+    setSaving(true);
+    try {
+      const r = await fetchFileBlob(sessionId, path, reveal);
+      if (r.withheld) toast("info", "This looks like a secrets file: show its contents first, then download it.");
+      else if (r.blob) saveBlob(r.blob, basename(path));
+    } catch (e: any) {
+      toast("error", `Couldn't download ${basename(path)}: ${e?.message ?? e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const downloadButton = <IconButton label="Download" tooltip="Download this file" variant="ghost" size="sm" isLoading={saving} icon={<Icon icon={ArrowDownTrayIcon} />} onClick={download} />;
+
   const header = narrow ? (
     <DialogHeader
       title={
@@ -248,7 +264,12 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
         </>
       }
       startContent={<IconButton label="Back to the chat" tooltip="Back" variant="ghost" size="sm" icon={<Icon icon={ArrowLeftIcon} />} onClick={closeFile} />}
-      endContent={openInChanges}
+      endContent={
+        <HStack gap={0.5} vAlign="center">
+          {downloadButton}
+          {openInChanges}
+        </HStack>
+      }
       hasDivider
     />
   ) : (
@@ -257,6 +278,7 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
         <StackItem size="fill" style={minZero}>
           {title}
         </StackItem>
+        {downloadButton}
         {openInChanges}
         <IconButton label="Close file" tooltip="Close (Esc)" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={closeFile} />
       </HStack>
@@ -290,7 +312,7 @@ function FileView({ target, state, narrow }: { target: FileTarget; state: LiveSt
             {tab === "diff" && (
               <DiffTab diff={diff} error={diffError} scope={scope} range={range} exists={diff?.exists ?? target.exists} onShowFile={() => setTab("file")} onReveal={() => setReveal(true)} />
             )}
-            {tab === "file" && <FileTab file={file} error={fileError} path={path} range={range} deleted={diff ? !diff.exists : target.exists === false} onReveal={() => setReveal(true)} />}
+            {tab === "file" && <FileTab sessionId={sessionId} reveal={reveal} file={file} error={fileError} path={path} range={range} deleted={diff ? !diff.exists : target.exists === false} onReveal={() => setReveal(true)} />}
           </VStack>
         </LayoutContent>
       }
@@ -387,6 +409,8 @@ function DiffTab({
 }
 
 function FileTab({
+  sessionId,
+  reveal,
   file,
   error,
   path,
@@ -394,6 +418,8 @@ function FileTab({
   deleted,
   onReveal,
 }: {
+  sessionId: string;
+  reveal: boolean;
   file?: FileContents;
   error?: string;
   path: string;
@@ -412,7 +438,11 @@ function FileTab({
   if (error) return <Banner status="error" title="Couldn't read the file" description={error} />;
   if (!file) return <EmptyState title="Reading the file…" icon={<Spinner />} isCompact />;
   if (file.withheld) return <SecretsNotice onReveal={onReveal} />;
-  if (file.binary) return <EmptyState isCompact title="Binary file" description={`${fmtSize(file.size)}, not shown.`} />;
+  if (file.binary) {
+    const kind = previewKind(path);
+    if (kind) return <BinaryPreview sessionId={sessionId} path={path} kind={kind} reveal={reveal} size={file.size} />;
+    return <EmptyState isCompact title="Binary file" description={`${fmtSize(file.size)}. Use Download to open it on this device.`} />;
+  }
   return (
     <VStack gap={2} ref={box}>
       {file.truncated && (
@@ -430,6 +460,36 @@ function FileTab({
       )}
     </VStack>
   );
+}
+
+const pdfFrame: CSSProperties = { width: "100%", height: "75vh", border: "none", borderRadius: "var(--radius-element)", background: "var(--color-background-muted)" };
+const imageBox: CSSProperties = { display: "block", maxWidth: "100%", maxHeight: "75vh", borderRadius: "var(--radius-element)" };
+
+/** A PDF in the browser's own viewer, or an image, from the file's bytes. */
+function BinaryPreview({ sessionId, path, kind, reveal, size }: { sessionId: string; path: string; kind: "pdf" | "image"; reveal: boolean; size: number }) {
+  const [url, setUrl] = useState<string>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    let made: string | undefined;
+    setUrl(undefined);
+    setError(undefined);
+    fetchFileBlob(sessionId, path, reveal)
+      .then((r) => {
+        if (!live || !r.blob) return;
+        // The browser's PDF viewer needs the type; a Blob from the runner already carries it.
+        made = URL.createObjectURL(kind === "pdf" ? new Blob([r.blob], { type: "application/pdf" }) : r.blob);
+        setUrl(made);
+      })
+      .catch((e) => live && setError(e?.message ?? String(e)));
+    return () => {
+      live = false;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [sessionId, path, kind, reveal]);
+  if (error) return <Banner status="error" title="Couldn't load the file" description={error} />;
+  if (!url) return <EmptyState title={`Loading ${fmtSize(size)}…`} icon={<Spinner />} isCompact />;
+  return kind === "pdf" ? <iframe src={url} title={basename(path)} style={pdfFrame} /> : <img src={url} alt={basename(path)} style={imageBox} />;
 }
 
 /**

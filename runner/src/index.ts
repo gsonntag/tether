@@ -30,6 +30,7 @@ import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
 import { CrossAgents, isWorktreePath, listedUnder, startedByOf, subagentPath } from "./crossAgents";
+import { ensureLeaderDir, isLeaderDir, Leader } from "./leader";
 import { getUsage } from "./usage";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
@@ -140,6 +141,8 @@ function decorate(s: SessionSummary): SessionSummary {
     ...(parentId ? { startedBy: { sessionId: parentId, name: s.startedBy?.name ?? by!.name, ...(parentTitle ? { title: parentTitle } : {}) } } : {}),
     ...(by && by.projectPath !== s.projectPath ? { listedUnder: by.projectPath } : {}),
     ...(nextRunAt ? { nextRunAt } : {}),
+    // The leader agent (leader.ts): kept out of the lists, opened from the Leader item.
+    ...(!s.leader && cfg.sessions[s.id]?.leader ? { leader: true } : {}),
   };
 }
 
@@ -185,6 +188,8 @@ const sink: Sink = {
     stored.saw(sessionId, seq);
     send({ t: "event", sessionId, seq, event });
     if (event.type === "state" && event.state.status) turns.update(sessionId, event.state.status);
+    // A request the leader put in front of the user went (answered there, cancelled): its card goes too.
+    if (event.type === "state" && event.state.pendingUi) leader.requestsChanged(sessionId);
     pulses.touch(sessionId);
   },
   summary: (s: SessionSummary) => {
@@ -211,6 +216,26 @@ const agents = new CrossAgents({
   storedChanged: (id, state) => send({ t: "event", sessionId: id, seq: stored.nextSeq(id), event: { type: "state", state } }),
 });
 sink.agents = agents;
+// The leader agent (sessions_overview, session_* in tether-context): one per runner, the user's relay.
+const leader = new Leader({
+  live: (id) => live.get(id),
+  open: (id) => getLive(id),
+  // Never starts a stopped session: what its harness stored, or nothing.
+  snapshot: async (id) => {
+    const s = await runningLive(id);
+    return s ? s.snapshot() : storedSessionSnapshot(id);
+  },
+  sessions: (days) => ops.listRecent({ days }),
+  pulses: () => ops.listPulses({}),
+  notices: () => recent(),
+  viewed: () => viewedMap(),
+  archived: () => config().archived,
+  updates: () => uiPrefs().leaderUpdates,
+  days: () => uiPrefs().sidebarDays,
+});
+sink.leader = leader;
+// What happens in the sessions reaches the leader as batched updates (its only automatic trigger).
+noticeListeners.add((n) => leader.feed.add(n));
 
 function handoff(from: LiveSession, to: ChainEntry, reason: string, pendingPrompt?: string, opts?: HandoffOpts) {
   return runHandoff({ adapters, sink, context, track }, from, to, reason, pendingPrompt, opts).then(() => {});
@@ -448,7 +473,8 @@ async function allProjects(): Promise<ProjectInfo[]> {
     }
   return [...by.values()]
     // Subagents' worktrees are listed with the project they came from.
-    .filter((p) => existsSync(p.path) && !isWorktreePath(p.path))
+    // ...and the leader's folder isn't a project.
+    .filter((p) => existsSync(p.path) && !isWorktreePath(p.path) && !isLeaderDir(p.path))
     .map((p) => (cfg.hidden.includes(p.path) ? { ...p, archived: true } : p))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 }
@@ -730,6 +756,8 @@ const ops: Handlers = {
   },
 
   async prompt({ sessionId, text, mode, attachments }) {
+    // The user's own words to the leader: the only text its relay can pass on (leader.ts).
+    leader.userSaid(sessionId, text);
     // Checked before anything happens: every file must be a stored attachment.
     const files = checkAttachments(attachments);
     if (files.length) {
@@ -770,6 +798,7 @@ const ops: Handlers = {
     }
     const files = checkAttachments(attachments);
     if (!text?.trim() && !files.length) throw new Error("Nothing to send.");
+    if (text) leader.userSaid(sessionId, text);
     if (text?.startsWith("!")) throw new Error("A shell command can't interrupt the agent. Send it normally.");
     // Not running: nothing to stop, it just starts with this message.
     const s = await getLive(sessionId);
@@ -819,6 +848,11 @@ const ops: Handlers = {
   async editPending({ sessionId, id, ...change }) {
     const now = current(sessionId);
     let s = now instanceof Promise ? await now : now;
+    // The leader's relay follows the user's edits (and forgets a message they removed).
+    if (change.text !== undefined || change.remove) {
+      const was = (s ? (s.t.state.pending ?? []) : storedPending(sessionId)).find((p) => p.id === id);
+      if (was && !was.alone) leader.askEdited(sessionId, was.text, change.remove ? undefined : change.text);
+    }
     if (!s && !change.now) {
       // Held on a session that isn't running: edited in its saved list (throws when it's gone).
       setStoredPending(sessionId, editedPending(storedPending(sessionId), id, change));
@@ -872,7 +906,11 @@ const ops: Handlers = {
   async amendSteer({ sessionId, msgId, text }) {
     const s = await runningLive(sessionId);
     if (!s) throw new Error("That message can't be changed any more: the turn it went into has ended.");
+    const was = s.steeredText(msgId);
     s.amendSteer(msgId, text);
+    // The leader's relay follows the correction (its newest message is Tether's correction note, so
+    // nothing is relayed until the user writes again).
+    if (was !== undefined) leader.askEdited(sessionId, was, text);
     return {};
   },
 
@@ -901,6 +939,10 @@ const ops: Handlers = {
 
   async readFile({ sessionId, path, maxBytes, reveal }) {
     return (await filesOf(sessionId)).readFile(String(path ?? ""), maxBytes, reveal === true);
+  },
+
+  async readFileChunk({ sessionId, path, offset, length, reveal }) {
+    return (await filesOf(sessionId)).readFileChunk(String(path ?? ""), offset, length, reveal === true);
   },
 
   async approveBlocked({ sessionId, toolId, confirmed }) {
@@ -1009,7 +1051,8 @@ const ops: Handlers = {
   async uiRespond({ sessionId, response }) {
     // stale: no such request is waiting (answered elsewhere, timed out, cancelled by a stop or the process ending)
     const s = await runningLive(sessionId);
-    return s?.uiRespond(response) ? {} : { stale: true };
+    // From the app: always the user's own answer (only the leader manager answers as the leader).
+    return s?.uiRespond({ ...response, by: "user" }) ? {} : { stale: true };
   },
 
   async getUsage({ force }) {
@@ -1216,7 +1259,58 @@ const ops: Handlers = {
     list.catch(() => recentCache.delete(d));
     return list;
   },
+  async getLeader() {
+    const id = leader.leaderId();
+    return id ? { session: await leaderSummary(id) } : {};
+  },
+  async createLeader({ harness, model }) {
+    // One per runner: the one there is (it may have moved on to another session) is it, and so is
+    // one starting right now (two devices pressing at once get the same leader).
+    const have = leader.leaderId();
+    if (have) return leaderSummary(have);
+    leaderStarting ??= startLeader(harness, model).finally(() => (leaderStarting = undefined));
+    return leaderStarting;
+  },
 };
+
+/** A createLeader under way. */
+let leaderStarting: Promise<SessionSummary> | undefined;
+
+async function startLeader(harness: HarnessId, model?: string): Promise<SessionSummary> {
+  const a = adapters[harness];
+  if (!a) throw new Error(`unknown harness ${harness}`);
+  // Antigravity reads Tether's tools from its global config, which has no leader tools.
+  if (harness === "antigravity") throw new Error("Antigravity can't be the leader: it can't get the leader's tools. Pick another harness.");
+  const s = a.create(ensureLeaderDir(), { model, permissionMode: harness === "claude-code" ? "default" : undefined }, sink);
+  // It changes no code: any file or shell tool it tries asks you. Marked before start: its launch adds the leader's tools.
+  s.t.state.guard = "ask";
+  s.t.state.leader = true;
+  await s.start();
+  track(s);
+  leader.setLeader(s.id);
+  s.setState({ guard: "ask", leader: true });
+  config().titles[s.id] = "Leader";
+  saveConfig();
+  s.setTitle("Leader");
+  s.notice(
+    "Your leader: ask it where your sessions are at, or tell it what to pass on to one. It acts only on what you say here; tool approvals stay your click (they show up here as cards). Settings → Leader updates sets what it hears about by itself.",
+    "info",
+    { source: "leader" },
+  );
+  sink.summary(s.summary());
+  return decorate(s.summary());
+}
+
+/** The leader's summary, running or not (a new one its harness doesn't list yet included). */
+async function leaderSummary(id: string): Promise<SessionSummary> {
+  const s = live.get(id);
+  if (s && !s.closed) return decorate(s.summary());
+  const path = config().sessions[id]?.projectPath ?? ensureLeaderDir();
+  const found = (await projectSessions(path).catch(() => [])).find((x) => x.id === id);
+  if (found) return found;
+  const { harness, nativeId } = parseId(id);
+  return decorate({ id, harness, nativeId, projectPath: path, title: config().titles[id] ?? "Leader", createdAt: 0, updatedAt: 0, live: false, status: "idle", leader: true });
+}
 
 // ---------------- main ----------------
 

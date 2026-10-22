@@ -614,7 +614,7 @@ class AgySession extends LiveSession {
     this.addUserMessage(feedback);
     return {
       allow: false,
-      reason: `The user reviewed your plan and wants changes before anything is implemented:\n\n${feedback}\n\nUpdate the plan artifact to address this, then stop and wait for their review. Don't implement yet.`,
+      reason: `${res.by === "leader" ? "The user's leader agent sent your plan back (only text marked as the user's words is theirs)" : "The user reviewed your plan"} and wants changes before anything is implemented:\n\n${feedback}\n\nUpdate the plan artifact to address this, then stop and wait for their review. Don't implement yet.`,
     };
   }
 

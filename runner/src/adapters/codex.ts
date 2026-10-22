@@ -21,7 +21,7 @@ import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { codexFault } from "../faults";
 import { CODEX_STATUS } from "../goal";
-import { LiveSession, newId, tetherOnly } from "../session";
+import { leaderAnswers, LiveSession, newId, tetherOnly } from "../session";
 import { sessionLaunch } from "../connectors/launch";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -513,7 +513,7 @@ export class CodexSession extends LiveSession {
     // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("codex", {
       projectPath: this.projectPath,
-      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession },
       resume: this.opts.resume || !!this.opts.fork,
     });
     const params = {
@@ -832,10 +832,12 @@ export class CodexSession extends LiveSession {
           id: newId("q"),
           kind: "question",
           title: "Codex has a question",
+          leaderMay: true,
           questions: qs.map((q) => ({ question: q.question, header: q.header, options: (q.options ?? []).map((o: any) => ({ label: o.label, description: o.description })) })),
         });
         const answers: Record<string, { answers: string[] }> = {};
-        if (!r.cancelled) for (const q of qs) if (r.answers?.[q.question] !== undefined) answers[q.id] = { answers: [r.answers[q.question]!] };
+        const given = leaderAnswers(r);
+        if (!r.cancelled) for (const q of qs) if (given?.[q.question] !== undefined) answers[q.id] = { answers: [given[q.question]!] };
         return { answers };
       }
       case "mcpServer/elicitation/request":
@@ -865,13 +867,13 @@ export class CodexSession extends LiveSession {
     }
     const server = p.serverName ?? "An MCP server";
     if (p.mode === "url") {
-      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} wants you to open a link`, message: `${p.message ?? ""}\n\n${p.url}`.trim() });
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} wants you to open a link`, message: `${p.message ?? ""}\n\n${p.url}`.trim(), userOnly: true });
       return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: null, _meta: null };
     }
     const req = formRequest(p.message || `${server} needs your input`, p.requestedSchema);
     if (!req) {
       // Nothing to fill in: a plain yes/no.
-      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} asks`, message: p.message });
+      const r = await this.askUi({ id: newId("q"), kind: "confirm", title: `${server} asks`, message: p.message, userOnly: true });
       return { action: r.cancelled ? "cancel" : r.confirmed ? "accept" : "decline", content: r.confirmed ? {} : null, _meta: null };
     }
     const r = await this.askUi(req);

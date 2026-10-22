@@ -197,6 +197,21 @@ export interface FileContents {
   withheld?: boolean;
 }
 
+/** A piece of a project file's raw bytes (base64), for previews and downloads. */
+export interface FileChunk {
+  path: string;
+  size: number;
+  offset: number;
+  data: string;
+  mimeType: string;
+  sensitive?: boolean;
+  /** a secrets file the user hasn't asked to see: nothing sent (ask again with `reveal`) */
+  withheld?: boolean;
+}
+
+/** Downloads and previews of project files: the largest file, and how much one request carries. */
+export const FILE_DOWNLOAD_LIMITS = { bytes: 100 * 1024 * 1024, chunk: 256 * 1024 };
+
 /** Caps for the file panel's File tab. */
 export const FILE_VIEW_LIMITS = { bytes: 1024 * 1024, lines: 20_000 };
 
@@ -215,7 +230,7 @@ export interface Msg {
   title?: string;
   collapsed?: boolean;
   /** notice: what produced it (agent report, background task, compaction…) */
-  source?: "agent" | "task" | "compaction" | "command" | "channel" | "memory";
+  source?: "agent" | "task" | "compaction" | "command" | "channel" | "memory" | "leader";
   /** assistant: ended in an error */
   error?: string;
   streaming?: boolean;
@@ -276,6 +291,13 @@ export interface UiRequest {
   questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[];
   /** plan: the agent waits for approval of this plan part; deny (allow: false) with `value` as feedback */
   planId?: string;
+  /** only the user's own click answers it, never the leader agent (it gives an agent more permission) */
+  userOnly?: boolean;
+  /**
+   * a question the leader agent may answer as the user tells it (Tether's ask_user, Claude's
+   * AskUserQuestion, Codex's requestUserInput); plans too. Nothing else is (an allowlist).
+   */
+  leaderMay?: boolean;
 }
 
 // ---------- goal (/goal, runner/src/goal.ts) ----------
@@ -418,6 +440,8 @@ export interface UiResponse {
   answers?: Record<string, string>;
   /** plan, with allow: false: `value` asks to talk the plan over, not to revise it (it stays under review) */
   discuss?: boolean;
+  /** who answered: the user (default), or the leader agent passing on what the user said (never a permission) */
+  by?: "user" | "leader";
 }
 
 export interface LiveState {
@@ -487,6 +511,8 @@ export interface LiveState {
   subagents?: SubagentLink[];
   /** this session is a cross-harness subagent: who started it */
   startedBy?: StartedBy;
+  /** this session is the runner's leader agent (runner/src/leader.ts) */
+  leader?: boolean;
 }
 
 /** A cross-harness subagent: a Tether session started by another one with agent_start. */
@@ -797,6 +823,8 @@ export interface SessionSummary {
   goalActive?: boolean;
   /** its soonest Tether loop or schedule run (/loop, /schedule): it will work again then */
   nextRunAt?: number;
+  /** the runner's leader agent: kept out of the lists (but for its own questions); the Leader item opens it */
+  leader?: boolean;
 }
 
 /** The project folder a session is listed in: its own, or its parent's for a subagent working in a worktree. */
@@ -827,11 +855,19 @@ export interface UiPrefs {
   sidebarDays: number;
   /** shell tool calls start expanded in the transcript */
   expandShell: boolean;
+  /** what reaches the leader agent by itself: batched updates, questions and blocks only, or nothing */
+  leaderUpdates: LeaderUpdates;
 }
+export type LeaderUpdates = "digest" | "questions" | "off";
+export const LEADER_UPDATES: { id: LeaderUpdates; label: string }[] = [
+  { id: "digest", label: "Updates" },
+  { id: "questions", label: "Questions only" },
+  { id: "off", label: "Off" },
+];
 /** The sidebar windows on offer, in days (0 = all). */
 export const SIDEBAR_DAYS = [1, 3, 7, 30, 0] as const;
 export const DEFAULT_SIDEBAR_DAYS = 3;
-export const DEFAULT_UI_PREFS: UiPrefs = { sidebarDays: DEFAULT_SIDEBAR_DAYS, expandShell: false };
+export const DEFAULT_UI_PREFS: UiPrefs = { sidebarDays: DEFAULT_SIDEBAR_DAYS, expandShell: false, leaderUpdates: "digest" };
 
 /** A live session's activity, for the runner-wide Running page. */
 export interface SessionActivity {
@@ -1293,6 +1329,8 @@ export interface Ops {
   fileDiff: { args: { sessionId: string; path: string; checkpoint?: string; reveal?: boolean }; result: FileDiffResult };
   /** a project file's current contents, up to FILE_VIEW_LIMITS (read-only); a secrets file's only with `reveal` */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; reveal?: boolean }; result: FileContents };
+  /** raw bytes of a project file, a piece at a time (see FILE_DOWNLOAD_LIMITS); a secrets file's only with `reveal` */
+  readFileChunk: { args: { sessionId: string; path: string; offset?: number; length?: number; reveal?: boolean }; result: FileChunk };
   /** `confirmed`: required for a call plan mode or a review held back ("by": "mode") */
   approveBlocked: { args: { sessionId: string; toolId: string; confirmed?: boolean }; result: {} };
   /**
@@ -1462,6 +1500,10 @@ export interface Ops {
    * one, across projects, most recently touched first: the sidebar's Recent and Home.
    */
   listRecent: { args: { days: number }; result: SessionSummary[] };
+  /** the runner's leader agent (runner/src/leader.ts), if it has one */
+  getLeader: { args: {}; result: { session?: SessionSummary } };
+  /** starts the leader agent (one per runner: an existing one is returned) */
+  createLeader: { args: { harness: HarnessId; model?: string }; result: SessionSummary };
 }
 
 export type OpName = keyof Ops;

@@ -155,6 +155,14 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   turn). Its questions and approvals come to you. Its guard is never looser than the parent's;
   at most 2 levels deep and 4 running per tree; stopping, archiving or removing the parent stops
   them. Details: `docs/harness-platform.md`, Phase 5.
+- **Leader.** One agent per runner that follows every session, so you don't have to open them:
+  ask it where things are at, and tell it what to pass on ("tell the Kiro one to skip the
+  migration", "approve that plan"). Open it from Leader in the sidebar or on Home ("Start your
+  leader": any harness and model). Your words reach a session as yours, word for word ("From your
+  leader" card), its own notes as its; it answers questions and plans only when you say so, and a
+  tool approval comes to you as a card in its chat. It hears about your sessions as batched
+  updates (questions within 30 s, the rest every 5 minutes); Settings → Leader updates: Updates,
+  Questions only or Off. Details: `docs/harness-platform.md`, Phase 6.
 - **Home.** The landing screen (and the 🏠 in the sidebar header) shows every connected runner's
   sessions at a glance, labeled by runner when there are several:
   - **Needs you:** permission prompts (Approve / Deny right there), questions with a few choices

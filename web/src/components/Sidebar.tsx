@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -18,13 +18,13 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { BookOpenIcon, ChatBubbleLeftRightIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { listPath, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
-import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, goHome, openLeader, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { byListOrder, nestSubagents, projectIsQuiet, sessionState, showInSidebar, touched, unreadNotice } from "../recentSessions";
-import { knownSessions, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
+import { knownSessions, useMinute, useNeedsCount, useRecentContext, useSessionGroups } from "../sessionLists";
 import { runningLine, summaryWork, workState, type WorkState } from "../workState";
 import { HarnessBadge } from "./HarnessBadge";
 import { NoticeBell } from "./Notices";
@@ -169,6 +169,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
       ) : (
         <>
         <HomeNavItem />
+        <LeaderNavItem />
         <MemoryNavItem />
         <NeedsYouSection />
         <RecentSection />
@@ -289,6 +290,24 @@ function HomeNavItem() {
   );
 }
 
+/**
+ * The leader agent's chat (runner/src/leader.ts): one agent that follows every session and passes
+ * on what you tell it. It isn't in the lists below (but for its own questions, under Needs you).
+ */
+function LeaderNavItem() {
+  const on = useStore((s) => !!s.selected && !!s.open[s.selected]?.session?.leader);
+  const working = useStore((s) => Object.values(s.sessions).some((list) => list.some((x) => x.leader && x.live && x.status === "running")));
+  return (
+    <SideNavItem
+      label="Leader"
+      icon={ChatBubbleLeftRightIcon}
+      isSelected={on}
+      onClick={openLeader}
+      endContent={working ? <StatusDot variant="accent" isPulsing label="Working" /> : undefined}
+    />
+  );
+}
+
 /** The Memory & Skills page; the count is open memory conflicts. */
 function MemoryNavItem() {
   const on = useStore((s) => s.page === "memory");
@@ -358,7 +377,9 @@ function RecentSection() {
   );
 }
 
-function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
+// Rows are memoized: the lists re-render on every click and status change, and each row is costly
+// (menus, tooltips), so only the rows whose session changed are drawn again.
+const ProjectRow = memo(function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const loaded = useStore((s) => s.sessions[p.path]);
   // Collapsed, the row still says whether anything in it works: its main turns, or only background work.
   const countIn = (s: ReturnType<typeof useStore.getState>, state: WorkState) =>
@@ -367,12 +388,49 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
   const background = useStore((s) => countIn(s, "background"));
   const ctx = useRecentContext();
   const [all, setAll] = useState(false);
-  const archiveProject = async (archived: boolean) => {
-    if (archived && p.live.some((s) => s.status !== "idle" || workState(summaryWork(s)) === "background") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
-      return;
-    if ((await act("archiveProject", { path: p.path, archived })) === undefined) return;
-    useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
-  };
+  // Built once per project and count: every click changes ctx and draws each project again, and
+  // these (a tooltip, a menu) are most of a row's cost.
+  const endContent = useMemo(
+    () => (
+      <HStack gap={1} vAlign="center">
+        {!open && running > 0 && <Spinner size="sm" aria-label={`${running} working`} />}
+        {!open && !running && background > 0 && (
+          <Tooltip content={`${background} working in background`}>
+            <Spinner size="sm" shade="subtle" aria-label={`${background} working in background`} />
+          </Tooltip>
+        )}
+        {p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : null}
+      </HStack>
+    ),
+    [p, open, running, background],
+  );
+  const actions = useMemo(() => {
+    const archiveProject = async (archived: boolean) => {
+      if (archived && p.live.some((s) => s.status !== "idle" || workState(summaryWork(s)) === "background") && !confirm(`${p.name} has a running session. Archive the project anyway? The session keeps running.`))
+        return;
+      if ((await act("archiveProject", { path: p.path, archived })) === undefined) return;
+      useStore.setState((st) => ({ projects: st.projects.map((x) => (x.path === p.path ? { ...x, archived } : x)) }));
+    };
+    return (
+      <>
+        {!p.archived && (
+          <IconButton
+            label={`New session in ${p.name}`}
+            tooltip={`New session in ${p.name}`}
+            variant="ghost"
+            icon={<Icon icon={PlusIcon} />}
+            onClick={() => useStore.setState({ dialog: "new", newSessionProject: p.path })}
+          />
+        )}
+        <MoreMenu
+          label={`${p.name} options`}
+          size="sm"
+          alignment="end"
+          items={[{ label: p.archived ? "Unarchive project" : "Archive project", onClick: () => archiveProject(!p.archived) }]}
+        />
+      </>
+    );
+  }, [p]);
 
   // Only sessions touched recently (Settings → "Show sessions from the last"), plus any that are
   // working, need you or are open. Older and done ones aren't listed; search finds them, and
@@ -397,36 +455,8 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
       style={quiet ? { color: "var(--color-text-secondary)" } : undefined}
       collapsible={{ isCollapsed: !open, onCollapsedChange: (collapsed) => toggleProject(p.path, !collapsed) }}
       onClick={() => toggleProject(p.path)}
-      endContent={
-        <HStack gap={1} vAlign="center">
-          {!open && running > 0 && <Spinner size="sm" aria-label={`${running} working`} />}
-          {!open && !running && background > 0 && (
-            <Tooltip content={`${background} working in background`}>
-              <Spinner size="sm" shade="subtle" aria-label={`${background} working in background`} />
-            </Tooltip>
-          )}
-          {p.sessionCount ? <Text type="supporting">{p.sessionCount}</Text> : null}
-        </HStack>
-      }
-      actions={
-        <>
-          {!p.archived && (
-            <IconButton
-              label={`New session in ${p.name}`}
-              tooltip={`New session in ${p.name}`}
-              variant="ghost"
-              icon={<Icon icon={PlusIcon} />}
-              onClick={() => useStore.setState({ dialog: "new", newSessionProject: p.path })}
-            />
-          )}
-          <MoreMenu
-            label={`${p.name} options`}
-            size="sm"
-            alignment="end"
-            items={[{ label: p.archived ? "Unarchive project" : "Archive project", onClick: () => archiveProject(!p.archived) }]}
-          />
-        </>
-      }
+      endContent={endContent}
+      actions={actions}
     >
       {nestSubagents(rows).map(({ session: s, depth }) => (
         <SessionRow key={s.id} s={s} depth={depth} />
@@ -434,7 +464,7 @@ function ProjectRow({ p, open }: { p: ProjectInfo; open: boolean }) {
       {more}
     </SideNavItem>
   );
-}
+});
 
 export async function archive(s: SessionSummary, archived: boolean) {
   const r = await act("archiveSession", { sessionId: s.id, archived });
@@ -525,8 +555,10 @@ function SessionIndicator({ s, needsYou }: { s: SessionSummary; needsYou?: boole
 const projectName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /** `withProject`: in the cross-project lists (Needs you, Recent), the project's name, subtly. */
-function SessionRow({ s, withProject, needsYou, depth = 0 }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean; depth?: number }) {
+const SessionRow = memo(function SessionRow({ s, withProject, needsYou, depth = 0 }: { s: SessionSummary; withProject?: boolean; needsYou?: boolean; depth?: number }) {
   const at = useStore((st) => touched(s, st));
+  // Memoized, the row redraws on its own each minute so "ago" moves on.
+  useMinute();
   const [editing, setEditing] = useState(false);
   const sel = useStore((st) => st.selected === s.id);
   const [removing, setRemoving] = useState(false);
@@ -601,4 +633,4 @@ function SessionRow({ s, withProject, needsYou, depth = 0 }: { s: SessionSummary
     />
     </VStack>
   );
-}
+});

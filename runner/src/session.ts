@@ -20,7 +20,7 @@ import { applyEvent, emptyState, findPlan, findTool, type Transcript } from "../
 import { tagToolParts, tagToolPatch } from "./toolKind";
 import { guardEnv, registerGuard, unregisterGuard } from "./bridge";
 import { computeDiff, diffStat, snapshot, treeHash, workingTreeStats } from "./checkpoint";
-import { checkPaths, fileDiff, readProjectFile } from "./files";
+import { checkPaths, fileDiff, readProjectFile, readProjectFileChunk } from "./files";
 import { config, prefs, saveConfig, saveConfigSoon } from "./config";
 import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
@@ -57,7 +57,7 @@ import {
   withNote,
   type GoalVerdict,
 } from "./goal";
-import { splitAgentWritten, subagentTask } from "../../web/src/shared/subagents";
+import { isRelay, splitAgentWritten, subagentTask } from "../../web/src/shared/subagents";
 import { describePlan, IMPLEMENT_PROMPT, isPlanMode, lastReply, mutates, parseChecklist, parseTodos, PLAN_MODE_REASON, PLAN_WAIT_REASON, todoInput, todosFromInput } from "./plan";
 import { describeFindings, fixMessage, MAX_REVIEWS, mergeReview, parseReport, parseReviewCommand, reportFromReply, REVIEW_READ_ONLY_REASON, type ReviewRequest } from "./review";
 import { PlanReviews } from "./planReview";
@@ -86,6 +86,14 @@ export interface SessionSink {
   reviewResult?: (sessionId: string, reviewId: string, patch: Partial<SessionReview>) => void;
   /** Cross-harness subagents (crossAgents.ts): the agent_* tools, and what a subagent's parent hears. Absent: not offered. */
   agents?: AgentHub;
+  /** The leader agent (leader.ts): its session_* tools. Absent: not offered. */
+  leader?: LeaderHub;
+}
+
+/** What the leader session asks the leader manager (runner/src/leader.ts). */
+export interface LeaderHub {
+  /** sessions_overview, session_read, session_message, session_answer, session_escalate, session_stop */
+  tool(from: LiveSession, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: boolean; text: string }>;
 }
 
 /** What sessions tell the cross-harness subagent manager (runner/src/crossAgents.ts), and ask it. */
@@ -120,6 +128,18 @@ const MANUAL_SKIP_MS = 60 * 60_000;
 const UNVERIFIED_BACKOFFS = 3;
 /** ask_user's answer when nobody answered (the same as Claude Code's AskUserQuestion gets) */
 export const NOBODY_ANSWERED = "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue.";
+
+/** Whether the leader agent may answer this request for the user: a question marked leaderMay, or a plan; never anything userOnly. */
+export const leaderMayAnswer = (r: UiRequest | undefined): boolean => !!r && !r.userOnly && (r.kind === "plan" || (r.kind === "question" && !!r.leaderMay));
+
+/**
+ * A question's answers as the agent gets them: the leader's say so, so the model doesn't take
+ * them for the user's own click (Claude's AskUserQuestion, Codex's requestUserInput).
+ */
+export function leaderAnswers(r: UiResponse): Record<string, string> | undefined {
+  if (!r.answers || r.by !== "leader") return r.answers;
+  return Object.fromEntries(Object.entries(r.answers).map(([q, a]) => [q, `(answered by the user's leader agent, passing on what the user told it) ${a}`]));
+}
 
 /**
  * One live agent session. The runner keeps the authoritative transcript here; every change goes
@@ -237,6 +257,7 @@ export abstract class LiveSession {
       ...(this.activeCount ? { activeCount: this.activeCount, workingCount: this.workingCount, runningKinds: this.runningKinds() } : {}),
       ...(this.t.state.reviewOf ? { reviewOf: this.t.state.reviewOf.sessionId } : {}),
       ...(this.t.state.startedBy ? { startedBy: { sessionId: this.t.state.startedBy.sessionId, name: this.t.state.startedBy.name } } : {}),
+      ...(this.t.state.leader ? { leader: true } : {}),
       ...(this.goalState?.status === "active" ? { goalActive: true } : {}),
       ...(this.schedules.length ? { nextRunAt: Math.min(...this.schedules.map((x) => x.nextAt)) } : {}),
     };
@@ -329,7 +350,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.reviews !== undefined || s.pending !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
+      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy", "leader"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -695,6 +716,10 @@ export abstract class LiveSession {
   private steered = new Map<string, string>();
   /** a turn is being started from the pending list: steers wait until it has been sent */
   private draining = false;
+  /** A waiting message is on its way to the agent right now (it left the list but isn't in the conversation yet). */
+  get delivering(): boolean {
+    return this.draining;
+  }
 
   /** Sends a message: starts a turn when idle, otherwise adds it to the pending list. */
   async prompt(text: string, mode: "steer" | "followUp" = "steer", opts: { alone?: boolean } = {}) {
@@ -797,7 +822,7 @@ export abstract class LiveSession {
     const now = Date.now();
     let n = 0;
     // Tether's notes and another agent's messages are never joined with yours (who wrote them must match).
-    while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now && !!list[n]!.alone === !!list[0]!.alone) n++;
+    while (n < list.length && list[n]!.mode === "steer" && (list[n]!.readyAt ?? 0) <= now && joins(list, n)) n++;
     if (!n) return this.scheduleSteers();
     const batch = list.slice(0, n);
     const text = await this.joinResolved(batch);
@@ -1005,6 +1030,11 @@ export abstract class LiveSession {
   }
 
   /** Editing a steer the agent already has: it can't be taken back, so the change goes in as a correction. */
+  /** A steer the agent already has, as typed (amendSteer can change it). */
+  steeredText(msgId: string): string | undefined {
+    return this.steered.get(msgId);
+  }
+
   amendSteer(msgId: string, text: string) {
     const before = this.steered.get(msgId);
     if (before === undefined) throw new Error("That message can't be changed any more: the turn it went into has ended.");
@@ -1121,6 +1151,7 @@ export abstract class LiveSession {
     // Cross-harness subagents it started (handed off: they went with the conversation), and who started it.
     if (p.subagents?.length && !p.handoffTo) restore.subagents = p.subagents;
     if (p.startedBy && !this.t.state.startedBy) restore.startedBy = p.startedBy;
+    if (p.leader && !this.t.state.leader) restore.leader = true;
     // Messages it hadn't taken when it stopped come back held, to send (or edit) when you choose.
     if (p.pending?.length && !this.t.state.pending?.length) Object.assign(restore, { pending: p.pending, pendingHeld: true });
     this.diffBaseSha = p.diffBaseSha;
@@ -1206,6 +1237,7 @@ export abstract class LiveSession {
       reviewOf: s.reviewOf,
       subagents: s.subagents?.length ? s.subagents : undefined,
       startedBy: s.startedBy,
+      leader: s.leader || undefined,
       // An active goal keeps the session going between turns: a restart resumes it like a turn.
       active: this.busy || (s.goal?.status === "active" && !s.handoffTo && !s.pendingUi.length),
       // Only Tether's own wait (waitThenContinue), not a harness's internal retry.
@@ -1247,6 +1279,11 @@ export abstract class LiveSession {
   uiRespond(r: UiResponse): boolean {
     const done = this.uiWaiters.get(r.id);
     if (!done) return false;
+    // A tool approval (or anything that gives an agent more permission) is the user's own click,
+    // never the leader's: whatever the leader manager does, it can't answer one here.
+    const req = this.t.state.pendingUi.find((u) => u.id === r.id);
+    // An allowlist: only questions marked leaderMay (ask_user, AskUserQuestion, requestUserInput) and plans.
+    if (r.by === "leader" && !leaderMayAnswer(req)) return false;
     if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
@@ -1587,7 +1624,8 @@ export abstract class LiveSession {
     return this.t.messages
       .filter((m) => m.role === "user")
       .map((m) => splitAgentWritten(m.parts.map((p) => (p.type === "text" ? p.text : p.type === "skill" ? `/${p.name}` : "")).join(" ").trim()).user)
-      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t));
+      // "Implement the plan." is Tether's (an approval, maybe the leader's), not the user's ask.
+      .filter((t) => t && !t.startsWith("You are taking over") && !isGoalPrompt(t) && t !== IMPLEMENT_PROMPT);
   }
 
   /** Every message text this session has (or will) send, attachment blocks included. */
@@ -2800,8 +2838,15 @@ export abstract class LiveSession {
         return this.reviewReport(args);
     }
     if (tool.startsWith("agent_")) {
+      // The leader starts no subagents (its MCP server doesn't list them; the runner refuses them too).
+      if (this.isLeaderSession) return { ok: false, text: "The leader agent doesn't start subagents." };
       if (!this.sink.agents) return { ok: false, text: "This Tether runner can't start subagents." };
       return this.sink.agents.tool(this, tool, args, signal);
+    }
+    // The leader's tools: the manager checks that this is the leader session.
+    if (tool === "sessions_overview" || tool.startsWith("session_")) {
+      if (!this.sink.leader) return { ok: false, text: "This Tether runner has no leader agent." };
+      return this.sink.leader.tool(this, tool, args, signal);
     }
     return { ok: false, text: `Unknown tool "${tool}".` };
   }
@@ -2852,11 +2897,12 @@ export abstract class LiveSession {
     if (signal?.aborted) return { ok: false, text: "The question was cancelled." };
     signal?.addEventListener("abort", () => this.uiRespond({ id, cancelled: true }));
     const res = await this.askUi(
-      { id, kind: "question", title: `${this.harnessLabel} has a question`, questions: [{ question, options, multiSelect: args.multiSelect === true }] },
+      { id, kind: "question", title: `${this.harnessLabel} has a question`, questions: [{ question, options, multiSelect: args.multiSelect === true }], leaderMay: true },
       this.questionTimeout(),
     );
     const answer = res.answers?.[question]?.trim();
     if (res.cancelled || !answer) return { ok: true, text: NOBODY_ANSWERED };
+    if (res.by === "leader") return { ok: true, text: `The user's leader agent answered for them, passing on what the user told it: ${answer}` };
     return { ok: true, text: `The user answered: ${answer}` };
   }
 
@@ -3047,6 +3093,16 @@ export abstract class LiveSession {
   /** This session moved on from `from` (a fallback, /compact): it is the same subagent. Before start. */
   inheritStartedBy(from: LiveSession) {
     if (from.t.state.startedBy) this.t.state.startedBy = from.t.state.startedBy;
+  }
+
+  /** Whether this is the leader agent's session, also before its prefs are loaded (its launch adds the leader tools). */
+  get isLeaderSession(): boolean {
+    return !!(this.t.state.leader ?? config().sessions[this.id]?.leader);
+  }
+
+  /** The leader's conversation moved on from `from` (a fallback, /compact): this is the leader now. Before start. */
+  inheritLeader(from: LiveSession) {
+    if (from.isLeaderSession) this.t.state.leader = true;
   }
 
   /** Whether changes are held back here (a review session, plan mode or a plan awaiting review): no subagents start. */
@@ -3408,6 +3464,7 @@ export function sessionFiles(v: FilesView) {
     checkPaths: (paths: string[]) => checkPaths(v.projectPath, paths, base),
     fileDiff: (path: string, checkpointId?: string, reveal?: boolean) => fileDiff(v.projectPath, path, base, list, checkpointId, reveal === true),
     readFile: (path: string, maxBytes?: number, reveal?: boolean) => readProjectFile(v.projectPath, path, maxBytes, reveal === true),
+    readFileChunk: (path: string, offset?: number, length?: number, reveal?: boolean) => readProjectFileChunk(v.projectPath, path, offset, length, reveal === true),
   };
 }
 
@@ -3472,8 +3529,18 @@ export function nextTurnSize(list: PendingMessage[]): number {
   // Tether's notes and another agent's messages are never joined with yours (either way round):
   // a run of steers stops where who wrote them changes.
   let n = 0;
-  while (n < list.length && list[n]!.mode === "steer" && !!list[n]!.alone === !!list[0]!.alone) n++;
+  while (n < list.length && list[n]!.mode === "steer" && joins(list, n)) n++;
   return n || (list.length ? 1 : 0);
+}
+
+/**
+ * Whether the n-th waiting message may go out together with the ones above it: never when who
+ * wrote them differs (yours, or Tether's / another agent's), and the user's words relayed by the
+ * leader always go alone (joined after an agent's note they'd read as part of it).
+ */
+function joins(list: PendingMessage[], n: number): boolean {
+  if (n === 0) return true;
+  return !!list[n]!.alone === !!list[0]!.alone && !isRelay(list[n]!.text) && !isRelay(list[0]!.text);
 }
 
 /** Tool calls this event reports finished that weren't before (call it before applying the event). */
