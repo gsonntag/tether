@@ -38,17 +38,37 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   that take over 110 s are stopped (do those in a terminal).
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
-- **Steer and queue.** Enter steers a running agent; Alt+Enter queues a message for after the
-  current turn. Tether holds both in an ordered list until they go out, and any device can edit,
-  drag, switch or cancel them until then:
+- **Steer and queue.** While an agent works, the send button reads **Steer**: your message goes
+  into the running turn. Its menu (the chevron beside it) offers **Queue for after this turn** and
+  **Stop and send now**. Tether holds steered and queued messages in an ordered list until they go
+  out, and any device can edit, reorder, switch or cancel them until then:
+  - Keys (desktop, in the message box):
+
+    | Key | Idle | Agent working |
+    |---|---|---|
+    | Enter | Send | Steer |
+    | Tab | (moves focus) | Queue, when the box has text (with the `/` menu open, Tab completes) |
+    | ⌘/Ctrl+Enter | Send | Stop and send now |
+    | Shift+Enter | New line | New line |
+    | Esc | Close the `/` menu, or leave ↑ history | Same; with an empty box, Stop |
+    | ↑ in an empty box | Earlier messages | Pull waiting messages back into the box |
+
+    Alt+Enter still queues for now. On phones Enter is a new line and the buttons send.
   - Messages leave from the top. A steer at the top goes into the running turn after a 5-second
-    grace period. A queued message holds back everything below it until the turn ends.
-  - Queued messages go out one per turn, in order. A steer below a queued message goes into that
-    message's turn once it starts.
-  - ↑ in an empty composer pulls all waiting messages back into the box.
-  - Stop keeps waiting messages, held until you send them.
+    grace period; its dashed bubble at the end of the chat counts it down ("Steering in 4s").
+    A queued message holds back everything below it until the turn ends.
+  - Queued messages wait above the box and go out one per turn, in order. A steer below a queued
+    message goes into that message's turn once it starts ("Waits for the queued message").
+  - Click a waiting message (or focus it and press Enter) to edit it. A steer's bubble has × to
+    cancel, **Queue instead** on hover, and the rest on right-click or a long press; a queued row
+    has × and a ⋯ menu (Steer now, Stop and send now, Move up, Move down, Edit, Cancel), and
+    reorders by drag too.
+  - Stop keeps waiting messages, held ("Held · 2 messages") until you send them.
   - A steer the agent already has can't be taken back. Editing it sends a correction.
-  - opencode, Kiro and Antigravity can't steer, so their steers wait for the end of the turn.
+  - opencode, Kiro and Antigravity can't steer: the button stays **Send**, the message waits for
+    the end of the turn, and there is no Queue.
+  - Approvals, questions and plans waiting on you sit just above the message box until answered,
+    so they never scroll away.
 - **Attachments.** Attach images and files with the paperclip, by pasting a screenshot, or by
   dropping files anywhere on the session (on phones the picker also offers the photo library and
   the camera). Chips above the box show upload progress and refusals, and work for steered and
