@@ -1774,8 +1774,8 @@ export abstract class LiveSession {
         if (v.decision === "deny") this.raiseBlocked(tool, input, toolId, v.reason);
       }
     }
-    // A denied call isn't a notification: the agent sees the reason and carries on, and the verdict
-    // shows on the tool card.
+    // The agent sees the reason and carries on; the verdict shows on the tool card (and a judge's
+    // denial is also a blocked ticket, raised above).
     const verdict: GuardVerdict = { decision: v.decision === "allow" ? "allow" : "deny", by: v.by, reason: v.reason };
     this.annotate(tool, toolId, verdict);
     // "Run it myself" on the approval card: the runner runs it once the card shows the denial.
