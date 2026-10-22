@@ -167,49 +167,63 @@ async function codexUsage(auth = codexAuth()): Promise<ProviderUsage | undefined
 // profile ARN and the login's bearer token) — the same call kiro-cli's own `/usage` makes. The
 // token is read in-process and never logged. KIRO_DB and KIRO_USAGE_URL override the defaults.
 
-type KiroAuth = { access: string; region: string; profileArn?: string; expires?: number };
+type KiroAuth = { access: string; region: string; profileArn?: string };
 
 const regionOfArn = (arn?: string) => arn?.match(/^arn:aws:codewhisperer:([a-z0-9-]+):/)?.[1];
 
 const dbText = (v: unknown): string | undefined => (typeof v === "string" ? v : v instanceof Uint8Array ? Buffer.from(v).toString("utf8") : undefined);
 
-/** The kiro-cli login's bearer token, region and profile ARN, or undefined when it isn't signed in. */
-function kiroAuth(): KiroAuth | undefined {
+/**
+ * Reads the login token and profile ARN from kiro-cli's SQLite store. The live kiro-cli writes this
+ * DB (sessions, token refresh), so a reader must tolerate a busy lock: open read-only with a busy
+ * timeout so queries wait out a writer instead of failing. Returns null when there's no store or
+ * token (not signed in); throws only on an unexpected DB error (e.g. still locked after the wait),
+ * which the caller retries.
+ */
+function readKiroToken(): { access: string; arn?: string; region?: string } | null {
   const path = process.env.KIRO_DB ?? join(userHome(), ".local", "share", "kiro-cli", "data.sqlite3");
-  if (!existsSync(path)) return undefined;
-  let db: Database | undefined;
+  if (!existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
   try {
-    db = new Database(path, { readonly: true });
+    db.exec("PRAGMA busy_timeout = 3000"); // wait out the live kiro-cli's writes instead of failing
     // One token per auth method; social, Builder ID and IdC logins all land under kirocli:*:token.
-    // The stored record is snake_case (access_token, expires_at, profile_arn); camelCase is kept as
-    // a fallback in case a future kiro-cli changes it.
-    let token: { access: string; arn?: string; region?: string; expiresAt?: unknown } | undefined;
+    // The stored record is snake_case (access_token, profile_arn); camelCase kept as a fallback.
+    let token: { access: string; arn?: string; region?: string } | undefined;
     for (const r of db.query("select value from auth_kv where key like 'kirocli:%:token'").all() as { value: unknown }[]) {
       try {
         const j: any = JSON.parse(dbText(r.value) ?? "");
         const access = j?.access_token ?? j?.accessToken;
         if (access) {
-          token = { access, arn: j?.profile_arn ?? j?.profileArn, region: j?.region, expiresAt: j?.expires_at ?? j?.expiresAt };
+          token = { access, arn: j?.profile_arn ?? j?.profileArn, region: j?.region };
           break;
         }
       } catch {}
     }
-    if (!token) return undefined;
-    let profileArn = token.arn;
-    if (!profileArn)
+    if (!token) return null;
+    if (!token.arn)
       try {
         const prof = JSON.parse(dbText((db.query("select value from state where key = 'api.codewhisperer.profile'").get() as { value: unknown } | null)?.value) ?? "");
-        if (typeof prof?.arn === "string") profileArn = prof.arn;
+        if (typeof prof?.arn === "string") token.arn = prof.arn;
       } catch {}
-    const region = token.region || regionOfArn(profileArn) || "us-east-1";
-    const expires = typeof token.expiresAt === "number" ? token.expiresAt : typeof token.expiresAt === "string" ? Date.parse(token.expiresAt) || undefined : undefined;
-    return { access: token.access, region, profileArn, expires };
-  } catch {
-    return undefined;
+    return token;
   } finally {
     try {
-      db?.close();
+      db.close();
     } catch {}
+  }
+}
+
+/** The kiro-cli login's bearer token, region and profile ARN; undefined when not signed in. Retries a locked DB. */
+async function kiroAuth(): Promise<KiroAuth | undefined> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const t = readKiroToken();
+      if (!t) return undefined;
+      return { access: t.access, region: t.region || regionOfArn(t.arn) || "us-east-1", profileArn: t.arn };
+    } catch (e) {
+      if (attempt >= 3) throw e; // still locked after retries: let kiroUsage surface it
+      await Bun.sleep(150);
+    }
   }
 }
 
@@ -240,10 +254,14 @@ export function parseKiroUsage(j: any): ProviderUsage {
 }
 
 async function kiroUsage(): Promise<ProviderUsage | undefined> {
-  const auth = kiroAuth();
+  let auth: KiroAuth | undefined;
+  try {
+    auth = await kiroAuth();
+  } catch (e: any) {
+    // The DB stayed locked by the live kiro-cli; a transient error row, not a vanished provider.
+    return { provider: "kiro", label: "Kiro", windows: [], error: `Couldn't read the Kiro login (busy): ${e?.message ?? e}` };
+  }
   if (!auth) return undefined; // not signed in: no Kiro row on the page
-  if (auth.expires && auth.expires < Date.now())
-    return { provider: "kiro", label: "Kiro", windows: [], error: "Login expired; sign in again with `kiro-cli login`." };
   try {
     const base = process.env.KIRO_USAGE_URL ?? `https://management.${auth.region}.kiro.dev`;
     const url = `${base}/Get-Usage-Limits${auth.profileArn ? `?profileArn=${encodeURIComponent(auth.profileArn)}` : ""}`;
