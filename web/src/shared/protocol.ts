@@ -779,6 +779,15 @@ export interface AgentNotice {
   ts: number;
   /** kind "memory": the (newest) conflict it is about, for the Memory page link */
   conflictId?: string;
+  /** blocked: the denied tool call this notice is about (Approve & retry / Run it myself act on it) */
+  toolId?: string;
+  /** question/blocked: the call in one line ("git push origin main", "Edit src/a.ts") */
+  call?: string;
+  /** blocked: who denied it, and why (one sentence) */
+  by?: "rule" | "judge" | "hook";
+  reason?: string;
+  /** question: the open permission request it is about (answered with uiRespond) */
+  requestId?: string;
 }
 
 export interface PendingMessage {
