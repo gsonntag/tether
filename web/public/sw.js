@@ -27,6 +27,9 @@ const noticeUrl = (n) =>
       ? `/#/r/${encodeURIComponent(n.runnerId)}/s/${encodeURIComponent(n.sessionId)}`
       : "/";
 
+/** An approval (requestId) or a blocked call (toolId): what the Approve / Deny buttons act on. */
+const answerable = (n) => (n.sessionId && n.requestId ? { type: "request", id: n.requestId } : n.sessionId && n.toolId ? { type: "tool", id: n.toolId } : undefined);
+
 self.addEventListener("push", (e) => {
   let n;
   try {
@@ -40,12 +43,15 @@ self.addEventListener("push", (e) => {
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const visible = wins.filter((w) => w.focused && w.visibilityState === "visible");
       if (n.sessionId && (await Promise.all(visible.map((w) => isShowing(w, n.sessionId)))).some(Boolean)) return;
+      const target = answerable(n);
       await self.registration.showNotification(`${ICONS[n.kind] ?? ""} ${n.title}`.trim(), {
         body: n.body,
         tag: n.sessionId ? `${n.sessionId}:${n.kind}` : n.id,
         renotify: true,
-        requireInteraction: n.kind === "question",
-        data: { url: noticeUrl(n) },
+        requireInteraction: n.kind === "question" || !!target,
+        // Android and desktop Chrome show them; iOS opens the app on a tap instead.
+        actions: target ? [{ action: "approve", title: "Approve" }, { action: "deny", title: "Deny" }] : undefined,
+        data: { url: noticeUrl(n), target },
       });
     })(),
   );
@@ -53,7 +59,11 @@ self.addEventListener("push", (e) => {
 
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = new URL(e.notification.data?.url ?? "/", self.location.origin).href;
+  const data = e.notification.data ?? {};
+  const t = data.target;
+  // The app answers once on load (respond) or scrolls to the card (card), then drops the query.
+  const query = !t ? "" : e.action === "approve" || e.action === "deny" ? `?respond=${t.type}:${encodeURIComponent(t.id)}:${e.action}` : `?card=${encodeURIComponent(t.id)}`;
+  const url = new URL((data.url ?? "/") + query, self.location.origin).href;
   e.waitUntil(
     (async () => {
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });

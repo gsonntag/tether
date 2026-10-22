@@ -49,6 +49,10 @@ import { ChainEditor } from "./ChainEditor";
 import { useModels } from "./ModelMenu";
 import { chainLabel, modelDisplay } from "../models";
 import { modelIcon } from "./ModelName";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Icon } from "@astryxdesign/core/Icon";
+import { XMarkIcon } from "@heroicons/react/24/outline";
+import type { ApprovalRule } from "../shared/protocol";
 
 /** Modal host; the Dialog handles Escape and backdrop clicks. */
 export function Dialogs() {
@@ -1065,6 +1069,7 @@ function Settings({ close }: { close: () => void }) {
           }
         />
       </SettingsCard>
+      <ApprovalSettings />
       <SecretsSettings narrow={narrow} />
       <Collapsible trigger={<Text type="label">Advanced</Text>}>
         <VStack gap={4} paddingBlockStart={2}>
@@ -1123,5 +1128,58 @@ function Settings({ close }: { close: () => void }) {
         </VStack>
       </Collapsible>
     </Frame>
+  );
+}
+
+/** What an Always allow rule lets through, in one line. */
+const ruleLabel = (r: ApprovalRule) => (r.prefix ? `${r.prefix} …` : r.server ? `${r.tool.replace(/^mcp__.+?__/, "")} · ${r.server}` : r.tool);
+
+/** "Always allow" rules, per project (runner config `approvals`); × removes one, no questions. */
+function ApprovalSettings() {
+  const runnerId = useStore((s) => s.runnerId);
+  const [rules, setRules] = useState<ApprovalRule[]>();
+  const [busy, setBusy] = useState<string>();
+  useEffect(() => {
+    rpc("listApprovalRules", {})
+      .then(setRules)
+      .catch(() => setRules([]));
+  }, [runnerId]);
+  const remove = async (id: string) => {
+    setBusy(id);
+    const next = await act("removeApprovalRule", { id });
+    setBusy(undefined);
+    if (next) setRules(next);
+  };
+  const projects = [...new Set((rules ?? []).map((r) => r.project))].sort((a, b) => a.localeCompare(b));
+  return (
+    <SettingsCard title="Approvals">
+      <SettingsRow
+        title="Always allowed"
+        description={
+          rules?.length
+            ? "What you chose Always allow for, by project. The guard's own blocks still apply."
+            : rules
+              ? "Nothing yet. Always allow on an approval remembers the command (like git push) or tool for that project."
+              : "Loading…"
+        }
+      />
+      {projects.map((project) => (
+        <VStack key={project} padding={4} gap={1}>
+          <Text type="label">{tildify(project)}</Text>
+          {(rules ?? [])
+            .filter((r) => r.project === project)
+            .map((r) => (
+              <HStack key={r.id} gap={2} vAlign="center">
+                <StackItem size="fill">
+                  <Text type="code" maxLines={1}>
+                    {ruleLabel(r)}
+                  </Text>
+                </StackItem>
+                <IconButton label={`Remove ${ruleLabel(r)}`} variant="ghost" size="sm" icon={<Icon icon={XMarkIcon} />} isLoading={busy === r.id} isDisabled={!!busy} onClick={() => remove(r.id)} />
+              </HStack>
+            ))}
+        </VStack>
+      ))}
+    </SettingsCard>
   );
 }
