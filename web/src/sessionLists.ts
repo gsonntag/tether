@@ -61,12 +61,10 @@ export function useRecentContext(): RecentContext {
   const days = useStore((s) => s.ui.sidebarDays);
   const selected = useStore((s) => s.selected);
   const runnerId = useStore((s) => s.runnerId);
-  const held = useStore((s) => s.hold);
-  const hold = held?.id === selected ? held : undefined;
   const minute = useMinute();
   return useMemo(
-    () => ({ notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, hold, now: minute * 60_000 }),
-    [notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, hold, minute],
+    () => ({ notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, now: minute * 60_000 }),
+    [notices, noticesSeen, noticesRead, viewed, viewedHere, days, selected, runnerId, minute],
   );
 }
 

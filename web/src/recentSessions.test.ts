@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, nestSubagents, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
+import { activityAt, byActivity, byListOrder, groupSessions, hasUnreadNotice, isBusy, mergeEntries, needCount, nestSubagents, projectIsQuiet, sessionState, showInSidebar, sidebarDaysLabel, touched, type Entry, type RecentContext } from "./recentSessions";
 import { listPath, type AgentNotice, type SessionSummary } from "./shared/protocol";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -198,7 +198,7 @@ describe("the three states", () => {
 describe("groupSessions", () => {
   const e = (s: SessionSummary, extra: Partial<Entry> = {}): Entry => ({ session: s, ...extra });
 
-  test("each session in one group, most recently touched first; recent only inside the window; done never", () => {
+  test("each session in one group, by the agent's latest activity; recent only inside the window (opening counts there); done never", () => {
     const g = groupSessions(
       [
         e(session("old", 10 * DAY)),
@@ -212,10 +212,11 @@ describe("groupSessions", () => {
     );
     expect(g.needs.map((x) => x.session.id)).toEqual(["ask"]);
     expect(g.working.map((x) => x.session.id)).toEqual(["run"]);
-    expect(g.recent.map((x) => x.session.id)).toEqual(["opened", "msg"]);
+    // "opened" is in the window because you opened it a day ago, but sorts by its last message.
+    expect(g.recent.map((x) => x.session.id)).toEqual(["msg", "opened"]);
   });
 
-  test("an opened needs-you session stays put while open, then tops Recent", () => {
+  test("an opened needs-you session stays in Needs you while open, then goes back to its place in Recent", () => {
     const n = notice("a", NOW - 2 * DAY);
     const list = [e(session("a", 2 * DAY)), e(session("b", DAY))];
     const before = groupSessions(list, ctx({ notices: [n] }));
@@ -226,7 +227,7 @@ describe("groupSessions", () => {
     expect(open.needs.map((x) => x.session.id)).toEqual(["a"]);
     const left = groupSessions(list, ctx({ notices: [n], viewed: { a: NOW }, wasNeeds: was } as RecentContext));
     expect(left.needs).toEqual([]);
-    expect(left.recent.map((x) => x.session.id)).toEqual(["a", "b"]);
+    expect(left.recent.map((x) => x.session.id)).toEqual(["b", "a"]);
     // Opening a recent one doesn't put it in Needs you.
     expect(groupSessions(list, ctx({ selected: "b", wasNeeds: was } as RecentContext)).needs).toEqual([]);
   });
@@ -251,17 +252,23 @@ describe("review fixes", () => {
   const e = (s: SessionSummary, extra: Partial<Entry> = {}): Entry => ({ session: s, ...extra });
   const ids = (l: Entry[]) => l.map((x) => x.session.id);
 
-  test("the open session sorts where it was before you opened it, and moves up once you leave", () => {
+  test("opening a session never moves it: open or left, the lists go by the agent's activity", () => {
     const list = [e(session("a", DAY)), e(session("b", 2 * DAY)), e(session("c", 3 * DAY))];
-    // Opened c: viewed now, but held at its old place.
-    const open = ctx({ viewedHere: { c: NOW }, viewed: { c: NOW }, selected: "c", hold: { id: "c", at: 0 } });
+    const open = ctx({ viewedHere: { c: NOW }, viewed: { c: NOW }, selected: "c" });
     expect(ids(groupSessions(list, open).recent)).toEqual(["a", "b", "c"]);
-    expect([session("c", 3 * DAY), session("a", DAY)].sort(byListOrder(open)).map((s) => s.id)).toEqual(["a", "c"]);
-    // Left it: by when you opened it.
-    expect(ids(groupSessions(list, ctx({ viewedHere: { c: NOW }, viewed: { c: NOW } })).recent)).toEqual(["c", "a", "b"]);
+    expect([session("c", 3 * DAY), session("a", DAY)].sort(byListOrder).map((s) => s.id)).toEqual(["a", "c"]);
+    expect(ids(groupSessions(list, ctx({ viewedHere: { c: NOW }, viewed: { c: NOW } })).recent)).toEqual(["a", "b", "c"]);
   });
 
-  test("this device's own clock orders, but only the runner's view reads a notice", () => {
+  test("a turn that ended after the last message (a pulse's finishedAt) counts as activity", () => {
+    const a = e(session("a", 2 * DAY), { pulse: { session: session("a", 2 * DAY), finishedAt: NOW - 1000 } });
+    const b = e(session("b", DAY));
+    expect(activityAt(a.session, a.pulse)).toBe(NOW - 1000);
+    expect(ids(groupSessions([b, a], ctx()).recent)).toEqual(["a", "b"]);
+    expect([b, a].sort(byActivity).map((x) => x.session.id)).toEqual(["a", "b"]);
+  });
+
+  test("this device's own clock counts for the window, but only the runner's view reads a notice", () => {
     const n = notice("a", NOW - 1000);
     expect(touched(session("a", DAY), ctx({ viewedHere: { a: NOW } }))).toBe(NOW);
     expect(sessionState(session("a", DAY), ctx({ notices: [n], viewedHere: { a: NOW } }))).toBe("needs");

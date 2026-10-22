@@ -2,7 +2,9 @@
 //   working: its main agent or background work is running, or it waits on a limit or retry;
 //   needs you: a question, approval or plan waits, or a notice (finished, blocked) arrived after
 //     you last opened it;
-//   recent: everything else, by "last touched" (the latest message, or when you last opened it).
+//   recent: everything else.
+// Every list sorts by the agent's last activity (the latest message, or when its last turn ended),
+// never by when you opened a session, so browsing doesn't reorder them.
 // Pure, so it's unit tested (recentSessions.test.ts); the runner groups the same way for the leader
 // agent's sessions_overview (runner/src/leader.ts).
 
@@ -18,7 +20,7 @@ export interface Seen {
   noticesRead: string[];
   /** sessionId -> when you last opened it (any device), by the runner's clock: notices compare with it */
   viewed?: Record<string, number>;
-  /** sessionId -> when you opened it here, by this device's clock, until the runner confirms: for ordering only */
+  /** sessionId -> when you opened it here, by this device's clock, until the runner confirms: for the window only */
   viewedHere?: Record<string, number>;
   /** the runner these are for; another runner's sessions go by what their pulses say */
   runnerId?: string;
@@ -31,24 +33,22 @@ export interface RecentContext extends Seen {
   days: number;
   /** the session open on screen */
   selected?: string;
-  /**
-   * The open session sorts by when it was last touched before you opened it: opening it (or coming
-   * back to the tab) doesn't move it under your cursor. It moves up once you leave.
-   */
-  hold?: { id: string; at: number };
 }
 
-/** When it was last touched: the latest message, or when you last opened it (here or anywhere). */
+/** When it was last touched: the latest message, or when you last opened it (here or anywhere). For the window only. */
 export const touched = (s: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, c: Pick<Seen, "viewed" | "viewedHere">) =>
   lastTouched(s, Math.max(c.viewed?.[s.id] ?? 0, c.viewedHere?.[s.id] ?? 0));
 
-/** What the lists sort by: last touched, except for the open session (`hold`). */
-export const sortTouched = (s: Pick<SessionSummary, "id" | "updatedAt" | "viewedAt">, c: Pick<RecentContext, "viewed" | "viewedHere" | "hold">) =>
-  c.hold?.id === s.id ? Math.max(s.updatedAt, c.hold.at) : touched(s, c);
+/** The agent's last activity: its latest message, or when its last turn ended (a pulse knows). What every list sorts by. */
+export const activityAt = (s: Pick<SessionSummary, "updatedAt">, pulse?: Pick<SessionPulse, "finishedAt">) => Math.max(s.updatedAt, pulse?.finishedAt ?? 0);
 
-/** Sorts summaries like the lists do: most recently touched first, the open one where it was. */
-export const byListOrder = (c: Pick<RecentContext, "viewed" | "viewedHere" | "hold">) => (a: SessionSummary, b: SessionSummary) =>
-  sortTouched(b, c) - sortTouched(a, c) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Sorts summaries like the lists do: the agent's latest activity first. Opening one never moves it. */
+export const byListOrder = (a: SessionSummary, b: SessionSummary) => activityAt(b) - activityAt(a) || byId(a.id, b.id);
+
+/** Sorts entries (summary plus pulse) the same way. */
+export const byActivity = (a: Entry, b: Entry) => activityAt(b.session, b.pulse) - activityAt(a.session, a.pulse) || byId(a.session.id, b.session.id);
 
 /** The session's latest notice (finished, blocked, a question), when it arrived after you last opened the session. */
 export function unreadNotice(s: Pick<SessionSummary, "id" | "viewedAt">, c: Seen): AgentNotice | undefined {
@@ -129,10 +129,9 @@ export interface Groups<T> {
 }
 
 /**
- * Splits sessions into the three states, each most recently touched first; recent ones only
+ * Splits sessions into the three states, each by the agent's latest activity; recent ones only
  * inside the window. Done (archived) sessions are left out. The open session stays in Needs you
- * while you look at it if it was there before (`wasNeeds`), and sorts where it was (`hold`), so the
- * lists don't jump under you; it moves to the top of Recent once you leave.
+ * while you look at it if it was there before (`wasNeeds`), so it doesn't jump under you.
  */
 export function groupSessions<T extends Entry>(entries: T[], c: RecentContext & { wasNeeds?: Set<string> }): Groups<T> {
   const g: Groups<T> = { needs: [], working: [], recent: [] };
@@ -144,9 +143,7 @@ export function groupSessions<T extends Entry>(entries: T[], c: RecentContext & 
     if (st === "recent" && !inWindow(e, c)) continue;
     g[st].push(e);
   }
-  const at = (e: Entry) => (foreign(e, c) ? lastTouched(e.session) : sortTouched(e.session, c));
-  const by = (a: Entry, b: Entry) => at(b) - at(a) || (a.session.id < b.session.id ? -1 : a.session.id > b.session.id ? 1 : 0);
-  for (const list of [g.needs, g.working, g.recent]) list.sort(by);
+  for (const list of [g.needs, g.working, g.recent]) list.sort(byActivity);
   return g;
 }
 

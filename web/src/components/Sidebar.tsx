@@ -365,7 +365,7 @@ function RecentSection() {
   const { working, recent } = useSessionGroups("runner");
   const ctx = useRecentContext();
   const [all, setAll] = useState(false);
-  const list = [...working, ...recent].map((e) => e.session).sort(byListOrder(ctx));
+  const list = [...working, ...recent].map((e) => e.session).sort(byListOrder);
   if (!list.length) return null;
   return (
     <SideNavSection title="Recent">
@@ -435,7 +435,7 @@ const ProjectRow = memo(function ProjectRow({ p, open }: { p: ProjectInfo; open:
   // Only sessions touched recently (Settings → "Show sessions from the last"), plus any that are
   // working, need you or are open. Older and done ones aren't listed; search finds them, and
   // opening one or sending it a message makes it recent again.
-  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byListOrder(ctx));
+  const visible = (loaded ?? p.live).filter((s) => showInSidebar(s, ctx)).sort(byListOrder);
   // Nothing to list: dimmed, still there to start a session in.
   const quiet = projectIsQuiet(p, loaded, open, ctx);
 

@@ -85,8 +85,6 @@ interface State {
   viewed: Record<string, number>;
   /** sessionId -> when you opened it here, by this device's clock (for ordering until the runner confirms; all an older runner gets) */
   viewedHere: Record<string, number>;
-  /** the open session sorts by when it was touched before you opened it, so opening it doesn't move it (recentSessions.ts) */
-  hold?: { id: string; at: number };
   /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
   recent: SessionSummary[];
 }
@@ -484,13 +482,7 @@ export async function openLink(id: string) {
 }
 
 export function selectSession(sessionId: string | undefined) {
-  // Where it sorted before you opened it, so it stays there while it's open.
-  const st = get();
-  const hold =
-    !sessionId || st.hold?.id === sessionId
-      ? st.hold
-      : { id: sessionId, at: Math.max(summaryOf(sessionId)?.viewedAt ?? 0, st.viewed[sessionId] ?? 0, st.viewedHere[sessionId] ?? 0) };
-  set({ selected: sessionId, sidebarOpen: false, page: undefined, hold });
+  set({ selected: sessionId, sidebarOpen: false, page: undefined });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
     markViewed(sessionId);
@@ -602,7 +594,7 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here"), hold: undefined });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
   refreshProjects();
   refreshViewed();
   refreshRecent();
