@@ -12,6 +12,7 @@ import { Timer } from "@astryxdesign/core/Timer";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { HARNESSES, type UiRequest } from "../shared/protocol";
 import { act, cardFocused, NARROW_QUERY, useStore } from "../store";
+import { describeCall } from "../approvalCall";
 import { PlanRequestCard } from "./PlanReview";
 import { Diff, edits } from "./Transcript";
 
@@ -72,27 +73,6 @@ const responder = (sessionId: string, r: UiRequest): Respond => (response) => ac
 
 // ---------------- approvals ----------------
 
-const relTo = (p: string, root?: string) => {
-  const r = root?.replace(/\/$/, "");
-  if (r && p.startsWith(r + "/")) return p.slice(r.length + 1);
-  return p.replace(/^\/home\/[^/]+/, "~");
-};
-
-/** What the call is, in words: what it does and what it does it to. */
-function describeCall(name: string, input: any, root?: string): { verb: string; command?: string; path?: string; server?: string } {
-  const command = input?.command ?? input?.CommandLine ?? input?.cmd;
-  if (typeof command === "string" || Array.isArray(command)) return { verb: "wants to run", command: Array.isArray(command) ? command.join(" ") : command };
-  const mcp = name.match(/^mcp__(.+?)__(.+)$/);
-  if (mcp) return { verb: `wants to call ${mcp[1]}`, server: mcp[2] };
-  const p = input?.file_path ?? input?.filePath ?? input?.path ?? input?.notebook_path ?? input?.TargetFile;
-  if (typeof p === "string") {
-    const write = /write|create/i.test(name) && !edits(input).length;
-    return { verb: `wants to ${write ? "write" : /^(read|view)/i.test(name) ? "read" : "edit"} ${relTo(p, root)}`, path: p };
-  }
-  if (typeof input?.url === "string") return { verb: `wants to fetch ${input.url}` };
-  return { verb: `wants to use ${name}` };
-}
-
 /** An edit's preview: the transcript's diff of the first changes, or the new file's first lines. */
 function EditPreview({ input }: { input: any }) {
   const pairs = edits(input);
@@ -122,7 +102,7 @@ function PermissionCard({ sessionId, r, focusRef }: { sessionId: string; r: UiRe
   };
   const input: any = r.tool?.input ?? {};
   const name = r.tool?.name ?? "";
-  const call = describeCall(name, input, root);
+  const call = describeCall(name, input, root, edits(input).length > 0);
   const who = HARNESSES.find((h) => h.id === harness)?.label ?? "The agent";
   const note = r.message?.replace(/^⚠\s*/, "").replace(/^Blocked:\s*/, "");
   const size = phone ? "lg" : "md";

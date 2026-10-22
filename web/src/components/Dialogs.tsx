@@ -1157,7 +1157,7 @@ function ApprovalSettings() {
         title="Always allowed"
         description={
           rules?.length
-            ? "What you chose Always allow for, by project. The guard's own blocks still apply."
+            ? "What you chose Always allow for, by project. Safety rules still apply."
             : rules
               ? "Nothing yet. Always allow on an approval remembers the command (like git push) or tool for that project."
               : "Loading…"
