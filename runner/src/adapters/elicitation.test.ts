@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { UiRequest } from "../../../web/src/shared/protocol";
+import { config } from "../config";
 import { CodexSession, mcpApprovalTool } from "./codex";
 import { formContent, formRequest, SKIP } from "./elicitation";
 
@@ -58,10 +59,14 @@ describe("Codex MCP tool approvals", () => {
     let r = elicit(approval(["session", "always"]));
     s.uiRespond({ id: (await pending()).id, allow: true, always: true });
     expect(await r).toEqual({ action: "accept", content: null, _meta: { persist: "session" } });
+    // Tether remembers it for the project too (Settings → Approvals): the next call isn't asked.
+    expect(await elicit(approval())).toEqual({ action: "accept", content: null, _meta: null });
     // Not offered: a plain accept.
-    r = elicit(approval());
+    const other = approval();
+    r = elicit({ ...other, _meta: { ...other._meta, tool_name: "status" } });
     s.uiRespond({ id: (await pending()).id, allow: true, always: true });
     expect(await r).toEqual({ action: "accept", content: null, _meta: null });
+    config().approvals = [];
   });
 });
 
