@@ -77,6 +77,8 @@ const addText: CSSProperties = { color: "var(--color-success)", whiteSpace: "now
 const delText: CSSProperties = { color: "var(--color-error)", whiteSpace: "nowrap" };
 const noWrap: CSSProperties = { whiteSpace: "nowrap" };
 const blockText: CSSProperties = { color: "var(--color-text-red)" };
+/** A card scrolled to from a notification clears the floating sidebar button. */
+const scrollMargin: CSSProperties = { scrollMarginTop: "var(--spacing-12)" };
 const diffBox: CSSProperties = {
   maxHeight: "60vh",
   background: "var(--color-background-muted)",
@@ -704,7 +706,7 @@ function Tool({ t }: { t: ToolPart }) {
   useEffect(() => {
     if (!focused) return;
     setOpen(true);
-    cardRef.current?.scrollIntoView({ block: "center" });
+    cardRef.current?.scrollIntoView({ block: "start" });
     cardFocused(t.id);
   }, [focused, t.id]);
   // "Run it myself" is for shell commands only, not an MCP tool that happens to take a `command`.
@@ -772,7 +774,7 @@ function Tool({ t }: { t: ToolPart }) {
 
   return (
     <Card width="100%" padding={0} variant={blocked ? "red" : "default"}>
-      <VStack ref={cardRef} paddingInline={3} paddingBlock={1} gap={1}>
+      <VStack ref={cardRef} paddingInline={3} paddingBlock={1} gap={1} style={scrollMargin}>
         <HStack gap={1} vAlign="start">
           <StackItem size="fill" style={minZero}>
             <Collapsible isOpen={open} onOpenChange={setOpen} trigger={header}>
@@ -819,19 +821,22 @@ function Tool({ t }: { t: ToolPart }) {
               </Text>
             </StackItem>
             {/* One click, held-back calls too: you chose to. */}
-            {t.guard!.by !== "user" &&
-              (command ? (
-                <Button
-                  label="Run it myself"
-                  size="sm"
-                  onClick={() => {
-                    setOpen(true);
-                    act("runBlocked", { sessionId, toolId: t.id, confirmed: held || undefined });
-                  }}
-                />
-              ) : (
-                <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: held || undefined })} />
-              ))}
+            {t.guard!.by !== "user" && (
+              <StackItem size="static">
+                {command ? (
+                  <Button
+                    label="Run it myself"
+                    size="sm"
+                    onClick={() => {
+                      setOpen(true);
+                      act("runBlocked", { sessionId, toolId: t.id, confirmed: held || undefined });
+                    }}
+                  />
+                ) : (
+                  <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: held || undefined })} />
+                )}
+              </StackItem>
+            )}
           </HStack>
         )}
       </VStack>

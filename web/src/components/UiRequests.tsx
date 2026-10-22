@@ -54,7 +54,7 @@ function useFocusCard(id: string) {
   const focused = useStore((s) => s.focusCard === id);
   useEffect(() => {
     if (!focused) return;
-    ref.current?.scrollIntoView({ block: "center" });
+    ref.current?.scrollIntoView({ block: "nearest" });
     cardFocused(id);
   }, [focused, id]);
   return ref;
