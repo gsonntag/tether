@@ -6,7 +6,7 @@
 
 import { resetHome } from "../testenv";
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseEntry } from "../../../web/src/shared/protocol";
@@ -95,7 +95,7 @@ afterEach(() => {
   cancelAllFlows();
   unregister();
   config().exhausted = {};
-  for (const k of ["CLAUDE_BIN", "KIRO_BIN", "AGY_BIN", "CODEX_BIN", "PI_BIN", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+  for (const k of ["CLAUDE_BIN", "KIRO_BIN", "AGY_BIN", "CODEX_BIN", "PI_BIN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -109,7 +109,9 @@ describe("account homes", () => {
     writeFileSync(join(machine, "projects", "p", "s.jsonl"), "{}\n");
     writeFileSync(join(machine, "settings.json"), "{}");
     writeFileSync(join(machine, ".credentials.json"), "MACHINE LOGIN");
-    const dir = preparedHome("claude:work", "claude");
+    for (const n of ["daemon.lock", "daemon.status.json", "sessions"]) writeFileSync(join(machine, n), "machine's own");
+    const dir = preparedHome("claude:work", "claude", true);
+    for (const n of ["daemon.lock", "daemon.status.json", "sessions"]) expect(existsSync(join(dir, n))).toBe(false);
     expect(dir).toBe(join(accountsDir(), "claude:work", "claude"));
     expect(lstatSync(join(dir, "projects")).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(dir, "settings.json"))).toBe(join(machine, "settings.json"));
@@ -118,13 +120,32 @@ describe("account homes", () => {
     // a new entry on the machine shows up next time; the account's own files stay
     writeFileSync(join(machine, "CLAUDE.md"), "x");
     writeFileSync(join(dir, ".credentials.json"), "ACCOUNT LOGIN");
-    mirror(machine, dir, [".credentials.json"]);
+    mirror(machine, dir, /^\.credentials\.json$/);
     expect(lstatSync(join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(dir, ".credentials.json"), "utf8")).toBe("ACCOUNT LOGIN");
     removeAccountHome("claude:work");
     expect(existsSync(accountHome("claude:work"))).toBe(false);
     expect(readFileSync(join(machine, "projects", "p", "s.jsonl"), "utf8")).toBe("{}\n");
     expect(readFileSync(join(machine, ".credentials.json"), "utf8")).toBe("MACHINE LOGIN");
+  });
+
+  test("a Codex home doesn't share the machine's daemon, locks or databases", () => {
+    const machine = join(userHome(), ".codex");
+    mkdirSync(join(machine, "sessions"), { recursive: true });
+    for (const n of ["config.toml", "auth.json", "state_5.sqlite", "state_5.sqlite-wal", "logs_2.sqlite-shm", "app-server-daemon", "thread-writer-locks"])
+      writeFileSync(join(machine, n), "x");
+    const dir = preparedHome("chatgpt:work", "codex", true);
+    expect(readdirSync(dir).sort()).toEqual(["config.toml", "sessions"]);
+  });
+
+  test("a signed-out account fails closed: nothing brings its home back", async () => {
+    register(...accountPlugins);
+    preparedHome("claude:gone", "claude", true);
+    const r: any = await credentialAction("claude:gone", "signOut", {});
+    expect(r.message).toMatch(/Signed out/);
+    expect(existsSync(accountHome("claude:gone"))).toBe(false);
+    await expect(launchFor(parseEntry("claude-code:opus#claude:gone", "claude-code"))).rejects.toThrow(/signed out/);
+    expect(existsSync(accountHome("claude:gone"))).toBe(false);
   });
 
   test("only extra account ids have homes", () => {
@@ -143,11 +164,14 @@ describe("account homes", () => {
 describe("env per account", () => {
   test("an extra Claude account runs on its own home, the machine's token variables blanked; the machine login adds nothing", async () => {
     register(...accountPlugins);
+    preparedHome("claude:work", "claude", true);
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "machine-token";
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.example";
     const l = await launchFor(parseEntry("claude-code:opus#claude:work", "claude-code"));
     expect(l.env).toEqual({
       CLAUDE_CONFIG_DIR: partHome("claude:work", "claude"),
       CLAUDE_CODE_OAUTH_TOKEN: "",
+      ANTHROPIC_BASE_URL: "",
     });
     expect((await launchFor(parseEntry("claude-code:opus#claude:machine", "claude-code"))).env).toEqual({});
     expect(claudePlugin.homeFor("claude:work", "claude-code")).toBe(partHome("claude:work", "claude"));
@@ -156,7 +180,9 @@ describe("env per account", () => {
 
   test("a ChatGPT account gives Codex its CODEX_HOME and pi its agent dir, only the one the entry needs", async () => {
     register(...accountPlugins);
-    expect((await launchFor(parseEntry("codex:gpt-6-luna#chatgpt:work", "codex"))).env).toEqual({ CODEX_HOME: partHome("chatgpt:work", "codex") });
+    mkdirSync(accountHome("chatgpt:work"), { recursive: true });
+    process.env.OPENAI_API_KEY = "machine-key";
+    expect((await launchFor(parseEntry("codex:gpt-6-luna#chatgpt:work", "codex"))).env).toEqual({ CODEX_HOME: partHome("chatgpt:work", "codex"), OPENAI_API_KEY: "" });
     expect((await launchFor(parseEntry("pi:openai-codex/gpt-6-luna#chatgpt:work", "pi"))).env).toEqual({ PI_CODING_AGENT_DIR: partHome("chatgpt:work", "pi") });
     expect((await launchFor(parseEntry("codex:gpt-6-luna#chatgpt:codex", "codex"))).env).toEqual({});
     await expect(launchFor(parseEntry("claude-code:opus#chatgpt:work", "claude-code"))).rejects.toThrow(/runs Codex and pi/);
@@ -167,9 +193,9 @@ describe("listing", () => {
   test("machine login and extra accounts, with account, plan, models on extras only, and no token anywhere", async () => {
     mkdirSync(join(userHome(), ".claude"), { recursive: true });
     writeFileSync(join(userHome(), ".claude", ".credentials.json"), TOKEN);
-    preparedHome("claude:work", "claude");
+    preparedHome("claude:work", "claude", true);
     writeFileSync(join(partHome("claude:work", "claude"), ".credentials.json"), TOKEN);
-    preparedHome("claude:spare", "claude");
+    preparedHome("claude:spare", "claude", true);
     codexAuth(join(userHome(), ".codex"), "me@example.com");
     codexAuth(partHome("chatgpt:work", "codex"), "work@example.com", "plus");
     register(claudePlugin, chatgptPlugin);
@@ -330,6 +356,61 @@ echo "Invalid code"; exit 1`,
     await credentialAction("chatgpt:spare", "signInCancel", {});
     for (let i = 0; i < 20 && existsSync(accountHome("chatgpt:spare")); i++) await Bun.sleep(50);
     expect(existsSync(accountHome("chatgpt:spare"))).toBe(false);
+  });
+
+  test("retrying a new account's sign-in keeps the home it just prepared (Add twice, then Sign in on the row)", async () => {
+    register(...accountPlugins);
+    process.env.CODEX_BIN = script("codex", `printf 'Open https://auth.openai.com/codex/device\\nEnter this one-time code\\n   ABCD-12345\\n'; sleep 30`);
+    await credentialAction("chatgpt", "add", { name: "retry" });
+    const again: any = await credentialAction("chatgpt", "add", { name: "retry" });
+    expect(again.flow.state).toBe("waiting");
+    await Bun.sleep(200);
+    expect(existsSync(partHome("chatgpt:retry", "codex"))).toBe(true);
+    await credentialAction("chatgpt:retry", "signIn", {});
+    await Bun.sleep(200);
+    expect(existsSync(partHome("chatgpt:retry", "codex"))).toBe(true);
+    // Claude's add path too
+    process.env.CLAUDE_BIN = script("claude-login", `printf 'visit https://claude.ai/oauth/authorize?x=1\\nPaste code here > '; sleep 30`);
+    await credentialAction("claude", "add", { name: "retry" });
+    await credentialAction("claude", "add", { name: "retry" });
+    await Bun.sleep(200);
+    expect(existsSync(partHome("claude:retry", "claude"))).toBe(true);
+  });
+
+  test("a machine login is never signed out from the browser: the command to run is shown instead", async () => {
+    register(...accountPlugins);
+    const marker = join(userHome(), "logged-out");
+    process.env.CODEX_BIN = script("codex", `[ "$1" = "logout" ] && touch "${marker}"; exit 0`);
+    codexAuth(join(userHome(), ".codex"), "me@example.com");
+    const r: any = await credentialAction("chatgpt:codex", "signOut", {});
+    expect(r.flow).toMatchObject({ kind: "command", state: "waiting", command: `${process.env.CODEX_BIN} logout` });
+    await Bun.sleep(300);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(join(userHome(), ".codex", "auth.json"))).toBe(true);
+    for (const id of ["claude:machine", "kiro:machine", "chatgpt:pi"]) expect(((await credentialAction(id, "signOut", {})) as any).flow.kind).toBe("command");
+  });
+
+  test("the output shown never carries secrets: key=value, JSON fields, bearer, the pasted code", () => {
+    const out = outputTail(`error: access_token=abc123 "refresh_token": "r-xyz" code=4/0Abc\nAuthorization: Bearer sk-live\npasted: MY-PASTED-CODE`, 12, ["MY-PASTED-CODE"]);
+    for (const s of ["abc123", "r-xyz", "4/0Abc", "sk-live", "MY-PASTED-CODE"]) expect(out).not.toContain(s);
+  });
+});
+
+describe("expired access tokens", () => {
+  test("a Codex login with a refresh token whose usage call is refused reads as unknown, not expired", async () => {
+    codexAuth(partHome("chatgpt:work", "codex"), "work@example.com");
+    const auth = JSON.parse(readFileSync(join(partHome("chatgpt:work", "codex"), "auth.json"), "utf8"));
+    auth.tokens.refresh_token = "r";
+    writeFileSync(join(partHome("chatgpt:work", "codex"), "auth.json"), JSON.stringify(auth));
+    register(chatgptPlugin);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("no", { status: 401 })) as any;
+    try {
+      const list = await listCredentials();
+      expect(list.credentials.find((c) => c.id === "chatgpt:work")).toMatchObject({ state: "unknown" });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

@@ -53,7 +53,7 @@ Groups Claude, ChatGPT, Kiro, Antigravity (`runner/src/credentials/accounts.ts`)
 `claude:machine`, `chatgpt:codex`, `chatgpt:pi`, `kiro:machine`, `antigravity:machine`; extra accounts
 live in `<config>/accounts/<provider>:<name>/{claude,codex,pi}` (mirror of the machine's config by
 symlinks, minus the login file). Do this on a test runner (`TETHER_CONFIG_DIR=<scratch>`).
-- [ ] Every login on the runner listed: "Max (you@)" style label, email/org, state, usage windows; the machine rows say "own login on this machine" and offer Sign out only
+- [ ] Every login on the runner listed: "Max (you@)" style label, email/org, state, usage windows; the machine rows say "own login on this machine"; their Sign out only shows the CLI command to run on the runner (nothing is signed out from the browser) and notices when it was run
 - [ ] Claude → Add → name "work" → "Open sign-in page" opens claude.ai in a new tab (from the phone); paste the code → row turns Ready with its own email and usage; `ls <config>/accounts/claude:work/claude` shows symlinks plus its own `.credentials.json`
 - [ ] ChatGPT → Add → name → a device code and "Open page"; enter it at auth.openai.com → row Ready; "Sign in for pi too" shows the `PI_CODING_AGENT_DIR=… pi` command, `/login` there flips it
 - [ ] Cancel a half-done Add: the account's folder is gone

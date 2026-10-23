@@ -21,6 +21,10 @@ interface Running {
   timer?: ReturnType<typeof setTimeout>;
   poll?: ReturnType<typeof setInterval>;
   raw: string;
+  /** codes pasted into it: never shown back, even if the CLI prints them */
+  submitted: string[];
+  /** a link was read out of it: its output isn't shown at all then */
+  linked?: boolean;
   /** after the flow ends (done, failed, cancelled) */
   onEnd?: (flow: SignInFlow) => void | Promise<void>;
 }
@@ -63,9 +67,18 @@ export function findDeviceCode(text: string): string | undefined {
   return plain.match(/\b(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b/)?.[0] ?? plain.match(/\b[A-Z0-9]{4,}-[A-Z0-9]{4,}\b/)?.[0];
 }
 
-/** The last lines the CLI printed, long token-like runs cut (links come separately). */
-export function outputTail(text: string, lines = 12): string {
-  return text
+/** A key that names something secret: its value never shows. */
+const SECRET_KEY = "[A-Za-z0-9_.-]*(?:token|code|secret|key|password|passwd|auth|session|cookie|bearer|credential)[A-Za-z0-9_.-]*";
+
+/**
+ * The last lines the CLI printed, for when no link could be read from them: links out, values of
+ * secret-looking keys (`token=…`, `"code": "…"`, `Bearer …`) blanked, long token-like runs cut, and
+ * anything you pasted (`hide`) removed.
+ */
+export function outputTail(text: string, lines = 12, hide: string[] = []): string {
+  let t = text;
+  for (const h of hide) if (h) t = t.split(h).join("…");
+  return t
     .split("\n")
     .map((l) => l.trimEnd())
     .filter((l) => l.trim())
@@ -73,7 +86,9 @@ export function outputTail(text: string, lines = 12): string {
     .map((l) =>
       l
         .replace(/https:\/\/\S+/g, "<link>")
-        .replace(/[A-Za-z0-9_\-.~+/=]{32,}/g, "…")
+        .replace(/\b(bearer|basic)\s+\S+/gi, "$1 …")
+        .replace(new RegExp(`(["']?${SECRET_KEY}["']?\\s*[:=]\\s*)((?:bearer|basic) …|"[^"]*"|'[^']*'|[^\\s,;}]+)`, "gi"), "$1…")
+        .replace(/[A-Za-z0-9_\-.~+/=]{24,}/g, "…")
         .slice(0, 300),
     )
     .join("\n");
@@ -95,7 +110,7 @@ export interface RelayOpts {
 
 const view = (r: Running): SignInFlow => {
   const f = { ...r.flow };
-  if (!f.url && f.kind !== "command" && r.raw) f.output = outputTail(stripAnsi(r.raw));
+  if (!r.linked && f.kind !== "command" && r.raw) f.output = outputTail(stripAnsi(r.raw), 12, r.submitted);
   return f;
 };
 
@@ -124,6 +139,7 @@ export async function startRelay(o: RelayOpts, waitMs = 10_000): Promise<SignInF
     flow: { id: o.id, kind: o.kind, state: "starting", startedAt: Date.now() },
     proc,
     raw: "",
+    submitted: [],
     onEnd: o.onEnd,
   };
   flows.set(o.id, r);
@@ -142,13 +158,15 @@ export async function startRelay(o: RelayOpts, waitMs = 10_000): Promise<SignInF
       const text = stripAnsi(r.raw);
       const url = findUrl(text, o.kind);
       const code = o.kind === "device" ? findDeviceCode(text) : undefined;
-      if (r.flow.state === "starting" && url && (o.kind === "paste" || code))
+      if (r.flow.state === "starting" && url && (o.kind === "paste" || code)) {
+        r.linked = true;
         r.flow = {
           ...r.flow,
           state: "waiting",
           url,
           ...(code ? { code } : {}),
         };
+      }
     }
   };
   void read(proc.stdout as ReadableStream<Uint8Array>).catch(() => {});
@@ -156,10 +174,15 @@ export async function startRelay(o: RelayOpts, waitMs = 10_000): Promise<SignInF
   proc.exited.then(async (exit) => {
     if (["done", "failed", "cancelled"].includes(r.flow.state)) return;
     if (exit === 0 && (await o.check().catch(() => false))) return end(r, { state: "done", message: undefined });
-    const tail = outputTail(stripAnsi(r.raw), 4);
+    // Once a link was read out, what the CLI printed next (the exchange) isn't shown.
+    const tail = r.linked ? "" : outputTail(stripAnsi(r.raw), 4, r.submitted);
     end(r, {
       state: "failed",
-      message: tail ? `The sign-in didn't finish:\n${tail}` : `The sign-in ended (code ${exit}) without a login.`,
+      message: tail
+        ? `The sign-in didn't finish:\n${tail}`
+        : r.linked
+          ? "The sign-in didn't finish (a wrong or expired code?). Start it again."
+          : `The sign-in ended (code ${exit}) without a login.`,
     });
   });
   const until = Date.now() + waitMs;
@@ -180,6 +203,7 @@ export function startCommand(o: { id: string; command: string; message?: string;
       startedAt: Date.now(),
     },
     raw: "",
+    submitted: [],
     onEnd: o.onEnd,
   };
   flows.set(o.id, r);
@@ -211,6 +235,7 @@ export async function submitCode(id: string, code: string): Promise<SignInFlow> 
   if (!r || r.flow.state !== "waiting" || !r.proc) throw new Error("That sign-in isn't waiting for a code. Start it again.");
   const c = code.trim();
   if (!c || /[\r\n\x00-\x1f]/.test(c) || c.length > 2048) throw new Error("That doesn't look like a sign-in code.");
+  r.submitted.push(c);
   const stdin = r.proc.stdin as any;
   stdin.write(c);
   await stdin.flush?.();

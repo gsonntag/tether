@@ -22,7 +22,7 @@ import type { CredentialModel, CredentialState, CredentialView } from "../../../
 import type { ChainEntry, HarnessId, ModelRef, ProviderUsage, UsageWindow } from "../../../web/src/shared/protocol";
 import { userHome } from "../home";
 import { accountUsage, getUsage, usageAt } from "../usage";
-import type { CredentialPlugin } from "./registry";
+import { usedIn, type CredentialPlugin } from "./registry";
 import { cancelFlow, flowFor, startCommand, startRelay, submitCode } from "./signin";
 import { accountsDir } from "./store";
 
@@ -47,11 +47,38 @@ const agyToken = () => join(userHome(), ".gemini", "antigravity-cli", "antigravi
 
 type Part = "claude" | "codex" | "pi";
 /** The login file in each kind of home: the one thing an account's home doesn't share. */
-const LOGIN_FILES: Record<Part, string[]> = {
+export const LOGIN_FILES: Record<Part, string[]> = {
   claude: [".credentials.json", ".claude.json"],
   codex: ["auth.json"],
   pi: ["auth.json"],
 };
+
+/**
+ * Entries an account home never shares: its login files, and the machine CLI's live process state
+ * (daemons, locks, sockets, per-process state, SQLite databases and their -wal/-shm). The account's
+ * CLI makes its own.
+ */
+const UNSHARED: Record<Part, RegExp> = {
+  claude: /^(\.credentials\.json|\.claude\.json|daemon|daemon\.lock|daemon\.status\.json|session-env|sessions|backups|.*\.lock)$/,
+  codex: /^(auth\.json|app-server-daemon|app-server-control|thread-writer-locks|backups|.*\.sqlite(-wal|-shm)?|.*\.lock)$/,
+  pi: /^(auth\.json|.*\.lock)$/,
+};
+
+/** Variables that would put an account's process on another login or endpoint: blanked when the runner has them. */
+const FOREIGN_ENV: Record<Part, string[]> = {
+  claude: [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+  ],
+  codex: ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"],
+  pi: [],
+};
+const blanked = (part: Part): Record<string, string> => Object.fromEntries(FOREIGN_ENV[part].filter((k) => process.env[k]).map((k) => [k, ""]));
 const machineDir = (p: Part) => (p === "claude" ? machineClaudeDir() : p === "codex" ? machineCodexHome() : machinePiDir());
 
 // ---------------- account homes ----------------
@@ -82,14 +109,14 @@ export const partHome = (id: string, part: Part) => join(accountHome(id), part);
  * plugins…) except its login files, which the account signs in to on its own. Entries the account
  * already has stay; anything new on the machine shows up the next time it's mirrored (every start).
  */
-export function mirror(src: string, dst: string, skip: string[]) {
+export function mirror(src: string, dst: string, skip: RegExp) {
   mkdirSync(dst, { recursive: true, mode: 0o700 });
   let names: string[] = [];
   try {
     names = readdirSync(src);
   } catch {}
   for (const n of names) {
-    if (skip.includes(n)) continue;
+    if (skip.test(n)) continue;
     const to = join(dst, n);
     try {
       lstatSync(to);
@@ -101,10 +128,14 @@ export function mirror(src: string, dst: string, skip: string[]) {
   }
 }
 
-/** The account's home for one harness, mirrored now. */
-export function preparedHome(id: string, part: Part): string {
+/**
+ * The account's home for one harness, mirrored now. Only a sign-in creates an account (`create`):
+ * a session or usage check on one that was signed out fails instead of bringing its home back.
+ */
+export function preparedHome(id: string, part: Part, create = false): string {
+  if (!create && !existsSync(accountHome(id))) throw new Error(`${id} was signed out: it isn't on this runner any more.`);
   const dir = partHome(id, part);
-  mirror(machineDir(part), dir, LOGIN_FILES[part]);
+  mirror(machineDir(part), dir, UNSHARED[part]);
   // Claude Code keeps its account state in .claude.json; a new one starts past the first-run screens.
   if (part === "claude" && !existsSync(join(dir, ".claude.json")))
     writeFileSync(join(dir, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }) + "\n", { mode: 0o600 });
@@ -163,12 +194,14 @@ export interface LoginInfo {
   plan?: string;
   /** what the CLI says when it couldn't tell */
   note?: string;
+  /** it has a refresh token: a refused access token only means the CLI hasn't refreshed it yet */
+  refreshable?: boolean;
 }
 
 /** Without the machine's token variables: an account's process runs on its own login. */
 function ownEnv(extra: Record<string, string>): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...extra };
-  for (const k of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete env[k];
+  for (const k of [...FOREIGN_ENV.claude, ...FOREIGN_ENV.codex]) delete env[k];
   return env;
 }
 
@@ -245,6 +278,7 @@ export function codexLogin(home: string): LoginInfo {
       signedIn: true,
       email: c?.email,
       plan: c?.["https://api.openai.com/auth"]?.chatgpt_plan_type,
+      refreshable: !!a.tokens?.refresh_token,
     };
   if (a.OPENAI_API_KEY) return { signedIn: true, plan: "API key" };
   return { signedIn: false };
@@ -259,6 +293,7 @@ export function piLogin(dir: string): LoginInfo {
     signedIn: true,
     email: c?.["https://api.openai.com/profile"]?.email ?? c?.email,
     plan: c?.["https://api.openai.com/auth"]?.chatgpt_plan_type,
+    refreshable: !!p.refresh,
   };
 }
 
@@ -347,6 +382,8 @@ const refused = (u?: ProviderUsage) => !!u?.error && /\b401\b|\b403\b|unauthori|
 
 function stateOf(info: LoginInfo, usage?: ProviderUsage): { state: CredentialState; stateNote?: string } {
   if (!info.signedIn) return { state: "missing", stateNote: "Not signed in." };
+  // A stale access token with a refresh token: the CLI refreshes it on its next use (Tether doesn't, to not race it).
+  if (refused(usage) && info.refreshable) return { state: "unknown", stateNote: "Usage can't be read until the CLI next refreshes its login." };
   if (refused(usage))
     return {
       state: "expired",
@@ -401,11 +438,22 @@ function flowResult(flow: ReturnType<typeof flowFor>, message?: string): SignInR
   };
 }
 
+/** Sign-ins started per credential: a cancelled flow cleans up only if no newer one took its place. */
+const generation = new Map<string, number>();
+
+/** Before a sign-in prepares anything: the earlier flow ends first (so its cleanup can't hit the new home). */
+function beginSignIn(id: string): number {
+  cancelFlow(id);
+  const g = (generation.get(id) ?? 0) + 1;
+  generation.set(id, g);
+  return g;
+}
+
 /** After a sign-in ends: fresh state, and a new account whose sign-in never finished leaves no home behind. */
-function afterSignIn(id: string, isNew: boolean, part?: Part) {
+function afterSignIn(id: string, isNew: boolean, part?: Part, gen = generation.get(id)) {
   return (flow: { state: string }) => {
     forget(id);
-    if (flow.state === "cancelled" && isNew && part) {
+    if (flow.state === "cancelled" && isNew && part && generation.get(id) === gen) {
       const signedIn =
         part === "claude"
           ? existsSync(join(partHome(id, "claude"), ".credentials.json"))
@@ -432,6 +480,31 @@ async function flowAction(id: string, name: string, args: any): Promise<SignInRe
   return undefined;
 }
 
+/**
+ * Signing a machine login out: never one tap from the browser (it signs the CLI out for every
+ * terminal too). The page shows the CLI's own command to run on the runner, and notices when it's done.
+ */
+function machineSignOut(id: string, command: string, what: string, signedIn: () => Promise<boolean> | boolean): SignInResult {
+  beginSignIn(id);
+  return flowResult(
+    startCommand({
+      id,
+      command,
+      message: `This signs ${what} out on the runner for everything, terminals included. To do it, run this there; Tether notices when it's done.`,
+      check: async () => (forget(id), !(await signedIn())),
+      onEnd: afterSignIn(id, false),
+    }),
+  );
+}
+
+/** Signs an extra account out (its home goes), saying where it was used: those entries are skipped from now on. */
+async function signOutExtra(id: string): Promise<SignInResult> {
+  const { defaultOrder } = await import("../defaultOrder");
+  const used = usedIn(id, defaultOrder());
+  removeAccountHome(id);
+  return { message: used.length ? `Signed out. It was in ${used.join(", ")}: those entries are skipped until you sign in again or edit the order.` : "Signed out." };
+}
+
 /** A new extra account's id from the name you gave it. */
 function newAccountId(provider: "claude" | "chatgpt", name: unknown): string {
   const slug = accountSlug(String(name ?? ""));
@@ -445,7 +518,8 @@ function newAccountId(provider: "claude" | "chatgpt", name: unknown): string {
 // ---------------- Claude ----------------
 
 async function claudeSignIn(id: string, isNew: boolean): Promise<SignInResult> {
-  const dir = isMachine(id) ? undefined : preparedHome(id, "claude");
+  const gen = beginSignIn(id);
+  const dir = isMachine(id) ? undefined : preparedHome(id, "claude", true);
   const flow = await startRelay({
     id,
     kind: "paste",
@@ -460,7 +534,7 @@ async function claudeSignIn(id: string, isNew: boolean): Promise<SignInResult> {
       forget(id);
       return (await claudeLogin(dir)).signedIn;
     },
-    onEnd: afterSignIn(id, isNew, "claude"),
+    onEnd: afterSignIn(id, isNew, "claude", gen),
   });
   return flowResult(flow);
 }
@@ -505,10 +579,8 @@ export const claudePlugin: AccountPlugin = {
   },
   async envFor(id) {
     if (isMachine(id)) return {};
-    const dir = preparedHome(id, "claude");
-    // The machine's token variables would win over the account's login: blanked for this process.
-    const blank = Object.fromEntries(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"].filter((k) => process.env[k]).map((k) => [k, ""]));
-    return { CLAUDE_CONFIG_DIR: dir, ...blank };
+    // The machine's token / endpoint variables would win over the account's login: blanked for this process.
+    return { CLAUDE_CONFIG_DIR: preparedHome(id, "claude"), ...blanked("claude") };
   },
   async usage(id) {
     return freshUsage(isMachine(id) ? { kind: "machine", account: "claude" } : { kind: "home", part: "claude", dir: partHome(id, "claude") });
@@ -536,14 +608,8 @@ export const claudePlugin: AccountPlugin = {
     if (f) return f;
     if (name === "signIn") return claudeSignIn(id, false);
     if (name === "signOut") {
-      if (!isMachine(id)) {
-        removeAccountHome(id);
-        return { message: "Signed out." };
-      }
-      const r = await run([CLAUDE_BIN(), "auth", "logout"], process.env);
-      forget(id);
-      if (r.code !== 0) throw new Error("Claude Code couldn't sign out.");
-      return { message: "Signed out of Claude Code on this machine." };
+      if (!isMachine(id)) return signOutExtra(id);
+      return machineSignOut(id, "claude auth logout", "Claude Code", async () => (await claudeLogin()).signedIn);
     }
     throw new Error(`Claude has no “${name}”.`);
   },
@@ -556,22 +622,24 @@ export const claudePlugin: AccountPlugin = {
 // ---------------- ChatGPT (Codex, pi) ----------------
 
 async function codexSignIn(id: string, isNew: boolean): Promise<SignInResult> {
-  const home = id === "chatgpt:codex" ? undefined : preparedHome(id, "codex");
+  const gen = beginSignIn(id);
+  const home = id === "chatgpt:codex" ? undefined : preparedHome(id, "codex", true);
   const flow = await startRelay({
     id,
     kind: "device",
     argv: [CODEX_BIN(), "login", "--device-auth"],
-    env: home ? { ...process.env, CODEX_HOME: home } : process.env,
+    env: home ? ownEnv({ CODEX_HOME: home }) : process.env,
     cwd: userHome(),
     check: async () => codexLogin(home ?? machineCodexHome()).signedIn,
-    onEnd: afterSignIn(id, isNew, "codex"),
+    onEnd: afterSignIn(id, isNew, "codex", gen),
   });
   return flowResult(flow);
 }
 
 /** pi has no sign-in command: its /login runs in its own screen. The page shows what to run. */
 function piSignIn(id: string): SignInResult {
-  const dir = id === "chatgpt:pi" ? machinePiDir() : preparedHome(id, "pi");
+  beginSignIn(id);
+  const dir = id === "chatgpt:pi" ? machinePiDir() : preparedHome(id, "pi", true);
   const command = id === "chatgpt:pi" ? PI_BIN() : `PI_CODING_AGENT_DIR=${dir.includes("'") ? JSON.stringify(dir) : `'${dir}'`} ${PI_BIN()}`;
   const flow = startCommand({
     id: `${id}`,
@@ -617,7 +685,7 @@ export const chatgptPlugin: AccountPlugin = {
           {
             label: "Codex on this machine",
             sourceNote: "The Codex CLI's own login on this machine",
-            actions: info.signedIn ? ["signOut"] : ["signIn"],
+            actions: [info.signedIn ? "signOut" : "signIn"],
           },
           async () => [],
         ),
@@ -633,7 +701,7 @@ export const chatgptPlugin: AccountPlugin = {
           {
             label: "pi on this machine",
             sourceNote: "pi's own ChatGPT login (openai-codex) on this machine",
-            actions: info.signedIn ? [] : ["signIn"],
+            actions: [info.signedIn ? "signOut" : "signIn"],
           },
           async () => [],
         ),
@@ -673,7 +741,7 @@ export const chatgptPlugin: AccountPlugin = {
   },
   async envFor(id, entry: ChainEntry): Promise<Record<string, string>> {
     if (isMachine(id)) return {};
-    if (entry.harness === "codex") return { CODEX_HOME: preparedHome(id, "codex") };
+    if (entry.harness === "codex") return { CODEX_HOME: preparedHome(id, "codex"), ...blanked("codex") };
     if (entry.harness === "pi") return { PI_CODING_AGENT_DIR: preparedHome(id, "pi") };
     throw new Error(`${id} is a ChatGPT login: it runs Codex and pi, not ${entry.harness}.`);
   },
@@ -716,15 +784,9 @@ export const chatgptPlugin: AccountPlugin = {
     if (name === "signIn") return id === "chatgpt:pi" ? piSignIn(id) : codexSignIn(id, false);
     if (name === "signInPi" && !isMachine(id)) return piSignIn(id);
     if (name === "signOut") {
-      if (!isMachine(id)) {
-        removeAccountHome(id);
-        return { message: "Signed out." };
-      }
-      if (id !== "chatgpt:codex") throw new Error("Sign pi out in pi itself (/logout).");
-      const r = await run([CODEX_BIN(), "logout"], process.env);
-      forget(id);
-      if (r.code !== 0) throw new Error("Codex couldn't sign out.");
-      return { message: "Signed out of Codex on this machine." };
+      if (!isMachine(id)) return signOutExtra(id);
+      if (id === "chatgpt:pi") return machineSignOut(id, `${PI_BIN()}   # then type /logout and pick ChatGPT`, "pi's ChatGPT login", () => piLogin(machinePiDir()).signedIn);
+      return machineSignOut(id, `${CODEX_BIN()} logout`, "the Codex CLI", () => codexLogin(machineCodexHome()).signedIn);
     }
     throw new Error(`ChatGPT has no “${name}”.`);
   },
@@ -779,12 +841,7 @@ export const kiroPlugin: AccountPlugin = {
           onEnd: afterSignIn(id, false),
         }),
       );
-    if (name === "signOut") {
-      const r = await run([KIRO_BIN(), "logout"], process.env);
-      forget(id);
-      if (r.code !== 0) throw new Error("kiro-cli couldn't sign out.");
-      return { message: "Signed out of Kiro on this machine." };
-    }
+    if (name === "signOut") return machineSignOut(id, `${KIRO_BIN()} logout`, "kiro-cli", async () => (await kiroLogin()).signedIn);
     throw new Error(`Kiro has no “${name}”.`);
   },
   async remove() {

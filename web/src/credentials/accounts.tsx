@@ -115,7 +115,7 @@ export function SignInPanel({ id, initial, onList, onClose }: { id: string; init
   if (flow.state === "done")
     return (
       <Text type="supporting" style={{ color: "var(--color-text-green)" }}>
-        Signed in.
+        {flow.kind === "command" ? "Done." : "Signed in."}
       </Text>
     );
   const over = !flowLive(flow);
@@ -231,14 +231,19 @@ function AccountRow({ credential: c, onList }: { credential: CredentialView; onL
     setBusy(action);
     try {
       const a = await act(c.id, action);
-      setFlow({ flow: a.result?.flow, open: true });
+      // Signing a machine login out shows the command to run; an extra account's is done already.
+      if (a.result?.flow) setFlow({ flow: a.result.flow, open: true });
+      else {
+        if (a.result?.message) toast("info", a.result.message);
+        if (a.list) onList(a.list);
+      }
     } catch (e: any) {
       toast("error", e?.message ?? String(e));
     } finally {
       setBusy(undefined);
     }
   };
-  const offers = (c.actions ?? []).filter((a) => a === "signIn" || a === "signInPi");
+  const offers = (c.actions ?? []).filter((a) => a === "signIn" || a === "signInPi" || a === "signOut");
   return flow.open ? (
     <SignInPanel
       id={c.id}
@@ -254,9 +259,9 @@ function AccountRow({ credential: c, onList }: { credential: CredentialView; onL
       {offers.map((a) => (
         <Button
           key={a}
-          label={a === "signInPi" ? "Sign in for pi too" : c.state === "expired" ? "Sign in again" : "Sign in"}
+          label={a === "signOut" ? "Sign out" : a === "signInPi" ? "Sign in for pi too" : c.state === "expired" ? "Sign in again" : "Sign in"}
           size="sm"
-          variant={a === "signIn" && focus ? "primary" : "secondary"}
+          variant={a === "signIn" && focus ? "primary" : a === "signOut" ? "ghost" : "secondary"}
           isLoading={busy === a}
           isDisabled={!!busy}
           onClick={() => start(a)}
@@ -325,7 +330,7 @@ function addForm(provider: "claude" | "chatgpt", hint: string): CredentialSlot["
   };
 }
 
-const FLOW_ACTIONS = ["signIn", "signInPi", "signInStatus", "signInCode", "signInCancel"];
+const FLOW_ACTIONS = ["signIn", "signInPi", "signOut", "signInStatus", "signInCode", "signInCancel"];
 
 export const accountSlots: CredentialSlot[] = [
   {
