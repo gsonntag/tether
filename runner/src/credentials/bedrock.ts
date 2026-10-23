@@ -21,6 +21,36 @@ import * as store from "./store";
 /** Every AWS variable a credential could set: the ones a credential doesn't set are blanked, so only its own reach the process. */
 export const AWS_SECRET_VARS = ["AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"] as const;
 
+/**
+ * Pass-through variables that could send a Bedrock process's auth or calls elsewhere (another
+ * config file, a role, a container's credentials, another endpoint): blanked too. Profiles read
+ * the default ~/.aws files. Every AWS_ENDPOINT_URL_* / AWS_CONTAINER_CREDENTIALS_* in the runner's
+ * env is added (blankedVars).
+ */
+export const AWS_REDIRECT_VARS = [
+  "AWS_ENDPOINT_URL",
+  "AWS_ENDPOINT_URL_BEDROCK",
+  "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+  "AWS_ENDPOINT_URL_STS",
+  "AWS_CONFIG_FILE",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_ROLE_ARN",
+  "AWS_ROLE_SESSION_NAME",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+] as const;
+
+/** Every variable blanked for a Bedrock process (or an `aws` call) unless its credential sets it. */
+export function blankedVars(env: NodeJS.ProcessEnv = process.env): string[] {
+  const extra = Object.keys(env).filter((k) => k.startsWith("AWS_ENDPOINT_URL") || k.startsWith("AWS_CONTAINER_CREDENTIALS_"));
+  return [...new Set([...AWS_SECRET_VARS, ...AWS_REDIRECT_VARS, ...extra])];
+}
+
 export const REGION = /^[a-z]{2}(-gov|-iso[a-z]*)?-[a-z]+-\d{1,2}$/;
 /** A Bedrock model id, inference profile id or ARN; no "#" (chain entries) or spaces. */
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,199}$/;
@@ -45,13 +75,19 @@ function awsBin() {
 
 /** The runner's env without any AWS credential variable, plus `env`: what an `aws` call for one credential runs with. */
 export function cliEnv(env: Record<string, string>): Record<string, string> {
-  const base = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined && !(AWS_SECRET_VARS as readonly string[]).includes(e[0])));
+  const blank = new Set(blankedVars());
+  const base = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined && !blank.has(e[0])));
   return { ...base, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off", ...env };
 }
 
 let cli = (args: string[], env: Record<string, string>, timeoutMs = 20_000): Promise<CliResult> =>
   new Promise((resolve) => {
-    execFile(awsBin(), args, { env: cliEnv(env), timeout: timeoutMs, maxBuffer: 8 << 20 }, (e, out, err) => resolve({ ok: !e, out: String(out ?? ""), err: String(err ?? "") || (e && !err ? e.message : "") }));
+    const child = execFile(awsBin(), args, { env: cliEnv(env), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 8 << 20 }, (e, out, err) =>
+      resolve({ ok: !e, out: String(out ?? ""), err: String(err ?? "") || (e && !err ? e.message : "") }),
+    );
+    // Nothing to type: an MFA or SSO prompt gets end-of-input and fails rather than waiting.
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
   });
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -118,7 +154,7 @@ async function resolve(id: string): Promise<Resolved> {
 /** The AWS variables a process on this credential gets: its own, the region, the others blanked. */
 export function awsEnv(r: Pick<Resolved, "env" | "region">): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const k of AWS_SECRET_VARS) out[k] = "";
+  for (const k of blankedVars()) out[k] = "";
   return { ...out, ...r.env, AWS_REGION: r.region, AWS_DEFAULT_REGION: r.region };
 }
 
@@ -256,18 +292,28 @@ interface ProfileStatus {
 }
 
 const profileCache = new Map<string, { at: number; s: ProfileStatus }>();
-const PROFILE_FRESH_MS = 60_000;
+/** How long a profile's status holds: a check runs the AWS CLI a few times, so not on every list. */
+const PROFILE_FRESH_MS = 5 * 60_000;
+/** Profile settings that mean getting credentials may run a program, prompt, or call SSO/STS. */
+const ACTIVE_SETTINGS = ["credential_process", "sso_session", "sso_start_url", "mfa_serial", "role_arn"];
 
 async function profileStatus(profile: string): Promise<ProfileStatus> {
   const hit = profileCache.get(profile);
   if (hit && Date.now() - hit.at < PROFILE_FRESH_MS) return hit.s;
-  const [region, login, creds] = await Promise.all([
-    profileRegion(profile),
-    cli(["configure", "get", "login_session", "--profile", profile], {}),
-    // Only the expiry is read from this; the values are dropped here and never leave this function.
-    cli(["configure", "export-credentials", "--profile", profile, "--format", "process"], {}),
-  ]);
+  const setting = (k: string) => cli(["configure", "get", k, "--profile", profile], {}, 10_000);
+  const [region, login, ...active] = await Promise.all([profileRegion(profile), setting("login_session"), ...ACTIVE_SETTINGS.map(setting)]);
   const s: ProfileStatus = { region, ...(login.ok && login.out.trim().startsWith("arn:") ? { login: login.out.trim() } : {}), state: "unknown" };
+  const kind = ACTIVE_SETTINGS.find((_, i) => active[i]!.ok && active[i]!.out.trim());
+  if (kind) {
+    // SSO, MFA, a role or a credential_process: a background check could prompt, open a browser or
+    // run a program every few minutes. Test makes the one real call instead.
+    s.note = `Not checked in the background (the profile uses ${kind}): Test checks it.`;
+    profileCache.set(profile, { at: Date.now(), s });
+    return s;
+  }
+  // An `aws login` or a static-key profile: reading its credentials only reads ~/.aws (and renews a
+  // login). Only the expiry is kept; the values are dropped here and never leave this function.
+  const creds = await cli(["configure", "export-credentials", "--profile", profile, "--format", "process"], {}, 10_000);
   if (creds.ok) {
     let exp: number | undefined;
     try {
@@ -334,6 +380,22 @@ async function profiles(): Promise<string[]> {
     .slice(0, MAX_PROFILES);
 }
 
+/** A "bedrock:aws.<profile>" id must name a profile the AWS CLI lists (not any name a caller sends). */
+async function knownProfile(id: string) {
+  const p = profileOf(id);
+  if (p !== undefined && !(await profiles()).includes(p)) throw new Error(`There's no AWS profile “${p}” on this runner.`);
+}
+
+export const isHaiku = (model: string) => isAnthropic(model) && /claude-haiku/i.test(model);
+
+/** Claude Code's background model on this credential: a Haiku it has added, else the region's listed one. */
+function haikuOf(r: Resolved): string | undefined {
+  const own = r.models.find(isHaiku);
+  if (own) return own;
+  const listed = store.get(r.id)?.meta?.haiku;
+  return typeof listed === "string" && MODEL_ID.test(listed) ? listed : undefined;
+}
+
 // ---- "Sign in again": relays `aws login --remote` ----
 
 const logins = new Map<string, { proc: ChildProcess; output: string; timer: ReturnType<typeof setTimeout> }>();
@@ -351,6 +413,8 @@ function endLogin(id: string) {
 async function startLogin(id: string, profile: string): Promise<{ url: string }> {
   endLogin(id);
   const proc = spawn(awsBin(), ["login", "--remote", "--profile", profile], { env: cliEnv({}), stdio: ["pipe", "pipe", "pipe"] });
+  // The CLI may be gone when the code is written (EPIPE): never an uncaught error in the runner.
+  proc.stdin!.on("error", () => {});
   const l = { proc, output: "", timer: setTimeout(() => endLogin(id), 10 * 60_000) };
   logins.set(id, l);
   return new Promise((resolve, reject) => {
@@ -381,7 +445,8 @@ async function finishLogin(id: string, code: string): Promise<{ message: string 
   if (!/^[\w.~+/=-]{4,4096}$/.test(code)) throw new Error("That doesn't look like an authorization code.");
   const done = new Promise<number | null>((resolve) => l.proc.once("exit", resolve));
   l.proc.stdin!.write(code + "\n");
-  const exit = await Promise.race([done, new Promise<"slow">((r) => setTimeout(() => r("slow"), 60_000))]);
+  let slow: ReturnType<typeof setTimeout> | undefined;
+  const exit = await Promise.race([done, new Promise<"slow">((r) => (slow = setTimeout(() => r("slow"), 60_000)))]).finally(() => clearTimeout(slow));
   const output = l.output;
   endLogin(id);
   profileCache.delete(profileOf(id)!);
@@ -411,6 +476,7 @@ export const bedrockPlugin: CredentialPlugin = {
   },
 
   async test(id) {
+    await knownProfile(id);
     const r = await resolve(id);
     if (r.models[0]) return tinyCall(r, r.models[0]);
     // No model yet: listing the region's models shows whether the credential works at all.
@@ -427,10 +493,13 @@ export const bedrockPlugin: CredentialPlugin = {
       const region = str("region") || "us-east-1";
       if (!NAME.test(slug) || slug.startsWith(PROFILE_PREFIX)) throw new Error("Give it a short name (letters, digits, . _ - @ +).");
       if (!REGION.test(region)) throw new Error(`“${region}” isn't an AWS region.`);
+      // A key added again under the same name replaces the key, not the models added to it.
+      const kept = store.get(`bedrock:${slug}`)?.meta;
+      const meta = kept ? { meta: kept } : {};
       if (kind === "apiKey") {
         const key = str("apiKey");
         if (key.length < 20 || /\s/.test(key)) throw new Error("Paste the whole Bedrock API key.");
-        await store.put({ id: `bedrock:${slug}`, kind: "apiKey", label: slug, region, values: { AWS_BEARER_TOKEN_BEDROCK: key }, last4Of: "AWS_BEARER_TOKEN_BEDROCK" });
+        await store.put({ id: `bedrock:${slug}`, kind: "apiKey", label: slug, region, values: { AWS_BEARER_TOKEN_BEDROCK: key }, last4Of: "AWS_BEARER_TOKEN_BEDROCK", ...meta });
       } else if (kind === "awsKeys") {
         const keyId = str("accessKeyId");
         const secret = str("secretAccessKey");
@@ -445,12 +514,20 @@ export const bedrockPlugin: CredentialPlugin = {
           account: keyId.slice(0, 4) + "…" + keyId.slice(-4),
           values: { AWS_ACCESS_KEY_ID: keyId, AWS_SECRET_ACCESS_KEY: secret, ...(token ? { AWS_SESSION_TOKEN: token } : {}) },
           last4Of: "AWS_SECRET_ACCESS_KEY",
+          ...meta,
         });
       } else throw new Error("Pick a Bedrock API key or an access key.");
       return { id: `bedrock:${slug}` };
     }
+    await knownProfile(id);
     const r = await resolve(id);
-    if (name === "listModels") return listModels(r);
+    if (name === "listModels") {
+      const l = await listModels(r);
+      // The region's Haiku inference profile, for Claude Code's background model (envFor).
+      const haiku = "models" in l ? l.models.find((m) => m.kind === "Inference profile" && isHaiku(m.id))?.id : undefined;
+      if (haiku && haiku !== store.get(id)?.meta?.haiku) await keepMeta(id, r, { haiku });
+      return l;
+    }
     if (name === "addModel") {
       const model = str("model").replace(/^amazon-bedrock\//, "");
       if (!MODEL_ID.test(model)) throw new Error(`“${model}” isn't a Bedrock model id.`);
@@ -478,8 +555,14 @@ export const bedrockPlugin: CredentialPlugin = {
   async envFor(id, entry) {
     const r = await resolve(id);
     const env = awsEnv(r);
-    // Claude Code talks to Bedrock instead of Anthropic only when told to.
-    if (entry.harness === "claude-code") env.CLAUDE_CODE_USE_BEDROCK = "1";
+    if (entry.harness === "claude-code") {
+      // Claude Code talks to Bedrock instead of Anthropic only when told to.
+      env.CLAUDE_CODE_USE_BEDROCK = "1";
+      // Its background model (titles, quick checks): a Haiku this credential has, else Claude
+      // Code's own Bedrock default.
+      const haiku = haikuOf(r);
+      if (haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = env.ANTHROPIC_SMALL_FAST_MODEL = haiku;
+    }
     return env;
   },
 
@@ -492,13 +575,18 @@ export const bedrockPlugin: CredentialPlugin = {
 
 /** Stores a credential's model list: on its own record, or a values-less one for a profile. */
 async function keepModels(id: string, r: Resolved, models: string[]) {
-  if (r.kind === "awsProfile") return keepProfile(id, { models });
-  await store.update(id, { meta: { ...(store.get(id)?.meta ?? {}), models } });
+  return keepMeta(id, r, { models });
 }
 
-async function keepProfile(id: string, change: { models?: string[]; region?: string }) {
+/** Changes a credential's non-secret settings (models, haiku). */
+async function keepMeta(id: string, r: Resolved, patch: Record<string, unknown>) {
+  if (r.kind === "awsProfile") return keepProfile(id, { meta: patch });
+  await store.update(id, { meta: { ...(store.get(id)?.meta ?? {}), ...patch } });
+}
+
+async function keepProfile(id: string, change: { meta?: Record<string, unknown>; region?: string }) {
   const rec = store.get(id);
-  const meta = { ...(rec?.meta ?? {}), ...(change.models ? { models: change.models } : {}) };
+  const meta = { ...(rec?.meta ?? {}), ...(change.meta ?? {}) };
   const region = "region" in change ? change.region : rec?.region;
   if (!rec) {
     await store.put({ id, kind: "awsProfile", label: profileOf(id)!, values: {}, meta, ...(region ? { region } : {}) });

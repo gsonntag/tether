@@ -144,7 +144,11 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   (read through the AWS CLI, its secrets never copied; an expired `aws login` gets "Sign in again",
   which relays `aws login --remote`). Add models per credential from the region's list or by id,
   each tested with one tiny call; they read "Opus 5.5 · Bedrock" in pickers, chains and the default
-  order. Only that credential's AWS variables reach the process. Codex and opencode aren't wired up.
+  order. Only that credential's AWS variables reach the process (endpoint, role and config-file
+  overrides are blanked). Claude Code's background model is a Haiku on the same credential (one
+  you added, else the region's from List models), otherwise Claude Code's own Bedrock default.
+  Pi and Claude Code on the same credential and model share one quota. Codex and opencode aren't
+  wired up.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.
   - A watchdog warns when a running session has been silent for 15 minutes with nothing

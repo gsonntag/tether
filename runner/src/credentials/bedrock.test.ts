@@ -7,10 +7,10 @@ import { resetHome } from "../testenv";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ChainEntry, HarnessId } from "../../../web/src/shared/protocol";
 import { config } from "../config";
-import { bedrockFault, onBedrock } from "../fallback";
+import { bedrockFault, onBedrock, providerOf } from "../fallback";
 import { claudeFault, piFault } from "../faults";
 import { LiveSession, type HandoffOpts } from "../session";
-import { accountOf, AWS_SECRET_VARS, bedrockPlugin, cliError, modelChoices, setBedrockIo, testResult, type CliResult } from "./bedrock";
+import { accountOf, AWS_REDIRECT_VARS, AWS_SECRET_VARS, bedrockPlugin, cliError, modelChoices, setBedrockIo, testResult, type CliResult } from "./bedrock";
 import { credentialAction, credentialModels, launchFor, listCredentials, register, testCredential, unregister } from "./registry";
 import * as store from "./store";
 
@@ -158,7 +158,7 @@ describe("process env", () => {
     await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", region: "us-west-2", apiKey: API_KEY });
     await credentialAction("bedrock", "add", { kind: "awsKeys", name: "iam", accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: SECRET });
     const cc = await launchFor({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:work" });
-    expect(cc.env).toEqual({
+    expect(cc.env).toMatchObject({
       AWS_PROFILE: "",
       AWS_DEFAULT_PROFILE: "",
       AWS_ACCESS_KEY_ID: "",
@@ -191,14 +191,88 @@ describe("words", () => {
   });
 });
 
+describe("review fixes", () => {
+  test("SSO / MFA / role / credential_process profiles aren't checked in the background", async () => {
+    answers["configure get sso_session --profile default"] = ok("corp\n");
+    const p = (await listCredentials()).credentials.find((c) => c.id === "bedrock:aws.default")!;
+    expect(p.state).toBe("unknown");
+    expect(p.stateNote).toContain("sso_session");
+    expect(calls.some((c) => c.args.includes("export-credentials"))).toBe(false);
+  });
+
+  test("a status check holds for minutes, not one list", async () => {
+    await listCredentials();
+    await listCredentials();
+    expect(calls.filter((c) => c.args.includes("export-credentials")).length).toBe(1);
+  });
+
+  test("adding a key again under the same name keeps its models", async () => {
+    await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", apiKey: API_KEY });
+    await store.update("bedrock:work", { meta: { models: ["us.anthropic.claude-opus-5-5"] } });
+    await credentialAction("bedrock", "add", { kind: "awsKeys", name: "work", accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: SECRET });
+    expect(store.get("bedrock:work")?.meta?.models).toEqual(["us.anthropic.claude-opus-5-5"]);
+    expect(store.get("bedrock:work")?.values.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+  });
+
+  test("a profile id must name a profile the AWS CLI lists", async () => {
+    await expect(credentialAction("bedrock:aws.someone-else", "addModel", { model: "us.anthropic.claude-opus-5-5" })).rejects.toThrow("no AWS profile");
+    await expect(testCredential("bedrock:aws.nope")).rejects.toThrow("no AWS profile");
+    expect(calls.some((c) => c.args[0] === "bedrock-runtime")).toBe(false);
+  });
+
+  test("Claude Code's background model is the credential's Haiku: an added one, else the region's listed one", async () => {
+    await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", apiKey: API_KEY });
+    let env = (await launchFor({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:work" })).env;
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+    fetchAnswer = () => new Response(JSON.stringify({ inferenceProfileSummaries: [{ inferenceProfileId: "us.anthropic.claude-haiku-4-5-20251001-v1:0", status: "ACTIVE" }], modelSummaries: [] }));
+    await credentialAction("bedrock:work", "listModels", {});
+    env = (await launchFor({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:work" })).env;
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    await store.update("bedrock:work", { meta: { ...store.get("bedrock:work")!.meta, models: ["us.anthropic.claude-haiku-5"] } });
+    env = (await launchFor({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:work" })).env;
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("us.anthropic.claude-haiku-5");
+    const pi = (await launchFor({ harness: "pi", model: "amazon-bedrock/x", credential: "bedrock:work" })).env;
+    expect(pi.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+  });
+
+  test("pass-through variables that could redirect auth or calls are blanked, in sessions and in aws calls", async () => {
+    const saved = { ...process.env };
+    process.env.AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "https://evil.example";
+    process.env.AWS_CONFIG_FILE = "/tmp/other-config";
+    process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH = "1";
+    process.env.AWS_ENDPOINT_URL_SOMETHING_NEW = "https://x.example";
+    try {
+      await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", apiKey: API_KEY });
+      const env = (await launchFor({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:work" })).env;
+      for (const k of [...AWS_REDIRECT_VARS, "AWS_ENDPOINT_URL_SOMETHING_NEW"]) expect(env[k]).toBe("");
+      const { cliEnv } = await import("./bedrock");
+      const c = cliEnv({ AWS_PROFILE: "default" });
+      expect(c.AWS_ENDPOINT_URL_BEDROCK_RUNTIME).toBeUndefined();
+      expect(c.AWS_CONFIG_FILE).toBeUndefined();
+      expect(c.AWS_PROFILE).toBe("default");
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    }
+  });
+
+  test("pi and Claude Code on the same Bedrock credential and model share one quota key; models don't", () => {
+    const cc = providerOf("us.anthropic.claude-opus-5-5", "claude-code", "bedrock:work");
+    expect(cc).toBe("bedrock:us.anthropic.claude-opus-5-5#bedrock:work");
+    expect(providerOf("amazon-bedrock/us.anthropic.claude-opus-5-5", "pi", "bedrock:work")).toBe(cc);
+    expect(providerOf("amazon-bedrock/us.anthropic.claude-sonnet-5", "pi", "bedrock:work")).not.toBe(cc);
+    expect(providerOf("amazon-bedrock/us.anthropic.claude-opus-5-5", "pi")).toBe("amazon-bedrock"); // no credential: unchanged
+  });
+});
+
 describe("faults", () => {
   test("throttling is a rate limit; a service or per-day quota is a definite quota", () => {
     expect(bedrockFault("ThrottlingException: Too many requests, please wait before trying again.")).toEqual({ kind: "rate_limit", resetAt: undefined });
     expect(bedrockFault("API Error: 429 Too many tokens, please wait before trying again.")?.kind).toBe("rate_limit");
     expect(bedrockFault("ServiceQuotaExceededException: Your request exceeds the service quota for your account.")).toMatchObject({ kind: "quota", definite: true });
-    const day = bedrockFault("Too many tokens per day, please wait before trying again.")!;
-    expect(day).toMatchObject({ kind: "quota", definite: true });
-    expect(new Date(day.resetAt!).getUTCHours()).toBe(0);
+    const now = Date.UTC(2026, 9, 23, 15, 30);
+    expect(bedrockFault("Too many tokens per day, please wait before trying again.", now)).toEqual({ kind: "quota", definite: true, resetAt: Date.UTC(2026, 9, 24) });
+    expect(bedrockFault("ThrottlingException: try again in 30 seconds", now)).toEqual({ kind: "rate_limit", resetAt: now + 30_000 });
     expect(bedrockFault("ValidationException: bad")).toBeUndefined();
     expect(onBedrock({ harness: "claude-code", model: "us.anthropic.claude-opus-5-5", credential: "bedrock:aws.default" })).toBe(true);
     expect(onBedrock({ harness: "pi", model: "amazon-bedrock/us.anthropic.claude-opus-5-5" })).toBe(true);
@@ -271,8 +345,18 @@ describe("fallback on Bedrock", () => {
     const { s, handoffs } = fake("claude-code", "us.anthropic.claude-opus-5-5", "bedrock:work");
     await s.setChain(["claude-code:us.anthropic.claude-opus-5-5#bedrock:work", "claude-code:opus"]);
     expect(await s.turnError("API Error: 400 Your request exceeds the service quota for your account.", 400, { kind: "rate_limit" })).toBe(true);
-    expect(config().exhausted["claude-code:us.anthropic.claude-opus-5-5#bedrock:work"]).toBeGreaterThan(Date.now());
+    expect(config().exhausted["bedrock:us.anthropic.claude-opus-5-5#bedrock:work"]).toBeGreaterThan(Date.now());
     expect(handoffs).toEqual([{ harness: "claude-code", model: "opus" }]);
+    s.close();
+  });
+
+  test("off Bedrock, the same words change nothing: a 429 with Claude's rate_limit hint still backs off", async () => {
+    const { s, handoffs } = fake("claude-code", "opus");
+    await s.setChain(["claude-code:opus", "claude-code:sonnet"]);
+    expect(await s.turnError("ServiceQuotaExceededException: Your request exceeds the service quota for your account.", 429, { kind: "rate_limit" })).toBe(true);
+    expect(config().exhausted).toEqual({});
+    expect(s.t.state.waitingReason).toContain("Rate limited");
+    expect(handoffs).toEqual([]);
     s.close();
   });
 });

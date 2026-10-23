@@ -69,14 +69,14 @@ export function agyQuota(text: string | undefined, now = Date.now()): Classified
  * confirm it, and retrying won't help), ThrottlingException / "Too many requests|tokens, please
  * wait before trying again" is a rate limit (back off on the same model).
  */
-export function bedrockFault(text: string | undefined): Classified | undefined {
+export function bedrockFault(text: string | undefined, now = Date.now()): Classified | undefined {
   const s = text ?? "";
   if (/ServiceQuotaExceeded|service quota|quota (?:exceeded|limit)|too many (?:tokens|requests) per day/i.test(s)) {
     // A per-day quota resets at midnight UTC; others after the default cooldown, unless the text says.
-    const midnight = /per day/i.test(s) ? new Date().setUTCHours(24, 0, 0, 0) : undefined;
-    return { kind: "quota", definite: true, resetAt: parseReset(s) ?? midnight };
+    const midnight = /per day/i.test(s) ? new Date(now).setUTCHours(24, 0, 0, 0) : undefined;
+    return { kind: "quota", definite: true, resetAt: parseReset(s, now) ?? midnight };
   }
-  if (/ThrottlingException|too many (?:requests|tokens), please wait|ServiceUnavailableException|ModelNotReadyException|Rate exceeded/i.test(s)) return { kind: "rate_limit", resetAt: parseReset(s) };
+  if (/ThrottlingException|too many (?:requests|tokens), please wait|ServiceUnavailableException|ModelNotReadyException|Rate exceeded/i.test(s)) return { kind: "rate_limit", resetAt: parseReset(s, now) };
   return undefined;
 }
 
@@ -113,6 +113,9 @@ export function parseReset(s: string, now = Date.now()): number | undefined {
  */
 export function providerOf(model: string, harness: string, credential?: string): string {
   const cred = credential ? `#${credential}` : "";
+  // On a Bedrock credential the quota is the model's on that account, whichever harness runs it:
+  // Claude Code's "us.anthropic.…" and pi's "amazon-bedrock/us.anthropic.…" share one key.
+  if (credential?.startsWith("bedrock:")) return `bedrock:${model.replace(/^amazon-bedrock\//, "")}${cred}`;
   if (harness === "codex") {
     const i = model.indexOf("/");
     const provider = i > 0 ? model.slice(0, i) : "openai";
