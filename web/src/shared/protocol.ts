@@ -253,8 +253,9 @@ export interface Msg {
   /**
    * notice: a button under it. "continueOn": move the session to a chain entry (continueOn op);
    * "mcpAuth": sign in to a registry MCP server (startMcpAuth)
+   * "signIn": the session failed on a sign-in problem: opens the Credentials page at that login
    */
-  action?: { kind: "continueOn"; label: string; entry: string } | { kind: "mcpAuth"; label: string; server: string };
+  action?: { kind: "continueOn"; label: string; entry: string } | { kind: "mcpAuth"; label: string; server: string } | { kind: "signIn"; label: string; credential: string };
 }
 
 import type { Attachment } from "./attachments";

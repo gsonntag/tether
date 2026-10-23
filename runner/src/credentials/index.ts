@@ -8,7 +8,7 @@ import { register } from "./registry";
 
 // slot bedrock: import { bedrockPlugin } from "./bedrock";
 
-// slot accounts: import { accountPlugins } from "./accounts";
+import { accountPlugins } from "./accounts";
 
 export * from "./registry";
 
@@ -24,5 +24,5 @@ export function registerCredentialPlugins() {
 
   // slot bedrock: register(bedrockPlugin);
 
-  // slot accounts: register(...accountPlugins);
+  register(...accountPlugins);
 }

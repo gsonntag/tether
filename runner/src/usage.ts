@@ -104,14 +104,24 @@ export function usageChanged() {
 const pct = (n: number | null | undefined) => (typeof n === "number" ? Math.max(0, Math.min(100, Math.round(n))) : undefined);
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) || undefined : undefined);
 
-async function claudeUsage(): Promise<ProviderUsage | undefined> {
+/**
+ * Usage for a login in its own home (an extra account, credentials/accounts.ts): Claude Code with
+ * CLAUDE_CONFIG_DIR, the Codex CLI's CODEX_HOME, pi's agent dir. Always fetched fresh.
+ */
+export async function usageAt(kind: "claude" | "codex" | "pi", dir: string, env: Record<string, string | undefined> = process.env): Promise<ProviderUsage | undefined> {
+  if (kind === "claude") return claudeUsage({ ...env, CLAUDE_CONFIG_DIR: dir });
+  const auth = kind === "pi" ? piAuth(dir) : codexCliAuth(dir);
+  return auth ? codexUsage(auth) : undefined;
+}
+
+async function claudeUsage(env?: Record<string, string | undefined>): Promise<ProviderUsage | undefined> {
   async function* idle(): AsyncGenerator<never> {
     await new Promise(() => {});
   }
   // A throwaway Claude Code process that never gets a prompt: it only answers the usage request.
   const q = query({
     prompt: idle(),
-    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [] } as any,
+    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [], ...(env ? { env } : {}) } as any,
   });
   try {
     const u: any = await Promise.race([
@@ -139,17 +149,17 @@ async function claudeUsage(): Promise<ProviderUsage | undefined> {
 
 type CodexAuth = { access: string; accountId?: string; expires?: number };
 
-function piAuth(): CodexAuth | undefined {
+function piAuth(dir = join(userHome(), ".pi", "agent")): CodexAuth | undefined {
   try {
-    const pi = JSON.parse(readFileSync(join(userHome(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
+    const pi = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"))["openai-codex"];
     if (pi?.access) return pi;
   } catch {}
   return undefined;
 }
 
-function codexCliAuth(): CodexAuth | undefined {
+function codexCliAuth(home = process.env.CODEX_HOME ?? join(userHome(), ".codex")): CodexAuth | undefined {
   try {
-    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(userHome(), ".codex"), "auth.json"), "utf8")).tokens;
+    const t = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")).tokens;
     if (t?.access_token) return { access: t.access_token, accountId: t.account_id };
   } catch {}
   return undefined;

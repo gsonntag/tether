@@ -49,8 +49,16 @@ only a person can verify. Never use the prod runner for limit/credential experim
 - [ ] Throttling backs off; quota error moves down the chain
 
 ### Credentials page, accounts, sign-in
-- [ ] Every login on the runner listed with account, plan, state, usage
-- [ ] Sign in to Claude Code from the phone (OAuth URL + paste code); Codex device code
-- [ ] Second account for the same provider; usage shown per account; limit on one moves to the other
-- [ ] Sign out; expired login shows "Sign in" inline and in the inbox
-- [ ] The machine's own CLI logins still work after all of this
+Groups Claude, ChatGPT, Kiro, Antigravity (`runner/src/credentials/accounts.ts`). Machine logins are
+`claude:machine`, `chatgpt:codex`, `chatgpt:pi`, `kiro:machine`, `antigravity:machine`; extra accounts
+live in `<config>/accounts/<provider>:<name>/{claude,codex,pi}` (mirror of the machine's config by
+symlinks, minus the login file). Do this on a test runner (`TETHER_CONFIG_DIR=<scratch>`).
+- [ ] Every login on the runner listed: "Max (you@)" style label, email/org, state, usage windows; the machine rows say "own login on this machine" and offer Sign out only
+- [ ] Claude → Add → name "work" → "Open sign-in page" opens claude.ai in a new tab (from the phone); paste the code → row turns Ready with its own email and usage; `ls <config>/accounts/claude:work/claude` shows symlinks plus its own `.credentials.json`
+- [ ] ChatGPT → Add → name → a device code and "Open page"; enter it at auth.openai.com → row Ready; "Sign in for pi too" shows the `PI_CODING_AGENT_DIR=… pi` command, `/login` there flips it
+- [ ] Cancel a half-done Add: the account's folder is gone
+- [ ] "Opus · Max (work@)" appears in the model picker / default order; a session on it answers and shows in the sidebar; reopening it resumes
+- [ ] Default order "Opus on machine" → "Opus on work": simulate the limit on the first (`/tether simulate-usage`), the session moves to work
+- [ ] Remove an extra account: folder gone, `~/.claude` untouched
+- [ ] A session with an expired/missing login: the error notice has "Sign in to Claude" (opens Credentials), the inbox row reads "Sign in to Claude · …"
+- [ ] The machine's own CLI logins still work after all of this (`claude auth status`, `codex login status`)

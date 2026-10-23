@@ -10,7 +10,7 @@ import type { CredentialList, CredentialProviderInfo, CredentialView } from "../
 
 // slot bedrock: import { bedrockSlot } from "./bedrock";
 
-// slot accounts: import { accountSlots } from "./accounts";
+import { accountSlots } from "./accounts";
 
 /** What a slot's piece calls with the runner's answer (credentialAction returns the new list). */
 export type OnList = (list: CredentialList) => void;
@@ -43,4 +43,4 @@ export const slotFor = (provider: string): CredentialSlot | undefined => slots.g
 
 // slot bedrock: registerSlot(bedrockSlot);
 
-// slot accounts: registerSlot(...accountSlots);
+registerSlot(...accountSlots);

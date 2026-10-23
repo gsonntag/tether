@@ -36,6 +36,15 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   into the folder you're browsing. GitHub repos always go over SSH (`git@github.com:org/repo.git`),
   so the runner machine's own SSH key authenticates; other git URLs are cloned as given. Clones
   that take over 110 s are stopped (do those in a terminal).
+- **Logins and extra accounts (Credentials page).** Each harness login on the runner (Claude Code,
+  Codex and pi's ChatGPT, Kiro, Antigravity) is listed with its account, plan, state and usage.
+  Sign in from any device: Claude opens its sign-in page in a new tab and takes the code back,
+  Codex shows a device code, the rest show the command to run and notice when it's done. **Add**
+  makes another account with its own home under `<config>/accounts/` (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`, pi's agent dir; settings and sessions shared with the machine's by symlinks), so a
+  default order can go "Opus · Max (me@)" → "Opus · Max (work@)" and a limit on one moves to the
+  next. The machine's own logins are never moved. Tokens stay on the runner. A session failing on
+  a sign-in problem shows **Sign in to …** and an inbox row.
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
 - **Steer and queue.** While an agent works, the send button reads **Steer**: your message goes
