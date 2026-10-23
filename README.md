@@ -36,15 +36,49 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   into the folder you're browsing. GitHub repos always go over SSH (`git@github.com:org/repo.git`),
   so the runner machine's own SSH key authenticates; other git URLs are cloned as given. Clones
   that take over 110 s are stopped (do those in a terminal).
-- **Logins and extra accounts (Credentials page).** Each harness login on the runner (Claude Code,
-  Codex and pi's ChatGPT, Kiro, Antigravity) is listed with its account, plan, state and usage.
-  Sign in from any device: Claude opens its sign-in page in a new tab and takes the code back,
-  Codex shows a device code, the rest show the command to run and notice when it's done. **Add**
-  makes another account with its own home under `<config>/accounts/` (`CLAUDE_CONFIG_DIR`,
-  `CODEX_HOME`, pi's agent dir; settings and sessions shared with the machine's by symlinks), so a
-  default order can go "Opus · Max (me@)" → "Opus · Max (work@)" and a limit on one moves to the
-  next. The machine's own logins are never moved. Tokens stay on the runner. A session failing on
-  a sign-in problem shows **Sign in to …** and an inbox row.
+- **Credentials page** (sidebar → Credentials): every login, account and API key the runner can
+  run agents on, one group per provider, each row with its account or endpoint, where it comes
+  from, its state, usage where Tether reads it, and where it's used ("Default order #2",
+  "2 sessions"). Values never leave the runner: the app sees labels and the last 4 characters at
+  most, stored values are write-only (replace, never reveal) in `<config>/credentials.json`
+  (mode 600), and the guard keeps agents off it and the account logins. A credential's models are
+  entries like any other ("GPT-6 Luna · Azure", "Opus 5.5 · Bedrock", "Opus 5.5 · Max (work@)") in
+  pickers, chains and the default order (`harness:model#<credential>`); a session on one gets only
+  that credential's variables and arguments, and its quota is tracked per credential, so a limit
+  on one account moves to the next. Removing one makes its entries skipped at once.
+  - **Logins and extra accounts.** Each harness login on the runner (Claude Code, Codex and pi's
+    ChatGPT, Kiro, Antigravity) is listed with its account, plan, state and usage. Sign in from
+    any device: Claude opens its sign-in page in a new tab and takes the code back, Codex shows a
+    device code, the rest show the command to run and notice when it's done. **Add** makes another
+    account with its own home under `<config>/accounts/<id>/` (`claude` as `CLAUDE_CONFIG_DIR`,
+    `codex` as `CODEX_HOME`, `pi` as pi's agent dir; settings and sessions shared with the
+    machine's by symlinks, pi's sessions kept in the machine's sessions dir), so a default order can
+    go "Opus · Max (me@)" → "Opus · Max (work@)". The machine's own logins are never moved, and are
+    signed out only by the command shown, run on the runner. A session failing on a sign-in problem
+    shows **Sign in to …** and an inbox row.
+  - **Microsoft Foundry (Azure OpenAI)** for GPT models in Codex and pi. An Azure
+    `[model_providers.*]` in `~/.codex/config.toml` and the Codex profiles on it
+    (`~/.codex/<name>.config.toml`) show up as models ("GPT-6.1 Sol · Azure"); a session on one gets
+    that profile as `-c` overrides (app-server has no `-p`); only a profile's top-level scalar
+    settings (`model_reasoning_effort`…) carry over, not tables. Two profiles on one deployment with
+    other settings are two entries ("GPT-6 Luna (azure-luna-low)"). Or add an endpoint + key in
+    Tether, then models by deployment name (tested first; the resource's model list is offered).
+    The key comes from Tether's store, else the runner's env, else your login shell (`bash -lic`,
+    only that variable, cached; "Store in Tether" keeps it); a stored key only ever goes to the host
+    it was stored for, under the provider's own `env_key`. pi also gets `AZURE_OPENAI_BASE_URL`,
+    and a small extension (loaded only for these sessions) makes the key pi's runtime key, so it
+    wins over an `azure` key pi keeps in its own auth.json (which stays untouched). Azure 429s back
+    off; Tether can't read Azure usage, so these entries never switch on their own (the error
+    offers "Continue on …").
+  - **AWS Bedrock**: Claude Code (native Bedrock) and pi (`amazon-bedrock`) on a Bedrock API key or
+    an access key stored in Tether, or an AWS profile from `~/.aws` (read through the AWS CLI, its
+    secrets never copied; an expired `aws login` gets "Sign in again", which relays
+    `aws login --remote`: open the page, paste the code back). Add models per credential from the
+    region's list or by id, each tested with one tiny call. Only that credential's AWS variables
+    reach the process (endpoint, role and config-file overrides are blanked). Claude Code's
+    background model is a Haiku on the same credential (one you added, else the region's from List
+    models), otherwise Claude Code's own Bedrock default. pi and Claude Code on the same credential
+    and model share one quota. Codex and opencode aren't wired up.
 - **A harness-neutral transcript** covers markdown, thinking, tool cards with diffs and shell
   output, todo lists, and permission prompts or questions answered from any device.
 - **Steer and queue.** While an agent works, the send button reads **Steer**: your message goes
@@ -119,20 +153,6 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Expansion reads a repo skill's SKILL.md only if it (symlinks resolved) stays inside the repo,
     up to 256 KB, never a binary file; other files are listed, not read. Skills the master
     context disabled are never offered or expanded.
-- **Microsoft Foundry (Azure OpenAI) keys** for GPT models in Codex and pi (Credentials page).
-  An Azure `[model_providers.*]` in `~/.codex/config.toml` and the Codex profiles on it
-  (`~/.codex/<name>.config.toml`) show up as models ("GPT-6.1 Sol · Azure"); a session on one gets
-  that profile as `-c` overrides (app-server has no `-p`); only a profile's top-level scalar
-  settings (strings, numbers, booleans: `model_reasoning_effort`…) carry over, not tables. Two
-  profiles on one deployment with other settings are two entries ("GPT-6 Luna (azure-luna-low)").
-  Or add an endpoint + key in Tether, then
-  models by deployment name (tested first; the resource's model list is offered). The key comes
-  from Tether's store, else the runner's env, else your login shell (`bash -lic`, only that
-  variable, cached; "Store in Tether" keeps it). A stored key only ever goes to the host it was
-  stored for. Only the session's own key goes into its process; pi also gets
-  `AZURE_OPENAI_BASE_URL`, and a small extension makes the key pi's runtime key, so it wins over
-  an `azure` key pi keeps in its own auth.json (which stays untouched). Azure 429s back off; Tether can't read Azure usage, so
-  these entries never switch on their own (the error offers "Continue on …").
 - **Fallback chains for usage limits.** A chain is an ordered list of `harness:model`
   entries, e.g. `claude-code:opus → codex:gpt-6-sol → pi:openai-codex/gpt-6-luna`. You keep one
   **default order** (Settings → New sessions; until it's saved, Home shows a "Set your default
@@ -162,16 +182,6 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   background tasks stopped where the harness allows it (Claude Code tasks, Codex subagents); the
   new agent is told about both and to check the working tree first.
   The UI follows the link automatically.
-- **AWS Bedrock** (Credentials page): Claude Code (native Bedrock) and pi (`amazon-bedrock`) on a
-  Bedrock API key or an access key stored in Tether (write-only), or an AWS profile from `~/.aws`
-  (read through the AWS CLI, its secrets never copied; an expired `aws login` gets "Sign in again",
-  which relays `aws login --remote`). Add models per credential from the region's list or by id,
-  each tested with one tiny call; they read "Opus 5.5 · Bedrock" in pickers, chains and the default
-  order. Only that credential's AWS variables reach the process (endpoint, role and config-file
-  overrides are blanked). Claude Code's background model is a Haiku on the same credential (one
-  you added, else the region's from List models), otherwise Claude Code's own Bedrock default.
-  Pi and Claude Code on the same credential and model share one quota. Codex and opencode aren't
-  wired up.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.
   - A watchdog warns when a running session has been silent for 15 minutes with nothing

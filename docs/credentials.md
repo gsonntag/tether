@@ -1,6 +1,6 @@
 # Credentials: how to add a provider
 
-Stage 0 of `.claude/credentials/SPEC.md` (branch `cred-foundation`). The seams every provider
+Stage 0 of `.claude/credentials/SPEC.md` (branch `cred-foundation`, integrated with the providers on `credentials`). The seams every provider
 branch (Foundry, Bedrock, accounts) builds on.
 
 ## Model
@@ -77,20 +77,37 @@ Feature branches built on 49e7e1c adapt to these:
   break them. Slot files can keep `import type { CredentialSlot } from "./index"`. The session usage pill
   shows nothing for a session on a credential (`UsagePill credential`).
 
-## Adding a provider (a feature branch touches only these)
+## The providers (integrated on `credentials`)
 
-1. `runner/src/credentials/<branch>.ts` exporting a `CredentialPlugin`: `provider`, `label`,
+- `foundry.ts` (`azure:<resource>`): Codex profiles on an Azure `[model_providers.*]` plus Tether-stored
+  keys; declares the Codex provider's `env_key` with `envNames`; `suggest` answers `suggestions`; pi
+  sessions get `-e runner/hooks/pi-azure-key.ts` (argsFor, only for these credentials).
+- `bedrock.ts` (`bedrock:<name>`, `bedrock:aws.<profile>`): `listModels` answers `models` (`label`
+  "name · kind") or the reason in `message`; "Sign in again" answers `url` + `next` (`signInCode`).
+- `accounts.ts` (`claude:*`, `chatgpt:*`, `kiro:machine`, `antigravity:machine`): `homeFor` per
+  harness folder (`claude`, `codex`, `pi`); a sign-in step answers `url`/`code`/`message`, the code to
+  paste as `next` (`signInCode`), and `id` while the flow goes on (the page asks `signInStatus` again).
+  pi on an extra account keeps its sessions in the machine's dir (`PI_CODING_AGENT_SESSION_DIR`), where
+  the pi adapter lists and resumes them; only its login is the account's. `usageAtHome(harness, home,
+  env)` is the one usage reader for account homes.
+- Web: `credentials/ActionAnswer.tsx` shows any action result (message, link, code, `next` prompt); the
+  generic row uses it for actions without a slot of their own, and the slots reuse it.
+
+## Adding a provider
+
+1. `runner/src/credentials/<name>.ts` exporting a `CredentialPlugin`: `provider`, `label`,
    `discover()` (stored ones via `store.views(provider)` plus what it finds in shell/env/CLI; set
    `models` per harness and per-row `actions`), `envFor` (only this credential's variables), and
-   optionally `argsFor`, `test`, `action` (also called with the bare provider id for provider-level
-   actions such as `"add"`), `models`, `usage`, `remove`. Secrets go through `store.put` / `get` /
-   `update` / `remove` (`get` is runner-only). Per-account homes go under `store.accountsDir()`.
-2. `runner/src/credentials/index.ts`: replace your two `// slot <branch>:` comment lines (import,
-   register) with the code they show. Keep the blank lines between slots so branches merge cleanly.
-3. `web/src/credentials/<branch>.tsx` exporting a `CredentialSlot`: `provider`, optional `Add` form,
+   optionally `argsFor`, `envNames`, `homeFor`, `test`, `action` (also called with the bare provider id
+   for provider-level actions such as `"add"`; answers a `CredentialActionResult`), `models`, `usage`,
+   `remove`. Secrets go through `store.put` / `get` / `update` / `remove` (`get` is runner-only).
+   Per-account homes go under `store.accountsDir()/<id>/<harness folder>/`.
+2. `runner/src/credentials/index.ts`: an import and a `register(...)` line, each apart from the others.
+3. `web/src/credentials/<name>.tsx` exporting a `CredentialSlot`: `provider`, optional `Add` form,
    `Row` (extra content under a row), `actionLabels`, `ownActions`. Forms call
-   `rpc("credentialAction", { id, action, args })` and hand the returned `list` to `onList`.
-4. `web/src/credentials/index.ts`: replace your two `// slot <branch>:` lines the same way.
+   `rpc("credentialAction", { id, action, args })` (or `credentialAct` in `ActionAnswer.tsx`) and hand
+   the returned `list` to `onList`.
+4. `web/src/credentials/index.ts`: an import and a `registerSlot(...)` line the same way.
 5. Tests next to the plugin; `runner/src/credentials/credentials.test.ts` has the stub-session
    pattern that checks a credential's env and args reaching a spawned process.
 

@@ -35,44 +35,48 @@ only a person can verify. Never use the prod runner for limit/credential experim
 - [ ] Editing the default changes new sessions only
 - [ ] Old profile-based sessions still run
 
-### Microsoft Foundry (branch `foundry`)
-Checked 2026-10-23 on an isolated test runner (`foundry-test`, key only in ~/.bashrc, runner env
-without it; screenshots in `.claude/credentials/shots-foundry/`):
+### Credentials (branch `credentials`: foundation, accounts, Foundry, Bedrock)
+Do all of this on a test runner (`TETHER_CONFIG_DIR=<scratch>`, its own server and vite), never the prod
+runner. Integration smoke 2026-10-23 (runner `integ-test`, empty config dir; screenshots in
+`.claude/credentials/shots-integration/`): the page lists the Foundry resource (key from ~/.bashrc, its
+three Codex profiles as models), the Bedrock `default` profile (expired `aws login`), the machine's
+Claude, Codex and pi logins; a Codex session on `gpt-6-luna#azure:…` answered (rollout
+`model_provider = "azure"`), a Claude Code session on `claude:machine` answered, a session with no
+credential answered as before; Bedrock "Sign in again" shows the AWS page link and the code prompt.
+Earlier branch checks: `.claude/credentials/shots-foundry/`, `shots-bedrock/`.
+
+Page and logins. Groups Claude, ChatGPT, Kiro, Antigravity (`runner/src/credentials/accounts.ts`).
+Machine logins are `claude:machine`, `chatgpt:codex`, `chatgpt:pi`, `kiro:machine`,
+`antigravity:machine`; extra accounts live in `<config>/accounts/<provider>:<name>/{claude,codex,pi}`
+(mirror of the machine's config by symlinks, minus the login file).
+- [x] Every login on the runner listed: "Max (you@)" style label, email/org, state, usage windows; the machine rows say "own login on this machine"
+- [ ] A machine row's Sign out only shows the CLI command to run on the runner (nothing is signed out from the browser) and notices when it was run
+- [ ] Claude → Add → name "work" → "Open page" opens claude.ai in a new tab (from the phone); paste the code → row turns Ready with its own email and usage; `ls <config>/accounts/claude:work/claude` shows symlinks plus its own `.credentials.json`
+- [ ] ChatGPT → Add → name → a device code and "Open page"; enter it at auth.openai.com → row Ready; "Sign in for pi too" shows the `PI_CODING_AGENT_DIR=… pi` command, `/login` there flips it
+- [ ] Cancel a half-done Add: the account's folder is gone
+- [ ] "Opus · Max (work@)" appears in the model picker / default order; a session on it answers and shows in the sidebar; reopening it resumes; a pi session on an extra ChatGPT account lists in the sidebar (its sessions stay in ~/.pi/agent/sessions)
+- [ ] Default order "Opus on machine" → "Opus on work": simulate the limit on the first (`/tether simulate-usage`), the session moves to work
+- [ ] Remove an extra account: folder gone, `~/.claude` untouched; its default-order entries are skipped
+- [ ] A session with an expired/missing login: the error notice has "Sign in to Claude" (opens Credentials), the inbox row reads "Sign in to Claude · …"
+- [ ] The machine's own CLI logins still work after all of this (`claude auth status`, `codex login status`)
+
+Microsoft Foundry.
 - [x] azure-luna / azure-sol / azure-astra Codex profiles appear as models ("GPT-6.1 Sol · Azure"); a session on each answers (rollouts: `model_provider = "azure"`, effort high from the profile)
 - [x] Key found from ~/.bashrc (row says "From ~/.bashrc"); Test: "All 3 models answer."; "Store in Tether" works; only the last 4 characters show
 - [x] pi on `azure/gpt-6-luna` with the same key answers (base URL injected; the runner has none)
 - [x] Stored key with no Codex config (empty CODEX_HOME): Test, Add model `gpt-6-luna` (tested first; a bogus name is refused), a Codex session answers through Tether's own `-c` provider (`tether-azure`); Remove
-Still to check by hand:
 - [ ] On the phone: Add (endpoint + key + name) for another resource; Add model with a suggestion; Replace key
 - [ ] Foundry models in the default order editor and the chain editor; a default order starting on one
 - [ ] Fallback from ChatGPT login to Foundry when the ChatGPT limit hits ("Continue on …" from Foundry back)
 - [ ] An Azure 429 in a real session backs off and retries on the same model
 
-### AWS Bedrock (branch `bedrock`)
-Checked 2026-10-23 on a test runner (screenshots in `.claude/credentials/shots-bedrock/`): the
-machine's `[default]` profile lists with account (root), region and "expired" state; Test and List
-models report the expired `aws login`; "Sign in again" relays `aws login --remote` up to the URL;
-the Add form for both key kinds. Not checked: anything that needs a live AWS session.
+AWS Bedrock.
 - [x] `aws login` profile shows on Credentials with account, region, state and expiry; root warning
+- [x] "Sign in again" relays `aws login --remote` up to the URL and the code prompt
+- [ ] "Sign in again" end to end: open the URL, paste the code, row turns Ready
 - [ ] Bedrock API key added from the Credentials page (last 4 shown, never the key); Test
 - [ ] Access key id + secret added; Test
-- [ ] "Sign in again" end to end: open the URL, paste the code, row turns Ready
 - [ ] List models shows the region's inference profiles; "Test and add" adds one; "Type an id" works
 - [ ] Claude Code on `us.anthropic.claude-opus-…` · Bedrock answers; pi on `amazon-bedrock/…` answers
 - [ ] The process only has that credential's AWS variables (names only: `env | cut -d= -f1 | grep AWS` in a Bash tool call)
 - [ ] `/tether simulate-limit rate` on a Bedrock entry backs off; `quota` moves down the chain
-
-### Credentials page, accounts, sign-in
-Groups Claude, ChatGPT, Kiro, Antigravity (`runner/src/credentials/accounts.ts`). Machine logins are
-`claude:machine`, `chatgpt:codex`, `chatgpt:pi`, `kiro:machine`, `antigravity:machine`; extra accounts
-live in `<config>/accounts/<provider>:<name>/{claude,codex,pi}` (mirror of the machine's config by
-symlinks, minus the login file). Do this on a test runner (`TETHER_CONFIG_DIR=<scratch>`).
-- [ ] Every login on the runner listed: "Max (you@)" style label, email/org, state, usage windows; the machine rows say "own login on this machine"; their Sign out only shows the CLI command to run on the runner (nothing is signed out from the browser) and notices when it was run
-- [ ] Claude → Add → name "work" → "Open sign-in page" opens claude.ai in a new tab (from the phone); paste the code → row turns Ready with its own email and usage; `ls <config>/accounts/claude:work/claude` shows symlinks plus its own `.credentials.json`
-- [ ] ChatGPT → Add → name → a device code and "Open page"; enter it at auth.openai.com → row Ready; "Sign in for pi too" shows the `PI_CODING_AGENT_DIR=… pi` command, `/login` there flips it
-- [ ] Cancel a half-done Add: the account's folder is gone
-- [ ] "Opus · Max (work@)" appears in the model picker / default order; a session on it answers and shows in the sidebar; reopening it resumes
-- [ ] Default order "Opus on machine" → "Opus on work": simulate the limit on the first (`/tether simulate-usage`), the session moves to work
-- [ ] Remove an extra account: folder gone, `~/.claude` untouched
-- [ ] A session with an expired/missing login: the error notice has "Sign in to Claude" (opens Credentials), the inbox row reads "Sign in to Claude · …"
-- [ ] The machine's own CLI logins still work after all of this (`claude auth status`, `codex login status`)
