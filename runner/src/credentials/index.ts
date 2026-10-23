@@ -4,7 +4,7 @@
 
 import { examplePlugin } from "./example";
 import { register } from "./registry";
-// slot foundry: import { foundryPlugin } from "./foundry";
+import { foundryPlugin } from "./foundry";
 
 // slot bedrock: import { bedrockPlugin } from "./bedrock";
 
@@ -20,7 +20,7 @@ export function registerCredentialPlugins() {
   done = true;
   // Local UI work only: a stand-in provider for the Credentials page.
   if (process.env.TETHER_EXAMPLE_CREDENTIALS === "1") register(examplePlugin);
-  // slot foundry: register(foundryPlugin);
+  register(foundryPlugin);
 
   // slot bedrock: register(bedrockPlugin);
 

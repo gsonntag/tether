@@ -6,7 +6,7 @@
 
 import type { ComponentType } from "react";
 import type { CredentialList, CredentialProviderInfo, CredentialView } from "../shared/credentials";
-// slot foundry: import { foundrySlot } from "./foundry";
+import { foundrySlot } from "./foundry";
 
 // slot bedrock: import { bedrockSlot } from "./bedrock";
 
@@ -39,7 +39,7 @@ export const clearSlots = () => slots.clear();
 
 export const slotFor = (provider: string): CredentialSlot | undefined => slots.get(provider);
 
-// slot foundry: registerSlot(foundrySlot);
+registerSlot(foundrySlot);
 
 // slot bedrock: registerSlot(bedrockSlot);
 

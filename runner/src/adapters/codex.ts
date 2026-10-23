@@ -778,6 +778,8 @@ export class CodexSession extends LiveSession {
   }
 
   private classifyError(e: any): { status?: number; hint?: Classified } {
+    // On a credential (an Azure key…) a usageLimitExceeded isn't the ChatGPT plan's limit.
+    if (this.t.state.credential) return classifyCodexError(e, "credential/model", () => undefined);
     return classifyCodexError(e, this.model ?? this.t.state.model, () => this.quotaReset());
   }
 
