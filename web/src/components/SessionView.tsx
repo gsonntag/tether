@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import {
@@ -40,6 +40,8 @@ import { ActivityButton, ActivityPanel, ActivityStrip } from "./Activity";
 import { ChangesButton, ChangesDialog, turnChangeMarkers } from "./Changes";
 import { FilePanel, FileSheet, takeScrollAnchor, useFileTarget } from "./FilePanel";
 import { FileRefScope, refreshFileChecks } from "./FileRefs";
+import { FindBar, modalOpen, type FindBarHandle } from "./FindBar";
+import { findMatches, latestUnmounted, MIN_TERM } from "../find";
 import { GoalLine } from "./GoalLine";
 import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
@@ -89,9 +91,74 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   // can't (STARTS_ON_OPEN) start the process for it.
   const knownLive = useStore((s) => (s.open[sessionId]?.session ?? Object.values(s.sessions).flat().find((x) => x.id === sessionId) ?? s.recent?.find((x) => x.id === sessionId))?.live);
   const scroller = useRef<HTMLDivElement>(null);
+  // Following the end of the conversation. SessionView alone decides this: `stick` turns off only
+  // when a scroll lands above the last position we set or saw (the reader went up), and on again
+  // when one lands at the bottom. Our own downward writes never turn it off.
   const stick = useRef(true);
+  const lastTop = useRef(0);
+  const atBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 2;
+  /** Moves the scroller and keeps the follow state in step with where it landed. */
+  const scrollTo = (top: number) => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = top;
+    lastTop.current = el.scrollTop;
+    stick.current = atBottom(el);
+  };
+  const toBottom = () => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
+  };
   const narrow = useNarrow();
   const sidebarHidden = useStore((s) => s.sidebarHidden);
+
+  // Find in this session (Cmd/Ctrl+F): the bar is open while `find` is a string. The conversation
+  // (not the page) says how many matches there are. The transcript mounts back to one more matching
+  // message (`revealFrom`, the latest it hasn't got) only when the bar asks: it has nothing to show
+  // for the term, or the reader walked back past the first match on the page. A new term withdraws
+  // the wish, so the window stops growing.
+  const [find, setFind] = useState<string>();
+  const [revealFrom, setRevealFrom] = useState<number>();
+  const [revealed, setRevealed] = useState(true);
+  const findBar = useRef<FindBarHandle>(null);
+  const composerInput = useRef<ChatComposerInputHandle>(null);
+  const term = find && find.length >= MIN_TERM ? find : "";
+  const messages = o?.messages;
+  const matches = useMemo(() => (term && messages ? findMatches(messages, term) : { indices: [], total: 0 }), [term, messages]);
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
+  const startRef = useRef(0);
+  const onStart = useCallback((start: number) => void (startRef.current = start), []);
+  const earlier = useCallback(() => {
+    const at = latestUnmounted(matchesRef.current.indices, startRef.current);
+    if (at === undefined) return false;
+    setRevealFrom(at);
+    return true;
+  }, []);
+  // A new term withdraws the wish at once (not in an effect: the bar's own effects may ask again in
+  // the same commit, and that request must stand).
+  const onTerm = (t: string) => {
+    setFind(t);
+    setRevealFrom(undefined);
+  };
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "f") return;
+      if (modalOpen()) return;
+      e.preventDefault();
+      setFind((f) => f ?? "");
+      findBar.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const closeFind = () => {
+    setFind(undefined);
+    setRevealFrom(undefined);
+    composerInput.current?.focus();
+  };
 
   // Follow a handoff that happens while this session is on screen.
   const handoffTo = o?.state?.handoffTo?.sessionId;
@@ -108,12 +175,45 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return () => void (document.title = "Tether");
   }, [title]);
 
-  // Stay pinned to the bottom unless the reader scrolled up. ChatLayout follows growth of the
-  // transcript on its own; this also covers what sits after it (pending steers, prompts, the dock).
+  // Stay pinned to the bottom unless the reader scrolled up: after every render of this view…
   useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (stick.current) toBottom();
   });
+  // …and whenever the message area changes size without one (earlier rows mounting, an image
+  // decoding, a bubble from another store). ChatLayout's own hook springs toward the bottom from
+  // the position it read in its observer callback, which ran before ours; its next frames would
+  // write that stale position back, so the bottom is asserted again each frame until nothing else
+  // has moved the scroller for two frames. A reader's wheel still wins: its scroll event fires
+  // before that frame's animation callbacks and turns `stick` off first.
+  const loaded = !!o && !o.loading && !!o.session;
+  useEffect(() => {
+    const el = scroller.current;
+    const area = el?.firstElementChild;
+    if (!el || !area) return;
+    let frame = 0;
+    let settled = 0;
+    const hold = () => {
+      frame = 0;
+      if (!stick.current) return;
+      if (atBottom(el)) settled++;
+      else {
+        toBottom();
+        settled = 0;
+      }
+      if (settled < 2) frame = requestAnimationFrame(hold);
+    };
+    const ro = new ResizeObserver(() => {
+      if (!stick.current) return;
+      toBottom();
+      settled = 0;
+      if (!frame) frame = requestAnimationFrame(hold);
+    });
+    ro.observe(area);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [loaded, sessionId]);
 
   // File references in the transcript belong to this session; they're checked again when a turn ends.
   const refScope = useMemo(() => ({ sessionId }), [sessionId]);
@@ -126,7 +226,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
 
   // The file panel narrows the chat and the transcript reflows: keep what was on screen in place
   // (the clicked reference, else the line at the top), or the bottom when following the end.
-  const loaded = !!o && !o.loading && !!o.session;
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -137,12 +236,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       anchor = node && node !== el && el.contains(node) ? { node, top: node.getBoundingClientRect().top } : undefined;
     };
     let width = el.clientWidth;
+    let height = el.clientHeight;
     const ro = new ResizeObserver(() => {
+      // A shorter scroller (the keyboard, a smaller window) leaves a gap under the end unless re-pinned.
+      if (el.clientHeight !== height) {
+        height = el.clientHeight;
+        if (stick.current) toBottom();
+      }
       if (el.clientWidth === width) return;
       width = el.clientWidth;
       const a = takeScrollAnchor() ?? anchor;
-      if (stick.current) el.scrollTop = el.scrollHeight;
-      else if (a?.node.isConnected) el.scrollTop += a.node.getBoundingClientRect().top - a.top;
+      if (stick.current) toBottom();
+      else if (a?.node.isConnected) scrollTo(el.scrollTop + a.node.getBoundingClientRect().top - a.top);
       capture();
     });
     capture();
@@ -197,15 +302,33 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       {dropping && <Banner status="info" container="section" title="Drop to attach to your message" />}
       <GoalLine goal={st.goal} inset={narrow || sidebarHidden} />
       <ScheduleLine sessionId={sessionId} schedules={st.schedules} inset={narrow || sidebarHidden} />
+      {find !== undefined && (
+        <FindBar
+          ref={findBar}
+          scroller={scroller}
+          term={find}
+          onTerm={onTerm}
+          onClose={closeFind}
+          scrollTo={scrollTo}
+          total={matches.total}
+          pending={!revealed}
+          onEarlier={earlier}
+          inset={narrow || sidebarHidden}
+        />
+      )}
       <ChatLayout
         ref={scroller}
         density="spacious"
         style={{ overscrollBehavior: "contain" }}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          if (atBottom(el)) stick.current = true;
+          else if (el.scrollTop < lastTop.current - 1) stick.current = false;
+          lastTop.current = el.scrollTop;
         }}
-        composer={<Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} />}
+        composer={
+          <Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} inputRef={composerInput} />
+        }
       >
         {/* Room at the top on phones for the floating sidebar button. */}
         <VStack gap={4} paddingBlockStart={narrow ? 10 : 6} paddingBlockEnd={2}>
@@ -218,6 +341,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               running={st.status === "running"}
               amendable={st.amendable}
               after={withReviews(turnChangeMarkers(sessionId, o.messages, st), sessionId, o.messages, st.reviews)}
+              revealFrom={revealFrom}
+              onRevealed={setRevealed}
+              onStart={onStart}
             />
           </FileRefScope>
           <PendingSteers sessionId={sessionId} state={st} />
@@ -559,14 +685,30 @@ function SlashItem({ c, highlighted, narrow, onPick }: { c: SlashCommand; highli
   );
 }
 
-function Composer({ sessionId, state, messages, harness, live, opening }: { sessionId: string; state: LiveState; messages: Msg[]; harness: HarnessId; live: boolean; opening: boolean }) {
+function Composer({
+  sessionId,
+  state,
+  messages,
+  harness,
+  live,
+  opening,
+  inputRef: input,
+}: {
+  sessionId: string;
+  state: LiveState;
+  messages: Msg[];
+  harness: HarnessId;
+  live: boolean;
+  opening: boolean;
+  /** the message box, so the session view can put focus back in it */
+  inputRef: RefObject<ChatComposerInputHandle | null>;
+}) {
   /** a message went to a session whose process had stopped: it starts again first */
   const [waking, setWaking] = useState(false);
   const [text, setText] = useState(() => localStorage.getItem(`tether.draft.${sessionId}`) ?? "");
   const [cmds, setCmds] = useState<SlashCommand[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
-  const input = useRef<ChatComposerInputHandle>(null);
   const historyPosition = useRef<number | null>(null);
   const historySnapshot = useRef<string[]>([]);
   const historyDraft = useRef("");

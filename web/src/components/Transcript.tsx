@@ -96,12 +96,21 @@ export const Transcript = memo(function Transcript({
   running,
   amendable,
   after,
+  revealFrom,
+  onRevealed,
+  onStart,
 }: {
   messages: Msg[];
   running: boolean;
   amendable?: string[];
   /** extra rows after a message, by message id (e.g. the end of a turn that changed files) */
   after?: Map<string, ReactNode>;
+  /** mount the messages from this index on (the find bar's next earlier match); lowering it stops the growth */
+  revealFrom?: number;
+  /** told whether the messages from `revealFrom` on are all mounted, whenever that changes */
+  onRevealed?: (revealed: boolean) => void;
+  /** told the index of the first mounted message whenever it changes */
+  onStart?: (start: number) => void;
 }) {
   const timed = useMemo(() => timedMessages(messages), [messages]);
   // A long conversation renders its end first, then earlier messages a few at a time between
@@ -114,25 +123,32 @@ export const Transcript = memo(function Transcript({
     const len = messages.length;
     setWin((w) => (w.len === len ? w : { ...w, count: w.len && len > w.len && len - w.len <= LIVE_ADDS ? w.count + len - w.len : w.count, len }));
   }
-  const { count, target } = win;
+  const { count } = win;
+  // The find bar's wish is not part of the window's own target: a new term withdraws it.
+  const target = Math.max(win.target, revealFrom === undefined ? 0 : messages.length - revealFrom);
   const start = Math.max(0, messages.length - count);
   const sentinel = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   // The row on screen before a step, and where it was: the step moves the view back by however far
   // it went (nothing where the browser already anchored it, and growth at the bottom doesn't count).
-  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number }>(undefined);
+  // A reader at the bottom stays at the bottom instead: the rows that mounted are history.
+  const grew = useRef<{ el: HTMLElement | null; row: Element | null; top: number; at: number; bottom: boolean }>(undefined);
   const step = useRef(FIRST_STEP);
   const more = () => setWin((w) => ({ ...w, target: Math.max(w.target, w.count + MORE_ROWS) }));
   useLayoutEffect(() => {
     const g = grew.current;
     grew.current = undefined;
     if (!g) return;
-    if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
+    if (g.el && g.bottom) g.el.scrollTop = g.el.scrollHeight;
+    else if (g.el && g.row?.isConnected) g.el.scrollTop += g.row.getBoundingClientRect().top - g.top;
     // Size the next step to what this one cost.
     const took = performance.now() - g.at;
     step.current = Math.min(MAX_STEP, Math.max(1, Math.round((step.current * FRAME_MS) / Math.max(took, 1))));
   }, [count]);
   const pending = start > 0 && count < target;
+  const revealed = revealFrom === undefined || start <= revealFrom;
+  useEffect(() => onRevealed?.(revealed), [revealed, onRevealed]);
+  useEffect(() => onStart?.(start), [start, onStart]);
   useEffect(() => {
     if (!pending) return;
     // After the frame paints, so input and scrolling get their turn between steps.
@@ -141,8 +157,9 @@ export const Transcript = memo(function Transcript({
       timer = setTimeout(() => {
         const el = scrollParent(sentinel.current);
         const row = list.current?.querySelector(".astryx-chat-message") ?? null;
-        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now() };
-        setWin((w) => ({ ...w, count: Math.min(w.target, w.count + step.current) }));
+        const bottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 2;
+        grew.current = { el, row, top: row?.getBoundingClientRect().top ?? 0, at: performance.now(), bottom };
+        setWin((w) => ({ ...w, count: Math.min(target, w.count + step.current) }));
       });
     });
     return () => {
@@ -150,7 +167,7 @@ export const Transcript = memo(function Transcript({
       clearTimeout(timer);
       grew.current = undefined;
     };
-  }, [pending, count]);
+  }, [pending, count, target]);
   useEffect(() => {
     const node = sentinel.current;
     if (!node || !start || pending) return;
