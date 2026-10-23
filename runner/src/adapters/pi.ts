@@ -351,7 +351,10 @@ class PiSession extends LiveSession {
     if (this.isReviewSession) args.push("--exclude-tools", "edit,write");
     // pi's own goal extension stays out: Tether's /goal drives goals here (connectors/pi.ts).
     args.push(...(await piGoalFilter(this.projectPath)).args);
-    this.rpc = new PiRpc(this.projectPath, args, this.guardEnv);
+    // The session's credential (its env under the guard's, its args last).
+    const cred = await this.credentialLaunch();
+    args.push(...cred.args);
+    this.rpc = new PiRpc(this.projectPath, args, { ...cred.env, ...this.guardEnv });
     this.rpc.onRecord = (r) => this.onRecord(r);
     this.rpc.onExit = (code, stderr) => {
       if (!this.closed) {

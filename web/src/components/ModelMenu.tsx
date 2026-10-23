@@ -12,9 +12,9 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { ArrowsRightLeftIcon } from "@heroicons/react/24/outline";
-import { formatEntry, type HarnessId, type LiveState, type ModelRef } from "../shared/protocol";
+import { formatEntry, modelKey, type HarnessId, type LiveState, type ModelRef } from "../shared/protocol";
 import { act, learnModels, rpc, useStore } from "../store";
-import { modelDisplay, orderLabel } from "../models";
+import { modelDisplay, modelLabel, orderLabel } from "../models";
 import { ChainEditor } from "./ChainEditor";
 import { modelIcon, modelTooltip } from "./ModelName";
 
@@ -107,18 +107,20 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
 
   const chain = state.chain ?? [];
   const cur = state.model ?? "default";
+  // The model and the credential it runs on ("gpt-6-luna#azure:east"); another credential is another process.
+  const curKey = modelKey({ id: cur, credential: state.credential });
   const setChain = (c: string[], preferEarlier = state.preferEarlier) => act("setChain", { sessionId, chain: c, preferEarlier });
   const list = (models[harness] ?? [])
-    .map((m) => ({ ...m, d: modelDisplay(m.id, harness) }))
-    .filter((m) => `${m.id} ${m.label ?? ""} ${m.d.name}`.toLowerCase().includes(filter.toLowerCase()));
+    .map((m) => ({ ...m, key: modelKey(m), d: modelDisplay(m.id, harness), name: modelLabel(m, harness) }))
+    .filter((m) => `${m.id} ${m.label ?? ""} ${m.name}`.toLowerCase().includes(filter.toLowerCase()));
   const curD = modelDisplay(cur, harness);
-  const label = curD.name;
+  const label = modelLabel({ id: cur, credential: state.credential }, harness);
 
   const content = (
     <VStack gap={3}>
       <VStack gap={1.5}>
         <MenuTitle>Fallback order for this session</MenuTitle>
-        <ChainEditor chain={chain} onChange={(c) => setChain(c)} sessionId={sessionId} fallback={harness} current={formatEntry({ harness, model: cur })} />
+        <ChainEditor chain={chain} onChange={(c) => setChain(c)} sessionId={sessionId} fallback={harness} current={formatEntry({ harness, model: cur, credential: state.credential })} />
         {chain.length > 0 && (
           <CheckboxInput
             size="sm"
@@ -142,23 +144,23 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
         <VStack style={modelList}>
           {list.slice(0, 200).map((m) => (
             <Item
-              key={m.id}
+              key={m.key}
               density="compact"
               startContent={modelIcon(m.d)}
               label={
                 <Tooltip content={modelTooltip(m.d)} hasHoverIndication={false}>
-                  {m.d.name}
+                  {m.name}
                 </Tooltip>
               }
-              description={m.d.via}
+              description={(m.credential ?? "") !== (state.credential ?? "") ? "Continues in a new session" : m.d.via}
               labelLines={1}
               descriptionLines={1}
               endContent={
                 <Button
-                  label={m.id === cur ? "current" : "Use"}
+                  label={m.key === curKey ? "current" : "Use"}
                   size="sm"
-                  isDisabled={m.id === cur}
-                  onClick={() => act("setModel", { sessionId, model: m.id })}
+                  isDisabled={m.key === curKey}
+                  onClick={() => act("setModel", { sessionId, model: m.key })}
                 />
               }
             />

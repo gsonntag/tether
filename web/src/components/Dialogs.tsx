@@ -24,12 +24,14 @@ import {
   formatEntry,
   GUARD_MODES,
   HARNESSES,
+  modelKey,
   NOTIFY_KINDS,
   parseEntry,
   SIDEBAR_DAYS,
   type BackgroundModelSetting,
   type GuardMode,
   type HarnessId,
+  type ModelRef,
   type NotifyKind,
   type Ops,
   type ProjectInfo,
@@ -44,7 +46,7 @@ import { addModeOf, filterRepos, isMissing, isOldRunner, type AddMode } from "..
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
 import { useModels } from "./ModelMenu";
-import { modelDisplay, orderLabel } from "../models";
+import { modelDisplay, modelLabel, orderLabel } from "../models";
 import { modelIcon } from "./ModelName";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -120,8 +122,16 @@ const DEFAULT_CHOICE = "__default__";
 const ORDER_CHOICE = "__order__";
 const ADD_PROJECT = "+add";
 
-const choiceLabel = (c: string, harness: HarnessId) =>
-  c === ORDER_CHOICE ? "Default order" : c ? modelDisplay(c, harness).name : `${HARNESSES.find((h) => h.id === harness)?.label}'s default`;
+/** A choice is ORDER_CHOICE, "" (the harness's default) or a modelKey ("gpt-6-luna#azure:east" on a credential). */
+const choiceLabel = (c: string, harness: HarnessId) => {
+  if (c === ORDER_CHOICE) return "Default order";
+  if (!c) return `${HARNESSES.find((h) => h.id === harness)?.label}'s default`;
+  const e = parseEntry(c, harness);
+  return modelLabel({ id: e.model, credential: e.credential }, harness);
+};
+
+/** A model as a picker option: keyed with its credential, named "GPT-6 Luna · Azure". */
+const modelOption = (m: ModelRef, harness: HarnessId) => ({ value: modelKey(m), label: modelLabel(m, harness), description: m.id, icon: modelIcon(modelDisplay(m.id, harness)) });
 
 function NewSession({ close }: { close: () => void }) {
   const allProjects = useStore((s) => s.projects);
@@ -206,10 +216,7 @@ function NewSession({ close }: { close: () => void }) {
     {
       type: "section",
       title: "Models",
-      options: (models[harness] ?? []).map((m) => {
-        const d = modelDisplay(m.id, harness);
-        return { value: m.id, label: d.name, description: m.id, icon: modelIcon(d) };
-      }),
+      options: (models[harness] ?? []).map((m) => modelOption(m, harness)),
     },
   ];
 
@@ -316,14 +323,9 @@ function ForkSession({ close }: { close: () => void }) {
   const listed = models[harness] ?? [];
   const modelOptions: SelectorOptionType[] = [
     { value: DEFAULT_CHOICE, label: "Default" },
-    ...listed
-      .filter((m) => m.id !== "default")
-      .map((m) => {
-        const d = modelDisplay(m.id, harness);
-        return { value: m.id, label: d.name, description: m.id, icon: modelIcon(d) };
-      }),
+    ...listed.filter((m) => m.id !== "default").map((m) => modelOption(m, harness)),
     // The session's own model, even when the list doesn't have it (an alias).
-    ...(model && !listed.some((m) => m.id === model) ? [{ value: model, label: modelDisplay(model, harness).name, description: model }] : []),
+    ...(model && !listed.some((m) => modelKey(m) === model) ? [{ value: model, label: choiceLabel(model, harness), description: model }] : []),
   ];
   const fork = async () => {
     if (busy) return;

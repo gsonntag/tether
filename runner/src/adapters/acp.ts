@@ -124,8 +124,8 @@ export class AcpProcess {
    * `env`: a session's additions (your secrets, connectors/launch.ts processLaunch); `opencodeConfig`:
    * merged into OPENCODE_CONFIG_CONTENT (your subagents and commands), under what's already there.
    */
-  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean; env?: Record<string, string>; opencodeConfig?: Record<string, unknown> } = {}) {
-    const args = [...spec.args];
+  constructor(spec: AcpSpec, cwd: string, opts: { http?: boolean; env?: Record<string, string>; args?: string[]; opencodeConfig?: Record<string, unknown> } = {}) {
+    const args = [...spec.args, ...(opts.args ?? [])];
     let env: Record<string, string | undefined> = opts.env ? { ...agentEnv(opts.env), ...spec.env } : { ...process.env, ...spec.env };
     if (opts.opencodeConfig) env.OPENCODE_CONFIG_CONTENT = withOpencodeConfig(env.OPENCODE_CONFIG_CONTENT, opts.opencodeConfig);
     if (spec.httpPermissionReply) {
@@ -301,8 +301,10 @@ class AcpSession extends LiveSession {
   }
 
   async start() {
-    // Your secrets in its environment; opencode also gets your subagents and commands inline.
-    this.p = new AcpProcess(this.spec, this.projectPath, { http: true, ...processLaunch(this.spec.id, this.projectPath) });
+    // Your secrets in its environment, then the session's credential's; opencode also gets your subagents and commands inline.
+    const cred = await this.credentialLaunch();
+    const proc = processLaunch(this.spec.id, this.projectPath);
+    this.p = new AcpProcess(this.spec, this.projectPath, { http: true, ...proc, env: { ...proc.env, ...cred.env }, args: cred.args });
     this.p.exited.then((code) => {
       if (!this.closed) {
         this.notice(`${this.spec.id} exited (code ${code}). ${this.p.stderr.trim().split("\n").slice(-3).join("\n")}`, "error");

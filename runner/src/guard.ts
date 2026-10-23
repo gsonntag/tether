@@ -14,6 +14,8 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { attachmentsDir, isAttachmentPath } from "./attachments";
 import type { ApprovalRule } from "../../web/src/shared/protocol";
 import { config, saveConfig, saveConfigSoon } from "./config";
+import { accountsDir, credentialsFile } from "./credentials/store";
+import { secretsFile } from "./secrets";
 import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
 import { trustedServerFor, type McpTrust } from "./mcp/registry";
 import { userHome } from "./home";
@@ -102,8 +104,14 @@ const SENSITIVE = [
   /credentials(\.json)?$/i,
 ];
 
+/**
+ * Tether's credential store and per-account homes (credentials/store.ts) wherever the config dir is
+ * ($TETHER_CONFIG_DIR may move it out of ~/.config/tether), and secrets.json with them.
+ */
+const tetherSecrets = () => [credentialsFile(), accountsDir(), secretsFile()];
+
 /** Credential and secrets files (keys, tokens, .env…): the guard keeps agents off them; the file panel asks before showing one. */
-export const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p));
+export const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p)) || tetherSecrets().some((s) => inside(p, s));
 
 const ATTACHMENTS_READ_ONLY = "Blocked: files attached to messages are read-only. Copy one into the project to change it.";
 const ANOTHER_SESSION = "Blocked: that file was attached in another session.";

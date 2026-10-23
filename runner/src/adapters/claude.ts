@@ -113,6 +113,32 @@ interface EntryFlags {
   origin?: { kind?: string; name?: string; body?: string; server?: string; from?: string };
 }
 
+/**
+ * A credential's env and args (LiveSession.credentialLaunch) as query options: the SDK's `env`
+ * replaces the process environment, so it goes over what the launch already set (your secrets) or
+ * the runner's own; args become `extraArgs` ("--flag value" / "--flag=value" / "--flag").
+ */
+export function credentialOptions(cred: { env: Record<string, string>; args: string[] }, launched: Record<string, any> = {}): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (Object.keys(cred.env).length) {
+    const base = launched.env ?? Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+    out.env = { ...base, ...cred.env };
+  }
+  if (cred.args.length) {
+    const flags: Record<string, string | null> = { ...(launched.extraArgs ?? {}) };
+    for (let i = 0; i < cred.args.length; i++) {
+      const a = cred.args[i]!;
+      if (!a.startsWith("--")) continue;
+      const eq = a.indexOf("=");
+      if (eq > 0) flags[a.slice(2, eq)] = a.slice(eq + 1);
+      else if (cred.args[i + 1] !== undefined && !cred.args[i + 1]!.startsWith("--")) flags[a.slice(2)] = cred.args[++i]!;
+      else flags[a.slice(2)] = null;
+    }
+    out.extraArgs = flags;
+  }
+  return out;
+}
+
 const tag = (text: string, name: string) => text.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`))?.[1]?.trim();
 
 function notice(id: string, ts: number, source: Msg["source"], title: string, body?: string, collapsed = true): Msg {
@@ -425,6 +451,7 @@ export class ClaudeSession extends LiveSession {
     const launch = await sessionLaunch("claude-code", { projectPath: this.projectPath, session: { id: this.id, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession } });
     // Headers (OAuth tokens) stay off the command line: launched without, then set over stdin.
     const mcp = argvSafeMcp(launch.options.mcpServers ?? {});
+    const cred = credentialOptions(await this.credentialLaunch(), launch.options);
     this.q = query({
       prompt: this.input,
       options: {
@@ -438,6 +465,7 @@ export class ClaudeSession extends LiveSession {
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code" },
         ...launch.options,
+        ...cred,
         ...(mcp.full ? { mcpServers: mcp.launch } : {}),
         // A review session (/review): its edit tools are gone; Bash and the rest still go through the guard.
         ...disallowed(launch.options.disallowedTools, this.isReviewSession),

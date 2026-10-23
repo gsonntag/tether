@@ -100,7 +100,11 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
   if (!a) throw new Error(`Unknown harness ${req.harness}`);
   const cut = forkCut(from.t.messages, req.msgId);
   if (!cut) throw new Error("That message isn't in this session any more.");
-  const model = req.model && req.model !== "default" ? req.model : undefined;
+  // A model picked with its credential ("id#azure:east"); else a fork in the same harness stays on the session's.
+  const hash = req.model?.indexOf("#") ?? -1;
+  const picked = hash >= 0 ? req.model!.slice(0, hash) : req.model;
+  const credential = hash >= 0 ? req.model!.slice(hash + 1) : req.harness === from.harness ? from.t.state.credential : undefined;
+  const model = picked && picked !== "default" ? picked : undefined;
   const ask = cut.ask !== undefined && imagesOf(cut.at).length ? promptOf(cut.at, storeImages(from.id, cut.at)) : cut.ask;
   const prompt = [ask, req.prompt?.trim()].filter(Boolean).join("\n\n") || undefined;
   const reason = forkReason(cut.at);
@@ -116,6 +120,7 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
     try {
       next = await a.fork({ nativeId: from.nativeId, projectPath: from.projectPath, point }, opts, sink);
       next.t.state.guard = from.guardMode;
+      if (credential) next.t.state.credential = credential;
       await next.start();
     } catch (e: any) {
       console.error(`fork of ${from.id}: the harness's own fork failed, using a brief: ${e?.message ?? e}`);
@@ -154,6 +159,7 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
     }
     next = a.create(from.projectPath, opts, sink);
     next.t.state.guard = from.guardMode;
+    if (credential) next.t.state.credential = credential;
     try {
       await next.start();
     } finally {

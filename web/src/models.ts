@@ -181,8 +181,35 @@ export function learnAliases(harness: string, models: ModelRef[]): boolean {
   return changed;
 }
 
-/** Tests: back to knowing no aliases. */
-export const forgetAliases = () => RESOLVED.clear();
+/** Tests: back to knowing no aliases (or credential names). */
+export const forgetAliases = () => (RESOLVED.clear(), CREDENTIALS.clear());
+
+/** credential id → its short name in labels ("azure:east" → "Azure"), as model lists and the Credentials page said. */
+const CREDENTIALS = new Map<string, string>();
+
+/**
+ * Remembers credential names: from model lists (ModelRef.credentialLabel, preferred) and from the
+ * Credentials page's list (`weak`: only where nothing better is known). True when something changed.
+ */
+export function learnCredentials(list: { credential?: string; credentialLabel?: string }[], weak = false): boolean {
+  let changed = false;
+  for (const m of list) {
+    if (!m.credential || !m.credentialLabel || CREDENTIALS.get(m.credential) === m.credentialLabel) continue;
+    if (weak && CREDENTIALS.has(m.credential)) continue;
+    CREDENTIALS.set(m.credential, m.credentialLabel);
+    changed = true;
+  }
+  return changed;
+}
+
+/** A credential's short name: what it was learned as, else its id's name part ("azure:east" → "east"). */
+export const credentialName = (id: string) => CREDENTIALS.get(id) ?? id.slice(id.indexOf(":") + 1);
+
+/** "GPT-6 Luna · Azure" for a model on a credential, the plain name otherwise. */
+export function modelLabel(m: { id: string; credential?: string; credentialLabel?: string }, harness?: string): string {
+  const name = modelDisplay(m.id, harness).name;
+  return m.credential ? `${name} · ${m.credentialLabel ?? credentialName(m.credential)}` : name;
+}
 
 /**
  * Pretty name, maker and logo for a model id, e.g. "claude-opus-5-5" → Opus 5.5 (Anthropic),
@@ -268,8 +295,9 @@ function finish(id: string, name: string, provider: ModelProvider | undefined, v
 /** "claude-code:opus → codex:gpt-6-luna" → "Opus → GPT-6 Luna". */
 export function chainLabel(chain: string[], fallback: HarnessId = "claude-code"): string {
   const ds = chain.map((e) => {
-    const { harness, model } = parseEntry(e, fallback);
-    return modelDisplay(model || undefined, harness);
+    const { harness, model, credential } = parseEntry(e, fallback);
+    const d = modelDisplay(model || undefined, harness);
+    return credential ? { ...d, name: `${d.name} · ${credentialName(credential)}` } : d;
   });
   // The same model through two routes ("openai-codex/gpt-6-luna", "azure/gpt-6-luna") names its route.
   const twice = (name: string) => ds.filter((d) => d.name === name).length > 1;
@@ -283,8 +311,9 @@ export function chainLabel(chain: string[], fallback: HarnessId = "claude-code")
  */
 export function orderLabel(order: string[]): string {
   const es = order.map((e) => {
-    const { harness, model } = parseEntry(e, "claude-code");
-    return { harness, d: modelDisplay(model || undefined, harness) };
+    const { harness, model, credential } = parseEntry(e, "claude-code");
+    const d = modelDisplay(model || undefined, harness);
+    return { harness, d: credential ? { ...d, name: `${d.name} · ${credentialName(credential)}` } : d };
   });
   const twice = (x: (typeof es)[number]) => es.filter((y) => y.harness === x.harness && y.d.name === x.d.name).length > 1;
   return es.map((x) => `${x.d.name} (${[HARNESS_LABELS[x.harness] ?? x.harness, twice(x) ? x.d.via : undefined].filter(Boolean).join(", ")})`).join(" → ");

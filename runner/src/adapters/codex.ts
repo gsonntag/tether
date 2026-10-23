@@ -95,8 +95,8 @@ export class CodexProcess {
   onRequest?: (method: string, params: any) => Promise<unknown>;
 
   /** `env`: a session's process gets your secrets (secrets.ts agentEnv); background calls run with the runner's own */
-  constructor(cwd: string, env: Record<string, string | undefined> = process.env) {
-    const proc = Bun.spawn([CODEX_BIN, "app-server"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
+  constructor(cwd: string, env: Record<string, string | undefined> = process.env, args: string[] = []) {
+    const proc = Bun.spawn([CODEX_BIN, "app-server", ...args], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
     this.proc = proc;
     (async () => {
       const dec = new TextDecoder();
@@ -494,7 +494,9 @@ export class CodexSession extends LiveSession {
   }
 
   async start() {
-    this.p = new CodexProcess(this.projectPath, agentEnv());
+    // The session's credential: its env over your secrets, its args ("-c" overrides) after app-server.
+    const cred = await this.credentialLaunch();
+    this.p = new CodexProcess(this.projectPath, agentEnv(cred.env), cred.args);
     this.p.onNotify = (m, params) => this.onNotify(m, params);
     this.p.onRequest = (m, params) => this.onRequest(m, params);
     this.p.exited.then((code) => {

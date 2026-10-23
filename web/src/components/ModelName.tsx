@@ -4,7 +4,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { CubeTransparentIcon } from "@heroicons/react/24/outline";
-import { modelDisplay, PROVIDERS, type ModelDisplay, type ModelProvider } from "../models";
+import { credentialName, modelDisplay, PROVIDERS, type ModelDisplay, type ModelProvider } from "../models";
 import { useStore } from "../store";
 
 type IconSize = ComponentProps<typeof Icon>["size"];
@@ -41,16 +41,21 @@ export function modelTooltip(d: ModelDisplay) {
   return [d.providerLabel, d.via && `via ${d.via}`, d.id].filter(Boolean).join(" · ");
 }
 
-/** Logo plus pretty name of a model id; hover for the raw id. */
-export function ModelName({ id, harness, hasLogo = true }: { id: string | undefined; harness?: string; hasLogo?: boolean }) {
+/** Logo plus pretty name of a model id ("GPT-6 Luna · Azure" on a credential); hover for the raw id. */
+export function ModelName({ id, harness, credential, hasLogo = true }: { id: string | undefined; harness?: string; credential?: string; hasLogo?: boolean }) {
   useStore((s) => s.aliasVersion); // an alias ("opus") reads as what it runs now once the runner says
   const d = modelDisplay(id, harness);
   return (
-    <Tooltip content={modelTooltip(d)} hasHoverIndication={false}>
+    <Tooltip content={[modelTooltip(d), credential].filter(Boolean).join(" · ")} hasHoverIndication={false}>
       <HStack gap={1} vAlign="center">
         {hasLogo && modelIcon(d)}
         <Text type="inherit" maxLines={1}>
           {d.name}
+          {credential && (
+            <Text type="inherit" color="secondary">
+              {` · ${credentialName(credential)}`}
+            </Text>
+          )}
         </Text>
       </HStack>
     </Tooltip>

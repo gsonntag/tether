@@ -87,6 +87,8 @@ export interface SessionPrefs {
   pending?: { id: string; text: string; mode: "steer" | "followUp"; ts: number; scheduleId?: string; alone?: boolean }[];
   /** the model, effort and mode it last ran with, re-applied on resume (session.reapplyChoices) */
   model?: string;
+  /** the credential its process runs on (credentials/registry.ts), set again before a resume starts it */
+  credential?: string;
   thinking?: string;
   permissionMode?: string;
   /** the modes and effort levels the harness offered when it last ran (pickers of a session that isn't running) */

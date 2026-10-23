@@ -16,6 +16,7 @@
 
 import { parseEntry, usageProvider, type ChainEntry, type HarnessId, type ProviderUsage } from "../../web/src/shared/protocol";
 import { config, saveConfig } from "./config";
+import { canCheckUsage, credentialUsage } from "./credentials/registry";
 import { accountUsage, type UsageAccount } from "./usage";
 
 export type ErrorKind = "quota" | "rate_limit" | "other";
@@ -86,17 +87,26 @@ export function parseReset(s: string, now = Date.now()): number | undefined {
  * The unit a quota applies to. pi: the provider account ("openai-codex/gpt-6-luna" ->
  * "openai-codex"). Claude Code models have no provider prefix, and subscription limits can be
  * per model family, so each model is its own key ("claude-code:opus"). OpenAI-backed Codex
- * models share the ChatGPT account key; custom Codex routes get a route-specific key.
+ * models share the ChatGPT account key; custom Codex routes get a route-specific key. On a
+ * credential ("#azure:east") the key gets "#<credential>": account A at its limit leaves account B
+ * usable.
  */
-export function providerOf(model: string, harness: string): string {
+export function providerOf(model: string, harness: string, credential?: string): string {
+  const cred = credential ? `#${credential}` : "";
   if (harness === "codex") {
     const i = model.indexOf("/");
     const provider = i > 0 ? model.slice(0, i) : "openai";
-    return provider === "openai" ? "codex" : `codex:${provider}`;
+    return (provider === "openai" ? "codex" : `codex:${provider}`) + cred;
   }
   const i = model.indexOf("/");
-  return i > 0 ? model.slice(0, i) : `${harness}:${model}`;
+  return (i > 0 ? model.slice(0, i) : `${harness}:${model}`) + cred;
 }
+
+/** providerOf for a chain entry. */
+export const quotaKey = (e: ChainEntry) => providerOf(e.model, e.harness, e.credential);
+
+/** Same harness, model and credential. */
+export const sameEntry = (a: ChainEntry, b: ChainEntry) => a.harness === b.harness && a.model === b.model && (a.credential ?? "") === (b.credential ?? "");
 
 const DEFAULT_QUOTA_COOLDOWN = 60 * 60_000;
 
@@ -121,14 +131,19 @@ export function exhaustedUntil(provider: string): number | undefined {
  * The account whose usage Tether can read for this entry: Claude Code runs on the Claude login,
  * Codex on the Codex CLI's ChatGPT login, pi's openai-codex provider on pi's ChatGPT login. pi on
  * Anthropic can't be tied to Claude Code's login, and other harnesses have no usage feed. A Codex
- * model routed to another provider ("openrouter/…") isn't on the ChatGPT login: none.
+ * model routed to another provider ("openrouter/…") isn't on the ChatGPT login: none. An entry on
+ * a credential isn't on those logins either: its plugin's usage, if any, is read instead (usageCheckable).
  */
 export function accountOf(entry: ChainEntry): UsageAccount | undefined {
+  if (entry.credential) return undefined;
   const p = usageProvider(entry.harness, entry.model);
   if (p === "claude") return entry.harness === "claude-code" ? "claude" : undefined;
   if (p === "codex") return entry.harness === "pi" ? "chatgpt:pi" : entry.harness === "codex" ? "chatgpt:codex" : undefined;
   return undefined;
 }
+
+/** Whether Tether can read this entry's usage: its login's (accountOf), or its credential plugin's. */
+export const usageCheckable = (entry: ChainEntry) => (entry.credential ? canCheckUsage(entry.credential) : !!accountOf(entry));
 
 /** Fresh usage for one account; tests and fault injection swap it (setUsageSource). */
 let usageSource: (account: UsageAccount) => Promise<ProviderUsage | undefined> = accountUsage;
@@ -162,9 +177,9 @@ export type UsageCheck = { limit?: { resetAt?: number }; unknown?: boolean };
 /** Fetches the entry's account usage now. */
 export async function confirmLimit(entry: ChainEntry): Promise<UsageCheck> {
   const account = accountOf(entry);
-  if (!account) return { unknown: true };
+  if (!usageCheckable(entry)) return { unknown: true };
   try {
-    const u = await usageSource(account);
+    const u = entry.credential ? await credentialUsage(entry.credential) : await usageSource(account!);
     if (!u || u.error) return { unknown: true };
     return { limit: limitReached(u, entry.model) };
   } catch {
@@ -182,7 +197,7 @@ export function pickEntry(chain: string[], harness: HarnessId, skip?: (provider:
     const entry = parseEntry(raw, harness);
     // A harness that isn't installed (now) is passed over; the session's own one runs, so it is.
     if (entry.harness !== harness && !isInstalled(entry.harness)) continue;
-    const key = providerOf(entry.model, entry.harness);
+    const key = quotaKey(entry);
     const until = exhaustedUntil(key) ?? skip?.(key);
     if (!until) return { entry };
     earliest = Math.min(earliest, until);
@@ -211,7 +226,7 @@ export function backoffMs(attempt: number): number {
  */
 export function nextEntry(chain: string[], current: ChainEntry, harness: HarnessId): ChainEntry | undefined {
   const entries = chain.map((raw) => parseEntry(raw, harness));
-  const same = (e: ChainEntry) => e.harness === current.harness && e.model === current.model;
+  const same = (e: ChainEntry) => sameEntry(e, current);
   const at = entries.findIndex(same);
-  return entries.slice(at + 1).find((e) => !same(e) && (e.harness === harness || isInstalled(e.harness)) && !exhaustedUntil(providerOf(e.model, e.harness)));
+  return entries.slice(at + 1).find((e) => !same(e) && (e.harness === harness || isInstalled(e.harness)) && !exhaustedUntil(quotaKey(e)));
 }

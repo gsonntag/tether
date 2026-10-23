@@ -66,6 +66,8 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   const mode = from.t.state.permissionMode;
   const next = a.create(from.projectPath, { model: to.model, permissionMode: mode && !APPROVING_MODES.has(mode) ? mode : undefined }, sink);
   next.t.state.guard = from.guardMode;
+  // The entry's credential, before start: its process gets that credential's env.
+  if (to.credential) next.t.state.credential = to.credential;
   // A review session stays one (before start: the launch narrows the harness's tools), never Dangerously skip.
   next.inheritReview(from);
   if (next.t.state.reviewOf) next.t.state.guard = "auto";

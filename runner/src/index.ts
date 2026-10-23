@@ -55,6 +55,7 @@ import { addHooks, importHooks, listHooks, setHook } from "./hooks";
 import { addLibraryCommand, importCommands, listLibraryCommands, setLibraryCommand } from "./commands";
 import { addSubagent, importSubagents, listSubagents, setSubagent } from "./subagents";
 import { listSecrets, setSecret } from "./secrets";
+import { credentialAction, credentialIds, credentialModels, listCredentials, registerCredentialPlugins, removeCredential, testCredential } from "./credentials";
 import { untilde } from "./context/paths";
 import { sessionForKey, sweepBridgeFiles } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -82,6 +83,7 @@ const adapters: Record<HarnessId, Adapter> = {
 /** The harnesses installed when last checked: fallback never moves to one that isn't (fallback.ts isInstalled). */
 let installedNow: Set<HarnessId> | undefined;
 setInstalledCheck((h) => !installedNow || installedNow.has(h));
+registerCredentialPlugins();
 
 async function installedHarnesses(): Promise<HarnessId[]> {
   const list = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available().catch(() => false)) ? a.id : null)))).filter(Boolean) as HarnessId[];
@@ -359,6 +361,9 @@ async function startLive(sessionId: string, projectPath?: string): Promise<LiveS
   // Harnesses that take the guard as a launch setting see the saved one (loadPrefs restores the rest).
   const guard = config().sessions[sessionId]?.guard;
   if (guard) s.t.state.guard = guard;
+  // Its credential, so the resumed process gets that credential's env again (credentialLaunch).
+  const credential = config().sessions[sessionId]?.credential;
+  if (credential) s.t.state.credential = credential;
   await s.start();
   // Read just before loadPrefs (in track) saves what it started on over them; nothing saves before.
   const saved = config().sessions[sessionId];
@@ -719,7 +724,7 @@ const ops: Handlers = {
 
   async createSession({ projectPath, harness: asked, model: askedModel, defaultOrder: useOrder, prompt, permissionMode, guard }) {
     const installed = useOrder ? await installedHarnesses() : [];
-    const { harness, model, chain } = sessionStart({ harness: asked, model: askedModel, useOrder }, defaultOrder(), (h) => installed.includes(h));
+    const { harness, model, credential, chain } = sessionStart({ harness: asked, model: askedModel, useOrder }, defaultOrder(), (h) => installed.includes(h));
     const a = adapters[harness];
     if (!a) throw new Error(`unknown harness ${harness}`);
     // The mode was picked for the harness asked for: another one (the order's first entry was out) starts in its own.
@@ -727,6 +732,8 @@ const ops: Handlers = {
     const s = a.create(expand(projectPath), { model, permissionMode: mode }, sink);
     // Set before start() so harnesses that take it as a launch flag (Antigravity) see it.
     s.t.state.guard = guard ?? config().guard?.defaultMode ?? "auto";
+    // So is the credential: start() gives its process that credential's env (credentialLaunch).
+    if (credential) s.t.state.credential = credential;
     await s.start();
     track(s);
     s.setState({ guard: s.t.state.guard });
@@ -1132,7 +1139,9 @@ const ops: Handlers = {
 
   async listModels({ harness, sessionId }) {
     const s = sessionId ? live.get(sessionId) : undefined;
-    return adapters[harness].listModels(s);
+    const [own, onCredentials] = await Promise.all([adapters[harness].listModels(s), credentialModels(harness).catch(() => [])]);
+    // The harness's own login's models, then the ones credentials serve on it ("GPT-6 Luna · Azure").
+    return onCredentials.length ? { ...own, models: [...own.models, ...onCredentials] } : own;
   },
 
   async getDefaultOrder({ suggest }) {
@@ -1142,7 +1151,25 @@ const ops: Handlers = {
   },
 
   async setDefaultOrder({ order }) {
-    return { order: saveDefaultOrder(order) };
+    const usesCredential = Array.isArray(order) && order.some((e) => typeof e === "string" && e.includes("#"));
+    return { order: saveDefaultOrder(order, usesCredential ? await credentialIds() : undefined) };
+  },
+
+  // ---- credentials (runner/src/credentials) ----
+
+  async listCredentials() {
+    return listCredentials({ order: defaultOrder() });
+  },
+  async testCredential({ id }) {
+    return testCredential(String(id ?? ""));
+  },
+  async removeCredential({ id }) {
+    await removeCredential(String(id ?? ""));
+    return listCredentials({ order: defaultOrder() });
+  },
+  async credentialAction({ id, action, args }) {
+    const result = await credentialAction(String(id ?? ""), String(action ?? ""), args);
+    return { result, list: await listCredentials({ order: defaultOrder() }) };
   },
 
   async listCommands({ sessionId }) {

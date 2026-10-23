@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -12,18 +12,21 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import { formatEntry, HARNESSES, parseEntry, switchesAutomatically, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
-import { useStore } from "../store";
-import { modelDisplay } from "../models";
+import { formatEntry, HARNESSES, modelKey, parseEntry, switchesAutomatically, usageProvider, type HarnessId, type ModelRef } from "../shared/protocol";
+import { refreshCredentials, useStore } from "../store";
+import { credentialName, modelDisplay, modelLabel } from "../models";
 import { HarnessBadge } from "./HarnessBadge";
 import { modelIcon, ModelName } from "./ModelName";
 import { useModels } from "./ModelMenu";
 
-/** Groups a harness's models by provider prefix ("openai-codex/gpt-6-luna" → "openai-codex"). */
+/**
+ * Groups a harness's models by provider prefix ("openai-codex/gpt-6-luna" → "openai-codex"), and
+ * models on a credential by that credential ("Azure").
+ */
 function groups(models: ModelRef[]): [string, ModelRef[]][] {
   const g = new Map<string, ModelRef[]>();
   for (const m of models) {
-    const k = m.id.includes("/") ? m.id.slice(0, m.id.indexOf("/")) : "";
+    const k = m.credential ? (m.credentialLabel ?? credentialName(m.credential)) : m.id.includes("/") ? m.id.slice(0, m.id.indexOf("/")) : "";
     g.set(k, [...(g.get(k) ?? []), m]);
   }
   return [...g.entries()];
@@ -78,9 +81,16 @@ export function ChainEditor({
   const [showAll, setShowAll] = useState(false);
   const [filter, setFilter] = useState("");
 
+  const credentials = useStore((s) => s.credentials);
+  // Entries naming a credential are checked against the runner's (and read with its name).
+  useEffect(() => {
+    if (!credentials && chain.some((e) => e.includes("#"))) void refreshCredentials();
+  }, [credentials, chain.join(",")]);
   const harness = (h || available[0] || "claude-code") as HarnessId;
   const list = models[harness] ?? [];
-  const model = m && list.some((x) => x.id === m) ? m : (list[0]?.id ?? "");
+  // `model` is a modelKey: "gpt-6-luna", or "gpt-6-luna#azure:east" on a credential.
+  const model = m && list.some((x) => modelKey(x) === m) ? m : list[0] ? modelKey(list[0]) : "";
+  const entryOf = (hid: HarnessId, key: string) => formatEntry(parseEntry(key, hid));
 
   const move = (i: number, d: number) => {
     const c = [...chain];
@@ -91,13 +101,16 @@ export function ChainEditor({
   const add = (entry: string) => !chain.includes(entry) && onChange([...chain, entry]);
 
   const check = (raw: string) => {
-    const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
+    const { harness: eh, model: em, credential: ec } = parseEntry(raw, fallback ?? "claude-code");
     const known = !!fallback || HARNESSES.some((x) => raw.startsWith(x.id + ":"));
     if (!known) return { bad: `Unknown harness. Use one of: ${HARNESSES.map((x) => x.id).join(", ")}` };
     if (!available.includes(eh)) return { bad: `${HARNESSES.find((x) => x.id === eh)?.label} is not installed on this runner` };
+    if (ec && credentials && !credentials.credentials.some((c) => c.id === ec)) return { bad: "That account or key isn't on this runner any more" };
     const ms = models[eh];
-    if (ms && em && em !== "default" && !ms.some((x) => x.id === em || x.label === em))
+    if (ms && em && em !== "default" && !ms.some((x) => (x.id === em || x.label === em) && (x.credential ?? "") === (ec ?? "")))
       return { warn: `Not in ${HARNESSES.find((x) => x.id === eh)?.label}'s model list (an alias may still work)` };
+    // Usage below is the harness's own login's: not a credential's.
+    if (ec) return { usage: undefined };
     const prov = usageProvider(eh, em);
     const u = prov && usage?.providers.find((p) => p.provider === prov);
     if (!u || u.error) return { usage: undefined };
@@ -112,7 +125,7 @@ export function ChainEditor({
     const f = filter.toLowerCase();
     return available.map((hid) => ({
       harness: hid,
-      models: (models[hid] ?? []).filter((x) => !f || `${hid}:${x.id} ${x.label ?? ""} ${modelDisplay(x.id, hid).name}`.toLowerCase().includes(f)),
+      models: (models[hid] ?? []).filter((x) => !f || `${hid}:${x.id} ${x.label ?? ""} ${modelLabel(x, hid)}`.toLowerCase().includes(f)),
     }));
   }, [available, models, filter]);
 
@@ -123,7 +136,7 @@ export function ChainEditor({
   }));
   const option = (x: ModelRef) => {
     const d = modelDisplay(x.id, harness);
-    return { value: x.id, label: d.name, description: x.id, icon: modelIcon(d) };
+    return { value: modelKey(x), label: modelLabel(x, harness), description: x.id, icon: modelIcon(d) };
   };
   const modelOptions: SelectorOptionType[] = groups(list).flatMap(([g, ms]): SelectorOptionType[] =>
     g ? [{ type: "section", title: g, options: ms.map(option) }] : ms.map(option),
@@ -136,13 +149,14 @@ export function ChainEditor({
       {chain.length > 0 && (
         <VStack as="ol" gap={0.5} padding={0} style={plainList}>
           {chain.map((raw, i) => {
-            const { harness: eh, model: em } = parseEntry(raw, fallback ?? "claude-code");
+            const e = parseEntry(raw, fallback ?? "claude-code");
+            const { harness: eh, model: em, credential: ec } = e;
             const c = check(raw);
-            const isCur = current !== undefined && formatEntry({ harness: eh, model: em }) === current;
+            const isCur = current !== undefined && formatEntry(e) === current;
             // The route tells apart one model listed twice ("openai-codex/…" and "azure/…").
-            const via = em ? modelDisplay(em, eh).via : undefined;
-            // Tether moves past a limit on its own only where it can confirm the limit.
-            const auto = switchesAutomatically(eh, em) ? "Switches automatically at its limit" : "Manual switch only: its usage can't be checked";
+            const via = em && !ec ? modelDisplay(em, eh).via : undefined;
+            // Tether moves past a limit on its own only where it can confirm the limit (a credential: its plugin, when it reads usage).
+            const auto = !ec && switchesAutomatically(eh, em) ? "Switches automatically at its limit" : "Manual switch only: its usage can't be checked";
             const subs = [via && `via ${via}`, c.usage, auto].filter(Boolean) as string[];
             return (
               <Item
@@ -158,7 +172,7 @@ export function ChainEditor({
                 startContent={<HarnessBadge harness={eh} />}
                 label={
                   <HStack gap={1.5} vAlign="center">
-                    <ModelName id={em || undefined} harness={eh} />
+                    <ModelName id={em || undefined} harness={eh} credential={ec} />
                     {isCur && <Token size="sm" color="blue" label="current" />}
                   </HStack>
                 }
@@ -237,12 +251,7 @@ export function ChainEditor({
                 onChange={setM}
               />
             </StackItem>
-            <Button
-              label="Add"
-              size="sm"
-              isDisabled={!model || chain.includes(formatEntry({ harness, model }))}
-              onClick={() => add(formatEntry({ harness, model }))}
-            />
+            <Button label="Add" size="sm" isDisabled={!model || chain.includes(entryOf(harness, model))} onClick={() => add(entryOf(harness, model))} />
           </HStack>
         </StackItem>
       </Stack>
@@ -268,11 +277,11 @@ export function ChainEditor({
                 {!models[g.harness] && <Text type="supporting">loading…</Text>}
               </HStack>
               {g.models.map((x) => {
-                const entry = formatEntry({ harness: g.harness, model: x.id });
+                const entry = formatEntry({ harness: g.harness, model: x.id, ...(x.credential ? { credential: x.credential } : {}) });
                 return (
-                  <HStack key={x.id} gap={1.5} vAlign="center">
+                  <HStack key={modelKey(x)} gap={1.5} vAlign="center">
                     <StackItem size="fill">
-                      <ModelName id={x.id} harness={g.harness} />
+                      <ModelName id={x.id} harness={g.harness} credential={x.credential} />
                     </StackItem>
                     <Button label={chain.includes(entry) ? "added" : "+ add"} size="sm" variant="ghost" isDisabled={chain.includes(entry)} onClick={() => add(entry)} />
                   </HStack>
