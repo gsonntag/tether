@@ -260,6 +260,7 @@ export interface Msg {
 import type { Attachment } from "./attachments";
 export type { Attachment } from "./attachments";
 import type { PlanDraft, PlanReviewState } from "./plan";
+import type { CredentialActionResult, CredentialList, CredentialRemoval, CredentialTest } from "./credentials";
 
 // ---------- live state ----------
 
@@ -271,6 +272,10 @@ export interface ModelRef {
   label?: string;
   /** an alias's concrete model now ("opus" → "claude-opus-5-5"), when the harness says */
   resolved?: string;
+  /** served on a credential (shared/credentials.ts), not the harness's own login: its id */
+  credential?: string;
+  /** that credential's short name for labels: "GPT-6 Luna · Azure" */
+  credentialLabel?: string;
 }
 
 /**
@@ -279,24 +284,30 @@ export interface ModelRef {
  * session's own harness. Moving down the chain within a harness switches the model; across
  * harnesses it hands the conversation off to a new linked session in the same directory.
  *
- * Reserved: the account or key an entry runs on will be a "#<id>" suffix
- * ("pi:azure/gpt-6-luna#foundry-1"). Entries stay plain strings, so stored chains and default
- * orders keep working unchanged when it arrives. Until then nothing may write it: saving a default
- * order refuses it, and parseEntry drops it.
+ * The account or key an entry runs on is a "#<credential id>" suffix
+ * ("pi:azure/gpt-6-luna#azure:east", shared/credentials.ts); without one it runs on the harness's
+ * own login. Entries stay plain strings, so stored chains and default orders work unchanged.
  */
 export interface ChainEntry {
   harness: HarnessId;
   model: string;
+  /** the credential it runs on ("azure:east"), when not the harness's own login */
+  credential?: string;
 }
 
 export function parseEntry(raw: string, fallback: HarnessId): ChainEntry {
-  // The reserved "#account" suffix isn't part of the model (nothing writes it yet; see above).
-  const entry = raw.replace(/#.*$/, "");
-  for (const h of HARNESSES) if (entry.startsWith(h.id + ":")) return { harness: h.id, model: entry.slice(h.id.length + 1) };
-  return { harness: fallback, model: entry };
+  const hash = raw.indexOf("#");
+  const entry = hash >= 0 ? raw.slice(0, hash) : raw;
+  const credential = hash >= 0 ? raw.slice(hash + 1).trim() : "";
+  const cred = credential ? { credential } : {};
+  for (const h of HARNESSES) if (entry.startsWith(h.id + ":")) return { harness: h.id, model: entry.slice(h.id.length + 1), ...cred };
+  return { harness: fallback, model: entry, ...cred };
 }
 
-export const formatEntry = (e: ChainEntry) => `${e.harness}:${e.model}`;
+export const formatEntry = (e: ChainEntry) => `${e.harness}:${e.model}${e.credential ? `#${e.credential}` : ""}`;
+
+/** A model with its credential, as pickers and chains key it ("gpt-6-luna#azure:east"). */
+export const modelKey = (m: { id: string; credential?: string }) => (m.credential ? `${m.id}#${m.credential}` : m.id);
 
 export interface UiRequest {
   id: string;
@@ -471,6 +482,8 @@ export interface LiveState {
   /** a check running between turns, shown inline in the chat ("Checking usage on GPT-5…"); null when done (undefined doesn't survive JSON) */
   checking?: string | null;
   model?: string;
+  /** the credential its process runs on ("azure:east"), when not the harness's own login */
+  credential?: string;
   /** this session's fallback order (a copy of the default order, editable per session) */
   chain?: string[];
   /** go back to an earlier chain entry (even across harnesses) once it has reset */
@@ -1317,6 +1330,7 @@ export interface Ops {
     /**
      * `defaultOrder`: start on the runner's default order (its first available entry's harness and
      * model, the order copied into the session's chain); `harness` and `model` apply when none is set.
+     * `model` may name a credential as "id#credential" (modelKey).
      */
     args: { projectPath: string; harness: HarnessId; model?: string; defaultOrder?: boolean; prompt?: string; permissionMode?: string; guard?: GuardMode };
     result: SessionSummary;
@@ -1345,6 +1359,7 @@ export interface Ops {
   readAttachment: { args: { path: string; offset?: number; length?: number }; result: { data: string; size: number; mimeType: string } };
   abort: { args: { sessionId: string }; result: {} };
   /** a single model (clears the chain), or `defaultOrder`: a copy of the default order becomes the chain */
+  /** `model` may name a credential ("id#credential", modelKey): another credential than the session's moves it to a new linked session */
   setModel: { args: { sessionId: string; model?: string; defaultOrder?: boolean }; result: {} };
   setGuard: { args: { sessionId: string; mode: GuardMode; minutes?: number }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
@@ -1520,6 +1535,18 @@ export interface Ops {
   addSubagent: { args: { text: string; name?: string }; result: SubagentView[] };
   setSubagent: { args: { id: string; enabled?: boolean; remove?: boolean }; result: SubagentView[] };
   findSubagents: { args: {}; result: SubagentFindResult };
+  // Credentials (runner/src/credentials, shared/credentials.ts): values go in, never come back
+  listCredentials: { args: {}; result: CredentialList };
+  /** one cheap call with it */
+  testCredential: { args: { id: string }; result: CredentialTest };
+  /** the new list, with where the removed one was still used (`usedIn`: "Default order #2", "2 sessions") */
+  removeCredential: { args: { id: string }; result: CredentialRemoval };
+  /**
+   * A provider-specific step; `id` is a credential, or a bare provider ("azure") for provider-level
+   * ones ("add"). `result`: what the page shows or does next (a message, a sign-in URL, a device
+   * code, the next step's prompt), never the plugin's raw answer.
+   */
+  credentialAction: { args: { id: string; action: string; args?: unknown }; result: { result?: CredentialActionResult; list: CredentialList } };
   // Env and secrets (runner/src/secrets.ts): values go in, never come back
   listSecrets: { args: {}; result: SecretView[] };
   setSecret: { args: { name: string; value?: string; remove?: boolean }; result: SecretView[] };

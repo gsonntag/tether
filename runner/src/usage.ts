@@ -104,14 +104,25 @@ export function usageChanged() {
 const pct = (n: number | null | undefined) => (typeof n === "number" ? Math.max(0, Math.min(100, Math.round(n))) : undefined);
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) || undefined : undefined);
 
-async function claudeUsage(): Promise<ProviderUsage | undefined> {
+/**
+ * Usage of the login in one harness home (an account's CLAUDE_CONFIG_DIR / CODEX_HOME, credentials
+ * registry homeFor): what an accounts plugin's usage() reads. The machine's own login is getUsage's.
+ */
+export function usageAtHome(harness: "claude-code" | "codex", home: string): Promise<ProviderUsage | undefined> {
+  if (harness === "claude-code") return claudeUsage(home);
+  const auth = codexCliAuth(home);
+  return auth ? codexUsage(auth) : Promise.resolve(undefined);
+}
+
+/** `home`: an account's CLAUDE_CONFIG_DIR; none: the runner's own (the machine's login). */
+async function claudeUsage(home?: string): Promise<ProviderUsage | undefined> {
   async function* idle(): AsyncGenerator<never> {
     await new Promise(() => {});
   }
   // A throwaway Claude Code process that never gets a prompt: it only answers the usage request.
   const q = query({
     prompt: idle(),
-    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [] } as any,
+    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [], ...(home ? { env: { ...process.env, CLAUDE_CONFIG_DIR: home } } : {}) } as any,
   });
   try {
     const u: any = await Promise.race([
@@ -147,9 +158,9 @@ function piAuth(): CodexAuth | undefined {
   return undefined;
 }
 
-function codexCliAuth(): CodexAuth | undefined {
+function codexCliAuth(home = process.env.CODEX_HOME ?? join(userHome(), ".codex")): CodexAuth | undefined {
   try {
-    const t = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(userHome(), ".codex"), "auth.json"), "utf8")).tokens;
+    const t = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")).tokens;
     if (t?.access_token) return { access: t.access_token, accountId: t.account_id };
   } catch {}
   return undefined;

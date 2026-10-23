@@ -20,20 +20,31 @@ export const store = {
   inbox: () => join(contextDir(), "inbox"),
 };
 
-/** Harness-owned locations. */
+/** The credential plugins' homes (credentials/registry.ts homeFor), set by the registry when it loads. */
+let homeResolver: ((credId: string, harness: "claude-code" | "codex") => string | undefined) | undefined;
+export const setHarnessHomeResolver = (fn: typeof homeResolver) => (homeResolver = fn);
+
+/**
+ * Claude Code's and Codex's homes: the machine's own (~/.claude, ~/.codex), or with a session's
+ * credential the account home its plugin keeps (CLAUDE_CONFIG_DIR / CODEX_HOME), when it has one.
+ */
+export const claudeHome = (credential?: string) => (credential && homeResolver?.(credential, "claude-code")) || join(home(), ".claude");
+export const codexHome = (credential?: string) => (credential && homeResolver?.(credential, "codex")) || join(home(), ".codex");
+
+/** Harness-owned locations. `credential`: a session's, for its account home (claudeHome / codexHome). */
 export const harness = {
-  claudeDir: () => join(home(), ".claude"),
+  claudeDir: (credential?: string) => claudeHome(credential),
   /** Claude Code's own state file, user-scope MCP servers included ($CLAUDE_CONFIG_DIR moves it) */
   claudeJson: () => (process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : join(home(), ".claude.json")),
   claudeMd: () => join(home(), ".claude", "CLAUDE.md"),
-  claudeProjects: () => join(home(), ".claude", "projects"),
+  claudeProjects: (credential?: string) => join(claudeHome(credential), "projects"),
   claudeSkills: () => join(home(), ".claude", "skills"),
-  codexDir: () => join(home(), ".codex"),
-  codexAgentsMd: () => join(home(), ".codex", "AGENTS.md"),
-  codexMemories: () => join(home(), ".codex", "memories"),
-  codexMemoriesDb: () => join(home(), ".codex", "memories_1.sqlite"),
+  codexDir: (credential?: string) => codexHome(credential),
+  codexAgentsMd: (credential?: string) => join(codexHome(credential), "AGENTS.md"),
+  codexMemories: (credential?: string) => join(codexHome(credential), "memories"),
+  codexMemoriesDb: (credential?: string) => join(codexHome(credential), "memories_1.sqlite"),
   codexSkills: () => join(home(), ".codex", "skills"),
-  codexConfig: () => join(home(), ".codex", "config.toml"),
+  codexConfig: (credential?: string) => join(codexHome(credential), "config.toml"),
   piAgentsMd: () => join(home(), ".pi", "agent", "AGENTS.md"),
   piSkills: () => join(home(), ".pi", "agent", "skills"),
   piMcp: () => join(home(), ".pi", "agent", "mcp.json"),

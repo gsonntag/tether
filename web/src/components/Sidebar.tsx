@@ -18,7 +18,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { BookOpenIcon, KeyIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { listPath, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
 import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
@@ -185,6 +185,7 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
         <>
         <HomeNavItem />
         <MemoryNavItem />
+        <CredentialsNavItem />
         <SessionsSection />
         <SideNavSection
           title="Projects"
@@ -308,6 +309,12 @@ function MemoryNavItem() {
       endContent={open ? <Badge variant="warning" label={String(open)} /> : undefined}
     />
   );
+}
+
+/** The Credentials page: the accounts and keys this runner can run agents on. */
+function CredentialsNavItem() {
+  const on = useStore((s) => s.page === "credentials");
+  return <SideNavItem label="Credentials" icon={KeyIcon} isSelected={on} onClick={() => openPage("credentials")} />;
 }
 
 /** A session row's menu (right-click, long-press): Rename, Mark done, Stop the agent process; a done one from search: Bring back. */

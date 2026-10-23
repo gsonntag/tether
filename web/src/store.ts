@@ -17,7 +17,8 @@ import type {
   UsageReport,
 } from "./shared/protocol";
 import { byRecent, DEFAULT_UI_PREFS, listPath, type HarnessId as HarnessIdT, type ModelRef as ModelRefT, type UiPrefs } from "./shared/protocol";
-import { learnAliases } from "./models";
+import { learnAliases, learnCredentials } from "./models";
+import type { CredentialList } from "./shared/credentials";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { byId, reuseSame } from "./reuse";
@@ -77,7 +78,9 @@ interface State {
   /** newest notice the bell's list was opened on: its badge counts only newer ones (reading a session is separate) */
   bellSeen: number;
   /** a full page shown instead of a session ("running": Home, scrolled to its Working section) */
-  page?: "memory" | "running";
+  page?: "memory" | "running" | "credentials";
+  /** this runner's credentials (Credentials page, entry checks): undefined until asked, or an older runner */
+  credentials?: CredentialList;
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
   pulses: PulseMap;
   /** where links into the Memory & Skills page scroll to: "conflicts", or one conflict's id */
@@ -521,6 +524,29 @@ export function openPage(page: State["page"], focus?: string) {
   history.replaceState(null, "", page ? `#/${page}${q}` : "#/");
 }
 
+/** This runner's credentials (Credentials page, the chain editor's checks); kept as it was on an older runner. */
+export async function refreshCredentials(): Promise<CredentialList | undefined> {
+  const runnerId = get().runnerId;
+  if (!runnerId) return undefined;
+  try {
+    const list = await rpcTo(runnerId, "listCredentials", {});
+    setCredentials(list, runnerId);
+    return list;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A list the runner answered with (after an action): kept, and its names learned for labels. */
+export function setCredentials(list: CredentialList, runnerId = get().runnerId) {
+  if (get().runnerId !== runnerId) return;
+  learnCredentials(
+    list.credentials.map((c) => ({ credential: c.id, credentialLabel: c.label })),
+    true,
+  );
+  set((s) => ({ credentials: list, aliasVersion: (s.aliasVersion ?? 0) + 1 }));
+}
+
 export async function refreshContext() {
   if (!get().runnerId) return;
   try {
@@ -670,7 +696,7 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], defaultOrder: undefined, viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], defaultOrder: undefined, credentials: undefined, viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
   refreshProjects();
   refreshViewed();
   refreshRecent();
@@ -723,7 +749,10 @@ export function refreshUiPrefs() {
 
 /** A harness's model list arrived: what its aliases run now ("opus" → Opus 5.5) shows everywhere. */
 export function learnModels(harness: HarnessIdT, models: ModelRefT[]) {
-  if (learnAliases(harness, models)) set((s) => ({ aliasVersion: (s.aliasVersion ?? 0) + 1 }));
+  // Credential names ("GPT-6 Luna · Azure") re-render labels the same way.
+  const aliases = learnAliases(harness, models);
+  const creds = learnCredentials(models);
+  if (aliases || creds) set((s) => ({ aliasVersion: (s.aliasVersion ?? 0) + 1 }));
 }
 
 /** The runner's default order (Home's setup card, New session's "Default order"). */

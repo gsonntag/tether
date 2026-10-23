@@ -77,14 +77,17 @@ export async function pickReviewer(
   chain: string[] | undefined,
   available: (h: HarnessId) => Promise<boolean>,
   req: ReviewRequest,
-): Promise<{ harness: HarnessId; model?: string; same?: boolean } | string> {
+): Promise<{ harness: HarnessId; model?: string; credential?: string; same?: boolean } | string> {
   const entries = (chain ?? []).map((e) => parseEntry(e, current));
+  const cred = (e?: { credential?: string }) => (e?.credential ? { credential: e.credential } : {});
   if (req.harness) {
     if (!(await available(req.harness))) return `${label(req.harness)} isn't installed on this runner.`;
-    const model = req.model ?? entries.find((e) => e.harness === req.harness)?.model;
-    return { harness: req.harness, ...(model && model !== "default" ? { model } : {}) };
+    const e = req.model ? undefined : entries.find((x) => x.harness === req.harness);
+    const model = req.model ?? e?.model;
+    return { harness: req.harness, ...(model && model !== "default" ? { model } : {}), ...cred(e) };
   }
-  for (const e of entries) if (e.harness !== current && (await available(e.harness))) return { harness: e.harness, ...(e.model && e.model !== "default" ? { model: e.model } : {}) };
+  for (const e of entries)
+    if (e.harness !== current && (await available(e.harness))) return { harness: e.harness, ...(e.model && e.model !== "default" ? { model: e.model } : {}), ...cred(e) };
   for (const h of HARNESSES) if (h.id !== current && (await available(h.id))) return { harness: h.id };
   return { harness: current, same: true };
 }
@@ -300,6 +303,9 @@ export async function runReview(deps: ReviewDeps, from: LiveSession, req: Review
     next = deps.adapters[pick.harness].create(from.projectPath, { model: pick.model }, deps.sink);
     // Before start: the launch narrows the harness's own tools and offers review_report.
     next.t.state.reviewOf = { sessionId: from.id, reviewId: review.id };
+    // On the chain entry's credential; the session's own reviewing itself stays on the session's.
+    const credential = pick.credential ?? (pick.same ? from.t.state.credential : undefined);
+    if (credential) next.t.state.credential = credential;
     // Never Dangerously skip: Codex would then ask nothing at all (the read-only hold is in checkTool).
     next.t.state.guard = "auto";
     await next.start();

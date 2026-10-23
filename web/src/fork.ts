@@ -1,6 +1,6 @@
 // "Fork from here" (the runner's fork.ts): which messages offer it, and what the fork dialog shows.
 
-import type { HarnessId, Msg } from "./shared/protocol";
+import { modelKey, type HarnessId, type Msg } from "./shared/protocol";
 import { BRIEF_PREFIX } from "./msgTime";
 import { REVIEW_PREFIX } from "./shared/review";
 
@@ -8,7 +8,7 @@ import { REVIEW_PREFIX } from "./shared/review";
 export interface ForkTarget {
   sessionId: string;
   msgId: string;
-  /** the session's harness and model now (the dialog's defaults) */
+  /** the session's harness and model now (the dialog's defaults); the model with its credential ("gpt-6-luna#azure:east", modelKey) */
   harness: HarnessId;
   model?: string;
   /** a message of yours: the new session answers it again */
@@ -32,6 +32,10 @@ export function forkExcerpt(m: Msg, max = 80): string {
   return t.length > max ? t.slice(0, max).trimEnd() + "…" : t;
 }
 
-export function forkTarget(sessionId: string, m: Msg, harness: HarnessId, model?: string): ForkTarget {
-  return { sessionId, msgId: m.id, harness, model, atUser: m.role === "user", excerpt: forkExcerpt(m) };
+/**
+ * The dialog's target. The session's model is keyed with its credential: the runner reads a model
+ * without "#" as the harness's own login, so the default must name the session's credential.
+ */
+export function forkTarget(sessionId: string, m: Msg, harness: HarnessId, model?: string, credential?: string): ForkTarget {
+  return { sessionId, msgId: m.id, harness, model: model ? modelKey({ id: model, credential }) : undefined, atUser: m.role === "user", excerpt: forkExcerpt(m) };
 }

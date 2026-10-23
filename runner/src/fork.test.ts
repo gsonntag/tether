@@ -17,7 +17,7 @@ import { piAdapter } from "./adapters/pi";
 import type { Sink } from "./adapters/types";
 import { config, prefs } from "./config";
 import { capabilityMatrix } from "./connectors";
-import { forkCut, forkReason, promptOf, runFork, type ForkDeps } from "./fork";
+import { forkCut, forkModel, forkReason, promptOf, runFork, type ForkDeps } from "./fork";
 import { buildBrief, isBrief } from "./handoff";
 import { COMPACT_REASON, runCompact, type HandoffDeps } from "./handoffRun";
 import { LiveSession, newId } from "./session";
@@ -303,6 +303,37 @@ describe("forking", () => {
     await runFork(r2.d, from, { msgId: "a1", harness: "claude-code" });
     expect(r2.forks).toEqual([{ nativeId: from.nativeId, point: "e-a1" }]);
     expect(brief2.sent[0]).toContain("You are taking over");
+  });
+
+  test("the fork's credential: as picked; a plain model is the harness's own login; Default keeps the session's", () => {
+    expect(forkModel({ harness: "codex", model: "gpt-6-luna#azure:east" }, "codex", "azure:west")).toEqual({ model: "gpt-6-luna", credential: "azure:east" });
+    // The picker offered the session's own model with its credential (modelKey): picking a model
+    // without one means the harness's own login, not the session's credential.
+    expect(forkModel({ harness: "codex", model: "gpt-6-luna" }, "codex", "azure:east")).toEqual({ model: "gpt-6-luna" });
+    expect(forkModel({ harness: "codex" }, "codex", "azure:east")).toEqual({ credential: "azure:east" });
+    expect(forkModel({ harness: "codex", model: "default#azure:east" }, "codex")).toEqual({ credential: "azure:east" });
+    expect(forkModel({ harness: "pi" }, "codex", "azure:east")).toEqual({});
+  });
+
+  test("onto another credential: a brief, never the harness's own fork (that history is in the other account's home)", async () => {
+    const from = fake("claude-code", { marks: true });
+    from.t.state.credential = "anthropic:work";
+    from.say(user("u1", "Fix the login bug"));
+    from.mark("u1", "e-u1");
+    from.say(reply("a1", "Fixed it."));
+    from.mark("a1", "e-a1");
+    const onto = fake("claude-code");
+    const r1 = deps({ "claude-code": onto }, async () => fake("claude-code"));
+    await runFork(r1.d, from, { msgId: "a1", harness: "claude-code", model: "opus" });
+    expect(r1.forks).toEqual([]);
+    expect(onto.t.state.credential).toBeUndefined();
+    expect(onto.sent[0]).toContain("You are taking over");
+
+    const native = fake("claude-code");
+    const r2 = deps({ "claude-code": fake("claude-code") }, async () => native);
+    await runFork(r2.d, from, { msgId: "a1", harness: "claude-code", model: "opus#anthropic:work" });
+    expect(r2.forks).toEqual([{ nativeId: from.nativeId, point: "e-a1" }]);
+    expect(native.t.state.credential).toBe("anthropic:work");
   });
 
   test("an unknown message is refused", async () => {

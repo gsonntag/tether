@@ -26,7 +26,8 @@ import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { clearBlocked, DenialNotifier, notify, pushDenials, recordDenial } from "./notify";
-import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, providerOf, type Classified, type UsageCheck } from "./fallback";
+import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, quotaKey, sameEntry, usageCheckable, type Classified, type UsageCheck } from "./fallback";
+import { credentialLabel, launchFor, type CredentialLaunch } from "./credentials/registry";
 import { defaultOrder } from "./defaultOrder";
 import { modelDisplay } from "../../web/src/models";
 import { addApprovalRule, approvalRules, attachmentWrite, callLine, clip, commandOf, deriveRule, isContextTool, judge, kindOf, matchRule, precedentsFor, recordPrecedent, rules, type GuardMode, type Verdict } from "./guard";
@@ -1106,6 +1107,8 @@ export abstract class LiveSession {
     const p = prefs(this.id);
     const restore: Partial<LiveState> = {};
     if (p.chain) restore.chain = p.chain;
+    // Normally set before start() already (startLive), so its process got the credential's env.
+    if (p.credential && !this.t.state.credential) restore.credential = p.credential;
     if (p.preferEarlier !== undefined) restore.preferEarlier = p.preferEarlier;
     if (p.handoffFrom) restore.handoffFrom = p.handoffFrom;
     if (p.handoffTo) restore.handoffTo = p.handoffTo;
@@ -1225,6 +1228,7 @@ export abstract class LiveSession {
       checkpoints: s.checkpoints,
       context: s.context,
       model: s.model,
+      credential: s.credential,
       thinking: s.thinking,
       permissionMode: s.permissionMode,
       modes: s.modes,
@@ -1358,11 +1362,29 @@ export abstract class LiveSession {
   }
 
   get currentEntry(): ChainEntry {
-    return { harness: this.harness, model: this.t.state.model ?? "default" };
+    const cred = this.t.state.credential;
+    return { harness: this.harness, model: this.t.state.model ?? "default", ...(cred ? { credential: cred } : {}) };
   }
 
   private sameEntry(a: ChainEntry, b: ChainEntry) {
-    return a.harness === b.harness && a.model === b.model;
+    return sameEntry(a, b);
+  }
+
+  /**
+   * Whether this process can run `e` by switching its model: same harness and same credential.
+   * Another credential means other env (credentialLaunch), so a new linked session (a handoff).
+   */
+  protected sameProcess(e: ChainEntry) {
+    return e.harness === this.harness && (e.credential ?? "") === (this.t.state.credential ?? "");
+  }
+
+  /**
+   * The process-start hook: every adapter calls it once before it spawns its harness, and adds the
+   * result to that process (env over agentEnv's, args on its command line). It is the env and args
+   * of the credential this session runs on (credentials/registry.ts launchFor), nothing without one.
+   */
+  protected async credentialLaunch(): Promise<CredentialLaunch> {
+    return launchFor(this.currentEntry);
   }
 
   /**
@@ -1379,8 +1401,8 @@ export abstract class LiveSession {
     const idx = (e: ChainEntry) => chain.findIndex((c) => this.sameEntry(parseEntry(c, this.harness), e));
     const cur = idx(this.currentEntry);
     if (cur >= 0 && idx(pick.entry) > cur) return false;
-    if (pick.entry.harness === this.harness) {
-      const key = providerOf(pick.entry.model, pick.entry.harness);
+    if (this.sameProcess(pick.entry)) {
+      const key = quotaKey(pick.entry);
       const wasSkipped = this.skipped.delete(key);
       await this.applyModel(pick.entry.model);
       this.notice(wasSkipped ? `Back on ${entryLabel(pick.entry)}.` : `Back on ${entryLabel(pick.entry)}: its usage limit has reset.`);
@@ -1407,7 +1429,7 @@ export abstract class LiveSession {
     if (!chain) return false;
     const c = hint ?? classify(errorText, status);
     const current = this.currentEntry;
-    let verifiable = !!accountOf(current);
+    let verifiable = usageCheckable(current);
     // A possible limit, rate-limit wording included (pi's "You have hit your ChatGPT usage limit …
     // Try again in ~N min", an Anthropic 429), is checked against the account's usage first. An
     // adapter's own rate-limit hint is taken as it is.
@@ -1437,7 +1459,7 @@ export abstract class LiveSession {
       this.offerContinue(errorText);
       return false;
     }
-    const until = markExhausted(providerOf(current.model, current.harness), limit.resetAt ?? c.resetAt);
+    const until = markExhausted(quotaKey(current), limit.resetAt ?? c.resetAt);
     this.notice(`Usage limit reached on ${entryLabel(current)} (resets ${fmtTime(until)}).`, "warning");
     // Stopped (or closed) while the usage check ran: the limit stands, but nothing moves on.
     if (this.userStopped || this.closed) return false;
@@ -1453,7 +1475,7 @@ export abstract class LiveSession {
       return true;
     }
     this.fallbackAttempt = 0;
-    if (pick.entry.harness !== this.harness) {
+    if (!this.sameProcess(pick.entry)) {
       await this.sink.handoff(this, pick.entry, `${entryLabel(current)} hit its usage limit`, undefined, { interrupted: true });
       return true;
     }
@@ -1506,13 +1528,13 @@ export abstract class LiveSession {
     const from = this.currentEntry;
     // You judged it unusable for now: this session's next message shouldn't go straight back to
     // it. Only here, though: no limit was confirmed, so other sessions keep using it.
-    const key = providerOf(from.model, from.harness);
-    if (key !== providerOf(to.model, to.harness)) {
+    const key = quotaKey(from);
+    if (key !== quotaKey(to)) {
       const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ");
       this.skipped.set(key, parseReset(text) ?? Date.now() + MANUAL_SKIP_MS);
     }
     this.fallbackAttempt = 0;
-    if (to.harness !== this.harness) return this.sink.handoff(this, to, `You moved it on from ${entryLabel(from)} after an error`, undefined, { interrupted: true });
+    if (!this.sameProcess(to)) return this.sink.handoff(this, to, `You moved it on from ${entryLabel(from)} after an error`, undefined, { interrupted: true });
     await this.applyModel(to.model);
     this.notice(`Switched to ${entryLabel(to)}.`);
     this.turnStarting = true;
@@ -1534,7 +1556,7 @@ export abstract class LiveSession {
       if (chain) {
         const pick = pickEntry(chain, this.harness);
         if ("waitUntil" in pick) return this.waitThenContinue(pick.waitUntil, reason, text);
-        if (pick.entry.harness !== this.harness) {
+        if (!this.sameProcess(pick.entry)) {
           this.setState({ waitingReason: undefined, waitingUntil: undefined });
           return this.sink.handoff(this, pick.entry, `${entryLabel(pick.entry)} has reset`, undefined, { interrupted: true });
         }
@@ -1555,7 +1577,7 @@ export abstract class LiveSession {
    * chat while it runs ("Checking usage on …"): it can take a while.
    */
   private async checkUsage(entry: ChainEntry): Promise<UsageCheck> {
-    if (!accountOf(entry)) return { unknown: true };
+    if (!usageCheckable(entry)) return { unknown: true };
     this.setState({ checking: `Checking usage on ${entryLabel(entry)}…` });
     try {
       return await confirmLimit(entry);
@@ -1584,16 +1606,20 @@ export abstract class LiveSession {
       if (!order) throw new Error("No default order is set. Set one in Settings.");
       await this.setChain(order);
     } else if (model) {
+      // "id#credential" (modelKey): on another credential (or back on the harness's own login) it's a new process.
+      const hash = model.indexOf("#");
+      const to: ChainEntry = { harness: this.harness, model: hash >= 0 ? model.slice(0, hash) : model, ...(hash >= 0 ? { credential: model.slice(hash + 1) } : {}) };
       this.setState({ chain: undefined });
-      await this.applyModel(model);
+      if (!this.sameProcess(to)) return this.sink.handoff(this, to, `You switched to ${entryLabel(to)}`);
+      await this.applyModel(to.model);
     }
   }
 
-  /** Sets this session's own fallback order. The first entry for this harness becomes current. */
+  /** Sets this session's own fallback order. The first entry for this harness (and credential) becomes current. */
   async setChain(chain: string[], preferEarlier?: boolean) {
     this.setState({ chain, ...(preferEarlier !== undefined ? { preferEarlier } : {}) });
     const pick = pickEntry(chain, this.harness);
-    if ("entry" in pick && pick.entry.harness === this.harness && pick.entry.model !== this.t.state.model) await this.applyModel(pick.entry.model);
+    if ("entry" in pick && this.sameProcess(pick.entry) && pick.entry.model !== this.t.state.model) await this.applyModel(pick.entry.model);
   }
 
   // ---- guard: who approves tool calls ----
@@ -2262,7 +2288,7 @@ export abstract class LiveSession {
         break;
       case "exhausted": {
         const e = parseEntry(c.entry, this.harness);
-        markExhausted(providerOf(e.model, e.harness), Date.now() + c.ms);
+        markExhausted(quotaKey(e), Date.now() + c.ms);
         this.notice(`${entryLabel(e, this.harness)} counts as at its usage limit for ${fmtSpan(c.ms)}.`);
         break;
       }
@@ -3697,9 +3723,9 @@ export const tetherOnly = (m: Msg) => m.role === "notice" || (m.role === "user" 
 export const joinPending = (list: PendingMessage[]) => list.map((p) => p.text).join("\n\n");
 const quote = (t: string) => t.trim().split("\n").map((l) => `> ${l}`).join("\n");
 
-/** "Opus 5.5", or "GPT-6 Luna in Codex" when it runs in another harness than `harness`. */
+/** "Opus 5.5", "GPT-6 Luna · Azure" on a credential, or "GPT-6 Luna in Codex" when it runs in another harness than `harness`. */
 export function entryLabel(e: ChainEntry, harness?: HarnessId): string {
-  const name = modelDisplay(e.model, e.harness).name;
+  const name = modelDisplay(e.model, e.harness).name + (e.credential ? ` · ${credentialLabel(e.credential)}` : "");
   return harness && e.harness !== harness ? `${name} in ${HARNESSES.find((h) => h.id === e.harness)?.label ?? e.harness}` : name;
 }
 

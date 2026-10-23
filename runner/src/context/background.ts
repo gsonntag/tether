@@ -25,7 +25,9 @@ export const DEFAULT_BACKGROUND_MODEL = "claude-code:haiku";
 
 /** The configured background model, always "harness:model" (older values are migrated on load). */
 export function backgroundModel(): string {
-  return normalizeModelEntry(config().backgroundModel) ?? DEFAULT_BACKGROUND_MODEL;
+  const m = normalizeModelEntry(config().backgroundModel);
+  // One on a credential ("…#azure:east", set by hand) would run on the harness's own login: not that.
+  return m && !parseEntry(m, "claude-code").credential ? m : DEFAULT_BACKGROUND_MODEL;
 }
 
 /** Whether the Auto-mode judge runs (on unless turned off in Settings). */

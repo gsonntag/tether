@@ -9,6 +9,7 @@ import { ToastViewport, useToast } from "@astryxdesign/core/Toast";
 import { Bars3Icon } from "@heroicons/react/24/outline";
 import { Dialogs } from "./components/Dialogs";
 import { MemoryPage } from "./components/MemoryPage";
+import { CredentialsPage } from "./components/Credentials";
 import { SessionView } from "./components/SessionView";
 import { Dashboard } from "./components/Dashboard";
 import { keys, Sidebar } from "./components/Sidebar";
@@ -70,6 +71,7 @@ function Shell() {
       }
       // The old Running page is Home's Working section.
       if (location.hash === "#/running") return openPage("running");
+      if (location.hash === "#/credentials") return openPage("credentials");
       // The sidebar's "Tether" heading.
       if (location.hash === "#/") return goHome();
       // A notification adds ?respond=<request|tool>:<id>:<approve|deny> (its Approve / Deny) or ?card=<id> (a tap).
@@ -141,6 +143,8 @@ function Shell() {
         )}
         {page === "memory" ? (
           <MemoryPage narrow={narrow} />
+        ) : page === "credentials" ? (
+          <CredentialsPage narrow={narrow} />
         ) : selected && page !== "running" ? (
           <SessionView key={selected} sessionId={selected} />
         ) : (

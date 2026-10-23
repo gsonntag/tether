@@ -407,7 +407,7 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
       <ActivityButton state={st} />
       <StackItem size="fill" />
       <ContextMeter state={st} />
-      <UsagePill harness={sess.harness} model={st.model} statuses={st.statuses} cost={st.cost} />
+      <UsagePill harness={sess.harness} model={st.model} credential={st.credential} statuses={st.statuses} cost={st.cost} />
     </>
   );
   if (narrow)

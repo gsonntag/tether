@@ -768,6 +768,8 @@ export class CrossAgents implements AgentHub {
     const child = this.deps.adapters[harness].create(cwd, { model, permissionMode: mode }, this.deps.sink);
     child.t.state.guard = guard;
     child.t.state.startedBy = startedBy;
+    // On the default order: its first entry's credential (before start: its process gets the env).
+    if (order?.credential) child.t.state.credential = order.credential;
     try {
       await child.start();
     } catch (e: any) {

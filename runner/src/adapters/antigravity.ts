@@ -235,7 +235,11 @@ class AgySession extends LiveSession {
     this.setState({ status: "idle", model: this.model ?? "default", modes: MODES, permissionMode: this.mode, ...this.effortState() });
     // Master context: shared memory goes ahead of the first message of a new conversation.
     if (!this.convId) this.preamble = (await sessionLaunch("antigravity", { projectPath: this.projectPath })).preamble;
+    // The session's credential, for every agy process this session spawns (one per turn).
+    this.cred = await this.credentialLaunch();
   }
+
+  private cred: { env: Record<string, string>; args: string[] } = { env: {}, args: [] };
 
   /** The attachment folders the running process was given (--add-dir). */
   private readFolders: string[] = [];
@@ -246,12 +250,12 @@ class AgySession extends LiveSession {
     const readDirs = this.readFolders.map((f) => join(attachmentsDir(), f));
     for (const d of readDirs) mkdirSync(d, { recursive: true, mode: 0o700 });
     const args = spawnArgs({ convId: this.convId, model: this.model, effort: this.effort, plan: this.mode === "plan", hookDir: ensureHookDir(), sandbox: SANDBOX, readDirs });
-    const proc = Bun.spawn([AGY_BIN, ...args], {
+    const proc = Bun.spawn([AGY_BIN, ...args, ...this.cred.args], {
       cwd: this.projectPath,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: agentEnv(this.guardEnv),
+      env: agentEnv({ ...this.cred.env, ...this.guardEnv }),
     });
     this.proc = proc;
     this.stale = false;

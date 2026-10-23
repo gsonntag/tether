@@ -7,7 +7,8 @@
 import { cleanOrder, entryProblem } from "../../web/src/shared/defaultOrder";
 import { parseEntry, type HarnessId, type ModelRef } from "../../web/src/shared/protocol";
 import { config, saveConfig } from "./config";
-import { exhaustedUntil, isInstalled, providerOf } from "./fallback";
+import { entryAvailable } from "./credentials/registry";
+import { exhaustedUntil, isInstalled, quotaKey } from "./fallback";
 
 /** The saved default order (a copy), or undefined while none is saved. */
 export function defaultOrder(): string[] | undefined {
@@ -15,11 +16,14 @@ export function defaultOrder(): string[] | undefined {
   return o?.length ? [...o] : undefined;
 }
 
-/** Saves it (trimmed, no repeats); an empty one clears it. A bad entry refuses the whole save. */
-export function saveDefaultOrder(order: unknown): string[] | undefined {
+/**
+ * Saves it (trimmed, no repeats); an empty one clears it. A bad entry refuses the whole save, and
+ * so does a "#credential" not in `credentials` (the runner's ids, credentials/registry.ts) when given.
+ */
+export function saveDefaultOrder(order: unknown, credentials?: ReadonlySet<string>): string[] | undefined {
   if (!Array.isArray(order) || order.some((e) => typeof e !== "string")) throw new Error('The default order is a list of "harness:model" entries.');
   const clean = cleanOrder(order);
-  const bad = clean.map(entryProblem).find(Boolean);
+  const bad = clean.map((e) => entryProblem(e, credentials)).find(Boolean);
   if (bad) throw new Error(`${bad}. Nothing was saved.`);
   const cfg = config();
   if (clean.length) cfg.defaultOrder = clean;
@@ -31,6 +35,8 @@ export function saveDefaultOrder(order: unknown): string[] | undefined {
 export interface SessionStart {
   harness: HarnessId;
   model?: string;
+  /** the credential its first entry runs on */
+  credential?: string;
   /** the session's own chain: a copy of the default order */
   chain?: string[];
 }
@@ -46,12 +52,20 @@ export function sessionStart(
   order: string[] | undefined,
   installed: (h: HarnessId) => boolean = isInstalled,
 ): SessionStart {
-  const plain = { harness: want.harness, ...(want.model ? { model: want.model } : {}) };
+  // A picked model may name its credential ("gpt-6-luna#azure:east").
+  const picked = want.model ? parseEntry(want.model, want.harness) : undefined;
+  const plain = { harness: want.harness, ...(picked?.model ? { model: picked.model } : {}), ...(picked?.credential ? { credential: picked.credential } : {}) };
   if (!want.useOrder || !order?.length) return plain;
-  const entries = order.map((e) => parseEntry(e, want.harness)).filter((e) => installed(e.harness));
-  const e = entries.find((x) => !exhaustedUntil(providerOf(x.model, x.harness))) ?? entries[0];
+  // Entries on a harness that isn't installed, or a credential that is gone, are passed over.
+  const entries = order.map((e) => parseEntry(e, want.harness)).filter((e) => installed(e.harness) && entryAvailable(e));
+  const e = entries.find((x) => !exhaustedUntil(quotaKey(x))) ?? entries[0];
   if (!e) return plain;
-  return { harness: e.harness, ...(e.model && e.model !== "default" ? { model: e.model } : {}), chain: [...order] };
+  return {
+    harness: e.harness,
+    ...(e.model && e.model !== "default" ? { model: e.model } : {}),
+    ...(e.credential ? { credential: e.credential } : {}),
+    chain: [...order],
+  };
 }
 
 /** What the runner knows about one installed harness, for a suggested order. */
