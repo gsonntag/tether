@@ -71,8 +71,6 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   if (next.t.state.reviewOf) next.t.state.guard = "auto";
   // A cross-harness subagent stays one: its parent follows it to the new session.
   next.inheritStartedBy(from);
-  // The leader stays the leader (before start: its launch adds the leader tools).
-  next.inheritLeader(from);
   try {
     await next.start();
   } finally {
@@ -91,7 +89,6 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
     guard: next.t.state.reviewOf ? "auto" : from.guardMode,
     ...(next.t.state.reviewOf ? { reviewOf: next.t.state.reviewOf } : {}),
     ...(next.t.state.startedBy ? { startedBy: next.t.state.startedBy } : {}),
-    ...(next.t.state.leader ? { leader: true } : {}),
   });
   if (to.model !== "default" && next.t.state.model !== to.model) await next.applyModel(to.model);
   const goal = from.goalState;

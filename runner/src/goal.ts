@@ -9,7 +9,7 @@
 //
 // This file is the part without a session: the command, the prompts, the budget and the check.
 
-import { LEADER_RELAY_PREFIX, splitAgentWritten } from "../../web/src/shared/subagents";
+import { splitAgentWritten } from "../../web/src/shared/subagents";
 import type { GoalBudget, GoalNote, GoalStatus, Msg, SessionGoal, SlashCommand } from "../../web/src/shared/protocol";
 import { budgetUsed, fmtDuration, fmtTokens, STATUS_LABEL } from "../../web/src/shared/goal";
 import { parseJsonReply, runBackground } from "./context/background";
@@ -209,11 +209,7 @@ export const checkGoal = (c: GoalCheck) => judge(c);
 
 /** The last `max` characters' worth of conversation: user and agent text, tool calls and short results. */
 /** How agent-written user messages are labelled where a model reads the conversation. */
-export const AGENT_LABEL = "Tether (about a subagent, another agent's message, or the user's leader agent's own note; not the user)";
-/** The user's own words, relayed verbatim by their leader agent (the runner copied them). */
-export const RELAY_LABEL = "User (their own words, passed on verbatim by their leader agent)";
-/** Who wrote the user's part of a message: the user, here or through the leader. */
-export const userLabel = (user: string) => (user.startsWith(LEADER_RELAY_PREFIX) ? RELAY_LABEL : "User");
+export const AGENT_LABEL = "Tether (about a subagent, or another agent's message; not the user)";
 
 export function transcriptTail(messages: Msg[], max = 12_000): string {
   const out: string[] = [];
@@ -235,7 +231,7 @@ export function transcriptTail(messages: Msg[], max = 12_000): string {
     // Tether's notes about subagents and another agent's messages aren't the user's words.
     if (m.role === "user") {
       const { user, agent } = splitAgentWritten(lines.join("\n"));
-      block = [user && `${userLabel(user)}: ${user}`, agent && `${AGENT_LABEL}: ${agent}`].filter(Boolean).join("\n\n");
+      block = [user && `User: ${user}`, agent && `${AGENT_LABEL}: ${agent}`].filter(Boolean).join("\n\n");
       if (!block) continue;
     }
     out.unshift(block);

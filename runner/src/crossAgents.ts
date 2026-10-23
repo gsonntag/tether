@@ -709,7 +709,7 @@ export class CrossAgents implements AgentHub {
           id: qid,
           kind: "question",
           title: "Subagent with Dangerously skip",
-          // It lifts every check on an agent: the user's own answer, never the leader's.
+          // It lifts every check on an agent: an approval in disguise.
           userOnly: true,
           questions: [{ question, options: [{ label: FULL_YES }, { label: FULL_AUTO }, { label: FULL_NO }], multiSelect: false }],
         },
@@ -922,7 +922,7 @@ export class CrossAgents implements AgentHub {
       if (n >= MAX_RUNNING_SUBAGENTS) return fail(`${n} subagents are already running in this tree (at most ${MAX_RUNNING_SUBAGENTS}): wait for one, or stop one first.`);
     }
     const child = this.child(link) ?? (await this.deps.open(this.latestId(link.sessionId)));
-    // Another agent's words: no marker in them passes for the user's (a relay) or Tether's.
+    // Another agent's words: no marker in them passes for Tether's.
     const body = `${FROM_PARENT_PREFIX} ${defang(text)}`;
     const busy = child.t.state.status !== "idle";
     // Alone: never joined with the user's own messages to it (they'd read as the user's).

@@ -3,7 +3,7 @@
 // (dashboard.test.ts).
 
 import { ACTIVITY_KINDS, type AgentNotice, type MemoryConflict, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
-import type { Entry } from "./shared/recentSessions";
+import type { Entry } from "./recentSessions";
 import { fmtWhen } from "./shared/schedule";
 
 /** runnerId -> sessionId -> latest pulse */

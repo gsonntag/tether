@@ -17,7 +17,6 @@ import {
   ArrowsPointingInIcon,
   ArrowUpLeftIcon,
   ArrowUturnLeftIcon,
-  ChatBubbleLeftRightIcon,
   ChevronRightIcon,
   ClipboardDocumentCheckIcon,
   Cog6ToothIcon,
@@ -33,12 +32,12 @@ import { diffLines } from "diff";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
-import { act, cardFocused, openLeader, selectSession, useStore } from "../store";
+import { act, cardFocused, selectSession, useStore } from "../store";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
 import { REVIEW_PREFIX } from "../shared/review";
-import { LEADER_DIGEST_PREFIX, parseLeaderMessage, SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX } from "../shared/subagents";
+import { SUBAGENT_NOTE_PREFIX, SUBAGENT_TASK_PREFIX } from "../shared/subagents";
 import { AttachmentChips } from "./Attachments";
 import { FileOpenButton, fileRefMarkdown, ToolOutput } from "./FileRefs";
 import { MsgTime } from "./MsgTime";
@@ -342,40 +341,7 @@ const EVENT_ICONS = {
   compaction: ArrowsPointingInIcon,
   channel: EnvelopeIcon,
   memory: LightBulbIcon,
-  leader: ChatBubbleLeftRightIcon,
 } as const;
-
-const quoteStyle: CSSProperties = { ...preWrap, display: "block", borderInlineStart: "var(--border-width) solid var(--color-border)", paddingInlineStart: "var(--spacing-2)" };
-
-/**
- * A message from the leader agent (runner/src/leader.ts): your own words it passed on (the runner
- * copied them from your leader chat), and its own note, each marked as whose it is.
- */
-function LeaderCard({ relay, note, time }: { relay?: string; note?: string; time?: ReactNode }) {
-  return (
-    <Card width="100%" padding={3} variant="transparent">
-      <VStack gap={2}>
-        <HStack gap={1.5} vAlign="center">
-          <Icon icon={ChatBubbleLeftRightIcon} color="secondary" size="sm" />
-          <Text type="supporting">From your leader</Text>
-          {time}
-        </HStack>
-        {relay !== undefined && (
-          <VStack gap={1}>
-            <Text type="supporting">Your words, passed on as you wrote them</Text>
-            <Text style={quoteStyle}>{relay}</Text>
-          </VStack>
-        )}
-        {note && (
-          <VStack gap={1}>
-            {relay !== undefined && <Text type="supporting">Its note</Text>}
-            <Text style={preWrap}>{note}</Text>
-          </VStack>
-        )}
-      </VStack>
-    </Card>
-  );
-}
 
 const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; last: boolean; amendable?: boolean; timed?: boolean }) {
   const time = timed ? <MsgTime ts={m.ts} /> : undefined;
@@ -384,12 +350,10 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
       .flatMap((p) => (p.type === "text" ? [p.text] : []))
       .join("\n")
       .trimEnd();
-    const fromLeader = parseLeaderMessage(text);
-    if (fromLeader) return <LeaderCard relay={fromLeader.relay} note={fromLeader.note} time={time} />;
-    // Tether's word about a subagent (finished, failed, stopped) or the leader's updates, and a subagent's task with its instructions.
-    if (text.startsWith(SUBAGENT_NOTE_PREFIX) || text.startsWith(LEADER_DIGEST_PREFIX) || text.startsWith(SUBAGENT_TASK_PREFIX)) {
+    // Tether's word about a subagent (finished, failed, stopped), and a subagent's task with its instructions.
+    if (text.startsWith(SUBAGENT_NOTE_PREFIX) || text.startsWith(SUBAGENT_TASK_PREFIX)) {
       const note = !text.startsWith(SUBAGENT_TASK_PREFIX);
-      const head = text.startsWith(LEADER_DIGEST_PREFIX) ? "Updates from your sessions" : note ? text.slice("[Tether] ".length).split("\n")[0]! : "Task from the agent that started this subagent";
+      const head = note ? text.slice("[Tether] ".length).split("\n")[0]! : "Task from the agent that started this subagent";
       return (
         <Card width="100%" padding={3} variant="transparent">
           <Collapsible
@@ -880,27 +844,15 @@ export function LinkBanner({
   forked,
   reviewOf,
   startedBy,
-  createdBy,
 }: {
   from?: Link;
   to?: Link;
   forked?: Link;
   reviewOf?: { sessionId: string };
   startedBy?: { sessionId: string; name: string };
-  createdBy?: { by: "leader" };
 }) {
   return (
     <>
-      {createdBy && (
-        <Card width="100%" padding={2} variant="transparent">
-          <HStack gap={2} vAlign="center" wrap="wrap">
-            <Icon icon={ChatBubbleLeftRightIcon} color="secondary" size="sm" />
-            <Text type="supporting">Started by your</Text>
-            <Button label="Leader" size="sm" onClick={openLeader} />
-            <Text type="supporting">at your request.</Text>
-          </HStack>
-        </Card>
-      )}
       {startedBy && (
         <Card width="100%" padding={2} variant="transparent">
           <HStack gap={2} vAlign="center" wrap="wrap">

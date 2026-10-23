@@ -58,7 +58,7 @@ interface State {
   sidebarHidden: boolean;
   /** the session's history panel of finished work (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
-  dialog?: "new" | "addProject" | "settings" | "fork" | "leader";
+  dialog?: "new" | "addProject" | "settings" | "fork";
   newSessionProject?: string;
   /** the message "Fork from here" was picked on (dialog "fork") */
   forkTarget?: ForkTarget;
@@ -504,15 +504,6 @@ export function selectSession(sessionId: string | undefined) {
     rememberLink(sessionId);
     history.replaceState(null, "", `#/s/${encodeURIComponent(linkId(sessionId))}`);
   } else history.replaceState(null, "", "#/");
-}
-
-/** The Leader item and Home's button: the leader agent's chat, or "Start your leader" when the runner has none. */
-export async function openLeader() {
-  const r = await act("getLeader", {});
-  if (!r) return;
-  if (!r.session) return set({ dialog: "leader", sidebarOpen: false });
-  upsertSummary(r.session);
-  selectSession(r.session.id);
 }
 
 // ---------------- master context (shared memory and skills) ----------------

@@ -18,9 +18,9 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { BookOpenIcon, ChatBubbleLeftRightIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { BookOpenIcon, ChevronDoubleLeftIcon, Cog6ToothIcon, CpuChipIcon, HomeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { listPath, type ProjectInfo, type SessionSearchResult, type SessionSummary } from "../shared/protocol";
-import { act, goHome, openLeader, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
+import { act, goHome, openPage, rpc, selectSession, switchRunner, toggleProject, toggleSidebar, useStore } from "../store";
 import { allowTrashClick, holdTrashUntilMove, useTrashHeld } from "../trashGuard";
 import { ago } from "../util";
 import { activityAt, byActivity, byListOrder, nestSubagents, projectIsQuiet, sessionState, showInSidebar, unreadNotice } from "../recentSessions";
@@ -184,7 +184,6 @@ export function Sidebar({ narrow }: { narrow?: boolean }) {
       ) : (
         <>
         <HomeNavItem />
-        <LeaderNavItem />
         <MemoryNavItem />
         <SessionsSection />
         <SideNavSection
@@ -292,24 +291,6 @@ function HomeNavItem() {
           </Tooltip>
         ) : undefined
       }
-    />
-  );
-}
-
-/**
- * The leader agent's chat (runner/src/leader.ts): one agent that follows every session and passes
- * on what you tell it. It isn't in the lists below (but for its own questions).
- */
-function LeaderNavItem() {
-  const on = useStore((s) => !!s.selected && !!s.open[s.selected]?.session?.leader);
-  const working = useStore((s) => Object.values(s.sessions).some((list) => list.some((x) => x.leader && x.live && x.status === "running")));
-  return (
-    <SideNavItem
-      label="Leader"
-      icon={ChatBubbleLeftRightIcon}
-      isSelected={on}
-      onClick={openLeader}
-      endContent={working ? <StatusDot variant="accent" isPulsing label="Working" /> : undefined}
     />
   );
 }
@@ -629,11 +610,6 @@ const SessionRow = memo(function SessionRow({ s, at, withProject, needsYou, dept
           {s.startedBy && (
             <Tooltip content={`Subagent "${s.startedBy.name}", started by ${s.startedBy.title ? `“${s.startedBy.title}”` : "another session"}`}>
               <Icon icon={CpuChipIcon} size="xsm" color="secondary" />
-            </Tooltip>
-          )}
-          {s.createdBy && (
-            <Tooltip content="Started by your leader, at your request">
-              <Icon icon={ChatBubbleLeftRightIcon} size="xsm" color="secondary" />
             </Tooltip>
           )}
           <HarnessGlyph harness={s.harness} />
