@@ -10,7 +10,7 @@ import type { CredentialList, CredentialProviderInfo, CredentialView } from "../
 
 // slot bedrock: import { bedrockSlot } from "./bedrock";
 
-// slot accounts: import { accountSlots } from "./accounts";
+import { accountSlots } from "./accounts";
 
 // The registry and types live in ./slots (tests import that, not the slots, which may need a browser).
 export { clearSlots, registerSlot, slotFor, type CredentialSlot, type OnList } from "./slots";
@@ -20,4 +20,4 @@ import { registerSlot } from "./slots";
 
 // slot bedrock: registerSlot(bedrockSlot);
 
-// slot accounts: registerSlot(...accountSlots);
+registerSlot(...accountSlots);

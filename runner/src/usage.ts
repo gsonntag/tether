@@ -105,24 +105,26 @@ const pct = (n: number | null | undefined) => (typeof n === "number" ? Math.max(
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) || undefined : undefined);
 
 /**
- * Usage of the login in one harness home (an account's CLAUDE_CONFIG_DIR / CODEX_HOME, credentials
- * registry homeFor): what an accounts plugin's usage() reads. The machine's own login is getUsage's.
+ * Usage of the login in one harness home (an account's CLAUDE_CONFIG_DIR / CODEX_HOME / pi agent
+ * dir, credentials registry homeFor): what an accounts plugin's usage() reads, always fetched fresh.
+ * `env`: the env for Claude Code's check (an account's runs without the machine's token variables,
+ * which would win over its login). The machine's own logins are getUsage's.
  */
-export function usageAtHome(harness: "claude-code" | "codex", home: string): Promise<ProviderUsage | undefined> {
-  if (harness === "claude-code") return claudeUsage(home);
-  const auth = codexCliAuth(home);
-  return auth ? codexUsage(auth) : Promise.resolve(undefined);
+export async function usageAtHome(harness: "claude-code" | "codex" | "pi", home: string, env: Record<string, string | undefined> = process.env): Promise<ProviderUsage | undefined> {
+  if (harness === "claude-code") return claudeUsage({ ...env, CLAUDE_CONFIG_DIR: home });
+  const auth = harness === "pi" ? piAuth(home) : codexCliAuth(home);
+  return auth ? codexUsage(auth) : undefined;
 }
 
-/** `home`: an account's CLAUDE_CONFIG_DIR; none: the runner's own (the machine's login). */
-async function claudeUsage(home?: string): Promise<ProviderUsage | undefined> {
+/** `env`: an account's (with its CLAUDE_CONFIG_DIR); none: the runner's own (the machine's login). */
+async function claudeUsage(env?: Record<string, string | undefined>): Promise<ProviderUsage | undefined> {
   async function* idle(): AsyncGenerator<never> {
     await new Promise(() => {});
   }
   // A throwaway Claude Code process that never gets a prompt: it only answers the usage request.
   const q = query({
     prompt: idle(),
-    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [], ...(home ? { env: { ...process.env, CLAUDE_CONFIG_DIR: home } } : {}) } as any,
+    options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [], ...(env ? { env } : {}) } as any,
   });
   try {
     const u: any = await Promise.race([
@@ -150,9 +152,9 @@ async function claudeUsage(home?: string): Promise<ProviderUsage | undefined> {
 
 type CodexAuth = { access: string; accountId?: string; expires?: number };
 
-function piAuth(): CodexAuth | undefined {
+function piAuth(dir = join(userHome(), ".pi", "agent")): CodexAuth | undefined {
   try {
-    const pi = JSON.parse(readFileSync(join(userHome(), ".pi", "agent", "auth.json"), "utf8"))["openai-codex"];
+    const pi = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"))["openai-codex"];
     if (pi?.access) return pi;
   } catch {}
   return undefined;

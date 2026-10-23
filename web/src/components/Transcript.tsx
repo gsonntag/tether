@@ -32,7 +32,7 @@ import { diffLines } from "diff";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
-import { act, cardFocused, selectSession, useStore } from "../store";
+import { act, cardFocused, openPage, selectSession, useStore } from "../store";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
@@ -451,6 +451,11 @@ const Message = memo(function Message({ m, last, amendable, timed }: { m: Msg; l
           </Markdown>
           {action?.kind === "continueOn" && <ContinueOnAction label={action.label} msgId={m.id} />}
           {action?.kind === "mcpAuth" && <McpAuthAction label={action.label} server={action.server} />}
+          {action?.kind === "signIn" && (
+            <HStack>
+              <Button label={action.label} size="sm" onClick={() => openPage("credentials", action.credential)} />
+            </HStack>
+          )}
         </VStack>
       </NoticeCard>
     );

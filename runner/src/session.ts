@@ -28,6 +28,7 @@ import { mergeContext, switchModel } from "./contextWindow";
 import { clearBlocked, DenialNotifier, notify, pushDenials, recordDenial } from "./notify";
 import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, quotaKey, sameEntry, usageCheckable, type Classified, type UsageCheck } from "./fallback";
 import { credentialLabel, launchFor, type CredentialLaunch } from "./credentials/registry";
+import { signInFor } from "./credentials/authError";
 import { defaultOrder } from "./defaultOrder";
 import { modelDisplay } from "../../web/src/models";
 import { addApprovalRule, approvalRules, attachmentWrite, callLine, clip, commandOf, deriveRule, isContextTool, judge, kindOf, matchRule, precedentsFor, recordPrecedent, rules, type GuardMode, type Verdict } from "./guard";
@@ -413,7 +414,11 @@ export abstract class LiveSession {
     const id = newId("n");
     // An error that fallback didn't act on: the button moves the session on by hand.
     const offer = level === "error" ? this.continueOffer : undefined;
-    const action = offer && { kind: "continueOn" as const, label: `Continue on ${entryLabel(offer.entry, this.harness)}`, entry: formatEntry(offer.entry) };
+    // A sign-in problem (expired or missing login): "Sign in to Claude" instead (credentials/authError.ts).
+    const signIn = level === "error" ? signInFor(this.currentEntry, text) : undefined;
+    const action: Msg["action"] = offer
+      ? { kind: "continueOn" as const, label: `Continue on ${entryLabel(offer.entry, this.harness)}`, entry: formatEntry(offer.entry) }
+      : signIn && { kind: "signIn" as const, label: `Sign in to ${signIn.provider}`, credential: signIn.credential };
     if (offer) {
       this.continueOffer = undefined;
       this.withdrawOffer();
@@ -422,7 +427,7 @@ export abstract class LiveSession {
     this.emit({ type: "msg", msg: { id, role: "notice", parts: [{ type: "text", text }], ts: Date.now(), level, ...extra, ...(action ? { action } : {}) } });
     if (level === "error") {
       this.turnTrouble = true;
-      this.alert("blocked", "Failed", text);
+      this.alert("blocked", signIn ? `Sign in to ${signIn.provider}` : "Failed", text);
     }
   }
 
