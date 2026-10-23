@@ -15,10 +15,11 @@ import { defang, LEADER_DIGEST_PREFIX, LEADER_NOTE_PREFIX, LEADER_RELAY_PREFIX, 
 import type { Sink } from "./adapters/types";
 import { config } from "./config";
 import { handle, LEADER_TOOLS, tools } from "./context/mcp";
+import { disallowed } from "./adapters/claude";
 import { RELAY_LABEL, transcriptTail } from "./goal";
 import { renderTranscript } from "./handoff";
 import { digestText, Leader, LEADER_TIMING, LeaderFeed, MAX_ACTIONS_PER_TURN } from "./leader";
-import { leaderAnswers, leaderMayAnswer, LiveSession, newId, nextTurnSize } from "./session";
+import { LEADER_NO_SUBAGENTS_REASON, leaderAnswers, leaderMayAnswer, LiveSession, newId, nextTurnSize } from "./session";
 import { formRequest } from "./adapters/elicitation";
 import { withAttachments } from "../../web/src/shared/attachments";
 import { EMPTY_DRAFT } from "../../web/src/shared/plan";
@@ -1094,5 +1095,46 @@ describe("session_create", () => {
     expect(r.ok).toBe(false);
     expect(r.text).toContain("Only the leader");
     expect(w.created.length).toBe(0);
+  });
+});
+
+describe("no subagents or workflows for the leader", () => {
+  test("Claude's leader never gets Agent, Task or Workflow; other sessions keep them", () => {
+    expect(disallowed(["X"], { leader: true }).disallowedTools).toEqual(["X", "Agent", "Task", "Workflow"]);
+    expect(disallowed(undefined, { review: true, leader: true }).disallowedTools).toEqual(expect.arrayContaining(["Edit", "Write", "Agent", "Workflow"]));
+    expect(disallowed(["X"], {})).toEqual({});
+    expect(disallowed(undefined, { review: true }).disallowedTools).not.toContain("Agent");
+  });
+
+  test("the guard refuses them to the leader on any harness and guard, even after an approval; other sessions are unaffected", async () => {
+    const w = world();
+    const l = w.makeLeader();
+    const other = w.session("app");
+    for (const guard of ["ask", "auto", "full"] as const) {
+      l.setState({ guard });
+      for (const tool of ["Agent", "Task", "Workflow", "agent", "invoke_subagent"]) {
+        const v = await l.checkTool(tool, { prompt: "explore the repo" });
+        expect(v.allow).toBe(false);
+        expect(v.reason).toBe(LEADER_NO_SUBAGENTS_REASON);
+      }
+    }
+    // An "Approve & retry" of a blocked call doesn't let one through either.
+    (l as any).approved.add(JSON.stringify(["Agent", { prompt: "explore the repo" }]));
+    expect((await l.checkTool("Agent", { prompt: "explore the repo" })).allow).toBe(false);
+    // Nothing waits on the user for them: refused outright.
+    expect(l.t.state.pendingUi.length).toBe(0);
+    other.setState({ guard: "full" });
+    expect((await other.checkTool("Agent", { prompt: "explore" })).allow).toBe(true);
+    expect((await other.checkTool("Workflow", { script: "x" })).allow).toBe(true);
+  });
+
+  test("the leader's instructions say to delegate through session_create", async () => {
+    process.env.TETHER_CONTEXT_LEADER = "1";
+    try {
+      const init: any = await handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+      expect(init.result.instructions).toContain("Delegate work only through Tether sessions (session_create), never with subagents or workflows of your own");
+    } finally {
+      delete process.env.TETHER_CONTEXT_LEADER;
+    }
   });
 });

@@ -129,6 +129,15 @@ const UNVERIFIED_BACKOFFS = 3;
 /** ask_user's answer when nobody answered (the same as Claude Code's AskUserQuestion gets) */
 export const NOBODY_ANSWERED = "Nobody answered. Make the most reasonable choice yourself, say which one you made, and continue.";
 
+/**
+ * Tools the leader never runs, on any harness: its own subagents (Claude's Agent / Task, Codex's
+ * Agent items, Antigravity's invoke_subagent) and workflows. It delegates by starting Tether sessions.
+ */
+export const LEADER_BARRED_TOOLS = ["Agent", "Task", "Workflow"];
+export const isLeaderBarred = (tool: string) => LEADER_BARRED_TOOLS.some((t) => t.toLowerCase() === tool.toLowerCase()) || /^(invoke_subagent|workflow)$/i.test(tool);
+export const LEADER_NO_SUBAGENTS_REASON =
+  "The leader doesn't run subagents or workflows (they fill its context). Delegate by starting a Tether session with session_create, once the user asks for one.";
+
 /** Whether the leader agent may answer this request for the user: a question marked leaderMay, or a plan; never anything userOnly. */
 export const leaderMayAnswer = (r: UiRequest | undefined): boolean => !!r && !r.userOnly && (r.kind === "plan" || (r.kind === "question" && !!r.leaderMay));
 
@@ -1723,10 +1732,13 @@ export abstract class LiveSession {
     let runMyself = false;
     // A review session, plan mode (or a plan waiting for review) hold back changes, whatever the guard mode.
     const held = this.reviewHold(tool, input) ?? this.planHold(tool, input);
+    // The leader delegates only through Tether sessions (session_create): never, not even approved.
+    const barred = this.leaderBar(tool);
     // Your PreToolUse hooks (hooks.ts) come first, as in Claude Code; "Approve & retry" skips them.
-    const hook = this.approved.has(key) || held ? undefined : await this.preToolHook(tool, input, toolId);
+    const hook = this.approved.has(key) || held || barred ? undefined : await this.preToolHook(tool, input, toolId);
     const hookAllow = hook?.decision === "allow" ? hook.reason : undefined;
-    if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
+    if (barred) v = { decision: "deny", by: "mode", reason: barred };
+    else if (this.approved.has(key)) v = { decision: "allow", by: "user", reason: "Approved after it was blocked." };
     else if (held) v = { decision: "deny", by: "mode", reason: held };
     // `continue: false` wins over any decision, as in Claude Code: the call doesn't run and the agent stops.
     else if (hook?.stop) v = { decision: "deny", by: "hook", reason: hook.stop };
@@ -3380,6 +3392,11 @@ export abstract class LiveSession {
   private reviewSettled = false;
   /** where the review session's running turn starts in the transcript (its reply is read from there) */
   private reviewTurnFrom = 0;
+
+  /** Why the leader may not run this call (checkTool): its own subagents and workflows bloat its context. */
+  private leaderBar(tool: string): string | undefined {
+    return this.isLeaderSession && isLeaderBarred(tool) ? LEADER_NO_SUBAGENTS_REASON : undefined;
+  }
 
   /** Why a review session holds this call back, if it does (checkTool). */
   private reviewHold(tool: string, input: unknown): string | undefined {
