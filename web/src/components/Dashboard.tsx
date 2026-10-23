@@ -1,7 +1,8 @@
 // Home, the main page: one ranked inbox of what waits on you across every connected runner
 // (dashboard.ts rankInbox: approvals, questions and plans, blocked calls, memory conflicts, then
 // finished turns you haven't opened), answerable in place; then what's working, and a few
-// sessions to continue. Live (runner pulses, no polling).
+// sessions to continue. Live (runner pulses, no polling). While no default order is saved, a
+// setup card for it sits on top.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -48,6 +49,7 @@ import { enablePush, needsHomeScreen, pushOnHere, pushState, pushSupported } fro
 import { ago, harnessLabel } from "../util";
 import { pulseWork, workState } from "../workState";
 import { WorkIndicator } from "./WorkIndicator";
+import { DefaultOrderCard } from "./DefaultOrder";
 import { HarnessGlyph } from "./HarnessBadge";
 import { AgoWithAction, RowMenus, rowMenuKey, TitleLink, type RowMenuItems } from "./RowMenu";
 import { archive, removeSession } from "./Sidebar";
@@ -218,6 +220,7 @@ export function Dashboard({ focus }: { focus?: "running" }) {
         <LayoutContent padding={phone ? 0 : 6} role="main">
           <RowMenus itemsFor={menuFor}>
             <VStack gap={phone ? 4 : 6} paddingBlockEnd={6}>
+              <DefaultOrderCard />
               <NotifyBanner hasInbox={inbox.length > 0} />
               {!loaded ? (
                 <VStack padding={4}>

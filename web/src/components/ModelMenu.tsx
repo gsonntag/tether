@@ -12,9 +12,9 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { ArrowsRightLeftIcon } from "@heroicons/react/24/outline";
-import { formatEntry, type HarnessId, type LiveState, type ModelProfile, type ModelRef } from "../shared/protocol";
-import { act, rpc } from "../store";
-import { chainLabel, modelDisplay } from "../models";
+import { formatEntry, type HarnessId, type LiveState, type ModelRef } from "../shared/protocol";
+import { act, learnModels, rpc, useStore } from "../store";
+import { modelDisplay, orderLabel } from "../models";
 import { ChainEditor } from "./ChainEditor";
 import { modelIcon, modelTooltip } from "./ModelName";
 
@@ -85,24 +85,25 @@ export function useModels(harnesses: HarnessId[], sessionId?: string) {
   useEffect(() => {
     for (const h of harnesses)
       rpc("listModels", { harness: h, sessionId })
-        .then((r) => setModels((m) => ({ ...m, [h]: r.models })))
+        .then((r) => {
+          learnModels(h, r.models);
+          setModels((m) => ({ ...m, [h]: r.models }));
+        })
         .catch(() => {});
   }, [harnesses.join(","), sessionId]);
   return models;
 }
 
 /**
- * Model picker plus this session's fallback chain: pick one model, apply a profile, or edit the
+ * Model picker plus this session's fallback chain: pick one model, use the default order, or edit the
  * order (entries may name another harness; moving to one hands the conversation off).
  */
 export function ModelMenu({ sessionId, harness, state }: { sessionId: string; harness: HarnessId; state: LiveState }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
-  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
+  const order = useStore((s) => s.defaultOrder);
+  useStore((s) => s.aliasVersion); // labels follow what aliases resolve to
   const models = useModels(open ? [harness] : [], sessionId);
-  useEffect(() => {
-    if (open) rpc("getProfiles", {}).then(setProfiles).catch(() => {});
-  }, [open]);
 
   const chain = state.chain ?? [];
   const cur = state.model ?? "default";
@@ -111,7 +112,7 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
     .map((m) => ({ ...m, d: modelDisplay(m.id, harness) }))
     .filter((m) => `${m.id} ${m.label ?? ""} ${m.d.name}`.toLowerCase().includes(filter.toLowerCase()));
   const curD = modelDisplay(cur, harness);
-  const label = state.profile ? `${state.profile} · ${curD.name}` : curD.name;
+  const label = curD.name;
 
   const content = (
     <VStack gap={3}>
@@ -127,22 +128,13 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
           />
         )}
       </VStack>
-      {profiles.length > 0 && (
-        <VStack gap={1.5}>
-          <MenuTitle>Apply a profile</MenuTitle>
-          <HStack gap={1.5} wrap="wrap">
-            {profiles.map((p) => (
-              <Button
-                key={p.name}
-                label={p.name}
-                size="sm"
-                variant={state.profile === p.name ? "primary" : "secondary"}
-                tooltip={chainLabel(p.chain, harness)}
-                onClick={() => act("setModel", { sessionId, profile: p.name })}
-              />
-            ))}
-          </HStack>
-        </VStack>
+      {order && JSON.stringify(order) !== JSON.stringify(chain) && (
+        <HStack gap={1.5} vAlign="center">
+          <Text type="supporting" maxLines={2}>
+            Default order: {orderLabel(order)}
+          </Text>
+          <Button label="Use it" size="sm" onClick={() => act("setModel", { sessionId, defaultOrder: true })} />
+        </HStack>
       )}
       <VStack gap={1.5}>
         <MenuTitle>Switch this session's model</MenuTitle>

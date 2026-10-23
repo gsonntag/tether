@@ -62,12 +62,40 @@ export function keepsGuard(mode: string | undefined): mode is "default" | "plan"
   return mode === "default" || mode === "plan";
 }
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-const FALLBACK_MODELS: ModelRef[] = [
+/** Only when Claude Code can't list its models: the aliases with what they resolved to when last checked. */
+export const FALLBACK_MODELS: ModelRef[] = [
   { id: "default", label: "Default" },
-  { id: "opus", label: "Opus" },
-  { id: "sonnet", label: "Sonnet" },
-  { id: "haiku", label: "Haiku" },
+  { id: "opus", label: "Opus", resolved: "claude-opus-5-5" },
+  { id: "sonnet", label: "Sonnet", resolved: "claude-sonnet-5-5" },
+  { id: "haiku", label: "Haiku", resolved: "claude-haiku-5-5" },
 ];
+
+/** Claude Code's model list as the picker shows it: each alias with the concrete model it runs now. */
+export function claudeModelRefs(ms: { value: string; displayName?: string; resolvedModel?: string }[]): ModelRef[] {
+  return ms.map((m) => ({
+    id: m.value,
+    label: m.displayName,
+    ...(m.resolvedModel && m.resolvedModel !== m.value && m.value !== "default" ? { resolved: m.resolvedModel } : {}),
+  }));
+}
+
+/** The list from a throwaway Claude Code process (no prompt, nothing saved), when no session has given it yet. */
+async function fetchModels(): Promise<ModelRef[] | undefined> {
+  async function* idle(): AsyncGenerator<never> {
+    await new Promise(() => {});
+  }
+  const q = query({ prompt: idle(), options: { cwd: userHome(), persistSession: false, settingSources: [], tools: [] } as any });
+  try {
+    const ms: any[] = await Promise.race([q.supportedModels(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timed out")), 20_000))]);
+    return ms.length ? claudeModelRefs(ms) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      q.close();
+    } catch {}
+  }
+}
 
 // ---------------- conversion ----------------
 
@@ -959,7 +987,7 @@ export class ClaudeSession extends LiveSession {
 
   async models(): Promise<ModelRef[]> {
     const ms = (await this.q?.supportedModels()) ?? [];
-    return ms.length ? ms.map((m) => ({ id: m.value, label: m.displayName })) : FALLBACK_MODELS;
+    return ms.length ? claudeModelRefs(ms) : FALLBACK_MODELS;
   }
 
   async continueTurn(text = "Continue where you left off.") {
@@ -997,6 +1025,10 @@ export class ClaudeSession extends LiveSession {
 // ---------------- adapter ----------------
 
 let modelCache: ModelRef[] | undefined;
+let modelCacheAt = 0;
+let modelFetch: Promise<ModelRef[] | undefined> | undefined;
+/** What an alias resolves to changes with Claude Code releases: asked again after this long. */
+const MODEL_CACHE_MS = 60 * 60_000;
 
 /** When a stored session's last message was written (the file's mtime also moves on titles, modes, …). */
 async function lastMessageAt(s: { sessionId: string; lastModified: number; fileSize?: number }, projectPath: string): Promise<number> {
@@ -1079,7 +1111,16 @@ export const claudeAdapter: Adapter = {
   },
 
   async listModels(live) {
-    if (live instanceof ClaudeSession) modelCache = await live.models();
+    if (live instanceof ClaudeSession) {
+      modelCache = await live.models();
+      modelCacheAt = Date.now();
+    } else if (!modelCache || Date.now() - modelCacheAt > MODEL_CACHE_MS) {
+      // No session has said lately: ask a throwaway process, once for everyone asking now.
+      modelFetch ??= fetchModels().finally(() => (modelFetch = undefined));
+      const fetched = await modelFetch;
+      if (fetched) modelCache = fetched;
+      modelCacheAt = Date.now(); // a failure isn't retried on every call either
+    }
     return { models: modelCache ?? FALLBACK_MODELS, thinkingLevels: EFFORT_LEVELS, permissionModes: PERMISSION_MODES };
   },
 };

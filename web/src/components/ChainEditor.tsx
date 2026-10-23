@@ -57,6 +57,7 @@ export function ChainEditor({
   sessionId,
   fallback,
   current,
+  emptyText = "Empty: a usage limit just stops the session.",
 }: {
   chain: string[];
   onChange: (c: string[]) => void;
@@ -65,6 +66,8 @@ export function ChainEditor({
   fallback?: HarnessId;
   /** the entry the session runs on now */
   current?: string;
+  /** what an empty list means where it is edited */
+  emptyText?: string;
 }) {
   const available = useAvailable();
   const narrow = useMediaQuery("(max-width: 640px)");
@@ -129,7 +132,7 @@ export function ChainEditor({
 
   return (
     <VStack gap={1.5}>
-      {chain.length === 0 && <Text type="supporting">Empty: a usage limit just stops the session.</Text>}
+      {chain.length === 0 && <Text type="supporting">{emptyText}</Text>}
       {chain.length > 0 && (
         <VStack as="ol" gap={0.5} padding={0} style={plainList}>
           {chain.map((raw, i) => {

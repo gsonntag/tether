@@ -15,7 +15,7 @@ import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import type { Sink } from "./adapters/types";
 import { config, prefs } from "./config";
-import { setUsageSource } from "./fallback";
+import { setInstalledCheck, setUsageSource } from "./fallback";
 import { resumeActive, runHandoff, type HandoffDeps } from "./handoffRun";
 import type { HandoffOpts, LiveSession } from "./session";
 import { simulatedFor, simulateUsage } from "./usage";
@@ -346,6 +346,21 @@ describe("whole chain exhausted", () => {
     jest.setSystemTime(Date.now() + 31 * 60_000);
     expect(await (cx as any).preferBest("again")).toBe(true);
     expect(w.handoffs.at(-1)).toMatchObject({ from: cx.id, to: { harness: "claude-code", model: "opus" }, reason: "Opus is available again" });
+  });
+
+  test("an earlier entry whose harness isn't installed is never handed to (a default order copied into the chain)", async () => {
+    setInstalledCheck((h) => h !== "antigravity");
+    try {
+      const w = world();
+      const s = setup(makeClaude(process.env.HOME!, {}, w.sink), "opus", ["antigravity:gemini-3-pro", "claude-code:opus", "codex:gpt-5.5"]);
+      expect(await (s as any).preferBest("first turn")).toBe(false);
+      await s.prompt("first turn");
+      await micro();
+      expect(w.handoffs).toHaveLength(0);
+      expect(s.inputs().at(-1)).toBe("first turn");
+    } finally {
+      setInstalledCheck();
+    }
   });
 });
 

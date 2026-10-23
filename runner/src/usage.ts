@@ -67,6 +67,35 @@ export async function accountUsage(account: UsageAccount): Promise<ProviderUsage
   return auth ? codexUsage(auth) : undefined;
 }
 
+/**
+ * Which subscription logins are on this machine, from the files the harnesses keep (no network):
+ * for suggesting a default order. Claude Code's login is in the macOS keychain there, so it counts
+ * as signed in; elsewhere its credentials file or a token in the environment does. The ChatGPT
+ * logins carry their account id, to tell whether pi's and the Codex CLI's are the same account.
+ */
+export async function signedIn(): Promise<{ claude: boolean; codex?: { accountId?: string }; pi?: { accountId?: string }; kiro?: boolean }> {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(userHome(), ".claude");
+  const claude = process.platform === "darwin" || !!process.env.CLAUDE_CODE_OAUTH_TOKEN || !!process.env.ANTHROPIC_API_KEY || existsSync(join(claudeDir, ".credentials.json"));
+  const codex = codexCliAuth();
+  const pi = piAuth();
+  return { claude, codex: codex && { accountId: codex.accountId }, pi: pi && { accountId: pi.accountId }, kiro: await kiroSignedIn() };
+}
+
+/**
+ * Whether kiro-cli has a login, without holding up the runner: its store is read with a short busy
+ * wait (a live kiro-cli may be writing), a few times. Undefined (unknown) when it can't be read.
+ */
+async function kiroSignedIn(): Promise<boolean | undefined> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return !!readKiroToken(50);
+    } catch {
+      await Bun.sleep(100);
+    }
+  }
+  return undefined;
+}
+
 /** Marks the cache stale (after a turn ends, usage has moved). */
 export function usageChanged() {
   if (cache) cache.at = 0;
@@ -180,12 +209,12 @@ const dbText = (v: unknown): string | undefined => (typeof v === "string" ? v : 
  * token (not signed in); throws only on an unexpected DB error (e.g. still locked after the wait),
  * which the caller retries.
  */
-function readKiroToken(): { access: string; arn?: string; region?: string } | null {
+function readKiroToken(busyMs = 3000): { access: string; arn?: string; region?: string } | null {
   const path = process.env.KIRO_DB ?? join(userHome(), ".local", "share", "kiro-cli", "data.sqlite3");
   if (!existsSync(path)) return null;
   const db = new Database(path, { readonly: true });
   try {
-    db.exec("PRAGMA busy_timeout = 3000"); // wait out the live kiro-cli's writes instead of failing
+    db.exec(`PRAGMA busy_timeout = ${Math.round(busyMs)}`); // wait out the live kiro-cli's writes instead of failing
     // One token per auth method; social, Builder ID and IdC logins all land under kirocli:*:token.
     // The stored record is snake_case (access_token, profile_arn); camelCase kept as a fallback.
     let token: { access: string; arn?: string; region?: string } | undefined;

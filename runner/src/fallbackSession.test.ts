@@ -704,11 +704,10 @@ describe("preferBest", () => {
 });
 
 describe("setChain", () => {
-  test("stores chain, profile and preferEarlier, and moves to the first available model of this harness", async () => {
+  test("stores chain and preferEarlier, and moves to the first available model of this harness", async () => {
     const { s, log } = fake("claude-code", "haiku");
-    await s.setChain(["opus", "sonnet"], false, "Work");
+    await s.setChain(["opus", "sonnet"], false);
     expect(s.t.state.chain).toEqual(["opus", "sonnet"]);
-    expect(s.t.state.profile).toBe("Work");
     expect(s.t.state.preferEarlier).toBe(false);
     expect(log).toEqual(["model: opus"]);
   });

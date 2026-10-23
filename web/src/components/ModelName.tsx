@@ -5,6 +5,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { CubeTransparentIcon } from "@heroicons/react/24/outline";
 import { modelDisplay, PROVIDERS, type ModelDisplay, type ModelProvider } from "../models";
+import { useStore } from "../store";
 
 type IconSize = ComponentProps<typeof Icon>["size"];
 
@@ -42,6 +43,7 @@ export function modelTooltip(d: ModelDisplay) {
 
 /** Logo plus pretty name of a model id; hover for the raw id. */
 export function ModelName({ id, harness, hasLogo = true }: { id: string | undefined; harness?: string; hasLogo?: boolean }) {
+  useStore((s) => s.aliasVersion); // an alias ("opus") reads as what it runs now once the runner says
   const d = modelDisplay(id, harness);
   return (
     <Tooltip content={modelTooltip(d)} hasHoverIndication={false}>

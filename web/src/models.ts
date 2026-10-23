@@ -4,7 +4,7 @@
  * the heuristic, so new ids ("claude-opus-6", "gpt-7-codex", "us.anthropic.…-v1:0") still read well.
  */
 
-import { parseEntry, type HarnessId } from "./shared/protocol";
+import { HARNESSES, parseEntry, type HarnessId, type ModelRef } from "./shared/protocol";
 
 export type ModelProvider =
   | "anthropic"
@@ -162,12 +162,37 @@ function unglue(w: string): [string, string] | undefined {
   return m ? [m[1]!, m[2]!] : undefined;
 }
 
+/** "harness:alias" → the concrete model it runs now, as harnesses reported in their model lists. */
+const RESOLVED = new Map<string, string>();
+
+/**
+ * Remembers what a harness's aliases resolve to (ModelRef.resolved), for display everywhere. True
+ * when something changed (the caller re-renders).
+ */
+export function learnAliases(harness: string, models: ModelRef[]): boolean {
+  let changed = false;
+  for (const m of models) {
+    if (!m.resolved || m.resolved === m.id) continue;
+    const k = `${harness}:${m.id}`;
+    if (RESOLVED.get(k) === m.resolved) continue;
+    RESOLVED.set(k, m.resolved);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Tests: back to knowing no aliases. */
+export const forgetAliases = () => RESOLVED.clear();
+
 /**
  * Pretty name, maker and logo for a model id, e.g. "claude-opus-5-5" → Opus 5.5 (Anthropic),
  * "openai-codex/gpt-6-luna" → GPT-6 Luna (OpenAI, via openai-codex). `harness` names the maker of
  * ids that don't (Claude Code's "default" is Anthropic's).
  */
 export function modelDisplay(id: string | undefined, harness?: string): ModelDisplay {
+  // An alias the runner has resolved ("opus" → "claude-opus-5-5") reads as that model: "Opus 5.5".
+  const resolved = id && RESOLVED.get(`${harness ?? "claude-code"}:${id}`);
+  if (resolved && resolved !== id) return { ...modelDisplay(resolved, harness), id };
   const rawId = id ?? "default";
   let rest = rawId.trim();
   let provider: ModelProvider | undefined;
@@ -250,6 +275,22 @@ export function chainLabel(chain: string[], fallback: HarnessId = "claude-code")
   const twice = (name: string) => ds.filter((d) => d.name === name).length > 1;
   return ds.map((d) => (d.via && twice(d.name) ? `${d.name} (${d.via})` : d.name)).join(" → ");
 }
+
+/**
+ * A default order (entries always name their harness), with each harness:
+ * "Opus (Claude Code) → GPT-6 Luna (Codex) → GPT-6 Luna (pi, azure)". The route shows when one
+ * model is there twice in one harness.
+ */
+export function orderLabel(order: string[]): string {
+  const es = order.map((e) => {
+    const { harness, model } = parseEntry(e, "claude-code");
+    return { harness, d: modelDisplay(model || undefined, harness) };
+  });
+  const twice = (x: (typeof es)[number]) => es.filter((y) => y.harness === x.harness && y.d.name === x.d.name).length > 1;
+  return es.map((x) => `${x.d.name} (${[HARNESS_LABELS[x.harness] ?? x.harness, twice(x) ? x.d.via : undefined].filter(Boolean).join(", ")})`).join(" → ");
+}
+
+const HARNESS_LABELS: Record<string, string> = Object.fromEntries(HARNESSES.map((h) => [h.id, h.label]));
 
 const EFFORT_LABELS: Record<string, string> = { xhigh: "XHigh", "x-high": "XHigh", max: "Max", off: "Off", none: "None", minimal: "Minimal" };
 

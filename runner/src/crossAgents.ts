@@ -24,6 +24,7 @@ import { defang, FROM_PARENT_PREFIX, guardWithin, MAX_RUNNING_SUBAGENTS, MAX_SUB
 import type { Adapter, Sink } from "./adapters/types";
 import { computeDiff, root } from "./checkpoint";
 import { config, saveConfig, saveConfigSoon } from "./config";
+import { defaultOrder, sessionStart, type SessionStart } from "./defaultOrder";
 import { userHome } from "./home";
 import { currentAction } from "./pulse";
 import { ALIASES, formatDiff } from "./review";
@@ -563,8 +564,12 @@ export class CrossAgents implements AgentHub {
     }
     const depth = (from.t.state.startedBy?.depth ?? 0) + 1;
     const runningNow = this.treeRunning(this.rootOf(from));
+    const order = defaultOrder();
     out.push(
       "",
+      order
+        ? `The user's default order (what agent_start uses when you give no harness, model, effort or mode): ${order.join(" → ")}.`
+        : `No default order is set: agent_start without a harness uses your own (${from.harness}).`,
       `Guard: yours is ${from.guardMode}; a subagent's can be ${GUARD_MODES.filter((g) => guardWithin(g.id, from.guardMode))
         .map((g) => g.id)
         .join(", ")} (never looser than yours).`,
@@ -646,7 +651,18 @@ export class CrossAgents implements AgentHub {
   private async startReserved(from: LiveSession, args: Record<string, unknown>, signal: AbortSignal | undefined, r: { task: string; depth: number; rootId: string; name: string; release: () => void }): Promise<Result> {
     const { task, depth, rootId, name } = r;
     const gaveUp = () => fail("The call was cancelled before the subagent started; nothing was started.");
-    const harness = args.harness === undefined || args.harness === "" ? from.harness : this.harnessOf(args.harness);
+    const want = typeof args.model === "string" ? args.model.trim() : "";
+    const noHarness = args.harness === undefined || args.harness === "";
+    // Nothing chosen (no harness, model, effort or mode): the user's default order, when one is
+    // saved. Anything chosen keeps to your own harness unless one is named, as before.
+    const given = (k: string) => typeof args[k] === "string" && (args[k] as string).trim() !== "";
+    let order: SessionStart | undefined;
+    if (noHarness && !given("model") && !given("effort") && !given("mode")) {
+      const installed = await this.installed();
+      const st = sessionStart({ harness: from.harness, useOrder: true }, defaultOrder(), (h) => installed.includes(h));
+      if (st.chain) order = st;
+    }
+    const harness = order ? order.harness : noHarness ? from.harness : this.harnessOf(args.harness);
     if (!harness || !this.deps.adapters[harness]) return fail(`Unknown harness "${args.harness}". Use agent_harnesses to see the installed ones: ${HARNESSES.map((h) => h.id).join(", ")}.`);
     if (!(await this.deps.adapters[harness].available().catch(() => false))) return fail(`${label(harness)} isn't installed on this runner. agent_harnesses lists the ones that are.`);
 
@@ -654,8 +670,7 @@ export class CrossAgents implements AgentHub {
     if (signal?.aborted) return gaveUp();
     const notes: string[] = [];
     // The model: one of the ids the harness lists (the model picker's), or its label.
-    let model: string | undefined;
-    const want = typeof args.model === "string" ? args.model.trim() : "";
+    let model: string | undefined = order?.model;
     if (want && want !== "default") {
       if (!cat || !cat.models.length) {
         model = want;
@@ -772,6 +787,11 @@ export class CrossAgents implements AgentHub {
     child.setTitle(title);
     child.setState({ startedBy, guard });
     if (model && child.t.state.model !== model) await child.applyModel(model).catch((e) => notes.push(`The model couldn't be set: ${e?.message ?? e}`));
+    // On the default order it falls back along its own copy of it, like a session started from the UI.
+    if (order?.chain) {
+      await child.setChain(order.chain).catch(() => {});
+      notes.push("It runs on the user's default order (no harness or model given), falling back along it at usage limits.");
+    }
     if (effort && child.t.state.thinking !== effort) await child.setThinking(effort).catch((e) => notes.push(`The effort couldn't be set: ${e?.message ?? e}`));
 
     const link: SubagentLink = {

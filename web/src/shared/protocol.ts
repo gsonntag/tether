@@ -269,25 +269,29 @@ export interface ModelRef {
   /** "provider/id" for pi, model alias or id for Claude Code */
   id: string;
   label?: string;
+  /** an alias's concrete model now ("opus" → "claude-opus-5-5"), when the harness says */
+  resolved?: string;
 }
 
 /**
- * An ordered fallback chain. Entries are "harness:model" ("claude-code:opus",
- * "pi:openai-codex/gpt-6-luna"); a bare model means the session's own harness. Moving down the
- * chain within a harness switches the model; across harnesses it hands the conversation off to a
- * new linked session in the same directory.
+ * One entry of a fallback chain (a session's `chain`, the user's default order): "harness:model"
+ * ("claude-code:opus", "pi:openai-codex/gpt-6-luna"); in a session's chain a bare model means the
+ * session's own harness. Moving down the chain within a harness switches the model; across
+ * harnesses it hands the conversation off to a new linked session in the same directory.
+ *
+ * Reserved: the account or key an entry runs on will be a "#<id>" suffix
+ * ("pi:azure/gpt-6-luna#foundry-1"). Entries stay plain strings, so stored chains and default
+ * orders keep working unchanged when it arrives. Until then nothing may write it: saving a default
+ * order refuses it, and parseEntry drops it.
  */
-export interface ModelProfile {
-  name: string;
-  chain: string[];
-}
-
 export interface ChainEntry {
   harness: HarnessId;
   model: string;
 }
 
-export function parseEntry(entry: string, fallback: HarnessId): ChainEntry {
+export function parseEntry(raw: string, fallback: HarnessId): ChainEntry {
+  // The reserved "#account" suffix isn't part of the model (nothing writes it yet; see above).
+  const entry = raw.replace(/#.*$/, "");
   for (const h of HARNESSES) if (entry.startsWith(h.id + ":")) return { harness: h.id, model: entry.slice(h.id.length + 1) };
   return { harness: fallback, model: entry };
 }
@@ -467,9 +471,7 @@ export interface LiveState {
   /** a check running between turns, shown inline in the chat ("Checking usage on GPT-5…"); null when done (undefined doesn't survive JSON) */
   checking?: string | null;
   model?: string;
-  /** model profile the chain came from, if any */
-  profile?: string;
-  /** this session's fallback order (a copy of the profile, editable per session) */
+  /** this session's fallback order (a copy of the default order, editable per session) */
   chain?: string[];
   /** go back to an earlier chain entry (even across harnesses) once it has reset */
   preferEarlier?: boolean;
@@ -1312,7 +1314,11 @@ export interface Ops {
   listSessions: { args: { projectPath: string }; result: SessionSummary[] };
   searchSessions: { args: { query: string }; result: SessionSearchResult[] };
   createSession: {
-    args: { projectPath: string; harness: HarnessId; model?: string; profile?: string; prompt?: string; permissionMode?: string; guard?: GuardMode };
+    /**
+     * `defaultOrder`: start on the runner's default order (its first available entry's harness and
+     * model, the order copied into the session's chain); `harness` and `model` apply when none is set.
+     */
+    args: { projectPath: string; harness: HarnessId; model?: string; defaultOrder?: boolean; prompt?: string; permissionMode?: string; guard?: GuardMode };
     result: SessionSummary;
   };
   /** projectPath (optional) saves the runner a search of every project for a stored session */
@@ -1338,7 +1344,8 @@ export interface Ops {
   /** Reads part of an attachment (any session's) for the transcript: thumbnails and downloads. */
   readAttachment: { args: { path: string; offset?: number; length?: number }; result: { data: string; size: number; mimeType: string } };
   abort: { args: { sessionId: string }; result: {} };
-  setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };
+  /** a single model (clears the chain), or `defaultOrder`: a copy of the default order becomes the chain */
+  setModel: { args: { sessionId: string; model?: string; defaultOrder?: boolean }; result: {} };
   setGuard: { args: { sessionId: string; mode: GuardMode; minutes?: number }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
@@ -1432,8 +1439,13 @@ export interface Ops {
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: { models: ModelRef[]; thinkingLevels: string[]; permissionModes: string[] } };
   /** per harness and slot: native, emulated or unsupported (runner/src/connectors/) */
   harnessCapabilities: { args: {}; result: HarnessCapabilities };
-  getProfiles: { args: {}; result: ModelProfile[] };
-  setProfiles: { args: { profiles: ModelProfile[] }; result: ModelProfile[] };
+  /**
+   * The default order (undefined until the user saves one). `suggest`: while none is saved, also a
+   * starting point from the installed and signed-in harnesses (it may start their processes to list models).
+   */
+  getDefaultOrder: { args: { suggest?: boolean }; result: { order?: string[]; suggested?: string[] } };
+  /** Saves the default order ("harness:model" entries); an empty one clears it. Applies to sessions started from now on. */
+  setDefaultOrder: { args: { order: string[] }; result: { order?: string[] } };
   /** the `/` menu: the harness's own commands and the skills this session can run */
   listCommands: { args: { sessionId: string }; result: SlashCommand[] };
   // master context

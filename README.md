@@ -110,11 +110,16 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Expansion reads a repo skill's SKILL.md only if it (symlinks resolved) stays inside the repo,
     up to 256 KB, never a binary file; other files are listed, not read. Skills the master
     context disabled are never offered or expanded.
-- **Fallback chains for usage limits.** A profile is an ordered list of `harness:model`
-  entries, e.g. `codex:gpt-6.1-sol → codex:gpt-6-sol → codex:gpt-6-luna`. The built-in
-  `codex-current` profile follows the current Codex lineup; the model picker itself is populated
-  from the installed Codex CLI's entitlement-aware catalog. Each
-  session gets its own copy, which you can edit or reorder.
+- **Fallback chains for usage limits.** A chain is an ordered list of `harness:model`
+  entries, e.g. `claude-code:opus → codex:gpt-6-sol → pi:openai-codex/gpt-6-luna`. You keep one
+  **default order** (Settings → New sessions; until it's saved, Home shows a "Set your default
+  order" card that opens the editor pre-filled from the installed, signed-in harnesses). A new
+  session starts on it unless you pick a specific model (then it has no chain): it runs on the
+  first entry that's installed and not out of quota, and gets its own copy as its chain, which
+  you can edit or reorder (or reset with "Use it" in the model menu). Cross-harness subagents
+  started without a harness or model use it too. Editing the default order changes sessions
+  started afterwards, not running ones. Model pickers are populated from each harness (Codex's
+  from the installed CLI's entitlement-aware catalog).
   - **Quota exhausted:** the runner marks that provider as out until its reset time and moves
     to the next entry, but only on a definite signal: the harness's own limit error (Claude
     Code, Codex, Antigravity), or an error that looks like a limit plus a fresh usage check of
@@ -344,5 +349,5 @@ A runner started with `TETHER_DEV=1` also takes `/tether simulate-limit …` and
 | Kiro | `kiro-cli` logged in | ACP with the V3 engine (`KIRO_ACP_ARGS` to change it). Untested here: not installed |
 | Antigravity | `agy` (1.3), signed in once interactively (`agy models` lists your models) | Headless stream-json, one process per session. Models come from `agy models`; effort switches between a model's `-low`/`-medium`/`-high` variants (single-variant models have none). Thinking, full tool results and edit diffs come from agy's transcript, which also replays history when a session is reopened. `/plan` (or plan mode) shows the plan and holds the first change until you approve it. Can't steer; Stop interrupts the turn. Its question tool is answered "skipped" by headless agy. Only sessions started from Tether are listed |
 
-Runner state lives in `~/.config/tether/runner.json`: added projects, profiles, quota
+Runner state lives in `~/.config/tether/runner.json`: added projects, the default order, quota
 resets, and per-session chains and links.

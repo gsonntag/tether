@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type ModelProfile, type UiPrefs } from "../../web/src/shared/protocol";
+import { DEFAULT_UI_PREFS, formatEntry, HARNESSES, parseEntry, SIDEBAR_DAYS, type UiPrefs } from "../../web/src/shared/protocol";
 import { userHome } from "./home";
 
 // $HOME first (as context/paths.ts does), so a runner launched with a scratch HOME never falls
@@ -19,7 +19,12 @@ export interface RunnerConfig {
   archived: string[];
   /** Titles set by the user; they win over titles from the harness. */
   titles: Record<string, string>;
-  profiles: ModelProfile[];
+  /**
+   * The user's default order (defaultOrder.ts): chain entries, first one first. New sessions,
+   * cross-harness subagents started without a harness or model, and "Use the default order" copy
+   * it into the session's own chain. Unset until the user saves one.
+   */
+  defaultOrder?: string[];
   /** provider key -> epoch ms until which it is considered out of quota */
   exhausted: Record<string, number>;
   /** per-session settings that must survive runner restarts */
@@ -52,7 +57,6 @@ export interface RunnerConfig {
 
 export interface SessionPrefs {
   chain?: string[];
-  profile?: string;
   preferEarlier?: boolean;
   handoffFrom?: { sessionId: string; reason: string };
   handoffTo?: { sessionId: string; reason: string };
@@ -106,30 +110,12 @@ export interface SessionPrefs {
   startedBy?: import("../../web/src/shared/protocol").StartedBy;
 }
 
-/** Current Codex lineup used by the built-in fallback profile. The picker remains catalog-driven. */
-export const BUILTIN_PROFILES: ModelProfile[] = [
-  {
-    name: "codex-current",
-    chain: ["codex:gpt-6.1-sol", "codex:gpt-6-sol", "codex:gpt-6-luna", "codex:gpt-6-astra"],
-  },
-];
-
-export function availableProfiles(): ModelProfile[] {
-  const configured = config().profiles;
-  const names = new Set(configured.map((p) => p.name));
-  return [...configured, ...BUILTIN_PROFILES.filter((p) => !names.has(p.name)).map((p) => ({ ...p, chain: [...p.chain] }))];
-}
-
 const defaults = (): RunnerConfig => ({
   runnerId: hostname(),
   projects: [],
   hidden: [],
   archived: [],
   titles: {},
-  profiles: [
-    { name: "luna", chain: ["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"] },
-    { name: "claude-then-luna", chain: ["claude-code:opus", "pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"] },
-  ],
   exhausted: {},
   sessions: {},
 });
@@ -145,6 +131,7 @@ export function config(): RunnerConfig {
   }
   migrateJudge(cached!);
   dropLeader(cached!);
+  migrateProfiles(cached!);
   return cached!;
 }
 
@@ -157,6 +144,45 @@ export function dropLeader(cfg: RunnerConfig): void {
     delete (p as Record<string, unknown>).leader;
     delete (p as Record<string, unknown>).createdBy;
   }
+}
+
+/** Named profiles older versions shipped (written into runner.json as defaults, or merged in at run time). */
+const SHIPPED_PROFILES: Record<string, string[]> = {
+  "codex-current": ["codex:gpt-6.1-sol", "codex:gpt-6-sol", "codex:gpt-6-luna", "codex:gpt-6-astra"],
+  luna: ["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"],
+  "claude-then-luna": ["claude-code:opus", "pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"],
+};
+
+/**
+ * Named model profiles are gone: one default order replaces them. The first profile the user made
+ * (not one Tether shipped, unless its models were changed) seeds the default order when none is
+ * set; otherwise it stays unset. A session that picked a profile already has its own copy in
+ * `chain` (one that somehow doesn't gets it now), and the profile name goes. Idempotent.
+ */
+export function migrateProfiles(cfg: RunnerConfig): void {
+  const old = cfg as RunnerConfig & { profiles?: unknown };
+  const list = Array.isArray(old.profiles) ? (old.profiles as { name?: unknown; chain?: unknown }[]) : [];
+  const clean = list
+    .map((p) => ({
+      name: typeof p?.name === "string" ? p.name.trim() : "",
+      chain: Array.isArray(p?.chain) ? (p.chain as unknown[]).filter((c): c is string => typeof c === "string").map((c) => c.trim()).filter(Boolean) : [],
+    }))
+    .filter((p) => p.chain.length);
+  const shipped = (p: { name: string; chain: string[] }) => JSON.stringify(SHIPPED_PROFILES[p.name]) === JSON.stringify(p.chain);
+  const mine = clean.find((p) => !shipped(p));
+  // The default order's entries always name their harness (a profile's bare model was Claude Code's).
+  const order = mine && [...new Set(mine.chain.map(normalizeModelEntry).filter((e): e is string => !!e))];
+  if (order?.length && !cfg.defaultOrder?.length) cfg.defaultOrder = order;
+  for (const s of Object.values(cfg.sessions ?? {})) {
+    const p = s as SessionPrefs & { profile?: unknown };
+    if (p.profile === undefined) continue;
+    if (!p.chain?.length && typeof p.profile === "string") {
+      const chain = clean.find((x) => x.name === p.profile)?.chain ?? SHIPPED_PROFILES[p.profile];
+      if (chain) p.chain = [...chain];
+    }
+    delete p.profile;
+  }
+  delete old.profiles;
 }
 
 /**

@@ -21,20 +21,21 @@ import type {
 } from "../../web/src/shared/protocol";
 import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
 import { agyHookInstalled, antigravityAdapter } from "./adapters/antigravity";
-import { claudeAdapter } from "./adapters/claude";
+import { claudeAdapter, FALLBACK_MODELS as CLAUDE_FALLBACK_MODELS } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
-import { availableProfiles, config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
+import { config, freezeConfig, prefs, saveConfig, setUiPrefs, uiPrefs } from "./config";
 import { resumeActive, runCompact, runHandoff } from "./handoffRun";
 import { runFork } from "./fork";
 import { applyReview, runReview } from "./review";
 import { CrossAgents, isWorktreePath, listedUnder, startedByOf, subagentPath } from "./crossAgents";
-import { getUsage } from "./usage";
+import { getUsage, signedIn } from "./usage";
+import { defaultOrder, saveDefaultOrder, sessionStart, suggestOrder, type HarnessFacts } from "./defaultOrder";
+import { setInstalledCheck } from "./fallback";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, HARNESSES, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
 import type { SessionPrefs } from "./config";
-import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
 import { denials, editedPending, joinPending, sessionFiles, storedSlashMenu, type HandoffOpts, type LiveSession } from "./session";
 import { approvalRules, removeApprovalRule, type GuardMode } from "./guard";
 import { settingChange, storedSnapshot, storedState, StoredSessions, type StoredSetting } from "./stored";
@@ -77,6 +78,41 @@ const adapters: Record<HarnessId, Adapter> = {
   kiro: kiroAdapter,
   antigravity: antigravityAdapter,
 };
+
+/** The harnesses installed when last checked: fallback never moves to one that isn't (fallback.ts isInstalled). */
+let installedNow: Set<HarnessId> | undefined;
+setInstalledCheck((h) => !installedNow || installedNow.has(h));
+
+async function installedHarnesses(): Promise<HarnessId[]> {
+  const list = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available().catch(() => false)) ? a.id : null)))).filter(Boolean) as HarnessId[];
+  installedNow = new Set(list);
+  return list;
+}
+// Kept fresh: a harness installed (or removed) while the runner runs counts from then on.
+void installedHarnesses();
+setInterval(() => void installedHarnesses(), 60_000).unref?.();
+
+/** A starting point for the default order: installed harnesses with the logins this machine has, and their models. */
+async function suggestedOrder(): Promise<string[]> {
+  const installed = await installedHarnesses();
+  const logins = await signedIn();
+  const signed: Partial<Record<HarnessId, { signedIn?: boolean; account?: string }>> = {
+    "claude-code": { signedIn: logins.claude },
+    codex: { signedIn: !!logins.codex, account: logins.codex?.accountId },
+    pi: { signedIn: !!logins.pi, account: logins.pi?.accountId },
+    kiro: { signedIn: logins.kiro },
+  };
+  const listed = (h: HarnessId) =>
+    Promise.race([adapters[h].listModels().then((r) => r.models), new Promise<[]>((ok) => setTimeout(() => ok([]), 25_000))])
+      .catch(() => [])
+      // Claude Code that couldn't answer: its aliases with the models they last resolved to, never a bare "opus".
+      .then((ms) => (ms.length || h !== "claude-code" ? ms : CLAUDE_FALLBACK_MODELS));
+  const facts: HarnessFacts[] = await Promise.all(
+    HARNESSES.filter((h) => installed.includes(h.id)).map(async (h) => ({ harness: h.id, ...signed[h.id], models: await listed(h.id) })),
+  );
+  return suggestOrder(facts);
+}
+
 const live = new Map<string, LiveSession>();
 /** sessions whose agent is starting (getLive): everyone asking waits for the same one */
 const starting = new Map<string, Promise<LiveSession>>();
@@ -226,7 +262,7 @@ function connect(attempt = 0) {
     connected = true;
     attempt = 0;
     console.log(`connected to ${URL_BASE}`);
-    const harnesses = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available()) ? a.id : null)))).filter(Boolean) as HarnessId[];
+    const harnesses = await installedHarnesses();
     sock.send(JSON.stringify({ t: "hello", runner: { id: config().runnerId, hostname: hostname(), version: VERSION, harnesses } } satisfies RunnerToServer));
     while (outbox.length) sock.send(JSON.stringify(outbox.shift()));
     pulses.resetSent();
@@ -681,16 +717,20 @@ const ops: Handlers = {
     return clean ? findSessionMatches(clean) : [];
   },
 
-  async createSession({ projectPath, harness, model, profile, prompt, permissionMode, guard }) {
+  async createSession({ projectPath, harness: asked, model: askedModel, defaultOrder: useOrder, prompt, permissionMode, guard }) {
+    const installed = useOrder ? await installedHarnesses() : [];
+    const { harness, model, chain } = sessionStart({ harness: asked, model: askedModel, useOrder }, defaultOrder(), (h) => installed.includes(h));
     const a = adapters[harness];
     if (!a) throw new Error(`unknown harness ${harness}`);
-    const s = a.create(expand(projectPath), { model: profile ? undefined : model, permissionMode: permissionMode && !APPROVING_MODES.has(permissionMode) ? permissionMode : undefined }, sink);
+    // The mode was picked for the harness asked for: another one (the order's first entry was out) starts in its own.
+    const mode = harness === asked && permissionMode && !APPROVING_MODES.has(permissionMode) ? permissionMode : undefined;
+    const s = a.create(expand(projectPath), { model, permissionMode: mode }, sink);
     // Set before start() so harnesses that take it as a launch flag (Antigravity) see it.
     s.t.state.guard = guard ?? config().guard?.defaultMode ?? "auto";
     await s.start();
     track(s);
     s.setState({ guard: s.t.state.guard });
-    if (profile) await s.setModelOrProfile(undefined, profile);
+    if (chain) await s.setChain(chain);
     if (prompt) await s.prompt(prompt);
     sink.summary(s.summary());
     return s.summary();
@@ -916,8 +956,8 @@ const ops: Handlers = {
     return {};
   },
 
-  async setModel({ sessionId, model, profile }) {
-    await changeSetting(sessionId, { op: "model", model, profile }, (s) => s.setModelOrProfile(model, profile));
+  async setModel({ sessionId, model, defaultOrder: useOrder }) {
+    await changeSetting(sessionId, { op: "model", model, defaultOrder: useOrder }, (s) => s.setModelOrOrder(model, useOrder));
     return {};
   },
 
@@ -1029,7 +1069,7 @@ const ops: Handlers = {
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
-    await changeSetting(sessionId, { op: "chain", chain, preferEarlier }, (s) => s.setChain(chain, preferEarlier, undefined));
+    await changeSetting(sessionId, { op: "chain", chain, preferEarlier }, (s) => s.setChain(chain, preferEarlier));
     return {};
   },
 
@@ -1095,19 +1135,14 @@ const ops: Handlers = {
     return adapters[harness].listModels(s);
   },
 
-  async getProfiles() {
-    return availableProfiles();
+  async getDefaultOrder({ suggest }) {
+    const order = defaultOrder();
+    if (order || !suggest) return { order };
+    return { suggested: await suggestedOrder() };
   },
 
-  async setProfiles({ profiles }) {
-    // Reject rather than silently drop a profile the UI let through (an older web app, say).
-    const problems = profileProblems(profiles);
-    const bad = problems.findIndex(Boolean);
-    if (bad >= 0) throw new Error(`Profile ${profiles[bad]!.name.trim() ? `“${profiles[bad]!.name.trim()}”` : bad + 1}: ${problems[bad]}. Nothing was saved.`);
-    const clean = cleanProfiles(profiles);
-    config().profiles = clean;
-    saveConfig();
-    return clean;
+  async setDefaultOrder({ order }) {
+    return { order: saveDefaultOrder(order) };
   },
 
   async listCommands({ sessionId }) {

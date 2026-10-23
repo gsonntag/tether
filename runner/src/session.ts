@@ -26,7 +26,8 @@ import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { clearBlocked, DenialNotifier, notify, pushDenials, recordDenial } from "./notify";
-import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified, type UsageCheck } from "./fallback";
+import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, providerOf, type Classified, type UsageCheck } from "./fallback";
+import { defaultOrder } from "./defaultOrder";
 import { modelDisplay } from "../../web/src/models";
 import { addApprovalRule, approvalRules, attachmentWrite, callLine, clip, commandOf, deriveRule, isContextTool, judge, kindOf, matchRule, precedentsFor, recordPrecedent, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
@@ -339,7 +340,7 @@ export abstract class LiveSession {
         this.sink.summary(this.summary());
         this.armIdle();
       } else if (s.reviews !== undefined || s.pending !== undefined) this.armIdle(); // a review settled: the idle close counts from its result
-      if (["status", "chain", "profile", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
+      if (["status", "chain", "preferEarlier", "handoffFrom", "handoffTo", "forkedFrom", "guard", "checkpoints", "pending", "background", "context", "model", "thinking", "permissionMode", "modes", "thinkingLevels", "goal", "plan", "schedules", "reviews", "reviewOf", "subagents", "startedBy"].some((k) => k in s))
         this.savePrefs();
       if (s.activity) this.activityChanged();
       if (s.model && beforeModel && s.model !== beforeModel && this.t.state.context) {
@@ -1105,7 +1106,6 @@ export abstract class LiveSession {
     const p = prefs(this.id);
     const restore: Partial<LiveState> = {};
     if (p.chain) restore.chain = p.chain;
-    if (p.profile) restore.profile = p.profile;
     if (p.preferEarlier !== undefined) restore.preferEarlier = p.preferEarlier;
     if (p.handoffFrom) restore.handoffFrom = p.handoffFrom;
     if (p.handoffTo) restore.handoffTo = p.handoffTo;
@@ -1215,7 +1215,6 @@ export abstract class LiveSession {
     const bg = this.backgroundWork();
     Object.assign(prefs(this.id), {
       chain: s.chain,
-      profile: s.profile,
       preferEarlier: s.preferEarlier,
       handoffFrom: s.handoffFrom,
       handoffTo: s.handoffTo,
@@ -1578,21 +1577,21 @@ export abstract class LiveSession {
     return true;
   }
 
-  /** Picks a profile (copied into this session's chain) or a single model (clears the chain). */
-  async setModelOrProfile(model?: string, profileName?: string) {
-    if (profileName) {
-      const p = profile(profileName);
-      if (!p) throw new Error(`No model profile "${profileName}"`);
-      await this.setChain([...p.chain], undefined, p.name);
+  /** The default order (copied into this session's chain) or a single model (clears the chain). */
+  async setModelOrOrder(model?: string, useDefaultOrder?: boolean) {
+    if (useDefaultOrder) {
+      const order = defaultOrder();
+      if (!order) throw new Error("No default order is set. Set one in Settings.");
+      await this.setChain(order);
     } else if (model) {
-      this.setState({ profile: undefined, chain: undefined });
+      this.setState({ chain: undefined });
       await this.applyModel(model);
     }
   }
 
   /** Sets this session's own fallback order. The first entry for this harness becomes current. */
-  async setChain(chain: string[], preferEarlier?: boolean, profileName?: string) {
-    this.setState({ chain, profile: profileName, ...(preferEarlier !== undefined ? { preferEarlier } : {}) });
+  async setChain(chain: string[], preferEarlier?: boolean) {
+    this.setState({ chain, ...(preferEarlier !== undefined ? { preferEarlier } : {}) });
     const pick = pickEntry(chain, this.harness);
     if ("entry" in pick && pick.entry.harness === this.harness && pick.entry.model !== this.t.state.model) await this.applyModel(pick.entry.model);
   }

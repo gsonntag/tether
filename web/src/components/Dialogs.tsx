@@ -30,22 +30,21 @@ import {
   type BackgroundModelSetting,
   type GuardMode,
   type HarnessId,
-  type ModelProfile,
   type NotifyKind,
   type Ops,
   type ProjectInfo,
   type SecretView,
 } from "../shared/protocol";
-import { profileProblems, profilesToSave } from "../shared/profiles";
+import { cleanOrder } from "../shared/defaultOrder";
+import { DefaultOrderSettings, ORDER_WHY, OrderDraftEditor, useOrderDraft } from "./DefaultOrder";
 import { disablePush, enablePush, needsHomeScreen, pushState, pushSupported, testPush } from "../push";
 
-import { act, refreshProjects, rpc, selectSession, setUiPref, toast, toggleProject, useStore } from "../store";
+import { act, refreshProjects, rpc, saveDefaultOrder, selectSession, setUiPref, toast, toggleProject, useStore } from "../store";
 import { addModeOf, filterRepos, isMissing, isOldRunner, type AddMode } from "../addProject";
 import { sidebarDaysLabel } from "../recentSessions";
 import { tildify } from "../util";
-import { ChainEditor } from "./ChainEditor";
 import { useModels } from "./ModelMenu";
-import { chainLabel, modelDisplay } from "../models";
+import { modelDisplay, orderLabel } from "../models";
 import { modelIcon } from "./ModelName";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -62,6 +61,7 @@ export function Dialogs() {
       {dialog === "addProject" && <AddProject close={close} />}
       {dialog === "settings" && <Settings close={close} />}
       {dialog === "fork" && <ForkSession close={close} />}
+      {dialog === "defaultOrder" && <DefaultOrderDialog close={close} />}
     </Dialog>
   );
 }
@@ -103,62 +103,77 @@ function Group({ label, description, children }: { label: string; description?: 
 type Last = { choice: string; guard?: GuardMode };
 
 function loadLast(harness: HarnessId): Last | undefined {
+  // A named profile picked last (they're gone) reads as the default order that replaced them.
+  const fix = (l: Last): Last => (typeof l.choice === "string" && l.choice.startsWith("profile:") ? { ...l, choice: ORDER_CHOICE } : l);
   try {
     const raw = localStorage.getItem(`tether.last.${harness}`);
-    if (raw) return JSON.parse(raw);
+    if (raw) return fix(JSON.parse(raw));
   } catch {}
   const choice = localStorage.getItem(`tether.model.${harness}`);
   if (choice === null) return undefined;
-  return { choice, guard: (localStorage.getItem("tether.guard") as GuardMode) || undefined };
+  return fix({ choice, guard: (localStorage.getItem("tether.guard") as GuardMode) || undefined });
 }
-
-const choiceLabel = (c: string) => (c.startsWith("profile:") ? c.slice(8) : modelDisplay(c || undefined).name);
 
 /** Selector values can't be empty; the harness default ("") travels as this sentinel. */
 const DEFAULT_CHOICE = "__default__";
+/** The default order (a model picked instead means no fallback chain). */
+const ORDER_CHOICE = "__order__";
 const ADD_PROJECT = "+add";
+
+const choiceLabel = (c: string, harness: HarnessId) =>
+  c === ORDER_CHOICE ? "Default order" : c ? modelDisplay(c, harness).name : `${HARNESSES.find((h) => h.id === harness)?.label}'s default`;
 
 function NewSession({ close }: { close: () => void }) {
   const allProjects = useStore((s) => s.projects);
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const initial = useStore((s) => s.newSessionProject);
+  const order = useStore((s) => s.defaultOrder) ?? undefined;
+  useStore((s) => s.aliasVersion); // "opus" in the order reads as the Opus it runs now
   const projects = allProjects.filter((p) => !p.archived || p.path === initial);
   const [project, setProject] = useState(initial ?? projects[0]?.path ?? "");
-  const [harness, setHarness] = useState<HarnessId>(() => (localStorage.getItem("tether.harness") as HarnessId) || "claude-code");
-  const last = useMemo(() => loadLast(harness), [harness]);
-  const [choice, setChoice] = useState("last"); // "last" | "" (harness default) | model id | profile:<name>
+  const [pickedHarness, setHarness] = useState<HarnessId>(() => (localStorage.getItem("tether.harness") as HarnessId) || "claude-code");
+  const available = HARNESSES.filter((h) => !runner || runner.harnesses.includes(h.id));
+  // The harness the order starts on: its first entry on an installed harness (as the runner picks).
+  const orderHarness = order?.map((e) => parseEntry(e, pickedHarness).harness).find((h) => available.some((a) => a.id === h));
+  // Nothing picked: the default order when one is saved (and usable here), else what was used last on this harness.
+  const [picked, setChoice] = useState<string>(); // ORDER_CHOICE | "last" | "" (harness default) | model id
+  const choice = picked ?? (orderHarness ? ORDER_CHOICE : "last");
+  const harness = choice === ORDER_CHOICE && orderHarness ? orderHarness : pickedHarness;
+  const last = useMemo(() => {
+    const l = loadLast(harness);
+    // "Default order" remembered while none is saved (or a profile from before): the harness's default.
+    return l && l.choice === ORDER_CHOICE && !orderHarness ? { ...l, choice: "" } : l;
+  }, [harness, orderHarness]);
   const [guard, setGuard] = useState<GuardMode>(() => last?.guard ?? "auto");
   const [prompt, setPrompt] = useState("");
   const [name, setName] = useState("");
-  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const models = useModels([harness]);
   useEffect(() => {
-    rpc("getProfiles", {}).then(setProfiles).catch(() => {});
-  }, []);
-  useEffect(() => {
-    setChoice("last");
     if (last?.guard) setGuard(last.guard);
   }, [last]);
-  const available = HARNESSES.filter((h) => !runner || runner.harnesses.includes(h.id));
+  const pickHarness = (h: HarnessId) => {
+    setHarness(h);
+    setChoice("last");
+  };
   const fixedProject = initial ? allProjects.find((p) => p.path === initial) : undefined;
   const guardLabel = (g?: GuardMode) => GUARD_MODES.find((m) => m.id === g)?.label;
 
   const start = async () => {
     if (!project || busy) return;
     setBusy(true);
-    const picked: Last = choice === "last" ? (last ?? { choice: "" }) : { choice, guard };
+    const chosen: Last = choice === "last" ? (last ?? { choice: "" }) : { choice, guard };
     localStorage.setItem("tether.harness", harness);
-    localStorage.setItem(`tether.last.${harness}`, JSON.stringify(picked));
-    const isProfile = picked.choice.startsWith("profile:");
+    localStorage.setItem(`tether.last.${harness}`, JSON.stringify(chosen));
+    const onOrder = chosen.choice === ORDER_CHOICE;
     const s = await act("createSession", {
       projectPath: project,
       harness,
-      model: !isProfile && picked.choice ? picked.choice : undefined,
-      profile: isProfile ? picked.choice.slice(8) : undefined,
+      model: !onOrder && chosen.choice ? chosen.choice : undefined,
+      defaultOrder: onOrder || undefined,
       // Claude Code's own mode would override the guard (its settings can set acceptEdits, plan, …).
-      permissionMode: harness === "claude-code" && picked.guard ? "default" : undefined,
-      guard: picked.guard,
+      permissionMode: harness === "claude-code" && chosen.guard ? "default" : undefined,
+      guard: chosen.guard,
       prompt: prompt.trim() || undefined,
     });
     setBusy(false);
@@ -185,11 +200,9 @@ function NewSession({ close }: { close: () => void }) {
     { value: ADD_PROJECT, label: "Add a project…" },
   ];
   const modelOptions: SelectorOptionType[] = [
-    { value: "last", label: `Use last${last ? ` (${choiceLabel(last.choice)}${last.guard ? ` · ${guardLabel(last.guard)}` : ""})` : ""}` },
-    { value: DEFAULT_CHOICE, label: "Default" },
-    ...(profiles.length > 0
-      ? [{ type: "section" as const, title: "Fallback profiles", options: profiles.map((p) => ({ value: `profile:${p.name}`, label: `${p.name}: ${chainLabel(p.chain, harness)}` })) }]
-      : []),
+    ...(order && orderHarness ? [{ value: ORDER_CHOICE, label: "Default order", description: orderLabel(order) }] : []),
+    { value: "last", label: `Use last${last ? ` (${choiceLabel(last.choice, harness)}${last.guard ? ` · ${guardLabel(last.guard)}` : ""})` : ""}` },
+    { value: DEFAULT_CHOICE, label: choiceLabel("", harness) },
     {
       type: "section",
       title: "Models",
@@ -221,7 +234,7 @@ function NewSession({ close }: { close: () => void }) {
         />
       )}
       <Group label="Harness">
-        <SegmentedControl label="Harness" value={harness} onChange={(v) => setHarness(v as HarnessId)}>
+        <SegmentedControl label="Harness" value={harness} onChange={(v) => pickHarness(v as HarnessId)}>
           {available.map((h) => (
             <SegmentedControlItem key={h.id} value={h.id} label={h.label} />
           ))}
@@ -233,7 +246,12 @@ function NewSession({ close }: { close: () => void }) {
         hasSearch
         options={modelOptions}
         value={choice === "" ? DEFAULT_CHOICE : choice}
-        onChange={(v) => setChoice(v === DEFAULT_CHOICE ? "" : v)}
+        description={choice === ORDER_CHOICE && order ? orderLabel(order) : undefined}
+        onChange={(v) => {
+          // Picking a model while on the default order stays on the order's harness.
+          if (choice === ORDER_CHOICE) setHarness(harness);
+          setChoice(v === DEFAULT_CHOICE ? "" : v);
+        }}
       />
       {choice !== "last" && (
         <Group label="Permissions">
@@ -246,6 +264,33 @@ function NewSession({ close }: { close: () => void }) {
       )}
       <TextInput label="Name" value={name} onChange={setName} placeholder="Optional: named from the first message otherwise" />
       <TextArea label="First message" rows={4} value={prompt} onChange={setPrompt} placeholder="What should the agent do? (⌘↵ to start)" />
+    </Frame>
+  );
+}
+
+/** Home's setup card opens this: the suggested order (or the saved one), saved with Save. */
+function DefaultOrderDialog({ close }: { close: () => void }) {
+  const { saved, draft, setDraft, suggesting, loaded } = useOrderDraft();
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const ok = await saveDefaultOrder(draft);
+    setBusy(false);
+    if (ok) close();
+  };
+  return (
+    <Frame
+      title={saved ? "Default order" : "Set your default order"}
+      subtitle={`${ORDER_WHY} You can change it any time in Settings.`}
+      close={close}
+      actions={
+        <>
+          <Button label="Cancel" onClick={close} />
+          <Button label="Save" variant="primary" isLoading={busy} isDisabled={!loaded || !cleanOrder(draft).length} onClick={save} />
+        </>
+      }
+    >
+      <OrderDraftEditor draft={draft} setDraft={setDraft} suggesting={suggesting} />
     </Frame>
   );
 }
@@ -865,45 +910,15 @@ function Settings({ close }: { close: () => void }) {
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const manyRunners = useStore((s) => s.runners.filter((r) => r.connected).length > 1);
   const ui = useStore((s) => s.ui);
-  // undefined until the runner answers, so nothing is saved over profiles not loaded yet
-  const [loaded, setProfiles] = useState<ModelProfile[]>();
-  const profiles = loaded ?? [];
-  const saved = useRef<ModelProfile[]>(undefined);
-  const pending = useRef<ModelProfile[]>(undefined);
   const [guard, setGuardInfo] = useState<{ antigravityHook: boolean; judgeModel: string; judgeEnabled: boolean; defaultMode: GuardMode }>();
   useEffect(() => {
-    rpc("getProfiles", {})
-      .then((p) => {
-        saved.current = p;
-        setProfiles(p);
-      })
-      .catch(() => {});
     rpc("guardSetup", {}).then(setGuardInfo).catch(() => {});
   }, []);
   const updateGuard = async (args: { install?: boolean; judgeModel?: string; defaultMode?: GuardMode }) => {
     const r = await act("guardSetup", args);
     if (r) setGuardInfo(r);
   };
-  const problems = profileProblems(profiles);
-  // Profiles save themselves a moment after the last edit, once every one is valid; closing saves at once.
-  const flush = () => {
-    const p = pending.current;
-    if (!p) return;
-    pending.current = undefined;
-    saved.current = p;
-    act("setProfiles", { profiles: p }).then((r) => {
-      if (!r) saved.current = undefined; // retried on the next edit
-    });
-  };
-  useEffect(() => {
-    pending.current = profilesToSave(loaded, saved.current);
-    if (!pending.current) return;
-    const t = setTimeout(flush, 600);
-    return () => clearTimeout(t);
-  }, [loaded]);
-  useEffect(() => flush, []);
   const controlWidth = narrow ? "100%" : CONTROL_WIDTH;
-  const setProfile = (i: number, p: Partial<ModelProfile>) => setProfiles(profiles.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
   return (
     <Frame
@@ -939,6 +954,9 @@ function Settings({ close }: { close: () => void }) {
         />
       </SettingsCard>
       <SettingsCard title="New sessions">
+        <SettingsRow title="Default order" description={`${ORDER_WHY} Changes apply to sessions started afterwards.`}>
+          <DefaultOrderSettings />
+        </SettingsRow>
         <SettingsRow
           title="Default approvals"
           description="How much an agent may do before asking you. You can change it for each session."
@@ -989,29 +1007,6 @@ function Settings({ close }: { close: () => void }) {
                 />
               }
             />
-          </SettingsCard>
-          <SettingsCard title="Fallback profiles">
-            <SettingsRow
-              title="Switch models at usage limits"
-              description="A profile is a list of models to try in order. When one hits its usage limit, the session moves on to the next. Pick a profile when you start a session."
-              control={<Button label="Add profile" size="sm" isDisabled={!loaded} onClick={() => setProfiles([...profiles, { name: "", chain: [] }])} />}
-            />
-            {profiles.map((p, i) => (
-              <VStack key={i} padding={4} gap={2}>
-                <HStack gap={2} vAlign="center">
-                  <StackItem size="fill">
-                    <TextInput label="Profile name" isLabelHidden size="sm" value={p.name} placeholder="Profile name" onChange={(v) => setProfile(i, { name: v })} />
-                  </StackItem>
-                  <Button label="Remove" size="sm" variant="destructive" onClick={() => setProfiles(profiles.filter((_, j) => j !== i))} />
-                </HStack>
-                {problems[i] && (
-                  <Text type="supporting" style={{ color: "var(--color-text-red)" }}>
-                    {problems[i]}. Not saved until fixed.
-                  </Text>
-                )}
-                <ChainEditor chain={p.chain} onChange={(c) => setProfile(i, { chain: c })} />
-              </VStack>
-            ))}
           </SettingsCard>
         </VStack>
       </Collapsible>

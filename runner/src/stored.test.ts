@@ -28,13 +28,13 @@ const toolMsg = (): Msg => ({ id: "a1", role: "assistant", ts: 1, parts: [{ type
 describe("storedState", () => {
   test("idle with the saved settings; the store fills what Tether didn't keep", () => {
     const st = storedState({
-      prefs: { model: "haiku", thinking: "low", guard: "ask", chain: ["claude-code:opus"], profile: "p", checkpoints: [{ id: "c1", sha: "s", ts: 1, label: "x" }], pending: [{ id: "q", text: "hi", mode: "followUp", ts: 1 }] },
+      prefs: { model: "haiku", thinking: "low", guard: "ask", chain: ["claude-code:opus"], checkpoints: [{ id: "c1", sha: "s", ts: 1, label: "x" }], pending: [{ id: "q", text: "hi", mode: "followUp", ts: 1 }] },
       history: { model: "claude-opus-4", permissionMode: "plan", context: { used: 1000, max: 200_000, model: "haiku" } },
       modes: ["default", "plan"],
       plans: { p1: { held: 5 } },
       defaultGuard: "auto",
     });
-    expect(st).toMatchObject({ status: "idle", model: "haiku", thinking: "low", permissionMode: "plan", modes: ["default", "plan"], guard: "ask", chain: ["claude-code:opus"], profile: "p", preferEarlier: true, activity: [], plans: { p1: { held: 5 } }, pendingUi: [] });
+    expect(st).toMatchObject({ status: "idle", model: "haiku", thinking: "low", permissionMode: "plan", modes: ["default", "plan"], guard: "ask", chain: ["claude-code:opus"], preferEarlier: true, activity: [], plans: { p1: { held: 5 } }, pendingUi: [] });
     expect(st.context?.used).toBe(1000);
     expect(st.checkpoints).toHaveLength(1);
     // Messages it hadn't taken show held: sending starts it.
@@ -101,13 +101,20 @@ describe("storedState", () => {
 });
 
 describe("settingChange", () => {
-  test("a model clears the chain; a chain or profile picks its first model in this harness", () => {
-    expect(settingChange("claude-code", { op: "model", model: "haiku" })).toEqual({ profile: undefined, chain: undefined, model: "haiku" });
-    expect(settingChange("claude-code", { op: "chain", chain: ["claude-code:sonnet", "pi:x/y"], preferEarlier: false })).toEqual({ chain: ["claude-code:sonnet", "pi:x/y"], profile: undefined, preferEarlier: false, model: "sonnet" });
+  test("a model clears the chain; a chain or the default order picks its first model in this harness", () => {
+    expect(settingChange("claude-code", { op: "model", model: "haiku" })).toEqual({ chain: undefined, model: "haiku" });
+    expect(settingChange("claude-code", { op: "chain", chain: ["claude-code:sonnet", "pi:x/y"], preferEarlier: false })).toEqual({ chain: ["claude-code:sonnet", "pi:x/y"], preferEarlier: false, model: "sonnet" });
     // Another harness first: the model stays (a handoff happens when it next sends).
-    expect(settingChange("claude-code", { op: "chain", chain: ["pi:x/y"] })).toEqual({ chain: ["pi:x/y"], profile: undefined });
-    expect(settingChange("pi", { op: "model", profile: "luna" })).toMatchObject({ profile: "luna", model: "openai-codex/gpt-6-luna" });
-    expect(() => settingChange("pi", { op: "model", profile: "nope" })).toThrow(/No model profile/);
+    expect(settingChange("claude-code", { op: "chain", chain: ["pi:x/y"] })).toEqual({ chain: ["pi:x/y"] });
+    delete config().defaultOrder;
+    expect(() => settingChange("pi", { op: "model", defaultOrder: true })).toThrow(/No default order/);
+    config().defaultOrder = ["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"];
+    const change = settingChange("pi", { op: "model", defaultOrder: true });
+    expect(change).toEqual({ chain: ["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"], model: "openai-codex/gpt-6-luna" });
+    // A copy: editing the session's chain doesn't touch the default order.
+    change.chain!.push("x");
+    expect(config().defaultOrder).toHaveLength(2);
+    delete config().defaultOrder;
   });
 
   test("effort, mode and guard", () => {
