@@ -30,6 +30,9 @@ import { formContent, formRequest } from "./elicitation";
 import { userHome } from "../home";
 import { codexNativeKeys, hooksFor } from "../hooks";
 import { agentEnv } from "../secrets";
+import { codexHome } from "../context/paths";
+import { config } from "../config";
+import { sessionCredential } from "../credentials/registry";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -179,9 +182,12 @@ export class CodexProcess {
   }
 }
 
-/** A short-lived app-server for catalog calls (thread list, models). */
-async function withProcess<T>(fn: (p: CodexProcess) => Promise<T>): Promise<T> {
-  const p = new CodexProcess(userHome());
+/**
+ * A short-lived app-server for catalog calls (thread list, models). `home`: an account's CODEX_HOME
+ * (a session's credential, codexHomeOf), for its threads; none: the machine's own login.
+ */
+async function withProcess<T>(fn: (p: CodexProcess) => Promise<T>, home?: string): Promise<T> {
+  const p = new CodexProcess(userHome(), home ? { ...process.env, CODEX_HOME: home } : process.env);
   try {
     await p.init();
     return await fn(p);
@@ -196,12 +202,12 @@ let historyRunning = 0;
 const historyQueue: (() => void)[] = [];
 
 /** withProcess for reading a thread, a few at a time. */
-export async function withHistoryProcess<T>(fn: (p: CodexProcess) => Promise<T>, run: typeof withProcess = withProcess): Promise<T> {
+export async function withHistoryProcess<T>(fn: (p: CodexProcess) => Promise<T>, run: typeof withProcess = withProcess, home?: string): Promise<T> {
   // A finished read hands its slot straight to the next one waiting.
   if (historyRunning >= HISTORY_HELPERS) await new Promise<void>((r) => historyQueue.push(r));
   else historyRunning++;
   try {
-    return await run(fn);
+    return await run(fn, home);
   } finally {
     const next = historyQueue.shift();
     if (next) next();
@@ -1079,9 +1085,40 @@ let modelCache: CodexModel[] | undefined;
 let modelCacheAt = 0;
 const MODEL_CACHE_MS = 5 * 60_000;
 let listCache: { at: number; threads: any[] } | undefined;
+/** The same for each account home (CODEX_HOME) sessions run on. */
+const homeLists = new Map<string, { at: number; threads: any[] }>();
 
-async function threads(): Promise<any[]> {
-  if (listCache && Date.now() - listCache.at < 20_000) return listCache.threads;
+/** The CODEX_HOME a stored session's threads are in, when its credential has its own (else undefined: the machine's). */
+function codexHomeOf(nativeId: string): string | undefined {
+  const h = codexHome(sessionCredential(`codex:${nativeId}`));
+  return h === codexHome() ? undefined : h;
+}
+
+/** The account homes Codex sessions run on (other than the machine's own). */
+function accountCodexHomes(): string[] {
+  const own = codexHome();
+  const homes = new Set<string>();
+  for (const [id, s] of Object.entries(config().sessions ?? {}))
+    if (id.startsWith("codex:") && s?.credential) {
+      const h = codexHome(s.credential);
+      if (h !== own) homes.add(h);
+    }
+  return [...homes];
+}
+
+/** The machine's threads, then those in the account homes sessions run on. */
+async function allThreads(): Promise<any[]> {
+  const own = await threads();
+  const homes = accountCodexHomes();
+  if (!homes.length) return own;
+  const seen = new Set(own.map((t) => t.id));
+  const more = (await Promise.all(homes.map((h) => threads(h)))).flat().filter((t) => !seen.has(t.id) && (seen.add(t.id), true));
+  return [...own, ...more];
+}
+
+async function threads(home?: string): Promise<any[]> {
+  const c = home ? homeLists.get(home) : listCache;
+  if (c && Date.now() - c.at < 20_000) return c.threads;
   const all: any[] = [];
   try {
     await withProcess(async (p) => {
@@ -1091,9 +1128,10 @@ async function threads(): Promise<any[]> {
         all.push(...r.data);
         if (!(cursor = r.nextCursor)) break;
       }
-    });
+    }, home);
   } catch {}
-  listCache = { at: Date.now(), threads: all };
+  if (home) homeLists.set(home, { at: Date.now(), threads: all });
+  else listCache = { at: Date.now(), threads: all };
   return all;
 }
 
@@ -1127,7 +1165,7 @@ export const codexAdapter: Adapter = {
   async listProjects(): Promise<StoredProject[]> {
     if (!Bun.which(CODEX_BIN)) return [];
     const by = new Map<string, StoredProject>();
-    for (const t of await threads()) {
+    for (const t of await allThreads()) {
       const p = by.get(t.cwd) ?? { path: t.cwd, updatedAt: 0, count: 0 };
       p.count++;
       p.updatedAt = Math.max(p.updatedAt, t.updatedAt * 1000);
@@ -1138,7 +1176,7 @@ export const codexAdapter: Adapter = {
 
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
     if (!Bun.which(CODEX_BIN)) return [];
-    const list = (await threads()).filter((t) => t.cwd === projectPath);
+    const list = (await allThreads()).filter((t) => t.cwd === projectPath);
     const skills = list.some((t) => !t.name && t.preview?.startsWith("$")) ? skillNames(projectPath) : undefined;
     return Promise.all(
       list.map(async (t) => ({
@@ -1161,7 +1199,7 @@ export const codexAdapter: Adapter = {
       const r: any = await p.call("thread/read", { threadId: nativeId, includeTurns: true });
       const thread = r.thread ?? r;
       return historyMsgs(thread.turns ?? [], projectPath, thread.model, await itemTimes(p, nativeId, thread.turns ?? []));
-    });
+    }, withProcess, codexHomeOf(nativeId));
   },
 
   // A short-lived app-server answers thread/read; the thread itself isn't resumed.
@@ -1183,23 +1221,25 @@ export const codexAdapter: Adapter = {
               .catch(() => undefined)
           : undefined;
       return { messages, context, model };
-    });
+    }, withProcess, codexHomeOf(nativeId));
   },
 
   modes: CODEX_MODES,
 
   create(projectPath, opts, sink) {
     listCache = undefined;
+    homeLists.clear();
     return new CodexSession({ nativeId: "pending-" + newId(""), projectPath }, sink, opts);
   },
 
   async fork(from, opts, sink) {
     listCache = undefined;
+    homeLists.clear();
     return new CodexSession({ nativeId: "pending-" + newId(""), projectPath: from.projectPath }, sink, { ...opts, fork: { threadId: from.nativeId, lastTurnId: from.point } });
   },
 
   async resume(nativeId, projectPath, sink) {
-    const t = (await threads()).find((x) => x.id === nativeId);
+    const t = (await allThreads()).find((x) => x.id === nativeId);
     return new CodexSession(
       { nativeId, projectPath: t?.cwd ?? projectPath, title: t ? titleOf(t, skillNames(t.cwd)) : undefined, createdAt: t ? t.createdAt * 1000 : undefined, updatedAt: t && (await lastMessageAt(t)) },
       sink,

@@ -4,20 +4,28 @@
 
 import { resetHome } from "../testenv";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { statSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import { claudeHomeOf, homeOptions, homeSessionStore } from "../adapters/claudeHome";
+import { claudeHome, codexHome } from "../context/paths";
 import { join } from "node:path";
 import { entryProblem } from "../../../web/src/shared/defaultOrder";
 import { formatEntry, parseEntry, type ChainEntry } from "../../../web/src/shared/protocol";
 import { credentialOptions } from "../adapters/claude";
 import { config } from "../config";
 import { defaultOrder, saveDefaultOrder, sessionStart } from "../defaultOrder";
-import { markExhausted, pickEntry, providerOf, quotaKey } from "../fallback";
+import { markExhausted, nextEntry, pickEntry, providerOf, quotaKey } from "../fallback";
 import { isSensitive } from "../guard";
-import { agentEnv, resetSecretsCache } from "../secrets";
+import { agentEnv, resetSecretsCache, setSecret } from "../secrets";
 import { LiveSession, type HandoffOpts } from "../session";
 import { examplePlugin } from "./example";
 import {
+  cleanView,
   credentialAction,
+  credentialAvailable,
+  envNameAllowed,
+  homeFor,
+  scrub,
   credentialIds,
   credentialModels,
   launchFor,
@@ -33,6 +41,9 @@ import {
 import * as store from "./store";
 
 const KEY = "ex-SECRET-value-1234";
+
+/** A plugin that does nothing but own its provider's ids (so entries on them are available). */
+const owner = (provider: string, over: Partial<CredentialPlugin> = {}): CredentialPlugin => ({ provider, label: provider, discover: async () => [], envFor: async () => ({}), ...over });
 
 beforeEach(() => {
   resetHome();
@@ -131,6 +142,7 @@ describe("#credential entries", () => {
   });
 
   test("a new session on the order starts on its first entry's credential; a picked model can name one", () => {
+    register(owner("azure"));
     expect(sessionStart({ harness: "claude-code", useOrder: true }, ["codex:gpt-6-luna#azure:east", "claude-code:opus"], () => true)).toEqual({
       harness: "codex",
       model: "gpt-6-luna",
@@ -143,6 +155,7 @@ describe("#credential entries", () => {
 
 describe("quotas per credential", () => {
   test("providerOf adds the credential; account A at its limit moves to account B", () => {
+    register(owner("anthropic"));
     expect(providerOf("opus", "claude-code")).toBe("claude-code:opus");
     expect(providerOf("opus", "claude-code", "anthropic:work")).toBe("claude-code:opus#anthropic:work");
     expect(providerOf("gpt-6-luna", "codex", "azure:east")).toBe("codex#azure:east");
@@ -297,5 +310,172 @@ describe("Claude Code options", () => {
     expect(credentialOptions({ env: {}, args: [] })).toEqual({});
     const o = credentialOptions({ env: { AWS_REGION: "us-east-1" }, args: ["--settings", "/x.json", "--debug", "--model=opus"] }, { env: { A: "1" }, extraArgs: { keep: null } });
     expect(o).toEqual({ env: { A: "1", AWS_REGION: "us-east-1" }, extraArgs: { keep: null, settings: "/x.json", debug: null, model: "opus" } });
+  });
+
+  test("a word after a flag is its value; anything else refuses the start instead of being dropped", () => {
+    expect(credentialOptions({ env: {}, args: ["--x", "-1"] }).extraArgs).toEqual({ x: "-1" });
+    expect(() => credentialOptions({ env: {}, args: ["-v"] })).toThrow(/--flag \[value\]/);
+    expect(() => credentialOptions({ env: {}, args: ["--a", "b", "stray"] })).toThrow(/“stray”/);
+  });
+});
+
+describe("what a plugin may give a process", () => {
+  test("env names: providers' own and harness homes yes; what runs code, home, Tether's own no", async () => {
+    for (const k of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "AWS_PROFILE", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL", "PI_CODING_AGENT_DIR", "EXAMPLE_API_KEY", "MY_AZURE_KEY"])
+      expect(envNameAllowed(k)).toBe(true);
+    for (const k of ["PATH", "HOME", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "BUN_INSTALL", "TETHER_GUARD_KEY", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME", "https_proxy", "BASH_ENV", "PYTHONPATH"])
+      expect(envNameAllowed(k)).toBe(false);
+    // declared for the credential (a Codex provider's env_key): allowed over the deny list, never over ENV_NEVER
+    expect(envNameAllowed("GIT_TOKEN", ["GIT_TOKEN"])).toBe(true);
+    expect(envNameAllowed("PATH", ["PATH"])).toBe(false);
+    expect(envNameAllowed("TETHER_GUARD_KEY", ["TETHER_GUARD_KEY"])).toBe(false);
+    register(owner("azure", { envFor: async () => ({ NODE_OPTIONS: "--require /tmp/x.js" }) }));
+    await expect(launchFor({ harness: "codex", model: "x", credential: "azure:east" })).rejects.toThrow(/can't set NODE_OPTIONS/);
+    unregister("azure");
+    register(owner("azure", { envFor: async () => ({ GIT_TOKEN: "tok-123456" }), envNames: () => ["GIT_TOKEN"] }));
+    expect((await launchFor({ harness: "codex", model: "x", credential: "azure:east" })).env).toEqual({ GIT_TOKEN: "tok-123456" });
+  });
+});
+
+describe("what reaches the app", () => {
+  test("a view keeps only its own fields; a plugin's extras never leave", async () => {
+    register(
+      owner("azure", {
+        discover: async () => [{ id: "azure:z", kind: "apiKey", provider: "azure", label: "Z", source: "shell", state: "ok", last4: "1234", apiKey: KEY, values: { k: KEY }, models: [{ harness: "codex", id: "gpt", token: KEY }] } as any],
+      }),
+    );
+    const l = await listCredentials();
+    expect(l.credentials).toEqual([{ id: "azure:z", kind: "apiKey", provider: "azure", label: "Z", source: "shell", state: "ok", last4: "1234", models: [{ harness: "codex", id: "gpt" }] }]);
+    expect(JSON.stringify(l)).not.toContain(KEY);
+    expect(cleanView({ id: "azure:z", label: "Z", last4: KEY })?.last4).toBeUndefined();
+  });
+
+  test("an action answers a typed result (message, https url, code, models, suggestions, next), never the raw one", async () => {
+    register(
+      owner("anthropic", {
+        action: async (_id, name) =>
+          name === "signIn"
+            ? { url: "https://claude.ai/oauth?x=1", message: "Open it and paste the code", next: { action: "signInCode", prompt: "Code", secret: true }, token: KEY, raw: { a: 1 } }
+            : name === "list"
+              ? { models: [{ id: "us.anthropic.claude-opus-5-5", label: "Opus", harness: "claude-code" }, { nope: 1 }], suggestions: ["gpt-6-luna", 3] }
+              : name === "bad"
+                ? { url: "javascript:alert(1)", code: "ABCD-1234" }
+                : "a string",
+      }),
+    );
+    expect(await credentialAction("anthropic", "signIn", {})).toEqual({ url: "https://claude.ai/oauth?x=1", message: "Open it and paste the code", next: { action: "signInCode", prompt: "Code", secret: true } });
+    expect(await credentialAction("anthropic", "list", {})).toEqual({ models: [{ id: "us.anthropic.claude-opus-5-5", label: "Opus", harness: "claude-code" }], suggestions: ["gpt-6-luna"] });
+    expect(await credentialAction("anthropic", "bad", {})).toEqual({ code: "ABCD-1234" });
+    expect(await credentialAction("anthropic", "other", {})).toBeUndefined();
+  });
+
+  test("messages are scrubbed of every known value: stored keys, your secrets, what a process was given", async () => {
+    register(examplePlugin);
+    await credentialAction("example", "add", { name: "k1", apiKey: KEY });
+    await setSecret("MY_TOKEN", { value: "secret-token-xyz" });
+    expect(scrub(`bad key ${KEY} and secret-token-xyz`)).toBe("bad key •••• and ••••");
+    register(
+      owner("azure", {
+        test: async () => ({ ok: false, result: "invalid", message: `401 for key ${KEY}` }),
+        action: async () => {
+          throw new Error(`rejected ${KEY}`);
+        },
+        discover: async () => Promise.reject(new Error(`can't read ${KEY}`)),
+      }),
+    );
+    expect((await testCredential("azure:x")).message).toBe("401 for key ••••");
+    await expect(credentialAction("azure", "add", {})).rejects.toThrow("rejected ••••");
+    expect((await listCredentials()).errors).toEqual([{ provider: "azure", error: "can't read ••••" }]);
+    await setSecret("MY_TOKEN", { remove: true });
+  });
+});
+
+describe("an unavailable credential is passed over", () => {
+  test("plugin missing or record removed: sessionStart, pickEntry and nextEntry skip it like an uninstalled harness", async () => {
+    const order = ["codex:gpt-6-luna#azure:east", "claude-code:opus"];
+    // no plugin for azure on this runner
+    expect(credentialAvailable("azure:east")).toBe(false);
+    expect(sessionStart({ harness: "claude-code", useOrder: true }, order, () => true)).toMatchObject({ harness: "claude-code", model: "opus" });
+    const pick = pickEntry(order, "claude-code");
+    expect("entry" in pick && pick.entry).toEqual({ harness: "claude-code", model: "opus" });
+    expect(nextEntry(["claude-code:sonnet", ...order], { harness: "claude-code", model: "sonnet" }, "claude-code")).toEqual({ harness: "claude-code", model: "opus" });
+
+    // a stored one, removed: gone at once, and the answer says where it was used
+    register(examplePlugin);
+    await credentialAction("example", "add", { name: "k1", apiKey: KEY });
+    expect(credentialAvailable("example:k1")).toBe(true);
+    config().sessions["pi:s1"] = { chain: ["pi:example/echo-1#example:k1"] } as any;
+    const r = await removeCredential("example:k1", ["claude-code:opus", "pi:example/echo-1#example:k1"]);
+    expect(r.usedIn).toEqual(["Default order #2", "1 session"]);
+    expect(credentialAvailable("example:k1")).toBe(false);
+    expect(pickEntry(["pi:example/echo-1#example:k1", "pi:x/y"], "pi")).toEqual({ entry: { harness: "pi", model: "x/y" } });
+    delete config().sessions["pi:s1"];
+  });
+
+  test("model lists answer from the last list and refresh it in the background", async () => {
+    let calls = 0;
+    let release!: () => void;
+    register(
+      owner("azure", {
+        discover: async () => {
+          calls++;
+          if (calls > 1) await new Promise<void>((r) => (release = r));
+          return [{ id: "azure:east", kind: "apiKey", provider: "azure", label: "Azure", source: "tether", state: "ok", models: [{ harness: "codex", id: `m${calls}` }] }];
+        },
+      }),
+    );
+    expect((await credentialModels("codex")).map((m) => m.id)).toEqual(["m1"]);
+    // stale: answered at once from the old list while discovery (blocked here) runs
+    const real = Date.now;
+    Date.now = () => real() + 60_000;
+    try {
+      const t0 = performance.now();
+      expect((await credentialModels("codex")).map((m) => m.id)).toEqual(["m1"]);
+      expect(performance.now() - t0).toBeLessThan(500);
+      release();
+      await Bun.sleep(10);
+      expect((await credentialModels("codex")).map((m) => m.id)).toEqual(["m2"]);
+    } finally {
+      Date.now = real;
+    }
+  });
+});
+
+describe("account homes (homeFor)", () => {
+  test("Tether reads a session's native files in its credential's home; the machine's login is unchanged", async () => {
+    const home = join(process.env.HOME!, ".config", "tether", "accounts", "work", "claude");
+    register(owner("anthropic", { homeFor: (id, h) => (id === "anthropic:work" && h === "claude-code" ? home : undefined) }));
+    expect(homeFor("anthropic:work", "claude-code")).toBe(home);
+    expect(homeFor("anthropic:work", "codex")).toBeUndefined();
+    expect(homeFor("anthropic:other", "claude-code")).toBeUndefined();
+    expect(claudeHome()).toBe(join(process.env.HOME!, ".claude"));
+    expect(claudeHome("anthropic:work")).toBe(home);
+    expect(codexHome("anthropic:work")).toBe(join(process.env.HOME!, ".codex"));
+
+    // a stored session on that credential: its transcript is read from the account home
+    const id = crypto.randomUUID();
+    const project = join(process.env.HOME!, "proj");
+    const dir = join(home, "projects", project.replace(/[^a-zA-Z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    const line = (o: object) => JSON.stringify({ sessionId: id, cwd: project, version: "2", gitBranch: "", isSidechain: false, userType: "external", ...o });
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        line({ type: "user", uuid: "u1", parentUuid: null, timestamp: "2026-10-23T10:00:00.000Z", message: { role: "user", content: "hello from the work account" } }),
+        line({ type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: "2026-10-23T10:00:01.000Z", message: { id: "m1", role: "assistant", model: "x", type: "message", content: [{ type: "text", text: "hi" }] } }),
+      ].join("\n") + "\n",
+    );
+    expect(homeOptions(id)).toEqual({});
+    config().sessions[`claude-code:${id}`] = { credential: "anthropic:work" } as any;
+    try {
+      expect(claudeHomeOf(id)).toBe(home);
+      const msgs = await getSessionMessages(id, { dir: project, ...homeOptions(id) });
+      expect(msgs.map((m) => m.uuid)).toEqual(["u1", "a1"]);
+      // without the store the SDK looks in the machine's home and finds nothing
+      expect(await getSessionMessages(id, { dir: project }).catch(() => [])).toEqual([]);
+      expect((await homeSessionStore(home).listSessions!(project.replace(/[^a-zA-Z0-9]/g, "-"))).map((s) => s.sessionId)).toEqual([id]);
+    } finally {
+      delete config().sessions[`claude-code:${id}`];
+    }
   });
 });

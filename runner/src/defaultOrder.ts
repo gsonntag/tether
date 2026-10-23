@@ -7,6 +7,7 @@
 import { cleanOrder, entryProblem } from "../../web/src/shared/defaultOrder";
 import { parseEntry, type HarnessId, type ModelRef } from "../../web/src/shared/protocol";
 import { config, saveConfig } from "./config";
+import { entryAvailable } from "./credentials/registry";
 import { exhaustedUntil, isInstalled, quotaKey } from "./fallback";
 
 /** The saved default order (a copy), or undefined while none is saved. */
@@ -55,7 +56,8 @@ export function sessionStart(
   const picked = want.model ? parseEntry(want.model, want.harness) : undefined;
   const plain = { harness: want.harness, ...(picked?.model ? { model: picked.model } : {}), ...(picked?.credential ? { credential: picked.credential } : {}) };
   if (!want.useOrder || !order?.length) return plain;
-  const entries = order.map((e) => parseEntry(e, want.harness)).filter((e) => installed(e.harness));
+  // Entries on a harness that isn't installed, or a credential that is gone, are passed over.
+  const entries = order.map((e) => parseEntry(e, want.harness)).filter((e) => installed(e.harness) && entryAvailable(e));
   const e = entries.find((x) => !exhaustedUntil(quotaKey(x))) ?? entries[0];
   if (!e) return plain;
   return {

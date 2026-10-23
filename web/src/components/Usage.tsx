@@ -101,12 +101,13 @@ const popoverBody: CSSProperties = { maxHeight: "70vh", overflowY: "auto" };
  * Settings-bar pill: the 5h / weekly usage of the subscription this session runs on. Its popover
  * also holds the session's cost and its extensions' status lines, so the bar stays one short row.
  */
-export function UsagePill({ harness, model, statuses, cost }: { harness?: string; model?: string; statuses?: Record<string, string>; cost?: number }) {
+export function UsagePill({ harness, model, credential, statuses, cost }: { harness?: string; model?: string; credential?: string; statuses?: Record<string, string>; cost?: number }) {
   const usage = useStore((s) => s.usage);
   const [open, setOpen] = useState(false);
   // No tooltip on touch: focus coming back after the popover closes would leave it on screen.
   const touch = useMediaQuery("(hover: none)");
-  const prov = usageProvider(harness, model);
+  // On a credential (an account or key) the harness's own login's usage isn't this session's: none shown.
+  const prov = credential ? undefined : usageProvider(harness, model);
   const found = prov && usage?.providers.find((x) => x.provider === prov);
   const p = found && !found.error && found.windows.length ? found : undefined;
   const extra = Object.entries(statuses ?? {});

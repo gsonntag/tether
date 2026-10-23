@@ -136,14 +136,14 @@ describe("credential files, whatever reads them", () => {
     "sort ~/.config/tether/credentials.json",
     "jq . ~/.config/tether/credentials.json",
     "awk 1 ~/.config/tether/secrets.json",
-    "xxd ~/.config/tether/accounts/anthropic-work/.credentials.json",
+    "xxd ~/.config/tether/accounts/anthropic-work/claude/.credentials.json",
     "strings ~/.codex/auth.json",
     "od -c ~/.claude/.credentials.json",
     "grep -r sk- ~/.config/tether",
     "grep -r sk- ~/.config",
     "grep -rn sk- ~",
     "rg sk- ~/.config/tether/accounts",
-    "rg sk- ~/.config/tether/accounts/anthropic-work",
+    "rg sk- ~/.config/tether/accounts/anthropic-work/claude",
     "sort < ~/.codex/auth.json",
     "wc -l < ~/.config/tether/credentials.json",
     "cat ~/.codex/au*",
@@ -153,7 +153,9 @@ describe("credential files, whatever reads them", () => {
     "jq -r .tokens --rawfile x ~/.pi/agent/auth.json package.json",
     "cd ~/.config/tether && cat credentials.json",
     "cd ~ && grep -r sk- .",
-    "head -c 200 ~/.config/tether/accounts/openai-work/auth.json",
+    "cd ~ && grep -r sk-",
+    "cd ~ && rg --hidden sk-",
+    "head -c 200 ~/.config/tether/accounts/openai-work/codex/auth.json",
     "git diff --no-index ~/.codex/auth.json a.txt",
   ])("%s is denied", (c) => expect(sh(c)).toBe("deny"));
 
@@ -185,18 +187,29 @@ describe("credential files, whatever reads them", () => {
     expect(grep({ pattern: "src/**/*.ts", path: "/home/u/proj" }, "Glob")).toBe("allow");
   });
 
-  test("an account's own home stays readable; its login files don't", () => {
-    const home = "~/.config/tether/accounts/anthropic-work";
-    expect(read(`${home}/projects/x/memory/MEMORY.md`)).toBe("allow");
-    expect(read(`${home}/plans/plan.md`)).toBe("allow");
-    expect(read(`${home}/todos/a.json`)).toBe("allow");
+  test("an account's harness homes stay the agent's own; only their login files are secret", () => {
+    const acc = "~/.config/tether/accounts/anthropic-work";
+    const home = `${acc}/claude`;
+    const codex = "~/.config/tether/accounts/openai-work/codex";
+    // readable: plans, memory, saved tool output, skills, todos; Codex skills and memories
+    for (const p of [`${home}/plans/plan.md`, `${home}/projects/x/memory/MEMORY.md`, `${home}/projects/x/abc/tool-results/t.txt`, `${home}/skills/s/SKILL.md`, `${home}/todos/a.json`, `${codex}/skills/s/SKILL.md`, `${codex}/memories/m.md`, `${codex}/memories_1.sqlite`, `${codex}/config.toml`])
+      expect(read(p)).toBe("allow");
     expect(grep({ pattern: "x", path: `${home}/projects` })).toBe("allow");
-    expect(read(`${home}/.credentials.json`)).toBe("deny");
-    expect(read(`${home}/.claude.json`)).toBe("deny");
-    expect(read("~/.config/tether/accounts/openai-work/auth.json")).toBe("deny");
-    expect(read("~/.config/tether/accounts/openai-work/state_5.sqlite")).toBe("deny");
-    expect(edit(`${home}/settings.json`)).toBe("deny");
     expect(sh(`cat ${home}/plans/plan.md`)).toBe("allow");
+    expect(sh(`grep -r TODO ${codex}/memories`)).toBe("allow");
+    // a plan written in the account home goes like one in ~/.claude (the test home is under /tmp), never hard-denied
+    expect(edit(`${home}/plans/plan.md`)).toBe(edit("~/.claude/plans/plan.md"));
+    expect(edit(`${home}/plans/plan.md`)).not.toBe("deny");
+    // secret: the login files, and anything outside a harness home
+    for (const p of [`${home}/.credentials.json`, `${home}/.claude.json`, `${codex}/auth.json`, "~/.config/tether/accounts/x/pi/auth.json", `${acc}/notes.json`, `${acc}/anything/else`])
+      expect(read(p)).toBe("deny");
+    expect(sh(`sort ${codex}/auth.json`)).toBe("deny");
+    // reading a whole home (its login files are at the top) or account
+    expect(grep({ pattern: "sk-", path: home })).toBe("deny");
+    expect(sh(`rg sk- ${acc}`)).toBe("deny");
+    // hooks and servers: not editable
+    expect(edit(`${home}/settings.json`)).toBe("deny");
+    expect(edit(`${codex}/config.toml`)).toBe("deny");
   });
 
   test("a config dir moved elsewhere is protected there too", () => {

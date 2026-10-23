@@ -38,6 +38,7 @@ import { nativeAttachments } from "../attachments";
 import { hardLimit, LimitStatus } from "../limitStatus";
 import { claudeFault } from "../faults";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
+import { accountClaudeHomes, claudeHomeOf, homeOptions, homeSessionStore } from "./claudeHome";
 import { claudePick, fileStamp, lastLineTime } from "./lastActivity";
 import { userHome } from "../home";
 import { claudeNativeKeys, HOOK_EVENTS, hooksFor, runHooks } from "../hooks";
@@ -116,7 +117,9 @@ interface EntryFlags {
 /**
  * A credential's env and args (LiveSession.credentialLaunch) as query options: the SDK's `env`
  * replaces the process environment, so it goes over what the launch already set (your secrets) or
- * the runner's own; args become `extraArgs` ("--flag value" / "--flag=value" / "--flag").
+ * the runner's own; args become `extraArgs` ("--flag value" / "--flag=value" / "--flag"). A word
+ * after a flag is its value; anything else (a short "-x" flag, a stray word) can't be passed through
+ * the SDK and refuses the start rather than being dropped.
  */
 export function credentialOptions(cred: { env: Record<string, string>; args: string[] }, launched: Record<string, any> = {}): Record<string, any> {
   const out: Record<string, any> = {};
@@ -128,7 +131,7 @@ export function credentialOptions(cred: { env: Record<string, string>; args: str
     const flags: Record<string, string | null> = { ...(launched.extraArgs ?? {}) };
     for (let i = 0; i < cred.args.length; i++) {
       const a = cred.args[i]!;
-      if (!a.startsWith("--")) continue;
+      if (!a.startsWith("--") || a === "--") throw new Error(`Claude Code takes a credential's arguments as "--flag [value]" only; “${a}” isn't one.`);
       const eq = a.indexOf("=");
       if (eq > 0) flags[a.slice(2, eq)] = a.slice(eq + 1);
       else if (cred.args[i + 1] !== undefined && !cred.args[i + 1]!.startsWith("--")) flags[a.slice(2)] = cred.args[++i]!;
@@ -261,9 +264,12 @@ function applyUser(content: unknown, messages: Msg[], id: string, ts: number, fl
   return parts.length ? { id, role: "user", parts, ts } : undefined;
 }
 
-/** The session's JSONL under ~/.claude/projects (the SDK encodes the cwd by replacing non-alphanumerics). */
+/**
+ * The session's JSONL under ~/.claude/projects, or its account home's on a credential (claudeHome.ts;
+ * the SDK encodes the cwd by replacing non-alphanumerics).
+ */
 function transcriptFile(sessionId: string, dir: string): string | undefined {
-  const base = join(userHome(), ".claude", "projects");
+  const base = join(claudeHomeOf(sessionId), "projects");
   const direct = join(base, dir.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
   if (existsSync(direct)) return direct;
   try {
@@ -304,7 +310,7 @@ async function entries(sessionId: string, dir: string) {
 
 /** `onContext`: the context as of the last stored reply (a resumed process reports nothing until prompted). */
 export async function loadHistory(sessionId: string, dir: string, onContext?: (c: ContextUsage | undefined) => void, marks?: Map<string, string>): Promise<Msg[]> {
-  const [list, meta] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true }), entries(sessionId, dir)]);
+  const [list, meta] = await Promise.all([getSessionMessages(sessionId, { dir, includeSystemMessages: true, ...homeOptions(sessionId) }), entries(sessionId, dir)]);
   onContext?.(claudeHistoryContext(list));
   return historyMessages(list, meta, marks);
 }
@@ -1060,9 +1066,19 @@ const MODEL_CACHE_MS = 60 * 60_000;
 
 /** When a stored session's last message was written (the file's mtime also moves on titles, modes, …). */
 async function lastMessageAt(s: { sessionId: string; lastModified: number; fileSize?: number }, projectPath: string): Promise<number> {
-  const file = join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
+  const file = join(claudeHomeOf(s.sessionId), "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
   const known = s.fileSize !== undefined ? { mtime: s.lastModified, size: s.fileSize } : undefined;
   return (await lastLineTime(file, claudePick, known)) ?? s.lastModified;
+}
+
+/** A project's stored sessions: the machine's own (~/.claude), then those in the account homes sessions run on. */
+async function storedSessions(projectPath: string) {
+  const own = await listSessions({ dir: projectPath, includeWorktrees: false });
+  const homes = accountClaudeHomes();
+  if (!homes.length) return own;
+  const more = await Promise.all(homes.map((h) => listSessions({ dir: projectPath, includeWorktrees: false, sessionStore: homeSessionStore(h) }).catch(() => [])));
+  const seen = new Set(own.map((s) => s.sessionId));
+  return [...own, ...more.flat().filter((s) => !seen.has(s.sessionId) && (seen.add(s.sessionId), true))];
 }
 
 export const claudeAdapter: Adapter = {
@@ -1085,7 +1101,7 @@ export const claudeAdapter: Adapter = {
   },
 
   async listSessions(projectPath: string): Promise<SessionSummary[]> {
-    const list = (await listSessions({ dir: projectPath, includeWorktrees: false })).filter((s) => !s.cwd || s.cwd === projectPath);
+    const list = (await storedSessions(projectPath)).filter((s) => !s.cwd || s.cwd === projectPath);
     return Promise.all(
       list.map(async (s) => ({
         id: `claude-code:${s.sessionId}`,
@@ -1112,7 +1128,7 @@ export const claudeAdapter: Adapter = {
   },
 
   async historyStamp(nativeId: string, projectPath: string) {
-    return fileStamp(join(userHome(), ".claude", "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeId}.jsonl`));
+    return fileStamp(join(claudeHomeOf(nativeId), "projects", projectPath.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeId}.jsonl`));
   },
 
   modes: PERMISSION_MODES,
@@ -1123,12 +1139,13 @@ export const claudeAdapter: Adapter = {
 
   async fork(from, opts, sink) {
     // A copy of the transcript up to that entry (fresh uuids, no undo history), resumed as a new session.
-    const { sessionId } = await forkSession(from.nativeId, { dir: from.projectPath, upToMessageId: from.point });
+    // In the session's own home (runFork forks natively only on the same credential).
+    const { sessionId } = await forkSession(from.nativeId, { dir: from.projectPath, upToMessageId: from.point, ...homeOptions(from.nativeId) });
     return new ClaudeSession({ nativeId: sessionId, projectPath: from.projectPath }, sink, { ...opts, resume: true });
   },
 
   async resume(nativeId, projectPath, sink) {
-    const s = (await listSessions({ dir: projectPath, includeWorktrees: false })).find((x) => x.sessionId === nativeId);
+    const s = (await listSessions({ dir: projectPath, includeWorktrees: false, ...homeOptions(nativeId) })).find((x) => x.sessionId === nativeId);
     return new ClaudeSession(
       { nativeId, projectPath, title: s ? s.customTitle || s.summary || s.firstPrompt : undefined, createdAt: s?.createdAt, updatedAt: s && (await lastMessageAt(s, projectPath)) },
       sink,

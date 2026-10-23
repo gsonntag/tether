@@ -142,6 +142,8 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
   const slot = slotFor(owner);
   const [busy, setBusy] = useState<string>();
   const [test, setTest] = useState<CredentialTest>();
+  // What a generic action said (its result's message); flows with a URL or code are a slot's Row.
+  const [answer, setAnswer] = useState<string>();
   const st = STATE[c.state] ?? STATE.unknown;
   const run = async (name: string, fn: () => Promise<void>) => {
     setBusy(name);
@@ -155,7 +157,7 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
   };
   const actions = (c.actions ?? []).filter((a) => !slot?.ownActions?.includes(a));
   const usage = usageLine(c);
-  const notes = [c.stateNote, usage, c.usedIn?.length ? `Used in ${c.usedIn.join(", ")}` : undefined].filter(Boolean) as string[];
+  const notes = [answer, c.stateNote, usage, c.usedIn?.length ? `Used in ${c.usedIn.join(", ")}` : undefined].filter(Boolean) as string[];
   const Row = slot?.Row;
   return (
     <VStack padding={2} gap={1}>
@@ -174,10 +176,22 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
                 variant="ghost"
                 isLoading={busy === a}
                 isDisabled={!!busy}
-                onClick={() => run(a, async () => setCredentials((await rpc("credentialAction", { id: c.id, action: a })).list))}
+                onClick={() =>
+                  run(a, async () => {
+                    const r = await rpc("credentialAction", { id: c.id, action: a });
+                    setAnswer(r.result?.message);
+                    setCredentials(r.list);
+                  })
+                }
               />
             ))}
             <Button label="Test" size="sm" variant="ghost" isLoading={busy === "test"} isDisabled={!!busy} onClick={() => run("test", async () => setTest(await rpc("testCredential", { id: c.id })))} />
+            {/* No confirm: what removing it changes is said next to the button. */}
+            {c.source === "tether" && c.usedIn?.some((u) => u.startsWith("Default order")) && (
+              <Text type="supporting" color="secondary">
+                Used in your default order
+              </Text>
+            )}
             {c.source === "tether" && (
               <Button
                 label="Remove"

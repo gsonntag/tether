@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { clearSlots, registerSlot, slotFor } from "./credentials";
+// The registry alone: slots may import the store, which needs a browser.
+import { clearSlots, registerSlot, slotFor } from "./credentials/slots";
 import { chainLabel, credentialName, forgetAliases, learnCredentials, modelLabel, orderLabel } from "./models";
 import { entryProblem } from "./shared/defaultOrder";
 import { isCredentialId } from "./shared/credentials";

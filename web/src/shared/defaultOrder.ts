@@ -17,8 +17,9 @@ export function entryProblem(entry: string, credentials?: ReadonlySet<string>): 
   const hash = entry.indexOf("#");
   const model = (hash >= 0 ? entry.slice(h.id.length + 1, hash) : entry.slice(h.id.length + 1)).trim();
   if (!model) return `“${entry}” has no model`;
-  if (hash < 0) return undefined;
-  const cred = entry.slice(hash + 1);
+  // As parseEntry reads it: trimmed, and an empty one is no credential (the harness's own login).
+  const cred = hash < 0 ? "" : entry.slice(hash + 1).trim();
+  if (!cred) return undefined;
   if (!isCredentialId(cred)) return `“${entry}” names an account or key that isn't one (“${cred}”)`;
   if (credentials && !credentials.has(cred)) return `“${entry}” runs on ${cred}, which isn't on this runner`;
   return undefined;

@@ -110,11 +110,21 @@ const SENSITIVE = [
 const TETHER_CONFIG = /(^|\/)\.config\/tether\//;
 
 /**
- * In a per-account home (credentials/store.ts accountsDir: CLAUDE_CONFIG_DIR, CODEX_HOME, pi's agent
- * dir…) only the login files are secret: tokens, keys, the harness's login databases and the
- * configs that can carry a key. Its memory, plans, todos and transcripts stay readable.
+ * The accounts folder (credentials/store.ts accountsDir) holds one folder per account, and in it one
+ * home per harness: accounts/<id>/claude (CLAUDE_CONFIG_DIR), accounts/<id>/codex (CODEX_HOME),
+ * accounts/<id>/pi (pi's agent dir)… In a harness home only the login files are secret; its plans,
+ * memory, skills, saved tool output and transcripts are the agent's own, readable (and writable
+ * where the guard otherwise allows). Anything else under accounts/ is secret.
  */
-const ACCOUNT_SECRET = /^(auth\.json|\.credentials\.json|\.claude\.json|credentials(\.json)?|config\.toml|[^/]*tokens?(\.json)?|[^/]*\.(sqlite3?|db)(-wal|-shm|-journal)?|[^/]*\.(pem|key|p12|pfx))$/i;
+const HARNESS_HOMES = new Set(["claude", "claude-code", "codex", "pi", "opencode", "kiro", "antigravity", "gemini"]);
+const ACCOUNT_LOGIN = /^(\.credentials\.json|\.claude\.json|auth\.json)$/;
+
+/** Where a path under the accounts folder is: its parts after accounts/ (undefined: not under it). */
+function accountParts(p: string): string[] | undefined {
+  const acc = accountsDir();
+  if (!inside(p, acc)) return undefined;
+  return p.slice(acc.replace(/\/$/, "").length).split("/").filter(Boolean);
+}
 
 /**
  * Tether's credential store wherever the config dir is ($TETHER_CONFIG_DIR may move it out of
@@ -124,10 +134,13 @@ const tetherSecrets = () => [credentialsFile(), secretsFile()];
 
 /** Credential and secrets files (keys, tokens, .env…): the guard keeps agents off them; the file panel asks before showing one. */
 export function isSensitive(p: string): boolean {
-  const acc = accountsDir();
-  if (inside(p, acc) && p !== acc) {
-    const rel = p.slice(acc.replace(/\/$/, "").length + 1);
-    return ACCOUNT_SECRET.test(basename(p)) || SENSITIVE.some((re) => re.test(rel));
+  const parts = accountParts(p);
+  if (parts?.length) {
+    // accounts/<id>, or a file next to its harness homes: secret.
+    if (parts.length < 2 || !HARNESS_HOMES.has(parts[1]!)) return true;
+    const inHome = parts.slice(2);
+    if (!inHome.length) return false; // the home folder itself (holdsSensitive covers reading it whole)
+    return (inHome.length === 1 && ACCOUNT_LOGIN.test(inHome[0]!)) || SENSITIVE.some((re) => re.test(inHome.join("/")));
   }
   return SENSITIVE.some((re) => re.test(p)) || TETHER_CONFIG.test(p) || tetherSecrets().some((s) => inside(p, s));
 }
@@ -149,13 +162,14 @@ function sensitiveRoots(): string[] {
 
 /**
  * Whether reading `p` recursively (grep -r, rg, Grep/Glob on it) could read a credential: it is
- * one, or a folder with one inside (no trailing slash needed). An account's home (accounts/<id>)
- * has its login files at the top; the folders below it (memory, plans) don't.
+ * one, or a folder with one inside (no trailing slash needed). A harness home (accounts/<id>/claude)
+ * has its login files at the top; the folders below it (memory, plans, skills) don't.
  */
 export function holdsSensitive(p: string): boolean {
   if (isSensitive(p)) return true;
-  const acc = accountsDir();
-  if (inside(p, acc)) return p.slice(acc.replace(/\/$/, "").length).split("/").filter(Boolean).length <= 1;
+  // The accounts folder, an account's folder, a harness home: its login files are at the top.
+  const parts = accountParts(p);
+  if (parts) return parts.length <= 2;
   return sensitiveRoots().some((r) => inside(r, p));
 }
 
@@ -245,8 +259,9 @@ const AGENT_CONFIG = [
 ];
 const AGENT_CONFIG_IN_COMMAND = /hooks\.json|(^|[\s/"'=])[._]agents?([\s/"';&|]|$)|\.gemini\/config|\.claude\/settings/;
 
-/** An account home's settings (CLAUDE_CONFIG_DIR/settings.json) carry hooks like ~/.claude's. */
-export const isAgentConfig = (p: string) => AGENT_CONFIG.some((re) => re.test(p)) || (inside(p, accountsDir()) && /^(settings(\.local)?\.json|hooks\.json)$/.test(basename(p)));
+/** An account home's settings (CLAUDE_CONFIG_DIR/settings.json, CODEX_HOME/config.toml) carry hooks and servers like ~/.claude's. */
+export const isAgentConfig = (p: string) =>
+  AGENT_CONFIG.some((re) => re.test(p)) || (inside(p, accountsDir()) && /^(settings(\.local)?\.json|hooks\.json|config\.toml|mcp\.json)$/.test(basename(p)));
 
 // ---------------- shell commands ----------------
 
@@ -420,8 +435,10 @@ function classifyShell(cmd: string, call: ToolCall): Verdict | undefined {
         const x = readExposure(w, wd);
         if (x) return x;
       }
-      // A search with no folder given searches where it is.
-      const recursive = head === "rg" || head === "ag" || (/^e?grep$/.test(head) && args.some((a) => /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)/.test(a)));
+      // A search with no folder given searches where it is. rg and ag skip hidden folders (~/.config,
+      // ~/.codex…) unless told otherwise; grep -r doesn't.
+      const unhidden = args.some((a) => /^(--hidden|--no-ignore\b|--unrestricted|-[a-zA-Z]*u)/.test(a));
+      const recursive = ((head === "rg" || head === "ag") && unhidden) || (/^e?grep$/.test(head) && args.some((a) => /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)/.test(a)));
       if (recursive && holdsSensitive(wd)) return { decision: "deny", by: "rule", reason: SEARCHES_SECRETS };
     }
     if (head === "cd" || head === "pushd") {

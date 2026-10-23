@@ -260,7 +260,7 @@ export interface Msg {
 import type { Attachment } from "./attachments";
 export type { Attachment } from "./attachments";
 import type { PlanDraft, PlanReviewState } from "./plan";
-import type { CredentialList, CredentialTest } from "./credentials";
+import type { CredentialActionResult, CredentialList, CredentialRemoval, CredentialTest } from "./credentials";
 
 // ---------- live state ----------
 
@@ -1539,9 +1539,14 @@ export interface Ops {
   listCredentials: { args: {}; result: CredentialList };
   /** one cheap call with it */
   testCredential: { args: { id: string }; result: CredentialTest };
-  removeCredential: { args: { id: string }; result: CredentialList };
-  /** a provider-specific step; `id` is a credential, or a bare provider ("azure") for provider-level ones ("add") */
-  credentialAction: { args: { id: string; action: string; args?: unknown }; result: { result?: unknown; list: CredentialList } };
+  /** the new list, with where the removed one was still used (`usedIn`: "Default order #2", "2 sessions") */
+  removeCredential: { args: { id: string }; result: CredentialRemoval };
+  /**
+   * A provider-specific step; `id` is a credential, or a bare provider ("azure") for provider-level
+   * ones ("add"). `result`: what the page shows or does next (a message, a sign-in URL, a device
+   * code, the next step's prompt), never the plugin's raw answer.
+   */
+  credentialAction: { args: { id: string; action: string; args?: unknown }; result: { result?: CredentialActionResult; list: CredentialList } };
   // Env and secrets (runner/src/secrets.ts): values go in, never come back
   listSecrets: { args: {}; result: SecretView[] };
   setSecret: { args: { name: string; value?: string; remove?: boolean }; result: SecretView[] };

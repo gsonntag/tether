@@ -34,7 +34,8 @@ import { getUsage, signedIn } from "./usage";
 import { defaultOrder, saveDefaultOrder, sessionStart, suggestOrder, type HarnessFacts } from "./defaultOrder";
 import { setInstalledCheck } from "./fallback";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
-import { APPROVING_MODES, byRecent, HARNESSES, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
+import { APPROVING_MODES, byRecent, HARNESSES, isActive, listPath, parseEntry, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
+import { isCredentialId } from "../../web/src/shared/credentials";
 import type { SessionPrefs } from "./config";
 import { denials, editedPending, joinPending, sessionFiles, storedSlashMenu, type HandoffOpts, type LiveSession } from "./session";
 import { approvalRules, removeApprovalRule, type GuardMode } from "./guard";
@@ -1076,6 +1077,14 @@ const ops: Handlers = {
   },
 
   async setChain({ sessionId, chain, preferEarlier }) {
+    // A list of entries; one on a credential names one this runner has (as the default order's are checked).
+    if (!Array.isArray(chain) || chain.some((e) => typeof e !== "string" || !e.trim())) throw new Error('A chain is a list of "harness:model" entries.');
+    const creds = chain.map((e) => parseEntry(e, "claude-code").credential).filter((c): c is string => !!c);
+    if (creds.length) {
+      const ids = await credentialIds();
+      const bad = creds.find((c) => !isCredentialId(c) || !ids.has(c));
+      if (bad) throw new Error(isCredentialId(bad) ? `${bad} isn't on this runner. Nothing was changed.` : `“${bad}” isn't an account or key. Nothing was changed.`);
+    }
     await changeSetting(sessionId, { op: "chain", chain, preferEarlier }, (s) => s.setChain(chain, preferEarlier));
     return {};
   },
@@ -1164,8 +1173,9 @@ const ops: Handlers = {
     return testCredential(String(id ?? ""));
   },
   async removeCredential({ id }) {
-    await removeCredential(String(id ?? ""));
-    return listCredentials({ order: defaultOrder() });
+    // Where it was still used comes back with the list: those entries are passed over from now on.
+    const { usedIn } = await removeCredential(String(id ?? ""), defaultOrder());
+    return { ...(await listCredentials({ order: defaultOrder() })), ...(usedIn.length ? { usedIn } : {}) };
   },
   async credentialAction({ id, action, args }) {
     const result = await credentialAction(String(id ?? ""), String(action ?? ""), args);

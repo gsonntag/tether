@@ -155,6 +155,12 @@ describe("context service", () => {
     expect(config().guard?.judgeModel).toBeUndefined(); // no second copy of the model any more
     expect(() => s.setBackgroundModel("kiro:x")).toThrow();
     expect(() => s.setBackgroundModel("off")).toThrow();
+    // not on an account or key until there's a model · account picker for it; one set by hand is ignored
+    expect(() => s.setBackgroundModel("codex:gpt-6-luna#azure:east")).toThrow(/own login/);
+    expect(config().backgroundModel).toBe("claude-code:sonnet");
+    config().backgroundModel = "codex:gpt-6-luna#azure:east";
+    expect(s.backgroundModel().model).toBe("claude-code:haiku");
+    config().backgroundModel = "claude-code:sonnet";
     s.setJudgeEnabled(false);
     expect(s.backgroundModel()).toMatchObject({ model: "claude-code:sonnet", judge: false });
     expect(config().guard).toMatchObject({ judge: false, judgeModel: "off" }); // older runners see "off"

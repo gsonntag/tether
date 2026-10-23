@@ -567,6 +567,8 @@ export class ContextService {
     if (!norm) throw new Error("Pick a model");
     const e = parseEntry(norm, "claude-code");
     if (!BACKGROUND_HARNESSES.includes(e.harness)) throw new Error(`${e.harness} can't run background work`);
+    // Background jobs run on the harness's own login until there is a model · account background picker.
+    if (e.credential || model.includes("#")) throw new Error("The background model runs on the harness's own login; models on an account or key can't be picked for it yet.");
     config().backgroundModel = norm;
     saveConfig();
     return this.backgroundModel();

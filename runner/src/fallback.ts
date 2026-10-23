@@ -16,7 +16,7 @@
 
 import { parseEntry, usageProvider, type ChainEntry, type HarnessId, type ProviderUsage } from "../../web/src/shared/protocol";
 import { config, saveConfig } from "./config";
-import { canCheckUsage, credentialUsage } from "./credentials/registry";
+import { canCheckUsage, credentialUsage, entryAvailable } from "./credentials/registry";
 import { accountUsage, type UsageAccount } from "./usage";
 
 export type ErrorKind = "quota" | "rate_limit" | "other";
@@ -197,6 +197,8 @@ export function pickEntry(chain: string[], harness: HarnessId, skip?: (provider:
     const entry = parseEntry(raw, harness);
     // A harness that isn't installed (now) is passed over; the session's own one runs, so it is.
     if (entry.harness !== harness && !isInstalled(entry.harness)) continue;
+    // So is one on a credential that is gone (its plugin or its record): like an uninstalled harness.
+    if (!entryAvailable(entry)) continue;
     const key = quotaKey(entry);
     const until = exhaustedUntil(key) ?? skip?.(key);
     if (!until) return { entry };
@@ -228,5 +230,5 @@ export function nextEntry(chain: string[], current: ChainEntry, harness: Harness
   const entries = chain.map((raw) => parseEntry(raw, harness));
   const same = (e: ChainEntry) => sameEntry(e, current);
   const at = entries.findIndex(same);
-  return entries.slice(at + 1).find((e) => !same(e) && (e.harness === harness || isInstalled(e.harness)) && !exhaustedUntil(quotaKey(e)));
+  return entries.slice(at + 1).find((e) => !same(e) && (e.harness === harness || isInstalled(e.harness)) && entryAvailable(e) && !exhaustedUntil(quotaKey(e)));
 }

@@ -64,6 +64,34 @@ export interface CredentialTest {
   message?: string;
 }
 
+/**
+ * What a credentialAction step answers the page, never a plugin's raw result: a sentence, a page to
+ * open (an OAuth sign-in), a code to show (a device code), and what to ask the user next (paste the
+ * code back: the page sends it as action `next.action` with `{ [next.field ?? "code"]: input }`).
+ */
+export interface CredentialActionResult {
+  /** a short sentence for the page ("Signed in as gavin@…", "Open the link and paste the code") */
+  message?: string;
+  /** an https page to open in a new tab (an OAuth sign-in URL) */
+  url?: string;
+  /** a code to show the user (a device code to type on the provider's page) */
+  code?: string;
+  /** the credential the step created or changed */
+  id?: string;
+  /** models to pick from (Bedrock inference profiles, a Foundry resource's GET /models): `id`, `label`, `harness` when it's for one */
+  models?: (ModelRef & { harness?: HarnessId })[];
+  /** plain names to suggest for an input (Foundry deployment names for "Add model") */
+  suggestions?: string[];
+  /** the step goes on with the user's input: the action to call next and what to ask for */
+  next?: { action: string; prompt: string; field?: string; secret?: boolean };
+}
+
+/**
+ * removeCredential's answer: the new list, and where the removed credential was still used
+ * ("Default order #2", "2 sessions"): those entries are passed over from now on.
+ */
+export type CredentialRemoval = CredentialList & { usedIn?: string[] };
+
 /** A credential provider the runner has a plugin for, with what it can do (the Credentials page's groups). */
 export interface CredentialProviderInfo {
   provider: CredentialProvider;

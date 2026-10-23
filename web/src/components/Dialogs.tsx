@@ -767,7 +767,8 @@ function BackgroundModelPicker({ narrow }: { narrow: boolean }) {
   const h = harness ?? cur?.harness ?? "claude-code";
   const models = useModels(setting ? [h] : []);
   const usable = (setting?.harnesses ?? []).filter((x) => !runner || runner.harnesses.includes(x));
-  const list = models[h] ?? [];
+  // The harness's own login only: background jobs can't run on an account or key yet (the runner refuses "#" entries).
+  const list = (models[h] ?? []).filter((m) => !m.credential);
   // The saved model may be an alias ("haiku") the harness doesn't list: keep it pickable.
   const ids = [...(cur && cur.harness === h && !list.some((m) => m.id === cur.model) ? [cur.model] : []), ...list.map((m) => m.id)];
   const pick = async (model: string) => {

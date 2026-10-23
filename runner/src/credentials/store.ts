@@ -116,6 +116,11 @@ export async function remove(id: string): Promise<boolean> {
   });
 }
 
+/** Runner-only: every stored value (the registry masks them in messages it passes on). */
+export function allValues(): string[] {
+  return Object.values(load().credentials).flatMap((c) => Object.values(c.values));
+}
+
 /** Stored ids, of one provider ("azure") or all. */
 export function ids(provider?: string): string[] {
   return Object.keys(load().credentials)
