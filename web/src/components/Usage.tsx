@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Button } from "@astryxdesign/core/Button";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Popover } from "@astryxdesign/core/Popover";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
@@ -68,25 +69,72 @@ function AllUsage() {
   );
 }
 
-/** Settings-bar pill: the 5h / weekly usage of the subscription this session runs on. */
-export function UsagePill({ harness, model }: { harness?: string; model?: string }) {
+/** What the session itself reports: its cost so far and its extensions' status lines (pi's usage lines). */
+function SessionDetails({ statuses, spent }: { statuses: [string, string][]; spent?: string }) {
+  return (
+    <VStack gap={1.5}>
+      <Text weight="semibold">This session</Text>
+      {spent && (
+        <HStack gap={2} vAlign="center">
+          <StackItem size="fill">
+            <Text type="supporting">Cost so far</Text>
+          </StackItem>
+          <Text hasTabularNumbers>{spent}</Text>
+        </HStack>
+      )}
+      {statuses.map(([k, v]) => (
+        <VStack key={k} gap={0.5}>
+          <Text type="supporting">{k}</Text>
+          <Text type="code" style={wrapCode}>
+            {v}
+          </Text>
+        </VStack>
+      ))}
+    </VStack>
+  );
+}
+const wrapCode: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word" };
+/** Several plans plus the session's lines can be taller than a phone: the popover scrolls. */
+const popoverBody: CSSProperties = { maxHeight: "70vh", overflowY: "auto" };
+
+/**
+ * Settings-bar pill: the 5h / weekly usage of the subscription this session runs on. Its popover
+ * also holds the session's cost and its extensions' status lines, so the bar stays one short row.
+ */
+export function UsagePill({ harness, model, statuses, cost }: { harness?: string; model?: string; statuses?: Record<string, string>; cost?: number }) {
   const usage = useStore((s) => s.usage);
   const [open, setOpen] = useState(false);
+  // No tooltip on touch: focus coming back after the popover closes would leave it on screen.
+  const touch = useMediaQuery("(hover: none)");
   const prov = usageProvider(harness, model);
-  const p = prov && usage?.providers.find((x) => x.provider === prov);
-  if (!p || p.error || !p.windows.length) return null;
-  // Claude/Codex collapse to their 5h/weekly windows; providers without them (Kiro's credit pool) show all.
-  const windowed = p.windows.filter((w) => w.label === "5h" || w.label === "Weekly");
-  const main = windowed.length ? windowed : p.windows;
-  const worst = level(Math.max(...main.map((w) => w.percent ?? 0)));
-  const text = main.map((w) => (hasAmounts(w) ? `${short(w.label)} ${fmtNum(w.used)}/${fmtNum(w.limit)}` : `${short(w.label)} ${w.percent ?? "–"}%`)).join(" · ");
+  const found = prov && usage?.providers.find((x) => x.provider === prov);
+  const p = found && !found.error && found.windows.length ? found : undefined;
+  const extra = Object.entries(statuses ?? {});
+  const spent = cost != null && cost > 0 ? `$${cost.toFixed(2)}` : undefined;
+  if (!p && !extra.length && !spent) return null;
+  let text = spent ?? "Status";
+  let worst: Level = "ok";
+  if (p) {
+    // Claude/Codex collapse to their 5h/weekly windows; providers without them (Kiro's credit pool) show all.
+    const windowed = p.windows.filter((w) => w.label === "5h" || w.label === "Weekly");
+    const main = windowed.length ? windowed : p.windows;
+    worst = level(Math.max(...main.map((w) => w.percent ?? 0)));
+    text = main.map((w) => (hasAmounts(w) ? `${short(w.label)} ${fmtNum(w.used)}/${fmtNum(w.limit)}` : `${short(w.label)} ${w.percent ?? "–"}%`)).join(" · ");
+  }
+  const name = p ? `${p.label} plan usage` : "Session cost and status";
+  const content = (
+    <VStack gap={3} style={popoverBody}>
+      {(spent || extra.length > 0) && <SessionDetails statuses={extra} spent={spent} />}
+      {p && <AllUsage />}
+    </VStack>
+  );
   return (
-    <Popover label={`${p.label} plan usage`} content={<AllUsage />} isOpen={open} onOpenChange={setOpen} placement="above" alignment="end" width={300}>
+    <Popover label={name} content={content} isOpen={open} onOpenChange={setOpen} placement="above" alignment="end" width={300}>
       <Button
-        label={`${p.label} plan usage: ${text}`}
+        label={`${name}: ${text}`}
         variant="ghost"
         size="sm"
-        tooltip={`${p.label} plan usage`}
+        tooltip={touch ? undefined : name}
         icon={worst === "ok" ? undefined : <StatusDot variant={worst === "crit" ? "error" : "warning"} label={worst === "crit" ? "Near the limit" : "Getting close to the limit"} />}
       >
         <Text type="inherit" hasTabularNumbers>

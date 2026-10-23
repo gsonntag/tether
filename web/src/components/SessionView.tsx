@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type FocusEvent, type KeyboardEvent, type RefObject } from "react";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import {
   ChatComposer,
   ChatComposerDrawer,
@@ -10,13 +11,18 @@ import {
   ChatMessageBubble,
   type ChatComposerInputHandle,
 } from "@astryxdesign/core/Chat";
+import { ContextMenu } from "@astryxdesign/core/ContextMenu";
+import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Item } from "@astryxdesign/core/Item";
+import { Kbd } from "@astryxdesign/core/Kbd";
 import { Layout } from "@astryxdesign/core/Layout";
+import { MoreMenu } from "@astryxdesign/core/MoreMenu";
+import { ScrollableArea } from "@astryxdesign/core/ScrollableArea";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
@@ -30,7 +36,7 @@ import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
 import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
-import { GUARD_MODES, STARTS_ON_OPEN, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
+import { GUARD_MODES, STARTS_ON_OPEN, type GuardMode, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
 import { composerHistory } from "../composerHistory";
@@ -45,7 +51,6 @@ import { findMatches, latestUnmounted, MIN_TERM } from "../find";
 import { GoalLine } from "./GoalLine";
 import { ScheduleLine } from "./ScheduleLine";
 import { ContextMeter } from "./ContextMeter";
-import { HarnessBadge } from "./HarnessBadge";
 import { ModelMenu, PickMenu } from "./ModelMenu";
 import { SessionConflicts } from "./MemoryConflicts";
 import { LinkBanner, setProjectRoot, Transcript } from "./Transcript";
@@ -54,6 +59,8 @@ import { UiRequests } from "./UiRequests";
 import { UsagePill } from "./Usage";
 import { commandRunsHow } from "../library";
 import { create } from "zustand";
+// opencode, Kiro and Antigravity can't take a message mid-turn: what you send waits for the turn's end (README, "Steer and queue").
+import { canSteer, completesSlash, composerKeyAction, fullAccessLeft } from "../composerKeys";
 
 /** Phones: Enter makes a new line, and the less important settings hide. */
 const NARROW = "(max-width: 760px)";
@@ -64,9 +71,10 @@ const fill: CSSProperties = { flex: 1, minHeight: 0 };
  *  scrolls and a tall composer drawer (the `/` menu, waiting messages) never pushes the composer out. */
 const chatColumn: CSSProperties = { ...fill, height: "100%" };
 const preWrap: CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" };
-const statusText: CSSProperties = { maxWidth: "calc(var(--spacing-12) * 4)" };
 const composerDock: CSSProperties ={ paddingBlockEnd: "env(safe-area-inset-bottom)" };
 const pendingScroll: CSSProperties = { maxHeight: "30vh", overflowY: "auto" };
+/** Docked requests stay reachable without taking the whole screen (a long plan scrolls inside). */
+const dockedRequests: CSSProperties = { maxHeight: "50dvh", overflowY: "auto" };
 /** Fills the drawer's row without letting long menu rows widen it (they truncate instead). */
 const drawerBody: CSSProperties = { flex: "1 1 100%", width: 0, minWidth: 0 };
 const queuedRow = (dragging: boolean): CSSProperties => ({
@@ -327,7 +335,16 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           lastTop.current = el.scrollTop;
         }}
         composer={
-          <Composer sessionId={sessionId} state={st} messages={o.messages} harness={o.session.harness} live={o.session.live} opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)} inputRef={composerInput} />
+          <Composer
+            sessionId={sessionId}
+            state={st}
+            messages={o.messages}
+            harness={o.session.harness}
+            live={o.session.live}
+            opening={!!o.syncing && STARTS_ON_OPEN.has(o.session.harness)}
+            syncing={!!o.syncing}
+            inputRef={composerInput}
+          />
         }
       >
         {/* Room at the top on phones for the floating sidebar button. */}
@@ -346,7 +363,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               onStart={onStart}
             />
           </FileRefScope>
-          <PendingSteers sessionId={sessionId} state={st} />
+          <PendingSteers sessionId={sessionId} state={st} steerable={canSteer(o.session.harness)} />
           <Sending sessionId={sessionId} starting={!o.session.live ? harnessLabel(o.session.harness) : undefined} />
           {st.checking && (
             <HStack gap={2} vAlign="center">
@@ -357,7 +374,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </HStack>
           )}
           {st.handoffTo && <LinkBanner to={st.handoffTo} />}
-          {!o.syncing && <UiRequests sessionId={sessionId} requests={st.pendingUi} />}
           <SessionConflicts sessionId={sessionId} />
         </VStack>
       </ChatLayout>
@@ -376,43 +392,94 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   );
 }
 
-/** Under the message box: what the session runs on and how, plus context and plan usage. */
+/** Under the message box: what the session runs on and how, plus context and plan usage. One row
+ *  that scrolls sideways on phones instead of wrapping to three. */
 function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveState }) {
   const sess = useStore((s) => s.open[sessionId]?.session);
   const narrow = useNarrow();
   if (!sess) return null;
-  return (
-    <HStack gap={1} vAlign="center" wrap="wrap" paddingInline={1}>
-      <HarnessBadge harness={sess.harness} />
+  const items = (
+    <>
       <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />
-      <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} compact={narrow} />
+      <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />
       <ModeMenu sessionId={sessionId} state={st} />
-      <PickMenu
-        label=""
-        value={GUARD_MODES.find((g) => g.id === (st.guard ?? "auto"))?.label ?? st.guard!}
-        options={GUARD_MODES.map((g) => g.label)}
-        onPick={(label) => act("setGuard", { sessionId, mode: GUARD_MODES.find((g) => g.label === label)!.id })}
-      />
+      <GuardMenu sessionId={sessionId} state={st} />
       <ChangesButton sessionId={sessionId} state={st} />
       <ActivityButton state={st} />
       <StackItem size="fill" />
-      {!narrow &&
-        Object.entries(st.statuses).map(([k, v]) => (
-          // Extension statuses can be long (pi's usage lines); one short line each keeps the bar on one row.
-          <Tooltip key={k} content={`${k}: ${v}`}>
-            <Text type="code" color="secondary" maxLines={1} style={statusText}>
-              {v}
-            </Text>
-          </Tooltip>
-        ))}
       <ContextMeter state={st} />
-      {!narrow && st.cost != null && st.cost > 0 && (
-        <Text type="supporting" hasTabularNumbers>
-          ${st.cost.toFixed(2)}
-        </Text>
-      )}
-      <UsagePill harness={sess.harness} model={st.model} />
+      <UsagePill harness={sess.harness} model={st.model} statuses={st.statuses} cost={st.cost} />
+    </>
+  );
+  if (narrow)
+    return (
+      <ScrollableArea axis="inline" label="Session settings">
+        <HStack gap={1} vAlign="center" wrap="nowrap" paddingInline={1}>
+          {items}
+        </HStack>
+      </ScrollableArea>
+    );
+  return (
+    <HStack gap={1} vAlign="center" wrap="wrap" paddingInline={1}>
+      {items}
     </HStack>
+  );
+}
+
+/** Approvals, in the picker's words (GUARD_MODES' ids, shorter labels). */
+const GUARD_LABEL: Record<GuardMode, string> = { ask: "Ask", edits: "Accept edits", auto: "Auto", full: "Full access" };
+const TIMED_FULL_MINUTES = 15;
+
+/** The time left before `until`; re-renders at each whole minute left and once more at `until`. */
+function useTimeLeft(until: number | undefined): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!until) return;
+    const left = until - Date.now();
+    if (left <= 0) return;
+    const t = setTimeout(() => setNow(Date.now()), (left % 60_000) + 50);
+    return () => clearTimeout(t);
+  }, [until, now]);
+  return until ? Math.max(0, until - Date.now()) : undefined;
+}
+
+/** Who approves tool calls; "Full access for 15 minutes" counts down in the trigger ("Full · 12m"). */
+function GuardMenu({ sessionId, state }: { sessionId: string; state: LiveState }) {
+  const mode = state.guard ?? "auto";
+  const timed = !!state.guardUntil && mode === "full";
+  const left = useTimeLeft(timed ? state.guardUntil : undefined);
+  const shown = timed ? `Full · ${fullAccessLeft(left ?? 0)}` : GUARD_LABEL[mode];
+  const set = (args: Omit<Ops["setGuard"]["args"], "sessionId">) => act("setGuard", { sessionId, ...args });
+  return (
+    <DropdownMenu
+      button={{ label: `Approvals: ${shown}`, variant: "ghost", size: "sm", children: shown }}
+      placement="above"
+      presentation="adaptive"
+      menuWidth={240}
+      items={[
+        ...GUARD_MODES.map((g) => ({
+          id: g.id,
+          label: GUARD_LABEL[g.id],
+          endContent: g.id === mode && !timed ? <Icon icon="check" size="sm" color="accent" /> : undefined,
+          onClick: () => (g.id !== mode || timed) && set({ mode: g.id }),
+        })),
+        // Untimed full access has nothing to go back to: no timed item then.
+        ...(timed
+          ? // The runner puts back the mode from before; "auto" when it can't tell.
+            [{ type: "divider" as const }, { id: "end", label: "End full access", onClick: () => set({ mode: "auto" }) }]
+          : mode === "full"
+            ? []
+            : [
+                { type: "divider" as const },
+                {
+                  id: "timed",
+                  label: `Full access for ${TIMED_FULL_MINUTES} minutes`,
+                  description: `Then back to ${GUARD_LABEL[mode]}`,
+                  onClick: () => set({ mode: "full", minutes: TIMED_FULL_MINUTES }),
+                },
+              ]),
+      ]}
+    />
   );
 }
 
@@ -433,8 +500,8 @@ function ModeMenu({ sessionId, state }: { sessionId: string; state: LiveState })
   );
 }
 
-/** `compact` (phones): no label in front, the value says what it is ("High effort"). */
-function ThinkingMenu({ sessionId, harness, state, compact }: { sessionId: string; harness: string; state: LiveState; compact?: boolean }) {
+/** No label in front: the value says what it is ("High effort", "Low thinking"). */
+function ThinkingMenu({ sessionId, harness, state }: { sessionId: string; harness: string; state: LiveState }) {
   const [fetched, setLevels] = useState<string[]>([]);
   // A deep link shows the saved copy before the runner is connected; ask again once it is.
   const online = useStore((s) => s.connected && !!s.runnerId);
@@ -446,25 +513,47 @@ function ThinkingMenu({ sessionId, harness, state, compact }: { sessionId: strin
   }, [harness, sessionId, state.model, state.thinkingLevels, online]);
   const levels = state.thinkingLevels ?? fetched;
   if (!levels.length) return null;
-  const label = harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "Effort" : "Thinking";
-  return (
-    <PickMenu
-      label={compact ? "" : label}
-      value={state.thinking ?? "default"}
-      options={levels}
-      format={compact ? (l) => `${effortLabel(l)} ${label.toLowerCase()}` : effortLabel}
-      onPick={(level) => act("setThinking", { sessionId, level })}
-    />
-  );
+  const noun = harness === "claude-code" || harness === "codex" || harness === "antigravity" ? "effort" : "thinking";
+  return <PickMenu label="" value={state.thinking ?? "default"} options={levels} format={effortLabel} formatValue={(l) => `${effortLabel(l)} ${noun}`} onPick={(level) => act("setThinking", { sessionId, level })} />;
 }
 
 type EditPending = (id: string, change: Omit<Ops["editPending"]["args"], "sessionId" | "id">) => void;
 
-/** A waiting message's text; click to edit it until it goes out. */
-function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending; clamp?: boolean }) {
+/** A waiting message's text; click it (or Enter on it) to edit it until it goes out. `editAsk`
+ *  changing (a menu's "Edit") opens the editor too. */
+function PendingText({
+  p,
+  edit,
+  clamp,
+  editAsk,
+  onEditingChange,
+}: {
+  p: PendingMessage;
+  edit: EditPending;
+  clamp?: boolean;
+  editAsk?: number;
+  onEditingChange?: (editing: boolean) => void;
+}) {
   const [draft, setDraft] = useState<string>();
   // Only the words are edited; the attached files stay with the message.
   const { text: body, files } = useMemo(() => splitAttachments(p.text), [p.text]);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const asked = useRef(editAsk);
+  useEffect(() => {
+    if (editAsk === asked.current) return;
+    asked.current = editAsk;
+    setDraft(body);
+    // A menu's sheet or popover hands focus back to its trigger as it closes, after the editor
+    // mounted: take it back once the menu is gone, so the editor can be typed in (and blurs to save).
+    const timers = [0, 150, 400].map((ms) =>
+      setTimeout(() => {
+        if (box.current && document.activeElement !== box.current) box.current.focus();
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [editAsk, body]);
+  const editing = draft !== undefined;
+  useEffect(() => onEditingChange?.(editing), [editing]);
   const save = () => {
     if (draft !== undefined && draft !== body) edit(p.id, { text: withAttachments(draft, files) });
     setDraft(undefined);
@@ -474,7 +563,21 @@ function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending;
       <VStack gap={1}>
         {body.trim() && (
           <Tooltip content="Click to edit" hasHoverIndication={false}>
-            <Text display="block" maxLines={clamp ? 3 : 0} hasTruncateTooltip={false} style={preWrap} onClick={() => setDraft(body)}>
+            <Text
+              display="block"
+              maxLines={clamp ? 3 : 0}
+              hasTruncateTooltip={false}
+              style={preWrap}
+              role="button"
+              tabIndex={0}
+              aria-label={`Edit: ${body.slice(0, 80)}`}
+              onClick={() => setDraft(body)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                setDraft(body);
+              }}
+            >
               {body.split("\n\n<bash-input>")[0]}
             </Text>
           </Tooltip>
@@ -484,6 +587,7 @@ function PendingText({ p, edit, clamp }: { p: PendingMessage; edit: EditPending;
     );
   return (
     <TextArea
+      ref={box}
       label="Edit message"
       isLabelHidden
       size="sm"
@@ -539,35 +643,133 @@ function Sending({ sessionId, starting }: { sessionId: string; starting?: string
   );
 }
 
+/** Re-renders each second while `until` is ahead (a steer's grace period counting down). */
+function useSecondsLeft(until: number | undefined): number {
+  const [now, setNow] = useState(() => Date.now());
+  const ahead = !!until && until > now;
+  useEffect(() => {
+    if (!ahead) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ahead, until]);
+  return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
+}
+
+/** Hover or keyboard focus inside a row: its quieter actions show. Touch screens always show them. */
+function useReveal() {
+  const [on, setOn] = useState(false);
+  const handlers = {
+    onMouseEnter: () => setOn(true),
+    onMouseLeave: () => setOn(false),
+    onFocus: () => setOn(true),
+    onBlur: (e: FocusEvent<HTMLElement>) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setOn(false),
+  };
+  return [on, handlers] as const;
+}
+const shown = (on: boolean): CSSProperties => ({ opacity: on ? 1 : 0 });
+
+/**
+ * A long press opens the context menu's sheet while the finger is still down; lifting it can then
+ * land a click on the sheet's backdrop, which closes it at once. On touch screens the click right
+ * after that lift (the first one only, within 400 ms) is swallowed.
+ */
+function keepSheetOpenAfterLongPress() {
+  if (!window.matchMedia("(hover: none)").matches) return;
+  let liftedAt = 0;
+  const lift = () => {
+    liftedAt = Date.now();
+    window.removeEventListener("touchend", lift, true);
+    setTimeout(done, 400);
+  };
+  const click = (e: MouseEvent) => {
+    if (liftedAt && Date.now() - liftedAt < 400) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    done();
+  };
+  const done = () => {
+    window.removeEventListener("touchend", lift, true);
+    window.removeEventListener("click", click, true);
+  };
+  window.addEventListener("touchend", lift, true);
+  window.addEventListener("click", click, true);
+  setTimeout(done, 3000);
+}
+
 /**
  * Steers that haven't reached the agent yet: dashed user bubbles at the end of the chat. They go into
  * the running turn at its next step (one behind a queued message waits for that message's turn).
+ * At rest: the text, when it goes, and ×. Hover adds "Queue instead"; right-click or a long press
+ * opens the rest.
  */
-function PendingSteers({ sessionId, state }: { sessionId: string; state: LiveState }) {
-  const edit = usePendingEdit(sessionId);
+function PendingSteers({ sessionId, state, steerable }: { sessionId: string; state: LiveState; steerable: boolean }) {
   const list = state.pending ?? [];
   const firstQueued = list.findIndex((p) => p.mode === "followUp");
   return (
     <>
       {list.map((p, i) =>
-        p.mode !== "steer" ? null : (
-          <ChatMessage key={p.id} sender="user">
-            <ChatMessageBubble
-              style={steerBubble(firstQueued >= 0 && i > firstQueued)}
-              metadata={
-                <HStack gap={0.5} hAlign="end" vAlign="center">
-                  <Button label="Queue instead" variant="ghost" size="sm" tooltip="Send after this turn instead" onClick={() => edit(p.id, { mode: "followUp" })} />
-                  <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />
-                  <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
-                </HStack>
-              }
-            >
-              <PendingText p={p} edit={edit} />
-            </ChatMessageBubble>
-          </ChatMessage>
-        ),
+        p.mode !== "steer" ? null : <SteerBubble key={p.id} sessionId={sessionId} state={state} p={p} behindQueued={firstQueued >= 0 && i > firstQueued} steerable={steerable} />,
       )}
     </>
+  );
+}
+
+function SteerBubble({ sessionId, state, p, behindQueued, steerable }: { sessionId: string; state: LiveState; p: PendingMessage; behindQueued: boolean; steerable: boolean }) {
+  const edit = usePendingEdit(sessionId);
+  const touch = useMediaQuery("(hover: none)");
+  const [hover, reveal] = useReveal();
+  const [editAsk, setEditAsk] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const running = state.status === "running";
+  const secs = useSecondsLeft(steerable && running && !behindQueued && !state.pendingHeld ? p.readyAt : undefined);
+  const when = state.pendingHeld
+    ? "Held"
+    : !steerable
+      ? "Goes in when this turn ends"
+      : behindQueued
+        ? "Waits for the queued message"
+        : secs > 0
+          ? `Steering in ${secs}s`
+          : "Steering";
+  const queueInstead = () => edit(p.id, { mode: "followUp" });
+  const items = [
+    ...(steerable ? [{ label: "Queue instead", onClick: queueInstead }] : []),
+    ...(running ? [{ label: "Stop and send now", onClick: () => void act("forceSend", { sessionId, id: p.id }) }] : []),
+    { label: "Edit", onClick: () => setEditAsk((n) => n + 1) },
+    { label: "Cancel", onClick: () => edit(p.id, { remove: true }) },
+  ];
+  return (
+    <ChatMessage sender="user" {...reveal}>
+      <ChatMessageBubble
+        style={steerBubble(behindQueued)}
+        metadata={
+          <HStack gap={1} hAlign="end" vAlign="center">
+            {steerable && !touch && (
+              <HStack style={shown(hover)}>
+                <Button label="Queue instead" variant="ghost" size="sm" tooltip="Send after this turn instead" onClick={queueInstead} />
+              </HStack>
+            )}
+            <Text type="supporting" color="secondary" hasTabularNumbers>
+              {when}
+            </Text>
+            <IconButton label="Cancel this message" tooltip="Cancel" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
+          </HStack>
+        }
+      >
+        {/* Off while editing: a long press or right-click in the editor gets the native select/paste menu. */}
+        <ContextMenu
+          items={items}
+          presentation="adaptive"
+          label="Waiting message"
+          menuWidth={200}
+          isDisabled={editing}
+          onOpenChange={(on) => on && keepSheetOpenAfterLongPress()}
+        >
+          <PendingText p={p} edit={edit} editAsk={editAsk} onEditingChange={setEditing} />
+        </ContextMenu>
+      </ChatMessageBubble>
+    </ChatMessage>
   );
 }
 
@@ -594,46 +796,93 @@ function QueuedList({ sessionId, state }: { sessionId: string; state: LiveState 
       {state.pendingHeld && list.length > 0 && (
         <HStack gap={2} vAlign="center">
           <StackItem size="fill">
-            <Text type="supporting">Stopped. Waiting messages hold until you send them.</Text>
+            <Text type="supporting">{`Held · ${list.length} ${list.length === 1 ? "message" : "messages"}`}</Text>
           </StackItem>
           <StackItem>
-            <Button label="Send" variant="primary" size="sm" onClick={() => edit(list[0]!.id, { now: true })} />
+            <Button label="Send" variant="primary" size="sm" tooltip="Send the waiting messages now" onClick={() => edit(list[0]!.id, { now: true })} />
           </StackItem>
         </HStack>
       )}
-      {queued.map(({ p, i }) => (
-        <HStack
+      {queued.map(({ p, i }, n) => (
+        <QueuedRow
           key={p.id}
-          gap={1.5}
-          vAlign="start"
-          padding={1.5}
-          style={queuedRow(drag === p.id)}
-          draggable
-          onDragStart={(e) => {
-            setDrag(p.id);
-            e.dataTransfer.effectAllowed = "move";
+          sessionId={sessionId}
+          state={state}
+          p={p}
+          dragging={drag === p.id}
+          // editPending takes the place in the whole list: the row above's, or the row below's (it moves up once this one is out).
+          up={n > 0 ? queued[n - 1]!.i : undefined}
+          down={n < queued.length - 1 ? queued[n + 1]!.i : undefined}
+          drag={{
+            draggable: true,
+            onDragStart: (e: DragEvent<HTMLElement>) => {
+              setDrag(p.id);
+              e.dataTransfer.effectAllowed = "move";
+            },
+            onDragEnd: () => setDrag(undefined),
+            onDragOver: (e: DragEvent<HTMLElement>) => drag && drag !== p.id && e.preventDefault(),
+            onDrop: (e: DragEvent<HTMLElement>) => {
+              e.preventDefault();
+              if (drag && drag !== p.id) edit(drag, { index: i });
+              setDrag(undefined);
+            },
           }}
-          onDragEnd={() => setDrag(undefined)}
-          onDragOver={(e) => drag && drag !== p.id && e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            if (drag && drag !== p.id) edit(drag, { index: i });
-            setDrag(undefined);
-          }}
-        >
-          <Icon icon={EllipsisVerticalIcon} size="sm" color="secondary" label="Drag to reorder" />
-          <StackItem size="fill">
-            <PendingText p={p} edit={edit} clamp />
-          </StackItem>
-          {p.scheduleId && <ScheduledToken id={p.scheduleId} state={state} />}
-          <HStack gap={0.5} vAlign="center">
-            <Button label="Steer now" variant="ghost" size="sm" tooltip="Send it into the running turn now" onClick={() => edit(p.id, { now: true })} />
-            {state.status === "running" && <Button label="Force send" variant="ghost" size="sm" tooltip="Stop the agent and send this now" onClick={() => act("forceSend", { sessionId, id: p.id })} />}
-            <IconButton label="Cancel this message" tooltip="Cancel this message" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
-          </HStack>
-        </HStack>
+        />
       ))}
     </VStack>
+  );
+}
+
+/** One queued message: grip (on hover) · text (click to edit) · loop/schedule · ⋯ · ×. */
+function QueuedRow({
+  sessionId,
+  state,
+  p,
+  dragging,
+  up,
+  down,
+  drag,
+}: {
+  sessionId: string;
+  state: LiveState;
+  p: PendingMessage;
+  dragging: boolean;
+  up?: number;
+  down?: number;
+  drag: Record<string, unknown>;
+}) {
+  const edit = usePendingEdit(sessionId);
+  const touch = useMediaQuery("(hover: none)");
+  const [hover, reveal] = useReveal();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [editAsk, setEditAsk] = useState(0);
+  const items = [
+    { label: "Steer now", onClick: () => edit(p.id, { now: true }) },
+    ...(state.status === "running" ? [{ label: "Stop and send now", onClick: () => void act("forceSend", { sessionId, id: p.id }) }] : []),
+    ...(up !== undefined ? [{ label: "Move up", onClick: () => edit(p.id, { index: up }) }] : []),
+    ...(down !== undefined ? [{ label: "Move down", onClick: () => edit(p.id, { index: down }) }] : []),
+    { label: "Edit", onClick: () => setEditAsk((n) => n + 1) },
+    { label: "Cancel", onClick: () => edit(p.id, { remove: true }) },
+  ];
+  return (
+    <HStack gap={1.5} vAlign="start" padding={1.5} style={queuedRow(dragging)} {...drag} {...reveal}>
+      {/* Dragging is a mouse thing: touch screens reorder with the menu's Move up / Move down. */}
+      {!touch && (
+        <HStack style={shown(hover)}>
+          <Icon icon={EllipsisVerticalIcon} size="sm" color="secondary" label="Drag to reorder" />
+        </HStack>
+      )}
+      <StackItem size="fill">
+        <PendingText p={p} edit={edit} clamp editAsk={editAsk} />
+      </StackItem>
+      {p.scheduleId && <ScheduledToken id={p.scheduleId} state={state} />}
+      <HStack gap={0.5} vAlign="center">
+        <HStack style={shown(hover || touch || menuOpen)}>
+          <MoreMenu label="Message actions" size="sm" placement="above" alignment="end" presentation="adaptive" items={items} onOpenChange={setMenuOpen} />
+        </HStack>
+        <IconButton label="Cancel this message" tooltip="Cancel" variant="ghost" size="sm" icon={<Icon icon="close" />} onClick={() => edit(p.id, { remove: true })} />
+      </HStack>
+    </HStack>
   );
 }
 
@@ -692,6 +941,7 @@ function Composer({
   harness,
   live,
   opening,
+  syncing,
   inputRef: input,
 }: {
   sessionId: string;
@@ -700,6 +950,8 @@ function Composer({
   harness: HarnessId;
   live: boolean;
   opening: boolean;
+  /** still catching up with the runner: requests may already be answered */
+  syncing: boolean;
   /** the message box, so the session view can put focus back in it */
   inputRef: RefObject<ChatComposerInputHandle | null>;
 }) {
@@ -715,6 +967,7 @@ function Composer({
   const narrow = useNarrow();
   const touch = useMediaQuery("(pointer: coarse)");
   const running = state.status === "running";
+  const steerable = canSteer(harness);
 
   useEffect(() => {
     try {
@@ -778,10 +1031,15 @@ function Composer({
     if (r === undefined) setText(t);
     else if (files.length) clearDrafts(sessionId);
   };
+  /** Queue for after this turn: offered only where a send would otherwise steer. */
+  const canQueue = running && steerable && !shell;
+  const stop = () => act("abort", { sessionId });
 
   // A pasted screenshot or copied file is attached; rich content (a spreadsheet's cells, a web
   // page) pastes as text even when the clipboard also carries a picture of it.
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    // A request's own fields (a deny reason, an answer) keep their paste.
+    if ((e.target as Element).closest?.("[data-docked-requests]")) return;
     const files = [...e.clipboardData.files];
     if (!files.length || e.clipboardData.types.includes("text/html")) return;
     e.preventDefault();
@@ -800,16 +1058,30 @@ function Composer({
     input.current?.focus();
   };
 
+  // Keys (desktop): Enter sends (steers while running), Tab queues while running, ⌘/Ctrl+Enter stops
+  // and sends now, Shift+Enter is a new line, Esc closes the `/` menu or leaves history, else stops
+  // an agent from an empty box. Alt+Enter still queues (the old key, for one release). Phones:
+  // Enter is a new line and the buttons send.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const composing = e.nativeEvent.isComposing;
     // A recalled "/cmd" opens the menu; while stepping through history the arrows stay history's.
     if (matches.length && historyPosition.current === null) {
       const idx = Math.min(cmdIdx, matches.length - 1);
       if (e.key === "ArrowDown") return (e.preventDefault(), setCmdIdx((idx + 1) % matches.length));
       if (e.key === "ArrowUp") return (e.preventDefault(), setCmdIdx((idx - 1 + matches.length) % matches.length));
       if (e.key === "Escape") return (e.preventDefault(), setMenuClosed(true));
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && `/${matches[idx]!.name}` !== text)) {
+      if (completesSlash({ key: e.key, shift: e.shiftKey }, `/${matches[idx]!.name}` === text)) {
         e.preventDefault();
         setText(`/${matches[idx]!.name} `);
+        return;
+      }
+    }
+    if (e.key === "Escape" && !composing) {
+      if (menuNote) return (e.preventDefault(), setMenuClosed(true));
+      if (historyPosition.current !== null) {
+        e.preventDefault();
+        setText(historyDraft.current);
+        clearHistoryNavigation();
         return;
       }
     }
@@ -827,7 +1099,7 @@ function Composer({
     }
     // Only from the first line up / the last line down, so the caret still moves inside a message.
     const box = e.target as HTMLTextAreaElement;
-    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !composing;
     const onFirst = !box.value?.slice(0, box.selectionStart ?? 0).includes("\n");
     const onLast = !box.value?.slice(box.selectionEnd ?? 0).includes("\n");
     if (e.key === "ArrowUp" && plain && onFirst && (historyPosition.current !== null || !text) && history.length) {
@@ -854,26 +1126,26 @@ function Composer({
       }
       return;
     }
-    if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey) && running && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      send("force");
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      // Always ours: the input's own submit doesn't know steer from queue.
-      e.preventDefault();
-      if (window.innerWidth <= 760) {
-        // Phones: Enter is a new line; the button sends.
-        if (!document.execCommand("insertLineBreak")) input.current?.insertText("\n");
-        return;
-      }
-      send(e.altKey ? "followUp" : "steer");
-    }
+    // Enter is always ours (the input's own submit doesn't know steer from queue); Tab only when it queues.
+    const action = composerKeyAction(
+      { key: e.key, shift: e.shiftKey, alt: e.altKey, mod: e.metaKey || e.ctrlKey, composing },
+      { running, steerable, shell, narrow, text },
+    );
+    if (!action) return;
+    e.preventDefault();
+    if (action === "stop") return void stop();
+    // Phones: Enter is a new line; the button sends.
+    if (action === "newline") return void (document.execCommand("insertLineBreak") || input.current?.insertText("\n"));
+    send(action);
   };
 
   const legacyQueued = !state.pending?.length && !state.pending && state.queued.length > 0;
-  const hasDrawer = matches.length > 0 || !!menuNote || !!state.pending?.length || legacyQueued || drafts.length > 0;
-  const placeholder = shell ? "" : running ? "Steer the agent… (Enter to steer, Alt+Enter to queue, ⌘⇧Enter to stop and send now)" : "Message the agent… (/ for skills and commands)";
+  // Steers wait in the chat, not here: only queued messages (or the held row) open the drawer.
+  const hasQueued = !!state.pending?.some((p) => p.mode === "followUp") || (!!state.pendingHeld && !!state.pending?.length);
+  const hasDrawer = matches.length > 0 || !!menuNote || hasQueued || legacyQueued || drafts.length > 0;
+  const placeholder = shell ? "" : running && steerable ? "Steer the agent" : "Message the agent";
+  // Pending requests (approvals, questions, plans) wait here, above the box, so they never scroll away.
+  const requests = syncing ? [] : state.pendingUi;
 
   const drawer = hasDrawer ? (
     <ChatComposerDrawer>
@@ -909,7 +1181,7 @@ function Composer({
             </Text>
           </HStack>
         )}
-        {state.pending?.length ? <QueuedList sessionId={sessionId} state={state} /> : null}
+        {hasQueued && <QueuedList sessionId={sessionId} state={state} />}
         {drafts.length > 0 && <DraftChips sessionId={sessionId} drafts={drafts} />}
         {legacyQueued && (
           <HStack gap={1.5} wrap="wrap">
@@ -932,6 +1204,48 @@ function Composer({
     </HStack>
   );
 
+  // The primary button: Send, Steer (into the running turn) or Run (bash mode). Its tooltip carries the keys.
+  const primaryLabel = shell ? "Run" : running && steerable ? "Steer" : "Send";
+  const why = uploading ? "Waiting for attachments to upload" : shell && ready.length ? "Bash mode can't take attachments" : undefined;
+  const keyRows: KeyHint[] = shell
+    ? [["Run on the runner", "enter"]]
+    : running
+      ? [
+          [steerable ? "Steer into this turn" : "Goes in when this turn ends", "enter"],
+          ...(canQueue ? [["Queue for after this turn", "tab"] as KeyHint] : []),
+          ["Stop and send now", "mod+enter"],
+          ["New line", "shift+enter"],
+        ]
+      : [
+          ["Send", "enter"],
+          ["New line", "shift+enter"],
+          ["Bash mode", "!"],
+        ];
+  // Narrow windows: Enter is a new line there, so no key list.
+  const narrowTip = running && !shell ? (steerable ? "Goes into the running turn" : "Goes in when this turn ends") : undefined;
+  const primaryTip = why ?? (narrow ? narrowTip : <KeyHints rows={keyRows} />);
+  const primary = (
+    // Touch screens get no key tooltips (no keys, and a tooltip can stick after a tap).
+    <Tooltip content={primaryTip} isEnabled={!!primaryTip && (!touch || !!why)}>
+      <Button label={narrow ? primaryLabel : `${primaryLabel} ↵`} variant="primary" size="sm" isDisabled={!canSend} onClick={() => send("steer")} />
+    </Tooltip>
+  );
+  const more =
+    running && !shell ? (
+      <DropdownMenu
+        button={{ label: "More ways to send", isIconOnly: true, icon: <Icon icon="chevronDown" />, variant: "primary", size: "sm", isDisabled: !canSend }}
+        hasChevron={false}
+        placement="above"
+        alignment="end"
+        presentation="adaptive"
+        menuWidth={260}
+        items={[
+          ...(canQueue ? [{ id: "queue", label: "Queue for after this turn", endContent: narrow ? undefined : <Kbd keys="tab" />, onClick: () => void send("followUp") }] : []),
+          { id: "force", label: "Stop and send now", endContent: narrow ? undefined : <Kbd keys="mod+enter" />, onClick: () => void send("force") },
+        ]}
+      />
+    ) : null;
+
   return (
     <VStack gap={2} style={composerDock} onPasteCapture={onPaste}>
       {/* While sending, the message's own bubble says the agent is starting. */}
@@ -941,12 +1255,17 @@ function Composer({
           <Text type="supporting">{`Starting ${harnessLabel(harness)} process…`}</Text>
         </HStack>
       )}
+      {requests.length > 0 && (
+        <VStack gap={2} style={dockedRequests} data-docked-requests>
+          <UiRequests sessionId={sessionId} requests={requests} />
+        </VStack>
+      )}
       <ActivityStrip sessionId={sessionId} state={state} />
       {state.status === "waiting" && (
         <Banner
           status="warning"
           title={`${state.waitingReason ?? "Waiting"}${state.waitingUntil ? ` · resumes ${fmtClock(state.waitingUntil)}` : ""}`}
-          endContent={<Button label="Cancel" size="sm" onClick={() => act("abort", { sessionId })} />}
+          endContent={<Button label="Cancel" size="sm" onClick={stop} />}
         />
       )}
       <ChatComposer
@@ -973,43 +1292,41 @@ function Composer({
             style={shell ? shellFont : undefined}
           />
         }
-        footerActions={
-          <HStack gap={1} vAlign="center">
-            {!shell && attach}
-            {!narrow && (
-              <Text type="supporting">
-                {shell
-                  ? ready.length
-                    ? "Bash mode can't take attachments"
-                    : "Enter to run · output goes to the agent with your next message"
-                  : uploading
-                    ? "Uploading…"
-                    : "Shift+Enter for a new line · ! for bash mode"}
-              </Text>
-            )}
-          </HStack>
-        }
+        footerActions={shell ? undefined : attach}
         sendActions={
-          <>
-            {running && <Button label="Stop" variant="destructive" size="sm" icon={<Icon icon="stop" />} onClick={() => act("abort", { sessionId })} />}
-            {running && !shell && <Button label="Queue" size="sm" isDisabled={!canSend} onClick={() => send("followUp")} />}
-            {running && !shell && (
-              <Button label="Force send" size="sm" isDisabled={!canSend} tooltip="Stop the agent and send this now (⌘⇧↵)" onClick={() => send("force")} />
-            )}
-          </>
+          running ? (
+            <Tooltip content={<KeyHints rows={[["Stop the agent (from an empty box)", "esc"]]} />} isEnabled={!touch}>
+              <Button label="Stop" variant="secondary" size="sm" icon={<Icon icon="stop" />} onClick={stop} />
+            </Tooltip>
+          ) : undefined
         }
         sendButton={
-          <Button
-            label={shell ? "Run ↵" : running ? "Steer ↵" : "Send ↵"}
-            variant="primary"
-            size="sm"
-            isDisabled={!canSend}
-            tooltip={uploading ? "Waiting for attachments to upload" : undefined}
-            onClick={() => send("steer")}
-          />
+          more ? (
+            <ButtonGroup label="Send" size="sm">
+              {primary}
+              {more}
+            </ButtonGroup>
+          ) : (
+            primary
+          )
         }
       />
       <SettingsBar sessionId={sessionId} state={state} />
+    </VStack>
+  );
+}
+
+type KeyHint = [label: string, keys?: string];
+/** Tooltip rows: what a key does, and the key (Kbd, ⌘ on a Mac and Ctrl elsewhere). */
+function KeyHints({ rows }: { rows: KeyHint[] }) {
+  return (
+    <VStack gap={1}>
+      {rows.map(([label, keys]) => (
+        <HStack key={label} gap={3} vAlign="center" hAlign="between">
+          <Text type="inherit">{label}</Text>
+          {keys && <Kbd keys={keys} />}
+        </HStack>
+      ))}
     </VStack>
   );
 }

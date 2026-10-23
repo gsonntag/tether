@@ -467,6 +467,8 @@ export interface LiveState {
   permissionMode?: string;
   /** who approves tool calls: a person, the guard (rules + judge), or nobody */
   guard?: GuardMode;
+  /** timed full access: when it ends and the guard goes back to its previous mode (epoch ms) */
+  guardUntil?: number;
   /** git snapshots of the working tree taken before each turn */
   checkpoints?: Checkpoint[];
   /** what the whole session changed (first checkpoint to the working tree), as of the last turn end */
@@ -1348,7 +1350,7 @@ export interface Ops {
   readAttachment: { args: { path: string; offset?: number; length?: number }; result: { data: string; size: number; mimeType: string } };
   abort: { args: { sessionId: string }; result: {} };
   setModel: { args: { sessionId: string; model?: string; profile?: string }; result: {} };
-  setGuard: { args: { sessionId: string; mode: GuardMode }; result: {} };
+  setGuard: { args: { sessionId: string; mode: GuardMode; minutes?: number }; result: {} };
   /** the whole session, or with `checkpoint` the one turn that started at that checkpoint */
   getSessionDiff: { args: { sessionId: string; checkpoint?: string }; result: SessionDiff };
   /**
