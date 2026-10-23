@@ -12,17 +12,17 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import type { CredentialView } from "../shared/credentials";
+import type { CredentialActionResult, CredentialView } from "../shared/credentials";
 import { modelDisplay } from "../models";
 import type { CredentialSlot, OnList } from "./index";
 
-/** One action; the new list goes to `onList`, its message (suggestions…) comes back. */
-async function act(id: string, action: string, args: unknown, onList: OnList): Promise<string | undefined> {
+/** One action; the new list goes to `onList`, its answer (message, suggestions…) comes back. */
+async function act(id: string, action: string, args: unknown, onList: OnList): Promise<CredentialActionResult | undefined> {
   // Loaded on use: credentials/index.ts (and so this file) is imported where the store can't be (tests).
   const { rpc } = await import("../store");
-  const r: any = await rpc("credentialAction", { id, action, args });
+  const r = await rpc("credentialAction", { id, action, args });
   if (r?.list) onList(r.list);
-  return r?.message ?? r?.result?.message;
+  return r?.result;
 }
 
 function useAction() {
@@ -89,7 +89,7 @@ function AddModel({ c, onList, close }: { c: CredentialView; onList: OnList; clo
     let live = true;
     // Where the key can read the resource's model list; typing a name always works.
     act(c.id, "suggest", undefined, () => {})
-      .then((m) => live && setSuggestions((m ?? "").split("\n").filter(Boolean)))
+      .then((r) => live && setSuggestions(r?.suggestions ?? []))
       .catch(() => {});
     return () => void (live = false);
   }, [c.id]);

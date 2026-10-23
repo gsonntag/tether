@@ -11,7 +11,7 @@ import { agentEnv, resetSecretsCache } from "../secrets";
 import { classifyCodexError } from "../adapters/codex";
 import { classify, isTransient } from "../fallback";
 import { azureResult, codexAzureProviders, codexArgs, foundryPlugin, normalizeEndpoint, PI_AZURE_EXT, resourceId, setFetch, suggestionOrder, setShellReader, shellVar, SHELL_TIMEOUT, TETHER_CODEX_PROVIDER, _shellFile } from "./foundry";
-import { credentialAction, credentialModels, launchFor, listCredentials, register, removeCredential, testCredential, unregister } from "./registry";
+import { credentialAction, credentialModels, envNameAllowed, launchFor, listCredentials, register, removeCredential, testCredential, unregister } from "./registry";
 import * as store from "./store";
 
 const KEY = "az-SECRET-key-value-9876";
@@ -103,6 +103,22 @@ describe("the user's Codex setup, as-is", () => {
     const l = await launchFor(entry("codex", "gpt-6.1-sol"));
     expect(l.args).toEqual(["-c", 'model_provider="azure"', "-c", 'model="gpt-6.1-sol"', "-c", 'model_reasoning_effort="high"']);
     expect(l.env).toEqual({ AZURE_OPENAI_API_KEY: SHELL_KEY });
+  });
+
+  test("a provider's env_key with a name the deny list refuses is declared (envNames) and allowed; one no credential may set is refused", async () => {
+    userCodexConfig();
+    const cfg = join(process.env.HOME!, ".codex", "config.toml");
+    const named = (name: string) => writeFileSync(cfg, readFileSync(cfg, "utf8").replace(/env_key = "[A-Z_]+"/, `env_key = "${name}"`));
+    named("GIT_FOUNDRY_KEY");
+    setShellReader(async (name) => (name === "GIT_FOUNDRY_KEY" ? SHELL_KEY : undefined));
+    expect(envNameAllowed("GIT_FOUNDRY_KEY")).toBe(false);
+    expect(foundryPlugin.envNames!(ID)).toEqual(["GIT_FOUNDRY_KEY"]);
+    expect((await launchFor(entry("codex", "gpt-6.1-sol"))).env).toEqual({ GIT_FOUNDRY_KEY: SHELL_KEY });
+    named("LD_PRELOAD");
+    setShellReader(async (name) => (name === "LD_PRELOAD" ? SHELL_KEY : undefined));
+    await expect(launchFor(entry("codex", "gpt-6.1-sol"))).rejects.toThrow(/can't set LD_PRELOAD/);
+    // pi's and a Tether-native key's names need no declaring.
+    for (const k of ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_BASE_URL", "AZURE_TETHER_SESSION_KEY"]) expect(envNameAllowed(k)).toBe(true);
   });
 
   test("a pi session gets the base URL, the key, and the extension that makes it win over pi's own stored key", async () => {
@@ -286,9 +302,9 @@ describe("Tether-native keys", () => {
     expect(calls[0]!.headers["api-key"]).toBe(KEY);
     let [c] = (await listCredentials()).credentials;
     expect(c).toMatchObject({ id: "azure:west", label: "Work", source: "tether", last4: "9876", state: "ok" });
-    expect(c!.models).toEqual([]);
+    expect(c!.models ?? []).toEqual([]);
 
-    expect(((await credentialAction("azure:west", "suggest", undefined)) as any).message).toBe("gpt-6-luna");
+    expect(await credentialAction("azure:west", "suggest", undefined)).toEqual({ suggestions: ["gpt-6-luna"] });
     await expect(credentialAction("azure:west", "addModel", { deployment: "nope" })).rejects.toThrow(/isn't a deployment/);
     await expect(credentialAction("azure:west", "addModel", { deployment: "bad name" })).rejects.toThrow(/letters/);
     await credentialAction("azure:west", "addModel", { deployment: "gpt-6-luna" });
@@ -303,7 +319,7 @@ describe("Tether-native keys", () => {
     expect(l.env).toEqual({ AZURE_OPENAI_API_KEY: KEY });
 
     await credentialAction("azure:west", "removeModel", { deployment: "gpt-6-luna" });
-    expect((await listCredentials()).credentials[0]!.models).toEqual([]);
+    expect((await listCredentials()).credentials[0]!.models ?? []).toEqual([]);
     await removeCredential("azure:west");
     expect((await listCredentials()).credentials).toEqual([]);
   });

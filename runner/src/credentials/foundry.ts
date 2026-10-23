@@ -17,7 +17,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CredentialModel, CredentialSource, CredentialTest, CredentialView } from "../../../web/src/shared/credentials";
+import type { CredentialActionResult, CredentialModel, CredentialSource, CredentialTest, CredentialView } from "../../../web/src/shared/credentials";
 import type { ChainEntry } from "../../../web/src/shared/protocol";
 import type { CredentialPlugin } from "./registry";
 import * as store from "./store";
@@ -601,16 +601,16 @@ export const foundryPlugin: CredentialPlugin = {
       const r: Resource = existing ?? { id: cid, host, baseUrl, label: label || host.split(".")[0]!, envKey: DEFAULT_ENV_KEY, wireApi: "responses", deployments: new Map() };
       if (label) r.label = label;
       await store.put({ id: cid, kind: "apiKey", label: r.label, values: { apiKey }, last4Of: "apiKey", endpointHost: host, meta: { ...metaOf(existing?.stored), baseUrl: r.baseUrl } });
-      return { message: `Added ${r.label}. Add a model to use it.` };
+      return { id: cid, message: `Added ${r.label}. Add a model to use it.` } satisfies CredentialActionResult;
     }
     const r = mustResource(id);
     switch (name) {
       case "suggest": {
-        // The resource's model names, one per line (credentialAction results carry text, not lists).
+        // The resource's model names the key can read, for "Add model" (typing a name always works).
         const key = await keyFor(r);
         const { models } = await listAzureModels(r, key);
         const have = new Set([...r.deployments.values()].map((d) => d.deployment));
-        return { message: models.filter((m) => !have.has(m)).join("\n") };
+        return { suggestions: models.filter((m) => !have.has(m)) } satisfies CredentialActionResult;
       }
       case "addModel": {
         const d = String(a.deployment ?? "").trim();
@@ -660,6 +660,13 @@ export const foundryPlugin: CredentialPlugin = {
     if (entry.harness === "pi") return { AZURE_OPENAI_API_KEY: key, AZURE_OPENAI_BASE_URL: r.baseUrl, AZURE_TETHER_SESSION_KEY: "1" };
     if (entry.harness === "codex") return { [r.codex ? r.envKey : DEFAULT_ENV_KEY]: key };
     throw new Error(`Microsoft Foundry keys run in Codex and pi, not ${entry.harness}.`);
+  },
+
+  // A Codex provider's env_key can be any name (the user's config.toml): declared, so the registry
+  // allows it unless it's one no credential may set (PATH, LD_*…). The rest are AZURE_* names.
+  envNames(id) {
+    const r = resource(id);
+    return r?.codex ? [r.envKey] : [];
   },
 
   argsFor(id, entry) {
