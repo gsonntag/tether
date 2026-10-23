@@ -6,7 +6,7 @@
 
 // slot foundry: import { foundrySlot } from "./foundry";
 
-// slot bedrock: import { bedrockSlot } from "./bedrock";
+import { bedrockSlot } from "./bedrock";
 
 import { accountSlots } from "./accounts";
 
@@ -16,6 +16,6 @@ import { registerSlot } from "./slots";
 
 // slot foundry: registerSlot(foundrySlot);
 
-// slot bedrock: registerSlot(bedrockSlot);
+registerSlot(bedrockSlot);
 
 registerSlot(...accountSlots);

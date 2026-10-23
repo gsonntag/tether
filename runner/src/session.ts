@@ -26,7 +26,7 @@ import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
 import { clearBlocked, DenialNotifier, notify, pushDenials, recordDenial } from "./notify";
-import { backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, quotaKey, sameEntry, usageCheckable, type Classified, type UsageCheck } from "./fallback";
+import { backoffMs, bedrockFault, classify, confirmLimit, isTransient, markExhausted, nextEntry, onBedrock, parseReset, pickEntry, quotaKey, sameEntry, usageCheckable, type Classified, type UsageCheck } from "./fallback";
 import { credentialLabel, launchFor, type CredentialLaunch } from "./credentials/registry";
 import { signInFor } from "./credentials/authError";
 import { defaultOrder } from "./defaultOrder";
@@ -1432,8 +1432,9 @@ export abstract class LiveSession {
   protected async handleTurnError(errorText: string | undefined, status?: number | null, hint?: Classified): Promise<boolean> {
     const chain = this.chain;
     if (!chain) return false;
-    const c = hint ?? classify(errorText, status);
     const current = this.currentEntry;
+    // Bedrock's quota / throttling wording outranks a harness's generic 429 hint.
+    const c = (hint?.definite ? hint : undefined) ?? (onBedrock(current) ? bedrockFault(errorText) : undefined) ?? hint ?? classify(errorText, status);
     let verifiable = usageCheckable(current);
     // A possible limit, rate-limit wording included (pi's "You have hit your ChatGPT usage limit …
     // Try again in ~N min", an Anthropic 429), is checked against the account's usage first. An

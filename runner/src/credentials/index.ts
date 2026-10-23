@@ -6,7 +6,7 @@ import { examplePlugin } from "./example";
 import { register } from "./registry";
 // slot foundry: import { foundryPlugin } from "./foundry";
 
-// slot bedrock: import { bedrockPlugin } from "./bedrock";
+import { bedrockPlugin } from "./bedrock";
 
 import { accountPlugins } from "./accounts";
 
@@ -22,7 +22,7 @@ export function registerCredentialPlugins() {
   if (process.env.TETHER_EXAMPLE_CREDENTIALS === "1") register(examplePlugin);
   // slot foundry: register(foundryPlugin);
 
-  // slot bedrock: register(bedrockPlugin);
+  register(bedrockPlugin);
 
   register(...accountPlugins);
 }

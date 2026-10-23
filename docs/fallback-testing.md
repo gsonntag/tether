@@ -60,6 +60,7 @@ What each harness reports (`runner/src/faults.ts`):
 | pi | "You have hit your ChatGPT usage limit … Try again in ~N min." on `openai-codex`, else the provider's 429 text | "429 Rate limit reached … try again in Ns" | "500 Internal server error" |
 | opencode, Kiro (ACP) | JSON-RPC internal error with limit text | the same with "429 … try again in Ns" | "Internal error" |
 | Antigravity | "RESOURCE_EXHAUSTED (code 429): Individual quota reached … Resets in …" | RESOURCE_EXHAUSTED 429 without "quota" | INTERNAL 500 |
+| Claude Code / pi on AWS Bedrock | "ServiceQuotaExceededException: … service quota …" (definite: moves on) | "ThrottlingException: Too many requests, please wait …" (backs off) | as above |
 
 The runner stops the real turn the harness's own way (interrupt, abort, `session/cancel`, or
 SIGINT for agy). It then feeds the error to the adapter's parser, so the real classification and
