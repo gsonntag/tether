@@ -5,12 +5,12 @@
 
 import { resetHome } from "../testenv";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentEnv, resetSecretsCache } from "../secrets";
 import { classifyCodexError } from "../adapters/codex";
 import { classify, isTransient } from "../fallback";
-import { azureResult, codexAzureProviders, codexArgs, foundryPlugin, normalizeEndpoint, resourceId, setFetch, suggestionOrder, setShellReader, shellVar, TETHER_CODEX_PROVIDER, _shellFile } from "./foundry";
+import { azureResult, codexAzureProviders, codexArgs, foundryPlugin, normalizeEndpoint, PI_AZURE_EXT, resourceId, setFetch, suggestionOrder, setShellReader, shellVar, SHELL_TIMEOUT, TETHER_CODEX_PROVIDER, _shellFile } from "./foundry";
 import { credentialAction, credentialModels, launchFor, listCredentials, register, removeCredential, testCredential, unregister } from "./registry";
 import * as store from "./store";
 
@@ -105,10 +105,36 @@ describe("the user's Codex setup, as-is", () => {
     expect(l.env).toEqual({ AZURE_OPENAI_API_KEY: SHELL_KEY });
   });
 
-  test("a pi session gets the base URL and the key, no args", async () => {
+  test("a pi session gets the base URL, the key, and the extension that makes it win over pi's own stored key", async () => {
     userCodexConfig();
     const l = await launchFor(entry("pi", "azure/gpt-6-luna"));
-    expect(l).toEqual({ env: { AZURE_OPENAI_API_KEY: SHELL_KEY, AZURE_OPENAI_BASE_URL: BASE }, args: [] });
+    expect(l).toEqual({ env: { AZURE_OPENAI_API_KEY: SHELL_KEY, AZURE_OPENAI_BASE_URL: BASE, AZURE_TETHER_SESSION_KEY: "1" }, args: ["-e", PI_AZURE_EXT] });
+  });
+
+  test("the pi extension sets the key as pi's runtime key (never auth.json) and takes it out of the env", async () => {
+    const ext = (await import(PI_AZURE_EXT)).default;
+    const handlers: Record<string, (e: any, ctx: any) => Promise<void>> = {};
+    const set: [string, string][] = [];
+    const ctx = { modelRegistry: { runtime: { setRuntimeApiKey: async (p: string, k: string) => void set.push([p, k]) } }, ui: { notify: () => {} } };
+    process.env.AZURE_OPENAI_API_KEY = KEY;
+    process.env.AZURE_TETHER_SESSION_KEY = "1";
+    ext({ on: (ev: string, fn: any) => (handlers[ev] = fn) });
+    await handlers.session_start!({}, ctx);
+    expect(set).toEqual([["azure", KEY]]);
+    expect(process.env.AZURE_OPENAI_API_KEY).toBeUndefined();
+    expect(process.env.AZURE_TETHER_SESSION_KEY).toBeUndefined();
+    // Not started by Tether for a credential: inert.
+    process.env.AZURE_OPENAI_API_KEY = KEY;
+    const none: Record<string, unknown> = {};
+    ext({ on: (ev: string, fn: any) => (none[ev] = fn) });
+    expect(none).toEqual({});
+    // A pi without runtime keys: says so in the session.
+    process.env.AZURE_TETHER_SESSION_KEY = "1";
+    const notes: string[] = [];
+    ext({ on: (ev: string, fn: any) => (handlers[ev] = fn) });
+    await handlers.session_start!({}, { modelRegistry: {}, ui: { notify: (m: string) => notes.push(m) } });
+    expect(notes[0]).toMatch(/pi's own azure key/);
+    expect(notes[0]).not.toContain(KEY);
   });
 
   test("key order: Tether's store, then the runner's env, then the shell (read once, cached)", async () => {
@@ -141,8 +167,103 @@ describe("the user's Codex setup, as-is", () => {
     userCodexConfig();
     setShellReader(async () => undefined);
     const [c] = (await listCredentials()).credentials;
-    expect(c).toMatchObject({ state: "missing", stateNote: "AZURE_OPENAI_API_KEY isn't set for the runner or in your login shell." });
-    await expect(launchFor(entry("codex", "gpt-6-luna"))).rejects.toThrow(/No key for east-coast-gavin-resource/);
+    expect(c).toMatchObject({ state: "missing", stateNote: "No key found (not in Tether, the runner env, or ~/.bashrc as AZURE_OPENAI_API_KEY)." });
+    await expect(launchFor(entry("codex", "gpt-6-luna"))).rejects.toThrow(/east-coast-gavin-resource: No key found/);
+  });
+
+  test("a missing key isn't looked for in the shell on every list, only on demand (Test, a session start)", async () => {
+    userCodexConfig();
+    setShellReader(async (name) => (shellReads.push(name), undefined));
+    await listCredentials();
+    await listCredentials();
+    expect(shellReads).toEqual(["AZURE_OPENAI_API_KEY"]);
+    await testCredential(ID);
+    expect(shellReads.length).toBe(2);
+    await launchFor(entry("codex", "gpt-6-luna")).catch(() => {});
+    expect(shellReads.length).toBe(3);
+    // A found one is kept; Store in Tether / Test read it again.
+    setShellReader(async (name) => (shellReads.push(name), SHELL_KEY));
+    shellReads = [];
+    await listCredentials();
+    await launchFor(entry("codex", "gpt-6-luna"));
+    expect(shellReads.length).toBe(1);
+    await testCredential(ID);
+    expect(shellReads.length).toBe(2);
+  });
+
+  test("a shell that never answers times out, isn't cached, and doesn't hold up the next ask", async () => {
+    let hang = true;
+    setShellReader((name) => (hang ? new Promise(() => {}) : Promise.resolve(name === "AZURE_OPENAI_API_KEY" ? SHELL_KEY : undefined)), 50);
+    const t0 = Date.now();
+    expect(await shellVar("AZURE_OPENAI_API_KEY")).toBeUndefined();
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    hang = false;
+    expect(await shellVar("AZURE_OPENAI_API_KEY")).toBe(SHELL_KEY);
+    setShellReader(async () => SHELL_TIMEOUT, 50);
+    expect(await shellVar("AZURE_OPENAI_API_KEY")).toBeUndefined();
+  });
+});
+
+describe("the real login shell", () => {
+  const profile = (text: string) => writeFileSync(join(process.env.HOME!, ".profile"), text);
+  const alive = (tag: string) => Bun.spawnSync(["pgrep", "-f", tag]).stdout.toString().trim();
+
+  test("answers as soon as the value is printed, though an rc file leaves `sleep 600 &` holding stdout; that job is killed", async () => {
+    setShellReader(undefined, 4_000);
+    profile("export FOUNDRY_TEST_VAR=from-profile-1234\nsleep 600.4242 &\n");
+    const t0 = Date.now();
+    expect(await shellVar("FOUNDRY_TEST_VAR")).toBe("from-profile-1234");
+    expect(Date.now() - t0).toBeLessThan(3_500);
+    await Bun.sleep(200);
+    expect(alive("sleep 600.4242")).toBe("");
+  });
+
+  test("a shell stuck in its rc times out, kills its group, and the next ask runs again", async () => {
+    setShellReader(undefined, 500);
+    profile("sleep 600.4343\nexport FOUNDRY_TEST_VAR=never\n");
+    const t0 = Date.now();
+    expect(await shellVar("FOUNDRY_TEST_VAR")).toBeUndefined();
+    expect(Date.now() - t0).toBeLessThan(2_500);
+    await Bun.sleep(200);
+    expect(alive("sleep 600.4343")).toBe("");
+    profile("export FOUNDRY_TEST_VAR=second-try\n");
+    expect(await shellVar("FOUNDRY_TEST_VAR")).toBe("second-try");
+  });
+});
+
+describe("profiles and hosts", () => {
+  test("two profiles on one deployment at other efforts are two entries; each launches with its own; NaN/Infinity left out", async () => {
+    userCodexConfig();
+    const dir = join(process.env.HOME!, ".codex");
+    writeFileSync(join(dir, "azure-luna-low.config.toml"), `model_provider = "azure"\nmodel = "gpt-6-luna"\nmodel_reasoning_effort = "low"\nodd = nan\nbig = inf\n`);
+    // Same deployment, same settings: one entry.
+    writeFileSync(join(dir, "zz-luna-copy.config.toml"), `model_provider = "azure"\nmodel = "gpt-6-luna"\nmodel_reasoning_effort = "high"\n`);
+    const [c] = (await listCredentials()).credentials;
+    expect(c!.models!.filter((m) => m.harness === "codex").map((m) => [m.id, m.label])).toEqual([
+      ["gpt-6-astra", "azure-astra"],
+      ["gpt-6-luna", "azure-luna"],
+      ["gpt-6-luna@azure-luna-low", "azure-luna-low"],
+      ["gpt-6.1-sol", "azure-sol"],
+    ]);
+    expect(c!.models!.filter((m) => m.harness === "pi").map((m) => m.id)).toEqual(["azure/gpt-6-astra", "azure/gpt-6-luna", "azure/gpt-6.1-sol"]);
+    expect((await launchFor(entry("codex", "gpt-6-luna@azure-luna-low"))).args).toEqual(["-c", 'model_provider="azure"', "-c", 'model="gpt-6-luna"', "-c", 'model_reasoning_effort="low"']);
+    expect((await launchFor(entry("codex", "gpt-6-luna"))).args).toEqual(["-c", 'model_provider="azure"', "-c", 'model="gpt-6-luna"', "-c", 'model_reasoning_effort="high"']);
+    // Test calls each deployment once.
+    fakeAzure(() => [200, {}]);
+    await testCredential(ID);
+    expect(calls.map((x) => x.body.model).sort()).toEqual(["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+  });
+
+  test("a stored key goes only to its own host: a Codex provider with the same resource name elsewhere gets its own row and not that key", async () => {
+    await store.put({ id: ID, kind: "apiKey", label: "Mine", values: { apiKey: KEY }, endpointHost: "east-coast-gavin-resource.cognitiveservices.azure.com", meta: { baseUrl: "https://east-coast-gavin-resource.cognitiveservices.azure.com/openai/v1" } });
+    userCodexConfig();
+    const list = (await listCredentials()).credentials;
+    const mine = list.find((c) => c.id === ID)!;
+    const codex = list.find((c) => c.id !== ID)!;
+    expect(mine).toMatchObject({ endpointHost: "east-coast-gavin-resource.cognitiveservices.azure.com", source: "tether" });
+    expect(codex).toMatchObject({ id: "azure:east-coast-gavin-resource-azure", endpointHost: "east-coast-gavin-resource.openai.azure.com", source: "shell" });
+    expect((await launchFor({ harness: "codex", model: "gpt-6-luna", credential: codex.id })).env.AZURE_OPENAI_API_KEY).toBe(SHELL_KEY);
+    expect((await launchFor({ harness: "codex", model: "gpt-6-luna", credential: ID })).args).toContain('model_providers.tether-azure.base_url="https://east-coast-gavin-resource.cognitiveservices.azure.com/openai/v1"');
   });
 });
 
@@ -264,7 +385,7 @@ describe("safety", () => {
   });
 
   test("codexArgs quotes values as TOML", () => {
-    const args = codexArgs({ baseUrl: 'https://x.openai.azure.com/openai/v1', wireApi: "responses", deployments: new Map([["m", { name: "p", model: "m", overrides: { model_reasoning_effort: 'hi"gh', n: 3, b: true } }]]) }, "m");
+    const args = codexArgs({ baseUrl: "https://x.openai.azure.com/openai/v1", wireApi: "responses", deployments: new Map([["m", { deployment: "m", profile: { name: "p", model: "m", overrides: { model_reasoning_effort: 'hi"gh', n: 3, b: true } } }]]) }, "m");
     expect(args.slice(-6)).toEqual(["-c", 'model_reasoning_effort="hi\\"gh"', "-c", "n=3", "-c", "b=true"]);
   });
 });

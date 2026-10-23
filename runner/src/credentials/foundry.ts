@@ -16,12 +16,15 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CredentialModel, CredentialSource, CredentialTest, CredentialView } from "../../../web/src/shared/credentials";
 import type { ChainEntry } from "../../../web/src/shared/protocol";
 import type { CredentialPlugin } from "./registry";
 import * as store from "./store";
 
 export const PROVIDER = "azure";
+/** pi extension that makes the session's key win over pi's own stored azure key (runner/hooks/pi-azure-key.ts). */
+export const PI_AZURE_EXT = fileURLToPath(new URL("../../hooks/pi-azure-key.ts", import.meta.url));
 const DEFAULT_ENV_KEY = "AZURE_OPENAI_API_KEY";
 /** The Codex provider id Tether defines on the command line for a key that has no Codex config. */
 export const TETHER_CODEX_PROVIDER = "tether-azure";
@@ -49,6 +52,12 @@ export interface CodexAzureProvider {
   profiles: CodexProfile[];
 }
 
+/** One model entry of a resource. */
+interface Deployment {
+  deployment: string;
+  profile?: CodexProfile;
+}
+
 /** One Azure resource, merged from Codex's config and Tether's store. */
 interface Resource {
   id: string;
@@ -60,8 +69,11 @@ interface Resource {
   query?: Record<string, string>;
   codex?: CodexAzureProvider;
   stored?: store.StoredCredential;
-  /** deployment → the Codex profile it came from (undefined: added in Tether) */
-  deployments: Map<string, CodexProfile | undefined>;
+  /**
+   * Model entries by their id: the deployment name, or "<deployment>@<profile>" for a second Codex
+   * profile on the same deployment with other settings (e.g. another effort). No profile: added in Tether.
+   */
+  deployments: Map<string, Deployment>;
 }
 
 // ---------------- Codex config ----------------
@@ -95,7 +107,7 @@ const isAzureProvider = (p: any) => {
 function profileOf(name: string, t: Record<string, any> | undefined, providers: Set<string>): (CodexProfile & { provider: string }) | undefined {
   if (!t || typeof t.model !== "string" || typeof t.model_provider !== "string" || !providers.has(t.model_provider)) return undefined;
   const overrides: Record<string, Scalar> = {};
-  for (const [k, v] of Object.entries(t)) if (k !== "model_provider" && k !== "model" && /^[A-Za-z0-9_]+$/.test(k) && ["string", "number", "boolean"].includes(typeof v)) overrides[k] = v as Scalar;
+  for (const [k, v] of Object.entries(t)) if (k !== "model_provider" && k !== "model" && /^[A-Za-z0-9_]+$/.test(k) && (typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)))) overrides[k] = v as Scalar;
   return { name, model: t.model, overrides, provider: t.model_provider };
 }
 
@@ -129,53 +141,102 @@ export function codexAzureProviders(dir = codexHome()): CodexAzureProvider[] {
 
 // ---------------- the key ----------------
 
-/** How the login shell is read (tests swap it). Returns the variable's value, or undefined. */
-type ShellReader = (name: string) => Promise<string | undefined>;
-
-const SHELL_MS = 8_000;
+let shellMs = 8_000;
 const MARK = "\u001eTETHER\u001e";
+/** What a reader returns when the shell didn't answer in time (not cached: the next ask tries again). */
+export const SHELL_TIMEOUT = Symbol("shell timeout");
 
-/** `bash -lic`, only that variable (by indirection: the name never goes into the script), a timeout. */
-const bashReader: ShellReader = async (name) => {
-  const env: Record<string, string> = { TETHER_SHELL_VAR: name, TERM: "dumb" };
-  for (const k of ["HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG"]) if (process.env[k]) env[k] = process.env[k]!;
-  const p = Bun.spawn(["bash", "-lic", `printf '${MARK}%s${MARK}' "\${!TETHER_SHELL_VAR}"`], { env, cwd: home(), stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-  const timer = setTimeout(() => p.kill(9), SHELL_MS);
-  try {
-    const out = await new Response(p.stdout).text();
-    await p.exited;
-    const a = out.indexOf(MARK);
-    const b = a >= 0 ? out.indexOf(MARK, a + MARK.length) : -1;
-    const v = b > a ? out.slice(a + MARK.length, b) : "";
-    return v || undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-};
+/** The value between the two marks, "" for an empty one, undefined until both are there. */
+function marked(out: string): string | undefined {
+  const a = out.indexOf(MARK);
+  const b = a >= 0 ? out.indexOf(MARK, a + MARK.length) : -1;
+  return b > a ? out.slice(a + MARK.length, b) : undefined;
+}
+
+/** How the login shell is read (tests swap it): the value, undefined, or SHELL_TIMEOUT. */
+type ShellReader = (name: string) => Promise<string | undefined | typeof SHELL_TIMEOUT>;
+
+/**
+ * `bash -lic`, only that variable (by indirection: the name never goes into the script). It answers
+ * as soon as the value is printed, not when stdout closes: a background job an rc file starts
+ * (`sleep 600 &`) keeps stdout open. `setsid` makes bash lead its own process group, and the whole
+ * group is killed when it has answered or after the timeout.
+ */
+const bashReader: ShellReader = (name) =>
+  new Promise((resolve) => {
+    const env: Record<string, string> = { TETHER_SHELL_VAR: name, TERM: "dumb" };
+    for (const k of ["HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG"]) if (process.env[k]) env[k] = process.env[k]!;
+    let p: ReturnType<typeof Bun.spawn>;
+    try {
+      p = Bun.spawn(["setsid", "bash", "-lic", `printf '${MARK}%s${MARK}' "\${!TETHER_SHELL_VAR}"`], { env, cwd: home(), stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    } catch {
+      return resolve(undefined);
+    }
+    let done = false;
+    const finish = (v: string | undefined | typeof SHELL_TIMEOUT) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        process.kill(-p.pid, "SIGKILL");
+      } catch {}
+      p.kill(9);
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(SHELL_TIMEOUT), shellMs);
+    (async () => {
+      const dec = new TextDecoder();
+      let out = "";
+      try {
+        for await (const chunk of p.stdout as ReadableStream<Uint8Array>) {
+          out = (out + dec.decode(chunk, { stream: true })).slice(-200_000);
+          const v = marked(out);
+          if (v !== undefined) return finish(v || undefined);
+        }
+      } catch {}
+      finish(marked(out) || undefined);
+    })();
+  });
 
 let shellReader: ShellReader = bashReader;
 const shellCache = new Map<string, { at: number; value?: string; pending?: Promise<string | undefined> }>();
-const SHELL_FOUND_MS = 30 * 60_000;
-const SHELL_MISSING_MS = 2 * 60_000;
+/** Found or missing, until asked again on demand (Test, Store in Tether, a session start…) or 30 min. */
+const SHELL_CACHE_MS = 30 * 60_000;
 
-/** Tests: read the shell with `fn` (absent: bash again), and forget what was read. */
-export function setShellReader(fn?: ShellReader) {
+/** Tests: read the shell with `fn` (absent: bash again) and this timeout, and forget what was read. */
+export function setShellReader(fn?: ShellReader, timeoutMs = 8_000) {
   shellReader = fn ?? bashReader;
+  shellMs = timeoutMs;
   shellCache.clear();
 }
 
-/** One variable from the login shell, cached (a found one for 30 min, a missing one for 2). */
-export async function shellVar(name: string): Promise<string | undefined> {
+/** Forget what the shell said for `name` (Test, Remove, Store in Tether, Replace key). */
+export function forgetShell(name: string) {
+  if (!shellCache.get(name)?.pending) shellCache.delete(name);
+}
+
+/**
+ * One variable from the login shell, cached for 30 min, a missing one too (no login shell every few
+ * minutes). `fresh` (on demand: a session start, an action): a missing one is asked again. A shell
+ * that times out isn't cached and never holds up the next ask.
+ */
+export async function shellVar(name: string, fresh = false): Promise<string | undefined> {
   if (!ENV_NAME.test(name)) return undefined;
   const c = shellCache.get(name);
   if (c?.pending) return c.pending;
-  if (c && Date.now() - c.at < (c.value ? SHELL_FOUND_MS : SHELL_MISSING_MS)) return c.value;
-  const pending = shellReader(name)
-    .catch(() => undefined)
-    .then((value) => {
-      shellCache.set(name, { at: Date.now(), value });
-      return value;
-    });
+  if (c && Date.now() - c.at < SHELL_CACHE_MS && (c.value || !fresh)) return c.value;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A reader that never answers (a test's, a stuck spawn) times out here too.
+  const guard = new Promise<typeof SHELL_TIMEOUT>((res) => (timer = setTimeout(() => res(SHELL_TIMEOUT), shellMs + 2_000)));
+  const pending = Promise.race([shellReader(name).catch(() => undefined), guard]).then((v) => {
+    clearTimeout(timer);
+    if (v === SHELL_TIMEOUT) {
+      shellCache.delete(name);
+      return undefined;
+    }
+    shellCache.set(name, { at: Date.now(), value: v });
+    return v;
+  });
   shellCache.set(name, { at: 0, pending });
   return pending;
 }
@@ -197,12 +258,16 @@ interface Key {
   note?: string;
 }
 
-async function keyOf(r: Resource): Promise<Key> {
-  const stored = r.stored?.values.apiKey;
+/** The host a stored record is for: a stored key goes only to that host. */
+const storedHost = (c: store.StoredCredential | undefined) => c && (c.endpointHost ?? (typeof c.meta?.baseUrl === "string" ? hostOf(c.meta.baseUrl) : undefined));
+
+/** `fresh`: ask the shell again when it had nothing (on demand: Test, a session start, an action). */
+async function keyOf(r: Resource, fresh = false): Promise<Key> {
+  const stored = storedHost(r.stored) === r.host ? r.stored?.values.apiKey : undefined;
   if (stored) return { value: stored, source: "tether" };
   const env = process.env[r.envKey];
   if (env) return { value: env, source: "env", note: `From the runner's environment (${r.envKey})` };
-  const shell = await shellVar(r.envKey);
+  const shell = await shellVar(r.envKey, fresh);
   if (shell) {
     const f = shellFile(r.envKey);
     return { value: shell, source: "shell", note: f ? `From ${f}` : `From your login shell (${r.envKey})` };
@@ -254,15 +319,26 @@ export function resources(): Resource[] {
   const byId = new Map<string, Resource>();
   for (const p of codexAzureProviders()) {
     const host = hostOf(p.baseUrl)!;
-    const id = resourceId(host);
-    const r = byId.get(id) ?? { id, host, baseUrl: p.baseUrl, label: host.split(".")[0]!, envKey: p.envKey, wireApi: p.wireApi, ...(p.query ? { query: p.query } : {}), codex: p, deployments: new Map() };
-    for (const pr of p.profiles) if (!r.deployments.has(pr.model)) r.deployments.set(pr.model, pr);
+    let id = resourceId(host);
+    // A key stored for another host under this name never goes to this one: this provider gets its own id.
+    const other = storedHost(store.get(id));
+    if ((other && other !== host) || (byId.has(id) && byId.get(id)!.host !== host)) id = resourceId(`${host.split(".")[0]}-${p.id}`);
+    const r = byId.get(id) ?? { id, host, baseUrl: p.baseUrl, label: id.slice(PROVIDER.length + 1), envKey: p.envKey, wireApi: p.wireApi, ...(p.query ? { query: p.query } : {}), codex: p, deployments: new Map() };
+    // By name: "azure-luna" keeps the plain id, "azure-luna-low" gets "@azure-luna-low".
+    for (const pr of [...p.profiles].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const same = [...r.deployments.values()].filter((d) => d.deployment === pr.model);
+      // The same deployment with the same settings is one entry; other settings (an effort) another.
+      if (same.some((d) => JSON.stringify(d.profile?.overrides ?? {}) === JSON.stringify(pr.overrides))) continue;
+      if (same.length && !/^[A-Za-z0-9._-]{1,64}$/.test(pr.name)) continue;
+      r.deployments.set(same.length ? `${pr.model}@${pr.name}` : pr.model, { deployment: pr.model, profile: pr });
+    }
     byId.set(id, r);
   }
   for (const id of store.ids(PROVIDER)) {
     const c = store.get(id)!;
     const m = metaOf(c);
     let r = byId.get(id);
+    if (r && storedHost(c) !== r.host) continue;
     if (!r) {
       if (!m.baseUrl) continue;
       const host = hostOf(m.baseUrl);
@@ -272,7 +348,7 @@ export function resources(): Resource[] {
     }
     r.stored = c;
     if (c.label) r.label = c.label;
-    for (const d of m.deployments ?? []) if (!r.deployments.has(d)) r.deployments.set(d, undefined);
+    for (const d of m.deployments ?? []) if (![...r.deployments.values()].some((x) => x.deployment === d)) r.deployments.set(d, { deployment: d });
   }
   return [...byId.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
@@ -291,10 +367,13 @@ const shortName = (r: Resource, all: Resource[]) => (all.length > 1 ? `Azure · 
 function modelsOf(r: Resource, all: Resource[]): CredentialModel[] {
   const credentialLabel = shortName(r, all);
   const out: CredentialModel[] = [];
-  for (const [d, profile] of r.deployments) {
+  const pi = new Set<string>();
+  for (const [id, { deployment, profile }] of r.deployments) {
     // label: the Codex profile it came from (searchable in pickers; the Credentials row shows it). None: added in Tether.
-    out.push({ harness: "codex", id: d, credentialLabel, ...(profile ? { label: profile.name } : {}) });
-    out.push({ harness: "pi", id: `azure/${d}`, credentialLabel, ...(profile ? { label: profile.name } : {}) });
+    out.push({ harness: "codex", id, credentialLabel, ...(profile ? { label: profile.name } : {}) });
+    // pi has no profiles: one entry per deployment.
+    if (!pi.has(deployment)) out.push({ harness: "pi", id: `azure/${deployment}`, credentialLabel, ...(profile ? { label: profile.name } : {}) });
+    pi.add(deployment);
   }
   return out;
 }
@@ -403,7 +482,7 @@ export async function listAzureModels(r: { baseUrl: string; query?: Record<strin
 
 async function viewOf(r: Resource, all: Resource[]): Promise<CredentialView> {
   const key = await keyOf(r);
-  const removable = [...r.deployments.values()].some((p) => !p);
+  const removable = [...r.deployments.values()].some((d) => !d.profile);
   const actions = [key.value && key.source !== "tether" ? "storeKey" : undefined, "addModel", key.source === "tether" ? "replaceKey" : undefined, removable ? "removeModel" : undefined].filter(Boolean) as string[];
   const last4 = key.value && key.value.length >= 8 ? key.value.slice(-4) : undefined;
   return {
@@ -416,16 +495,19 @@ async function viewOf(r: Resource, all: Resource[]): Promise<CredentialView> {
     source: key.source,
     ...(key.note ? { sourceNote: key.note } : {}),
     state: key.value ? "ok" : "missing",
-    ...(key.value ? {} : { stateNote: r.stored ? "No key stored." : `${r.envKey} isn't set for the runner or in your login shell.` }),
+    ...(key.value ? {} : { stateNote: noKey(r) }),
     ...(r.stored?.values.apiKey ? { setAt: r.stored.setAt } : {}),
     models: modelsOf(r, all),
     actions,
   };
 }
 
+/** Why there's no key, in words. */
+const noKey = (r: Resource) => `No key found (not in Tether, the runner env, or ~/.bashrc as ${r.envKey}).`;
+
 async function keyFor(r: Resource): Promise<string> {
-  const k = (await keyOf(r)).value;
-  if (!k) throw new Error(`No key for ${r.label}: ${r.envKey} isn't set for the runner or in your login shell. Add it on the Credentials page.`);
+  const k = (await keyOf(r, true)).value;
+  if (!k) throw new Error(`${r.label}: ${noKey(r)} Add it on the Credentials page.`);
   return k;
 }
 
@@ -445,15 +527,13 @@ export function codexArgs(r: Pick<Resource, "codex" | "baseUrl" | "wireApi" | "q
     for (const [k, v] of Object.entries(r.query ?? {})) if (/^[A-Za-z0-9_-]+$/.test(k)) args.push(...c(`${at}.query_params.${k}`, v));
   }
   args.push(...c("model_provider", provider));
-  if (model && model !== "default") args.push(...c("model", model));
+  const d = r.deployments.get(model);
+  const deployment = d?.deployment ?? model.replace(/@[^@]*$/, "");
+  if (deployment && deployment !== "default") args.push(...c("model", deployment));
   // The rest of the model's profile, as `codex -p <name>` would layer it.
-  const profile = r.deployments.get(model);
-  for (const [k, v] of Object.entries(profile?.overrides ?? {})) args.push(...c(k, v));
+  for (const [k, v] of Object.entries(d?.profile?.overrides ?? {})) args.push(...c(k, v));
   return args;
 }
-
-/** The deployment an entry runs: Codex's model id, pi's "azure/<deployment>". */
-const deploymentOf = (entry: ChainEntry) => (entry.harness === "pi" ? entry.model.replace(/^azure\//, "") : entry.model);
 
 async function storeKey(r: Resource, apiKey: string, extra: Partial<Meta> = {}) {
   const m = metaOf(r.stored);
@@ -486,9 +566,11 @@ export const foundryPlugin: CredentialPlugin = {
 
   async test(id) {
     const r = mustResource(id);
-    const key = (await keyOf(r)).value;
-    if (!key) return { ok: false, result: "missing", message: `No key: ${r.envKey} isn't set for the runner or in your login shell.` };
-    const ds = [...r.deployments.keys()];
+    // Test reads the shell again: it may have changed since it was last asked.
+    forgetShell(r.envKey);
+    const key = (await keyOf(r, true)).value;
+    if (!key) return { ok: false, result: "missing", message: noKey(r) };
+    const ds = [...new Set([...r.deployments.values()].map((d) => d.deployment))];
     if (!ds.length) {
       const { status, models } = await listAzureModels(r, key);
       if (status === 401 || status === 403) return azureResult(status, { message: "" });
@@ -527,12 +609,13 @@ export const foundryPlugin: CredentialPlugin = {
         // The resource's model names, one per line (credentialAction results carry text, not lists).
         const key = await keyFor(r);
         const { models } = await listAzureModels(r, key);
-        return { message: models.filter((m) => !r.deployments.has(m)).join("\n") };
+        const have = new Set([...r.deployments.values()].map((d) => d.deployment));
+        return { message: models.filter((m) => !have.has(m)).join("\n") };
       }
       case "addModel": {
         const d = String(a.deployment ?? "").trim();
         if (!DEPLOYMENT.test(d)) throw new Error("A deployment name has letters, digits, dots, dashes and underscores.");
-        if (r.deployments.has(d)) throw new Error(`“${d}” is already there.`);
+        if ([...r.deployments.values()].some((x) => x.deployment === d)) throw new Error(`“${d}” is already there.`);
         const t = await tinyCall(r, await keyFor(r), d);
         if (!t.ok) throw new Error(t.message ?? `“${d}” didn't answer (${t.result}).`);
         const m = metaOf(r.stored);
@@ -544,14 +627,16 @@ export const foundryPlugin: CredentialPlugin = {
       }
       case "removeModel": {
         const d = String(a.deployment ?? "");
-        if (!r.deployments.has(d)) throw new Error(`“${d}” isn't there.`);
-        if (r.deployments.get(d)) throw new Error(`“${d}” comes from your Codex profile ${r.deployments.get(d)!.name}; change it there.`);
+        const e = r.deployments.get(d);
+        if (!e) throw new Error(`“${d}” isn't there.`);
+        if (e.profile) throw new Error(`“${d}” comes from your Codex profile ${e.profile.name}; change it there.`);
         const m = metaOf(r.stored);
-        await store.update(r.id, { meta: { ...m, deployments: (m.deployments ?? []).filter((x) => x !== d) } });
+        await store.update(r.id, { meta: { ...m, deployments: (m.deployments ?? []).filter((x) => x !== e.deployment) } });
         return { message: `Removed ${d}.` };
       }
       case "storeKey": {
-        const key = await keyOf(r);
+        forgetShell(r.envKey);
+        const key = await keyOf(r, true);
         if (!key.value) throw new Error(`There's no key to store: ${r.envKey} isn't set for the runner or in your login shell.`);
         if (key.source !== "tether") await storeKey(r, key.value);
         return { message: "Stored in Tether." };
@@ -561,6 +646,7 @@ export const foundryPlugin: CredentialPlugin = {
         if (!apiKey) throw new Error("Paste the new key.");
         await checkKey(r, apiKey);
         await storeKey(r, apiKey);
+        forgetShell(r.envKey);
         return { message: "Key replaced." };
       }
     }
@@ -570,20 +656,24 @@ export const foundryPlugin: CredentialPlugin = {
   async envFor(id, entry) {
     const r = mustResource(id);
     const key = await keyFor(r);
-    if (entry.harness === "pi") return { AZURE_OPENAI_API_KEY: key, AZURE_OPENAI_BASE_URL: r.baseUrl };
+    // AZURE_TETHER_SESSION_KEY: the pi extension (argsFor) makes this key win over one pi stores itself.
+    if (entry.harness === "pi") return { AZURE_OPENAI_API_KEY: key, AZURE_OPENAI_BASE_URL: r.baseUrl, AZURE_TETHER_SESSION_KEY: "1" };
     if (entry.harness === "codex") return { [r.codex ? r.envKey : DEFAULT_ENV_KEY]: key };
     throw new Error(`Microsoft Foundry keys run in Codex and pi, not ${entry.harness}.`);
   },
 
   argsFor(id, entry) {
+    // pi resolves a key in its own auth.json before AZURE_OPENAI_API_KEY: this extension makes the session's pi's runtime key.
+    if (entry.harness === "pi") return ["-e", PI_AZURE_EXT];
     if (entry.harness !== "codex") return [];
-    return codexArgs(mustResource(id), deploymentOf(entry));
+    return codexArgs(mustResource(id), entry.model);
   },
 
   async remove(id) {
     const r = resource(id);
     if (!r?.stored) throw new Error(r?.codex ? "This one comes from your Codex config; change it there." : "Nothing stored for it.");
     await store.remove(id);
+    forgetShell(r.envKey);
   },
 };
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { foundryModels, foundrySlot } from "./foundry";
-import { modelLabel } from "../models";
+import { modelDisplay, modelLabel } from "../models";
 import type { CredentialView } from "../shared/credentials";
 
 const view: CredentialView = {
@@ -30,5 +30,10 @@ describe("Foundry slot", () => {
     expect(foundrySlot.actionLabels?.storeKey).toBe("Store in Tether");
     expect(foundrySlot.ownActions).toEqual(expect.arrayContaining(["addModel", "replaceKey", "removeModel"]));
     expect(foundrySlot.ownActions).not.toContain("storeKey");
+  });
+
+  test("a second Codex profile on one deployment reads with its profile", () => {
+    expect(modelDisplay("gpt-6-luna@azure-luna-low", "codex").name).toBe("GPT-6 Luna (azure-luna-low)");
+    expect(modelDisplay("@cf/meta/llama-3", "opencode").name).not.toContain("(");
   });
 });

@@ -217,6 +217,12 @@ export function modelLabel(m: { id: string; credential?: string; credentialLabel
  * ids that don't (Claude Code's "default" is Anthropic's).
  */
 export function modelDisplay(id: string | undefined, harness?: string): ModelDisplay {
+  // A second Codex profile on one Azure deployment ("gpt-6-luna@azure-luna-low"): "GPT-6 Luna (azure-luna-low)".
+  const profile = id?.match(/^([^@/]+)@([A-Za-z0-9._-]+)$/);
+  if (profile) {
+    const d = modelDisplay(profile[1], harness);
+    return { ...d, id: id!, name: `${d.name} (${profile[2]})` };
+  }
   // An alias the runner has resolved ("opus" → "claude-opus-5-5") reads as that model: "Opus 5.5".
   const resolved = id && RESOLVED.get(`${harness ?? "claude-code"}:${id}`);
   if (resolved && resolved !== id) return { ...modelDisplay(resolved, harness), id };
