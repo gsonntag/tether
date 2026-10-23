@@ -251,6 +251,32 @@ describe("agent_start", () => {
     expect(w.created[1]!.guardMode).toBe("edits");
   });
 
+  test("without a harness or model it runs on the default order (its first installed entry), else on the parent's harness", async () => {
+    const w = world();
+    const p = w.parent(repo());
+    try {
+      config().defaultOrder = ["antigravity:gemini-3-pro", "codex:gpt-6-luna", "pi:openai-codex/gpt-6-luna"];
+      expect((await call(p, "agent_harnesses")).text).toContain("default order");
+      const r = await call(p, "agent_start", { task: "x", cwd: "shared" });
+      expect(r.ok).toBe(true);
+      const child = w.created[0]!;
+      expect(child.harness).toBe("codex");
+      expect(child.t.state.model).toBe("gpt-6-luna");
+      expect(child.t.state.chain).toEqual(config().defaultOrder!);
+      expect(child.t.state.chain).not.toBe(config().defaultOrder!);
+      // A harness given: that harness, no chain.
+      expect((await call(p, "agent_start", { harness: "kiro", task: "y", cwd: "shared" })).ok).toBe(true);
+      expect(w.created[1]!.harness).toBe("kiro");
+      expect(w.created[1]!.t.state.chain).toBeUndefined();
+      delete config().defaultOrder;
+      expect((await call(p, "agent_start", { task: "z", cwd: "shared" })).ok).toBe(true);
+      expect(w.created[2]!.harness).toBe("claude-code");
+      expect(w.created[2]!.t.state.chain).toBeUndefined();
+    } finally {
+      delete config().defaultOrder;
+    }
+  });
+
   test("outside git it shares the folder; names stay unique", async () => {
     const w = world();
     const dir = join(HOME, "plain");

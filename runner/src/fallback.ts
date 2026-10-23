@@ -1,4 +1,5 @@
-// Model profiles and quota-aware fallback, shared by every harness.
+// Quota-aware fallback along a session's chain, shared by every harness (the chain is a copy of
+// the default order, defaultOrder.ts, or one the session set itself).
 //
 // Policy (agreed with the user, docs/harness-platform.md "Phase 1"):
 //  - a provider counts as exhausted only on a definite signal: the harness's own structured limit
@@ -14,7 +15,7 @@
 // No pre-emptive switching near a limit: a threshold setting is a possible later improvement.
 
 import { parseEntry, usageProvider, type ChainEntry, type HarnessId, type ProviderUsage } from "../../web/src/shared/protocol";
-import { availableProfiles, config, saveConfig } from "./config";
+import { config, saveConfig } from "./config";
 import { accountUsage, type UsageAccount } from "./usage";
 
 export type ErrorKind = "quota" | "rate_limit" | "other";
@@ -185,10 +186,6 @@ export function pickEntry(chain: string[], harness: HarnessId, skip?: (provider:
     earliest = Math.min(earliest, until);
   }
   return { waitUntil: earliest };
-}
-
-export function profile(name: string | undefined) {
-  return name ? availableProfiles().find((p) => p.name === name) : undefined;
 }
 
 export function backoffMs(attempt: number): number {

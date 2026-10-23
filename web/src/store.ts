@@ -58,8 +58,10 @@ interface State {
   sidebarHidden: boolean;
   /** the session's history panel of finished work (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
-  dialog?: "new" | "addProject" | "settings" | "fork";
+  dialog?: "new" | "addProject" | "settings" | "fork" | "defaultOrder";
   newSessionProject?: string;
+  /** the runner's default order: null while none is saved, undefined until it answers (or an older runner) */
+  defaultOrder?: string[] | null;
   /** the message "Fork from here" was picked on (dialog "fork") */
   forkTarget?: ForkTarget;
   usage?: UsageReport;
@@ -665,7 +667,7 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], defaultOrder: undefined, viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
   refreshProjects();
   refreshViewed();
   refreshRecent();
@@ -713,6 +715,30 @@ export function refreshUiPrefs() {
     })
     // An older runner has no preferences: this device's stay. Other failures keep what we have.
     .catch(() => {});
+  refreshDefaultOrder();
+}
+
+/** The runner's default order (Home's setup card, New session's "Default order"). */
+export function refreshDefaultOrder() {
+  const runnerId = get().runnerId;
+  if (!runnerId) return;
+  rpcTo(runnerId, "getDefaultOrder", {})
+    .then((r) => get().runnerId === runnerId && set({ defaultOrder: r.order ?? null }))
+    .catch(() => {}); // an older runner: no default order, and no setup card
+}
+
+/** Saves it; false (and a toast) when the runner refused it. */
+export async function saveDefaultOrder(order: string[]): Promise<boolean> {
+  const runnerId = get().runnerId;
+  if (!runnerId) return false;
+  try {
+    const r = await rpcTo(runnerId, "setDefaultOrder", { order });
+    if (get().runnerId === runnerId) set({ defaultOrder: r.order ?? null });
+    return true;
+  } catch (e: any) {
+    toast("error", e?.message ?? String(e));
+    return false;
+  }
 }
 // Another device may have changed them.
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refreshUiPrefs());

@@ -189,7 +189,7 @@ export const AGENT_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        harness: { type: "string", description: "claude-code, codex, pi, opencode, kiro or antigravity (default: your own). See agent_harnesses." },
+        harness: { type: "string", description: "claude-code, codex, pi, opencode, kiro or antigravity. Without a harness and a model: the user's default order, else your own harness. See agent_harnesses." },
         model: { type: "string", description: "A model id that harness lists (agent_harnesses), e.g. pi's provider/model. Default: the harness's default." },
         effort: { type: "string", description: "Effort / thinking level, one the harness lists" },
         mode: { type: "string", description: "The harness's mode (e.g. plan), one it lists" },

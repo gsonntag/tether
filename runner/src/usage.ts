@@ -67,6 +67,26 @@ export async function accountUsage(account: UsageAccount): Promise<ProviderUsage
   return auth ? codexUsage(auth) : undefined;
 }
 
+/**
+ * Which subscription logins are on this machine, from the files the harnesses keep (no network):
+ * for suggesting a default order. Claude Code's login is in the macOS keychain there, so it counts
+ * as signed in; elsewhere its credentials file or a token in the environment does. The ChatGPT
+ * logins carry their account id, to tell whether pi's and the Codex CLI's are the same account.
+ */
+export function signedIn(): { claude: boolean; codex?: { accountId?: string }; pi?: { accountId?: string }; kiro: boolean } {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(userHome(), ".claude");
+  const claude = process.platform === "darwin" || !!process.env.CLAUDE_CODE_OAUTH_TOKEN || !!process.env.ANTHROPIC_API_KEY || existsSync(join(claudeDir, ".credentials.json"));
+  const codex = codexCliAuth();
+  const pi = piAuth();
+  let kiro = false;
+  try {
+    kiro = !!readKiroToken();
+  } catch {
+    kiro = true; // its store is there but busy: a login is likely
+  }
+  return { claude, codex: codex && { accountId: codex.accountId }, pi: pi && { accountId: pi.accountId }, kiro };
+}
+
 /** Marks the cache stale (after a turn ends, usage has moved). */
 export function usageChanged() {
   if (cache) cache.at = 0;

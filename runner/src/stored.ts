@@ -12,7 +12,8 @@ import { subagentItem } from "../../web/src/shared/subagents";
 import type { StoredHistory } from "./adapters/types";
 import type { SessionPrefs } from "./config";
 import { switchModel } from "./contextWindow";
-import { pickEntry, profile } from "./fallback";
+import { defaultOrder } from "./defaultOrder";
+import { pickEntry } from "./fallback";
 import type { GuardMode } from "./guard";
 import { tagToolParts } from "./toolKind";
 
@@ -39,7 +40,6 @@ export function storedState(o: {
     modes: p.modes ?? o.modes,
     thinkingLevels: p.thinkingLevels,
     chain: p.chain,
-    profile: p.profile,
     preferEarlier: p.preferEarlier ?? true,
     handoffFrom: p.handoffFrom,
     handoffTo: p.handoffTo,
@@ -106,7 +106,7 @@ export function withBlockedVerdicts(messages: Msg[], blocked?: SessionPrefs["blo
 
 /** A setting changed while the session isn't running. */
 export type StoredSetting =
-  | { op: "model"; model?: string; profile?: string }
+  | { op: "model"; model?: string; defaultOrder?: boolean }
   | { op: "chain"; chain: string[]; preferEarlier?: boolean }
   | { op: "thinking"; level: string }
   | { op: "mode"; mode: string }
@@ -119,22 +119,22 @@ function chainModel(chain: string[], harness: HarnessId): { model?: string } {
 }
 
 /**
- * What a setting changes, as LiveSession would change it (setModelOrProfile, setChain, …). The
+ * What a setting changes, as LiveSession would change it (setModelOrOrder, setChain, …). The
  * keys are the same in LiveState and SessionPrefs, so this is both the state event browsers get
  * and what is saved.
  */
 export function settingChange(harness: HarnessId, s: StoredSetting): Partial<LiveState> {
   switch (s.op) {
     case "model": {
-      if (s.profile) {
-        const p = profile(s.profile);
-        if (!p) throw new Error(`No model profile "${s.profile}"`);
-        return { chain: [...p.chain], profile: p.name, ...chainModel(p.chain, harness) };
+      if (s.defaultOrder) {
+        const order = defaultOrder();
+        if (!order) throw new Error("No default order is set. Set one in Settings.");
+        return { chain: order, ...chainModel(order, harness) };
       }
-      return s.model ? { profile: undefined, chain: undefined, model: s.model } : {};
+      return s.model ? { chain: undefined, model: s.model } : {};
     }
     case "chain":
-      return { chain: s.chain, profile: undefined, ...(s.preferEarlier !== undefined ? { preferEarlier: s.preferEarlier } : {}), ...chainModel(s.chain, harness) };
+      return { chain: s.chain, ...(s.preferEarlier !== undefined ? { preferEarlier: s.preferEarlier } : {}), ...chainModel(s.chain, harness) };
     case "thinking":
       return { thinking: s.level };
     case "mode":

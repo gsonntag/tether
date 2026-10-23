@@ -83,7 +83,6 @@ export async function runHandoff(deps: HandoffDeps, from: LiveSession, to: Chain
   next.setTitle(from.title);
   next.setState({
     chain: from.t.state.chain,
-    profile: from.t.state.profile,
     preferEarlier: from.t.state.preferEarlier,
     handoffFrom: { sessionId: from.id, reason },
     guard: next.t.state.reviewOf ? "auto" : from.guardMode,

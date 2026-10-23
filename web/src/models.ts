@@ -4,7 +4,7 @@
  * the heuristic, so new ids ("claude-opus-6", "gpt-7-codex", "us.anthropic.…-v1:0") still read well.
  */
 
-import { parseEntry, type HarnessId } from "./shared/protocol";
+import { HARNESSES, parseEntry, type HarnessId } from "./shared/protocol";
 
 export type ModelProvider =
   | "anthropic"
@@ -250,6 +250,22 @@ export function chainLabel(chain: string[], fallback: HarnessId = "claude-code")
   const twice = (name: string) => ds.filter((d) => d.name === name).length > 1;
   return ds.map((d) => (d.via && twice(d.name) ? `${d.name} (${d.via})` : d.name)).join(" → ");
 }
+
+/**
+ * A default order (entries always name their harness), with each harness:
+ * "Opus (Claude Code) → GPT-6 Luna (Codex) → GPT-6 Luna (pi, azure)". The route shows when one
+ * model is there twice in one harness.
+ */
+export function orderLabel(order: string[]): string {
+  const es = order.map((e) => {
+    const { harness, model } = parseEntry(e, "claude-code");
+    return { harness, d: modelDisplay(model || undefined, harness) };
+  });
+  const twice = (x: (typeof es)[number]) => es.filter((y) => y.harness === x.harness && y.d.name === x.d.name).length > 1;
+  return es.map((x) => `${x.d.name} (${[HARNESS_LABELS[x.harness] ?? x.harness, twice(x) ? x.d.via : undefined].filter(Boolean).join(", ")})`).join(" → ");
+}
+
+const HARNESS_LABELS: Record<string, string> = Object.fromEntries(HARNESSES.map((h) => [h.id, h.label]));
 
 const EFFORT_LABELS: Record<string, string> = { xhigh: "XHigh", "x-high": "XHigh", max: "Max", off: "Off", none: "None", minimal: "Minimal" };
 
