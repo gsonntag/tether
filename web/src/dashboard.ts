@@ -2,7 +2,8 @@
 // states by recentSessions.ts), and answering what waits on you. Pure, so it's unit tested
 // (dashboard.test.ts).
 
-import { ACTIVITY_KINDS, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import { ACTIVITY_KINDS, type AgentNotice, type MemoryConflict, type SessionPulse, type UiRequest, type UiResponse } from "./shared/protocol";
+import type { Entry } from "./shared/recentSessions";
 import { fmtWhen } from "./shared/schedule";
 
 /** runnerId -> sessionId -> latest pulse */
@@ -85,12 +86,57 @@ export async function answerRequest(
   }
 }
 
-/** A question answerable with one tap: a single, single-choice question with a few options. */
+/** Longest option label Home answers with a button. */
+const SHORT_OPTION = 32;
+
+/** A question answerable with one tap: a single, single-choice question with a few short options. */
 export function oneTapQuestion(r: UiRequest) {
   if (r.kind !== "question" || r.questions?.length !== 1) return undefined;
   const q = r.questions[0]!;
-  return !q.multiSelect && q.options.length > 0 && q.options.length <= 4 ? q : undefined;
+  return !q.multiSelect && q.options.length > 0 && q.options.length <= 4 && q.options.every((o) => o.label.length <= SHORT_OPTION) ? q : undefined;
 }
+
+type ToolInput = { command?: unknown; cmd?: unknown; file_path?: unknown; path?: unknown; summary?: unknown; truncated?: boolean } | undefined;
+const str = (v: unknown) => (typeof v === "string" ? v : Array.isArray(v) && v.every((x) => typeof x === "string") ? v.join(" ") : undefined);
+
+/** A permission request's call: the shell command, or the path it touches, or what it says it does. */
+export function requestCall(r: UiRequest): { text?: string; shell: boolean } {
+  const i = r.tool?.input as ToolInput;
+  const cmd = str(i?.command) ?? str(i?.cmd);
+  if (cmd) return { text: cmd, shell: true };
+  return { text: str(i?.file_path) ?? str(i?.path) ?? str(i?.summary), shell: false };
+}
+
+/** A call too long to show in full on Home: approved from the session, where it is. */
+export const requestTruncated = (r: UiRequest) => !!(r.tool?.input as ToolInput)?.truncated;
+
+const EDIT_TOOLS = /^(edit|multiedit|write|notebookedit|apply_patch|str_replace\w*|create|write_file|edit_file)$/i;
+
+/** "wants to run", "wants to edit", "wants to use WebFetch". */
+export function permissionVerb(r: UiRequest): string {
+  if (requestCall(r).shell) return "wants to run";
+  const name = r.tool?.name ?? "";
+  if (EDIT_TOOLS.test(name)) return "wants to edit";
+  return name ? `wants to use ${name}` : "asks to go ahead";
+}
+
+/** The guard's note on a permission request (the runner's "⚠ reason", or a hook's reason), without the mark. */
+export function guardNote(r: UiRequest): string | undefined {
+  const m = r.kind === "permission" ? r.message?.replace(/^\s*⚠\uFE0F?\s*/, "").trim() : undefined;
+  return m || undefined;
+}
+
+/** A blocked call that is a shell command (Run it myself runs it): anything but "<Tool> <path>". */
+export const isShellCall = (call: string | undefined) => !!call && !/^(?:[A-Z][A-Za-z]*|mcp__\S+)(?:\s|$)/.test(call.trim());
+
+/** "Blocked by the judge: <reason>", by who blocked it. */
+export function blockedLine(n: Pick<AgentNotice, "by" | "reason" | "body">): string {
+  if (!n.by) return n.reason || n.body;
+  const who = n.by === "judge" ? "the judge" : n.by === "hook" ? "a hook" : "a rule";
+  return n.reason ? `Blocked by ${who}: ${n.reason}` : `Blocked by ${who}`;
+}
+
+export const firstLine = (text: string | undefined) => text?.split("\n").map((l) => l.trim()).find(Boolean);
 
 /** What a waiting request asks, in one line. */
 export function requestLine(r: UiRequest): string {
@@ -100,6 +146,93 @@ export function requestLine(r: UiRequest): string {
     return `${r.tool?.name ?? "Tool"}${what ? `: ${what}` : ""}`;
   }
   if (r.kind === "question") return r.questions?.[0]?.question ?? r.title;
-  if (r.kind === "plan") return "The agent has a plan for you to review";
+  if (r.kind === "plan") return firstLine(r.message) ?? "The agent has a plan for you to review";
   return [r.title, r.message].filter(Boolean).join(": ");
+}
+
+// ---------------- the inbox ----------------
+
+/** The inbox's kinds, in the order they rank. */
+export type InboxKind = "permission" | "ask" | "blocked" | "memory" | "finished";
+const RANK: Record<InboxKind, number> = { permission: 0, ask: 1, blocked: 2, memory: 3, finished: 4 };
+
+/** One thing on Home's inbox: a waiting request, a notice, or a memory conflict. */
+export interface InboxRow {
+  kind: InboxKind;
+  /** unique on the page (runner, session, request or notice) */
+  key: string;
+  /** when it started waiting (requests) or arrived (notices) */
+  at: number;
+  runnerId: string;
+  /** the session it is about (all but memory conflicts) */
+  entry?: Entry;
+  /** a request answerable here */
+  request?: UiRequest;
+  /** the notice it is (blocked, finished) or that came with it */
+  notice?: AgentNotice;
+  conflict?: MemoryConflict;
+}
+
+/**
+ * The inbox order: permission requests, oldest first; then questions, confirms and plan reviews,
+ * oldest first; then blocked calls, newest first; then memory conflicts, newest first; then
+ * finished turns, newest first. What's waited on longest leads where something is stalled.
+ */
+export function rankInbox<T extends Pick<InboxRow, "kind" | "at" | "key">>(rows: T[]): T[] {
+  const oldestFirst = (k: InboxKind) => k === "permission" || k === "ask";
+  return [...rows].sort((a, b) => RANK[a.kind] - RANK[b.kind] || (oldestFirst(a.kind) ? a.at - b.at : b.at - a.at) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** Rows shown before "Show all N". */
+export const INBOX_ROWS = 12;
+
+/** Home's heading. */
+export const inboxTitle = (n: number) => (n ? `${n} to do` : "Nothing waiting");
+
+/** Blocking: a row an agent waits on (Finished is not; it only waits for a look). The sidebar's Home badge counts these. */
+export const isBlocking = (r: Pick<InboxRow, "kind">) => r.kind !== "finished";
+
+/**
+ * The inbox rows of the Needs you sessions and the open memory conflicts, ranked. `noticeOf`: the
+ * session's latest notice; `since`: when a request was first seen waiting (remembered by the
+ * caller; `fallback` the first time).
+ */
+export function buildInbox(
+  needs: Entry[],
+  conflicts: { runnerId: string; conflict: MemoryConflict }[],
+  noticeOf: (e: Entry) => AgentNotice | undefined,
+  since: (key: string, fallback: number) => number,
+  now: number,
+): InboxRow[] {
+  const rows: InboxRow[] = [];
+  for (const e of needs) {
+    const runnerId = e.runnerId ?? "";
+    const s = e.session;
+    const n = noticeOf(e);
+    const reqs = s.live ? (e.pulse?.pendingUi ?? []) : [];
+    if (reqs.length) {
+      for (const r of reqs) {
+        const key = `${runnerId}:${s.id}:${r.id}`;
+        // A question notice that came with it says when it started; else when this page first saw it.
+        const asked = n && (n.kind === "question" || n.requestId === r.id) && n.ts <= now ? n.ts : now;
+        rows.push({ kind: r.kind === "permission" ? "permission" : "ask", key, at: since(key, asked), runnerId, entry: e, request: r, notice: n?.requestId === r.id ? n : undefined });
+      }
+      continue;
+    }
+    const kind: InboxKind = s.live && s.needsInput ? "ask" : n?.kind === "blocked" ? "blocked" : n?.kind === "question" ? "ask" : "finished";
+    rows.push({ kind, key: `${runnerId}:${s.id}`, at: n?.ts ?? s.updatedAt, runnerId, entry: e, notice: n });
+  }
+  for (const { runnerId, conflict } of conflicts) rows.push({ kind: "memory", key: `${runnerId}:memory:${conflict.id}`, at: conflict.ts, runnerId, conflict });
+  return rankInbox(rows);
+}
+
+/** The bell's rows: one per session, its latest notice (the list is newest first), so a busy session doesn't flood it. */
+export function latestPerSession(notices: AgentNotice[]): AgentNotice[] {
+  const seen = new Set<string>();
+  return notices.filter((n) => {
+    const k = n.kind === "memory" || !n.sessionId ? `memory:${n.conflictId ?? n.id}` : n.sessionId;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }

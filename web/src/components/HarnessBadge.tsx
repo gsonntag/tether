@@ -1,5 +1,7 @@
 import { useId, type ComponentProps, type SVGProps } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
+import { HStack } from "@astryxdesign/core/Layout";
+import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import type { HarnessId } from "../shared/protocol";
@@ -55,6 +57,34 @@ export function HarnessBadge({ harness }: { harness: HarnessId }) {
   return (
     <Tooltip content={harnessLabel(harness)} hasHoverIndication={false}>
       <Token size="sm" color={color} label={harnessLabel(harness)} isLabelHidden icon={<Icon icon={logo} size="xsm" />} />
+    </Tooltip>
+  );
+}
+
+/** 14px, between the icon scale's 12 and 16. */
+const GLYPH = "calc(var(--spacing-3) + var(--spacing-1) / 2)";
+
+/** The harness as a bare 14px mark (its logo, or its letters), for dense rows; its name in a tooltip. */
+export function HarnessGlyph({ harness }: { harness: HarnessId }) {
+  const Logo = ICONS[harness];
+  const name = harnessLabel(harness);
+  return (
+    <Tooltip content={name} hasHoverIndication={false}>
+      <HStack
+        role="img"
+        aria-label={name}
+        vAlign="center"
+        hAlign="center"
+        style={{ width: GLYPH, height: GLYPH, flexShrink: 0, color: "var(--color-text-secondary)" }}
+      >
+        {Logo ? (
+          <Logo width="100%" height="100%" aria-hidden />
+        ) : (
+          <Text type="supporting" size="3xs" weight="bold" color="secondary">
+            {badge(harness)}
+          </Text>
+        )}
+      </HStack>
     </Tooltip>
   );
 }

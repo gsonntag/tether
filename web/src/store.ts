@@ -42,6 +42,8 @@ interface State {
   connected: boolean;
   user?: { name: string; email: string };
   runners: RunnerInfo[];
+  /** the server has said which runners there are (until then, no runner doesn't mean none is connected) */
+  runnersKnown: boolean;
   runnerId?: string;
   projects: ProjectInfo[];
   projectsLoaded: boolean;
@@ -56,7 +58,7 @@ interface State {
   sidebarHidden: boolean;
   /** the session's history panel of finished work (side panel on desktop, sheet on phones) */
   activityOpen: boolean;
-  dialog?: "new" | "addProject" | "settings" | "notify" | "fork" | "leader";
+  dialog?: "new" | "addProject" | "settings" | "fork" | "leader";
   newSessionProject?: string;
   /** the message "Fork from here" was picked on (dialog "fork") */
   forkTarget?: ForkTarget;
@@ -67,6 +69,8 @@ interface State {
   noticesSeen: number;
   /** individual notices opened on this device */
   noticesRead: string[];
+  /** newest notice the bell's list was opened on: its badge counts only newer ones (reading a session is separate) */
+  bellSeen: number;
   /** a full page shown instead of a session ("running": Home, scrolled to its Working section) */
   page?: "memory" | "running";
   /** Home dashboard: every connected runner's sessions at a glance (runnerId -> sessionId -> pulse) */
@@ -85,8 +89,6 @@ interface State {
   viewed: Record<string, number>;
   /** sessionId -> when you opened it here, by this device's clock (for ordering until the runner confirms; all an older runner gets) */
   viewedHere: Record<string, number>;
-  /** the open session sorts by when it was touched before you opened it, so opening it doesn't move it (recentSessions.ts) */
-  hold?: { id: string; at: number };
   /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
   recent: SessionSummary[];
 }
@@ -97,10 +99,13 @@ const VIEW_KEYS = { runner: "tether.viewedBy", here: "tether.viewedHereBy" } as 
 export const useStore = create<State>(() => ({
   connected: false,
   runners: [],
+  runnersKnown: false,
   projects: [],
   projectsLoaded: false,
   sessions: {},
-  expanded: loadJSON("tether.expanded", {}),
+  // Projects start collapsed; only the ones you open in the sidebar stay open. (A new key: the old
+  // one also held projects opened for you by a new session.)
+  expanded: loadJSON("tether.projectsOpen", {}),
   open: {},
   toasts: [],
   sidebarOpen: false,
@@ -111,6 +116,7 @@ export const useStore = create<State>(() => ({
   notices: [],
   noticesSeen: loadJSON("tether.noticesSeen", 0),
   noticesRead: loadJSON("tether.noticesRead", []),
+  bellSeen: loadJSON("tether.bellSeen", 0),
   conflicts: [],
   contextLive: [],
   pulses: {},
@@ -217,7 +223,7 @@ function onMessage(m: ServerToBrowser) {
       const prev = get().runnerId;
       const online = m.runners.filter((r) => r.connected);
       const keep = online.find((r) => r.id === prev) ?? online.find((r) => r.id === loadJSON("tether.runner", "")) ?? online[0];
-      set((s) => ({ runners: m.runners, runnerId: keep?.id, pulses: Object.fromEntries(Object.entries(s.pulses).filter(([id]) => online.some((r) => r.id === id))) }));
+      set((s) => ({ runners: m.runners, runnersKnown: true, runnerId: keep?.id, pulses: Object.fromEntries(Object.entries(s.pulses).filter(([id]) => online.some((r) => r.id === id))) }));
       for (const r of online) refreshPulses(r.id);
       if (keep) {
         saveJSON("tether.runner", keep.id);
@@ -382,10 +388,14 @@ export async function refreshSessions(projectPath: string) {
   if (list) set((s) => ({ sessions: { ...s.sessions, [projectPath]: reuseSame(s.sessions[projectPath], list, byId) } }));
 }
 
-export function toggleProject(path: string, open?: boolean) {
+/**
+ * Opens or closes a project in the sidebar. Only what you do there is remembered (`remember`); a
+ * project opened for you (a new session in it) is open until the page reloads.
+ */
+export function toggleProject(path: string, open?: boolean, remember = false) {
   const expanded = { ...get().expanded, [path]: open ?? !get().expanded[path] };
   set({ expanded });
-  saveJSON("tether.expanded", expanded);
+  if (remember) saveJSON("tether.projectsOpen", { ...loadJSON<Record<string, boolean>>("tether.projectsOpen", {}), [path]: expanded[path] });
   if (expanded[path]) refreshSessions(path);
 }
 
@@ -484,13 +494,7 @@ export async function openLink(id: string) {
 }
 
 export function selectSession(sessionId: string | undefined) {
-  // Where it sorted before you opened it, so it stays there while it's open.
-  const st = get();
-  const hold =
-    !sessionId || st.hold?.id === sessionId
-      ? st.hold
-      : { id: sessionId, at: Math.max(summaryOf(sessionId)?.viewedAt ?? 0, st.viewed[sessionId] ?? 0, st.viewedHere[sessionId] ?? 0) };
-  set({ selected: sessionId, sidebarOpen: false, page: undefined, hold });
+  set({ selected: sessionId, sidebarOpen: false, page: undefined });
   if (sessionId) {
     markSessionNoticeRead(sessionId);
     markViewed(sessionId);
@@ -594,6 +598,14 @@ export async function clearNotices() {
   } catch {}
 }
 
+/** The bell's list was opened: its badge drains (what each notice is about stays unread until you open it). */
+export function markBellSeen() {
+  const newest = Math.max(get().bellSeen, ...get().notices.map((n) => n.ts));
+  if (newest === get().bellSeen) return;
+  set({ bellSeen: newest });
+  saveJSON("tether.bellSeen", newest);
+}
+
 export function markSessionNoticeRead(sessionId: string) {
   const notice = get().notices.find((item) => item.sessionId === sessionId);
   if (notice) markNoticeRead(notice.id);
@@ -602,7 +614,7 @@ export function markSessionNoticeRead(sessionId: string) {
 export function switchRunner(id: string) {
   saveJSON("tether.runner", id);
   if (get().runnerId === id || !get().runners.some((r) => r.id === id && r.connected)) return;
-  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here"), hold: undefined });
+  set({ runnerId: id, projects: [], sessions: {}, open: {}, selected: undefined, notices: [], contextStatus: undefined, conflicts: [], contextLive: [], recent: [], viewed: cachedViewed(id), viewedHere: cachedViewed(id, "here") });
   refreshProjects();
   refreshViewed();
   refreshRecent();

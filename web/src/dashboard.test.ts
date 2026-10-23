@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionPulse, SessionSummary } from "./shared/protocol";
-import { activityLine, answerRequest, contextPercent, diffLabel, elapsed, mergePulses, oneTapQuestion, requestLine } from "./dashboard";
+import { activityLine, answerRequest, blockedLine, buildInbox, contextPercent, diffLabel, elapsed, guardNote, inboxTitle, isBlocking, latestPerSession, isShellCall, mergePulses, oneTapQuestion, permissionVerb, rankInbox, requestCall, requestLine, requestTruncated, type InboxKind } from "./dashboard";
+import type { AgentNotice, MemoryConflict, UiRequest } from "./shared/protocol";
 import { pulseWork, workState } from "./workState";
 
 const s = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -112,3 +113,93 @@ describe("answerRequest (Home approve/deny/answer)", () => {
   });
 });
 
+
+describe("rankInbox", () => {
+  const r = (kind: InboxKind, at: number, key = `${kind}${at}`) => ({ kind, at, key });
+  test("permissions, then questions/plans (oldest first), then blocked, memory, finished (newest first)", () => {
+    const rows = [r("finished", 5), r("blocked", 1), r("ask", 9), r("memory", 2), r("permission", 8), r("finished", 7), r("blocked", 6), r("permission", 3), r("ask", 4), r("memory", 10)];
+    expect(rankInbox(rows).map((x) => x.key)).toEqual(["permission3", "permission8", "ask4", "ask9", "blocked6", "blocked1", "memory10", "memory2", "finished7", "finished5"]);
+  });
+  test("ties go by key, so the order is stable; the input is left alone", () => {
+    const rows = [r("ask", 1, "b"), r("ask", 1, "a")];
+    expect(rankInbox(rows).map((x) => x.key)).toEqual(["a", "b"]);
+    expect(rows.map((x) => x.key)).toEqual(["b", "a"]);
+  });
+  test("titles and what blocks", () => {
+    expect(inboxTitle(3)).toBe("3 to do");
+    expect(inboxTitle(0)).toBe("Nothing waiting");
+    expect((["permission", "ask", "blocked", "memory", "finished"] as InboxKind[]).filter((kind) => isBlocking({ kind }))).toEqual(["permission", "ask", "blocked", "memory"]);
+  });
+});
+
+describe("buildInbox", () => {
+  const notice = (sessionId: string, kind: AgentNotice["kind"], ts: number, extra: Partial<AgentNotice> = {}): AgentNotice => ({ id: `n-${sessionId}`, kind, title: "", body: "body", sessionId, projectPath: "/p", project: "p", ts, ...extra });
+  const perm = (id: string): UiRequest => ({ id, kind: "permission", title: "Allow?", tool: { name: "Bash", input: { command: "ls" } } });
+  const conflict = { id: "c1", memoryId: "m", name: "db", scope: "s", oldBody: "", newBody: "", source: "", ts: 50, status: "open" } as MemoryConflict;
+  test("one row per waiting request, else one per session by its notice; conflicts too; ranked", () => {
+    const seen = new Map<string, number>();
+    const since = (k: string, f: number) => (seen.has(k) ? seen.get(k)! : (seen.set(k, f), f));
+    const needs = [
+      { runnerId: "r", session: s("a", { updatedAt: 10 }), pulse: p("a", { pendingUi: [perm("p1"), { id: "q1", kind: "question", title: "Q" }] }) },
+      { runnerId: "r", session: s("b", { live: false, updatedAt: 20 }) },
+      { runnerId: "r", session: s("c", { live: false }) },
+      { runnerId: "r", session: s("d", { needsInput: true }) },
+      // Not live: its stale requests don't count; its notice does.
+      { runnerId: "r", session: s("e", { live: false }), pulse: p("e", { pendingUi: [perm("p9")] }) },
+    ];
+    const notices: Record<string, AgentNotice> = { b: notice("b", "finished", 30), c: notice("c", "blocked", 40, { toolId: "t1", call: "git push", by: "judge", reason: "pushes" }), d: notice("d", "question", 25), e: notice("e", "finished", 35) };
+    const rows = buildInbox(needs, [{ runnerId: "r", conflict }], (e) => notices[e.session.id], since, 100);
+    expect(rows.map((x) => `${x.kind}:${x.key}`)).toEqual(["permission:r:a:p1", "ask:r:d", "ask:r:a:q1", "blocked:r:c", "memory:r:memory:c1", "finished:r:e", "finished:r:b"]);
+    // A request is as old as when it was first seen, and stays that old.
+    expect(rows[0]!.at).toBe(100);
+    expect(buildInbox(needs, [], (e) => notices[e.session.id], since, 500)[0]!.at).toBe(100);
+    expect(rows.find((x) => x.key === "r:c")!.notice!.toolId).toBe("t1");
+  });
+  test("a question notice says when its request started", () => {
+    const e = { runnerId: "r", session: s("a"), pulse: p("a", { pendingUi: [perm("p1")] }) };
+    const rows = buildInbox([e], [], () => notice("a", "question", 40, { requestId: "p1" }), (_k, f) => f, 100);
+    expect(rows[0]!.at).toBe(40);
+    expect(rows[0]!.notice?.requestId).toBe("p1");
+  });
+});
+
+describe("row text", () => {
+  const perm = (name: string, input: unknown, message?: string): UiRequest => ({ id: "1", kind: "permission", title: "t", tool: { name, input }, message });
+  test("requestCall, permissionVerb, requestTruncated", () => {
+    expect(requestCall(perm("Bash", { command: "git push" }))).toEqual({ text: "git push", shell: true });
+    expect(requestCall(perm("exec_command", { cmd: ["ls", "-la"] }))).toEqual({ text: "ls -la", shell: true });
+    expect(requestCall(perm("Edit", { file_path: "src/a.ts" }))).toEqual({ text: "src/a.ts", shell: false });
+    expect(permissionVerb(perm("Bash", { command: "ls" }))).toBe("wants to run");
+    expect(permissionVerb(perm("Edit", { file_path: "a" }))).toBe("wants to edit");
+    expect(permissionVerb(perm("WebFetch", { url: "x" }))).toBe("wants to use WebFetch");
+    expect(requestTruncated(perm("Bash", { command: "x", truncated: true }))).toBe(true);
+    expect(requestTruncated(perm("Bash", { command: "x" }))).toBe(false);
+  });
+  test("guardNote drops the warning mark; nothing when there's no note", () => {
+    expect(guardNote(perm("Bash", {}, "⚠ Pushes to a remote."))).toBe("Pushes to a remote.");
+    expect(guardNote(perm("Bash", {}, "A hook asks"))).toBe("A hook asks");
+    expect(guardNote(perm("Bash", {}))).toBeUndefined();
+    expect(guardNote({ id: "q", kind: "question", title: "", message: "hi" })).toBeUndefined();
+  });
+  test("isShellCall and blockedLine", () => {
+    expect(isShellCall("git push origin main")).toBe(true);
+    expect(isShellCall("Edit src/a.ts")).toBe(false);
+    expect(isShellCall("mcp__github__create_pr")).toBe(false);
+    expect(isShellCall(undefined)).toBe(false);
+    expect(blockedLine({ by: "judge", reason: "It pushes.", body: "x" })).toBe("Blocked by the judge: It pushes.");
+    expect(blockedLine({ by: "rule", body: "x" })).toBe("Blocked by a rule");
+    expect(blockedLine({ body: "older runner" })).toBe("older runner");
+  });
+  test("a plan's first line; one-tap questions only with short options", () => {
+    expect(requestLine({ id: "p", kind: "plan", title: "Plan", message: "\n  1. Add a queue\n2. Test" })).toBe("1. Add a queue");
+    expect(requestLine({ id: "p", kind: "plan", title: "Plan" })).toBe("The agent has a plan for you to review");
+    const q = { id: "1", kind: "question" as const, title: "Q", questions: [{ question: "Which?", options: [{ label: "A".repeat(40) }] }] };
+    expect(oneTapQuestion(q)).toBeUndefined();
+  });
+});
+
+test("latestPerSession: the bell shows each session once, by its newest notice", () => {
+  const n = (id: string, sessionId: string, kind: AgentNotice["kind"] = "finished", conflictId?: string): AgentNotice => ({ id, kind, title: "", body: "", sessionId, projectPath: "/p", project: "p", ts: 0, conflictId });
+  const list = [n("3", "a"), n("2", "b", "question"), n("1", "a", "blocked"), n("m2", "", "memory", "c1"), n("m1", "", "memory", "c2")];
+  expect(latestPerSession(list).map((x) => x.id)).toEqual(["3", "2", "m2", "m1"]);
+});
