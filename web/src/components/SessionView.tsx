@@ -35,7 +35,7 @@ import { addFiles, clearDrafts, takeBack, useDrafts } from "../attachments";
 import { splitAttachments, withAttachments } from "../shared/attachments";
 import { AttachmentChips, DraftChips } from "./Attachments";
 import { effortLabel } from "../models";
-import { MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
+import { baseMode, MODE_DESCRIPTIONS, modeLabel, pickerModes } from "../modes";
 import { GUARD_MODES, STARTS_ON_OPEN, type GuardMode, type HarnessId, type LiveState, type Msg, type Ops, type PendingMessage, type SlashCommand } from "../shared/protocol";
 import { slashGroups, slashQuery } from "../slash";
 import { act, rpc, selectSession, useStore } from "../store";
@@ -402,7 +402,6 @@ function SettingsBar({ sessionId, state: st }: { sessionId: string; state: LiveS
     <>
       <ModelMenu sessionId={sessionId} harness={sess.harness} state={st} />
       <ThinkingMenu sessionId={sessionId} harness={sess.harness} state={st} />
-      <ModeMenu sessionId={sessionId} state={st} />
       <GuardMenu sessionId={sessionId} state={st} />
       <ChangesButton sessionId={sessionId} state={st} />
       <ActivityButton state={st} />
@@ -443,24 +442,34 @@ function useTimeLeft(until: number | undefined): number | undefined {
   return until ? Math.max(0, until - Date.now()) : undefined;
 }
 
-/** Who approves tool calls; "Full access for 15 minutes" counts down in the trigger ("Full · 12m"). */
+/**
+ * Who approves tool calls, and plan mode (with the harness's other modes) in the same menu: a mode
+ * other than the plain one is a toggle that shows in front ("Plan · Auto"). "Full access for 15
+ * minutes" counts down in the trigger ("Full · 12m").
+ */
 function GuardMenu({ sessionId, state }: { sessionId: string; state: LiveState }) {
   const mode = state.guard ?? "auto";
   const timed = !!state.guardUntil && mode === "full";
   const left = useTimeLeft(timed ? state.guardUntil : undefined);
-  const shown = timed ? `Full · ${fullAccessLeft(left ?? 0)}` : GUARD_LABEL[mode];
+  const modes = pickerModes(state);
+  const base = baseMode(modes);
+  const current = state.permissionMode && modes.includes(state.permissionMode) ? state.permissionMode : base;
+  const special = current !== base ? current : undefined;
+  const approvals = timed ? `Full · ${fullAccessLeft(left ?? 0)}` : GUARD_LABEL[mode];
+  const shown = special ? `${modeLabel(special)} · ${approvals}` : approvals;
   const set = (args: Omit<Ops["setGuard"]["args"], "sessionId">) => act("setGuard", { sessionId, ...args });
+  const check = <Icon icon="check" size="sm" color="accent" />;
   return (
     <DropdownMenu
       button={{ label: `Approvals: ${shown}`, variant: "ghost", size: "sm", children: shown }}
       placement="above"
       presentation="adaptive"
-      menuWidth={240}
+      menuWidth={260}
       items={[
         ...GUARD_MODES.map((g) => ({
           id: g.id,
           label: GUARD_LABEL[g.id],
-          endContent: g.id === mode && !timed ? <Icon icon="check" size="sm" color="accent" /> : undefined,
+          endContent: g.id === mode && !timed ? check : undefined,
           onClick: () => (g.id !== mode || timed) && set({ mode: g.id }),
         })),
         // Untimed full access has nothing to go back to: no timed item then.
@@ -478,24 +487,22 @@ function GuardMenu({ sessionId, state }: { sessionId: string; state: LiveState }
                   onClick: () => set({ mode: "full", minutes: TIMED_FULL_MINUTES }),
                 },
               ]),
+        // Plan mode and the like: on and off again (back to the plain mode); the plain one has no item.
+        ...(base
+          ? [
+              { type: "divider" as const },
+              ...modes
+                .filter((m) => m !== base)
+                .map((m) => ({
+                  id: `mode:${m}`,
+                  label: `${modeLabel(m)} mode`,
+                  description: MODE_DESCRIPTIONS[m],
+                  endContent: m === current ? check : undefined,
+                  onClick: () => act("setPermissionMode", { sessionId, mode: m === current ? base : m }),
+                })),
+            ]
+          : []),
       ]}
-    />
-  );
-}
-
-/** Plan mode and the harness's other modes (src/modes.ts); approvals stay with the guard picker. */
-function ModeMenu({ sessionId, state }: { sessionId: string; state: LiveState }) {
-  const options = pickerModes(state);
-  if (!options.length) return null;
-  const value = state.permissionMode ?? options[0]!;
-  return (
-    <PickMenu
-      label=""
-      value={value}
-      options={options}
-      format={modeLabel}
-      describe={Object.fromEntries(options.flatMap((m) => (MODE_DESCRIPTIONS[m] ? [[m, MODE_DESCRIPTIONS[m]!]] : [])))}
-      onPick={(mode) => mode !== value && act("setPermissionMode", { sessionId, mode })}
     />
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { modeLabel, pickerModes } from "./modes";
+import { baseMode, modeLabel, pickerModes } from "./modes";
 
 describe("mode picker", () => {
   test("Claude, Codex and opencode all offer plan mode", () => {
@@ -16,4 +16,12 @@ describe("mode picker", () => {
   test("labels", () => {
     expect(["default", "plan", "build", "deep-research"].map(modeLabel)).toEqual(["Default", "Plan", "Build", "Deep research"]);
   });
+});
+
+test("baseMode: the plain mode the others toggle back to", () => {
+  expect(baseMode(["default", "plan"])).toBe("default");
+  expect(baseMode(["plan", "build"])).toBe("build");
+  expect(baseMode(["ask", "architect", "code"])).toBe("code");
+  expect(baseMode(["research", "write"])).toBe("research");
+  expect(baseMode([])).toBeUndefined();
 });
