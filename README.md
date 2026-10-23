@@ -119,6 +119,20 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   - Expansion reads a repo skill's SKILL.md only if it (symlinks resolved) stays inside the repo,
     up to 256 KB, never a binary file; other files are listed, not read. Skills the master
     context disabled are never offered or expanded.
+- **Microsoft Foundry (Azure OpenAI) keys** for GPT models in Codex and pi (Credentials page).
+  An Azure `[model_providers.*]` in `~/.codex/config.toml` and the Codex profiles on it
+  (`~/.codex/<name>.config.toml`) show up as models ("GPT-6.1 Sol · Azure"); a session on one gets
+  that profile as `-c` overrides (app-server has no `-p`); only a profile's top-level scalar
+  settings (strings, numbers, booleans: `model_reasoning_effort`…) carry over, not tables. Two
+  profiles on one deployment with other settings are two entries ("GPT-6 Luna (azure-luna-low)").
+  Or add an endpoint + key in Tether, then
+  models by deployment name (tested first; the resource's model list is offered). The key comes
+  from Tether's store, else the runner's env, else your login shell (`bash -lic`, only that
+  variable, cached; "Store in Tether" keeps it). A stored key only ever goes to the host it was
+  stored for. Only the session's own key goes into its process; pi also gets
+  `AZURE_OPENAI_BASE_URL`, and a small extension makes the key pi's runtime key, so it wins over
+  an `azure` key pi keeps in its own auth.json (which stays untouched). Azure 429s back off; Tether can't read Azure usage, so
+  these entries never switch on their own (the error offers "Continue on …").
 - **Fallback chains for usage limits.** A chain is an ordered list of `harness:model`
   entries, e.g. `claude-code:opus → codex:gpt-6-sol → pi:openai-codex/gpt-6-luna`. You keep one
   **default order** (Settings → New sessions; until it's saved, Home shows a "Set your default

@@ -35,12 +35,18 @@ only a person can verify. Never use the prod runner for limit/credential experim
 - [ ] Editing the default changes new sessions only
 - [ ] Old profile-based sessions still run
 
-### Microsoft Foundry
-- [ ] azure-luna / azure-sol / azure-astra Codex profiles appear as models; a session on each answers
-- [ ] Key found from ~/.bashrc (shown as the source); "Store in Tether" works; the full key is never visible in the UI
-- [ ] Add API key from the Credentials page; Test; Add model by deployment name; it appears in picker and default order
-- [ ] pi on Foundry with the same key
-- [ ] Fallback from ChatGPT login to Foundry when the ChatGPT limit hits
+### Microsoft Foundry (branch `foundry`)
+Checked 2026-10-23 on an isolated test runner (`foundry-test`, key only in ~/.bashrc, runner env
+without it; screenshots in `.claude/credentials/shots-foundry/`):
+- [x] azure-luna / azure-sol / azure-astra Codex profiles appear as models ("GPT-6.1 Sol · Azure"); a session on each answers (rollouts: `model_provider = "azure"`, effort high from the profile)
+- [x] Key found from ~/.bashrc (row says "From ~/.bashrc"); Test: "All 3 models answer."; "Store in Tether" works; only the last 4 characters show
+- [x] pi on `azure/gpt-6-luna` with the same key answers (base URL injected; the runner has none)
+- [x] Stored key with no Codex config (empty CODEX_HOME): Test, Add model `gpt-6-luna` (tested first; a bogus name is refused), a Codex session answers through Tether's own `-c` provider (`tether-azure`); Remove
+Still to check by hand:
+- [ ] On the phone: Add (endpoint + key + name) for another resource; Add model with a suggestion; Replace key
+- [ ] Foundry models in the default order editor and the chain editor; a default order starting on one
+- [ ] Fallback from ChatGPT login to Foundry when the ChatGPT limit hits ("Continue on …" from Foundry back)
+- [ ] An Azure 429 in a real session backs off and retries on the same model
 
 ### AWS Bedrock (branch `bedrock`)
 Checked 2026-10-23 on a test runner (screenshots in `.claude/credentials/shots-bedrock/`): the

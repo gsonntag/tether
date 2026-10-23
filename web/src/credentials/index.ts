@@ -1,10 +1,9 @@
 // Per-provider pieces of the Credentials page (components/Credentials.tsx): an Add form, extra
 // content on a row, names for the provider's actions. The page renders every provider generically
-// from listCredentials; a slot only adds what's specific. A provider branch adds its file
-// (credentials/<branch>.tsx: foundry, bedrock, accounts; exporting CredentialSlots) and fills in its two slot lines below.
-// Each slot sits apart from the others so the branches merge without conflicts.
+// from listCredentials; a slot only adds what's specific. Each provider has its file
+// (credentials/<name>.tsx: foundry, bedrock, accounts; exporting CredentialSlots) and two lines below.
 
-// slot foundry: import { foundrySlot } from "./foundry";
+import { foundrySlot } from "./foundry";
 
 import { bedrockSlot } from "./bedrock";
 
@@ -14,7 +13,7 @@ import { accountSlots } from "./accounts";
 export { clearSlots, registerSlot, slotFor, type CredentialSlot, type OnList } from "./slots";
 import { registerSlot } from "./slots";
 
-// slot foundry: registerSlot(foundrySlot);
+registerSlot(foundrySlot);
 
 registerSlot(bedrockSlot);
 
