@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, config, migrateProfiles, type RunnerConfig } from "./config";
 import { defaultOrder, saveDefaultOrder, sessionStart, suggestOrder } from "./defaultOrder";
 import { markExhausted } from "./fallback";
+import { claudeModelRefs, FALLBACK_MODELS } from "./adapters/claude";
 
 afterEach(() => {
   delete config().defaultOrder;
@@ -156,6 +157,24 @@ describe("suggestOrder", () => {
         { harness: "kiro", signedIn: true, models: models("auto", "claude-sonnet-4.5") },
       ]),
     ).toEqual(["claude-code:opus", "codex:gpt-6-sol", "pi:openai-codex/gpt-6-sol", "kiro:auto"]);
+  });
+
+  test("Claude Code's Opus is pinned to what its alias runs now, from its own list or the fallback list", () => {
+    const live = claudeModelRefs([
+      { value: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" },
+      { value: "opus", displayName: "Opus 5.5", resolvedModel: "claude-opus-5-5" },
+      { value: "sonnet", displayName: "Sonnet 5.5", resolvedModel: "claude-sonnet-5-5" },
+      { value: "claude-opus-4-8", displayName: "Opus 4.8", resolvedModel: "claude-opus-4-8" },
+    ]);
+    expect(live).toEqual([
+      { id: "default", label: "Default (recommended)" },
+      { id: "opus", label: "Opus 5.5", resolved: "claude-opus-5-5" },
+      { id: "sonnet", label: "Sonnet 5.5", resolved: "claude-sonnet-5-5" },
+      { id: "claude-opus-4-8", label: "Opus 4.8" },
+    ]);
+    expect(suggestOrder([{ harness: "claude-code", signedIn: true, models: live }])).toEqual(["claude-code:claude-opus-5-5"]);
+    expect(suggestOrder([{ harness: "claude-code", signedIn: true, models: FALLBACK_MODELS }])).toEqual([`claude-code:${FALLBACK_MODELS.find((m) => m.id === "opus")!.resolved}`]);
+    expect(FALLBACK_MODELS.find((m) => m.id === "opus")!.resolved).toMatch(/^claude-opus-\d/);
   });
 
   test("the same ChatGPT account through pi and Codex is listed once; signed-out harnesses are left out", () => {

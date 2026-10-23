@@ -10,5 +10,7 @@ export function entryProblem(entry: string): string | undefined {
   const h = HARNESSES.find((x) => entry.startsWith(x.id + ":"));
   if (!h) return `“${entry}” doesn't start with a harness (${HARNESSES.map((x) => x.id).join(", ")})`;
   if (!entry.slice(h.id.length + 1).trim()) return `“${entry}” has no model`;
+  // "#account" is reserved for the account or key an entry runs on (protocol.ts ChainEntry): not yet.
+  if (entry.includes("#")) return `“${entry}” names an account, which isn't supported yet`;
   return undefined;
 }

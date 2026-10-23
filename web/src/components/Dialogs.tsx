@@ -128,15 +128,22 @@ function NewSession({ close }: { close: () => void }) {
   const runner = useStore((s) => s.runners.find((r) => r.id === s.runnerId));
   const initial = useStore((s) => s.newSessionProject);
   const order = useStore((s) => s.defaultOrder) ?? undefined;
+  useStore((s) => s.aliasVersion); // "opus" in the order reads as the Opus it runs now
   const projects = allProjects.filter((p) => !p.archived || p.path === initial);
   const [project, setProject] = useState(initial ?? projects[0]?.path ?? "");
   const [pickedHarness, setHarness] = useState<HarnessId>(() => (localStorage.getItem("tether.harness") as HarnessId) || "claude-code");
-  // Nothing picked: the default order when one is saved, else what was used last on this harness.
+  const available = HARNESSES.filter((h) => !runner || runner.harnesses.includes(h.id));
+  // The harness the order starts on: its first entry on an installed harness (as the runner picks).
+  const orderHarness = order?.map((e) => parseEntry(e, pickedHarness).harness).find((h) => available.some((a) => a.id === h));
+  // Nothing picked: the default order when one is saved (and usable here), else what was used last on this harness.
   const [picked, setChoice] = useState<string>(); // ORDER_CHOICE | "last" | "" (harness default) | model id
-  const choice = picked ?? (order ? ORDER_CHOICE : "last");
-  // On the default order, the harness is its first entry's.
-  const harness = choice === ORDER_CHOICE && order ? parseEntry(order[0]!, pickedHarness).harness : pickedHarness;
-  const last = useMemo(() => loadLast(harness), [harness]);
+  const choice = picked ?? (orderHarness ? ORDER_CHOICE : "last");
+  const harness = choice === ORDER_CHOICE && orderHarness ? orderHarness : pickedHarness;
+  const last = useMemo(() => {
+    const l = loadLast(harness);
+    // "Default order" remembered while none is saved (or a profile from before): the harness's default.
+    return l && l.choice === ORDER_CHOICE && !orderHarness ? { ...l, choice: "" } : l;
+  }, [harness, orderHarness]);
   const [guard, setGuard] = useState<GuardMode>(() => last?.guard ?? "auto");
   const [prompt, setPrompt] = useState("");
   const [name, setName] = useState("");
@@ -149,7 +156,6 @@ function NewSession({ close }: { close: () => void }) {
     setHarness(h);
     setChoice("last");
   };
-  const available = HARNESSES.filter((h) => !runner || runner.harnesses.includes(h.id));
   const fixedProject = initial ? allProjects.find((p) => p.path === initial) : undefined;
   const guardLabel = (g?: GuardMode) => GUARD_MODES.find((m) => m.id === g)?.label;
 
@@ -194,7 +200,7 @@ function NewSession({ close }: { close: () => void }) {
     { value: ADD_PROJECT, label: "Add a project…" },
   ];
   const modelOptions: SelectorOptionType[] = [
-    ...(order ? [{ value: ORDER_CHOICE, label: "Default order", description: orderLabel(order) }] : []),
+    ...(order && orderHarness ? [{ value: ORDER_CHOICE, label: "Default order", description: orderLabel(order) }] : []),
     { value: "last", label: `Use last${last ? ` (${choiceLabel(last.choice, harness)}${last.guard ? ` · ${guardLabel(last.guard)}` : ""})` : ""}` },
     { value: DEFAULT_CHOICE, label: choiceLabel("", harness) },
     {

@@ -7,7 +7,7 @@
 import { cleanOrder, entryProblem } from "../../web/src/shared/defaultOrder";
 import { parseEntry, type HarnessId, type ModelRef } from "../../web/src/shared/protocol";
 import { config, saveConfig } from "./config";
-import { exhaustedUntil, providerOf } from "./fallback";
+import { exhaustedUntil, isInstalled, providerOf } from "./fallback";
 
 /** The saved default order (a copy), or undefined while none is saved. */
 export function defaultOrder(): string[] | undefined {
@@ -44,7 +44,7 @@ export interface SessionStart {
 export function sessionStart(
   want: { harness: HarnessId; model?: string; useOrder?: boolean },
   order: string[] | undefined,
-  installed: (h: HarnessId) => boolean = () => true,
+  installed: (h: HarnessId) => boolean = isInstalled,
 ): SessionStart {
   const plain = { harness: want.harness, ...(want.model ? { model: want.model } : {}) };
   if (!want.useOrder || !order?.length) return plain;
@@ -68,7 +68,7 @@ const real = (ms: ModelRef[]) => ms.filter((m) => m.id && m.id !== "default");
 
 /**
  * A starting point for the default order editor, from what's installed and signed in: Claude Code
- * (Opus), then Codex (its catalog's first model), then pi on its ChatGPT login when that's another
+ * (the Opus its "opus" alias runs now, pinned), then Codex (its catalog's first model), then pi on its ChatGPT login when that's another
  * account than Codex's (the same model there when pi has it), then Kiro. Harnesses whose login
  * Tether can't see aren't guessed at, unless nothing else is there: then the first installed one.
  */
@@ -77,9 +77,10 @@ export function suggestOrder(facts: HarnessFacts[]): string[] {
   const out: string[] = [];
   const claude = of("claude-code");
   if (claude?.signedIn) {
+    // The concrete Opus the alias runs now ("claude-opus-5-5"), so the order says which one.
     const ms = real(claude.models);
-    const m = ms.find((x) => /opus/i.test(x.id)) ?? ms[0];
-    out.push(`claude-code:${m?.id ?? "opus"}`);
+    const m = ms.find((x) => x.id === "opus") ?? ms.find((x) => /opus/i.test(x.id)) ?? ms[0];
+    out.push(`claude-code:${m?.resolved ?? m?.id ?? "opus"}`);
   }
   const codex = of("codex");
   const codexModel = codex?.signedIn ? real(codex.models)[0]?.id : undefined;

@@ -16,7 +16,8 @@ import type {
   SessionSummary,
   UsageReport,
 } from "./shared/protocol";
-import { byRecent, DEFAULT_UI_PREFS, listPath, type UiPrefs } from "./shared/protocol";
+import { byRecent, DEFAULT_UI_PREFS, listPath, type HarnessId as HarnessIdT, type ModelRef as ModelRefT, type UiPrefs } from "./shared/protocol";
+import { learnAliases } from "./models";
 import { mergePulses, type PulseMap } from "./dashboard";
 import { dropCached, getCached, putCached } from "./cache";
 import { byId, reuseSame } from "./reuse";
@@ -62,6 +63,8 @@ interface State {
   newSessionProject?: string;
   /** the runner's default order: null while none is saved, undefined until it answers (or an older runner) */
   defaultOrder?: string[] | null;
+  /** bumped when a model list taught new alias resolutions (models.ts learnAliases): labels re-render */
+  aliasVersion?: number;
   /** the message "Fork from here" was picked on (dialog "fork") */
   forkTarget?: ForkTarget;
   usage?: UsageReport;
@@ -718,10 +721,20 @@ export function refreshUiPrefs() {
   refreshDefaultOrder();
 }
 
+/** A harness's model list arrived: what its aliases run now ("opus" → Opus 5.5) shows everywhere. */
+export function learnModels(harness: HarnessIdT, models: ModelRefT[]) {
+  if (learnAliases(harness, models)) set((s) => ({ aliasVersion: (s.aliasVersion ?? 0) + 1 }));
+}
+
 /** The runner's default order (Home's setup card, New session's "Default order"). */
 export function refreshDefaultOrder() {
   const runnerId = get().runnerId;
   if (!runnerId) return;
+  // Claude Code's aliases ("opus") in orders and chains read as the model they run now.
+  if (get().runners.find((r) => r.id === runnerId)?.harnesses.includes("claude-code"))
+    rpcTo(runnerId, "listModels", { harness: "claude-code" })
+      .then((r) => learnModels("claude-code", r.models))
+      .catch(() => {});
   rpcTo(runnerId, "getDefaultOrder", {})
     .then((r) => get().runnerId === runnerId && set({ defaultOrder: r.order ?? null }))
     .catch(() => {}); // an older runner: no default order, and no setup card

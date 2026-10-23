@@ -180,13 +180,26 @@ export function pickEntry(chain: string[], harness: HarnessId, skip?: (provider:
   let earliest = Infinity;
   for (const raw of chain) {
     const entry = parseEntry(raw, harness);
+    // A harness that isn't installed (now) is passed over; the session's own one runs, so it is.
+    if (entry.harness !== harness && !isInstalled(entry.harness)) continue;
     const key = providerOf(entry.model, entry.harness);
     const until = exhaustedUntil(key) ?? skip?.(key);
     if (!until) return { entry };
     earliest = Math.min(earliest, until);
   }
-  return { waitUntil: earliest };
+  // Nothing usable and nothing that resets (only harnesses that aren't installed): look again later.
+  return { waitUntil: Number.isFinite(earliest) ? earliest : Date.now() + DEFAULT_QUOTA_COOLDOWN };
 }
+
+/**
+ * Whether a harness is installed on this runner, as index.ts last checked (kept fresh, so one
+ * installed later becomes usable again). Everything counts as installed until it has checked.
+ */
+let installedCheck: (h: HarnessId) => boolean = () => true;
+export function setInstalledCheck(fn?: (h: HarnessId) => boolean) {
+  installedCheck = fn ?? (() => true);
+}
+export const isInstalled = (h: HarnessId) => installedCheck(h);
 
 export function backoffMs(attempt: number): number {
   return Math.min(5 * 60_000, 15_000 * 2 ** Math.min(attempt, 5));
@@ -200,5 +213,5 @@ export function nextEntry(chain: string[], current: ChainEntry, harness: Harness
   const entries = chain.map((raw) => parseEntry(raw, harness));
   const same = (e: ChainEntry) => e.harness === current.harness && e.model === current.model;
   const at = entries.findIndex(same);
-  return entries.slice(at + 1).find((e) => !same(e) && !exhaustedUntil(providerOf(e.model, e.harness)));
+  return entries.slice(at + 1).find((e) => !same(e) && (e.harness === harness || isInstalled(e.harness)) && !exhaustedUntil(providerOf(e.model, e.harness)));
 }

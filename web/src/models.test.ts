@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chainLabel, effortLabel, modelDisplay, orderLabel } from "./models";
+import { chainLabel, effortLabel, forgetAliases, learnAliases, modelDisplay, orderLabel } from "./models";
 
 const name = (id: string, harness?: string) => modelDisplay(id, harness).name;
 
@@ -101,6 +101,22 @@ test("orderLabel: human names with their harness", () => {
   expect(orderLabel(["claude-code:claude-opus-5-5", "codex:gpt-6-luna", "pi:openai-codex/gpt-6-luna"])).toBe("Opus 5.5 (Claude Code) → GPT-6 Luna (Codex) → GPT-6 Luna (pi)");
   expect(orderLabel(["pi:openai-codex/gpt-6-luna", "pi:azure/gpt-6-luna"])).toBe("GPT-6 Luna (pi, openai-codex) → GPT-6 Luna (pi, azure)");
   expect(orderLabel([])).toBe("");
+});
+
+test("an alias reads as the model it resolves to, once the harness said; until then its family", () => {
+  try {
+    expect(orderLabel(["claude-code:opus", "codex:gpt-6-luna"])).toBe("Opus (Claude Code) → GPT-6 Luna (Codex)");
+    expect(learnAliases("claude-code", [{ id: "default" }, { id: "opus", label: "Opus 5.5", resolved: "claude-opus-5-5" }, { id: "fable", resolved: "claude-fable-5-1" }])).toBe(true);
+    expect(learnAliases("claude-code", [{ id: "opus", resolved: "claude-opus-5-5" }])).toBe(false); // nothing new
+    expect(orderLabel(["claude-code:opus", "codex:gpt-6-luna"])).toBe("Opus 5.5 (Claude Code) → GPT-6 Luna (Codex)");
+    expect(chainLabel(["opus", "fable"], "claude-code")).toBe("Opus 5.5 → Fable 5.1");
+    expect(modelDisplay("opus", "claude-code")).toMatchObject({ id: "opus", name: "Opus 5.5", provider: "anthropic" });
+    // Only that harness's alias: "default" and other harnesses stay as they are.
+    expect(modelDisplay("default", "claude-code").name).toBe("Default");
+    expect(modelDisplay("opus", "kiro").name).toBe("Opus");
+  } finally {
+    forgetAliases();
+  }
 });
 
 test("effortLabel", () => {

@@ -269,6 +269,8 @@ export interface ModelRef {
   /** "provider/id" for pi, model alias or id for Claude Code */
   id: string;
   label?: string;
+  /** an alias's concrete model now ("opus" → "claude-opus-5-5"), when the harness says */
+  resolved?: string;
 }
 
 /**
@@ -279,14 +281,17 @@ export interface ModelRef {
  *
  * Reserved: the account or key an entry runs on will be a "#<id>" suffix
  * ("pi:azure/gpt-6-luna#foundry-1"). Entries stay plain strings, so stored chains and default
- * orders keep working unchanged when it arrives; nothing writes the suffix yet.
+ * orders keep working unchanged when it arrives. Until then nothing may write it: saving a default
+ * order refuses it, and parseEntry drops it.
  */
 export interface ChainEntry {
   harness: HarnessId;
   model: string;
 }
 
-export function parseEntry(entry: string, fallback: HarnessId): ChainEntry {
+export function parseEntry(raw: string, fallback: HarnessId): ChainEntry {
+  // The reserved "#account" suffix isn't part of the model (nothing writes it yet; see above).
+  const entry = raw.replace(/#.*$/, "");
   for (const h of HARNESSES) if (entry.startsWith(h.id + ":")) return { harness: h.id, model: entry.slice(h.id.length + 1) };
   return { harness: fallback, model: entry };
 }

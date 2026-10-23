@@ -13,7 +13,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { ArrowsRightLeftIcon } from "@heroicons/react/24/outline";
 import { formatEntry, type HarnessId, type LiveState, type ModelRef } from "../shared/protocol";
-import { act, rpc, useStore } from "../store";
+import { act, learnModels, rpc, useStore } from "../store";
 import { modelDisplay, orderLabel } from "../models";
 import { ChainEditor } from "./ChainEditor";
 import { modelIcon, modelTooltip } from "./ModelName";
@@ -85,7 +85,10 @@ export function useModels(harnesses: HarnessId[], sessionId?: string) {
   useEffect(() => {
     for (const h of harnesses)
       rpc("listModels", { harness: h, sessionId })
-        .then((r) => setModels((m) => ({ ...m, [h]: r.models })))
+        .then((r) => {
+          learnModels(h, r.models);
+          setModels((m) => ({ ...m, [h]: r.models }));
+        })
         .catch(() => {});
   }, [harnesses.join(","), sessionId]);
   return models;
@@ -99,6 +102,7 @@ export function ModelMenu({ sessionId, harness, state }: { sessionId: string; ha
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const order = useStore((s) => s.defaultOrder);
+  useStore((s) => s.aliasVersion); // labels follow what aliases resolve to
   const models = useModels(open ? [harness] : [], sessionId);
 
   const chain = state.chain ?? [];

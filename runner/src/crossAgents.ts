@@ -568,7 +568,7 @@ export class CrossAgents implements AgentHub {
     out.push(
       "",
       order
-        ? `The user's default order (what agent_start uses with neither harness nor model): ${order.join(" → ")}.`
+        ? `The user's default order (what agent_start uses when you give no harness, model, effort or mode): ${order.join(" → ")}.`
         : `No default order is set: agent_start without a harness uses your own (${from.harness}).`,
       `Guard: yours is ${from.guardMode}; a subagent's can be ${GUARD_MODES.filter((g) => guardWithin(g.id, from.guardMode))
         .map((g) => g.id)
@@ -653,9 +653,11 @@ export class CrossAgents implements AgentHub {
     const gaveUp = () => fail("The call was cancelled before the subagent started; nothing was started.");
     const want = typeof args.model === "string" ? args.model.trim() : "";
     const noHarness = args.harness === undefined || args.harness === "";
-    // Neither a harness nor a model: the user's default order, when one is saved (else your own harness).
+    // Nothing chosen (no harness, model, effort or mode): the user's default order, when one is
+    // saved. Anything chosen keeps to your own harness unless one is named, as before.
+    const given = (k: string) => typeof args[k] === "string" && (args[k] as string).trim() !== "";
     let order: SessionStart | undefined;
-    if (noHarness && (!want || want === "default")) {
+    if (noHarness && !given("model") && !given("effort") && !given("mode")) {
       const installed = await this.installed();
       const st = sessionStart({ harness: from.harness, useOrder: true }, defaultOrder(), (h) => installed.includes(h));
       if (st.chain) order = st;

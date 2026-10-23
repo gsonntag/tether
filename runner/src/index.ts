@@ -21,7 +21,7 @@ import type {
 } from "../../web/src/shared/protocol";
 import { kiroAdapter, opencodeAdapter } from "./adapters/acp";
 import { agyHookInstalled, antigravityAdapter } from "./adapters/antigravity";
-import { claudeAdapter } from "./adapters/claude";
+import { claudeAdapter, FALLBACK_MODELS as CLAUDE_FALLBACK_MODELS } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { piAdapter } from "./adapters/pi";
 import type { Adapter, Sink } from "./adapters/types";
@@ -32,6 +32,7 @@ import { applyReview, runReview } from "./review";
 import { CrossAgents, isWorktreePath, listedUnder, startedByOf, subagentPath } from "./crossAgents";
 import { getUsage, signedIn } from "./usage";
 import { defaultOrder, saveDefaultOrder, sessionStart, suggestOrder, type HarnessFacts } from "./defaultOrder";
+import { setInstalledCheck } from "./fallback";
 import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyConflicts, recent, sendTest, subscribe, subscription, unsubscribe, vapidPublicKey } from "./notify";
 import { APPROVING_MODES, byRecent, HARNESSES, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
 import type { SessionPrefs } from "./config";
@@ -78,22 +79,34 @@ const adapters: Record<HarnessId, Adapter> = {
   antigravity: antigravityAdapter,
 };
 
+/** The harnesses installed when last checked: fallback never moves to one that isn't (fallback.ts isInstalled). */
+let installedNow: Set<HarnessId> | undefined;
+setInstalledCheck((h) => !installedNow || installedNow.has(h));
+
 async function installedHarnesses(): Promise<HarnessId[]> {
-  return (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available().catch(() => false)) ? a.id : null)))).filter(Boolean) as HarnessId[];
+  const list = (await Promise.all(Object.values(adapters).map(async (a) => ((await a.available().catch(() => false)) ? a.id : null)))).filter(Boolean) as HarnessId[];
+  installedNow = new Set(list);
+  return list;
 }
+// Kept fresh: a harness installed (or removed) while the runner runs counts from then on.
+void installedHarnesses();
+setInterval(() => void installedHarnesses(), 60_000).unref?.();
 
 /** A starting point for the default order: installed harnesses with the logins this machine has, and their models. */
 async function suggestedOrder(): Promise<string[]> {
   const installed = await installedHarnesses();
-  const logins = signedIn();
-  const signed: Partial<Record<HarnessId, { signedIn: boolean; account?: string }>> = {
+  const logins = await signedIn();
+  const signed: Partial<Record<HarnessId, { signedIn?: boolean; account?: string }>> = {
     "claude-code": { signedIn: logins.claude },
     codex: { signedIn: !!logins.codex, account: logins.codex?.accountId },
     pi: { signedIn: !!logins.pi, account: logins.pi?.accountId },
     kiro: { signedIn: logins.kiro },
   };
   const listed = (h: HarnessId) =>
-    Promise.race([adapters[h].listModels().then((r) => r.models), new Promise<[]>((ok) => setTimeout(() => ok([]), 15_000))]).catch(() => []);
+    Promise.race([adapters[h].listModels().then((r) => r.models), new Promise<[]>((ok) => setTimeout(() => ok([]), 25_000))])
+      .catch(() => [])
+      // Claude Code that couldn't answer: its aliases with the models they last resolved to, never a bare "opus".
+      .then((ms) => (ms.length || h !== "claude-code" ? ms : CLAUDE_FALLBACK_MODELS));
   const facts: HarnessFacts[] = await Promise.all(
     HARNESSES.filter((h) => installed.includes(h.id)).map(async (h) => ({ harness: h.id, ...signed[h.id], models: await listed(h.id) })),
   );

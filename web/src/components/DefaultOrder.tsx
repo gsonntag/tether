@@ -26,9 +26,15 @@ export function useOrderDraft() {
   const saved = useStore((s) => s.defaultOrder);
   const [draft, setDraft] = useState<string[]>();
   const [suggesting, setSuggesting] = useState(false);
+  // The saved order the draft started from: a newer one (saved elsewhere) replaces a draft not edited since.
+  const base = useRef<string[]>(undefined);
   useEffect(() => {
     if (saved) {
-      setDraft((d) => d ?? saved);
+      setDraft((d) => {
+        const untouched = !d || (base.current !== undefined && same(d, base.current));
+        base.current = saved;
+        return untouched ? saved : d;
+      });
       return;
     }
     if (saved !== null || draft) return;
@@ -44,7 +50,7 @@ export function useOrderDraft() {
 /** The chain editor over a draft, with a note while the suggestion loads or when it's empty. */
 export function OrderDraftEditor({ draft, setDraft, suggesting }: { draft: string[]; setDraft: (o: string[]) => void; suggesting: boolean }) {
   if (suggesting) return <Spinner size="sm" label="Looking at what's signed in…" />;
-  return <ChainEditor chain={draft} onChange={setDraft} />;
+  return <ChainEditor chain={draft} onChange={setDraft} emptyText="No models yet: add the one new sessions should start on, then the ones to move to." />;
 }
 
 /**
