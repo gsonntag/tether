@@ -20,7 +20,7 @@ export type { CapabilityLevel, SlotCapability, SlotId };
 export interface SessionCtx {
   projectPath: string;
   /** Tether session id (once the harness has one) and guard key, for the `tether-context` env; `review`: a review session (/review) */
-  session?: { id?: string; key?: string; review?: boolean; leader?: boolean };
+  session?: { id?: string; key?: string; review?: boolean };
   /** resuming an existing native session (no first-message preamble) */
   resume?: boolean;
   /** the master context for this session; undefined while the feature is off */

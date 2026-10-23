@@ -21,7 +21,7 @@ import { codexRollout, codexTokenUsage } from "../contextWindow";
 import type { Classified } from "../fallback";
 import { codexFault } from "../faults";
 import { CODEX_STATUS } from "../goal";
-import { leaderAnswers, LiveSession, newId, tetherOnly } from "../session";
+import { LiveSession, newId, tetherOnly } from "../session";
 import { sessionLaunch } from "../connectors/launch";
 import { nativeImagePaths } from "../attachments";
 import type { Adapter, CreateOpts, Sink, StoredProject } from "./types";
@@ -513,7 +513,7 @@ export class CodexSession extends LiveSession {
     // Its connector: shared memory as developer instructions, the tether-context MCP server and the MCP registry's servers.
     const launch = await sessionLaunch("codex", {
       projectPath: this.projectPath,
-      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession, leader: this.isLeaderSession },
+      session: { id: this.opts.resume ? this.id : undefined, key: this.guardEnv.TETHER_GUARD_KEY, review: this.isReviewSession },
       resume: this.opts.resume || !!this.opts.fork,
     });
     const params = {
@@ -832,12 +832,10 @@ export class CodexSession extends LiveSession {
           id: newId("q"),
           kind: "question",
           title: "Codex has a question",
-          leaderMay: true,
           questions: qs.map((q) => ({ question: q.question, header: q.header, options: (q.options ?? []).map((o: any) => ({ label: o.label, description: o.description })) })),
         });
         const answers: Record<string, { answers: string[] }> = {};
-        const given = leaderAnswers(r);
-        if (!r.cancelled) for (const q of qs) if (given?.[q.question] !== undefined) answers[q.id] = { answers: [given[q.question]!] };
+        if (!r.cancelled) for (const q of qs) if (r.answers?.[q.question] !== undefined) answers[q.id] = { answers: [r.answers[q.question]!] };
         return { answers };
       }
       case "mcpServer/elicitation/request":

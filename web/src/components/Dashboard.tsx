@@ -20,7 +20,7 @@ import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timer } from "@astryxdesign/core/Timer";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { ChatBubbleLeftRightIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { listPath, NOTIFY_KINDS, type SessionPulse, type SessionSummary, type UiResponse } from "../shared/protocol";
 import {
   answerRequest,
@@ -43,7 +43,7 @@ import {
 } from "../dashboard";
 import type { Entry } from "../recentSessions";
 import { useInbox, useSessionGroups } from "../sessionLists";
-import { markNoticeRead, markViewed, openLeader, openOnRunner, openPage, patchPulse, refreshNotices, resolveConflict, rpcTo, toast, useStore } from "../store";
+import { markNoticeRead, markViewed, openOnRunner, openPage, patchPulse, refreshNotices, resolveConflict, rpcTo, toast, useStore } from "../store";
 import { enablePush, needsHomeScreen, pushOnHere, pushState, pushSupported } from "../push";
 import { ago, harnessLabel } from "../util";
 import { pulseWork, workState } from "../workState";
@@ -180,24 +180,14 @@ export function Dashboard({ focus }: { focus?: "running" }) {
       {/* Room for the floating sidebar button on phones (and with the sidebar hidden). */}
       <HStack gap={3} vAlign="center" hAlign="between" paddingInlineStart={phone || sidebarHidden ? 8 : 0}>
         <Heading level={1}>{loaded ? inboxTitle(inbox.length) : "Home"}</Heading>
-        <HStack gap={2} vAlign="center">
-          <Button
-            label="Leader"
-            tooltip="Ask your leader where things are at, or tell it what to pass on"
-            size={phone ? "lg" : "md"}
-            icon={<Icon icon={ChatBubbleLeftRightIcon} />}
-            isIconOnly={phone}
-            onClick={openLeader}
-          />
-          <Button
-            label="New session"
-            variant="primary"
-            size={phone ? "lg" : "md"}
-            icon={<Icon icon={PlusIcon} />}
-            isIconOnly={phone}
-            onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })}
-          />
-        </HStack>
+        <Button
+          label="New session"
+          variant="primary"
+          size={phone ? "lg" : "md"}
+          icon={<Icon icon={PlusIcon} />}
+          isIconOnly={phone}
+          onClick={() => useStore.setState({ dialog: "new", newSessionProject: undefined })}
+        />
       </HStack>
     </LayoutHeader>
   );
@@ -296,8 +286,7 @@ function Where({ s, runnerId, ctx, verb }: { s: SessionSummary; runnerId: string
   return (
     <HStack gap={1.5} vAlign="center" wrap="wrap">
       <Text type="supporting" maxLines={1}>
-        {/* One the leader started for you (session_create) says so. */}
-        {[project(listPath(s)), harnessLabel(s.harness), s.createdBy && "started by your leader", verb].filter(Boolean).join(" · ")}
+        {[project(listPath(s)), harnessLabel(s.harness), verb].filter(Boolean).join(" · ")}
       </Text>
       {ctx.multi && <Token size="sm" color="gray" label={runnerId} />}
     </HStack>
@@ -429,7 +418,7 @@ function InboxItem({ row, ctx }: { row: InboxRow; ctx: RowCtx }) {
     else if (r.kind === "confirm")
       actions = (
         <>
-          {/* One that lets an agent do more (a new session the leader starts): confirmed in its session, read in full. */}
+          {/* One that may be an approval in disguise (an MCP server or extension asks, a link to open): confirmed in its session, read in full. */}
           {r.userOnly ? (
             <Button label="Review" variant="primary" size={size} isDisabled={!!busy} onClick={open} />
           ) : (

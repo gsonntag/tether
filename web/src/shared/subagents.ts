@@ -55,22 +55,12 @@ export function subagentItem(link: SubagentLink, live?: { model?: string; tokens
   };
 }
 
-// ---- the leader agent (runner/src/leader.ts) ----
-
-/** The user's own words, copied by the runner from the leader chat (never written by the leader): they count as the user's. */
-export const LEADER_RELAY_PREFIX = "[From you, via your leader]";
-
-/** The leader's own words to a session: not the user's. */
-export const LEADER_NOTE_PREFIX = "[From your leader]";
-
-/** How Tether's batched updates start in the leader's conversation. */
-export const LEADER_DIGEST_PREFIX = "[Tether] Updates";
-
-/** Text Tether or another agent wrote into a conversation as a user message (a note about a subagent, a parent's message or task, the leader's note, an update). */
-export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT_TASK_PREFIX, LEADER_NOTE_PREFIX, LEADER_DIGEST_PREFIX];
+/** Text Tether or another agent wrote into a conversation as a user message (a note about a subagent, a parent's message or task). */
+// The removed leader's notes and digests (2026-10-23) are still in older transcripts: still agent-written.
+export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT_TASK_PREFIX, "[From your leader]", "[Tether] Updates"];
 
 /** Markers that say who wrote a message: none may appear as written inside text that's passed on. */
-const MARKERS = [LEADER_RELAY_PREFIX, ...AGENT_WRITTEN, "[Tether]"];
+const MARKERS = ["[From you, via your leader]", ...AGENT_WRITTEN, "[Tether]"];
 /** Brackets, and what passes for one to a reader. */
 const OPEN = "[\\[［【〔⟦〚〖﹝❲⁅〘⦋⦍⦏]";
 const CLOSE = "[\\]］】〕⟧〛〗﹞❳⁆〙⦌⦎⦐]";
@@ -116,10 +106,9 @@ const CLOSE_RE = new RegExp(CLOSE, "g");
 const STARTS_OPEN = new RegExp(`^${OPEN}`);
 
 /**
- * Text passed from one writer to another (the user's words relayed, the leader's note, another
- * session's report) with every authorship marker defused: "[From your leader]" becomes
- * "(From your leader)", "You are a subagent:" is quoted. Also when written in another case,
- * without spaces, with full-width, compatibility or Cyrillic / Greek look-alike letters, with
+ * Text passed from one writer to another (a parent's message, a subagent's report) with every
+ * authorship marker defused: "[Tether]" becomes "(Tether)", "You are a subagent:" is quoted.
+ * Also when written in another case, without spaces, with full-width, compatibility or Cyrillic / Greek look-alike letters, with
  * look-alike brackets, or split by invisible characters (always dropped). Text that holds a
  * disguised marker is passed on in its compatibility form (NFKC), so what's left reads as it is;
  * other text stays as written. Then nothing in it can pass for a block someone else wrote.
@@ -144,31 +133,6 @@ export function defang(text: string): string {
   return out + norm.slice(at);
 }
 
-/**
- * What the leader sends a session: the user's words (copied by the runner, never by the model)
- * under LEADER_RELAY_PREFIX, then the leader's own note under LEADER_NOTE_PREFIX. Both defused, so
- * the only relay block is the first one and the split between the two is unambiguous.
- */
-export function leaderMessage(o: { relay?: string; note?: string }): string {
-  const relay = o.relay?.trim();
-  const note = o.note?.trim();
-  return [relay && `${LEADER_RELAY_PREFIX}\n${defang(relay)}`, note && `${LEADER_NOTE_PREFIX} ${defang(note)}`].filter(Boolean).join("\n\n");
-}
-
-/** A leader message taken apart (the transcript's card); undefined when it isn't one. */
-export function parseLeaderMessage(text: string): { relay?: string; note?: string } | undefined {
-  const t = text.trimStart();
-  if (t.startsWith(LEADER_NOTE_PREFIX)) return { note: t.slice(LEADER_NOTE_PREFIX.length).trim() };
-  if (!t.startsWith(LEADER_RELAY_PREFIX)) return undefined;
-  const body = t.slice(LEADER_RELAY_PREFIX.length);
-  const i = body.indexOf(`\n\n${LEADER_NOTE_PREFIX}`);
-  if (i < 0) return { relay: body.trim() };
-  return { relay: body.slice(0, i).trim(), note: body.slice(i + 2 + LEADER_NOTE_PREFIX.length).trim() };
-}
-
-/** A message that carries the user's words relayed by the leader: sent alone, never joined with another. */
-export const isRelay = (text: string) => text.trimStart().startsWith(LEADER_RELAY_PREFIX);
-
 /** Whether a user message's text was written by Tether or another agent, not the user. */
 export const agentWritten = (text: string) => AGENT_WRITTEN.some((p) => text.trimStart().startsWith(p));
 
@@ -180,7 +144,6 @@ export const agentWritten = (text: string) => AGENT_WRITTEN.some((p) => text.tri
  * wrote after one in the same message would be left out, never the other way round.
  */
 export function splitAgentWritten(text: string): { user: string; agent: string } {
-  // The leader's relay block is never a split point: inside agent-written text it stays agent-written.
   const pieces = text.split(new RegExp(`\\n\\n(?=${AGENT_WRITTEN.map((p) => p.replace(/[[\]]/g, "\\$&")).join("|")})`));
   const user: string[] = [];
   const agent: string[] = [];
