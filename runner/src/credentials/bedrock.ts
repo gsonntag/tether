@@ -13,7 +13,7 @@
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import type { CredentialModel, CredentialState, CredentialTest, CredentialView } from "../../../web/src/shared/credentials";
+import type { CredentialActionResult, CredentialModel, CredentialState, CredentialTest, CredentialView } from "../../../web/src/shared/credentials";
 import type { ChainEntry } from "../../../web/src/shared/protocol";
 import type { CredentialPlugin } from "./registry";
 import * as store from "./store";
@@ -366,7 +366,7 @@ async function profileView(profile: string): Promise<CredentialView> {
     sourceNote: `AWS profile “${profile}” in ~/.aws`,
     state: s.state,
     ...(notes.length ? { stateNote: notes.join(" ") } : {}),
-    actions: ["addModel", "removeModel", "listModels", "setRegion", ...(s.login ? ["signIn", "signInCode"] : [])],
+    actions: ["addModel", "removeModel", "listModels", "setRegion", ...(s.login ? ["signIn"] : [])],
   };
 }
 
@@ -523,10 +523,12 @@ export const bedrockPlugin: CredentialPlugin = {
     const r = await resolve(id);
     if (name === "listModels") {
       const l = await listModels(r);
+      // Can't list: the page says why and takes a typed id.
+      if ("error" in l) return { message: l.error } satisfies CredentialActionResult;
       // The region's Haiku inference profile, for Claude Code's background model (envFor).
-      const haiku = "models" in l ? l.models.find((m) => m.kind === "Inference profile" && isHaiku(m.id))?.id : undefined;
+      const haiku = l.models.find((m) => m.kind === "Inference profile" && isHaiku(m.id))?.id;
       if (haiku && haiku !== store.get(id)?.meta?.haiku) await keepMeta(id, r, { haiku });
-      return l;
+      return { message: l.message, models: l.models.map((m) => ({ id: m.id, label: `${m.name} · ${m.kind}` })) } satisfies CredentialActionResult;
     }
     if (name === "addModel") {
       const model = str("model").replace(/^amazon-bedrock\//, "");
@@ -547,7 +549,14 @@ export const bedrockPlugin: CredentialPlugin = {
       await keepProfile(id, { region: region || undefined });
       return { message: `Region: ${region || "the profile's own"}.` };
     }
-    if (profile && name === "signIn") return startLogin(id, profile);
+    if (profile && name === "signIn") {
+      const { url } = await startLogin(id, profile);
+      return {
+        url,
+        message: "Open the AWS sign-in page, sign in, and paste the authorization code it shows. This runs aws login on the runner and updates its profile.",
+        next: { action: "signInCode", prompt: "Paste the authorization code", field: "code", secret: true },
+      } satisfies CredentialActionResult;
+    }
     if (profile && name === "signInCode") return finishLogin(id, str("code"));
     throw new Error(`AWS Bedrock has no “${name}”.`);
   },

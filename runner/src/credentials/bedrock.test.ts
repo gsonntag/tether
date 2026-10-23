@@ -11,7 +11,10 @@ import { bedrockFault, onBedrock, providerOf } from "../fallback";
 import { claudeFault, piFault } from "../faults";
 import { LiveSession, type HandoffOpts } from "../session";
 import { accountOf, AWS_REDIRECT_VARS, AWS_SECRET_VARS, bedrockPlugin, cliError, modelChoices, setBedrockIo, testResult, type CliResult } from "./bedrock";
-import { credentialAction, credentialModels, launchFor, listCredentials, register, testCredential, unregister } from "./registry";
+import { credentialAction, credentialModels, envNameAllowed, launchFor, listCredentials, register, testCredential, unregister } from "./registry";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as store from "./store";
 
 const API_KEY = "ABSKQmVkcm9ja0FQSUtleS1TECRET-bedrock-key-9876";
@@ -126,7 +129,7 @@ describe("models", () => {
     await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", region: "us-west-2", apiKey: API_KEY });
     fetchAnswer = () => new Response(JSON.stringify({ inferenceProfileSummaries: [{ inferenceProfileId: "us.anthropic.claude-opus-5-5", inferenceProfileName: "US Opus 5.5", status: "ACTIVE" }], modelSummaries: [] }));
     const r = (await credentialAction("bedrock:work", "listModels", {})) as any;
-    expect(r.models).toEqual([{ id: "us.anthropic.claude-opus-5-5", name: "US Opus 5.5", kind: "Inference profile" }]);
+    expect(r).toEqual({ message: "1 models in us-west-2.", models: [{ id: "us.anthropic.claude-opus-5-5", label: "US Opus 5.5 · Inference profile" }] });
     expect(fetches[0]!.url).toStartWith("https://bedrock.us-west-2.amazonaws.com/");
     expect((fetches[0]!.init!.headers as any).authorization).toBe(`Bearer ${API_KEY}`);
     fetchAnswer = () => new Response(JSON.stringify({ message: "Too many requests, please wait before trying again." }), { status: 429, headers: { "x-amzn-errortype": "ThrottlingException:http://internal.amazon.com/coral/com.amazon.bedrock/" } });
@@ -216,7 +219,7 @@ describe("review fixes", () => {
 
   test("a profile id must name a profile the AWS CLI lists", async () => {
     await expect(credentialAction("bedrock:aws.someone-else", "addModel", { model: "us.anthropic.claude-opus-5-5" })).rejects.toThrow("no AWS profile");
-    await expect(testCredential("bedrock:aws.nope")).rejects.toThrow("no AWS profile");
+    expect(await testCredential("bedrock:aws.nope")).toMatchObject({ ok: false, result: "error", message: expect.stringContaining("no AWS profile") });
     expect(calls.some((c) => c.args[0] === "bedrock-runtime")).toBe(false);
   });
 
@@ -234,6 +237,28 @@ describe("review fixes", () => {
     expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("us.anthropic.claude-haiku-5");
     const pi = (await launchFor({ harness: "pi", model: "amazon-bedrock/x", credential: "bedrock:work" })).env;
     expect(pi.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+    // Every variable it sets passes the registry's name check without declaring it (envNames).
+    expect(bedrockPlugin.envNames).toBeUndefined();
+    for (const k of [...Object.keys(env), ...Object.keys(pi), "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION", ...AWS_SECRET_VARS, ...AWS_REDIRECT_VARS])
+      expect(envNameAllowed(k)).toBe(true);
+  });
+
+  test("an aws login profile's sign-in relays aws login --remote: its URL out, the pasted code in as the next step", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-aws-"));
+    const bin = join(dir, "aws");
+    writeFileSync(bin, `#!/bin/sh\n[ "$1 $2" = "login --remote" ] || exit 2\necho "Browser will not be opened. Open https://us-east-1.signin.aws.amazon.com/v1/authorize?client=x"\nread code\n[ "$code" = "good-code-123" ] && exit 0\nexit 1\n`);
+    chmodSync(bin, 0o755);
+    const saved = process.env.TETHER_AWS_CLI;
+    process.env.TETHER_AWS_CLI = bin;
+    try {
+      const r = await credentialAction("bedrock:aws.default", "signIn", {});
+      expect(r).toMatchObject({ url: "https://us-east-1.signin.aws.amazon.com/v1/authorize?client=x", next: { action: "signInCode", field: "code", secret: true } });
+      expect(await credentialAction("bedrock:aws.default", r!.next!.action, { [r!.next!.field!]: "good-code-123" })).toEqual({ message: "Signed in again." });
+    } finally {
+      if (saved === undefined) delete process.env.TETHER_AWS_CLI;
+      else process.env.TETHER_AWS_CLI = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("pass-through variables that could redirect auth or calls are blanked, in sessions and in aws calls", async () => {

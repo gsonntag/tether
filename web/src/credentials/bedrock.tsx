@@ -8,7 +8,6 @@
 import { useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Link } from "@astryxdesign/core/Link";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector } from "@astryxdesign/core/Selector";
 import { StackItem } from "@astryxdesign/core/Stack";
@@ -16,22 +15,17 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import type { CredentialView } from "../shared/credentials";
+import type { CredentialActionResult, CredentialView } from "../shared/credentials";
 import { modelLabel } from "../models";
+import { ActionAnswer } from "./ActionAnswer";
 import type { CredentialSlot, OnList } from "./index";
 
 type Kind = "apiKey" | "awsKeys";
 
-interface Choice {
-  id: string;
-  name: string;
-  kind: string;
-}
-
 const red = { color: "var(--color-text-red)" };
 
 /** Runs a credentialAction, hands the list on, gives back its result (or throws its message). */
-async function act(id: string, action: string, args: unknown, onList: OnList): Promise<any> {
+async function act(id: string, action: string, args: unknown, onList: OnList): Promise<CredentialActionResult | undefined> {
   // Loaded on use: credentials/index.ts (and so this file) is imported where the store can't be (tests).
   const { rpc } = await import("../store");
   const r = await rpc("credentialAction", { id, action, args });
@@ -56,7 +50,7 @@ function useBusy() {
       setBusy(undefined);
     }
   };
-  return { busy, error, note, run };
+  return { busy, error, note, setNote, run };
 }
 
 function Add({ onList, close }: { onList: OnList; close: () => void }) {
@@ -120,11 +114,12 @@ const modelIds = (c: CredentialView) => (c.models ?? []).filter((m) => m.harness
 function Row({ credential: c, onList }: { credential: CredentialView; onList: OnList }) {
   const ids = modelIds(c);
   const [model, setModel] = useState("");
-  const [choices, setChoices] = useState<Choice[]>();
+  // The region's models and inference profiles ("US Opus 5.5 · Inference profile"), once listed.
+  const [choices, setChoices] = useState<NonNullable<CredentialActionResult["models"]>>();
   const [region, setRegion] = useState<string>();
-  const [signIn, setSignIn] = useState<{ url: string }>();
-  const [code, setCode] = useState("");
-  const { busy, error, note, run } = useBusy();
+  // `aws login --remote` waiting for the code its page shows (the answer's `next`).
+  const [signIn, setSignIn] = useState<CredentialActionResult>();
+  const { busy, error, note, setNote, run } = useBusy();
   const isProfile = c.kind === "awsProfile";
   const canSignIn = c.actions?.includes("signIn");
   const credLabel = c.models?.[0]?.credentialLabel ?? "Bedrock";
@@ -132,8 +127,9 @@ function Row({ credential: c, onList }: { credential: CredentialView; onList: On
   const list = () =>
     run("list", async () => {
       const r = await act(c.id, "listModels", {}, onList);
-      if (r?.error) throw new Error(r.error);
-      setChoices(r?.models ?? []);
+      // No list (the credential may not list models): its reason; a typed id still works.
+      if (!r?.models?.length) throw new Error(r?.message ?? "No models listed. Type a model id.");
+      setChoices(r.models);
     });
   const addModel = (id = model) =>
     run("addModel", async () => {
@@ -161,7 +157,7 @@ function Row({ credential: c, onList }: { credential: CredentialView; onList: On
               searchPlaceholder="Filter"
               placeholder="Pick a model or inference profile"
               value={model || undefined}
-              options={choices.filter((m) => !ids.includes(m.id)).map((m) => ({ value: m.id, label: m.name, description: `${m.kind} · ${m.id}` }))}
+              options={choices.filter((m) => !ids.includes(m.id)).map((m) => ({ value: m.id, label: m.label ?? m.id, description: m.id }))}
               onChange={(v) => setModel(v)}
             />
           ) : (
@@ -197,33 +193,18 @@ function Row({ credential: c, onList }: { credential: CredentialView; onList: On
       )}
       {signIn && (
         <VStack gap={1}>
-          <Text type="supporting">
-            Open{" "}
-            <Link href={signIn.url} isExternalLink hasUnderline>
-              the AWS sign-in page
-            </Link>
-            , sign in, and paste the authorization code it shows. This runs <code>aws login</code> on the runner and updates its profile.
-          </Text>
-          <HStack gap={2} vAlign="end">
-            <StackItem size="fill">
-              <TextInput label="Authorization code" size="sm" autoComplete="off" value={code} onChange={setCode} />
-            </StackItem>
-            <Button
-              label="Finish"
-              size="sm"
-              variant="primary"
-              isLoading={busy === "code"}
-              isDisabled={!code.trim()}
-              onClick={() =>
-                run("code", async () => {
-                  const r = await act(c.id, "signInCode", { code: code.trim() }, onList);
-                  setSignIn(undefined);
-                  setCode("");
-                  return r?.message;
-                })
-              }
-            />
-            <Button label="Cancel" size="sm" variant="ghost" onClick={() => (setSignIn(undefined), setCode(""))} />
+          <ActionAnswer
+            id={c.id}
+            result={signIn}
+            onAnswer={(a) => {
+              onList(a.list);
+              // Done (or a step with nothing more to ask): its sentence as the row's note.
+              if (a.result?.next) setSignIn(a.result);
+              else (setSignIn(undefined), setNote(a.result?.message));
+            }}
+          />
+          <HStack>
+            <Button label="Cancel" size="sm" variant="ghost" onClick={() => setSignIn(undefined)} />
           </HStack>
         </VStack>
       )}
@@ -245,5 +226,5 @@ export const bedrockSlot: CredentialSlot = {
   provider: "bedrock",
   Add,
   Row,
-  ownActions: ["addModel", "removeModel", "listModels", "setRegion", "signIn", "signInCode"],
+  ownActions: ["addModel", "removeModel", "listModels", "setRegion", "signIn"],
 };
