@@ -9,7 +9,33 @@
 // Logins with no relayable flow (pi's /login, kiro-cli, agy) are "command" flows: the page shows
 // what to run on the runner, and a check notices when the login appears.
 
-import type { SignInFlow } from "../../../web/src/shared/accounts";
+/**
+ * A sign-in in progress on the runner (no token ever: the CLI writes the login into the account's
+ * own home, and the pasted code isn't echoed back). The page sees it as a CredentialActionResult
+ * (accounts.ts flowResult).
+ *  - "paste": open `url` in a new tab, sign in, paste the code it shows (Claude Code).
+ *  - "device": open `url` and enter `code` there (Codex device flow).
+ *  - "command": no flow Tether can relay: run `command` on the runner; Tether notices when it's done.
+ */
+export interface SignInFlow {
+  /** the credential it signs in ("claude:work") */
+  id: string;
+  kind: "paste" | "device" | "command";
+  state: "starting" | "waiting" | "verifying" | "done" | "failed" | "cancelled";
+  url?: string;
+  /** the device code to enter at `url` (not a secret: you type it there) */
+  code?: string;
+  /** what to run on the runner (kind "command") */
+  command?: string;
+  /** what went wrong, or a hint */
+  message?: string;
+  /** the last lines the CLI printed, for when Tether couldn't read a link or code out of it */
+  output?: string;
+  startedAt: number;
+}
+
+/** Whether a flow is still going (the runner waits on you or the CLI). */
+export const flowLive = (f?: SignInFlow) => !!f && (f.state === "starting" || f.state === "waiting" || f.state === "verifying");
 
 const FLOW_MS = 15 * 60_000;
 const POLL_MS = 3_000;

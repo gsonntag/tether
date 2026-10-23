@@ -4,6 +4,9 @@
 // (ChatGPT via Codex), or run a command on the runner (pi, Kiro, Antigravity), which Tether
 // notices. Nothing secret comes through here: the runner sends the link, the device code and the
 // account's name; the code you paste goes to the CLI on the runner and nowhere else.
+//
+// Each step answers a CredentialActionResult (shared/accounts.ts): while the sign-in goes on it
+// carries `id` and the panel keeps asking "signInStatus"; the code to paste is its `next` prompt.
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -12,33 +15,17 @@ import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { accountSlug, ACCOUNT_NAME, RESERVED_ACCOUNT_NAMES, type SignInFlow, type SignInResult } from "../shared/accounts";
-import type { CredentialList, CredentialView } from "../shared/credentials";
+import { accountSlug, ACCOUNT_NAME, RESERVED_ACCOUNT_NAMES, SIGN_IN_STEPS } from "../shared/accounts";
+import type { CredentialActionResult, CredentialView } from "../shared/credentials";
+import { ActionAnswer, credentialAct } from "./ActionAnswer";
 import type { CredentialSlot, OnList } from "./index";
 
-// The store is loaded on first use: this file is registered from credentials/index.ts, which
-// non-browser tests import too (the store needs a window).
 const store = () => import("../store");
 const toast = (level: "info" | "error", text: string) => void store().then((m) => m.toast(level, text));
-
-const mono = {
-  fontFamily: "var(--font-family-mono, ui-monospace, monospace)",
-  wordBreak: "break-all" as const,
-};
 const red = { color: "var(--color-text-red)" };
 
-type ActionAnswer = { result?: SignInResult; list?: CredentialList };
-
-async function act(id: string, action: string, args?: unknown): Promise<ActionAnswer> {
-  return (await store()).rpc("credentialAction", {
-    id,
-    action,
-    ...(args ? { args } : {}),
-  }) as Promise<ActionAnswer>;
-}
-
-/** Whether a flow is still going (the runner waits on you or the CLI). */
-export const flowLive = (f?: SignInFlow) => !!f && (f.state === "starting" || f.state === "waiting" || f.state === "verifying");
+/** Whether a sign-in step's answer says it goes on (the runner answers `id` while it does). */
+export const signInGoesOn = (r?: CredentialActionResult) => !!r?.id;
 
 /** What the name field says is wrong with a new account's name, if anything. */
 export function nameProblem(name: string): string | undefined {
@@ -50,153 +37,62 @@ export function nameProblem(name: string): string | undefined {
 }
 
 /**
- * One sign-in, shown under its row: follows the runner's flow (polling while it's live) until it's
- * done, then hands the fresh list up.
+ * One sign-in, shown under its row: follows the runner's flow (asking again while it goes on), and
+ * hands the fresh list up once it ends; its last word stays until Close.
  */
-export function SignInPanel({ id, initial, onList, onClose }: { id: string; initial?: SignInFlow; onList: OnList; onClose: () => void }) {
-  const [flow, setFlow] = useState<SignInFlow | undefined>(initial);
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+export function SignInPanel({ id, initial, onList, onClose }: { id: string; initial?: CredentialActionResult; onList: OnList; onClose: () => void }) {
+  const [answer, setAnswer] = useState<CredentialActionResult | undefined>(initial);
+  const live = !answer || signInGoesOn(answer);
   const stopped = useRef(false);
 
   useEffect(() => {
+    if (!live) return;
     stopped.current = false;
-    let t: ReturnType<typeof setTimeout>;
-    const tick = async () => {
-      if (stopped.current) return;
-      try {
-        const a = await act(id, "signInStatus");
-        const f = a.result?.flow;
-        setFlow(f);
-        if (f?.state === "done" && a.list) {
-          onList(a.list);
-          return;
+    const t = setTimeout(
+      async () => {
+        if (stopped.current) return;
+        try {
+          const a = await credentialAct(id, SIGN_IN_STEPS.status);
+          if (stopped.current) return;
+          setAnswer(a.result ?? { message: "The sign-in stopped." });
+          if (!signInGoesOn(a.result)) onList(a.list);
+        } catch {
+          // asked again on the next render
+          setAnswer((x) => (x ? { ...x } : x));
         }
-        if (!flowLive(f)) return;
-      } catch {}
-      t = setTimeout(tick, 2000);
-    };
-    t = setTimeout(tick, initial ? 2000 : 0);
+      },
+      answer ? 2000 : 0,
+    );
     return () => {
       stopped.current = true;
       clearTimeout(t);
     };
-  }, [id]);
+  }, [id, answer]);
 
-  const send = async () => {
-    setBusy(true);
-    setError(undefined);
-    try {
-      const a = await act(id, "signInCode", { code: code.trim() });
-      setFlow(a.result?.flow);
-      setCode("");
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
   const cancel = async () => {
     stopped.current = true;
     try {
-      const a = await act(id, "signInCancel");
-      if (a.list) onList(a.list);
+      onList((await credentialAct(id, SIGN_IN_STEPS.cancel)).list);
     } catch {}
     onClose();
   };
-  const copy = (s: string) =>
-    navigator.clipboard?.writeText(s).then(
-      () => toast("info", "Copied."),
-      () => {},
-    );
 
-  if (!flow) return <Text type="supporting">Starting the sign-in…</Text>;
-  if (flow.state === "done")
-    return (
-      <Text type="supporting" style={{ color: "var(--color-text-green)" }}>
-        {flow.kind === "command" ? "Done." : "Signed in."}
-      </Text>
-    );
-  const over = !flowLive(flow);
   return (
     <VStack gap={1.5}>
-      {flow.kind === "paste" && flow.url && !over && (
-        <>
-          <Text type="supporting">1. Open the sign-in page and sign in with the account you want here.</Text>
-          <HStack gap={2} wrap="wrap">
-            <Button label="Open sign-in page" size="sm" variant="primary" href={flow.url} target="_blank" rel="noopener noreferrer" />
-            <Button label="Copy link" size="sm" variant="ghost" onClick={() => copy(flow.url!)} />
-          </HStack>
-          <Text type="supporting">2. Paste the code it shows you.</Text>
-          <HStack gap={2} vAlign="end">
-            <StackItem size="fill">
-              <TextInput
-                label="Code"
-                isLabelHidden
-                size="sm"
-                placeholder="Paste the code"
-                autoComplete="off"
-                value={code}
-                onChange={setCode}
-                isDisabled={flow.state === "verifying"}
-              />
-            </StackItem>
-            <Button label="Sign in" size="sm" variant="primary" isLoading={busy || flow.state === "verifying"} isDisabled={!code.trim()} onClick={send} />
-          </HStack>
-          {flow.state === "verifying" && <Text type="supporting">Checking the code…</Text>}
-        </>
-      )}
-      {flow.kind === "device" && flow.url && !over && (
-        <>
-          <Text type="supporting">Open the page, sign in with the account you want here, and enter this code:</Text>
-          <HStack gap={2} vAlign="center" wrap="wrap">
-            <Text weight="semibold" style={{ ...mono, fontSize: "1.25em", letterSpacing: "0.08em" }}>
-              {flow.code}
-            </Text>
-            <Button label="Copy code" size="sm" variant="ghost" onClick={() => copy(flow.code ?? "")} />
-            <Button label="Open page" size="sm" variant="primary" href={flow.url} target="_blank" rel="noopener noreferrer" />
-          </HStack>
-          <Text type="supporting" color="secondary">
-            Waiting for you to finish there…
-          </Text>
-        </>
-      )}
-      {flow.kind === "command" && !over && (
-        <>
-          <Text type="supporting">{flow.message ?? "Run this on the runner. Tether notices when you're signed in."}</Text>
-          <HStack gap={2} vAlign="center">
-            <StackItem size="fill">
-              <Text type="supporting" style={mono}>
-                {flow.command}
-              </Text>
-            </StackItem>
-            <Button label="Copy" size="sm" variant="ghost" onClick={() => copy(flow.command ?? "")} />
-          </HStack>
-        </>
-      )}
-      {flow.state === "starting" && (
-        <Text type="supporting" color="secondary">
-          Starting the sign-in…
-        </Text>
-      )}
-      {flow.output && !flow.url && (
-        <Text type="supporting" color="secondary" style={{ ...mono, whiteSpace: "pre-wrap" }}>
-          {flow.output}
-        </Text>
-      )}
-      {over && flow.state !== "cancelled" && (
-        <Text type="supporting" style={{ ...red, whiteSpace: "pre-wrap" }}>
-          {flow.message ?? "The sign-in stopped."}
-        </Text>
-      )}
-      {error && (
-        <Text type="supporting" style={red}>
-          {error}
-        </Text>
+      {answer ? (
+        <ActionAnswer
+          id={id}
+          result={answer}
+          onAnswer={(a) => {
+            setAnswer(a.result ?? { message: "The sign-in stopped." });
+            onList(a.list);
+          }}
+        />
+      ) : (
+        <Text type="supporting">Starting the sign-in…</Text>
       )}
       <HStack>
-        <Button label={over ? "Close" : "Cancel"} size="sm" variant="ghost" onClick={over ? onClose : cancel} />
+        <Button label={live ? "Cancel" : "Close"} size="sm" variant="ghost" onClick={live ? cancel : onClose} />
       </HStack>
     </VStack>
   );
@@ -204,9 +100,7 @@ export function SignInPanel({ id, initial, onList, onClose }: { id: string; init
 
 /** The row's own part: its sign-in buttons, and the flow once one runs (or was running when the page opened). */
 function AccountRow({ credential: c, onList }: { credential: CredentialView; onList: OnList }) {
-  const [flow, setFlow] = useState<{ flow?: SignInFlow; open: boolean }>({
-    open: false,
-  });
+  const [flow, setFlow] = useState<{ answer?: CredentialActionResult; open: boolean }>({ open: false });
   const [busy, setBusy] = useState<string>();
   // Opened from a session's "Sign in to …" button (openPage("credentials", id)): its button leads.
   const [focus, setFocus] = useState(false);
@@ -221,8 +115,8 @@ function AccountRow({ credential: c, onList }: { credential: CredentialView; onL
   useEffect(() => {
     let gone = false;
     if (c.state === "ok") return;
-    act(c.id, "signInStatus")
-      .then((a) => !gone && flowLive(a.result?.flow) && setFlow({ flow: a.result!.flow, open: true }))
+    credentialAct(c.id, SIGN_IN_STEPS.status)
+      .then((a) => !gone && signInGoesOn(a.result) && setFlow({ answer: a.result, open: true }))
       .catch(() => {});
     return () => void (gone = true);
   }, [c.id, c.state]);
@@ -230,13 +124,11 @@ function AccountRow({ credential: c, onList }: { credential: CredentialView; onL
   const start = async (action: string) => {
     setBusy(action);
     try {
-      const a = await act(c.id, action);
-      // Signing a machine login out shows the command to run; an extra account's is done already.
-      if (a.result?.flow) setFlow({ flow: a.result.flow, open: true });
-      else {
-        if (a.result?.message) toast("info", a.result.message);
-        if (a.list) onList(a.list);
-      }
+      const a = await credentialAct(c.id, action);
+      // A sign-in (or a machine login's sign-out command) goes on under the row; an extra account's sign-out is done already.
+      if (signInGoesOn(a.result)) setFlow({ answer: a.result, open: true });
+      else if (a.result?.message) toast("info", a.result.message);
+      onList(a.list);
     } catch (e: any) {
       toast("error", e?.message ?? String(e));
     } finally {
@@ -245,15 +137,7 @@ function AccountRow({ credential: c, onList }: { credential: CredentialView; onL
   };
   const offers = (c.actions ?? []).filter((a) => a === "signIn" || a === "signInPi" || a === "signOut");
   return flow.open ? (
-    <SignInPanel
-      id={c.id}
-      initial={flow.flow}
-      onList={(l) => {
-        setFlow({ open: false });
-        onList(l);
-      }}
-      onClose={() => setFlow({ open: false })}
-    />
+    <SignInPanel id={c.id} initial={flow.answer} onList={onList} onClose={() => setFlow({ open: false })} />
   ) : offers.length ? (
     <HStack gap={2} wrap="wrap">
       {offers.map((a) => (
@@ -277,16 +161,16 @@ function addForm(provider: "claude" | "chatgpt", hint: string): CredentialSlot["
     const [name, setName] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string>();
-    const [started, setStarted] = useState<{ id: string; flow?: SignInFlow }>();
+    const [started, setStarted] = useState<{ id: string; answer: CredentialActionResult }>();
     const problem = nameProblem(name);
     const add = async () => {
       setBusy(true);
       setError(undefined);
       try {
-        const a = await act(provider, "add", { name: name.trim() });
-        const flow = a.result?.flow;
-        if (flow) setStarted({ id: flow.id, flow });
-        if (a.list) onList(a.list);
+        const a = await credentialAct(provider, "add", { name: name.trim() });
+        if (a.result?.id) setStarted({ id: a.result.id, answer: a.result });
+        else if (a.result?.message) setError(a.result.message);
+        onList(a.list);
       } catch (e: any) {
         setError(e?.message ?? String(e));
       } finally {
@@ -299,15 +183,7 @@ function addForm(provider: "claude" | "chatgpt", hint: string): CredentialSlot["
           <Text type="supporting" weight="semibold">
             Signing in “{started.id.split(":")[1]}”
           </Text>
-          <SignInPanel
-            id={started.id}
-            initial={started.flow}
-            onList={(l) => {
-              onList(l);
-              close();
-            }}
-            onClose={close}
-          />
+          <SignInPanel id={started.id} initial={started.answer} onList={onList} onClose={close} />
         </VStack>
       );
     return (
@@ -330,7 +206,7 @@ function addForm(provider: "claude" | "chatgpt", hint: string): CredentialSlot["
   };
 }
 
-const FLOW_ACTIONS = ["signIn", "signInPi", "signOut", "signInStatus", "signInCode", "signInCancel"];
+const FLOW_ACTIONS = ["signIn", "signInPi", "signOut", SIGN_IN_STEPS.status, SIGN_IN_STEPS.code, SIGN_IN_STEPS.cancel];
 
 export const accountSlots: CredentialSlot[] = [
   {

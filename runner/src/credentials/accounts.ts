@@ -17,19 +17,17 @@
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { ACCOUNT_NAME, RESERVED_ACCOUNT_NAMES, accountSlug, type SignInResult } from "../../../web/src/shared/accounts";
-import type { CredentialModel, CredentialState, CredentialView } from "../../../web/src/shared/credentials";
+import { ACCOUNT_NAME, RESERVED_ACCOUNT_NAMES, SIGN_IN_STEPS, accountSlug } from "../../../web/src/shared/accounts";
+import type { CredentialActionResult, CredentialModel, CredentialState, CredentialView } from "../../../web/src/shared/credentials";
 import type { ChainEntry, HarnessId, ModelRef, ProviderUsage, UsageWindow } from "../../../web/src/shared/protocol";
 import { userHome } from "../home";
 import { accountUsage, getUsage, usageAtHome } from "../usage";
 import { usedIn, type CredentialPlugin } from "./registry";
-import { cancelFlow, flowFor, startCommand, startRelay, submitCode } from "./signin";
+import { cancelFlow, flowFor, flowLive, startCommand, startRelay, submitCode, type SignInFlow } from "./signin";
 import { accountsDir } from "./store";
 
-/** The foundation's plugin plus `homeFor` (the account's own home for a harness, for readers of native session files). */
-export interface AccountPlugin extends CredentialPlugin {
-  homeFor(credId: string, harness: HarnessId): string | undefined;
-}
+/** A login plugin: the foundation's, with `homeFor` always answered (the account's own home for a harness). */
+export type AccountPlugin = CredentialPlugin & Required<Pick<CredentialPlugin, "homeFor">>;
 
 // ---------------- binaries and machine homes ----------------
 
@@ -43,6 +41,8 @@ const installed = (bin: string) => !!Bun.which(bin);
 export const machineClaudeDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(userHome(), ".claude");
 export const machineCodexHome = () => process.env.CODEX_HOME ?? join(userHome(), ".codex");
 export const machinePiDir = () => process.env.PI_CODING_AGENT_DIR ?? join(userHome(), ".pi", "agent");
+/** Where pi writes its sessions on this machine (and where the pi adapter reads them). */
+export const machinePiSessions = () => process.env.PI_CODING_AGENT_SESSION_DIR ?? join(machinePiDir(), "sessions");
 const agyToken = () => join(userHome(), ".gemini", "antigravity-cli", "antigravity-oauth-token");
 
 /** A harness home's folder in an account (the guard's harness folder names: accounts/<id>/claude, codex, pi). */
@@ -431,13 +431,41 @@ async function modelsFor(h: HarnessId, label: string, keep: (m: ModelRef) => boo
 
 // ---------------- sign-in ----------------
 
-function flowResult(flow: ReturnType<typeof flowFor>, message?: string): SignInResult {
-  return {
-    ...(flow ? { flow } : {}),
-    ...(flow?.url ? { url: flow.url } : {}),
-    ...(flow?.code ? { code: flow.code } : {}),
-    ...((message ?? flow?.message) ? { message: message ?? flow?.message } : {}),
-  };
+/**
+ * A sign-in step as the page sees it (a CredentialActionResult, shared/accounts.ts): while the flow
+ * is still going the answer carries `id` (the page asks again with signInStatus); a paste flow's
+ * link is `url` and the code it shows is asked for with `next` (signInCode); a device flow's link
+ * and code are `url` and `code`; a command flow says what to run in `message` (its last line).
+ */
+export function flowResult(flow: SignInFlow | undefined): CredentialActionResult {
+  if (!flow) return {};
+  const live = flowLive(flow);
+  const out: CredentialActionResult = live ? { id: flow.id } : {};
+  // What the CLI printed when no link could be read out of it (redacted by signin.ts).
+  const tail = flow.output && !flow.url ? `\n${flow.output}` : "";
+  switch (flow.state) {
+    case "starting":
+      return { ...out, message: `Starting the sign-in…${tail}` };
+    case "verifying":
+      return { ...out, message: "Checking the code…" };
+    case "done":
+      return { message: flow.kind === "command" ? "Done." : "Signed in." };
+    case "cancelled":
+      return { message: "Cancelled." };
+    case "failed":
+      return { message: `${flow.message ?? "The sign-in stopped."}${tail}` };
+  }
+  if (flow.kind === "paste" && flow.url)
+    return {
+      ...out,
+      url: flow.url,
+      message: "Open the sign-in page, sign in with the account you want here, and paste the code it shows.",
+      next: { action: SIGN_IN_STEPS.code, prompt: "Paste the code the sign-in page shows", field: "code", secret: true },
+    };
+  if (flow.kind === "device" && flow.url)
+    return { ...out, url: flow.url, ...(flow.code ? { code: flow.code } : {}), message: "Open the page, sign in with the account you want here, and enter this code. Tether notices when you're done." };
+  if (flow.kind === "command") return { ...out, message: `${flow.message ?? "Run this on the runner. Tether notices when you're signed in."}\n${flow.command ?? ""}` };
+  return { ...out, message: `Waiting for the sign-in…${tail}` };
 }
 
 /** Sign-ins started per credential: a cancelled flow cleans up only if no newer one took its place. */
@@ -472,12 +500,12 @@ function afterSignIn(id: string, isNew: boolean, part?: Part, gen = generation.g
 }
 
 /** Flow actions every plugin answers: the state of its sign-in, the code you paste, cancel. */
-async function flowAction(id: string, name: string, args: any): Promise<SignInResult | undefined> {
+async function flowAction(id: string, name: string, args: any): Promise<CredentialActionResult | undefined> {
   if (name === "signInStatus") return flowResult(flowFor(id));
   if (name === "signInCode") return flowResult(await submitCode(id, String(args?.code ?? "")));
   if (name === "signInCancel") {
     const f = cancelFlow(id);
-    return flowResult(f && { ...f, state: "cancelled" });
+    return f ? flowResult({ ...f, state: "cancelled" }) : { message: "No sign-in was running." };
   }
   return undefined;
 }
@@ -486,7 +514,7 @@ async function flowAction(id: string, name: string, args: any): Promise<SignInRe
  * Signing a machine login out: never one tap from the browser (it signs the CLI out for every
  * terminal too). The page shows the CLI's own command to run on the runner, and notices when it's done.
  */
-function machineSignOut(id: string, command: string, what: string, signedIn: () => Promise<boolean> | boolean): SignInResult {
+function machineSignOut(id: string, command: string, what: string, signedIn: () => Promise<boolean> | boolean): CredentialActionResult {
   beginSignIn(id);
   return flowResult(
     startCommand({
@@ -500,7 +528,7 @@ function machineSignOut(id: string, command: string, what: string, signedIn: () 
 }
 
 /** Signs an extra account out (its home goes), saying where it was used: those entries are skipped from now on. */
-async function signOutExtra(id: string): Promise<SignInResult> {
+async function signOutExtra(id: string): Promise<CredentialActionResult> {
   const { defaultOrder } = await import("../defaultOrder");
   const used = usedIn(id, defaultOrder());
   removeAccountHome(id);
@@ -519,7 +547,7 @@ function newAccountId(provider: "claude" | "chatgpt", name: unknown): string {
 
 // ---------------- Claude ----------------
 
-async function claudeSignIn(id: string, isNew: boolean): Promise<SignInResult> {
+async function claudeSignIn(id: string, isNew: boolean): Promise<CredentialActionResult> {
   const gen = beginSignIn(id);
   const dir = isMachine(id) ? undefined : preparedHome(id, "claude", true);
   const flow = await startRelay({
@@ -623,7 +651,7 @@ export const claudePlugin: AccountPlugin = {
 
 // ---------------- ChatGPT (Codex, pi) ----------------
 
-async function codexSignIn(id: string, isNew: boolean): Promise<SignInResult> {
+async function codexSignIn(id: string, isNew: boolean): Promise<CredentialActionResult> {
   const gen = beginSignIn(id);
   const home = id === "chatgpt:codex" ? undefined : preparedHome(id, "codex", true);
   const flow = await startRelay({
@@ -639,7 +667,7 @@ async function codexSignIn(id: string, isNew: boolean): Promise<SignInResult> {
 }
 
 /** pi has no sign-in command: its /login runs in its own screen. The page shows what to run. */
-function piSignIn(id: string): SignInResult {
+function piSignIn(id: string): CredentialActionResult {
   beginSignIn(id);
   const dir = id === "chatgpt:pi" ? machinePiDir() : preparedHome(id, "pi", true);
   const command = id === "chatgpt:pi" ? PI_BIN() : `PI_CODING_AGENT_DIR=${dir.includes("'") ? JSON.stringify(dir) : `'${dir}'`} ${PI_BIN()}`;
@@ -744,7 +772,9 @@ export const chatgptPlugin: AccountPlugin = {
   async envFor(id, entry: ChainEntry): Promise<Record<string, string>> {
     if (isMachine(id)) return {};
     if (entry.harness === "codex") return { CODEX_HOME: preparedHome(id, "codex"), ...blanked("codex") };
-    if (entry.harness === "pi") return { PI_CODING_AGENT_DIR: preparedHome(id, "pi") };
+    // pi's sessions stay where the pi adapter lists and resumes them (the machine's sessions dir):
+    // only the login (auth.json) is the account's.
+    if (entry.harness === "pi") return { PI_CODING_AGENT_DIR: preparedHome(id, "pi"), PI_CODING_AGENT_SESSION_DIR: machinePiSessions() };
     throw new Error(`${id} is a ChatGPT login: it runs Codex and pi, not ${entry.harness}.`);
   },
   async usage(id) {

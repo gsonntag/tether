@@ -1,38 +1,14 @@
-// Harness logins and extra accounts (.claude/credentials/SPEC.md sections 3 and 4): the sign-in
-// flows the runner relays to the browser. Shapes only; the runner side is
-// runner/src/credentials/{accounts,signin}.ts, the page side web/src/credentials/accounts.tsx.
+// Harness logins and extra accounts (.claude/credentials/SPEC.md sections 3 and 4): account names,
+// shared by the runner (runner/src/credentials/{accounts,signin}.ts) and the page
+// (web/src/credentials/accounts.tsx).
+//
+// A sign-in's steps reach the page as CredentialActionResults (shared/credentials.ts), see
+// runner/src/credentials/accounts.ts flowResult: while one is still going its answer carries `id`
+// (the page asks again with "signInStatus"); a link to open is `url`, a device code `code`, the code
+// to paste back is asked for with `next` ("signInCode"); a command to run on the runner is in `message`.
 
-/**
- * A sign-in in progress on the runner, as the browser sees it (no token ever: the CLI writes the
- * login into the account's own home, and the pasted code isn't echoed back).
- *  - "paste": open `url` in a new tab, sign in, paste the code it shows (Claude Code).
- *  - "device": open `url` and enter `code` there (Codex device flow).
- *  - "command": no flow Tether can relay: run `command` on the runner; Tether notices when it's done.
- */
-export interface SignInFlow {
-  /** the credential it signs in ("claude:work") */
-  id: string;
-  kind: "paste" | "device" | "command";
-  state: "starting" | "waiting" | "verifying" | "done" | "failed" | "cancelled";
-  url?: string;
-  /** the device code to enter at `url` (not a secret: you type it there) */
-  code?: string;
-  /** what to run on the runner (kind "command") */
-  command?: string;
-  /** what went wrong, or a hint */
-  message?: string;
-  /** the last lines the CLI printed, for when Tether couldn't read a link or code out of it */
-  output?: string;
-  startedAt: number;
-}
-
-/** What the sign-in actions answer (credentialAction's `result`): the flow, and its link/code at the top. */
-export interface SignInResult {
-  flow?: SignInFlow;
-  message?: string;
-  url?: string;
-  code?: string;
-}
+/** The actions a sign-in answers (accounts' plugins): its state now, the code you paste, cancel. */
+export const SIGN_IN_STEPS = { status: "signInStatus", code: "signInCode", cancel: "signInCancel" } as const;
 
 /** Names an extra account can't take: they're the machine's own logins. */
 export const RESERVED_ACCOUNT_NAMES = ["machine", "codex", "pi"];

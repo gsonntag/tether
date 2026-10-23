@@ -18,6 +18,7 @@ import {
   accountLabel,
   accountPlugins,
   chatgptPlugin,
+  flowResult,
   claudePlugin,
   codexLogin,
   mirror,
@@ -29,7 +30,8 @@ import {
   setModelSource,
 } from "./accounts";
 import { loginOf, signInFor } from "./authError";
-import { credentialAction, launchFor, listCredentials, register, unregister } from "./registry";
+import { credentialAction, envNameAllowed, launchFor, listCredentials, register, unregister } from "./registry";
+import { isSensitive } from "../guard";
 import { cancelAllFlows, findDeviceCode, findUrl, outputTail, startRelay, stripAnsi, submitCode } from "./signin";
 import { accountsDir } from "./store";
 
@@ -183,9 +185,26 @@ describe("env per account", () => {
     mkdirSync(accountHome("chatgpt:work"), { recursive: true });
     process.env.OPENAI_API_KEY = "machine-key";
     expect((await launchFor(parseEntry("codex:gpt-6-luna#chatgpt:work", "codex"))).env).toEqual({ CODEX_HOME: partHome("chatgpt:work", "codex"), OPENAI_API_KEY: "" });
-    expect((await launchFor(parseEntry("pi:openai-codex/gpt-6-luna#chatgpt:work", "pi"))).env).toEqual({ PI_CODING_AGENT_DIR: partHome("chatgpt:work", "pi") });
+    expect((await launchFor(parseEntry("pi:openai-codex/gpt-6-luna#chatgpt:work", "pi"))).env).toEqual({
+      PI_CODING_AGENT_DIR: partHome("chatgpt:work", "pi"),
+      PI_CODING_AGENT_SESSION_DIR: join(userHome(), ".pi", "agent", "sessions"),
+    });
     expect((await launchFor(parseEntry("codex:gpt-6-luna#chatgpt:codex", "codex"))).env).toEqual({});
     await expect(launchFor(parseEntry("claude-code:opus#chatgpt:work", "claude-code"))).rejects.toThrow(/runs Codex and pi/);
+  });
+
+  test("every variable an account sets passes the registry's env-name check, undeclared", () => {
+    for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"])
+      expect(envNameAllowed(k)).toBe(true);
+  });
+
+  test("account homes are where the guard expects them: accounts/<id>/<claude|codex|pi>, login files secret, the rest the agent's", () => {
+    for (const [id, part, harness] of [["claude:work", "claude", "claude-code"], ["chatgpt:work", "codex", "codex"], ["chatgpt:work", "pi", "pi"]] as const) {
+      const home = (part === "claude" ? claudePlugin : chatgptPlugin).homeFor(id, harness)!;
+      expect(home).toBe(join(accountsDir(), id, part));
+      expect(isSensitive(join(home, part === "claude" ? ".credentials.json" : "auth.json"))).toBe(true);
+      expect(isSensitive(join(home, "plans", "a.md"))).toBe(false);
+    }
   });
 });
 
@@ -289,6 +308,7 @@ describe("usage and quota per account", () => {
   });
 
   test("a limit on one account leaves the next account in the order usable", () => {
+    register(...accountPlugins);
     const chain = ["claude-code:opus#claude:machine", "claude-code:opus#claude:work", "codex:gpt-6-luna"];
     markExhausted(quotaKey(parseEntry(chain[0]!, "claude-code")), Date.now() + 60_000);
     const pick = pickEntry(chain, "claude-code");
@@ -350,8 +370,9 @@ echo "Invalid code"; exit 1`,
     expect(r).toMatchObject({
       url: "https://auth.openai.com/codex/device",
       code: "ABCD-12345",
-      flow: { id: "chatgpt:spare", kind: "device", state: "waiting" },
+      id: "chatgpt:spare",
     });
+    expect(r.next).toBeUndefined();
     expect(existsSync(partHome("chatgpt:spare", "codex"))).toBe(true);
     await credentialAction("chatgpt:spare", "signInCancel", {});
     for (let i = 0; i < 20 && existsSync(accountHome("chatgpt:spare")); i++) await Bun.sleep(50);
@@ -363,7 +384,7 @@ echo "Invalid code"; exit 1`,
     process.env.CODEX_BIN = script("codex", `printf 'Open https://auth.openai.com/codex/device\\nEnter this one-time code\\n   ABCD-12345\\n'; sleep 30`);
     await credentialAction("chatgpt", "add", { name: "retry" });
     const again: any = await credentialAction("chatgpt", "add", { name: "retry" });
-    expect(again.flow.state).toBe("waiting");
+    expect(again).toMatchObject({ id: "chatgpt:retry", code: "ABCD-12345" });
     await Bun.sleep(200);
     expect(existsSync(partHome("chatgpt:retry", "codex"))).toBe(true);
     await credentialAction("chatgpt:retry", "signIn", {});
@@ -383,11 +404,26 @@ echo "Invalid code"; exit 1`,
     process.env.CODEX_BIN = script("codex", `[ "$1" = "logout" ] && touch "${marker}"; exit 0`);
     codexAuth(join(userHome(), ".codex"), "me@example.com");
     const r: any = await credentialAction("chatgpt:codex", "signOut", {});
-    expect(r.flow).toMatchObject({ kind: "command", state: "waiting", command: `${process.env.CODEX_BIN} logout` });
+    expect(r.id).toBe("chatgpt:codex");
+    expect(r.message.split("\n").at(-1)).toBe(`${process.env.CODEX_BIN} logout`);
     await Bun.sleep(300);
     expect(existsSync(marker)).toBe(false);
     expect(existsSync(join(userHome(), ".codex", "auth.json"))).toBe(true);
-    for (const id of ["claude:machine", "kiro:machine", "chatgpt:pi"]) expect(((await credentialAction(id, "signOut", {})) as any).flow.kind).toBe("command");
+    for (const id of ["claude:machine", "kiro:machine", "chatgpt:pi"]) expect(await credentialAction(id, "signOut", {})).toMatchObject({ id, message: expect.stringContaining("logout") });
+  });
+
+  test("a flow reaches the page as an action result: link + code prompt, device code, command; `id` only while it goes on", () => {
+    const base = { id: "claude:work", startedAt: 0 };
+    expect(flowResult({ ...base, kind: "paste", state: "waiting", url: "https://claude.ai/oauth/authorize?x=1" })).toMatchObject({
+      id: "claude:work",
+      url: "https://claude.ai/oauth/authorize?x=1",
+      next: { action: "signInCode", field: "code", secret: true },
+    });
+    expect(flowResult({ ...base, kind: "device", state: "waiting", url: "https://auth.openai.com/codex/device", code: "AB12-CD34" })).toMatchObject({ id: "claude:work", code: "AB12-CD34" });
+    expect(flowResult({ ...base, kind: "command", state: "waiting", command: "kiro-cli login" }).message?.split("\n").at(-1)).toBe("kiro-cli login");
+    expect(flowResult({ ...base, kind: "paste", state: "verifying" })).toEqual({ id: "claude:work", message: "Checking the code…" });
+    expect(flowResult({ ...base, kind: "paste", state: "done" })).toEqual({ message: "Signed in." });
+    expect(flowResult({ ...base, kind: "paste", state: "failed", message: "Bad code." })).toEqual({ message: "Bad code." });
   });
 
   test("the output shown never carries secrets: key=value, JSON fields, bearer, the pasted code", () => {

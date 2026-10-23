@@ -4,8 +4,6 @@
 // (credentials/<branch>.tsx: foundry, bedrock, accounts; exporting CredentialSlots) and fills in its two slot lines below.
 // Each slot sits apart from the others so the branches merge without conflicts.
 
-import type { ComponentType } from "react";
-import type { CredentialList, CredentialProviderInfo, CredentialView } from "../shared/credentials";
 // slot foundry: import { foundrySlot } from "./foundry";
 
 // slot bedrock: import { bedrockSlot } from "./bedrock";

@@ -15,9 +15,10 @@ import { Layout, LayoutContent, LayoutHeader, VStack, HStack } from "@astryxdesi
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Heading, Text } from "@astryxdesign/core/Text";
-import { credentialProvider, type CredentialList, type CredentialProviderInfo, type CredentialState, type CredentialTest, type CredentialView } from "../shared/credentials";
+import { credentialProvider, type CredentialActionResult, type CredentialList, type CredentialProviderInfo, type CredentialState, type CredentialTest, type CredentialView } from "../shared/credentials";
 import { exampleSlot } from "../credentials/example";
 import { registerSlot, slotFor } from "../credentials";
+import { ActionAnswer } from "../credentials/ActionAnswer";
 import { refreshCredentials, rpc, setCredentials, toast, useStore } from "../store";
 
 // The example provider's form, for local UI work against a runner started with TETHER_EXAMPLE_CREDENTIALS=1.
@@ -142,8 +143,8 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
   const slot = slotFor(owner);
   const [busy, setBusy] = useState<string>();
   const [test, setTest] = useState<CredentialTest>();
-  // What a generic action said (its result's message); flows with a URL or code are a slot's Row.
-  const [answer, setAnswer] = useState<string>();
+  // What a generic action answered: its sentence, a page or code to show, the next step's prompt.
+  const [answer, setAnswer] = useState<CredentialActionResult>();
   const st = STATE[c.state] ?? STATE.unknown;
   const run = async (name: string, fn: () => Promise<void>) => {
     setBusy(name);
@@ -157,7 +158,7 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
   };
   const actions = (c.actions ?? []).filter((a) => !slot?.ownActions?.includes(a));
   const usage = usageLine(c);
-  const notes = [answer, c.stateNote, usage, c.usedIn?.length ? `Used in ${c.usedIn.join(", ")}` : undefined].filter(Boolean) as string[];
+  const notes = [c.stateNote, usage, c.usedIn?.length ? `Used in ${c.usedIn.join(", ")}` : undefined].filter(Boolean) as string[];
   const Row = slot?.Row;
   return (
     <VStack padding={2} gap={1}>
@@ -179,7 +180,7 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
                 onClick={() =>
                   run(a, async () => {
                     const r = await rpc("credentialAction", { id: c.id, action: a });
-                    setAnswer(r.result?.message);
+                    setAnswer(r.result);
                     setCredentials(r.list);
                   })
                 }
@@ -217,6 +218,18 @@ function CredentialRow({ credential: c }: { credential: CredentialView }) {
               {n}
             </Text>
           ))}
+        </VStack>
+      )}
+      {answer && (
+        <VStack paddingInlineStart={8}>
+          <ActionAnswer
+            id={c.id}
+            result={answer}
+            onAnswer={(a) => {
+              setAnswer(a.result);
+              setCredentials(a.list);
+            }}
+          />
         </VStack>
       )}
       {Row && (

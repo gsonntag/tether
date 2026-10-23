@@ -1,9 +1,9 @@
-// The accounts slot's pure parts (credentials/accounts.tsx, shared/accounts.ts): account names and flow states.
+// The accounts slot's pure parts (credentials/accounts.tsx, shared/accounts.ts): account names and sign-in steps.
 
 import { describe, expect, test } from "bun:test";
 import { accountSlug } from "./shared/accounts";
-import { accountSlots, flowLive, nameProblem } from "./credentials/accounts";
-import { slotFor } from "./credentials";
+import { accountSlots, nameProblem, signInGoesOn } from "./credentials/accounts";
+import { slotFor } from "./credentials/slots";
 
 describe("accounts slot", () => {
   test("names become id-safe slugs; the machine logins' names are refused", () => {
@@ -15,16 +15,11 @@ describe("accounts slot", () => {
     expect(nameProblem("!!!")).toMatch(/Letters/);
   });
 
-  test("live flows, and a slot per provider that owns its sign-in actions", () => {
-    expect(
-      flowLive({
-        id: "claude:a",
-        kind: "paste",
-        state: "waiting",
-        startedAt: 0,
-      }),
-    ).toBe(true);
-    expect(flowLive({ id: "claude:a", kind: "paste", state: "done", startedAt: 0 })).toBe(false);
+  test("a sign-in goes on while its answer carries the credential; a slot per provider owns its sign-in actions", async () => {
+    expect(signInGoesOn({ id: "claude:a", url: "https://claude.ai/oauth/authorize", next: { action: "signInCode", prompt: "Paste the code" } })).toBe(true);
+    expect(signInGoesOn({ message: "Signed in." })).toBe(false);
+    expect(signInGoesOn(undefined)).toBe(false);
+    await import("./credentials");
     expect(accountSlots.map((s) => s.provider)).toEqual(["claude", "chatgpt", "kiro", "antigravity"]);
     expect(slotFor("claude")?.ownActions).toContain("signIn");
     expect(slotFor("chatgpt")?.Add).toBeDefined();
