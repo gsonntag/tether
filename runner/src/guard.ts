@@ -58,13 +58,17 @@ const KINDS: [RegExp, Kind][] = [
   [/^browser_/i, "browser"],
 ];
 
+/** Read tools that read a whole folder's files (a path or the project), and those whose `pattern` is a path glob. */
+const SEARCH_TOOLS = /^(glob|grep|grep_search|find_by_name|search|codebase_search)$/i;
+const GLOB_TOOLS = /^(glob|find_by_name)$/i;
+
 export function kindOf(tool: string): Kind {
   for (const [re, k] of KINDS) if (re.test(tool)) return k;
   return "other";
 }
 
 function pathOf(input: any): string | undefined {
-  const p = input?.file_path ?? input?.filePath ?? input?.path ?? input?.notebook_path ?? input?.AbsolutePath ?? input?.TargetFile ?? input?.SearchPath ?? input?.DirectoryPath;
+  const p = input?.file_path ?? input?.filePath ?? input?.path ?? input?.notebook_path ?? input?.AbsolutePath ?? input?.TargetFile ?? input?.SearchPath ?? input?.SearchDirectory ?? input?.DirectoryPath;
   return typeof p === "string" ? p : undefined;
 }
 
@@ -97,21 +101,105 @@ const SENSITIVE = [
   /(^|\/)\.claude\/\.credentials\.json$/,
   /(^|\/)\.codex\/auth\.json$/,
   /(^|\/)\.local\/share\/opencode\/auth\.json$/,
-  /(^|\/)\.config\/tether\//,
   /(^|\/)\.config\/fol(iation)?\//,
   /id_(rsa|ed25519|ecdsa)(\.pub)?$/,
   /\.(pem|key|p12|pfx)$/,
   /credentials(\.json)?$/i,
 ];
+/** The runner's own config dir at its usual place: its token, keys, account logins. */
+const TETHER_CONFIG = /(^|\/)\.config\/tether\//;
 
 /**
- * Tether's credential store and per-account homes (credentials/store.ts) wherever the config dir is
- * ($TETHER_CONFIG_DIR may move it out of ~/.config/tether), and secrets.json with them.
+ * In a per-account home (credentials/store.ts accountsDir: CLAUDE_CONFIG_DIR, CODEX_HOME, pi's agent
+ * dir…) only the login files are secret: tokens, keys, the harness's login databases and the
+ * configs that can carry a key. Its memory, plans, todos and transcripts stay readable.
  */
-const tetherSecrets = () => [credentialsFile(), accountsDir(), secretsFile()];
+const ACCOUNT_SECRET = /^(auth\.json|\.credentials\.json|\.claude\.json|credentials(\.json)?|config\.toml|[^/]*tokens?(\.json)?|[^/]*\.(sqlite3?|db)(-wal|-shm|-journal)?|[^/]*\.(pem|key|p12|pfx))$/i;
+
+/**
+ * Tether's credential store wherever the config dir is ($TETHER_CONFIG_DIR may move it out of
+ * ~/.config/tether), and secrets.json with it. The account homes are checked file by file (above).
+ */
+const tetherSecrets = () => [credentialsFile(), secretsFile()];
 
 /** Credential and secrets files (keys, tokens, .env…): the guard keeps agents off them; the file panel asks before showing one. */
-export const isSensitive = (p: string) => SENSITIVE.some((re) => re.test(p)) || tetherSecrets().some((s) => inside(p, s));
+export function isSensitive(p: string): boolean {
+  const acc = accountsDir();
+  if (inside(p, acc) && p !== acc) {
+    const rel = p.slice(acc.replace(/\/$/, "").length + 1);
+    return ACCOUNT_SECRET.test(basename(p)) || SENSITIVE.some((re) => re.test(rel));
+  }
+  return SENSITIVE.some((re) => re.test(p)) || TETHER_CONFIG.test(p) || tetherSecrets().some((s) => inside(p, s));
+}
+
+/**
+ * Where credentials live, as absolute paths: a folder holding one of them (the home, ~/.config, the
+ * accounts folder) can't be searched or read recursively without reading them.
+ */
+function sensitiveRoots(): string[] {
+  const h = userHome();
+  const fixed = [
+    ".ssh", ".aws", ".gnupg", ".config/gcloud", ".kube/config", ".docker/config.json", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+    ".pi/agent/auth.json", ".claude/.credentials.json", ".codex/auth.json", ".local/share/opencode/auth.json",
+    ".config/tether", ".config/foliation", ".config/fol",
+  ].map((r) => join(h, r));
+  const env = [process.env.CODEX_HOME && join(process.env.CODEX_HOME, "auth.json"), process.env.CLAUDE_CONFIG_DIR && join(process.env.CLAUDE_CONFIG_DIR, ".credentials.json")];
+  return [...fixed, ...env.filter((x): x is string => !!x), ...tetherSecrets(), accountsDir()];
+}
+
+/**
+ * Whether reading `p` recursively (grep -r, rg, Grep/Glob on it) could read a credential: it is
+ * one, or a folder with one inside (no trailing slash needed). An account's home (accounts/<id>)
+ * has its login files at the top; the folders below it (memory, plans) don't.
+ */
+export function holdsSensitive(p: string): boolean {
+  if (isSensitive(p)) return true;
+  const acc = accountsDir();
+  if (inside(p, acc)) return p.slice(acc.replace(/\/$/, "").length).split("/").filter(Boolean).length <= 1;
+  return sensitiveRoots().some((r) => inside(r, p));
+}
+
+const hasGlob = (p: string) => /[*?[{]/.test(p);
+
+/** A path with a wildcard ("~/.codex/*.json"): the folder before the first one. */
+function globBase(p: string): string {
+  const parts = p.split("/");
+  const i = parts.findIndex((s) => hasGlob(s));
+  return i < 0 ? p : parts.slice(0, i).join("/") || "/";
+}
+
+/** The path and, when it exists and is (or goes through) a link, where it leads. */
+function realOf(p: string): string[] {
+  try {
+    const r = realpathSync(p);
+    return r === p ? [p] : [p, r];
+  } catch {
+    return [p];
+  }
+}
+
+/** What reading a path (a word of a command, a tool's path) could expose: a secret, a folder holding one, or nothing. */
+function exposure(raw: string, base: string): "secret" | "holds" | undefined {
+  const a = abs(raw, base);
+  if (hasGlob(raw)) {
+    const dir = globBase(a);
+    if (isSensitive(dir)) return "secret";
+    return holdsSensitive(dir) ? "holds" : undefined;
+  }
+  const ps = realOf(a);
+  if (ps.some(isSensitive)) return "secret";
+  return ps.some(holdsSensitive) ? "holds" : undefined;
+}
+
+const READS_SECRET = "Blocked: reads a credential or secrets file.";
+const SEARCHES_SECRETS = "Blocked: that folder holds credential or secrets files (keys, logins, Tether's own). Search or read inside the project instead, or name the file you need.";
+
+/** The deny for reading this path, if it is (or holds) a secret. Attachments have their own check (attachmentAccess). */
+function readExposure(raw: string, base: string): Verdict | undefined {
+  if (isAttachmentPath(abs(raw, base))) return undefined;
+  const x = exposure(raw, base);
+  return x ? { decision: "deny", by: "rule", reason: x === "secret" ? READS_SECRET : SEARCHES_SECRETS } : undefined;
+}
 
 const ATTACHMENTS_READ_ONLY = "Blocked: files attached to messages are read-only. Copy one into the project to change it.";
 const ANOTHER_SESSION = "Blocked: that file was attached in another session.";
@@ -157,7 +245,8 @@ const AGENT_CONFIG = [
 ];
 const AGENT_CONFIG_IN_COMMAND = /hooks\.json|(^|[\s/"'=])[._]agents?([\s/"';&|]|$)|\.gemini\/config|\.claude\/settings/;
 
-export const isAgentConfig = (p: string) => AGENT_CONFIG.some((re) => re.test(p));
+/** An account home's settings (CLAUDE_CONFIG_DIR/settings.json) carry hooks like ~/.claude's. */
+export const isAgentConfig = (p: string) => AGENT_CONFIG.some((re) => re.test(p)) || (inside(p, accountsDir()) && /^(settings(\.local)?\.json|hooks\.json)$/.test(basename(p)));
 
 // ---------------- shell commands ----------------
 
@@ -201,10 +290,48 @@ function splitSegments(cmd: string): string[] {
     .filter(Boolean);
 }
 
-function tokens(seg: string): string[] {
+function rawTokens(seg: string): string[] {
   const out: string[] = [];
   for (const m of seg.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3]!);
+  return out;
+}
+
+function tokens(seg: string): string[] {
+  const out = rawTokens(seg);
   while (out.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(out[0]!)) out.shift(); // FOO=bar cmd
+  return out;
+}
+
+/** Programs that look at names and metadata, never a file's contents: their paths aren't reads. */
+const METADATA_HEADS = new Set("ls pwd which whereis type stat du df tree basename dirname realpath readlink date true false test [ cd mkdir touch echo printf seq sleep file wc".split(" "));
+/** Programs whose first plain argument is a pattern or script, not a file (unless -e / -f gives it). */
+const PATTERN_FIRST = new Set("grep egrep fgrep rg ag sed awk gawk jq yq".split(" "));
+
+/**
+ * The words of one command that may name a file it reads: plain arguments, `--opt=<path>` values,
+ * and path-looking pieces of scripts and quoted strings ("r ~/.codex/auth.json", awk's getline <
+ * "/path"). Paths are what holds a "/" or starts with "~"; a bare word ("credentials.json", ".")
+ * counts unless it is the program's pattern or (git) a message or ref.
+ */
+function readCandidates(seg: string, head: string, args: string[]): string[] {
+  const out: string[] = [];
+  const pathy = (w: string) => (w.includes("/") || w.startsWith("~")) && !w.includes("://");
+  for (const t of rawTokens(seg)) {
+    for (const f of t.split(/[\s'"`;&|<>()=,]+/)) if (f && pathy(f)) out.push(f);
+    const eq = t.indexOf("=");
+    if (eq > 0 && pathy(t.slice(eq + 1))) out.push(t.slice(eq + 1));
+  }
+  if (head === "git") return out;
+  const explicit = args.some((a) => /^(-[ef]|--regexp|--file|--from-file|-f\S|--slurpfile|--rawfile)/.test(a));
+  let skipFirst = PATTERN_FIRST.has(head) && !explicit;
+  for (const a of args) {
+    if (a.startsWith("-")) continue;
+    if (skipFirst) {
+      skipFirst = false;
+      continue;
+    }
+    if (!/\s/.test(a) && !pathy(a)) out.push(a);
+  }
   return out;
 }
 
@@ -255,20 +382,28 @@ function attachmentReader(head: string, args: string[], cwd: string): "allow" | 
 }
 
 function classifyShell(cmd: string, call: ToolCall): Verdict | undefined {
-  const cwd = call.cwd;
+  // `root`: the project, where edits are routine; `wd`: where the command is when a segment runs
+  // (a `cd` moves it, and its relative paths are read from there).
+  const root = call.cwd;
+  let wd = root;
   for (const [re, why] of HARD_DENY) if (re.test(cmd)) return { decision: "deny", by: "rule", reason: `Blocked: ${why}.` };
   if (AGENT_CONFIG_IN_COMMAND.test(cmd)) return undefined; // agent hooks/config: never routine
   if (/\$\(|`|<\(|>\(/.test(cmd)) return undefined; // substitutions can hide anything: judge
   if (/\$/.test(cmd)) return undefined; // $HOME/…, ${X}: the path checks below can't see where it points
-  // Redirects must stay in the project (or /tmp, /dev/null).
-  for (const m of cmd.matchAll(/(?:^|[^<>&\d])>{1,2}\s*([^\s;&|]+)/g)) {
-    const target = m[1]!;
-    if (target.startsWith("&")) continue;
-    const p = abs(target, cwd);
-    if (isAttachmentPath(p)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
-    if (!(inside(p, cwd) || inside(p, "/tmp") || p === "/dev/null") || isSensitive(p)) return undefined;
-  }
   for (const seg of splitSegments(cmd)) {
+    // Redirects must stay in the project (or /tmp, /dev/null).
+    for (const m of seg.matchAll(/(?:^|[^<>&\d])>{1,2}\s*([^\s;&|]+)/g)) {
+      const target = m[1]!;
+      if (target.startsWith("&")) continue;
+      const p = abs(target, wd);
+      if (isAttachmentPath(p)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      if (!(inside(p, root) || inside(p, "/tmp") || p === "/dev/null") || isSensitive(p)) return undefined;
+    }
+    // An input redirect reads a file whatever the program is (`sort < ~/.codex/auth.json`).
+    for (const m of seg.matchAll(/(?:^|[^<])<(?![<(&])\s*["']?([^\s;&|<>"']+)/g)) {
+      const x = readExposure(m[1]!, wd);
+      if (x) return x;
+    }
     const t = tokens(seg);
     if (!t.length) continue;
     const head = basename(t[0]!);
@@ -276,7 +411,24 @@ function classifyShell(cmd: string, call: ToolCall): Verdict | undefined {
     // Another session's attachments (or the whole folder) aren't this agent's to read.
     for (const a of t) {
       const v = a.includes("=") ? a.slice(a.indexOf("=") + 1) : a;
-      if (attachmentAccess(abs(v, cwd), call) === "other") return { decision: "deny", by: "rule", reason: ANOTHER_SESSION };
+      if (attachmentAccess(abs(v, wd), call) === "other") return { decision: "deny", by: "rule", reason: ANOTHER_SESSION };
+    }
+    // Every file a command may read, whatever the program (sort, jq, awk, xxd, strings, grep -r…):
+    // a credential, or a folder that holds one, is off limits. Names and metadata (ls, stat) aren't reads.
+    if (!METADATA_HEADS.has(head)) {
+      for (const w of readCandidates(seg, head, args)) {
+        const x = readExposure(w, wd);
+        if (x) return x;
+      }
+      // A search with no folder given searches where it is.
+      const recursive = head === "rg" || head === "ag" || (/^e?grep$/.test(head) && args.some((a) => /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)/.test(a)));
+      if (recursive && holdsSensitive(wd)) return { decision: "deny", by: "rule", reason: SEARCHES_SECRETS };
+    }
+    if (head === "cd" || head === "pushd") {
+      if (args.includes("-")) return undefined; // back to wherever it was: can't follow
+      const to = args.find((a) => !a.startsWith("-"));
+      wd = to === undefined ? userHome() : abs(to, wd);
+      continue;
     }
     if (head === "git") {
       const sub = args.find((a) => !a.startsWith("-"));
@@ -304,29 +456,26 @@ function classifyShell(cmd: string, call: ToolCall): Verdict | undefined {
     }
     if (head === "find" && args.some((a) => ["-delete", "-exec", "-execdir", "-ok"].includes(a))) return undefined;
     if (head === "sed" && args.some((a) => a.startsWith("-i"))) {
-      if (args.some((a) => !a.startsWith("-") && isAttachmentPath(abs(a, cwd)))) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
-      if (args.some((a) => !a.startsWith("-") && isAbsolute(a) && !inside(a, cwd))) return undefined;
+      if (args.some((a) => !a.startsWith("-") && isAttachmentPath(abs(a, wd)))) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      if (args.some((a) => !a.startsWith("-") && (isAbsolute(a) || wd !== root) && !inside(abs(a, wd), root))) return undefined;
     }
     if (head === "rm" || head === "mv" || head === "cp" || head === "ln" || head === "touch" || head === "mkdir") {
-      let paths = args.filter((a) => !a.startsWith("-")).map((a) => abs(a, cwd));
+      let paths = args.filter((a) => !a.startsWith("-")).map((a) => abs(a, wd));
       // Attached files are read-only: copying one out is fine, anything that changes them isn't.
       // (`-t DIR` / `--target-directory=DIR` names the destination up front.)
       const ti = args.findIndex((a) => a === "-t" || a === "--target-directory");
-      const target = ti >= 0 ? args[ti + 1] :args.find((a) => a.startsWith("--target-directory="))?.slice(19);
-      if (target !== undefined && !isAttachmentPath(abs(target, cwd)) && head === "cp") paths = paths.filter((p) => p !== abs(target, cwd)).concat(abs(target, cwd));
-      if (target !== undefined && isAttachmentPath(abs(target, cwd))) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
+      const target = ti >= 0 ? args[ti + 1] : args.find((a) => a.startsWith("--target-directory="))?.slice(19);
+      if (target !== undefined && !isAttachmentPath(abs(target, wd)) && head === "cp") paths = paths.filter((p) => p !== abs(target, wd)).concat(abs(target, wd));
+      if (target !== undefined && isAttachmentPath(abs(target, wd))) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
       const changed = head === "cp" ? paths.slice(-1) : paths;
       if (changed.some(isAttachmentPath)) return { decision: "deny", by: "rule", reason: ATTACHMENTS_READ_ONLY };
       if (head === "cp") paths = [...paths.slice(0, -1).filter((p) => !isAttachmentPath(p)), ...paths.slice(-1)];
-      const touchesGitDir = paths.some((p) => inside(p, resolve(cwd, ".git")));
-      if (paths.some((p) => !(inside(p, cwd) || inside(p, "/tmp")) || isSensitive(p)) || touchesGitDir) return undefined;
-      if (head === "rm" && paths.some((p) => p === cwd)) return undefined;
+      const touchesGitDir = paths.some((p) => inside(p, resolve(root, ".git")));
+      if (paths.some((p) => !(inside(p, root) || inside(p, "/tmp")) || isSensitive(p)) || touchesGitDir) return undefined;
+      if (head === "rm" && paths.some((p) => p === root)) return undefined;
       continue;
     }
-    if (["cat", "head", "tail", "less", "grep", "rg"].includes(head) && args.some((a) => isSensitive(abs(a, cwd)) && !isAttachmentPath(abs(a, cwd)))) {
-      return { decision: "deny", by: "rule", reason: "Blocked: reads a credential or secrets file." };
-    }
-    const reader = attachmentReader(head, args, cwd);
+    const reader = wd === root ? attachmentReader(head, args, root) : undefined;
     if (reader === "allow") continue;
     if (reader) return reader;
     if (SAFE_HEADS.has(head)) continue;
@@ -375,7 +524,14 @@ export function rules(call: ToolCall): Verdict | undefined {
         if (access === "other") return { decision: "deny", by: "rule", reason: ANOTHER_SESSION };
         if (access === "own" && x === p) return { decision: "allow", by: "rule", reason: "Reads a file attached to a message." };
       }
-      if (p && isSensitive(abs(p, cwd))) return { decision: "deny", by: "rule", reason: "Blocked: reads a credential or secrets file." };
+      if (p && exposure(p, cwd) === "secret") return { decision: "deny", by: "rule", reason: READS_SECRET };
+      // A search (Grep, Glob…) reads everything under its folder (the project when none is given),
+      // and a Glob pattern can name its own ("~/.config/**/*.json").
+      if (SEARCH_TOOLS.test(call.tool)) {
+        if (holdsSensitive(abs(p ?? ".", cwd))) return { decision: "deny", by: "rule", reason: SEARCHES_SECRETS };
+        const glob = GLOB_TOOLS.test(call.tool) && typeof call.input?.pattern === "string" ? call.input.pattern : undefined;
+        if (glob && exposure(glob, p ? abs(p, cwd) : cwd)) return { decision: "deny", by: "rule", reason: SEARCHES_SECRETS };
+      }
       return { decision: "allow", by: "rule", reason: "Read-only." };
     }
     case "edit": {

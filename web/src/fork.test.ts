@@ -17,6 +17,8 @@ describe("Fork from here", () => {
   test("the dialog's target", () => {
     const m = msg({ id: "u1", parts: [{ type: "text", text: "Fix   the\nlogin bug" }] });
     expect(forkTarget("claude-code:1", m, "claude-code", "opus")).toEqual({ sessionId: "claude-code:1", msgId: "u1", harness: "claude-code", model: "opus", atUser: true, excerpt: "Fix the login bug" });
+    expect(forkTarget("codex:1", m, "codex", "gpt-6-luna", "azure:east").model).toBe("gpt-6-luna#azure:east");
+    expect(forkTarget("codex:1", m, "codex", undefined, "azure:east").model).toBeUndefined();
     expect(forkExcerpt(msg({ parts: [{ type: "text", text: "x".repeat(100) }] }), 10)).toBe("xxxxxxxxxx…");
   });
 });

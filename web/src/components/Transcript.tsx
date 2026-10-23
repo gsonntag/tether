@@ -259,7 +259,7 @@ function ForkButton({ m }: { m: Msg }) {
   const open = () => {
     const o = useStore.getState().open[sessionId];
     if (!o?.session) return;
-    useStore.setState({ dialog: "fork", forkTarget: forkTarget(sessionId, m, o.session.harness, o.state.model) });
+    useStore.setState({ dialog: "fork", forkTarget: forkTarget(sessionId, m, o.session.harness, o.state.model, o.state.credential) });
   };
   return <IconButton label="Fork from here" tooltip="Fork from here" variant="ghost" size="sm" icon={<Icon icon={Square2StackIcon} />} onClick={open} />;
 }

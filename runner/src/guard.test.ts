@@ -126,3 +126,88 @@ describe("agent hooks and plugins", () => {
     expect(sh("cat agents.md")).toBe("allow");
   });
 });
+
+// Credential files can be read by any program, not just cat: every word of every command that may
+// name a file is checked, folders holding a credential count (no trailing slash needed), and so do
+// input redirects and the Grep/Glob tools' path and pattern. Normal commands stay routine.
+describe("credential files, whatever reads them", () => {
+  const grep = (input: Record<string, string>, tool = "Grep") => rules({ tool, input, cwd })?.decision ?? "judge";
+  test.each([
+    "sort ~/.config/tether/credentials.json",
+    "jq . ~/.config/tether/credentials.json",
+    "awk 1 ~/.config/tether/secrets.json",
+    "xxd ~/.config/tether/accounts/anthropic-work/.credentials.json",
+    "strings ~/.codex/auth.json",
+    "od -c ~/.claude/.credentials.json",
+    "grep -r sk- ~/.config/tether",
+    "grep -r sk- ~/.config",
+    "grep -rn sk- ~",
+    "rg sk- ~/.config/tether/accounts",
+    "rg sk- ~/.config/tether/accounts/anthropic-work",
+    "sort < ~/.codex/auth.json",
+    "wc -l < ~/.config/tether/credentials.json",
+    "cat ~/.codex/au*",
+    "cat ~/.config/tether/*",
+    "cp ~/.codex/auth.json leak.json",
+    "sed -n 'r ~/.codex/auth.json' notes.txt",
+    "jq -r .tokens --rawfile x ~/.pi/agent/auth.json package.json",
+    "cd ~/.config/tether && cat credentials.json",
+    "cd ~ && grep -r sk- .",
+    "head -c 200 ~/.config/tether/accounts/openai-work/auth.json",
+    "git diff --no-index ~/.codex/auth.json a.txt",
+  ])("%s is denied", (c) => expect(sh(c)).toBe("deny"));
+
+  test.each([
+    "grep -r foo src",
+    "grep -rn credentials src",
+    "rg TODO",
+    "jq . package.json",
+    "sort names.txt | uniq -c",
+    "awk 1 data.csv",
+    "xxd bin/a.out | head",
+    "strings build/app",
+    "wc -l < src/a.ts",
+    "ls ~/.config/tether",
+    "git commit -m 'fix credentials handling'",
+    "cat src/credentials/store.ts",
+  ])("%s stays routine", (c) => expect(sh(c)).toBe("allow"));
+
+  test("Grep and Glob: a path that holds credentials, or a pattern into one", () => {
+    expect(grep({ pattern: "sk-", path: "~/.config/tether" })).toBe("deny");
+    expect(grep({ pattern: "sk-", path: "~/.config" })).toBe("deny");
+    expect(grep({ pattern: "sk-", path: "~/.codex" })).toBe("deny");
+    expect(grep({ pattern: "**/*.json", path: "~/.config/tether" }, "Glob")).toBe("deny");
+    expect(grep({ pattern: "~/.config/**/*.json" }, "Glob")).toBe("deny");
+    expect(grep({ pattern: "**/*", path: "~" }, "Glob")).toBe("deny");
+    expect(grep({ pattern: "foo", path: "src" })).toBe("allow");
+    expect(grep({ pattern: "foo" })).toBe("allow");
+    expect(grep({ pattern: "**/*.ts" }, "Glob")).toBe("allow");
+    expect(grep({ pattern: "src/**/*.ts", path: "/home/u/proj" }, "Glob")).toBe("allow");
+  });
+
+  test("an account's own home stays readable; its login files don't", () => {
+    const home = "~/.config/tether/accounts/anthropic-work";
+    expect(read(`${home}/projects/x/memory/MEMORY.md`)).toBe("allow");
+    expect(read(`${home}/plans/plan.md`)).toBe("allow");
+    expect(read(`${home}/todos/a.json`)).toBe("allow");
+    expect(grep({ pattern: "x", path: `${home}/projects` })).toBe("allow");
+    expect(read(`${home}/.credentials.json`)).toBe("deny");
+    expect(read(`${home}/.claude.json`)).toBe("deny");
+    expect(read("~/.config/tether/accounts/openai-work/auth.json")).toBe("deny");
+    expect(read("~/.config/tether/accounts/openai-work/state_5.sqlite")).toBe("deny");
+    expect(edit(`${home}/settings.json`)).toBe("deny");
+    expect(sh(`cat ${home}/plans/plan.md`)).toBe("allow");
+  });
+
+  test("a config dir moved elsewhere is protected there too", () => {
+    const was = process.env.TETHER_CONFIG_DIR;
+    process.env.TETHER_CONFIG_DIR = "/srv/tether-conf";
+    try {
+      expect(sh("grep -r sk- /srv")).toBe("deny");
+      expect(sh("sort /srv/tether-conf/credentials.json")).toBe("deny");
+      expect(grep({ pattern: "sk-", path: "/srv/tether-conf" })).toBe("deny");
+    } finally {
+      process.env.TETHER_CONFIG_DIR = was;
+    }
+  });
+});

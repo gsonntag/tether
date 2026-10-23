@@ -93,6 +93,20 @@ export function forkReason(at: Msg): string {
 
 const harnessLabel = (h: HarnessId) => HARNESSES.find((x) => x.id === h)?.label ?? h;
 
+/**
+ * The fork's model and credential. A model picked with its credential ("id#azure:east", modelKey)
+ * runs there; a model without one runs on the harness's own login; no model at all (Default) keeps
+ * the session's credential when the harness stays the same.
+ */
+export function forkModel(req: { harness: HarnessId; model?: string }, fromHarness: HarnessId, fromCredential?: string): { model?: string; credential?: string } {
+  const hash = req.model?.indexOf("#") ?? -1;
+  const picked = hash >= 0 ? req.model!.slice(0, hash) : req.model;
+  const named = hash >= 0 ? req.model!.slice(hash + 1).trim() : undefined;
+  const credential = req.model ? named || undefined : req.harness === fromHarness ? fromCredential : undefined;
+  const model = picked && picked !== "default" ? picked : undefined;
+  return { ...(model ? { model } : {}), ...(credential ? { credential } : {}) };
+}
+
 /** Forks `from` at a message into a new live session (started, tracked, its first turn on its way). */
 export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkRequest): Promise<LiveSession> {
   const { sink, context } = deps;
@@ -100,11 +114,7 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
   if (!a) throw new Error(`Unknown harness ${req.harness}`);
   const cut = forkCut(from.t.messages, req.msgId);
   if (!cut) throw new Error("That message isn't in this session any more.");
-  // A model picked with its credential ("id#azure:east"); else a fork in the same harness stays on the session's.
-  const hash = req.model?.indexOf("#") ?? -1;
-  const picked = hash >= 0 ? req.model!.slice(0, hash) : req.model;
-  const credential = hash >= 0 ? req.model!.slice(hash + 1) : req.harness === from.harness ? from.t.state.credential : undefined;
-  const model = picked && picked !== "default" ? picked : undefined;
+  const { model, credential } = forkModel(req, from.harness, from.t.state.credential);
   const ask = cut.ask !== undefined && imagesOf(cut.at).length ? promptOf(cut.at, storeImages(from.id, cut.at)) : cut.ask;
   const prompt = [ask, req.prompt?.trim()].filter(Boolean).join("\n\n") || undefined;
   const reason = forkReason(cut.at);
@@ -115,7 +125,10 @@ export async function runFork(deps: ForkDeps, from: LiveSession, req: ForkReques
 
   // The harness's own fork, where it cuts at this point.
   let next: LiveSession | undefined;
-  const point = sameHarness && a.fork && history ? from.forkPoint(cut.kept.length) : undefined;
+  // Not onto another credential: its history lives in the old one's home (an account's own
+  // CLAUDE_CONFIG_DIR / CODEX_HOME), so that fork goes by a brief.
+  const sameCredential = (credential ?? "") === (from.t.state.credential ?? "");
+  const point = sameHarness && sameCredential && a.fork && history ? from.forkPoint(cut.kept.length) : undefined;
   if (point && a.fork) {
     try {
       next = await a.fork({ nativeId: from.nativeId, projectPath: from.projectPath, point }, opts, sink);
