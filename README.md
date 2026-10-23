@@ -124,7 +124,8 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
     to the next entry, but only on a definite signal: the harness's own limit error (Claude
     Code, Codex, Antigravity), or an error that looks like a limit plus a fresh usage check of
     that account (Claude, or ChatGPT for Codex and pi on `openai-codex`) showing a window at
-    100%. There is no switching ahead of a limit.
+    100%. There is no switching ahead of a limit. On AWS Bedrock a service quota or per-day limit
+    counts as definite; `ThrottlingException` backs off.
   - **Entries Tether can't check** (pi on other providers, opencode, Kiro) never switch on their
     own; the chain editor marks them. Their errors, like any other error in a chain, show a
     "Continue on …" button that moves the session on by hand.
@@ -138,6 +139,12 @@ browser ──wss──► Tether app on Foliation (UI + relay) ◄──wss─�
   background tasks stopped where the harness allows it (Claude Code tasks, Codex subagents); the
   new agent is told about both and to check the working tree first.
   The UI follows the link automatically.
+- **AWS Bedrock** (Credentials page): Claude Code (native Bedrock) and pi (`amazon-bedrock`) on a
+  Bedrock API key or an access key stored in Tether (write-only), or an AWS profile from `~/.aws`
+  (read through the AWS CLI, its secrets never copied; an expired `aws login` gets "Sign in again",
+  which relays `aws login --remote`). Add models per credential from the region's list or by id,
+  each tested with one tiny call; they read "Opus 5.5 · Bedrock" in pickers, chains and the default
+  order. Only that credential's AWS variables reach the process. Codex and opencode aren't wired up.
 - **Long runs.**
   - Turns that were in progress resume after a runner restart.
   - A watchdog warns when a running session has been silent for 15 minutes with nothing

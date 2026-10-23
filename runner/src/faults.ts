@@ -134,17 +134,20 @@ function clock(ms: number) {
  * "You've hit your limit · resets 5pm" text, then an error result. A 429 is the same assistant
  * error without the rejected event; anything else an API error.
  */
-export function claudeFault(f: Fault, sessionId: string, now = Date.now()): any[] {
+export function claudeFault(f: Fault, sessionId: string, now = Date.now(), bedrock = false): any[] {
   const base = { uuid: crypto.randomUUID(), session_id: sessionId };
   const reset = resetOf(f, now);
-  const [error, status, text] =
-    f.kind === "quota"
+  // On Bedrock (CLAUDE_CODE_USE_BEDROCK) there's no rate_limit_event: AWS's own messages come through.
+  const bk = bedrock && f.kind !== "other" ? f.kind : undefined;
+  const [error, status, text] = bk
+    ? ["rate_limit", bk === "quota" ? 400 : 429, `API Error: ${bedrockFaultText(bk)}`]
+    : f.kind === "quota"
       ? ["rate_limit", 429, `You've hit your limit · resets ${clock(reset)}`]
       : f.kind === "rate"
         ? ["rate_limit", 429, "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later."]
         : ["server_error", 500, 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}'];
   const out: any[] = [];
-  if (f.kind === "quota")
+  if (f.kind === "quota" && !bk)
     out.push({
       type: "rate_limit_event",
       rate_limit_info: { status: "rejected", resetsAt: Math.floor(reset / 1000), rateLimitType: "five_hour", overageStatus: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false },
@@ -214,7 +217,9 @@ export function piFault(f: Fault, model: string | undefined, now = Date.now()): 
   const [provider, ...rest] = (model ?? "").split("/");
   const mins = Math.max(0, Math.round((resetOf(f, now) - now) / 60_000));
   const errorMessage =
-    f.kind === "quota"
+    provider === "amazon-bedrock" && f.kind !== "other"
+      ? bedrockFaultText(f.kind)
+      : f.kind === "quota"
       ? provider === "openai-codex"
         ? `You have hit your ChatGPT usage limit (plus plan). Try again in ~${mins} min.`
         : `429 {"type":"error","error":{"type":"rate_limit_error","message":"You have reached your usage limit. Your limit resets in ${mins} minutes."}}`
@@ -225,6 +230,13 @@ export function piFault(f: Fault, model: string | undefined, now = Date.now()): 
     type: "message_end",
     message: { role: "assistant", content: [], api: "", provider, model: rest.join("/"), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }, stopReason: "error", errorMessage, timestamp: now },
   };
+}
+
+/** AWS Bedrock's own wording: a service quota, or ThrottlingException (pi shows the SDK exception's name). */
+export function bedrockFaultText(kind: "quota" | "rate"): string {
+  return kind === "quota"
+    ? "ServiceQuotaExceededException: Your request exceeds the service quota for your account. You can view your quotas at https://console.aws.amazon.com/servicequotas/."
+    : "ThrottlingException: Too many requests, please wait before trying again.";
 }
 
 /**

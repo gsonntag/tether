@@ -63,6 +63,26 @@ export function agyQuota(text: string | undefined, now = Date.now()): Classified
   return { kind: "quota", definite: true, resetAt: parseReset(`in ${m[1]}`, now) };
 }
 
+/**
+ * AWS Bedrock's own errors (Claude Code passes the message through, pi the SDK's exception): a
+ * service quota or a per-day token/request limit is a quota (definite: there's no usage feed to
+ * confirm it, and retrying won't help), ThrottlingException / "Too many requests|tokens, please
+ * wait before trying again" is a rate limit (back off on the same model).
+ */
+export function bedrockFault(text: string | undefined): Classified | undefined {
+  const s = text ?? "";
+  if (/ServiceQuotaExceeded|service quota|quota (?:exceeded|limit)|too many (?:tokens|requests) per day/i.test(s)) {
+    // A per-day quota resets at midnight UTC; others after the default cooldown, unless the text says.
+    const midnight = /per day/i.test(s) ? new Date().setUTCHours(24, 0, 0, 0) : undefined;
+    return { kind: "quota", definite: true, resetAt: parseReset(s) ?? midnight };
+  }
+  if (/ThrottlingException|too many (?:requests|tokens), please wait|ServiceUnavailableException|ModelNotReadyException|Rate exceeded/i.test(s)) return { kind: "rate_limit", resetAt: parseReset(s) };
+  return undefined;
+}
+
+/** Whether an entry runs on Bedrock: a "#bedrock:" credential or pi's amazon-bedrock provider. */
+export const onBedrock = (e: ChainEntry) => !!e.credential?.startsWith("bedrock:") || e.model.startsWith("amazon-bedrock/");
+
 /** Best-effort reset time from messages like "try again in 2h 13m" or "retry after 30 seconds". */
 export function parseReset(s: string, now = Date.now()): number | undefined {
   const m = s.match(/(?:in|after)\s+((?:\d+(?:\.\d+)?\s*(?:d|days?|h|hours?|hrs?|m|mins?|minutes?|s|secs?|seconds?)\s*)+)/i);

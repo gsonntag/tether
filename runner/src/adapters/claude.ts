@@ -572,7 +572,7 @@ export class ClaudeSession extends LiveSession {
       const fault = this.takeFault();
       this.faultStop = undefined;
       if (fault) {
-        for (const x of claudeFault(fault, this.nativeId)) this.onMessage(x);
+        for (const x of claudeFault(fault, this.nativeId, Date.now(), !!this.t.state.credential?.startsWith("bedrock:"))) this.onMessage(x);
         return;
       }
     }

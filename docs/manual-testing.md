@@ -42,11 +42,19 @@ only a person can verify. Never use the prod runner for limit/credential experim
 - [ ] pi on Foundry with the same key
 - [ ] Fallback from ChatGPT login to Foundry when the ChatGPT limit hits
 
-### AWS Bedrock
-- [ ] Bedrock API key and `aws login` profile both show on Credentials with region and expiry
-- [ ] Claude Code on a Bedrock model answers; pi on Bedrock answers
-- [ ] Model list / inference profiles for the region; Test per model
-- [ ] Throttling backs off; quota error moves down the chain
+### AWS Bedrock (branch `bedrock`)
+Checked 2026-10-23 on a test runner (screenshots in `.claude/credentials/shots-bedrock/`): the
+machine's `[default]` profile lists with account (root), region and "expired" state; Test and List
+models report the expired `aws login`; "Sign in again" relays `aws login --remote` up to the URL;
+the Add form for both key kinds. Not checked: anything that needs a live AWS session.
+- [x] `aws login` profile shows on Credentials with account, region, state and expiry; root warning
+- [ ] Bedrock API key added from the Credentials page (last 4 shown, never the key); Test
+- [ ] Access key id + secret added; Test
+- [ ] "Sign in again" end to end: open the URL, paste the code, row turns Ready
+- [ ] List models shows the region's inference profiles; "Test and add" adds one; "Type an id" works
+- [ ] Claude Code on `us.anthropic.claude-opus-…` · Bedrock answers; pi on `amazon-bedrock/…` answers
+- [ ] The process only has that credential's AWS variables (names only: `env | cut -d= -f1 | grep AWS` in a Bash tool call)
+- [ ] `/tether simulate-limit rate` on a Bedrock entry backs off; `quota` moves down the chain
 
 ### Credentials page, accounts, sign-in
 - [ ] Every login on the runner listed with account, plan, state, usage
