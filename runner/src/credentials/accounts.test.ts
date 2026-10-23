@@ -30,7 +30,7 @@ import {
   setModelSource,
 } from "./accounts";
 import { loginOf, signInFor } from "./authError";
-import { credentialAction, envNameAllowed, launchFor, listCredentials, register, unregister } from "./registry";
+import { credentialAction, envNameAllowed, isStatusAction, lastCredentialList, launchFor, listCredentials, register, unregister } from "./registry";
 import { isSensitive } from "../guard";
 import { cancelAllFlows, findDeviceCode, findUrl, outputTail, startRelay, stripAnsi, submitCode } from "./signin";
 import { accountsDir } from "./store";
@@ -426,6 +426,17 @@ echo "Invalid code"; exit 1`,
     expect(flowResult({ ...base, kind: "paste", state: "failed", message: "Bad code." })).toEqual({ message: "Bad code." });
   });
 
+  test("polling a sign-in's status keeps the last list (no rediscovery); other actions drop it", async () => {
+    register(...accountPlugins);
+    await listCredentials();
+    expect(isStatusAction("claude:work", "signInStatus")).toBe(true);
+    expect(isStatusAction("claude:work", "signIn")).toBe(false);
+    await credentialAction("claude:work", "signInStatus", {});
+    expect(lastCredentialList()).toBeDefined();
+    await credentialAction("claude:work", "signInCancel", {});
+    expect(lastCredentialList()).toBeUndefined();
+  });
+
   test("the output shown never carries secrets: key=value, JSON fields, bearer, the pasted code", () => {
     const out = outputTail(`error: access_token=abc123 "refresh_token": "r-xyz" code=4/0Abc\nAuthorization: Bearer sk-live\npasted: MY-PASTED-CODE`, 12, ["MY-PASTED-CODE"]);
     for (const s of ["abc123", "r-xyz", "4/0Abc", "sk-live", "MY-PASTED-CODE"]) expect(out).not.toContain(s);
@@ -461,5 +472,19 @@ describe("auth errors", () => {
     expect(signInFor(parseEntry("codex:gpt-6-luna#azure:east", "codex"), "401 Unauthorized")).toBeUndefined();
     expect(signInFor(parseEntry("claude-code:opus", "claude-code"), "You've hit your usage limit")).toBeUndefined();
     expect(loginOf(parseEntry("pi:anthropic/claude", "pi"))).toBeUndefined();
+  });
+
+  test("only the harness's own login failing counts, not a 401 or 'unauthorized' in a tool's output", () => {
+    const claude = parseEntry("claude-code:opus", "claude-code");
+    for (const t of ["API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "unexpected status 401 Unauthorized: token expired", "Your access token could not be refreshed. Please log out and sign in again."])
+      expect(signInFor(claude, t)).toBeDefined();
+    for (const t of [
+      "Bash failed: curl https://api.example.com returned 401 Unauthorized",
+      "Tool error: request unauthorized by the proxy",
+      "The command failed.\n401 Unauthorized",
+      "Couldn't reach the server (sign in again later?)",
+      "fetch failed: HTTP 401 from https://registry.npmjs.org",
+    ])
+      expect(signInFor(claude, t)).toBeUndefined();
   });
 });

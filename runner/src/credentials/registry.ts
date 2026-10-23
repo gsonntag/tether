@@ -42,6 +42,12 @@ export interface CredentialPlugin {
    * reach the app, anything else is dropped.
    */
   action?(id: string, name: string, args: unknown): Promise<CredentialActionResult | unknown>;
+  /**
+   * Actions that only report how a step is going (a sign-in's "signInStatus", polled every few
+   * seconds): they change nothing, so the list isn't rediscovered for them (credentialAction's op
+   * answers the last one).
+   */
+  statusActions?: string[];
   /** the env a process running `entry` on this credential needs (only this credential's variables; see launchFor for the names allowed) */
   envFor(credId: string, entry: ChainEntry): Promise<Record<string, string>>;
   /**
@@ -423,6 +429,15 @@ export async function removeCredential(id: string, order?: string[]): Promise<{ 
   return { usedIn: used };
 }
 
+/** Whether `action` only reports a step's state (CredentialPlugin.statusActions): no rediscovery for it. */
+export const isStatusAction = (id: string, action: string) => {
+  const p = pluginFor(id) ?? plugins.get(id);
+  return !!p?.statusActions?.includes(action);
+};
+
+/** The last list, as it is (no discovery): what a status action answers with. */
+export const lastCredentialList = (): CredentialList | undefined => cached?.list;
+
 /** A provider-specific step; `id` is a credential or a bare provider ("azure" + "add"). */
 export async function credentialAction(id: string, action: string, args: unknown): Promise<CredentialActionResult | undefined> {
   const p = owner(id);
@@ -433,7 +448,7 @@ export async function credentialAction(id: string, action: string, args: unknown
   } catch (e: any) {
     throw new Error(errText(e));
   } finally {
-    cached = undefined;
+    if (!isStatusAction(id, action)) cached = undefined;
   }
   if (typeof r === "object" && r && "id" in r && typeof (r as any).id === "string") removed.delete((r as any).id);
   return cleanActionResult(r);

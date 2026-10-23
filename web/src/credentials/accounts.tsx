@@ -55,7 +55,8 @@ export function SignInPanel({ id, initial, onList, onClose }: { id: string; init
           const a = await credentialAct(id, SIGN_IN_STEPS.status);
           if (stopped.current) return;
           setAnswer(a.result ?? { message: "The sign-in stopped." });
-          if (!signInGoesOn(a.result)) onList(a.list);
+          // A status poll answers the runner's last list (no discovery); once the sign-in ends, a fresh one.
+          if (!signInGoesOn(a.result)) void store().then((m) => m.refreshCredentials());
         } catch {
           // asked again on the next render
           setAnswer((x) => (x ? { ...x } : x));

@@ -572,6 +572,7 @@ async function claudeSignIn(id: string, isNew: boolean): Promise<CredentialActio
 export const claudePlugin: AccountPlugin = {
   provider: "claude",
   label: "Claude",
+  statusActions: [SIGN_IN_STEPS.status],
   actions: ["add"],
   async discover() {
     const out: CredentialView[] = [];
@@ -684,6 +685,7 @@ function piSignIn(id: string): CredentialActionResult {
 export const chatgptPlugin: AccountPlugin = {
   provider: "chatgpt",
   label: "ChatGPT",
+  statusActions: [SIGN_IN_STEPS.status],
   actions: ["add"],
   async discover() {
     const out: CredentialView[] = [];
@@ -833,6 +835,7 @@ export const chatgptPlugin: AccountPlugin = {
 export const kiroPlugin: AccountPlugin = {
   provider: "kiro",
   label: "Kiro",
+  statusActions: [SIGN_IN_STEPS.status],
   async discover() {
     if (!installed(KIRO_BIN())) return [];
     const info = await kiroLogin();
@@ -884,6 +887,7 @@ export const kiroPlugin: AccountPlugin = {
 export const antigravityPlugin: AccountPlugin = {
   provider: "antigravity",
   label: "Antigravity",
+  statusActions: [SIGN_IN_STEPS.status],
   async discover() {
     const signedIn = existsSync(agyToken());
     if (!signedIn && !installed(AGY_BIN())) return [];

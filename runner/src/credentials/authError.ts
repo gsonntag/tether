@@ -5,11 +5,25 @@
 import { credentialProvider } from "../../../web/src/shared/credentials";
 import type { ChainEntry } from "../../../web/src/shared/protocol";
 
-/** Error text that means the login is missing, expired or refused (not a limit, not a network blip). */
-const AUTH =
-  /authentication_failed|authentication[_ ]error|invalid (x-)?api[ _-]?key|invalid (bearer|access|oauth) token|oauth token (has )?expired|token (has )?(expired|been revoked)|token_expired|refresh_token_(reused|expired|invalid)|could not refresh|not (logged|signed) in|please (run )?\/login|log ?in again|sign in again|re-?authenticate|\b401\b|unauthori[sz]ed/i;
+/**
+ * What the harnesses say when their own login is missing, expired or refused: Claude Code's
+ * authentication_failed / "Invalid API key · Please run /login" / "OAuth token has expired", Codex's
+ * refresh-token errors and "Not logged in", pi's provider 401.
+ */
+const AUTH_PHRASE =
+  /authentication_failed|authentication_error|invalid (x-)?api[ _-]?key|invalid (bearer|access|oauth) token|oauth token (has )?expired|access token could not be refreshed|token_expired|refresh_token_(reused|expired|invalid)|not (logged|signed) in\b|please run \/login|run `?(claude|codex) login/i;
+/** A bare 401 only when the error starts with it ("401 Unauthorized", "API Error: 401 …", "unexpected status 401 …"), not quoted from a tool's output. */
+const AUTH_STATUS = /^(?:(?:api )?error:\s*)?(?:unexpected status\s+|status(?: code)?:?\s+)?(?:401\b|unauthori[sz]ed\b)/i;
 
-export const isAuthError = (text: string | undefined) => !!text && AUTH.test(text);
+/**
+ * Whether a harness error means its login is refused (not a limit, not a network blip). Only the
+ * error's first line counts: an agent's curl output or a tool error quoted further down that
+ * mentions 401 or "unauthorized" isn't the harness's login failing.
+ */
+export function isAuthError(text: string | undefined): boolean {
+  const head = (text ?? "").trim().split("\n")[0]!.slice(0, 400);
+  return !!head && (AUTH_PHRASE.test(head) || AUTH_STATUS.test(head));
+}
 
 /** The login (credential id) a harness runs on, and its provider's name: the machine's own unless the entry names one of ours. */
 export function loginOf(entry: ChainEntry): { credential: string; provider: string } | undefined {

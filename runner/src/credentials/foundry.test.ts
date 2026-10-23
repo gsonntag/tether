@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentEnv, resetSecretsCache } from "../secrets";
-import { classifyCodexError } from "../adapters/codex";
+import { classifyCodexError, wireModel } from "../adapters/codex";
 import { classify, isTransient } from "../fallback";
 import { azureResult, codexAzureProviders, codexArgs, foundryPlugin, normalizeEndpoint, PI_AZURE_EXT, resourceId, setFetch, suggestionOrder, setShellReader, shellVar, SHELL_TIMEOUT, TETHER_CODEX_PROVIDER, _shellFile } from "./foundry";
 import { credentialAction, credentialModels, envNameAllowed, launchFor, listCredentials, register, removeCredential, testCredential, unregister } from "./registry";
@@ -264,6 +264,12 @@ describe("profiles and hosts", () => {
     expect(c!.models!.filter((m) => m.harness === "pi").map((m) => m.id)).toEqual(["azure/gpt-6-astra", "azure/gpt-6-luna", "azure/gpt-6.1-sol"]);
     expect((await launchFor(entry("codex", "gpt-6-luna@azure-luna-low"))).args).toEqual(["-c", 'model_provider="azure"', "-c", 'model="gpt-6-luna"', "-c", 'model_reasoning_effort="low"']);
     expect((await launchFor(entry("codex", "gpt-6-luna"))).args).toEqual(["-c", 'model_provider="azure"', "-c", 'model="gpt-6-luna"', "-c", 'model_reasoning_effort="high"']);
+    // Codex is sent the deployment only for a profile entry this credential knows; any other "@" stays.
+    expect(wireModel("gpt-6-luna@azure-luna-low", ID)).toBe("gpt-6-luna");
+    expect(wireModel("gpt-6-luna@azure-luna-low")).toBe("gpt-6-luna@azure-luna-low");
+    expect(wireModel("gpt-6-luna@other", ID)).toBe("gpt-6-luna@other");
+    expect(wireModel("org/model@v2", "chatgpt:work")).toBe("org/model@v2");
+    expect(wireModel("gpt-6-luna", ID)).toBe("gpt-6-luna");
     // Test calls each deployment once.
     fakeAzure(() => [200, {}]);
     await testCredential(ID);

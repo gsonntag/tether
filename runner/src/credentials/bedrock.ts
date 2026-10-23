@@ -98,6 +98,7 @@ export function setBedrockIo(io: { cli?: typeof cli; fetch?: Fetch }) {
   if (io.cli) cli = io.cli;
   if (io.fetch) http = io.fetch;
   profileCache.clear();
+  forgetProfiles();
 }
 
 // ---- credentials ----
@@ -370,15 +371,29 @@ async function profileView(profile: string): Promise<CredentialView> {
   };
 }
 
-async function profiles(): Promise<string[]> {
-  const r = await cli(["configure", "list-profiles"], {});
-  if (!r.ok) return [];
-  return r.out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((p) => PROFILE.test(p))
-    .slice(0, MAX_PROFILES);
+/** `aws configure list-profiles`, kept 5 minutes (every list and action asks); an action or Test asks again. */
+let profileList: { at: number; names: Promise<string[]> } | undefined;
+
+function profiles(): Promise<string[]> {
+  if (profileList && Date.now() - profileList.at < PROFILE_FRESH_MS) return profileList.names;
+  const names = cli(["configure", "list-profiles"], {}).then((r) =>
+    r.ok
+      ? r.out
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((p) => PROFILE.test(p))
+          .slice(0, MAX_PROFILES)
+      : [],
+  );
+  const entry = { at: Date.now(), names };
+  profileList = entry;
+  // A failed call isn't kept.
+  names.then((n) => !n.length && profileList === entry && (profileList = undefined)).catch(() => (profileList = undefined));
+  return names;
 }
+
+/** The profiles are read again on the next ask (an action, Test, tests swapping the CLI). */
+const forgetProfiles = () => (profileList = undefined);
 
 /** A "bedrock:aws.<profile>" id must name a profile the AWS CLI lists (not any name a caller sends). */
 async function knownProfile(id: string) {
@@ -476,6 +491,7 @@ export const bedrockPlugin: CredentialPlugin = {
   },
 
   async test(id) {
+    forgetProfiles();
     await knownProfile(id);
     const r = await resolve(id);
     if (r.models[0]) return tinyCall(r, r.models[0]);
@@ -485,6 +501,7 @@ export const bedrockPlugin: CredentialPlugin = {
   },
 
   async action(id, name, args) {
+    forgetProfiles();
     const a = (args ?? {}) as Record<string, unknown>;
     const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string).trim() : "");
     if (id === "bedrock" && name === "add") {

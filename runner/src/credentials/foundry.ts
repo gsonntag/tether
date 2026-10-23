@@ -355,6 +355,17 @@ export function resources(): Resource[] {
 
 const resource = (id: string) => resources().find((r) => r.id === id);
 
+/**
+ * The deployment a "<deployment>@<profile>" entry runs, when it is one of this resource's Codex
+ * profile entries (a second profile on one deployment); undefined for anything else, so an "@" in
+ * any other model id is never touched.
+ */
+export function profileDeployment(credId: string | undefined, model: string | undefined): string | undefined {
+  if (!credId?.startsWith(`${PROVIDER}:`) || !model?.includes("@")) return undefined;
+  const d = resource(credId)?.deployments.get(model);
+  return d?.profile ? d.deployment : undefined;
+}
+
 function mustResource(id: string): Resource {
   const r = resource(id);
   if (!r) throw new Error(`${id} isn't on this runner any more.`);

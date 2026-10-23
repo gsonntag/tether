@@ -64,6 +64,17 @@ afterEach(() => {
 });
 
 describe("adding and listing", () => {
+  test("the AWS CLI's profile list is read once per few minutes, and again after an action", async () => {
+    const asked = () => calls.filter((c) => c.args.join(" ") === "configure list-profiles").length;
+    await listCredentials();
+    await listCredentials();
+    expect(asked()).toBe(1);
+    await credentialAction("bedrock:aws.default", "setRegion", { region: "us-west-2" });
+    expect(asked()).toBe(2);
+    await listCredentials();
+    expect(asked()).toBe(2);
+  });
+
   test("an API key and an access key are stored write-only; views show labels, region and last 4 at most", async () => {
     await credentialAction("bedrock", "add", { kind: "apiKey", name: "work", region: "us-west-2", apiKey: API_KEY });
     await credentialAction("bedrock", "add", { kind: "awsKeys", name: "iam", accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: SECRET });

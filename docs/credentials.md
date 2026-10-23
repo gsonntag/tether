@@ -52,7 +52,7 @@ Feature branches built on 49e7e1c adapt to these:
   store over `<home>/projects`), Codex threads (`thread/list`, `thread/read` with `CODEX_HOME`).
   `context/paths.ts` has `claudeHome(cred?)`, `codexHome(cred?)` and `harness.claudeDir/claudeProjects/
   codexDir/codexMemories/codexMemoriesDb/codexAgentsMd/codexConfig(cred?)`; without a credential they
-  are what they were. `usage.ts` exports `usageAtHome("claude-code" | "codex", home)` for a plugin's
+  are what they were. `usage.ts` exports `usageAtHome("claude-code" | "codex" | "pi", home, env?)` for a plugin's
   `usage()`. `envFor` must still set the home variable itself (homeFor only tells Tether where to read).
 - Per-account homes go under `store.accountsDir()/<id>/<harness>/` with harness folder names `claude`,
   `codex`, `pi` (also `opencode`, `kiro`, `antigravity`, `gemini`). The guard treats only
@@ -85,7 +85,8 @@ Feature branches built on 49e7e1c adapt to these:
 - `bedrock.ts` (`bedrock:<name>`, `bedrock:aws.<profile>`): `listModels` answers `models` (`label`
   "name · kind") or the reason in `message`; "Sign in again" answers `url` + `next` (`signInCode`).
 - `accounts.ts` (`claude:*`, `chatgpt:*`, `kiro:machine`, `antigravity:machine`): `homeFor` per
-  harness folder (`claude`, `codex`, `pi`); a sign-in step answers `url`/`code`/`message`, the code to
+  harness folder (`claude`, `codex`, `pi`); `statusActions: ["signInStatus"]` (a poll answers the last
+  list, no discovery); a sign-in step answers `url`/`code`/`message`, the code to
   paste as `next` (`signInCode`), and `id` while the flow goes on (the page asks `signInStatus` again).
   pi on an extra account keeps its sessions in the machine's dir (`PI_CODING_AGENT_SESSION_DIR`), where
   the pi adapter lists and resumes them; only its login is the account's. `usageAtHome(harness, home,

@@ -33,6 +33,7 @@ import { agentEnv } from "../secrets";
 import { codexHome } from "../context/paths";
 import { config } from "../config";
 import { sessionCredential } from "../credentials/registry";
+import { profileDeployment } from "../credentials/foundry";
 
 const CODEX_BIN = process.env.CODEX_BIN ?? "codex";
 /** Thread sources listed as sessions (Codex's default is interactive ones only, which leaves out ours). */
@@ -90,9 +91,13 @@ export function classifyCodexError(e: any, model: string | undefined, quotaReset
 /**
  * The model Codex is sent: a credential's second Codex profile on one deployment is the entry
  * "<deployment>@<profile>" (credentials/foundry.ts); Codex runs the deployment, the profile's
- * settings came as `-c` at launch.
+ * settings came as `-c` at launch. Only an entry the session's Foundry credential knows is stripped.
  */
-export const wireModel = <T extends string | undefined>(m: T): T => (m ? (m.replace(/^([^@]+)@[A-Za-z0-9._-]+$/, "$1") as T) : m);
+export function wireModel(m: string, credential?: string): string;
+export function wireModel(m: string | undefined, credential?: string): string | undefined;
+export function wireModel(m: string | undefined, credential?: string): string | undefined {
+  return profileDeployment(credential, m) ?? m;
+}
 
 export class CodexProcess {
   proc: ReturnType<typeof Bun.spawn>;
@@ -536,7 +541,7 @@ export class CodexSession extends LiveSession {
       approvalPolicy,
       approvalsReviewer: "user",
       sandbox: sandboxPolicy.type === "dangerFullAccess" ? "danger-full-access" : sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write",
-      ...(this.model ? { model: wireModel(this.model) } : {}),
+      ...(this.model ? { model: wireModel(this.model, this.t.state.credential) } : {}),
       ...launch.options,
     };
     let r: any;
@@ -560,7 +565,7 @@ export class CodexSession extends LiveSession {
     }
     if (r.thread.name) this.setTitle(r.thread.name);
     // Kept as the entry it was asked as ("gpt-6-luna@azure-luna-low") when Codex runs its deployment.
-    this.model = this.model && wireModel(this.model) === r.model ? this.model : r.model;
+    this.model = this.model && wireModel(this.model, this.t.state.credential) === r.model ? this.model : r.model;
     this.effort = r.reasoningEffort ?? undefined;
     this.models = await fetchModels(this.p).catch(() => []);
     modelCache = this.models;
@@ -578,7 +583,7 @@ export class CodexSession extends LiveSession {
   }
 
   private levels(): string[] {
-    const m = this.models.find((x) => x.id === wireModel(this.model));
+    const m = this.models.find((x) => x.id === wireModel(this.model, this.t.state.credential));
     return (m?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
   }
 
@@ -761,7 +766,7 @@ export class CodexSession extends LiveSession {
         if (p.willRetry) this.setRetrying(`retrying: ${p.error?.message ?? "error"}`);
         break;
       case "thread/tokenUsage/updated": {
-        this.setContext(codexTokenUsage(p.tokenUsage, wireModel(this.model ?? this.t.state.model)));
+        this.setContext(codexTokenUsage(p.tokenUsage, wireModel(this.model ?? this.t.state.model, this.t.state.credential)));
         break;
       }
       case "account/rateLimits/updated":
@@ -932,7 +937,7 @@ export class CodexSession extends LiveSession {
         input: skills ? codexInput(text, this.skillPaths) : [{ type: "text", text, text_elements: [] }, ...imageItems(text)],
         approvalsReviewer: "user",
         ...this.policy(),
-        ...(this.model ? { model: wireModel(this.model) } : {}),
+        ...(this.model ? { model: wireModel(this.model, this.t.state.credential) } : {}),
         ...(this.effort ? { effort: this.effort } : {}),
         ...this.collabParam(),
       });
@@ -1048,7 +1053,7 @@ export class CodexSession extends LiveSession {
   }
 
   private collabParam() {
-    const model = wireModel(this.model ?? this.t.state.model);
+    const model = wireModel(this.model ?? this.t.state.model, this.t.state.credential);
     return this.collab && model && model !== "default" ? { collaborationMode: collaborationMode(this.collab, model, this.effort) } : {};
   }
 

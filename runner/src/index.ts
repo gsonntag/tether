@@ -56,7 +56,7 @@ import { addHooks, importHooks, listHooks, setHook } from "./hooks";
 import { addLibraryCommand, importCommands, listLibraryCommands, setLibraryCommand } from "./commands";
 import { addSubagent, importSubagents, listSubagents, setSubagent } from "./subagents";
 import { listSecrets, setSecret } from "./secrets";
-import { credentialAction, credentialIds, credentialModels, listCredentials, registerCredentialPlugins, removeCredential, testCredential } from "./credentials";
+import { credentialAction, credentialIds, credentialModels, isStatusAction, lastCredentialList, listCredentials, registerCredentialPlugins, removeCredential, testCredential } from "./credentials";
 import { untilde } from "./context/paths";
 import { sessionForKey, sweepBridgeFiles } from "./bridge";
 import { buildPulse, ClosedPulses, PulseThrottle, TurnClock } from "./pulse";
@@ -1179,7 +1179,9 @@ const ops: Handlers = {
   },
   async credentialAction({ id, action, args }) {
     const result = await credentialAction(String(id ?? ""), String(action ?? ""), args);
-    return { result, list: await listCredentials({ order: defaultOrder() }) };
+    // A status poll (a sign-in's signInStatus every 2 s) answers the last list: no discovery.
+    const last = isStatusAction(String(id ?? ""), String(action ?? "")) ? lastCredentialList() : undefined;
+    return { result, list: last ?? (await listCredentials({ order: defaultOrder() })) };
   },
 
   async listCommands({ sessionId }) {
