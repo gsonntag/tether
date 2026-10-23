@@ -96,7 +96,7 @@ export function ChainEditor({
     if (!known) return { bad: `Unknown harness. Use one of: ${HARNESSES.map((x) => x.id).join(", ")}` };
     if (!available.includes(eh)) return { bad: `${HARNESSES.find((x) => x.id === eh)?.label} is not installed on this runner` };
     const ms = models[eh];
-    if (ms && em && em !== "default" && !ms.some((x) => x.id === em || x.label === em))
+    if (ms && em && em !== "default" && !ms.some((x) => x.id === em || x.resolved === em || x.label === em))
       return { warn: `Not in ${HARNESSES.find((x) => x.id === eh)?.label}'s model list (an alias may still work)` };
     const prov = usageProvider(eh, em);
     const u = prov && usage?.providers.find((p) => p.provider === prov);
