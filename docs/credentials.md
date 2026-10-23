@@ -21,7 +21,9 @@ branch (Foundry, Bedrock, accounts) builds on.
   its own; without one the entry is "manual switch only".
 - Values never leave the runner. `credentials/store.ts` keeps Tether-stored ones in
   `<config>/credentials.json` (mode 600); `views()` carries the last 4 chars at most. The guard
-  protects `credentials.json`, `<config>/accounts/` and `secrets.json` wherever the config dir is.
+  protects `credentials.json`, `secrets.json` and the login files under `<config>/accounts/` wherever
+  the config dir is, whatever program or tool reads them (every command argument, `<` redirects,
+  Grep/Glob paths and patterns), and folders holding them (`grep -r sk- ~/.config`).
 
 ## Interface changes after review (cred-foundation, after 49e7e1c)
 
