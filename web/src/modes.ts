@@ -10,6 +10,11 @@ export function pickerModes(st: Pick<LiveState, "modes" | "permissionMode">): st
   return modes.length > 1 ? modes : [];
 }
 
+/** The mode that just works on the task (Claude Code's "default", opencode's "build"): the one the others toggle back to. */
+export function baseMode(modes: string[]): string | undefined {
+  return modes.find((m) => m === "default" || m === "build" || m === "code") ?? modes[0];
+}
+
 const LABELS: Record<string, string> = { default: "Default", plan: "Plan", build: "Build", ask: "Ask", architect: "Architect", code: "Code" };
 
 export function modeLabel(m: string): string {
