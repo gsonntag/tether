@@ -188,7 +188,7 @@ function ChangesBody({ sessionId, state, narrow }: { sessionId: string; state: L
     scope === SESSION
       ? diff?.base === "HEAD"
         ? "Since the last commit (this session has no checkpoint)"
-        : "Since the session's first turn, up to the working tree now"
+        : undefined
       : turnIndex < 0
         ? "That turn is no longer kept"
         : turnIndex === cps.length - 1
