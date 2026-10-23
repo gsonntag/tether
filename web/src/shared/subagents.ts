@@ -56,10 +56,11 @@ export function subagentItem(link: SubagentLink, live?: { model?: string; tokens
 }
 
 /** Text Tether or another agent wrote into a conversation as a user message (a note about a subagent, a parent's message or task). */
-export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT_TASK_PREFIX];
+// The removed leader's notes and digests (2026-10-23) are still in older transcripts: still agent-written.
+export const AGENT_WRITTEN = [SUBAGENT_NOTE_PREFIX, FROM_PARENT_PREFIX, SUBAGENT_TASK_PREFIX, "[From your leader]", "[Tether] Updates"];
 
 /** Markers that say who wrote a message: none may appear as written inside text that's passed on. */
-const MARKERS = [...AGENT_WRITTEN, "[Tether]"];
+const MARKERS = ["[From you, via your leader]", ...AGENT_WRITTEN, "[Tether]"];
 /** Brackets, and what passes for one to a reader. */
 const OPEN = "[\\[［【〔⟦〚〖﹝❲⁅〘⦋⦍⦏]";
 const CLOSE = "[\\]］】〕⟧〛〗﹞❳⁆〙⦌⦎⦐]";
