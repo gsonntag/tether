@@ -13,7 +13,7 @@ import { SessionView } from "./components/SessionView";
 import { Dashboard } from "./components/Dashboard";
 import { keys, Sidebar } from "./components/Sidebar";
 import { listenForOpen } from "./push";
-import { goHome, NARROW_QUERY, openLink, openPage, switchRunner, toggleSidebar, useStore } from "./store";
+import { focusCard, goHome, NARROW_QUERY, openLink, openPage, respondFromLink, switchRunner, toggleSidebar, useStore } from "./store";
 import { useDrawerSwipe } from "./swipe";
 
 listenForOpen();
@@ -72,10 +72,24 @@ function Shell() {
       if (location.hash === "#/running") return openPage("running");
       // The sidebar's "Tether" heading.
       if (location.hash === "#/") return goHome();
-      const r = location.hash.match(/^#\/r\/([^/]+)\/s\/(.+)$/);
-      if (r) switchRunner(decode(r[1]!));
-      const m = r ?? location.hash.match(/^#\/s\/(.+)$/);
-      if (m) openLink(decode(m[r ? 2 : 1]!));
+      // A notification adds ?respond=<request|tool>:<id>:<approve|deny> (its Approve / Deny) or ?card=<id> (a tap).
+      const r = location.hash.match(/^#\/r\/([^/]+)\/s\/([^?]+)(?:\?(.*))?$/);
+      const runner = r ? decode(r[1]!) : undefined;
+      if (runner) switchRunner(runner);
+      const m = r ?? location.hash.match(/^#\/s\/([^?]+)(?:\?(.*))?$/);
+      if (!m) return;
+      const id = decode(m[r ? 2 : 1]!);
+      const q = new URLSearchParams(m[r ? 3 : 2] ?? "");
+      const respond = q.get("respond");
+      const card = q.get("card");
+      // Answered once: a reload (or going back) never fires it again.
+      if (respond || card) history.replaceState(null, "", location.hash.replace(/\?.*$/, ""));
+      void openLink(id).then(() => {
+        const full = useStore.getState().selected;
+        if (!full || (full !== id && !full.endsWith(`:${id}`))) return;
+        if (respond) void respondFromLink(runner, full, respond);
+        if (card) focusCard(card);
+      });
     };
     // Right away, not after the runner connects: a saved copy can show while it does.
     fromHash();

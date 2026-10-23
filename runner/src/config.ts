@@ -47,6 +47,10 @@ export interface RunnerConfig {
    * follow handoffTo), and the user's latest messages to it, which `relay` copies verbatim.
    */
   leader?: { sessionId: string; asks?: LeaderAsk[] };
+  /** "Always allow" on approvals, remembered per project (guard.ts matchRule) */
+  approvals?: import("../../web/src/shared/protocol").ApprovalRule[];
+  /** the owner's verdicts on judged calls, per project path, the last 20 (guard.ts recordPrecedent) */
+  precedents?: Record<string, import("./guard").Precedent[]>;
   /** Web Push: this runner's VAPID key, subscribed devices, recent notifications */
   push?: { vapid?: { publicKey: string; privateKey: string }; subs: import("./notify").PushSub[]; recent: import("../../web/src/shared/protocol").AgentNotice[] };
 }
@@ -68,6 +72,16 @@ export interface SessionPrefs {
   handoffTo?: { sessionId: string; reason: string };
   forkedFrom?: { sessionId: string; reason: string };
   guard?: import("./guard").GuardMode;
+  /** timed full access: when it ends (epoch ms), and the mode it goes back to then */
+  guardUntil?: number;
+  guardBefore?: import("./guard").GuardMode;
+  /** timed full access ended while the session wasn't running: said inline when it next opens */
+  guardEnded?: import("./guard").GuardMode;
+  /**
+   * The judge's denials still waiting on the owner (blocked tickets): what "Approve & retry" and
+   * "Run it myself" act on once the process that saw them has closed or the runner restarted.
+   */
+  blocked?: { toolId: string; name: string; input: unknown; reason: string; at: number }[];
   checkpoints?: import("../../web/src/shared/protocol").Checkpoint[];
   /** First working-tree snapshot, used to show changes made across the whole Tether session. */
   diffBaseSha?: string;

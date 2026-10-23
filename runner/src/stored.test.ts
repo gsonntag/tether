@@ -88,6 +88,16 @@ describe("storedState", () => {
     expect(snap.session).toMatchObject({ live: false, status: "idle", needsInput: false });
     expect(snap.seq).toBe(7);
   });
+
+  test("an open blocked ticket's card shows the judge's denial again (the history has none); the cached history isn't changed", () => {
+    const tool = (id: string): Msg => ({ id: `m-${id}`, role: "assistant", ts: 0, parts: [{ type: "tool", id, name: "Bash", input: { command: "git push" }, status: "error", kind: "shell" }] });
+    const messages = [tool("t1"), tool("t2")];
+    const snap = storedSnapshot(summary(1), { messages }, storedState({ history: {}, defaultGuard: "auto" }), 1, [{ toolId: "t1", name: "Bash", input: { command: "git push" }, reason: "Pushes.", at: 1 }]);
+    expect((snap.messages[0]!.parts[0] as any).guard).toEqual({ decision: "deny", by: "judge", reason: "Pushes." });
+    expect((snap.messages[1]!.parts[0] as any).guard).toBeUndefined();
+    expect(snap.messages[1]).toBe(messages[1]!);
+    expect((messages[0]!.parts[0] as any).guard).toBeUndefined();
+  });
 });
 
 describe("settingChange", () => {

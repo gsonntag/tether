@@ -12,7 +12,8 @@
 import { realpathSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { attachmentsDir, isAttachmentPath } from "./attachments";
-import { config } from "./config";
+import type { ApprovalRule } from "../../web/src/shared/protocol";
+import { config, saveConfig, saveConfigSoon } from "./config";
 import { judgeEnabled, parseJsonReply, runBackground } from "./context/background";
 import { trustedServerFor, type McpTrust } from "./mcp/registry";
 import { userHome } from "./home";
@@ -394,6 +395,149 @@ export function rules(call: ToolCall): Verdict | undefined {
   }
 }
 
+// ---------------- one-line calls (notices, pushes, precedent) ----------------
+
+/** A call in one line: the shell command, or "<Tool> <path>" (relative to the project), or the tool. */
+export function callLine(tool: string, input: any, cwd: string): string {
+  const cmd = kindOf(tool) === "shell" ? commandOf(input) : undefined;
+  if (cmd) return cmd.replace(/\s+/g, " ").trim();
+  const p = pathOf(input);
+  if (p) {
+    const a = abs(p, cwd);
+    return `${tool} ${inside(a, cwd) && a !== cwd ? a.slice(cwd.replace(/\/$/, "").length + 1) : p}`;
+  }
+  return tool;
+}
+
+/** At most `max` characters, "…" where it was cut. */
+export const clip = (s: string, max: number) => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
+
+// ---------------- "Always allow" rules, per project ----------------
+
+/** Shell syntax that makes a prefix meaningless: substitutions, pipes, chains, redirections, running as root. */
+const COMPOUND = /\$\(|`|<\(|>\(|\||;|&|>|<|\n|(^|\s)(sudo|doas)(\s|$)/;
+
+/** Program and first subcommand ("git push", "docker compose"), or why the command can't be one rule. */
+export function shellPrefix(cmd: string): { prefix: string } | { refused: string } {
+  const c = cmd.trim();
+  if (COMPOUND.test(c)) return { refused: "Commands with substitutions, pipes, ;, &&, ||, redirections or sudo aren't remembered." };
+  const t = c.split(/\s+/);
+  if (!t[0] || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) return { refused: "Commands that set variables first aren't remembered." };
+  if (isWrapper(t[0])) return { refused: `\`${t[0]}\` runs whatever it is given, so it isn't remembered.` };
+  // A flag, path or quoted script where the subcommand goes ("rm -f a", "git -C sub push"): the
+  // bare program would allow every use of it.
+  const sub = t[1] && /^[A-Za-z][\w.:-]*$/.test(t[1]) ? t[1] : undefined;
+  if (t[1] && !sub) return { refused: "Only a program and its subcommand are remembered (\"git push\"), and this has neither after the program." };
+  return { prefix: sub ? `${t[0]} ${sub}` : t[0] };
+}
+
+/** Shells, interpreters and wrappers: their "subcommand" is code or another command. */
+const WRAPPERS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "node", "bun", "deno", "perl", "ruby", "php", "lua", "env", "xargs", "eval", "exec", "nohup", "timeout", "nice", "ionice", "find", "command", "builtin", "time", "watch", "ssh", "su", "sudo", "doas", "stdbuf", "setsid", "chroot", "busybox"]);
+
+const isWrapper = (program: string) => {
+  const b = program.slice(program.lastIndexOf("/") + 1);
+  return WRAPPERS.has(b) || /^(python|pypy)[\d.]*$/.test(b);
+};
+
+const mcpParts = (tool: string) => tool.match(/^mcp__(.+?)__(.+)$/);
+
+/** The rule "Always allow" on this call stores, or why it stores none (the call is still allowed once). */
+export function deriveRule(project: string, tool: string, input: any, now = Date.now()): { rule: ApprovalRule } | { refused: string } {
+  const base: ApprovalRule = { id: crypto.randomUUID(), project, tool, addedAt: now };
+  if (kindOf(tool) === "shell") {
+    const cmd = commandOf(input);
+    if (!cmd) return { rule: base };
+    const p = shellPrefix(cmd);
+    return "prefix" in p ? { rule: { ...base, prefix: p.prefix } } : p;
+  }
+  const m = mcpParts(tool);
+  if (m) return { rule: { ...base, server: m[1] } };
+  return { rule: base };
+}
+
+/**
+ * The rule that allows this call, if any. `ruled`: what the guard's own rules said. Their deny
+ * (HARD_DENY included) is never overridden, and edits are allowed by a rule only where the guard's
+ * rules allow them (inside the project): a rule spares you the question in Ask mode, nothing more.
+ */
+export function matchRule(list: ApprovalRule[], call: ToolCall, ruled?: Verdict): ApprovalRule | undefined {
+  if (ruled?.decision === "deny") return undefined;
+  const kind = kindOf(call.tool);
+  if (kind === "edit" && ruled?.decision !== "allow") return undefined;
+  const cmd = kind === "shell" ? commandOf(call.input) : undefined;
+  const words = cmd !== undefined && !COMPOUND.test(cmd.trim()) ? cmd.trim().split(/\s+/) : undefined;
+  for (const r of list) {
+    if (r.project !== call.cwd) continue;
+    if (kind === "shell") {
+      if (!r.prefix) {
+        if (r.tool === call.tool && cmd === undefined) return r;
+        continue;
+      }
+      // A wrapper's rule (stored before they were refused) never matches: it would allow any command.
+      if (!words || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "") || isWrapper(r.prefix.split(" ")[0]!)) continue;
+      if (r.prefix.split(" ").every((w, i) => words[i] === w)) return r;
+      continue;
+    }
+    if (!r.prefix && r.tool === call.tool) return r;
+  }
+  return undefined;
+}
+
+/** The runner's rules (runner config `approvals`). */
+export function approvalRules(): ApprovalRule[] {
+  return (config().approvals ??= []);
+}
+
+/** Stores a rule unless the same one is there already. */
+export function addApprovalRule(rule: ApprovalRule): ApprovalRule {
+  const list = approvalRules();
+  const same = list.find((r) => r.project === rule.project && r.tool === rule.tool && r.prefix === rule.prefix && r.server === rule.server);
+  if (same) return same;
+  list.push(rule);
+  saveConfig();
+  return rule;
+}
+
+export function removeApprovalRule(by: { id?: string; index?: number }): ApprovalRule[] {
+  const list = approvalRules();
+  const i = by.id ? list.findIndex((r) => r.id === by.id) : typeof by.index === "number" ? by.index : -1;
+  if (i < 0 || i >= list.length) throw new Error("That rule isn't there any more.");
+  list.splice(i, 1);
+  saveConfig();
+  return list;
+}
+
+// ---------------- precedent: your verdicts on judged calls ----------------
+
+export interface Precedent {
+  call: string;
+  decision: "allow" | "deny";
+  at: number;
+}
+
+export const PRECEDENT_MAX = 20;
+
+/** Records your verdict on a call the judge decides (or would have), per project; the last 20 are kept. */
+export function recordPrecedent(project: string, call: string, decision: "allow" | "deny", now = Date.now()) {
+  const all = (config().precedents ??= {});
+  const c = clip(call, 300);
+  const list = (all[project] ?? []).filter((p) => p.call !== c);
+  all[project] = [...list, { call: c, decision, at: now }].slice(-PRECEDENT_MAX);
+  saveConfigSoon();
+}
+
+export function precedentsFor(project: string): Precedent[] {
+  return config().precedents?.[project] ?? [];
+}
+
+/** The judge prompt's precedent ("The owner allowed `git push origin x` here on 2026-10-22."); "" when none. */
+export function precedentText(list: Precedent[]): string {
+  if (!list.length) return "";
+  const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+  const lines = list.map((p) => `- The owner ${p.decision === "allow" ? "allowed" : "denied"} \`${p.call.replace(/`/g, "'")}\` here on ${day(p.at)}.`);
+  return `The owner's own earlier decisions on calls in this project (oldest first):\n${lines.join("\n")}`;
+}
+
 // ---------------- judge ----------------
 
 const JUDGE_SYSTEM = `You are the safety gate for an autonomous coding agent working unattended in a developer's repository.
@@ -409,16 +553,26 @@ global configuration; affecting shared or production systems (deploys, releases,
 non-local databases, sending emails/messages, merging or pushing to protected branches) unless the user's task explicitly asks
 for exactly that; installing software from untrusted sources; disabling security controls; or anything you can't understand.
 
+When the prompt lists the owner's own earlier decisions in this project, follow them for the same or a closely similar
+call: an allow there means that kind of call is fine here, a deny means it isn't.
+
 When denying, say what the agent should do instead if there is a safer way.`;
 
 const cache = new Map<string, Verdict>();
 
-export async function judge(call: ToolCall, goal: string): Promise<Verdict> {
+/** The judge's prompt for one call, with the owner's precedent in this project when there is some. */
+export function judgePrompt(call: ToolCall, goal: string, precedent: Precedent[] = []): string {
+  const prior = precedentText(precedent);
+  return `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\nFiles the user attached to their messages: ${attachedFolders(call)} (reading them serves the user's task; they are read-only; other sessions' attachments are off limits)\n\n${prior ? `${prior}\n\n` : ""}Tool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
+}
+
+export async function judge(call: ToolCall, goal: string, precedent: Precedent[] = []): Promise<Verdict> {
   if (!judgeEnabled()) return { decision: "deny", by: "judge", reason: "Not covered by the safety rules, and the judge is turned off." };
-  const key = JSON.stringify([call.cwd, call.tool, call.input]);
+  // The owner's verdicts are part of the question: a new one can change the answer.
+  const key = JSON.stringify([call.cwd, call.tool, call.input, precedent]);
   const hit = cache.get(key);
   if (hit) return hit;
-  const prompt = `User's task (latest instructions last):\n${goal || "(unknown)"}\n\nProject directory: ${call.cwd}\nFiles the user attached to their messages: ${attachedFolders(call)} (reading them serves the user's task; they are read-only; other sessions' attachments are off limits)\n\nTool call:\n${JSON.stringify({ tool: call.tool, input: call.input }, null, 2).slice(0, 6000)}`;
+  const prompt = judgePrompt(call, goal, precedent);
   try {
     // The shared background model (Settings → Background model), Haiku via Claude by default.
     const text = await runBackground({ system: JUDGE_SYSTEM, prompt, cwd: call.cwd, timeoutMs: 60_000 });

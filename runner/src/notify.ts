@@ -107,16 +107,16 @@ const last = new Map<string, number>();
 export const noticeListeners = new Set<(n: AgentNotice) => void>();
 
 /** Records a notice and pushes it to the devices that want this kind. */
-export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">): AgentNotice | undefined {
+export function notify(n: Omit<AgentNotice, "id" | "ts" | "project">, opts: { push?: boolean; throttle?: boolean } = {}): AgentNotice | undefined {
   const key = `${n.sessionId}:${n.kind}:${n.title}`;
   const now = Date.now();
-  if (now - (last.get(key) ?? 0) < THROTTLE_MS[n.kind]) return undefined;
+  if (opts.throttle !== false && now - (last.get(key) ?? 0) < THROTTLE_MS[n.kind]) return undefined;
   last.set(key, now);
   const st = store();
   const notice: AgentNotice = { ...n, id: crypto.randomUUID(), ts: now, project: basename(n.projectPath) };
   st.recent = [notice, ...st.recent].slice(0, RECENT_MAX);
   saveConfigSoon();
-  for (const sub of st.subs) if (sub.kinds.includes(n.kind)) void send(sub, notice);
+  if (opts.push !== false) for (const sub of st.subs) if (sub.kinds.includes(n.kind)) void send(sub, notice);
   for (const f of noticeListeners) f(notice);
   return notice;
 }
@@ -251,4 +251,119 @@ export class ConflictNotifier {
 /** Pushes a batch of memory conflicts. No session: it links to the Memory page instead. */
 export function notifyConflicts(list: MemoryConflict[]) {
   return notify({ kind: "memory", ...conflictNotice(list), sessionId: "", projectPath: "" });
+}
+
+// ---- blocked tickets (the Auto-mode judge denied a call: the owner can approve it from anywhere) ----
+
+/** One call the judge denied. */
+export interface Denial {
+  sessionId: string;
+  /** the session's title, its project's path */
+  title: string;
+  projectPath: string;
+  toolId?: string;
+  call: string;
+  reason: string;
+  /** false once the call has been approved or run, or the session has gone (left out of a batch) */
+  still?: () => boolean;
+}
+
+/** At most `max` characters, "…" where it was cut. */
+const clipTo = (s: string, max: number) => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
+
+/** The notice for one denial (recorded for Home and the bell; pushed alone or in a batch). */
+export function denialNotice(list: Denial[]): Omit<AgentNotice, "id" | "ts" | "project"> {
+  const first = list[0]!;
+  const project = basename(first.projectPath);
+  const reason = first.reason.replace(/^Blocked:\s*/, "").replace(/\s+/g, " ").trim();
+  const head = list.length === 1 ? `Blocked ${clipTo(first.call, 60)}` : `${list.length} calls blocked`;
+  const body = list.length === 1 ? `${project} · Judge: ${reason}` : `${project} · ${clipTo(first.call, 120)}`;
+  return {
+    kind: "blocked",
+    title: `${head} · ${first.title}`.slice(0, 160),
+    body: body.slice(0, 300),
+    sessionId: first.sessionId,
+    projectPath: first.projectPath,
+    // A batch is a plain tap into the session, where every card has its own button: its push gets
+    // no Approve / Deny that could answer only the first call.
+    ...(list.length === 1 ? { toolId: first.toolId, call: first.call, by: "judge" as const, reason } : {}),
+  };
+}
+
+/**
+ * Batches blocked-call pushes per session: the first denial goes out at once, and for `windowMs`
+ * after a push, that session's next denials wait and go out together when the window ends ("3
+ * calls blocked · …"). Calls approved by then are left out. Each push has the session's topic, so
+ * a newer batch replaces one the device hasn't received yet.
+ */
+export class DenialNotifier {
+  private sessions = new Map<string, { pending: Denial[]; lastAt: number; timer?: ReturnType<typeof setTimeout> }>();
+
+  constructor(
+    private o: {
+      windowMs: number;
+      send: (list: Denial[]) => void;
+      now?: () => number;
+    },
+  ) {}
+
+  private now() {
+    return this.o.now?.() ?? Date.now();
+  }
+
+  add(d: Denial) {
+    let s = this.sessions.get(d.sessionId);
+    if (!s) this.sessions.set(d.sessionId, (s = { pending: [], lastAt: -Infinity }));
+    s.pending.push(d);
+    if (s.timer) return;
+    const wait = s.lastAt + this.o.windowMs - this.now();
+    if (wait <= 0) this.flush(d.sessionId);
+    else s.timer = setTimeout(() => this.flush(d.sessionId), wait);
+  }
+
+  flush(sessionId: string) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    clearTimeout(s.timer);
+    s.timer = undefined;
+    const list = s.pending.filter((d) => d.still?.() !== false);
+    s.pending = [];
+    if (!list.length) {
+      // Nothing waits and the window has passed: forget the session.
+      if (this.now() - s.lastAt >= this.o.windowMs) this.sessions.delete(sessionId);
+      return;
+    }
+    s.lastAt = this.now();
+    this.o.send(list);
+  }
+
+  /** A removed session: nothing more goes out for it. */
+  forget(sessionId: string) {
+    clearTimeout(this.sessions.get(sessionId)?.timer);
+    this.sessions.delete(sessionId);
+  }
+}
+
+/** Records one denial for Home and the bell (no push: DenialNotifier pushes, batched). */
+export function recordDenial(d: Denial): AgentNotice | undefined {
+  // Each denial is a ticket of its own (a retried call has a new id), so no throttle.
+  return notify(denialNotice([d]), { push: false, throttle: false });
+}
+
+/** Pushes a batch of denials (already recorded one by one). */
+export function pushDenials(list: Denial[]) {
+  const st = store();
+  const n = denialNotice(list);
+  const notice: AgentNotice = { ...n, id: crypto.randomUUID(), ts: Date.now(), project: basename(n.projectPath) };
+  for (const sub of st.subs) if (sub.kinds.includes("blocked")) void send(sub, notice);
+}
+
+/** The call was approved or run: its blocked notice goes from Home and the bell. True when one went. */
+export function clearBlocked(sessionId: string, toolId: string): boolean {
+  const st = store();
+  const before = st.recent.length;
+  st.recent = st.recent.filter((n) => !(n.kind === "blocked" && n.sessionId === sessionId && n.toolId === toolId));
+  if (st.recent.length === before) return false;
+  saveConfigSoon();
+  return true;
 }

@@ -4,7 +4,7 @@
 // action…). Settings changed meanwhile are saved here and applied when it starts (getLive →
 // reapplyChoices / loadPrefs).
 
-import type { DiffStat, HarnessId, LiveState, SessionSnapshot, SessionSummary } from "../../web/src/shared/protocol";
+import type { DiffStat, HarnessId, LiveState, Msg, SessionSnapshot, SessionSummary } from "../../web/src/shared/protocol";
 import type { PlanReviewState } from "../../web/src/shared/plan";
 import { emptyState } from "../../web/src/shared/reducer";
 import { bySoonest } from "../../web/src/shared/schedule";
@@ -86,8 +86,22 @@ export function storedExtras(p: SessionPrefs): Partial<LiveState> {
   return out;
 }
 
-export function storedSnapshot(session: SessionSummary, history: StoredHistory, state: LiveState, seq: number): SessionSnapshot {
-  return { session: { ...session, live: false, status: "idle", needsInput: false }, messages: history.messages, state, seq };
+export function storedSnapshot(session: SessionSummary, history: StoredHistory, state: LiveState, seq: number, blocked?: SessionPrefs["blocked"]): SessionSnapshot {
+  return { session: { ...session, live: false, status: "idle", needsInput: false }, messages: withBlockedVerdicts(history.messages, blocked), state, seq };
+}
+
+/**
+ * A harness's history has no guard verdicts: the cards of the session's open blocked tickets
+ * (SessionPrefs.blocked) show the judge's denial again, so their Approve & retry / Run it myself
+ * buttons are there. Copies what it changes (the history may be cached).
+ */
+export function withBlockedVerdicts(messages: Msg[], blocked?: SessionPrefs["blocked"]): Msg[] {
+  if (!blocked?.length) return messages;
+  const by = new Map(blocked.map((b) => [b.toolId, b]));
+  return messages.map((m) => {
+    if (!m.parts.some((p) => p.type === "tool" && !p.guard && !p.userRun && by.has(p.id))) return m;
+    return { ...m, parts: m.parts.map((p) => (p.type === "tool" && !p.guard && !p.userRun && by.has(p.id) ? { ...p, guard: { decision: "deny" as const, by: "judge" as const, reason: by.get(p.id)!.reason } } : p)) };
+  });
 }
 
 /** A setting changed while the session isn't running. */

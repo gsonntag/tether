@@ -37,7 +37,8 @@ import { clearRecent, ConflictNotifier, forgetSession, noticeListeners, notifyCo
 import { APPROVING_MODES, byRecent, isActive, listPath, type ChainEntry, type DiffStat, type LiveState, type PendingMessage, type SessionActivity, type SessionSnapshot } from "../../web/src/shared/protocol";
 import type { SessionPrefs } from "./config";
 import { cleanProfiles, profileProblems } from "../../web/src/shared/profiles";
-import { editedPending, joinPending, sessionFiles, storedSlashMenu, type HandoffOpts, type LiveSession } from "./session";
+import { denials, editedPending, joinPending, sessionFiles, storedSlashMenu, type HandoffOpts, type LiveSession } from "./session";
+import { approvalRules, removeApprovalRule, type GuardMode } from "./guard";
 import { settingChange, storedSnapshot, storedState, StoredSessions, type StoredSetting } from "./stored";
 import { workingTreeStats } from "./checkpoint";
 import { ContextService } from "./context";
@@ -390,7 +391,8 @@ async function storedSessionSnapshot(sessionId: string, projectPath?: string): P
   const base = p?.diffBaseSha ?? p?.checkpoints?.[0]?.sha;
   const diffStat = base ? await totalChanges(path, base) : undefined;
   const state = storedState({ prefs: p, history, modes: a.modes, plans: storedPlans(sessionId), defaultGuard: config().guard?.defaultMode ?? "auto", diffStat });
-  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId));
+  if (p?.guardUntil && p.guard === "full" && p.guardUntil > Date.now()) state.guardUntil = p.guardUntil;
+  return storedSnapshot(decorate(summary), history, state, stored.seq(sessionId), p?.blocked);
 }
 
 /** What a session changed since its first snapshot, measured at most every few seconds (several devices open it at once). */
@@ -417,15 +419,52 @@ function writeStored(sessionId: string, saved: Partial<SessionPrefs>, state: Par
  * when it starts (startLive: reapplyChoices, loadPrefs). Nothing is awaited between checking
  * whether it runs and saving, so a start can't read the old value in between.
  */
-async function changeSetting(sessionId: string, setting: StoredSetting, onLive: (s: LiveSession) => unknown) {
+async function changeSetting(
+  sessionId: string,
+  setting: StoredSetting,
+  onLive: (s: LiveSession) => unknown,
+  /** more to save (and show) with it for a session that isn't running */
+  more?: (saved: SessionPrefs) => [Partial<SessionPrefs>, Partial<LiveState>],
+) {
   const { harness } = parseId(sessionId);
   const path = await sessionPath(sessionId).catch(() => undefined);
   const now = current(sessionId);
   const s = now instanceof Promise ? await now : now;
   if (s) return void (await onLive(s));
   const change = settingChange(harness, setting);
-  writeStored(sessionId, change as Partial<SessionPrefs>, change, path);
+  const [saved, state] = more?.(prefs(sessionId)) ?? [{}, {}];
+  writeStored(sessionId, { ...(change as Partial<SessionPrefs>), ...saved }, { ...change, ...state }, path);
 }
+
+/** Clears a LiveState field in every browser (an undefined field doesn't survive JSON). */
+const CLEARED = null as unknown as undefined;
+
+/**
+ * Timed full access on a session that isn't running (Settings → its picker, or it stopped since):
+ * saved with its settings; the sweep below puts the mode back when it ends. A running session's
+ * own timer does that (LiveSession.setGuard).
+ */
+function timedGuard(mode: GuardMode, minutes: number | undefined) {
+  return (p: SessionPrefs): [Partial<SessionPrefs>, Partial<LiveState>] => {
+    if (mode !== "full" || !minutes || minutes <= 0) return [{ guardUntil: undefined, guardBefore: undefined, guardEnded: undefined }, p.guardUntil ? { guardUntil: CLEARED } : {}];
+    const cur = p.guard ?? config().guard?.defaultMode ?? "auto";
+    const before = p.guardUntil ? p.guardBefore : cur;
+    const until = Date.now() + Math.min(minutes, 24 * 60) * 60_000;
+    return [{ guardUntil: until, guardBefore: before && before !== "full" ? before : "auto", guardEnded: undefined }, { guardUntil: until }];
+  };
+}
+
+/** Ends timed full access on sessions that aren't running (running ones end it themselves). */
+function sweepTimedGuards() {
+  const now = Date.now();
+  for (const [id, p] of Object.entries(config().sessions)) {
+    if (!p.guardUntil || p.guardUntil > now || current(id)) continue;
+    const back = p.guardBefore && p.guardBefore !== "full" ? p.guardBefore : (config().guard?.defaultMode ?? "auto");
+    // The inline "Full access ended" waits for it to open again (loadPrefs).
+    writeStored(id, { guard: back, guardUntil: undefined, guardBefore: undefined, guardEnded: back }, { guard: back, guardUntil: CLEARED });
+  }
+}
+setInterval(sweepTimedGuards, 30_000);
 
 /** Messages held on a session that isn't running (shown held; sending starts it). */
 function storedPending(sessionId: string) {
@@ -739,8 +778,9 @@ const ops: Handlers = {
     // Nothing to resume or resend after a runner restart.
     const p = cfg.sessions[sessionId];
     // Nor any loop or schedule to run.
-    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined });
+    if (p) Object.assign(p, { active: false, pending: undefined, background: undefined, schedules: undefined, blocked: undefined });
     forgetSession(sessionId);
+    denials.forget(sessionId);
     forgetPlans(sessionId);
     stored.forget(sessionId);
     saveConfig();
@@ -912,9 +952,18 @@ const ops: Handlers = {
     return {};
   },
 
-  async setGuard({ sessionId, mode }) {
-    await changeSetting(sessionId, { op: "guard", mode }, (s) => s.setGuard(mode));
+  async setGuard({ sessionId, mode, minutes }) {
+    if (minutes !== undefined && (typeof minutes !== "number" || !(minutes > 0))) throw new Error("minutes must be a positive number");
+    await changeSetting(sessionId, { op: "guard", mode }, (s) => s.setGuard(mode, minutes), timedGuard(mode, minutes));
     return {};
+  },
+
+  async listApprovalRules() {
+    return approvalRules();
+  },
+
+  async removeApprovalRule({ id, index }) {
+    return removeApprovalRule({ id, index });
   },
 
   async getSessionDiff({ sessionId, checkpoint }) {
@@ -939,8 +988,10 @@ const ops: Handlers = {
   },
 
   async approveBlocked({ sessionId, toolId, confirmed }) {
-    await (await getLive(sessionId)).approveBlocked(toolId, confirmed === true);
-    return {};
+    const r = await (await getLive(sessionId)).approveBlocked(toolId, confirmed === true);
+    // Its blocked notice is gone: open bells and Homes refetch.
+    send({ t: "sessions" });
+    return r;
   },
 
   async forkSession({ sessionId, msgId, harness, model, prompt }) {
@@ -966,8 +1017,9 @@ const ops: Handlers = {
   },
 
   async runBlocked({ sessionId, toolId, confirmed }) {
-    await (await getLive(sessionId)).runBlocked(toolId, confirmed === true);
-    return {};
+    const r = await (await getLive(sessionId)).runBlocked(toolId, confirmed === true);
+    send({ t: "sessions" });
+    return r;
   },
 
   async stopActivity({ sessionId, id }) {

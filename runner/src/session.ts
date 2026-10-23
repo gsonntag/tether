@@ -25,10 +25,10 @@ import { config, prefs, saveConfig, saveConfigSoon } from "./config";
 import { simulateUsage, usageChanged } from "./usage";
 import { describeFault, fmtSpan, parseDevCommand, simulatedUsage, type Fault } from "./faults";
 import { mergeContext, switchModel } from "./contextWindow";
-import { notify } from "./notify";
+import { clearBlocked, DenialNotifier, notify, pushDenials, recordDenial } from "./notify";
 import { accountOf, backoffMs, classify, confirmLimit, isTransient, markExhausted, nextEntry, parseReset, pickEntry, profile, providerOf, type Classified, type UsageCheck } from "./fallback";
 import { modelDisplay } from "../../web/src/models";
-import { attachmentWrite, commandOf, isContextTool, judge, kindOf, rules, type GuardMode, type Verdict } from "./guard";
+import { addApprovalRule, approvalRules, attachmentWrite, callLine, clip, commandOf, deriveRule, isContextTool, judge, kindOf, matchRule, precedentsFor, recordPrecedent, rules, type GuardMode, type Verdict } from "./guard";
 import { hiddenSkills, resolveMessage, skillsFor, slashMenu, type NativeSkill } from "./skillcmd";
 import { libraryCommands, offlineNativeCommands } from "./commands";
 import { connectorFor } from "./connectors";
@@ -186,7 +186,17 @@ export function movedAt(event: SessionEvent, updatedAt: number, messages: Msg[],
 
 /** Held back by plan mode or a review session (not a safety block): running it anyway needs a second yes. */
 const held = (g: GuardVerdict | undefined) => g?.decision === "deny" && g.by === "mode";
+/** Blocked tickets kept per session for acting on after a restart (SessionPrefs.blocked). */
+const BLOCKED_KEPT = 20;
 const HELD_CONFIRM = "This call was held back by plan mode or a review. Confirm to run it anyway.";
+
+/** Blocked-call pushes, batched per session for a minute (Home and the bell get each one at once). */
+export const denials = new DenialNotifier({ windowMs: 60_000, send: pushDenials });
+
+/** The guard modes as the app names them, for "Full access ended · back to Auto". */
+const GUARD_NAMES: Record<GuardMode, string> = { ask: "Ask", edits: "Accept edits", auto: "Auto", full: "Full access" };
+/** Clears a LiveState field in every browser (an undefined field doesn't survive JSON). */
+const CLEARED = null as unknown as undefined;
 
 export abstract class LiveSession {
   readonly harness: HarnessId;
@@ -377,6 +387,8 @@ export abstract class LiveSession {
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { guard } });
         } else if (p.type === "tool" && this.judging.has(p.id) && !p.judging && !p.guard)
           this.emit({ type: "tool", msgId: event.msg.id, toolId: p.id, patch: { judging: true } });
+    if (event.type === "reset") this.restoreBlockedVerdicts(this.t.messages);
+    else if (event.type === "msg") this.restoreBlockedVerdicts([event.msg]);
     this.plans.observe(event);
     // A subagent's parent shows what it's doing now (throttled there).
     if (this.t.state.startedBy) this.sink.agents?.changed(this);
@@ -1126,6 +1138,14 @@ export abstract class LiveSession {
     if (p.handoffTo) restore.handoffTo = p.handoffTo;
     if (p.forkedFrom) restore.forkedFrom = p.forkedFrom;
     if (p.guard) restore.guard = p.guard;
+    // Timed full access: still on (the timer is armed again below), or it ended while the runner was down.
+    let accessEnded: GuardMode | undefined;
+    if (p.guardUntil && p.guard === "full") {
+      if (p.guardUntil > Date.now()) {
+        restore.guardUntil = p.guardUntil;
+        this.guardBefore = p.guardBefore;
+      } else restore.guard = accessEnded = p.guardBefore && p.guardBefore !== "full" ? p.guardBefore : (config().guard?.defaultMode ?? "auto");
+    }
     if (p.checkpoints) restore.checkpoints = p.checkpoints;
     if (p.context && !this.t.state.context) restore.context = p.context;
     // An active goal nothing will drive (the session wasn't running when it was saved, so no
@@ -1160,6 +1180,14 @@ export abstract class LiveSession {
     if (Object.keys(restore).length) this.setState(restore);
     // What it runs on now (model, modes, effort levels…), for showing it while it isn't running.
     else this.savePrefs();
+    if (restore.guardUntil) this.armGuardTimer(restore.guardUntil);
+    // Or it ended while the session wasn't running (index.ts sweepTimedGuards): said now, once.
+    accessEnded ??= p.guardEnded;
+    if (p.guardEnded) p.guardEnded = undefined;
+    if (accessEnded) {
+      this.notice(`Full access ended · back to ${GUARD_NAMES[accessEnded]}`);
+      this.savePrefs();
+    }
     if (restore.subagents) this.sink.agents?.restored(this);
     if (restore.schedules) scheduleChanged();
     if (this.diffBaseSha || p.checkpoints?.length) void this.refreshDiffStats();
@@ -1222,6 +1250,8 @@ export abstract class LiveSession {
       handoffTo: s.handoffTo,
       forkedFrom: s.forkedFrom,
       guard: s.guard,
+      guardUntil: s.guardUntil || undefined,
+      guardBefore: s.guardUntil ? this.guardBefore : undefined,
       checkpoints: s.checkpoints,
       context: s.context,
       model: s.model,
@@ -1256,13 +1286,15 @@ export abstract class LiveSession {
   private uiWaiters = new Map<string, (r: UiResponse) => void>();
 
   askUi(req: UiRequest, timeoutMs?: number): Promise<UiResponse> {
+    req = { ...req, at: req.at ?? Date.now() };
     this.setState({ pendingUi: [...this.t.state.pendingUi, req] });
-    const tool = req.tool ? `${req.tool.name}${commandOf(req.tool.input) ? `: ${commandOf(req.tool.input)}` : ""}` : "";
-    this.alert(
-      "question",
-      req.kind === "permission" ? "Approval needed" : "Question",
-      req.questions?.[0]?.question ?? (req.kind === "permission" ? `Allow ${tool || req.title}?` : [req.title, req.message].filter(Boolean).join(": ")),
-    );
+    if (req.kind === "permission" && req.tool) this.alertPermission(req);
+    else
+      this.alert(
+        "question",
+        req.kind === "permission" ? "Approval needed" : "Question",
+        req.questions?.[0]?.question ?? (req.kind === "permission" ? `Allow ${req.title}?` : [req.title, req.message].filter(Boolean).join(": ")),
+      );
     return new Promise((resolve) => {
       const done = (r: UiResponse) => {
         this.uiWaiters.delete(req.id);
@@ -1290,6 +1322,23 @@ export abstract class LiveSession {
     if (this.t.state.pendingUi.some((u) => u.id === r.id && u.kind === "plan")) this.plans.disarm();
     done(r);
     return true;
+  }
+
+  /** An approval waits: the push names the call and carries the request, so it can be answered from the notification. */
+  private alertPermission(req: UiRequest) {
+    const call = callLine(req.tool!.name, req.tool!.input, this.projectPath);
+    const reason = req.message?.replace(/^⚠\s*/, "").replace(/^Blocked:\s*/, "").replace(/\s+/g, " ").trim() || undefined;
+    const project = this.projectPath.split("/").pop() ?? "";
+    notify({
+      kind: "question",
+      title: `Approve ${clip(call, 60)}? · ${this.title}`.slice(0, 160),
+      body: [project, reason && `Guard: ${reason}`].filter(Boolean).join("\n").slice(0, 300),
+      sessionId: this.id,
+      projectPath: this.projectPath,
+      requestId: req.id,
+      call,
+      reason,
+    });
   }
 
   /** Records the person's answer on a plan part (plan review approving it from Tether). */
@@ -1671,6 +1720,7 @@ export abstract class LiveSession {
     const key = JSON.stringify([tool, input]);
     let v: Verdict;
     let always = false;
+    let runMyself = false;
     // A review session, plan mode (or a plan waiting for review) hold back changes, whatever the guard mode.
     const held = this.reviewHold(tool, input) ?? this.planHold(tool, input);
     // Your PreToolUse hooks (hooks.ts) come first, as in Claude Code; "Approve & retry" skips them.
@@ -1695,7 +1745,10 @@ export abstract class LiveSession {
       const r = rules(call);
       // A hook's "ask" puts the call in front of you where someone is meant to answer (Ask, Edits).
       const askEdit = (this.guardMode === "ask" && r?.decision === "allow" && kindOf(tool) === "edit") || (hook?.decision === "ask" && r?.decision !== "deny");
+      // Your "Always allow" rules for this project: after the guard's own rules (never over their deny), before the judge or you.
+      const mine = hook?.decision === "ask" ? undefined : matchRule(approvalRules(), call, r);
       if (r?.decision === "allow" && !askEdit) v = r;
+      else if (mine) v = { decision: "allow", by: "rule", reason: `You always allow ${mine.prefix ?? mine.tool} in this project.` };
       else if (this.guardMode === "ask" || this.guardMode === "edits") {
         const res = await this.askUi({
           id: newId("perm"),
@@ -1703,28 +1756,99 @@ export abstract class LiveSession {
           title: `Allow ${tool}?`,
           message: r?.decision === "deny" ? `⚠ ${r.reason}` : hook?.decision === "ask" && hook.reason ? hook.reason : undefined,
           tool: { name: tool, input },
+          toolId: this.findCall(tool, toolId)?.part.id ?? toolId,
         });
         v = res.allow ? { decision: "allow", by: "user", reason: "You allowed it." } : { decision: "deny", by: "user", reason: res.value || "You denied it." };
         always = !!res.always;
+        // A call the judge would have decided in Auto: your answer is precedent for it.
+        // "Run it myself" is the owner letting it run (as runBlocked counts it), not a denial.
+        if (!res.allow && !res.cancelled && !r && !hook?.decision) recordPrecedent(this.projectPath, callLine(tool, input, this.projectPath), res.runMyself ? "allow" : "deny");
+        if (res.allow && res.always) this.rememberAlways(tool, input);
+        if (!res.allow && res.runMyself) {
+          v = { decision: "deny", by: "user", reason: "The user is running this command themselves; its output follows. Don't run it." };
+          runMyself = true;
+        }
       } else if (r?.decision === "deny") v = r;
       else {
         // The card shows "checking…" while the judge thinks; the verdict below replaces it.
         toolId = this.findCall(tool, toolId)?.part.id ?? toolId;
         if (toolId) this.setJudging(toolId, true);
         try {
-          v = await judge(call, this.goal());
+          v = await judge(call, this.goal(), precedentsFor(this.projectPath));
         } catch (e) {
           if (toolId) this.setJudging(toolId, false);
           throw e;
         }
         if (toolId) this.judging.delete(toolId);
+        // Auto mode never waits for you: the agent hears the reason and carries on, and you get a
+        // ticket to approve the call from Home, the bell or the notification.
+        if (v.decision === "deny") this.raiseBlocked(tool, input, toolId, v.reason);
       }
     }
-    // A denied call isn't a notification: the agent sees the reason and carries on, and the verdict
-    // shows on the tool card.
+    // The agent sees the reason and carries on; the verdict shows on the tool card (and a judge's
+    // denial is also a blocked ticket, raised above).
     const verdict: GuardVerdict = { decision: v.decision === "allow" ? "allow" : "deny", by: v.by, reason: v.reason };
     this.annotate(tool, toolId, verdict);
+    // "Run it myself" on the approval card: the runner runs it once the card shows the denial.
+    const card = runMyself ? this.findCall(tool, toolId)?.part.id : undefined;
+    if (card) void this.runBlocked(card).catch((e) => this.notice(`Couldn't run it: ${e?.message ?? e}`, "warning"));
     return { allow: verdict.decision === "allow", reason: v.reason, always };
+  }
+
+  /** "Always allow": a rule for this project (a shell command's program and subcommand, an MCP tool, a tool), said inline. */
+  private rememberAlways(tool: string, input: unknown) {
+    const d = deriveRule(this.projectPath, tool, input);
+    if ("refused" in d) return this.notice(`Allowed once. ${d.refused}`);
+    const rule = addApprovalRule(d.rule);
+    const what = rule.prefix ? `\`${rule.prefix}\`` : rule.server ? `${rule.tool} (${rule.server})` : rule.tool;
+    this.notice(`Always allowed in this project: ${what}. Remove it in Settings → Approvals.`);
+  }
+
+  /** The judge denied a call: a blocked notice now, a push batched per session. */
+  private raiseBlocked(tool: string, input: unknown, toolId: string | undefined, reason: string) {
+    const d = {
+      sessionId: this.id,
+      title: this.title,
+      projectPath: this.projectPath,
+      toolId,
+      call: callLine(tool, input, this.projectPath),
+      reason,
+      still: () => !toolId || this.findCall("", toolId)?.part.guard?.decision !== "allow",
+    };
+    recordDenial(d);
+    denials.add(d);
+    if (toolId) {
+      const p = prefs(this.id);
+      p.blocked = [...(p.blocked ?? []).filter((b) => b.toolId !== toolId), { toolId, name: tool, input, reason, at: Date.now() }].slice(-BLOCKED_KEPT);
+      saveConfigSoon();
+    }
+  }
+
+  /** A stored ticket for this call (see SessionPrefs.blocked). */
+  private storedBlocked(toolId: string) {
+    return prefs(this.id).blocked?.find((b) => b.toolId === toolId);
+  }
+
+  /** The ticket was approved or run: its notice and its stored call go. */
+  private settleBlocked(toolId: string) {
+    clearBlocked(this.id, toolId);
+    const p = prefs(this.id);
+    if (!p.blocked?.some((b) => b.toolId === toolId)) return;
+    const rest = p.blocked.filter((b) => b.toolId !== toolId);
+    p.blocked = rest.length ? rest : undefined;
+    saveConfigSoon();
+  }
+
+  /** History read back (a new process, a restart) has no verdicts: the stored tickets' cards get theirs again. */
+  private restoreBlockedVerdicts(msgs: { id: string; parts: Part[] }[]) {
+    const list = prefs(this.id).blocked;
+    if (!list?.length) return;
+    for (const m of msgs)
+      for (const p of m.parts)
+        if (p.type === "tool" && !p.guard && !p.userRun) {
+          const b = list.find((x) => x.toolId === p.id);
+          if (b) this.emit({ type: "tool", msgId: m.id, toolId: p.id, patch: { guard: { decision: "deny", by: "judge", reason: b.reason } } });
+        }
   }
 
   /** The card for this call: by id, or else the newest running one of that tool still undecided. */
@@ -1761,22 +1885,32 @@ export abstract class LiveSession {
   }
 
   /** "Approve & retry" on a blocked call: allow that exact call from now on and tell the agent. */
-  async approveBlocked(toolId: string, confirmed = false) {
+  async approveBlocked(toolId: string, confirmed = false): Promise<{ stale?: boolean }> {
     return this.hold(() => this.approveBlockedNow(toolId, confirmed));
   }
 
-  private async approveBlockedNow(toolId: string, confirmed: boolean) {
-    for (const m of this.t.messages)
-      for (const p of m.parts)
-        if (p.type === "tool" && p.id === toolId) {
-          if (held(p.guard) && !confirmed) throw new Error(HELD_CONFIRM);
-          this.approved.add(JSON.stringify([p.name, p.input]));
-          this.emit({ type: "tool", msgId: m.id, toolId, patch: { guard: { decision: "allow", by: "user", reason: "Approved after it was blocked." } } });
-          const what = commandOf(p.input) ?? JSON.stringify(p.input).slice(0, 300);
-          await this.tellAgent(`The user approved your earlier blocked ${p.name} call (${what}). Run it now if it is still needed, then continue.`);
-          return;
-        }
-    throw new Error("Tool call not found");
+  private async approveBlockedNow(toolId: string, confirmed: boolean): Promise<{ stale?: boolean }> {
+    const hit = this.findCall("", toolId);
+    const p = hit?.part;
+    // The stored ticket stands in for a card whose verdict went with an earlier process.
+    const stored = p?.guard ? undefined : this.storedBlocked(toolId);
+    if (!p && !stored) throw new Error("Tool call not found");
+    // Approved or run already (another device, a second tap, a notification's button).
+    if (p?.userRun || (p?.guard && p.guard.decision !== "deny") || (p && !p.guard && !stored)) {
+      this.settleBlocked(toolId);
+      return { stale: true };
+    }
+    const guard: GuardVerdict = p?.guard ?? { decision: "deny", by: "judge", reason: stored!.reason };
+    const name = p?.name ?? stored!.name;
+    const input = p ? p.input : stored!.input;
+    if (held(guard) && !confirmed) throw new Error(HELD_CONFIRM);
+    if (guard.by === "judge") recordPrecedent(this.projectPath, callLine(name, input, this.projectPath), "allow");
+    this.settleBlocked(toolId);
+    this.approved.add(JSON.stringify([name, input]));
+    if (hit) this.emit({ type: "tool", msgId: hit.msg.id, toolId, patch: { guard: { decision: "allow", by: "user", reason: "Approved after it was blocked." } } });
+    const what = commandOf(input) ?? JSON.stringify(input).slice(0, 300);
+    await this.tellAgent(`The user approved your earlier blocked ${name} call (${what}). Run it now if it is still needed, then continue.`);
+    return {};
   }
 
   private runningBlocked = new Set<string>();
@@ -1785,36 +1919,47 @@ export abstract class LiveSession {
    * "Run it myself" on a blocked shell command: the runner runs it in the session's directory, like
    * `!` shell mode, shows the output on the card and hands it to the agent, which doesn't run it again.
    */
-  async runBlocked(toolId: string, confirmed = false) {
+  async runBlocked(toolId: string, confirmed = false): Promise<{ stale?: boolean }> {
     // Held open while the command runs and its output reaches the agent (the idle close waits).
     return this.hold(() => this.runBlockedNow(toolId, confirmed));
   }
 
-  private async runBlockedNow(toolId: string, confirmed: boolean) {
+  private async runBlockedNow(toolId: string, confirmed: boolean): Promise<{ stale?: boolean }> {
     const hit = this.findCall("", toolId);
+    // The stored ticket stands in for a card whose verdict went with an earlier process.
+    const stored = hit?.part.guard ? undefined : this.storedBlocked(toolId);
+    const name = hit?.part.name ?? stored?.name ?? "";
+    const input: any = hit ? hit.part.input : stored?.input;
     // Shell commands only: an MCP or other tool with a `command` argument isn't one to run here.
-    const command = hit?.part.kind === "shell" ? commandOf(hit.part.input) : undefined;
-    if (!hit || !command) throw new Error("Shell command not found");
-    if (this.runningBlocked.has(toolId) || hit.part.userRun) return;
-    if (hit.part.guard?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
-    if (held(hit.part.guard) && !confirmed) throw new Error(HELD_CONFIRM);
+    const command = (hit ? hit.part.kind : kindOf(name)) === "shell" ? commandOf(input) : undefined;
+    if ((!hit && !stored) || !command) throw new Error("Shell command not found");
+    // Approved or run already (another device, a second tap): the owner's own allow.
+    if (this.runningBlocked.has(toolId) || hit?.part.userRun || (hit?.part.guard?.decision === "allow" && hit.part.guard.by === "user")) {
+      this.settleBlocked(toolId);
+      return { stale: true };
+    }
+    const blocked: GuardVerdict | undefined = hit?.part.guard ?? (stored ? { decision: "deny", by: "judge", reason: stored.reason } : undefined);
+    if (blocked?.decision !== "deny") throw new Error("Only a blocked command can be run this way");
+    if (held(blocked) && !confirmed) throw new Error(HELD_CONFIRM);
+    if (blocked.by === "judge") recordPrecedent(this.projectPath, callLine(name, input, this.projectPath), "allow");
+    this.settleBlocked(toolId);
     this.runningBlocked.add(toolId);
-    const { msg } = hit;
+    const msg = hit?.msg;
     try {
       const guard: GuardVerdict = { decision: "allow", by: "user", reason: "Run by you directly, outside the guard" };
-      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { guard, userRun: { status: "running" } } });
-      const input: any = hit.part.input;
+      if (msg) this.emit({ type: "tool", msgId: msg.id, toolId, patch: { guard, userRun: { status: "running" } } });
       const dir = typeof input?.cwd === "string" ? input.cwd : typeof input?.workdir === "string" ? input.workdir : undefined;
       const cwd = dir ? resolve(this.projectPath, dir) : this.projectPath;
       const proc = Bun.spawn(["bash", "-lc", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10 * 60_000 });
       const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
       const cap = (s: string) => (s.length > 30_000 ? s.slice(0, 30_000) + "\n…(truncated)" : s.trimEnd());
       const output = [cap(stdout), cap(stderr)].filter(Boolean).join("\n").trim();
-      this.emit({ type: "tool", msgId: msg.id, toolId, patch: { userRun: { status: "done", exitCode: code, output } } });
+      if (msg) this.emit({ type: "tool", msgId: msg.id, toolId, patch: { userRun: { status: "done", exitCode: code, output } } });
       await this.tellAgent(
         `Your blocked command was run by the user instead, so don't run it again:\n<bash-input>${command}</bash-input>\n` +
           `<bash-stdout>${cap(stdout)}</bash-stdout><bash-stderr>${cap(stderr)}${code ? `\n(exit code ${code})` : ""}</bash-stderr>\nContinue from there.`,
       );
+      return {};
     } finally {
       this.runningBlocked.delete(toolId);
     }
@@ -1830,9 +1975,43 @@ export abstract class LiveSession {
     }
   }
 
-  setGuard(mode: GuardMode) {
-    this.setState({ guard: mode });
+  /**
+   * Sets who approves tool calls. `minutes` with "full": full access for that long, then back to
+   * the mode before it (kept across a runner restart). Any other change ends the timer.
+   */
+  setGuard(mode: GuardMode, minutes?: number) {
+    clearTimeout(this.guardTimer);
+    this.guardTimer = undefined;
+    if (mode === "full" && minutes && minutes > 0) {
+      // Extending a timed full access keeps the mode it goes back to.
+      const before = this.t.state.guardUntil ? this.guardBefore : this.guardMode;
+      this.guardBefore = before && before !== "full" ? before : "auto";
+      const until = Date.now() + Math.min(minutes, 24 * 60) * 60_000;
+      this.setState({ guard: "full", guardUntil: until });
+      this.armGuardTimer(until);
+    } else {
+      this.guardBefore = undefined;
+      this.setState({ guard: mode, ...(this.t.state.guardUntil ? { guardUntil: CLEARED } : {}) });
+    }
+    this.savePrefs();
     this.onGuardChanged?.();
+  }
+
+  /** timed full access: the mode it goes back to, and the timer that does it */
+  private guardBefore?: GuardMode;
+  private guardTimer?: ReturnType<typeof setTimeout>;
+
+  private armGuardTimer(until: number) {
+    clearTimeout(this.guardTimer);
+    // setTimeout's limit is ~24.8 days; timed access is at most a day.
+    this.guardTimer = setTimeout(() => this.endTimedAccess(), Math.max(0, until - Date.now()));
+  }
+
+  /** Timed full access is over: back to the mode before it, said once in the chat. */
+  private endTimedAccess() {
+    const back = this.guardBefore ?? config().guard?.defaultMode ?? "auto";
+    this.setGuard(back);
+    this.notice(`Full access ended · back to ${GUARD_NAMES[back]}`);
   }
   /** Adapters whose harness needs restarting or reconfiguring on a guard change. */
   protected onGuardChanged?: () => void;
@@ -3415,6 +3594,7 @@ export abstract class LiveSession {
     clearTimeout(this.settleTimer);
     clearTimeout(this.shellWaitTimer);
     clearTimeout(this.activityTimer);
+    clearTimeout(this.guardTimer);
     unregisterGuard(this.guardKey);
     this.clearJudging();
     this.cancelAllUi();

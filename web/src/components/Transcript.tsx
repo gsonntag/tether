@@ -33,7 +33,7 @@ import { diffLines } from "diff";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Msg, Part } from "../shared/protocol";
 import { authorizeMcp, onMcpAuthorized } from "../mcpAuth";
-import { act, openLeader, selectSession, useStore } from "../store";
+import { act, cardFocused, openLeader, selectSession, useStore } from "../store";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { canFork, forkTarget } from "../fork";
 import { BRIEF_PREFIX, timedMessages } from "../msgTime";
@@ -77,6 +77,8 @@ const addText: CSSProperties = { color: "var(--color-success)", whiteSpace: "now
 const delText: CSSProperties = { color: "var(--color-error)", whiteSpace: "nowrap" };
 const noWrap: CSSProperties = { whiteSpace: "nowrap" };
 const blockText: CSSProperties = { color: "var(--color-text-red)" };
+/** A card scrolled to from a notification clears the floating sidebar button. */
+const scrollMargin: CSSProperties = { scrollMarginTop: "var(--spacing-12)" };
 const diffBox: CSSProperties = {
   maxHeight: "60vh",
   background: "var(--color-background-muted)",
@@ -611,7 +613,7 @@ function relPath(p: unknown): string {
 }
 
 /** Normalizes the edit inputs of Claude Code (old_string/new_string), pi (edits[]) and Antigravity. */
-function edits(input: any): { oldText: string; newText: string }[] {
+export function edits(input: any): { oldText: string; newText: string }[] {
   if (Array.isArray(input?.edits)) return input.edits.map((e: any) => ({ oldText: e.oldText ?? e.old_string ?? "", newText: e.newText ?? e.new_string ?? "" }));
   if (input?.old_string !== undefined || input?.new_string !== undefined) return [{ oldText: input.old_string ?? "", newText: input.new_string ?? "" }];
   if (input?.oldText !== undefined) return [{ oldText: input.oldText, newText: input.newText ?? "" }];
@@ -713,9 +715,17 @@ function Tool({ t }: { t: ToolPart }) {
   const stat = pairs.length ? countDiff(pairs) : undefined;
 
   const blocked = t.guard?.decision === "deny";
-  // Plan mode or a review held this back on purpose: running it anyway takes a second click.
+  // Plan mode or a review held this back on purpose (the runner wants that said: `confirmed`).
   const held = blocked && t.guard!.by === "mode";
-  const [confirming, setConfirming] = useState(false);
+  // A notification for this call was tapped: scroll here and open it.
+  const focused = useStore((s) => s.focusCard === t.id);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    setOpen(true);
+    cardRef.current?.scrollIntoView({ block: "start" });
+    cardFocused(t.id);
+  }, [focused, t.id]);
   // "Run it myself" is for shell commands only, not an MCP tool that happens to take a `command`.
   const command = isShell && (typeof input.command === "string" || Array.isArray(input.command) || typeof input.CommandLine === "string" || typeof input.cmd === "string");
   const icon = blocked ? (
@@ -781,7 +791,7 @@ function Tool({ t }: { t: ToolPart }) {
 
   return (
     <Card width="100%" padding={0} variant={blocked ? "red" : "default"}>
-      <VStack paddingInline={3} paddingBlock={1} gap={1}>
+      <VStack ref={cardRef} paddingInline={3} paddingBlock={1} gap={1} style={scrollMargin}>
         <HStack gap={1} vAlign="start">
           <StackItem size="fill" style={minZero}>
             <Collapsible isOpen={open} onOpenChange={setOpen} trigger={header}>
@@ -817,37 +827,33 @@ function Tool({ t }: { t: ToolPart }) {
           <HStack gap={2} vAlign="center" paddingBlockEnd={1}>
             <StackItem size="fill" style={minZero}>
               <Text type="supporting" style={blockText}>
-                {confirming
-                  ? `Plan mode or a review held this back. ${command ? "Run" : "Allow"} it anyway? `
-                  : held
-                    ? "Held back: "
-                    : null}
-                {held ? (confirming ? null : (t.guard!.reason ?? "")) : <>Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the safety judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
-                {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}</>}
+                {held ? (
+                  <>Held back: {t.guard!.reason ?? ""}</>
+                ) : (
+                  <>
+                    Blocked by {t.guard!.by === "user" ? "you" : t.guard!.by === "judge" ? "the judge" : t.guard!.by === "hook" ? "your hook" : "the safety rules"}:{" "}
+                    {(t.guard!.reason ?? "").replace(/^Blocked:\s*/, "")}
+                  </>
+                )}
               </Text>
             </StackItem>
-            {t.guard!.by !== "user" &&
-              (held && !confirming ? (
-                <Button label={command ? "Run it myself" : "Approve & retry"} size="sm" onClick={() => setConfirming(true)} />
-              ) : command ? (
-                <Button
-                  label={confirming ? "Run anyway" : "Run it myself"}
-                  variant={confirming ? "destructive" : undefined}
-                  size="sm"
-                  onClick={() => {
-                    setOpen(true);
-                    act("runBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined });
-                  }}
-                />
-              ) : (
-                <Button
-                  label={confirming ? "Approve anyway" : "Approve & retry"}
-                  variant={confirming ? "destructive" : undefined}
-                  size="sm"
-                  onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: confirming || undefined })}
-                />
-              ))}
-            {confirming && <Button label="Cancel" variant="ghost" size="sm" onClick={() => setConfirming(false)} />}
+            {/* One click, held-back calls too: you chose to. */}
+            {t.guard!.by !== "user" && (
+              <StackItem size="static">
+                {command ? (
+                  <Button
+                    label="Run it myself"
+                    size="sm"
+                    onClick={() => {
+                      setOpen(true);
+                      act("runBlocked", { sessionId, toolId: t.id, confirmed: held || undefined });
+                    }}
+                  />
+                ) : (
+                  <Button label="Approve & retry" size="sm" onClick={() => act("approveBlocked", { sessionId, toolId: t.id, confirmed: held || undefined })} />
+                )}
+              </StackItem>
+            )}
           </HStack>
         )}
       </VStack>

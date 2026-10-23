@@ -127,7 +127,10 @@ describe("session triggers", () => {
     subscribe({ endpoint: "https://push.example/a", keys, kinds: ["question"] });
     const s = fake();
     s.askUi({ id: "q1", kind: "permission", title: "Allow Bash?", tool: { name: "Bash", input: { command: "npm publish" } } });
-    expect(sent.at(-1)!.payload).toMatchObject({ kind: "question", title: "Approval needed · Fix login", body: "proj: Allow Bash: npm publish?" });
+    // The call itself, and the request, so the notification can answer it.
+    expect(sent.at(-1)!.payload).toMatchObject({ kind: "question", title: "Approve npm publish? · Fix login", body: "proj", requestId: "q1", call: "npm publish" });
+    s.askUi({ id: "q2", kind: "permission", title: "Allow Bash?", message: "⚠ Blocked: publishes a package.", tool: { name: "Bash", input: { command: "npm publish" } } });
+    expect(sent.at(-1)!.payload).toMatchObject({ title: "Approve npm publish? · Fix login", body: "proj\nGuard: publishes a package.", reason: "publishes a package." });
     s.close();
   });
 });

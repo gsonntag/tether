@@ -91,6 +91,8 @@ interface State {
   viewedHere: Record<string, number>;
   /** sessions touched in the sidebar window across projects (listRecent), for Recent; pushes update `sessions` */
   recent: SessionSummary[];
+  /** a notification was tapped: the tool card (blocked call) or docked request with this id scrolls into view and opens, then clears it */
+  focusCard?: string;
 }
 
 // Above useStore: its initial state reads it (cachedViewed), and a const used before its line throws.
@@ -604,6 +606,64 @@ export function markBellSeen() {
   if (newest === get().bellSeen) return;
   set({ bellSeen: newest });
   saveJSON("tether.bellSeen", newest);
+}
+
+// ---------------- links from notifications (sw.js): ?respond= and ?card= ----------------
+
+/** Resolves once the socket is up and that runner (or, without one, any) is connected; false after `ms`. */
+function whenRunnerUp(runnerId: string | undefined, ms = 30_000): Promise<boolean> {
+  const up = (s: State) => s.connected && (runnerId ? s.runners.some((r) => r.id === runnerId && r.connected) : !!s.runnerId);
+  if (up(get())) return Promise.resolve(true);
+  return new Promise((res) => {
+    const timer = setTimeout(() => (unsub(), res(false)), ms);
+    const unsub = useStore.subscribe((s) => {
+      if (!up(s)) return;
+      clearTimeout(timer);
+      unsub();
+      res(true);
+    });
+  });
+}
+
+/**
+ * A notification's Approve / Deny: answers once ("request:<id>:approve" → uiRespond; "tool:<id>:approve"
+ * → approveBlocked; "tool:<id>:deny" only marks its notice read). A stale one says so.
+ */
+export async function respondFromLink(runnerId: string | undefined, sessionId: string, respond: string) {
+  const m = respond.match(/^(request|tool):(.+):(approve|deny)$/);
+  if (!m) return;
+  const [, type, id, verdict] = m as unknown as [string, "request" | "tool", string, "approve" | "deny"];
+  if (!(await whenRunnerUp(runnerId))) return toast("error", "Couldn't answer: the runner isn't connected.");
+  const rid = runnerId ?? get().runnerId;
+  try {
+    if (type === "request") {
+      const r = await rpcTo(rid, "uiRespond", { sessionId, response: { id, allow: verdict === "approve" } });
+      if (r.stale) toast("info", "Already answered");
+    } else if (verdict === "approve") {
+      const r = await rpcTo(rid, "approveBlocked", { sessionId, toolId: id });
+      if (r?.stale) toast("info", "Already answered");
+    }
+    // The notice it came from is dealt with.
+    const notices = rid === get().runnerId ? await rpcTo(rid, "listNotifications", {}) : [];
+    if (notices.length) set({ notices });
+    const n = notices.find((x) => x.sessionId === sessionId && (x.requestId === id || x.toolId === id));
+    if (n) markNoticeRead(n.id);
+  } catch (e: any) {
+    toast(/not found/i.test(e?.message ?? "") ? "info" : "error", /not found/i.test(e?.message ?? "") ? "Already answered" : (e?.message ?? String(e)));
+  }
+}
+
+let focusTimer: ReturnType<typeof setTimeout> | undefined;
+/** A notification's plain tap: that card scrolls into view once it's on screen (or, after a while, nothing does). */
+export function focusCard(id: string) {
+  set({ focusCard: id });
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => get().focusCard === id && set({ focusCard: undefined }), 20_000);
+}
+
+/** The card scrolled to it. */
+export function cardFocused(id: string) {
+  if (get().focusCard === id) set({ focusCard: undefined });
 }
 
 export function markSessionNoticeRead(sessionId: string) {
