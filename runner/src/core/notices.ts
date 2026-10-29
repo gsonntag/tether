@@ -105,7 +105,11 @@ export function withOverlay(store: Msg[], overlay: OverlayNotice[]): Msg[] {
       }
     } else if (after) {
       const i = out.findIndex((m) => m.id === after);
-      if (i >= 0) at = i + 1;
+      if (i >= 0) {
+        at = i + 1;
+        // After the notices already put there: they came first.
+        while (at < out.length && out[at]!.id.startsWith("n-")) at++;
+      }
     }
     out.splice(at, 0, msg);
     have.add(msg.id);

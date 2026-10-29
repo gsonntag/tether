@@ -519,6 +519,21 @@ test("a setting changed while Claude starts is applied once it's up; Stop then s
   expect((await core.open("claude:s1")).state.model).toBe("haiku");
 });
 
+test("a notice right after another of Tether's is anchored to the store's message, and kept", async () => {
+  const { adapter, core, live, events } = setup();
+  adapter.addStored("s1", [user("m0")]);
+  const notice = (id: string) => (sink: any) => sink.event({ type: "msg", msg: { id, role: "notice", level: "warning", ts: 1, parts: [{ type: "text", text: id }] } });
+  adapter.script = () => [notice("n-a"), notice("n-b"), idle];
+  const v = new Viewer(await core.subscribe("claude:s1"));
+  await live.send("claude:s1", "go");
+  expect(core.notices.get("claude:s1").every((n) => n.after && !n.after.startsWith("n-"))).toBe(true);
+  adapter.drivers[0]!.onExit?.();
+  adapter.write("s1", [user("m0"), user("u1", "go"), { ...user("t1", "later"), ts: Date.now() + 1000 }]);
+  v.apply(events("claude:s1"));
+  expect(v.w.messages.map((m) => m.id)).toEqual(["m0", "u1", "n-a", "n-b", "t1"]);
+  expect(core.notices.get("claude:s1")).toHaveLength(2);
+});
+
 test("a notice whose anchor the store no longer has goes once the store has moved on", async () => {
   const { adapter, core, live, events } = setup();
   adapter.addStored("s1", [user("m0")]);

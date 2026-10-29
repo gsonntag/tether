@@ -69,7 +69,9 @@ export class Session {
       // Not loaded (nobody has opened it): the store has it when someone does.
       return null;
     }
-    const last = this.transcript.messages.at(-1)?.id;
+    // A notice is anchored to the message before it that the store has: not to another notice of
+    // Tether's, which no store read has, so it would be pruned.
+    const last = this.transcript.messages.findLast((m) => !isTetherNotice(m))?.id;
     const out = this.transcript.apply(e);
     if (out?.type === "msg" && out.isNew && isTetherNotice(out.msg)) {
       const n = { msg: out.msg, after: last };
