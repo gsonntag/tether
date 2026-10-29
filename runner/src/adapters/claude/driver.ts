@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
+import { canonicalCommand } from "./content";
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 
@@ -150,7 +151,7 @@ export class ClaudeDriver implements Driver {
     if (this.closed) throw new Error("Claude Code isn't running.");
     const uuid = randomUUID();
     // In the transcript under the uuid Claude Code stores it with, so stored and live ids agree.
-    this.sink.event({ type: "msg", msg: { id: uuid, role: "user", ts: Date.now(), parts: [{ type: "text", text }] } });
+    this.sink.event({ type: "msg", msg: { id: uuid, role: "user", ts: Date.now(), parts: [{ type: "text", text: canonicalCommand(text) }] } });
     this.sink.state({ status: "running", error: undefined });
     this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid, origin: { kind: "human" } } as SDKUserMessage);
   }

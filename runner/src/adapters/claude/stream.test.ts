@@ -125,3 +125,12 @@ test("a turn another session puts in is marked with its origin, as in the store"
   s.handle({ type: "user", uuid: "h1", parent_tool_use_id: null, origin: { kind: "human" }, message: { role: "user", content: "hi" } });
   expect(sink.t.get("h1")).toBeUndefined();
 });
+
+test("Claude Code's own replies read as the store has them: a notice, or a message with its error", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  s.handle({ type: "assistant", uuid: "s1", parent_tool_use_id: null, message: { id: "x1", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } });
+  s.handle({ type: "assistant", uuid: "s2", parent_tool_use_id: null, error: "rate_limit", message: { id: "x2", model: "<synthetic>", content: [{ type: "text", text: "You've hit your limit" }] } });
+  expect(sink.t.get("s1")).toMatchObject({ role: "notice", parts: [{ text: "No response requested." }] });
+  expect(sink.t.get("x2")).toMatchObject({ role: "assistant", error: "You've hit your limit" });
+});

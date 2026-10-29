@@ -34,9 +34,15 @@ const fail = (msg) => {
 // differs by screen size), with times dropped.
 const transcriptText = (p) =>
   p.evaluate(async () => {
-    const { useStore } = await import("/src/store.ts");
-    const views = Object.values(useStore.getState().views);
-    return JSON.stringify(views.map((v) => v.window.messages.map(({ ts, ...m }) => m)));
+    // The page's own store (on window in dev builds); waits until the open session has messages.
+    for (let i = 0; i < 100; i++) {
+      const store = globalThis.__tetherStore;
+      const views = store ? Object.values(store.getState().views) : [];
+      const msgs = views.flatMap((v) => v.window.messages);
+      if (msgs.length) return JSON.stringify(views.map((v) => v.window.messages.map(({ ts, ...m }) => m)));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("no transcript in the page's store");
   });
 const noOverflow = async (p, where) => {
   const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

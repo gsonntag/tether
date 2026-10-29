@@ -10,7 +10,7 @@
 import { getSubagentMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
-import { assistantPart, commandOutput, notice, toolResults, userMessage, type EntryFlags } from "./content";
+import { assistantPart, blockText, commandOutput, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** Each entry's time and the flags getSessionMessages drops, by uuid. */
@@ -43,10 +43,24 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
   let last = 0;
   const at = (uuid: string) => (last = meta.times.get(uuid) ?? last);
   for (const m of list) {
-    if (m.parent_tool_use_id && !subagent) continue;
+    try {
+      entry(m);
+    } catch (e) {
+      // One malformed entry is skipped; the rest of the session still reads.
+      console.error(`skipped a transcript entry (${m.uuid}):`, e);
+    }
+  }
+  function entry(m: (typeof list)[number]) {
+    if (m.parent_tool_use_id && !subagent) return;
     const msg: any = m.message;
     const ts = at(m.uuid);
-    if (m.type === "assistant" && Array.isArray(msg?.content)) {
+    if (m.type === "assistant" && Array.isArray(msg?.content) && msg.model === "<synthetic>") {
+      // Claude Code's own replies, as the live stream shows them (stream.ts): an API error is a
+      // message with its error; anything else ("No response requested.") a notice.
+      const text = blockText(msg.content);
+      if (msg.apiError) out.push({ id: msg.id ?? m.uuid, role: "assistant", ts, parts: [{ type: "text", text }], error: text });
+      else if (commandOutput(text)) out.push(notice(m.uuid, ts, commandOutput(text)));
+    } else if (m.type === "assistant" && Array.isArray(msg?.content)) {
       const id = msg.id ?? m.uuid;
       let target = byId.get(id);
       if (!target) {

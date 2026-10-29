@@ -9,6 +9,7 @@ import { CLAUDE_BIN } from "./bin";
 import { claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { readHistory } from "./history";
+import { pinStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
@@ -60,6 +61,18 @@ export const claudeAdapter: Adapter = {
   watchHistory(nativeId, projectPath, onChange) {
     const { session, agent } = splitNative(nativeId);
     const file = () => (agent ? storedSubagents(session, projectPath).find((c) => c.agentId === agent)?.file : sessionFile(session, projectPath));
+    // A main session's file stays parsed while watched (jsonl.ts): changes parse only what was appended.
+    let pinnedPath: string | undefined;
+    let unpin = () => {};
+    const pin = () => {
+      const p = agent ? undefined : file();
+      if (p && p !== pinnedPath) {
+        unpin();
+        pinnedPath = p;
+        unpin = pinStore(p);
+      }
+    };
+    pin();
     let reading = false;
     let again = false;
     const reread = async () => {
@@ -68,6 +81,7 @@ export const claudeAdapter: Adapter = {
       try {
         do {
           again = false;
+          pin();
           onChange(await readHistory(nativeId, projectPath));
         } while (again);
       } catch {
@@ -76,7 +90,11 @@ export const claudeAdapter: Adapter = {
         reading = false;
       }
     };
-    return watchFile(file, () => void reread());
+    const stop = watchFile(file, () => void reread());
+    return () => {
+      stop();
+      unpin();
+    };
   },
 
   async defaults(projectPath): Promise<StartOpts> {

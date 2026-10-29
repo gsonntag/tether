@@ -44,7 +44,8 @@ function entryOf(line: string): Entry | undefined {
   if (e.isSidechain) out.isSidechain = true;
   if (e.timestamp) out.timestamp = e.timestamp;
   if (e.type === "user" || e.type === "assistant") {
-    out.message = e.message;
+    // An API error reply (rate limit, auth) is marked on the entry, not the message: carried along.
+    out.message = e.isApiErrorMessage && e.message ? { ...e.message, apiError: e.error || true } : e.message;
     if (e.isMeta) out.isMeta = true;
     if (e.isCompactSummary) out.isCompactSummary = true;
     if (e.origin) out.origin = e.origin;
@@ -120,7 +121,8 @@ export class StoreFile {
       if (list) list.push(e);
       else this.children.set(e.parentUuid, [e]);
     }
-    if ((e.type === "user" || e.type === "assistant") && !e.isSidechain) this.messages.push(e);
+    // Conversation entries (a slash command's output too: it can be the last thing written).
+    if (((e.type === "user" || e.type === "assistant") && !e.isSidechain) || (e.type === "system" && e.subtype === "local_command")) this.messages.push(e);
     return true;
   }
 
@@ -156,12 +158,26 @@ export class StoreFile {
    * abandoned: an edit, retry or rewind continues the chain from the same parent with a newer
    * prompt you typed, and Claude Code no longer shows the old branch.
    */
+  /**
+   * The prompt the chain continues with after `parent`, past what Claude Code writes before a
+   * prompt (a slash command's caveat, attachments).
+   */
+  private nextPromptOnChain(parent: string, onChain: Set<string>): Entry | undefined {
+    let cur = (this.children.get(parent) ?? []).find((c) => onChain.has(c.uuid));
+    for (let i = 0; cur && i < 20; i++) {
+      if (isPrompt(cur) && !cur.isMeta) return cur;
+      if (cur.type === "assistant" || (cur.type === "user" && !cur.isMeta)) return undefined;
+      cur = (this.children.get(cur.uuid) ?? []).find((c) => onChain.has(c.uuid));
+    }
+    return undefined;
+  }
+
   private sideBranches(onChain: Set<string>): Entry[][] {
     const out: Entry[][] = [];
     for (const e of this.messages) {
       if (onChain.has(e.uuid) || !isPrompt(e) || !e.parentUuid || !onChain.has(e.parentUuid)) continue;
-      const main = (this.children.get(e.parentUuid) ?? []).find((c) => onChain.has(c.uuid));
-      if (main && isPrompt(main) && !main.origin && !main.isMeta && main.order > e.order) continue;
+      const main = this.nextPromptOnChain(e.parentUuid, onChain);
+      if (main && typed(main) && main.order > e.order) continue;
       const branch: Entry[] = [];
       const seen = new Set<string>();
       for (let cur: Entry | undefined = e; cur && !seen.has(cur.uuid) && !onChain.has(cur.uuid); cur = this.children.get(cur.uuid)?.at(-1)) {
@@ -190,9 +206,23 @@ export class StoreFile {
 }
 
 const cache = new Map<string, StoreFile>();
-
-/** Files kept parsed (a long session holds tens of MB): the watched ones and a few recent. */
+/** Files kept parsed besides the watched ones (a long session holds tens of MB). */
 const CACHE_MAX = 4;
+/** Watched files, by how many watchers: always cached, so each change parses only what was appended. */
+const pinned = new Map<string, number>();
+
+/** Keeps a file's parse while it's watched; returns the release. */
+export function pinStore(path: string): () => void {
+  pinned.set(path, (pinned.get(path) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const n = (pinned.get(path) ?? 1) - 1;
+    if (n > 0) pinned.set(path, n);
+    else pinned.delete(path);
+  };
+}
 
 /** The file, brought up to date (cached, so repeated reads parse only what was appended). */
 export async function readStore(path: string): Promise<StoreFile> {
@@ -200,15 +230,25 @@ export async function readStore(path: string): Promise<StoreFile> {
   if (f) cache.delete(path);
   else f = new StoreFile(path);
   cache.set(path, f);
-  while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+  // Only unwatched files count against the cap, oldest first.
+  const loose = [...cache.keys()].filter((p) => !pinned.has(p));
+  for (const p of loose.slice(0, Math.max(0, loose.length - CACHE_MAX))) cache.delete(p);
   await f.update();
   return f;
 }
 
-/** A user turn: a user entry with text (typed, or injected by Claude Code), not tool results. */
+/** For tests: what is cached. */
+export const cachedStores = () => [...cache.keys()];
+
+/** A user turn: a user entry with text or images (typed, or injected by Claude Code), not tool results. */
 function isPrompt(e: Entry): boolean {
   if (e.type !== "user") return false;
   const c = e.message?.content;
   if (typeof c === "string") return true;
-  return Array.isArray(c) && c.some((b: any) => b?.type === "text") && !c.some((b: any) => b?.type === "tool_result");
+  return Array.isArray(c) && c.some((b: any) => b?.type === "text" || b?.type === "image") && !c.some((b: any) => b?.type === "tool_result");
+}
+
+/** A prompt you typed: Claude Code (and Tether's driver) mark it origin human, older files not at all. */
+function typed(e: Entry): boolean {
+  return isPrompt(e) && !e.isMeta && (!e.origin || e.origin.kind === "human");
 }

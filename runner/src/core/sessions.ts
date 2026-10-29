@@ -18,7 +18,7 @@ import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
-import { NoticeStore, withOverlay } from "./notices";
+import { NoticeStore, pruneOverlay, withOverlay } from "./notices";
 import { Session } from "./session";
 import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
@@ -253,6 +253,7 @@ export class SessionCore {
           }
           this.o.prefs.set(s.id, { running: undefined });
         }
+        this.prune(s, msgs);
         // A live driver may have created it meanwhile (send right after open).
         s.transcript ??= new Transcript(withOverlay(msgs, s.overlay));
         return s.transcript;
@@ -290,9 +291,18 @@ export class SessionCore {
     if (s.unwatch || !this.watched.has(s.id)) return;
     s.unwatch = this.adapter(s.summary.harness).watchHistory(s.summary.nativeId, s.summary.projectPath, (msgs) => {
       if (s.live || s.childRunning || !s.transcript) return;
+      this.prune(s, msgs);
       for (const e of diffTranscripts(s.transcript.messages, withOverlay(msgs, s.overlay))) s.apply(e);
       this.touch(s);
     });
+  }
+
+  /** Drops notices whose anchor the store no longer has (notices.ts pruneOverlay). */
+  private prune(s: Session, store: Msg[]) {
+    const kept = pruneOverlay(store, s.overlay);
+    if (kept.length === s.overlay.length) return;
+    s.overlay = kept;
+    this.notices.set(s.id, kept);
   }
 
   /** Nobody watches it any more: stop tailing, and drop it from memory after a while. */

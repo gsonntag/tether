@@ -48,6 +48,17 @@ export class NoticeStore {
     this.timer.unref?.();
   }
 
+  /** Replaces a session's notices (after pruning). */
+  set(sessionId: string, notices: OverlayNotice[]) {
+    const had = this.map[sessionId]?.notices ?? [];
+    if (had.length === notices.length) return;
+    if (notices.length) this.map[sessionId] = { at: Date.now(), notices };
+    else delete this.map[sessionId];
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), 300);
+    this.timer.unref?.();
+  }
+
   flush() {
     clearTimeout(this.timer);
     if (!this.file) return;
@@ -59,6 +70,21 @@ export class NoticeStore {
       renameSync(tmp, this.file);
     } catch {}
   }
+}
+
+/**
+ * The notices still worth showing: one whose anchor (the prompt or message it follows) is no
+ * longer in the store, which has moved on since it was written (a rewind, a /clear), goes;
+ * otherwise it would sit at the bottom forever.
+ */
+export function pruneOverlay(store: Msg[], overlay: OverlayNotice[]): OverlayNotice[] {
+  if (!overlay.length) return overlay;
+  const ids = new Set(store.map((m) => m.id));
+  const latest = store.reduce((t, m) => Math.max(t, m.ts), 0);
+  return overlay.filter((n) => {
+    const anchor = n.turnOf ?? n.after;
+    return !anchor || ids.has(anchor) || latest <= n.msg.ts;
+  });
 }
 
 /** A transcript read from the store with Tether's own notices put back where they belong. */

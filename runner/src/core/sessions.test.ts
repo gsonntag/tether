@@ -518,3 +518,18 @@ test("a setting changed while Claude starts is applied once it's up; Stop then s
   expect(d.sent).toEqual(["two"]);
   expect((await core.open("claude:s1")).state.model).toBe("haiku");
 });
+
+test("a notice whose anchor the store no longer has goes once the store has moved on", async () => {
+  const { adapter, core, live, events } = setup();
+  adapter.addStored("s1", [user("m0")]);
+  adapter.script = () => [idle];
+  const v = new Viewer(await core.subscribe("claude:s1"));
+  await live.send("claude:s1", "go");
+  adapter.drivers[0]!.onExit?.("Claude Code stopped: boom");
+  expect(core.notices.get("claude:s1")).toHaveLength(1);
+  // A rewind: the prompt the notice followed is gone, and newer messages are there.
+  adapter.write("s1", [user("m0"), { ...user("r1", "rewound"), ts: Date.now() + 1000 }]);
+  v.apply(events("claude:s1"));
+  expect(v.w.messages.map((m) => m.id)).toEqual(["m0", "r1"]);
+  expect(core.notices.get("claude:s1")).toEqual([]);
+});

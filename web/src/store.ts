@@ -216,3 +216,6 @@ export function forgetRunner(id: string) {
   saveKnown(runners);
   set({ runners });
 }
+
+// Dev builds only: the store on window, for the end-to-end scripts (one instance across vite reloads).
+if (import.meta.env?.DEV) (globalThis as any).__tetherStore = useStore;

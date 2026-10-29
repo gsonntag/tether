@@ -39,7 +39,7 @@ function kindFromInput(name: string, input: any): ToolKind | undefined {
 
 /** Classifies one call: its kind, and the command or path the card shows. */
 export function classifyTool(name: string, input: unknown): ToolTags & { kind: ToolKind } {
-  const lower = name.toLowerCase();
+  const lower = (typeof name === "string" ? name : "").toLowerCase();
   const mcp = lower.startsWith("mcp__");
   const kind = (!mcp && (NAMES[lower] ?? kindFromInput(lower, input))) || "other";
   const out: ToolTags & { kind: ToolKind } = { kind };

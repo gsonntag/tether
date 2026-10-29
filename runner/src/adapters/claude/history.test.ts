@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readHistory } from "./history";
+import { canonicalCommand } from "./content";
 import { ClaudeStream } from "./stream";
 import { Transcript } from "../../core/transcript";
 
@@ -65,4 +66,11 @@ test("slash commands read as the live view showed them: output as notices, /comp
   const msgs = await readHistory("a8d21b1b-b9ed-4f99-a554-acb8bf137c86", DIR);
   const rows = msgs.map((m) => `${m.role}:${((m.parts[0] as any)?.text ?? "").split("\n")[0]}`);
   expect(rows).toEqual(["user:/context", "notice:## Context Usage", "user:Say ok.", "assistant:", "user:/compact", "notice:Context compacted.", "user:Say done.", "assistant:Done."]);
+});
+
+test("a command Claude Code stores under another name reads that way live too", () => {
+  expect(canonicalCommand("/cost")).toBe("/usage");
+  expect(canonicalCommand("/cost now")).toBe("/usage now");
+  expect(canonicalCommand("/costly")).toBe("/costly");
+  expect(canonicalCommand("tell me the /cost")).toBe("tell me the /cost");
 });

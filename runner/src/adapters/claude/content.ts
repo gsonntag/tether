@@ -14,10 +14,11 @@ export function blockText(content: unknown): string {
 
 /** One assistant content block as a part. */
 export function assistantPart(b: any): Part {
-  if (b?.type === "text") return { type: "text", text: b.text ?? "" };
-  if (b?.type === "thinking") return { type: "thinking", text: b.thinking ?? "" };
+  // A malformed block (text that isn't a string) degrades to empty, never breaks the session.
+  if (b?.type === "text") return { type: "text", text: typeof b.text === "string" ? b.text : "" };
+  if (b?.type === "thinking") return { type: "thinking", text: typeof b.thinking === "string" ? b.thinking : "" };
   if (b?.type === "redacted_thinking") return { type: "thinking", text: "" };
-  if (b?.type === "tool_use" || b?.type === "server_tool_use" || b?.type === "mcp_tool_use") return toolPart(b.id, b.name, b.input ?? {});
+  if (b?.type === "tool_use" || b?.type === "server_tool_use" || b?.type === "mcp_tool_use") return toolPart(String(b.id ?? ""), typeof b.name === "string" ? b.name : "tool", b.input ?? {});
   return { type: "text", text: "" };
 }
 
@@ -96,7 +97,7 @@ export function cleanUserText(text: string): string {
  */
 export function userMessage(content: unknown, id: string, ts: number, flags: EntryFlags = {}): Msg | undefined {
   const blocks: any[] = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
-  const whole = blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
+  const whole = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
   if (whole) {
     const inj = injected(whole, flags, id, ts);
     if (inj === null) return undefined;
@@ -104,7 +105,7 @@ export function userMessage(content: unknown, id: string, ts: number, flags: Ent
   }
   const parts: Part[] = [];
   for (const b of blocks) {
-    if (b?.type === "text" && b.text) parts.push({ type: "text", text: cleanUserText(b.text) });
+    if (b?.type === "text" && typeof b.text === "string" && b.text) parts.push({ type: "text", text: cleanUserText(b.text) });
     else if (b?.type === "image" && b.source?.type === "base64") parts.push({ type: "image", mimeType: b.source.media_type, data: b.source.data });
   }
   return parts.length ? { id, role: "user", parts, ts } : undefined;
@@ -121,4 +122,16 @@ export function commandOutput(text: string): string {
   const inner = text.match(/<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/)?.[1] ?? text;
   // Terminal styling (dim, bold) means nothing here.
   return inner.replace(/\u001b\[[0-9;]*m/g, "").trim();
+}
+
+/**
+ * Slash commands Claude Code stores under another name (it writes `/usage` for `/cost`). The live
+ * view shows the stored name too, so a session going stored reads the same.
+ */
+const COMMAND_ALIASES: Record<string, string> = { cost: "usage" };
+
+export function canonicalCommand(text: string): string {
+  const m = text.match(/^\/([\w-]+)(?=\s|$)/);
+  const to = m && COMMAND_ALIASES[m[1]!];
+  return to ? `/${to}${text.slice(m![0].length)}` : text;
 }
