@@ -63,7 +63,7 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
       if (!isId(m.sessionId) || !Number.isSafeInteger(m.seq) || !isObj(m.event) || !isStr(m.event.type)) return null;
       return { t: "event", sessionId: m.sessionId, seq: m.seq as number, event: m.event as unknown as SessionEvent };
     case "summary":
-      if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string) || !Number.isSafeInteger(m.summary.seq)) return null;
+      if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string) || !Number.isSafeInteger(m.summary.seq) || !isId(m.summary.epoch)) return null;
       return { t: "summary", summary: m.summary as unknown as SummaryUpdate };
     case "term":
       return isId(m.attachId) && typeof m.data === "string" ? { t: "term", attachId: m.attachId, data: m.data } : null;
@@ -87,4 +87,13 @@ export function decodeChunk(data: string): Uint8Array {
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
   return out;
+}
+
+/**
+ * The id of an rpc (from a browser) or result (from a runner) frame that didn't parse, so the
+ * caller can answer it with an error instead of leaving it to time out.
+ */
+export function malformedId(raw: string | ArrayBuffer | Uint8Array, t: "rpc" | "result"): string | null {
+  const m = json(raw);
+  return isObj(m) && m.t === t && isId(m.id) ? m.id : null;
 }

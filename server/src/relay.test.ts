@@ -35,6 +35,7 @@ function setup(opts: { rpcTimeoutMs?: number } = {}) {
   const runner = (id: string) => {
     const s = new FakeSocket(`runner:${id}`);
     relay.onRunnerMessage(s, { t: "hello", runner: runnerInfo(id) });
+    expect(s.take()).toEqual([{ t: "welcome" }]);
     return s;
   };
   const rpc = (b: FakeSocket, id: string, runnerId: string, op: string, args: unknown = {}) =>
@@ -61,7 +62,7 @@ describe("connections", () => {
     const b = browser("a");
     b.take();
     const r = new FakeSocket("anon");
-    relay.onRunnerMessage(r, { t: "summary", summary: { kind: "all", seq: 1, sessions: [] } });
+    relay.onRunnerMessage(r, { t: "summary", summary: { kind: "all", epoch: "e", seq: 1, sessions: [] } });
     expect(b.sent).toEqual([]);
   });
 
@@ -238,8 +239,8 @@ describe("subscriptions", () => {
     const a = browser("a");
     const b = browser("b");
     const r = runner("box");
-    fromRunner(r, { t: "summary", summary: { kind: "remove", seq: 1, ids: ["claude:x"] } });
-    for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", seq: 1, ids: ["claude:x"] } }]);
+    fromRunner(r, { t: "summary", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } });
+    for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } }]);
   });
 });
 
@@ -467,7 +468,7 @@ describe("slow sockets", () => {
     const a = browser("a");
     const r = runner("box");
     a.sendResult = -1;
-    fromRunner(r, { t: "summary", summary: { kind: "all", seq: 1, sessions: [] } });
+    fromRunner(r, { t: "summary", summary: { kind: "all", epoch: "e", seq: 1, sessions: [] } });
     expect(a.closed).toBeUndefined();
   });
 });
@@ -515,5 +516,60 @@ describe("protocol version", () => {
     relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), protocol: 9 } });
     expect(relay.runnerList()).toEqual([]);
     expect(r.closed?.code).toBe(4003);
+  });
+});
+
+describe("overlapping subscribe and unsubscribe", () => {
+  test("unsubscribe while a subscribe is in flight: the late answer leaves no route", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [f] = r.take("rpc");
+    rpc(a, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+    fromRunner(r, { t: "result", id: f.id, ok: true, data: {} });
+    fromRunner(r, { t: "event", sessionId: "claude:x", seq: 1, event: { type: "state", state: {} } });
+    expect(a.take("event")).toEqual([]);
+    expect(relay.stats().subscriptions).toBe(0);
+  });
+
+  test("subscribe, unsubscribe, subscribe: the first one failing late keeps the newer route", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [f1] = r.take("rpc");
+    rpc(a, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    rpc(a, "3", "box", "subscribe", { sessionId: "claude:x" });
+    r.take();
+    fromRunner(r, { t: "result", id: f1.id, ok: false, error: "late" });
+    expect(r.take()).toEqual([]);
+    expect(relay.stats().subscriptions).toBe(1);
+  });
+});
+
+describe("malformed frames", () => {
+  test("a malformed rpc with a readable id is answered with an error", () => {
+    const { browser, relay } = setup();
+    const a = browser("a");
+    a.take();
+    relay.malformedRpc(a, "9");
+    expect(a.take()).toEqual([{ t: "result", id: "9", ok: false, error: "Malformed request." }]);
+  });
+
+  test("a malformed result fails its rpc now, only from the runner it was sent to", () => {
+    const { browser, runner, rpc, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    const other = runner("other");
+    rpc(a, "1", "box", "ping");
+    const [f] = r.take("rpc");
+    a.take();
+    relay.malformedResult(other, f.id);
+    expect(a.take()).toEqual([]);
+    relay.malformedResult(r, f.id);
+    expect(a.take("result")[0]).toMatchObject({ id: "1", ok: false });
+    expect(relay.stats().pending).toBe(0);
   });
 });

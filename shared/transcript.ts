@@ -28,12 +28,19 @@ export interface ToolPart {
   path?: string;
   /** set when the call ran inside a subagent */
   parentToolId?: string;
+  /** `output` was cut short (shared/limits.ts): its full length; `fullPart` fetches it */
+  truncated?: number;
 }
 
+/**
+ * `truncated` on any part: its content was cut short to keep frames small (shared/limits.ts),
+ * and this is the full length (characters; for an image, the base64 length, with `data` empty).
+ * The `fullPart` op returns the whole part.
+ */
 export type Part =
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "image"; mimeType: string; data: string }
+  | { type: "text"; text: string; truncated?: number }
+  | { type: "thinking"; text: string; truncated?: number }
+  | { type: "image"; mimeType: string; data: string; truncated?: number }
   | ToolPart;
 
 export type Role = "user" | "assistant" | "notice";
@@ -109,7 +116,9 @@ export interface SessionSummary {
 /**
  * A session as a subscriber first sees it. `messages` is only the newest window (at most the
  * subscribe's `limit`), never the whole transcript, so opening a long session stays fast on a
- * phone. Older messages come page by page from `history` as the reader scrolls up.
+ * phone. Older messages come page by page from `history` as the reader scrolls up. Pages are
+ * cut by bytes too, and big parts arrive cut short (`limits.ts`: `newestPage`, `capMessage`); the
+ * runner applies the same caps to every `msg` and `reset` event.
  */
 export interface SessionSnapshot {
   session: SessionSummary;

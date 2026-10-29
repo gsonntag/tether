@@ -23,7 +23,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
-import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+import type { HarnessId, Msg, Part, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
 export const CLOSE_REPLACED = 4000;
@@ -69,6 +69,8 @@ export interface Ops {
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
   subscribe: { args: { sessionId: string; limit?: number }; result: SessionSnapshot };
+  /** a part whose content a snapshot or event cut short (`truncated` set), in full */
+  fullPart: { args: { sessionId: string; msgId: string; part: number }; result: Part };
   /** an older page of a transcript: up to `limit` messages before the message `before` */
   history: { args: { sessionId: string; before: string; limit?: number }; result: { messages: Msg[]; hasOlder: boolean } };
   /** stop receiving a session's events (answered by the server) */
@@ -92,15 +94,17 @@ export const TERMINAL_OPS = ["closeTerminal", "terminalInput", "terminalResize"]
 
 /**
  * The sidebar and Home: small, broadcast to every browser. `seq` counts the runner's summary
- * changes (from 1 per runner process), so a list fetched by one rpc and updates broadcast around it
- * can be put in order: anything not newer than what a browser has is stale (shared/summary.ts).
- * A browser that arrives later asks for the whole list, which carries the seq it is current to.
+ * changes within one `epoch` (a random id each runner process picks at start), so a list fetched
+ * by one rpc and updates broadcast around it can be put in order: anything not newer than what a
+ * browser has is stale. A new epoch means the runner restarted and its seq started over: the
+ * browser starts over too (shared/summary.ts). A browser that arrives later asks for the whole
+ * list, which carries the epoch and seq it is current to.
  */
 export type SummaryUpdate =
   /** the runner's whole list: broadcast on connect, and the answer to a list request */
-  | { kind: "all"; seq: number; sessions: SessionSummary[] }
-  | { kind: "upsert"; seq: number; sessions: SessionSummary[] }
-  | { kind: "remove"; seq: number; ids: string[] };
+  | { kind: "all"; epoch: string; seq: number; sessions: SessionSummary[] }
+  | { kind: "upsert"; epoch: string; seq: number; sessions: SessionSummary[] }
+  | { kind: "remove"; epoch: string; seq: number; ids: string[] };
 
 // ---------- messages ----------
 
@@ -133,6 +137,8 @@ export type ServerToRunner =
   | { t: "detach"; attachIds: string[] }
   /** no browser watches these sessions any more */
   | { t: "unwatched"; sessionIds: string[] }
+  /** the hello was accepted: the runner is connected from here on */
+  | { t: "welcome" }
   /** answers the runner's keepalive ping */
   | { t: "pong" };
 

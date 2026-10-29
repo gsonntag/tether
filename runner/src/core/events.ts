@@ -13,6 +13,10 @@ export interface CoreEvents {
   error: { sessionId?: string; message: string };
   /** the last browser watching these sessions went away */
   unwatched: { sessionIds: string[] };
+  /** the app accepted this runner (after every reconnect) */
+  connected: {};
+  /** the connection to the app is gone; the server forgot every subscription with it */
+  disconnected: {};
 }
 
 export type CoreEventName = keyof CoreEvents;

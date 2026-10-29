@@ -28,7 +28,8 @@ interface RunnerConn {
 }
 
 interface BrowserConn {
-  subs: Set<string>;
+  /** session key -> the route's token: which subscribe created it (see settle) */
+  subs: Map<string, number>;
   attaches: Set<string>;
 }
 
@@ -39,6 +40,8 @@ interface Pending {
   op: OpName;
   /** the session a subscribe is for, or the attach an openTerminal opens */
   key?: string;
+  /** a subscribe that created its route: that route's token */
+  token?: number;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -72,7 +75,7 @@ export class Relay {
   // ---------------- browsers ----------------
 
   addBrowser(sock: Socket, user: { name: string; email: string }, protocol: number) {
-    this.browsers.set(sock, { subs: new Set(), attaches: new Set() });
+    this.browsers.set(sock, { subs: new Map(), attaches: new Set() });
     this.out(sock, { t: "hello", user, protocol });
     this.out(sock, { t: "runners", runners: this.runnerList() });
   }
@@ -81,7 +84,7 @@ export class Relay {
     const b = this.browsers.get(sock);
     if (!b) return;
     this.browsers.delete(sock);
-    this.tellUnwatched([...b.subs].filter((k) => this.unsubscribe(sock, b, k)));
+    this.tellUnwatched([...b.subs.keys()].filter((k) => this.unsubscribe(sock, b, k)));
     // Its PTYs have no one to draw for: the runners close them.
     const byRunner = new Map<string, string[]>();
     for (const a of b.attaches) {
@@ -107,6 +110,7 @@ export class Relay {
     if (!runner) return reply({ ok: false, error: "That runner is offline." });
     const args = { ...(m.args as Record<string, unknown>) };
     let key: string | undefined;
+    let token: number | undefined;
 
     if ((m.op === "subscribe" || m.op === "unsubscribe") && (typeof args.sessionId !== "string" || !args.sessionId))
       return reply({ ok: false, error: "sessionId is required." });
@@ -122,8 +126,13 @@ export class Relay {
         const k = subKey(m.runnerId, args.sessionId as string);
         // Subscribing again (a fresh snapshot) reuses the route; only a subscribe that created it
         // may take it down when it fails, or a failed refresh would cut off a working subscription.
-        if (!b.subs.has(k)) key = k;
-        b.subs.add(k);
+        // A route also survives being removed and made again while this subscribe is in flight:
+        // the token tells the routes apart.
+        if (!b.subs.has(k)) {
+          key = k;
+          token = ++this.seq;
+          b.subs.set(k, token);
+        }
         let set = this.subscribers.get(k);
         if (!set) this.subscribers.set(k, (set = new Set()));
         set.add(sock);
@@ -147,7 +156,7 @@ export class Relay {
 
     const id = `s${++this.seq}`;
     const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), this.rpcTimeoutMs);
-    this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, timer });
+    this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, token, timer });
     this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
 
@@ -194,6 +203,18 @@ export class Relay {
     }
   }
 
+  /** A result frame from this runner that didn't parse: its rpc fails now rather than timing out. */
+  malformedResult(sock: Socket, id: string) {
+    const runnerId = this.runnerOf.get(sock);
+    const p = this.pending.get(id);
+    if (runnerId && p?.runnerId === runnerId && this.runners.get(runnerId)?.sock === sock) this.settle(id, { ok: false, error: "The runner sent an answer Tether couldn't read." });
+  }
+
+  /** An rpc frame from this browser that didn't parse: answered with an error. */
+  malformedRpc(sock: Socket, id: string) {
+    if (this.browsers.has(sock)) this.out(sock, { t: "result", id, ok: false, error: "Malformed request." });
+  }
+
   removeRunner(sock: Socket) {
     const id = this.runnerOf.get(sock);
     this.runnerOf.delete(sock);
@@ -232,6 +253,7 @@ export class Relay {
     // connectedAt tells browsers there's nothing to subscribe to again.
     const connectedAt = prev?.sock === sock ? prev.info.connectedAt : this.now();
     this.runners.set(id, { sock, info: { ...info, connectedAt } });
+    this.out(sock, { t: "welcome" });
     if (prev?.sock !== sock)
       this.log(`runner ${id} (${info.name}) connected from ${info.hostname}; ${info.harnesses.map((h) => `${h.id} ${h.version}`).join(", ") || "no harnesses"}`);
     this.broadcastRunners();
@@ -262,7 +284,8 @@ export class Relay {
     const b = this.browsers.get(p.browser);
     if (!r.ok && p.key && b) {
       // A failed subscribe or attach leaves no route behind.
-      if (p.op === "subscribe" && this.unsubscribe(p.browser, b, p.key)) this.tellUnwatched([p.key]);
+      // Only the route this subscribe made: not one an unsubscribe already removed, nor a newer one.
+      if (p.op === "subscribe" && b.subs.get(p.key) === p.token && this.unsubscribe(p.browser, b, p.key)) this.tellUnwatched([p.key]);
       if (p.op === "openTerminal") this.dropAttach(p.key);
     }
     if (b) this.out(p.browser, { t: "result", id: p.browserRpcId, ok: r.ok, data: r.data, error: r.error });

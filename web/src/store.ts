@@ -7,7 +7,10 @@ import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type Know
 import { Subscriptions } from "./subscriptions";
 
 /** The sessions this page has open (P1 opens them); kept subscribed across every reconnect. */
-export const subscriptions = new Subscriptions((runnerId, sessionId) => rpc(runnerId, "subscribe", { sessionId }));
+export const subscriptions = new Subscriptions(
+  (runnerId, sessionId) => rpc(runnerId, "subscribe", { sessionId }),
+  (runnerId, sessionId) => rpc(runnerId, "unsubscribe", { sessionId }),
+);
 
 interface State {
   link: LinkState;

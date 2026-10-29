@@ -3,7 +3,7 @@
 
 import type { Server, ServerWebSocket } from "bun";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
-import { parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
+import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
 import { DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
 
@@ -111,10 +111,14 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       message(ws: ServerWebSocket<Conn>, raw) {
         if (ws.data.kind === "runner") {
           const m = parseRunnerMessage(raw);
+          const bad = m ? null : malformedId(raw, "result");
           if (m) guard("runner", () => relay.onRunnerMessage(ws, m));
+          else if (bad) guard("runner", () => relay.malformedResult(ws, bad));
         } else {
           const m = parseBrowserMessage(raw);
+          const bad = m ? null : malformedId(raw, "rpc");
           if (m) guard("browser", () => relay.onBrowserMessage(ws, m));
+          else if (bad) guard("browser", () => relay.malformedRpc(ws, bad));
         }
       },
       close(ws) {

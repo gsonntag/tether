@@ -10,7 +10,7 @@ test("backoff doubles from 1 s to a 30 s cap, with jitter", () => {
 });
 
 /** A stand-in for the relay: records what the runner sends and lets the test talk back. */
-function fakeServer(port = 0, opts: { pong?: boolean; token?: string } = {}) {
+function fakeServer(port = 0, opts: { pong?: boolean; token?: string; welcome?: boolean; onHello?: (ws: ServerWebSocket<unknown>) => void } = {}) {
   const frames: any[] = [];
   const socks: ServerWebSocket<unknown>[] = [];
   const server: Server<unknown> = Bun.serve({
@@ -27,6 +27,10 @@ function fakeServer(port = 0, opts: { pong?: boolean; token?: string } = {}) {
         const m = JSON.parse(String(raw));
         frames.push(m);
         if (m.t === "ping" && opts.pong !== false) ws.send(JSON.stringify({ t: "pong" }));
+        if (m.t === "hello") {
+          if (opts.welcome !== false) ws.send(JSON.stringify({ t: "welcome" }));
+          opts.onHello?.(ws);
+        }
       },
     },
   });
@@ -178,3 +182,30 @@ test("refused for its protocol version: says so and backs off long", async () =>
   expect(s.socks.length).toBe(1);
   await until(() => s.socks.length === 2, 2000);
 });
+
+test("not connected until the server welcomes the hello", async () => {
+  let accept!: () => void;
+  const s = fakeServer(0, { welcome: false, onHello: (ws) => (accept = () => ws.send(JSON.stringify({ t: "welcome" }))) });
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs, states } = runner(s.url);
+  conn.start();
+  await until(() => s.frames.some((m) => m.t === "hello"));
+  await Bun.sleep(50);
+  expect(conn.connected).toBe(false);
+  expect(states).toEqual([]);
+  expect(logs.some((l) => l.startsWith("connected"))).toBe(false);
+  accept();
+  await until(() => conn.connected);
+  expect(logs.some((l) => l.startsWith("connected to") && l.includes("box (box)"))).toBe(true);
+});
+
+test("a hello that is refused every time backs off instead of retrying every second", async () => {
+  // Accepts the socket, then closes it on hello without a welcome.
+  const s = fakeServer(0, { welcome: false, onHello: (ws) => ws.close(1008, "no") });
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs } = runner(s.url);
+  conn.start();
+  await until(() => logs.filter((l) => l.startsWith("retrying in")).length >= 3, 9000);
+  const delays = logs.filter((l) => l.startsWith("retrying in")).map((l) => parseFloat(l.slice(12)));
+  expect(delays[2]!).toBeGreaterThan(delays[0]! * 2);
+}, 10_000);

@@ -5,12 +5,18 @@
 import type { SessionSnapshot } from "../../shared/transcript";
 
 type Subscribe = (runnerId: string, sessionId: string) => Promise<SessionSnapshot>;
+type Unsubscribe = (runnerId: string, sessionId: string) => Promise<unknown>;
 
-interface Open {
+interface Watch {
   runnerId: string;
   sessionId: string;
   onSnapshot: (s: SessionSnapshot) => void;
   onError?: (e: Error) => void;
+}
+
+interface Open extends Watch {
+  /** bumped by every subscribe: only the newest one's answer counts */
+  gen: number;
 }
 
 const key = (runnerId: string, sessionId: string) => `${runnerId}\u0000${sessionId}`;
@@ -18,15 +24,22 @@ const key = (runnerId: string, sessionId: string) => `${runnerId}\u0000${session
 export class Subscriptions {
   private open = new Map<string, Open>();
 
-  constructor(private subscribe: Subscribe) {}
+  constructor(
+    private subscribe: Subscribe,
+    private unsubscribe: Unsubscribe,
+  ) {}
 
-  /** Starts watching a session; the snapshot arrives through onSnapshot (now and after every resubscribe). */
-  watch(o: Open): () => void {
-    const k = key(o.runnerId, o.sessionId);
+  /** Starts watching a session; snapshots arrive through onSnapshot (now and after every resubscribe). */
+  watch(w: Watch): () => void {
+    const k = key(w.runnerId, w.sessionId);
+    const o: Open = { ...w, gen: 0 };
     this.open.set(k, o);
     this.fetch(o);
     return () => {
-      if (this.open.get(k) === o) this.open.delete(k);
+      if (this.open.get(k) !== o) return;
+      this.open.delete(k);
+      // Not an error if it fails: a dropped link already took the subscription with it.
+      this.unsubscribe(w.runnerId, w.sessionId).catch(() => {});
     };
   }
 
@@ -40,9 +53,12 @@ export class Subscriptions {
   }
 
   private fetch(o: Open) {
+    const gen = ++o.gen;
+    // An older subscribe answering after a newer one would roll the view back: drop it.
+    const current = () => this.open.get(key(o.runnerId, o.sessionId)) === o && o.gen === gen;
     this.subscribe(o.runnerId, o.sessionId).then(
-      (snap) => this.open.get(key(o.runnerId, o.sessionId)) === o && o.onSnapshot(snap),
-      (e: Error) => this.open.get(key(o.runnerId, o.sessionId)) === o && o.onError?.(e),
+      (snap) => current() && o.onSnapshot(snap),
+      (e: Error) => current() && o.onError?.(e),
     );
   }
 }

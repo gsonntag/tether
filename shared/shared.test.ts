@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseSessionId, sessionId } from "./ids";
 import { afterSnapshot, checkSeq } from "./sync";
-import { decodeChunk, encodeChunk, parseBrowserMessage, parseRunnerMessage } from "./wire";
+import { decodeChunk, encodeChunk, malformedId, parseBrowserMessage, parseRunnerMessage } from "./wire";
 
 describe("session ids", () => {
   test("round trip, with colons in the native id", () => {
@@ -53,10 +53,10 @@ describe("wire", () => {
   test("runner frames", () => {
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":true}')?.t).toBe("result");
     expect(parseRunnerMessage('{"t":"event","sessionId":"claude:x","seq":3,"event":{"type":"reset","messages":[]}}')?.t).toBe("event");
-    expect(parseRunnerMessage('{"t":"summary","summary":{"kind":"remove","seq":1,"ids":[]}}')?.t).toBe("summary");
+    expect(parseRunnerMessage('{"t":"summary","summary":{"kind":"remove","epoch":"e","seq":1,"ids":[]}}')?.t).toBe("summary");
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":false,"error":"x","junk":1}')).toEqual({ t: "result", id: "s1", ok: false, data: undefined, error: "x" });
     expect(parseRunnerMessage('{"t":"term","attachId":"a1","data":""}')?.t).toBe("term");
-    for (const bad of ['{"t":"hello"}', '{"t":"result","id":"s1"}', '{"t":"event","sessionId":"x","seq":1,"event":{}}', '{"t":"summary","summary":{"kind":"bogus","seq":1}}', '{"t":"summary","summary":{"kind":"all","sessions":[]}}', '{"t":"term","attachId":"a"}', '{"t":"event","sessionId":"x","seq":1.5,"event":{}}', '{"t":"rpc"}', "{"])
+    for (const bad of ['{"t":"hello"}', '{"t":"result","id":"s1"}', '{"t":"event","sessionId":"x","seq":1,"event":{}}', '{"t":"summary","summary":{"kind":"bogus","seq":1}}', '{"t":"summary","summary":{"kind":"all","sessions":[]}}', '{"t":"summary","summary":{"kind":"all","seq":1,"sessions":[]}}', '{"t":"term","attachId":"a"}', '{"t":"event","sessionId":"x","seq":1.5,"event":{}}', '{"t":"rpc"}', "{"])
       expect(parseRunnerMessage(bad)).toBeNull();
   });
   test("terminal chunks survive base64, including large and non-UTF-8 bytes", () => {
@@ -64,4 +64,12 @@ describe("wire", () => {
     expect(decodeChunk(encodeChunk(bytes))).toEqual(bytes);
     expect(encodeChunk(new TextEncoder().encode("hi"))).toBe("aGk=");
   });
+});
+
+test("malformed rpc and result frames still yield their id when it parses", () => {
+  expect(malformedId('{"t":"rpc","id":"7","op":3}', "rpc")).toBe("7");
+  expect(malformedId('{"t":"result","id":"s1"}', "result")).toBe("s1");
+  expect(malformedId('{"t":"rpc","id":7}', "rpc")).toBeNull();
+  expect(malformedId("{", "rpc")).toBeNull();
+  expect(malformedId('{"t":"result","id":"s1"}', "rpc")).toBeNull();
 });

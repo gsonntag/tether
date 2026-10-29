@@ -48,6 +48,7 @@ export class Connection {
   private lastHeard = 0;
   private stopped = false;
   private ready = false;
+  private helloName = "";
   private readonly log: (line: string) => void;
   private readonly WS: typeof WebSocket;
   private readonly fetch: typeof fetch;
@@ -107,7 +108,6 @@ export class Connection {
     sock.onopen = async () => {
       clearTimeout(dialTimer);
       opened = true;
-      this.attempt = 0;
       this.lastHeard = Date.now();
       let runner: Omit<RunnerInfo, "connectedAt">;
       try {
@@ -118,9 +118,8 @@ export class Connection {
       }
       if (this.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
       sock.send(JSON.stringify({ t: "hello", runner } satisfies RunnerToServer));
-      this.ready = true;
-      this.log(`connected to ${this.opts.url} as ${runner.id}`);
-      this.opts.onState?.(true);
+      this.helloName = `${runner.name} (${runner.id})`;
+      // Keepalive from the start: a server that never answers the hello is caught like any silence.
       this.heartbeat = setInterval(() => this.beat(sock), this.opts.heartbeatMs ?? 20_000);
     };
 
@@ -133,7 +132,15 @@ export class Connection {
       } catch {
         return;
       }
-      if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
+      if (m.t === "welcome") {
+        if (this.ready) return; // a repeated hello's answer
+        // Connected only now, and only now is the backoff reset: a server that accepts the socket
+        // but refuses the hello must not be retried every second.
+        this.ready = true;
+        this.attempt = 0;
+        this.log(`connected to ${this.opts.url} as ${this.helloName}`);
+        this.opts.onState?.(true);
+      } else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
       else if (m.t === "detach") this.opts.onDetach?.(m.attachIds);
       else if (m.t === "unwatched") this.opts.onUnwatched?.(m.sessionIds);
     };

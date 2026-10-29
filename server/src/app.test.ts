@@ -35,6 +35,20 @@ const until = async (cond: () => boolean, ms = 3000) => {
 
 const hello = { t: "hello", runner: { id: "u1", name: "box", hostname: "box", version: "0", protocol: 1, harnesses: [] } };
 
+test("a malformed result from the runner fails the browser's rpc at once", async () => {
+  const { base } = app();
+  const runner = await open(`ws://${base}/api/runner`, { headers: { Authorization: "Bearer dev" } });
+  const browser = await open(`ws://${base}/api/ws`);
+  runner.ws.send(JSON.stringify(hello));
+  await until(() => browser.frames.some((m) => m.t === "runners" && m.runners.length === 1));
+  browser.ws.send(JSON.stringify({ t: "rpc", id: "1", runnerId: "u1", op: "ping", args: {} }));
+  await until(() => runner.frames.some((m) => m.t === "rpc"));
+  const id = runner.frames.find((m) => m.t === "rpc").id;
+  runner.ws.send(JSON.stringify({ t: "result", id }));
+  await until(() => browser.frames.some((m) => m.t === "result"));
+  expect(browser.frames.find((m) => m.t === "result")).toMatchObject({ id: "1", ok: false });
+});
+
 test("malformed runner and browser frames are dropped and the server keeps working", async () => {
   const { base } = app();
   const runner = await open(`ws://${base}/api/runner`, { headers: { Authorization: "Bearer dev" } });
@@ -52,6 +66,11 @@ test("malformed runner and browser frames are dropped and the server keeps worki
   for (const j of ['{"t":"rpc","id":"1","runnerId":"u1","op":"ping","args":"x"}', '{"t":"rpc"}', "{"]) browser.ws.send(j);
   runner.ws.send(JSON.stringify(hello));
   await until(() => browser.frames.some((m) => m.t === "runners" && m.runners.length === 1));
+  expect(runner.frames).toContainEqual({ t: "welcome" });
+  // A malformed rpc whose id parses is answered at once instead of timing out.
+  browser.ws.send('{"t":"rpc","id":"bad1","runnerId":"u1","op":7}');
+  await until(() => browser.frames.some((m) => m.t === "result" && m.id === "bad1"));
+  expect(browser.frames.find((m) => m.id === "bad1")).toMatchObject({ ok: false, error: "Malformed request." });
   browser.ws.send(JSON.stringify({ t: "rpc", id: "1", runnerId: "u1", op: "ping", args: {} }));
   await until(() => runner.frames.some((m) => m.t === "rpc"));
   expect(runner.frames.find((m) => m.t === "rpc")).toMatchObject({ op: "ping" });
