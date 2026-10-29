@@ -242,7 +242,8 @@ async function brokenSession(p) {
   return r.ok.sessionId;
 }
 
-const SLOW = (n, word) => `Use the Bash tool to run exactly: sleep ${n}   Then reply with exactly one word: ${word}`;
+// Claude Code refuses a bare `sleep`; this waits the same.
+const SLOW = (n, word) => `Use the Bash tool to run exactly: timeout ${n} tail -f /dev/null; echo waited   Then reply with exactly one word: ${word}`;
 
 let claude; // the Claude session URL
 let codex; // the Codex session URL
@@ -403,13 +404,20 @@ const steps = {
     await button(ask, "Stop and open terminal").click();
     await waitState(a, (s) => s.mode === "terminal" && s.queueHeldBy === "terminal", "in the terminal, queue held", 60_000);
     await a.locator(".t-queue", { hasText: "back from the terminal" }).waitFor();
+    // Tab while the TUI drives queues too, held with the rest (SPEC §8).
+    await composer(a).fill("Reply with exactly: TAB-IN-TERMINAL");
+    await composer(a).press("Tab");
+    await a.locator(".t-queued", { hasText: "TAB-IN-TERMINAL" }).waitFor({ timeout: 10_000 });
     await sleep(4000);
-    if ((await liveState(a)).queue.length !== 1) fail("the queue went out into the terminal");
+    const held = await liveState(a);
+    if (held.queue.length !== 2 || held.queueHeldBy !== "terminal") fail(`the queue in the terminal: ${JSON.stringify(held.queue.map((m) => m.text))} ${held.queueHeldBy}`);
     await button(a, "Back to Tether").first().click();
-    await waitState(a, (s) => s.mode === "live" && s.queue.length === 0, "back live and the queue sent", 90_000);
+    await waitState(a, (s) => s.mode === "live" && s.queue.length <= 1, "back live and the queue going out", 90_000);
     await a.locator(".t-msg.user .t-bubble", { hasText: "AFTER-TERMINAL" }).waitFor({ timeout: 30_000 });
+    await waitState(a, (s) => s.queue.length === 0 && s.status === "idle", "both held messages sent", 180_000);
+    await a.locator(".t-msg.user .t-bubble", { hasText: "TAB-IN-TERMINAL" }).waitFor({ timeout: 10_000 });
     await idle(a);
-    ok("terminal handoff with a queued message: asked first (\"1 queued message will wait\"), held while the TUI drove, sent after Back to Tether");
+    ok("terminal handoff with a queued message: asked first (\"1 queued message will wait\"), held while the TUI drove (Tab there queued another, held too), both sent after Back to Tether");
     await a.close();
   },
 
@@ -525,20 +533,23 @@ const steps = {
     await rpcVia(home, "setPermissionMode", { sessionId: id, mode: "default" });
     await rpcVia(home, "send", { sessionId: id, text: "Use the Bash tool to run exactly: echo push > push.txt   Then reply with exactly: PUSHED" });
     const req = await waitPush(svc, (p) => p.kind === "request" && p.sessionId === id, "request push", 90_000);
-    if (!/Claude wants to run echo push/.test(req.payload.body)) fail(`request body: ${req.payload.body}`);
+    // Why it needs you, never the command itself.
+    if (!/^Claude (asks to: .+|wants to run a command\.)$/.test(req.payload.body) || /echo push/.test(req.payload.body)) fail(`request body: ${req.payload.body}`);
     const open = await rpcVia(home, "subscribe", { sessionId: id });
     const r = open.ok.state.requests[0];
     await rpcVia(home, "answerRequest", { sessionId: id, requestId: r.id, allow: true });
     // The finish.
     const fin = await waitPush(svc, (p) => p.kind === "finished" && p.sessionId === id, "finished push", 120_000);
-    if (!/PUSHED/.test(fin.payload.body)) fail(`finished body: ${fin.payload.body}`);
+    if (fin.payload.body !== "Finished." || /PUSHED/.test(JSON.stringify(fin.payload))) fail(`finished push: ${JSON.stringify(fin.payload)}`);
     await rpcVia(home, "setPermissionMode", { sessionId: id, mode: "bypassPermissions" });
     // A failure: a session on a model that doesn't exist.
     const broken = await brokenSession(home);
     await rpcVia(home, "send", { sessionId: broken, text: "Reply with exactly: NEVER" });
     const failed = await waitPush(svc, (p) => p.kind === "failed" && p.sessionId === broken, "failed push", 120_000);
+    if (failed.payload.body !== "Failed: model unavailable.") fail(`failed push: ${failed.payload.body}`);
+    if (svc.got.some((g) => /claude-no-such-model/.test(JSON.stringify(g.payload ?? {})))) fail("a push carried the raw error");
     await rpcVia(home, "unsubscribe", { sessionId: id });
-    ok(`push: test, request ("${req.payload.body}"), finished ("${fin.payload.body}") and failed ("${failed.payload.body.slice(0, 80)}") reached a device's push service, VAPID-signed, decrypting with its keys`);
+    ok(`push: test, request ("${req.payload.body}"), finished ("${fin.payload.body}") and failed ("${failed.payload.body}") reached a device's push service, VAPID-signed, decrypting with its keys`);
     // A device looking at the session isn't told; once it looks away, it is.
     const looking = await pageAs(desktop, "e2e-device", claude);
     await composer(looking).waitFor();
@@ -552,7 +563,8 @@ const steps = {
     await looking.goto(`${BASE}/#/`);
     await sleep(1000);
     await rpcVia(home, "send", { sessionId: id, text: "Reply with exactly: AWAY" });
-    await waitPush(svc, (p) => p.kind === "finished" && p.sessionId === id && /AWAY/.test(p.body), "finished push after looking away", 120_000);
+    const n0 = svc.got.length;
+    await waitPush(svc, (p) => p.kind === "finished" && p.sessionId === id && svc.got.indexOf(svc.got.find((g) => g.payload === p)) >= n0, "finished push after looking away", 120_000);
     ok("a device looking at the session got no push for it; after it went Home, it did");
     await looking.close();
     await rpcVia(home, "pushUnsubscribe", { endpoint: svc.endpoint });
@@ -659,7 +671,7 @@ const steps = {
     await composer(a).waitFor();
     await send(
       a,
-      'Use the Agent tool with run_in_background set to true, subagent_type "general-purpose", description "Waiting helper", and this prompt: "Run the Bash command sleep 45. Then reply with every message you received from the main agent while you waited, word for word." Then wait for it to finish and tell me exactly what it replied.',
+      'Use the Agent tool with run_in_background set to true, subagent_type "general-purpose", description "Waiting helper", and this prompt: "Run the Bash command: timeout 45 tail -f /dev/null; echo waited. Then reply with every message you received from the main agent while you waited, word for word." Then wait for it to finish and tell me exactly what it replied.',
     );
     const kid = await waitState(a, () => true, "x", 1).catch(() => null);
     void kid;
