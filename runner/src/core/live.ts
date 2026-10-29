@@ -42,6 +42,13 @@ export interface TerminalSeam {
   blocked(s: Session): string | undefined;
 }
 
+/** A send that Stop cancelled while the harness was starting: nothing went out. */
+export class SendCancelled extends Error {
+  constructor() {
+    super("Stopped before it went out.");
+  }
+}
+
 export class LiveControl {
   private readonly idleMs: number;
   terminal?: TerminalSeam;
@@ -131,15 +138,16 @@ export class LiveControl {
     try {
       await this.core.load(s);
       const d = await this.ensureDriver(s);
-      // Stopped before the message went out (interrupt already set idle and freed the session).
-      if (s.cancelSend === me) return;
+      // Stopped before the message went out (interrupt already set idle and freed the session):
+      // the caller hears it wasn't sent (a queued message goes back, your text stays in the box).
+      if (s.cancelSend === me) throw new SendCancelled();
       await this.confirmSettings(s, d);
-      if (s.cancelSend === me) return;
+      if (s.cancelSend === me) throw new SendCancelled();
       this.core.touch(s, { updatedAt: this.core.now() });
       await d.send(withAttachments(text, attachments), attachments);
       s.fresh = false;
     } catch (e) {
-      if (s.sending === me) {
+      if (s.sending === me && !(e instanceof SendCancelled)) {
         s.turnError = (e as Error)?.message ?? String(e);
         this.status(s, "idle");
       }

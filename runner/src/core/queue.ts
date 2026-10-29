@@ -9,10 +9,10 @@
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
 import { formatSize } from "../../../shared/attachments";
-import { MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, utf8Length } from "../../../shared/limits";
+import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, stripControls } from "../../../shared/limits";
 
-/** UTF-8 bytes of a queue's text. */
-export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + utf8Length(m.text), 0);
+/** Bytes a queue's text takes in a frame (JSON escapes included). */
+export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + jsonBytes(m.text), 0);
 import type { LiveState, QueuedMessage } from "../../../shared/transcript";
 import type { Session } from "./session";
 import type { SessionCore } from "./sessions";
@@ -32,6 +32,8 @@ export class MessageQueue {
   gone?: (s: Session, m: QueuedMessage, how: "sent" | "cancelled") => void;
   /** sessions whose next message is going out */
   private draining = new Set<string>();
+  /** the message going out, by session: still in runner.json until the harness has it */
+  private going = new Map<string, QueuedMessage>();
   /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
   private cutOff: Set<string>;
 
@@ -70,6 +72,8 @@ export class MessageQueue {
 
   async add(id: string, text: string, attachments: Attachment[], o: { shell?: QueuedMessage["shell"] } = {}): Promise<{ id: string }> {
     const s = await this.root(id);
+    // Control characters (a command's raw output) never wait: they'd take 6 bytes each in a frame.
+    text = stripControls(text);
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     if (s.state.queue.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
@@ -83,6 +87,7 @@ export class MessageQueue {
 
   async edit(id: string, msgId: string, text: string) {
     const s = await this.root(id);
+    text = stripControls(text);
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const m = this.find(s, msgId);
     if (m.shell) throw new Error("A command's output can't be edited. Cancel it instead.");
@@ -136,8 +141,15 @@ export class MessageQueue {
   async restore() {
     for (const id of this.core.o.prefs.queued()) {
       const s = await this.core.open(id).catch((e) => {
-        // Gone for good (deleted): its queue goes too.
-        if (/isn't on this runner|isn't a session id|can't drive/i.test(String(e?.message))) this.core.o.prefs.set(id, { queue: undefined, queueHeldBy: undefined });
+        // Not known (yet): a new session whose first start a restart cut short isn't in any store.
+        // Its queue stays, held, for when it is; only a long-forgotten one goes.
+        const p = this.core.o.prefs.get(id);
+        if (/isn't a session id|can't drive/i.test(String(e?.message)) || this.core.now() - (p.at ?? 0) > 30 * 24 * 60 * 60 * 1000) this.core.o.prefs.set(id, { queue: undefined, queueHeldBy: undefined });
+        else if (p.queueHeldBy !== "restart") {
+          this.core.o.prefs.set(id, { queueHeldBy: "restart" });
+          this.core.o.prefs.flush();
+        }
+        this.core.log(`${id}: its queue waits; the session isn't known yet (${e?.message ?? e})`);
         return undefined;
       });
       if (!s) continue;
@@ -162,18 +174,24 @@ export class MessageQueue {
     this.draining.add(id);
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once
     // the harness has it: a runner killed in between still has it waiting.
+    this.going.set(id, next!);
     this.save(s, rest, undefined, { persist: false });
     try {
       await this.host.send(id, next!.text, next!.attachments ?? []);
+      this.going.delete(id);
       this.persist(s);
       this.gone?.(s, next!, "sent");
     } catch (e: any) {
-      // Back at the front. A turn that started meanwhile (you sent something) just means later;
-      // anything else holds the queue: whatever stopped it would stop the rest too.
+      this.going.delete(id);
+      // Back at the front. Stopped while the harness started: held, as after any Stop. A turn that
+      // started meanwhile (you sent something) just means later; anything else holds the queue:
+      // whatever stopped it would stop the rest too.
       const busy = s.state.status !== "idle" || !!s.sending;
-      this.save(s, [next!, ...s.state.queue], busy ? undefined : "failed");
+      const how: HeldBy | undefined = e?.name === "SendCancelled" || e?.message === "Stopped before it went out." ? "stopped" : busy ? undefined : "failed";
+      this.save(s, [next!, ...s.state.queue], how);
       this.core.log(`${id}: a queued message didn't go out: ${e?.message ?? e}`);
     } finally {
+      this.going.delete(id);
       this.draining.delete(id);
     }
   }
@@ -188,7 +206,7 @@ export class MessageQueue {
 
   /** Refuses text that would take the queue past QUEUE_BYTES_MAX (its state must always travel). */
   private roomFor(others: QueuedMessage[], text: string) {
-    if (queueBytes(others) + utf8Length(text) > QUEUE_BYTES_MAX)
+    if (queueBytes(others) + jsonBytes(text) > QUEUE_BYTES_MAX)
       throw new Error(`The waiting messages can be at most ${formatSize(QUEUE_BYTES_MAX)} of text together. Send or cancel some first, or attach long text as a file.`);
   }
 
@@ -212,8 +230,10 @@ export class MessageQueue {
 
   /** The session's queue as its state has it, into runner.json now. */
   private persist(s: Session) {
-    const q = s.state.queue;
-    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, queue: q.length ? q : undefined, queueHeldBy: q.length ? s.state.queueHeldBy : undefined });
+    // A message going out stays saved (at the front) until the harness has it, whatever else changes.
+    const going = this.going.get(s.id);
+    const q = going ? [going, ...s.state.queue] : s.state.queue;
+    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, queue: q.length ? q : undefined, queueHeldBy: s.state.queue.length ? s.state.queueHeldBy : undefined });
     this.core.o.prefs.flush();
   }
 }

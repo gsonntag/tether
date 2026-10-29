@@ -404,7 +404,8 @@ describe("review round 1", () => {
     await live.interrupt("claude:s1");
     expect(s.state.status).toBe("idle");
     release();
-    await sending;
+    // The caller hears nothing went out (a queued message goes back; your text stays in the box).
+    await expect(sending).rejects.toThrow("Stopped before it went out.");
     expect(adapter.drivers[0]!.sent).toEqual([]);
     expect(s.state.status).toBe("idle");
   });
@@ -511,7 +512,8 @@ test("a setting changed while Claude starts is applied once it's up; Stop then s
   // Not "still working": the cancelled send freed the session.
   const second = live.send("claude:s1", "two");
   release();
-  await Promise.all([first, setting, second]);
+  await expect(first).rejects.toThrow("Stopped before it went out.");
+  await Promise.all([setting, second]);
   const d = adapter.drivers[0]!;
   expect(adapter.drivers).toHaveLength(1);
   expect(d.settings.model).toBe("haiku");
