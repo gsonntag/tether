@@ -3,16 +3,20 @@
 // Esc on an empty box stops. Phones (coarse pointer): Enter is a newline and the buttons send; the
 // menu beside the button has Queue and Stop and send now. Files attach by paste, drop, the paperclip
 // or (phones) the camera; they upload to the runner first and go with the message.
+//
+// Text starting with ! is a shell command (SPEC §9 Shell commands): the box turns into a shell
+// prompt, and Enter (or Run) runs it now on the runner, even mid-turn; its output then goes to the
+// agent through the queue. The ❯ toggle adds or removes the ! (the way in on a phone).
 
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { ArrowUpIcon, ChevronDownIcon, StopIcon } from "@heroicons/react/24/solid";
-import { CameraIcon, ClockIcon, PaperClipIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { CameraIcon, ClockIcon, CommandLineIcon, PaperClipIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, type Attachment } from "../../../shared/attachments";
 import { ATTACH_MAX } from "../../../shared/limits";
-import { composerMode, keyAction, primaryAction, type ComposerAction } from "../composerKeys";
+import { composerMode, isShellText, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
 
 export interface ComposerHandle {
@@ -36,7 +40,7 @@ interface Pending {
 const drafts = new Map<string, string>();
 const draftFiles = new Map<string, Pending[]>();
 
-export type SendKind = "send" | "steer" | "queue" | "stopSend";
+export type SendKind = "send" | "steer" | "queue" | "stopSend" | "shell";
 
 export const Composer = forwardRef<
   ComposerHandle,
@@ -56,11 +60,13 @@ export const Composer = forwardRef<
     inTerminal?: boolean;
     /** where attachments upload (none: no attaching) */
     uploadTo?: { runnerId: string; sessionId: string };
+    /** `!` commands run here (none: no shell mode): the folder they run in, for the hint */
+    shell?: { folder: string };
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
     onStop: () => Promise<void>;
     status?: React.ReactNode;
   }
->(function Composer({ draftKey, running, waiting, disabled, placeholder, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, onSend, onStop, status }, ref) {
+>(function Composer({ draftKey, running, waiting, disabled, placeholder, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -135,12 +141,39 @@ export const Composer = forwardRef<
       return l.filter((x) => x.key !== k);
     });
 
-  const mode = steerOnly ? "steer" : composerMode({ running, canSteer, inTerminal });
+  const shellOn = !!shell && !steerOnly && isShellText(text);
+  const mode = steerOnly ? "steer" : composerMode({ running, canSteer, inTerminal, shell: shellOn });
   const uploading = files.some((f) => !f.attachment && !f.error);
   const ready = files.filter((f) => f.attachment).map((f) => f.attachment!);
   const hasContent = !!text.trim() || ready.length > 0;
 
+  /** A `!` command: runs now; only the text is cleared (files stay for the next message). */
+  const run = async () => {
+    const command = shellCommand(text);
+    if (busy || disabled) return;
+    if (!command) return setError("Type a command after the !.");
+    setBusy(true);
+    setError(undefined);
+    const key = draftKey;
+    const sentText = text;
+    try {
+      await onSend("shell", command, []);
+      if (drafts.get(key) === sentText) drafts.delete(key);
+      if (keyRef.current === key && textRef.current === sentText) setText("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = () => {
+    change(toggleShell(text));
+    box.current?.focus();
+  };
+
   const go = async (kind: SendKind) => {
+    if (kind === "shell") return run();
     const t = text.trim();
     if ((!t && !ready.length) || busy || disabled) return;
     if (uploading) return setError("Wait for the files to finish uploading.");
@@ -198,8 +231,8 @@ export const Composer = forwardRef<
 
   const primary = primaryAction(mode);
   const busyTurn = mode === "steer" || mode === "queue";
-  const label = primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
-  const tip = primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? "Send after this turn (Enter)" : "Send (Enter)";
+  const label = primary === "shell" ? "Run" : primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
+  const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? "Send after this turn (Enter)" : "Send (Enter)";
   const hint =
     disabled ??
     (busyTurn
@@ -216,7 +249,7 @@ export const Composer = forwardRef<
 
   return (
     <div
-      className={`t-composer${drag ? " dragging" : ""}`}
+      className={`t-composer${drag ? " dragging" : ""}${shellOn ? " shell" : ""}`}
       onDragOver={(e) => {
         if (!uploadTo || !e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -232,6 +265,14 @@ export const Composer = forwardRef<
     >
       <div className="t-composer-inner">
         {status}
+        {shellOn && (
+          <div className="t-shell-hint" role="status">
+            <span className="t-shell-badge">Shell</span>
+            <span>
+              Runs now in <span className="t-path">{folderName(shell!.folder)}</span> · the output goes to {agent} {running && !inTerminal ? "when this turn ends" : "when it finishes"}
+            </span>
+          </div>
+        )}
         {error && <div className="t-inline-status error">{error}</div>}
         {files.length > 0 && (
           <div className="t-files" aria-label="Attachments">
@@ -252,17 +293,31 @@ export const Composer = forwardRef<
             <>
               <input ref={picker} type="file" multiple hidden aria-label="Attach files" onChange={(e) => (addFiles([...(e.target.files ?? [])]), (e.target.value = ""))} />
               <input ref={camera} type="file" accept="image/*" capture="environment" hidden aria-label="Take a photo" onChange={(e) => (addFiles([...(e.target.files ?? [])]), (e.target.value = ""))} />
-              <IconButton label="Attach files" tooltip="Attach files (or paste, or drop)" variant="ghost" icon={<Icon icon={PaperClipIcon} />} isDisabled={!!disabled} onClick={() => picker.current?.click()} />
-              {coarse() && <IconButton label="Take a photo" variant="ghost" icon={<Icon icon={CameraIcon} />} isDisabled={!!disabled} onClick={() => camera.current?.click()} />}
+              <IconButton label="Attach files" tooltip="Attach files (or paste, or drop)" variant="ghost" icon={<Icon icon={PaperClipIcon} />} isDisabled={!!disabled || shellOn} onClick={() => picker.current?.click()} />
+              {coarse() && <IconButton label="Take a photo" variant="ghost" icon={<Icon icon={CameraIcon} />} isDisabled={!!disabled || shellOn} onClick={() => camera.current?.click()} />}
             </>
           )}
-          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={hint} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
-          {busyTurn && !hasContent ? (
+          {shell && !steerOnly && (
+            <button
+              type="button"
+              className="t-shell-toggle"
+              aria-label="Shell command"
+              aria-pressed={shellOn}
+              title={shellOn ? "Back to a message (removes the !)" : "Run a shell command (or start with !)"}
+              // Keeps the phone keyboard up.
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={toggle}
+            >
+              <CommandLineIcon aria-hidden />
+            </button>
+          )}
+          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={hint} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
+          {busyTurn && !hasContent && !shellOn ? (
             <IconButton label="Stop" tooltip="Stop (Esc)" variant="secondary" icon={<Icon icon={StopIcon} />} onClick={() => void stop()} />
           ) : (
-            <IconButton label={label} tooltip={tip} variant="primary" icon={<Icon icon={primary === "queue" ? ClockIcon : ArrowUpIcon} />} isDisabled={!hasContent || busy || !!disabled || uploading} onClick={() => void go(primary)} />
+            <IconButton label={label} tooltip={tip} variant="primary" icon={<Icon icon={primary === "shell" ? CommandLineIcon : primary === "queue" ? ClockIcon : ArrowUpIcon} />} isDisabled={shellOn ? busy || !!disabled : !hasContent || busy || !!disabled || uploading} onClick={() => void go(primary)} />
           )}
-          {busyTurn && hasContent && !steerOnly && (
+          {busyTurn && hasContent && !steerOnly && !shellOn && (
             <DropdownMenu
               renderTrigger={(p) => (
                 <button type="button" className="t-more-send" aria-label="More ways to send" {...p}>
@@ -280,3 +335,6 @@ export const Composer = forwardRef<
     </div>
   );
 });
+
+/** A folder as the hint names it: its last part ("~/code/app" -> "app"). */
+const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;

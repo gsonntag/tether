@@ -1369,3 +1369,159 @@
   font-size: 14px;
   font-weight: var(--font-weight-medium, 500);
 }
+
+/* ---------- P5b: ! commands (SPEC §9 Shell commands) ---------- */
+
+.t-shell-toggle {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--t-muted);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-shell-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+.t-shell-toggle:hover {
+  background: var(--color-overlay-hover);
+}
+.t-shell-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.t-shell-toggle[aria-pressed="true"] {
+  background: var(--t-shell-bg);
+  color: var(--t-shell-fg);
+}
+:root {
+  --t-shell-fg: #8bd17c;
+  --t-shell-bg: color-mix(in srgb, #8bd17c 16%, transparent);
+}
+.t-composer.shell .t-input {
+  font-family: var(--t-mono);
+  font-size: 14px;
+  border-color: var(--t-shell-fg);
+  box-shadow: 0 0 0 1px var(--t-shell-fg);
+}
+.t-shell-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--t-muted);
+  min-width: 0;
+}
+.t-shell-hint > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.t-shell-badge {
+  flex: none;
+  font-family: var(--t-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--t-shell-bg);
+  color: var(--t-shell-fg);
+}
+
+/* The card of a command you ran: full width, a terminal look. */
+.t-msg.shellrun {
+  padding: 8px 0;
+}
+.t-shellcard {
+  border: 1px solid var(--t-border);
+  border-left: 3px solid var(--t-shell-fg);
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 0;
+}
+.t-shellcard.failed {
+  border-left-color: var(--color-text-red, var(--color-error));
+}
+.t-shellcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--t-soft);
+  min-width: 0;
+}
+.t-shellcard-who {
+  flex: none;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-shellcard-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--t-mono);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-shellcard-exit {
+  flex: none;
+  font-family: var(--t-mono);
+  font-size: 12px;
+  color: var(--color-text-green, var(--color-success));
+}
+.t-shellcard-exit.failed {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-shellcard-out {
+  background: #16171a;
+  color: #e6e6e6;
+  padding: 8px 10px;
+  max-height: 320px;
+}
+.t-shellcard-none,
+.t-shellcard-note {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-shellcard-where {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-top: 1px solid var(--t-border);
+  color: var(--t-muted);
+}
+.t-shellcard-where.sent {
+  color: var(--color-text-green, var(--color-success));
+}
+.t-shellcard-where.notSent {
+  color: var(--color-text-yellow, var(--color-warning));
+}
+/* Where the agent got a command's output: one quiet line, the message inside. */
+.t-msg.shellsent {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-msg.shellsent summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.t-msg.shellsent code,
+.t-queued-cmd {
+  font-family: var(--t-mono);
+  font-size: 12px;
+}
+.t-msg.shellsent .t-pre {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

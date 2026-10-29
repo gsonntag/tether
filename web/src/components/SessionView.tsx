@@ -207,10 +207,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
+            shell={{ folder: summary.projectPath }}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
-              if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
+              // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
+              if (kind === "shell") await rpc(runnerId, "runShell", { sessionId, command: text });
+              else if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}

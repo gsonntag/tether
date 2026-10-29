@@ -30,3 +30,20 @@ test("Tab queues text; ⌘/Ctrl+Enter stops and sends now; Esc on an empty box s
 test("on phones Enter is a newline", () => {
   expect(keyAction(k("Enter"), "idle", { hasText: true, phone: true })).toBeNull();
 });
+
+test("! text is a shell command: Enter runs it now, even mid-turn; the toggle adds and removes the !", async () => {
+  const { isShellText, shellCommand, toggleShell } = await import("./composerKeys");
+  const m = composerMode({ running: true, canSteer: true, inTerminal: false, shell: true });
+  expect(m).toBe("shell");
+  expect(keyAction(k("Enter"), m, desk)).toBe("shell");
+  expect(keyAction(k("Enter", { metaKey: true }), m, desk)).toBe("shell");
+  expect(keyAction(k("Tab"), m, desk)).toBeNull();
+  expect(keyAction(k("Escape"), m, { ...desk, hasText: false })).toBeNull();
+  expect(keyAction(k("Enter"), m, { hasText: true, phone: true })).toBeNull();
+  expect(isShellText("  !ls")).toBe(true);
+  expect(isShellText("ls !")).toBe(false);
+  expect(shellCommand("! npm test ")).toBe("npm test");
+  expect(toggleShell("npm test")).toBe("!npm test");
+  expect(toggleShell("!npm test")).toBe("npm test");
+  expect(toggleShell("")).toBe("!");
+});

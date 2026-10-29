@@ -65,8 +65,14 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
             ) : (
               <>
                 <span className="t-queued-text">
-                  {m.text || <em>No text</em>}
-                  {m.truncated ? "…" : null}
+                  {m.shell ? (
+                    <>
+                      Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
+                    </>
+                  ) : (
+                    m.text || <em>No text</em>
+                  )}
+                  {m.truncated && !m.shell ? "…" : null}
                   {m.attachments?.length ? <span className="t-queued-files"> · {m.attachments.length === 1 ? m.attachments[0]!.name : `${m.attachments.length} files`}</span> : null}
                 </span>
                 <span className="t-queued-tools">
@@ -75,7 +81,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                       <ArrowUpIcon aria-hidden />
                     </button>
                   )}
-                  {!m.truncated && <button
+                  {!m.truncated && !m.shell && <button
                     type="button"
                     className="t-icon-btn"
                     aria-label="Edit"

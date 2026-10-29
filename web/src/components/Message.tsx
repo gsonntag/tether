@@ -11,6 +11,7 @@ import { ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
 import { useFullParts, useSessionCtx } from "./sessionContext";
+import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
 
@@ -101,6 +102,9 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const missing = Array.from({ length: omitted }, (_, i) => msg.parts.length + i).filter((i) => !full[i]);
   const cutFor = (i: number) => (isCut(parts[i]!) && !full[i] ? <CutNote loading={loading.includes(i)} error={error} onLoad={() => load([i])} /> : undefined);
 
+  // A `!` command you ran, and the message that carried its output to the agent.
+  if (msg.shell) return <ShellCard msg={msg} />;
+  if (msg.role === "user" && msg.origin?.kind === "shell") return <ShellSent msg={msg} />;
   if (msg.role === "user" && msg.origin) {
     // Not something you typed: another session's message, a channel, a report.
     const who =
