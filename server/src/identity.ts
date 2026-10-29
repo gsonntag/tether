@@ -15,6 +15,12 @@ export interface Viewer {
 
 const env = process.env;
 export const DEV = !env.FOLIATION_ISSUER;
+/**
+ * Production must check the audience, or a token Foliation minted for another app would pass.
+ * Foliation always injects FOLIATION_AUDIENCE (with FOLIATION_ISSUER), so its absence is a broken
+ * deployment: the server refuses to start rather than run with the check off.
+ */
+export const PRODUCTION_CONFIG_ERROR = !DEV && !env.FOLIATION_AUDIENCE ? "FOLIATION_ISSUER is set but FOLIATION_AUDIENCE isn't: refusing to start without the audience check." : null;
 const DEV_RUNNER_TOKEN = env.TETHER_DEV_RUNNER_TOKEN ?? "dev";
 
 const local = createLocalJWKSet(JSON.parse(env.FOLIATION_JWKS ?? '{"keys":[]}'));

@@ -6,7 +6,7 @@
 // that came in on an older connection is dropped: the server that asked has forgotten it, and its
 // id may now name a different rpc.
 
-import type { RunnerInfo, RunnerToServer, ServerToRunner } from "../../../shared/protocol";
+import { CLOSE_REPLACED, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
   /** the app's base URL, e.g. https://tether--me.foliation.dev or http://localhost:8790 */
@@ -16,12 +16,18 @@ export interface ConnectionOptions {
   hello: () => Promise<Omit<RunnerInfo, "connectedAt">>;
   onRpc: (op: string, args: unknown) => Promise<{ ok: true; data: unknown } | { ok: false; error: string }>;
   onDetach?: (attachIds: string[]) => void;
+  /** no browser watches these sessions any more */
+  onUnwatched?: (sessionIds: string[]) => void;
   /** connected, after hello; or disconnected */
   onState?: (connected: boolean) => void;
   log?: (line: string) => void;
   heartbeatMs?: number;
   /** no frame from the server for this long means the connection is dead */
   silenceMs?: number;
+  /** a connection that hasn't opened by then is abandoned and retried */
+  dialTimeoutMs?: number;
+  /** how long to wait after another runner with our id replaced us */
+  replacedBackoffMs?: number;
   WebSocket?: typeof WebSocket;
   fetch?: typeof fetch;
 }
@@ -87,8 +93,17 @@ export class Connection {
       return this.scheduleRetry();
     }
     this.ws = sock;
+    // A dial that hangs (a black-holed network) would otherwise wait on the OS's TCP timeout.
+    const dialTimer = setTimeout(() => {
+      if (opened || this.ws !== sock) return;
+      this.log(`no answer from ${target} in ${Math.round((this.opts.dialTimeoutMs ?? 15_000) / 1000)}s`);
+      this.drop(sock);
+      sock.close();
+      this.scheduleRetry();
+    }, this.opts.dialTimeoutMs ?? 15_000);
 
     sock.onopen = async () => {
+      clearTimeout(dialTimer);
       opened = true;
       this.attempt = 0;
       this.lastHeard = Date.now();
@@ -118,13 +133,22 @@ export class Connection {
       }
       if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
       else if (m.t === "detach") this.opts.onDetach?.(m.attachIds);
+      else if (m.t === "unwatched") this.opts.onUnwatched?.(m.sessionIds);
     };
 
     sock.onclose = (ev) => {
+      clearTimeout(dialTimer);
       if (this.ws !== sock) return;
       const was = this.ready;
       this.drop(sock);
       if (this.stopped) return;
+      if (ev.code === CLOSE_REPLACED) {
+        // Another runner said hello with our id. Reconnecting right away would only replace it in
+        // turn, and the two would take turns forever: wait long, and say why.
+        const wait = this.opts.replacedBackoffMs ?? 60_000;
+        this.log(`another runner connected with this runner's id (${ev.reason}). Each runner needs its own runnerId in runner.json. Retrying in ${wait / 1000}s.`);
+        return this.scheduleRetry(wait);
+      }
       if (was || opened) this.log(`disconnected (${ev.code}${ev.reason ? ` ${ev.reason}` : ""})`);
       else void this.diagnose();
       this.scheduleRetry();
@@ -162,10 +186,9 @@ export class Connection {
     }
   }
 
-  private scheduleRetry() {
+  private scheduleRetry(delay = backoffDelay(this.attempt++)) {
     if (this.stopped) return;
     clearTimeout(this.retry);
-    const delay = backoffDelay(this.attempt++);
     this.log(`retrying in ${(delay / 1000).toFixed(1)}s`);
     this.retry = setTimeout(() => this.dial(), delay);
   }

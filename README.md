@@ -29,7 +29,7 @@ apart from a production runner on the same machine.
 ```sh
 (cd server && bun install && bun --watch src/index.ts)   # :8790, dev mode
 
-mkdir -p ~/.local/share/tether-dev && echo '{"runnerId":"tether-dev"}' > ~/.local/share/tether-dev/runner.json
+mkdir -p ~/.local/share/tether-dev && echo '{"runnerId":"tether-dev","name":"tether-dev"}' > ~/.local/share/tether-dev/runner.json
 (cd runner && bun install && TETHER_URL=http://localhost:8790 TETHER_TOKEN=dev \
   TETHER_CONFIG_DIR=~/.local/share/tether-dev bun src/index.ts)
 
@@ -56,8 +56,9 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
    `runner-<name>`.
 3. On each machine, put `TETHER_URL=https://tether--<org>.foliation.dev` and `TETHER_TOKEN=...`
    in `~/.config/tether/runner.env` and run the runner as a systemd user unit
-   (`bun src/index.ts` in `runner/`). To run several machines, give each its own token and its
-   own `runnerId` in `~/.config/tether/runner.json` (default: the hostname).
+   (`bun src/index.ts` in `runner/`). On first start the runner writes `~/.config/tether/runner.json`
+   with a generated `runnerId`; set `"name"` there to change its label (default: the hostname).
+   Never copy a `runner.json` between machines: two runners with one id replace each other.
 
 ## Runner environment
 
@@ -66,6 +67,9 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 | `TETHER_URL` | `http://localhost:8790` | the app's base URL |
 | `TETHER_TOKEN` | `dev` | the runner's service token |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
+
+Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;
+by default only pages on the app's own host may open one.
 | `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
 
 ## End-to-end check

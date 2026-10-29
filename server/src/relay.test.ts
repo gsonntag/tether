@@ -4,10 +4,13 @@ import { Relay, type Socket } from "./relay";
 
 class FakeSocket implements Socket {
   sent: any[] = [];
+  /** what send() returns: Bun's 0 means the frame was dropped */
+  sendResult = 1;
   closed?: { code?: number; reason?: string };
   constructor(readonly name: string) {}
   send(data: string) {
-    this.sent.push(JSON.parse(data));
+    if (this.sendResult !== 0) this.sent.push(JSON.parse(data));
+    return this.sendResult;
   }
   close(code?: number, reason?: string) {
     this.closed = { code, reason };
@@ -20,7 +23,7 @@ class FakeSocket implements Socket {
   }
 }
 
-const runnerInfo = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, hostname: `${id}.local`, version: "0.0.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1.0" }] });
+const runnerInfo = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: `${id}.local`, version: "0.0.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1.0" }] });
 
 function setup(opts: { rpcTimeoutMs?: number } = {}) {
   const relay = new Relay({ rpcTimeoutMs: opts.rpcTimeoutMs ?? 1000, now: () => 1000 });
@@ -360,5 +363,111 @@ describe("runner replacement", () => {
     runner("one");
     runner("two");
     expect(relay.runnerList().map((r) => r.id).sort()).toEqual(["one", "two"]);
+  });
+});
+
+describe("watching", () => {
+  test("the runner hears when the last subscriber unsubscribes, not before", () => {
+    const { browser, runner, rpc } = setup();
+    const a = browser("a");
+    const b = browser("b");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    rpc(b, "1", "box", "subscribe", { sessionId: "claude:x" });
+    r.take();
+    rpc(a, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    expect(r.take()).toEqual([]);
+    rpc(b, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+    // Unsubscribing again (or from something never watched) says nothing.
+    rpc(b, "3", "box", "unsubscribe", { sessionId: "claude:x" });
+    expect(r.take()).toEqual([]);
+  });
+
+  test("a browser that leaves unwatches everything it alone watched, per runner", () => {
+    const { browser, runner, rpc, relay } = setup();
+    const a = browser("a");
+    const b = browser("b");
+    const r1 = runner("one");
+    const r2 = runner("two");
+    rpc(a, "1", "one", "subscribe", { sessionId: "claude:x" });
+    rpc(a, "2", "one", "subscribe", { sessionId: "claude:y" });
+    rpc(a, "3", "two", "subscribe", { sessionId: "codex:z" });
+    rpc(b, "1", "one", "subscribe", { sessionId: "claude:y" });
+    r1.take();
+    r2.take();
+    relay.removeBrowser(a);
+    expect(r1.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+    expect(r2.take()).toEqual([{ t: "unwatched", sessionIds: ["codex:z"] }]);
+  });
+
+  test("a failed subscribe unwatches when it was the only one", () => {
+    const { browser, runner, rpc, fromRunner } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:gone" });
+    const [f] = r.take("rpc");
+    fromRunner(r, { t: "result", id: f.id, ok: false, error: "No such session." });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:gone"] }]);
+  });
+
+  test("subscribe without a session id is refused by the server", () => {
+    const { browser, runner, rpc } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", {});
+    rpc(a, "2", "box", "unsubscribe", { sessionId: 5 });
+    expect(r.take()).toEqual([]);
+    expect(a.take("result").map((m) => m.ok)).toEqual([false, false]);
+  });
+});
+
+describe("repeated hello", () => {
+  test("on the same connection it updates the info but keeps connectedAt and the routes", () => {
+    let now = 1000;
+    const relay = new Relay({ now: () => now });
+    const a = new FakeSocket("a");
+    relay.addBrowser(a, { name: "a", email: "" }, 1);
+    const r = new FakeSocket("r");
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    relay.onBrowserMessage(a, { t: "rpc", id: "1", runnerId: "box", op: "subscribe", args: { sessionId: "claude:x" } });
+    a.take();
+    now = 5000;
+    relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), harnesses: [] } });
+    expect(r.closed).toBeUndefined();
+    const [list] = a.take("runners");
+    expect(list.runners[0]).toMatchObject({ connectedAt: 1000, harnesses: [] });
+    expect(relay.stats()).toMatchObject({ subscriptions: 1, pending: 1 });
+  });
+
+  test("on a new connection it gets a new connectedAt", () => {
+    let now = 1000;
+    const relay = new Relay({ now: () => now });
+    relay.onRunnerMessage(new FakeSocket("r1"), { t: "hello", runner: runnerInfo("box") });
+    now = 2000;
+    relay.onRunnerMessage(new FakeSocket("r2"), { t: "hello", runner: runnerInfo("box") });
+    expect(relay.runnerList()[0]!.connectedAt).toBe(2000);
+  });
+});
+
+describe("slow sockets", () => {
+  test("a browser whose frames would be dropped is closed instead", () => {
+    const { browser, runner, rpc, fromRunner } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "openTerminal", { sessionId: "claude:x", cols: 80, rows: 24 });
+    const attachId = r.take("rpc")[0].args.attachId;
+    a.sendResult = 0;
+    fromRunner(r, { t: "term", attachId, data: "aGk=" });
+    expect(a.closed).toEqual({ code: 4002, reason: "too slow" });
+  });
+
+  test("backpressure that still queued the frame (-1) is fine", () => {
+    const { browser, runner, fromRunner } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    a.sendResult = -1;
+    fromRunner(r, { t: "summary", summary: { kind: "all", sessions: [] } });
+    expect(a.closed).toBeUndefined();
   });
 });

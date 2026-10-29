@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../shared/protocol";
 import pkg from "../package.json";
 import { detectHarnesses } from "./adapters/detect";
-import { CONFIG_DIR, loadConfig } from "./config";
+import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { EventBus } from "./core/bus";
 import { Connection } from "./core/connection";
 import type { CoreEvents } from "./core/events";
@@ -27,6 +27,7 @@ ops.register("ping", () => ({ runnerId: config.runnerId, at: Date.now() }));
 let harnesses: Promise<HarnessInfo[]> = detectHarnesses();
 const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
   id: config.runnerId,
+  name: displayName(config),
   hostname: hostname(),
   version: pkg.version,
   protocol: PROTOCOL_VERSION,
@@ -45,6 +46,8 @@ const conn = new Connection({
   hello: helloInfo,
   onRpc: (op, args) => ops.handle(op, args),
   onDetach: () => {}, // terminals arrive in P3
+  // Nobody is watching: P1 stops history tails here. A new connection also starts unwatched.
+  onUnwatched: (sessionIds) => bus.emit("unwatched", { sessionIds }),
 });
 
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
@@ -54,7 +57,7 @@ const stopModules = await startModules(MODULES, (m) => {
   return { bus, ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`) };
 });
 
-console.log(`Tether runner ${pkg.version}: ${config.runnerId}, config in ${CONFIG_DIR}`);
+console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);
 console.log(`harnesses: ${(await harnesses).map((h) => `${h.id} ${h.version}`).join(", ") || "none found"}`);
 conn.start();
 

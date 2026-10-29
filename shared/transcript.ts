@@ -101,6 +101,9 @@ export interface SessionSummary {
   updatedAt: number;
   /** open requests, for the status dot and Home */
   requests?: number;
+  /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
+  parentSessionId?: string;
+  parentToolId?: string;
 }
 
 /**
@@ -125,8 +128,11 @@ export const TRANSCRIPT_PAGE = 50;
 // ---------- session events (runner -> server -> subscribed browsers) ----------
 
 export type SessionEvent =
-  /** insert or replace by id */
-  | { type: "msg"; msg: Msg }
+  /**
+   * `isNew`: a message appended at the end of the transcript. Without it, a replacement of a
+   * message the browser may not have loaded (an older page): ignored if it isn't loaded.
+   */
+  | { type: "msg"; msg: Msg; isNew?: boolean }
   /** streamed text appended to a text or thinking part */
   | { type: "delta"; msgId: string; part: number; text: string }
   | { type: "tool"; msgId: string; toolId: string; patch: Partial<ToolPart> }
@@ -136,4 +142,4 @@ export type SessionEvent =
 
 // Events always refer to messages by id. One that patches a message outside what the browser has
 // loaded (an older page it never fetched) is simply skipped: the page carries the current text
-// when it's fetched.
+// when it's fetched. shared/window.ts applies events to a loaded window this way.

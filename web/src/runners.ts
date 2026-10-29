@@ -18,7 +18,8 @@ export function mergeRunners(known: KnownRunner[], online: RunnerInfo[], now: nu
 
 /** Connected first, then by name. */
 export function sortRunners(list: KnownRunner[]): KnownRunner[] {
-  return [...list].sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
+  const label = (r: KnownRunner) => r.name || r.id;
+  return [...list].sort((a, b) => Number(b.online) - Number(a.online) || label(a).localeCompare(label(b)) || a.id.localeCompare(b.id));
 }
 
 /** Runners whose connection is new since `before`: they need fresh subscriptions. */

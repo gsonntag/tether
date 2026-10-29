@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { RunnerInfo } from "../../shared/protocol";
 import { ago, mergeRunners, reconnected, type KnownRunner } from "./runners";
 
-const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
+const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, name: id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
 
 test("runners that drop off the server's list stay, as disconnected", () => {
   const first = mergeRunners([], [info("b"), info("a")], 100);

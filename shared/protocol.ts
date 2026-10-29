@@ -9,12 +9,26 @@
 // The server is stateless about sessions. It knows only which runners are connected, which
 // browser subscribed to which session, and which browser owns which terminal attach.
 //
+// Watching: the server tells the runner `unwatched` when the last browser subscribed to a
+// session goes away (unsubscribe, a failed subscribe, or the browser disconnecting), so the
+// runner can stop tailing what nobody looks at. A new runner connection starts with no watchers.
+//
+// Slow sockets: the server never drops a frame silently. A browser or runner that can't keep up
+// (its send buffer passes the limit) is disconnected; it reconnects, subscribes again for fresh
+// snapshots and reattaches terminals, which tmux redraws. Terminal output therefore needs no
+// replay: a gap in a terminal stream only ever happens with a reattach.
+//
 // Sync: `subscribe` answers with a SessionSnapshot. Events for that session reach the browser
 // from the moment the server forwards the subscribe, so a few may arrive before the snapshot;
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
 import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+
+/** Close code the server uses for a runner connection that a newer one with the same id replaced. */
+export const CLOSE_REPLACED = 4000;
+/** Close code for a socket whose send buffer passed the limit. */
+export const CLOSE_TOO_SLOW = 4002;
 
 /** Bumped when a change needs runner, server and web to move together. */
 export const PROTOCOL_VERSION = 1;
@@ -26,7 +40,10 @@ export interface HarnessInfo {
 }
 
 export interface RunnerInfo {
+  /** stable and unique: generated once and kept in runner.json */
   id: string;
+  /** what people see; defaults to the hostname */
+  name: string;
   hostname: string;
   /** the runner's own version */
   version: string;
@@ -107,6 +124,8 @@ export type ServerToRunner =
   | { t: "rpc"; id: string; op: OpName; args: unknown }
   /** these attaches lost their browser: close their PTYs */
   | { t: "detach"; attachIds: string[] }
+  /** no browser watches these sessions any more */
+  | { t: "unwatched"; sessionIds: string[] }
   /** answers the runner's keepalive ping */
   | { t: "pong" };
 

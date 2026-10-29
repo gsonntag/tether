@@ -60,7 +60,7 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
   }
   const status = runnerStatus(runner, linkOpen, now);
   const harnesses = runner.harnesses.map((h) => `${HARNESS_LABELS[h.id] ?? h.id} ${h.version}`).join(" · ") || "No harnesses found";
-  const host = runner.hostname !== runner.id ? `${runner.hostname} · ` : "";
+  const host = runner.hostname !== runner.name ? `${runner.hostname} · ` : "";
 
   const ping = async () => {
     const t0 = performance.now();
@@ -74,7 +74,7 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
 
   return (
     <ListItem
-      label={runner.id}
+      label={runner.name || runner.id}
       startContent={<RunnerDot runner={runner} now={now} />}
       description={
         <VStack gap={0.5}>
@@ -90,7 +90,7 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
         !linkOpen ? undefined : runner.online ? (
           <Button label="Ping" size="sm" variant="secondary" clickAction={ping} />
         ) : (
-          <IconButton label={`Forget ${runner.id}`} tooltip="Forget" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={() => forgetRunner(runner.id)} />
+          <IconButton label={`Forget ${runner.name || runner.id}`} tooltip="Forget" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={() => forgetRunner(runner.id)} />
         )
       }
     />

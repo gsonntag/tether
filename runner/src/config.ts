@@ -1,20 +1,25 @@
 // The runner's directory and its small state file (SPEC §4): runner.json, mode 600. Later phases
 // add session modes, prefs, queued messages and open requests here. Never transcripts.
 
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
 const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
 
 export interface RunnerConfig {
-  /** this machine's name in Tether; defaults to the hostname */
+  /**
+   * Unique and stable: generated on first start and kept. Two runners must never share one (the
+   * server lets the newer connection replace the older), so it is not the hostname.
+   */
   runnerId: string;
+  /** what people see; the hostname unless set */
+  name?: string;
 }
 
-const defaults = (): RunnerConfig => ({ runnerId: hostname() });
-
+/** Loads runner.json, creating it with a fresh id the first time. */
 export function loadConfig(file = CONFIG_FILE): RunnerConfig {
   let saved: Partial<RunnerConfig> = {};
   try {
@@ -22,14 +27,17 @@ export function loadConfig(file = CONFIG_FILE): RunnerConfig {
   } catch (e: any) {
     if (e?.code !== "ENOENT") throw new Error(`Can't read ${file}: ${e?.message ?? e}`);
   }
-  const cfg = { ...defaults(), ...saved };
-  if (typeof cfg.runnerId !== "string" || !cfg.runnerId.trim()) cfg.runnerId = defaults().runnerId;
+  if (typeof saved.runnerId === "string" && saved.runnerId.trim()) return saved as RunnerConfig;
+  const cfg: RunnerConfig = { ...saved, runnerId: randomUUID() };
+  saveConfig(cfg, file);
   return cfg;
 }
 
+export const displayName = (cfg: RunnerConfig) => (typeof cfg.name === "string" && cfg.name.trim()) || hostname();
+
 /** Atomic and private: written to a temp file, then renamed over the old one. */
 export function saveConfig(cfg: RunnerConfig, file = CONFIG_FILE) {
-  mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
   chmodSync(tmp, 0o600);

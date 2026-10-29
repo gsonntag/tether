@@ -8,6 +8,6 @@ export function parseSessionId(id: string): { harness: HarnessId; nativeId: stri
   const i = id.indexOf(":");
   if (i <= 0 || i === id.length - 1) return null;
   const harness = id.slice(0, i);
-  if (!(harness in HARNESS_LABELS)) return null;
+  if (!Object.hasOwn(HARNESS_LABELS, harness)) return null;
   return { harness: harness as HarnessId, nativeId: id.slice(i + 1) };
 }

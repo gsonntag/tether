@@ -29,7 +29,7 @@ export function Sidebar() {
       {runners.length > 0 && (
         <SideNavSection title="Runners">
           {runners.map((r) => (
-            <SideNavItem key={r.id} label={r.id} onClick={close} endContent={<RunnerDot runner={r} now={now} />} />
+            <SideNavItem key={r.id} label={r.name || r.id} onClick={close} endContent={<RunnerDot runner={r} now={now} />} />
           ))}
         </SideNavSection>
       )}

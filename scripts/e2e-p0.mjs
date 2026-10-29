@@ -13,7 +13,7 @@ const DEV = `${process.env.HOME}/.local/share/tether-dev`;
 const DEV2 = `${process.env.HOME}/.local/share/tether-dev2`;
 for (const [dir, id] of [[DEV, "tether-dev"], [DEV2, "tether-dev-2"]]) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(`${dir}/runner.json`, JSON.stringify({ runnerId: id }));
+  writeFileSync(`${dir}/runner.json`, JSON.stringify({ runnerId: id, name: id }));
 }
 const APP = "http://127.0.0.1:5180/";
 const env = { ...process.env, TETHER_URL: "http://localhost:8790", TETHER_TOKEN: "dev", TETHER_CONFIG_DIR: DEV };
@@ -133,6 +133,20 @@ try {
     r3.kill("SIGKILL");
     if (!log.includes("refused TETHER_TOKEN (403)")) throw new Error(log);
     if (await desktop.getByRole("main").getByText("tether-dev-2").count()) throw new Error("refused runner listed");
+  });
+  await step("a second runner with the same id: one row, and the replaced one says why and backs off", async () => {
+    const out = openSync(`${SP}/logs/runner-dup.log`, "w");
+    const dup = spawn("bun", ["src/index.ts"], { cwd: new URL("../runner", import.meta.url).pathname, env, stdio: ["ignore", out, out] });
+    const { readFileSync } = await import("node:fs");
+    const t0 = Date.now();
+    while (!readFileSync(`${SP}/logs/runner.log`, "utf8").includes("another runner connected with this runner's id") && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 100));
+    if (!readFileSync(`${SP}/logs/runner.log`, "utf8").includes("another runner connected with this runner's id")) throw new Error("no conflict message");
+    await new Promise((r) => setTimeout(r, 3000));
+    // No flapping: the first runner waits instead of replacing the newcomer every second.
+    const replaced = (readFileSync(`${SP}/logs/runner-dup.log`, "utf8").match(/another runner connected/g) ?? []).length;
+    if (replaced) throw new Error(`newcomer was replaced ${replaced} times`);
+    if ((await desktop.getByRole("main").getByText("tether-dev", { exact: true }).count()) !== 1) throw new Error("expected one row");
+    dup.kill("SIGKILL");
   });
   if (errors.length) { failures++; console.log("page errors:", errors); }
 } finally {

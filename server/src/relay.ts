@@ -6,10 +6,11 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { TERMINAL_OPS, type BrowserToServer, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
+import { CLOSE_REPLACED, CLOSE_TOO_SLOW, TERMINAL_OPS, type BrowserToServer, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
 
 export interface Socket {
-  send(data: string): void;
+  /** Bun's convention: bytes sent, -1 queued under backpressure, 0 dropped */
+  send(data: string): number | void;
   close(code?: number, reason?: string): void;
 }
 
@@ -68,16 +69,15 @@ export class Relay {
 
   addBrowser(sock: Socket, user: { name: string; email: string }, protocol: number) {
     this.browsers.set(sock, { subs: new Set(), attaches: new Set() });
-    send(sock, { t: "hello", user, protocol });
-    send(sock, { t: "runners", runners: this.runnerList() });
+    this.out(sock, { t: "hello", user, protocol });
+    this.out(sock, { t: "runners", runners: this.runnerList() });
   }
 
   removeBrowser(sock: Socket) {
     const b = this.browsers.get(sock);
     if (!b) return;
     this.browsers.delete(sock);
-    for (const k of b.subs) this.subscribers.get(k)?.delete(sock);
-    for (const k of b.subs) if (this.subscribers.get(k)?.size === 0) this.subscribers.delete(k);
+    this.tellUnwatched([...b.subs].filter((k) => this.unsubscribe(sock, b, k)));
     // Its PTYs have no one to draw for: the runners close them.
     const byRunner = new Map<string, string[]>();
     for (const a of b.attaches) {
@@ -87,7 +87,7 @@ export class Relay {
     }
     for (const [runnerId, attachIds] of byRunner) {
       const r = this.runners.get(runnerId);
-      if (r) send(r.sock, { t: "detach", attachIds });
+      if (r) this.out(r.sock, { t: "detach", attachIds });
     }
     for (const [id, p] of this.pending) if (p.browser === sock) (clearTimeout(p.timer), this.pending.delete(id));
   }
@@ -95,24 +95,27 @@ export class Relay {
   onBrowserMessage(sock: Socket, msg: BrowserToServer) {
     const b = this.browsers.get(sock);
     if (!b) return;
-    if (msg.t === "ping") return send(sock, { t: "pong" });
+    if (msg.t === "ping") return this.out(sock, { t: "pong" });
     const m = msg;
 
-    const reply = (r: Omit<ResultMsg, "t" | "id">) => send(sock, { t: "result", id: m.id, ...r });
+    const reply = (r: Omit<ResultMsg, "t" | "id">) => this.out(sock, { t: "result", id: m.id, ...r });
     const runner = this.runners.get(m.runnerId);
     if (!runner) return reply({ ok: false, error: "That runner is offline." });
     const args = { ...(m.args as Record<string, unknown>) };
     let key: string | undefined;
 
+    if ((m.op === "subscribe" || m.op === "unsubscribe") && (typeof args.sessionId !== "string" || !args.sessionId))
+      return reply({ ok: false, error: "sessionId is required." });
+
     switch (m.op) {
       case "unsubscribe": {
-        const k = subKey(m.runnerId, String(args.sessionId));
-        this.unsubscribe(sock, b, k);
+        const k = subKey(m.runnerId, args.sessionId as string);
+        if (this.unsubscribe(sock, b, k)) this.tellUnwatched([k]);
         return reply({ ok: true, data: null });
       }
       case "subscribe": {
         // Registered before the runner answers, so no event between its snapshot and the answer is lost.
-        key = subKey(m.runnerId, String(args.sessionId));
+        key = subKey(m.runnerId, args.sessionId as string);
         b.subs.add(key);
         let set = this.subscribers.get(key);
         if (!set) this.subscribers.set(key, (set = new Set()));
@@ -138,14 +141,14 @@ export class Relay {
     const id = `s${++this.seq}`;
     const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), this.rpcTimeoutMs);
     this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, timer });
-    send(runner.sock, { t: "rpc", id, op: m.op, args });
+    this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
 
   // ---------------- runners ----------------
 
   onRunnerMessage(sock: Socket, m: RunnerToServer) {
     if (m.t === "hello") return this.hello(sock, m.runner);
-    if (m.t === "ping") return send(sock, { t: "pong" });
+    if (m.t === "ping") return this.out(sock, { t: "pong" });
     const runnerId = this.runnerOf.get(sock);
     // Nothing counts before hello, and nothing from a connection a newer one replaced.
     if (!runnerId || this.runners.get(runnerId)?.sock !== sock) return;
@@ -159,26 +162,26 @@ export class Relay {
         const subs = this.subscribers.get(subKey(runnerId, m.sessionId));
         if (!subs?.size) return;
         const s = JSON.stringify({ t: "event", runnerId, sessionId: m.sessionId, seq: m.seq, event: m.event } satisfies ServerToBrowser);
-        for (const b of subs) b.send(s);
+        for (const b of [...subs]) this.raw(b, s);
         return;
       }
       case "summary": {
         const s = JSON.stringify({ t: "summary", runnerId, summary: m.summary } satisfies ServerToBrowser);
-        for (const b of this.browsers.keys()) b.send(s);
+        for (const b of [...this.browsers.keys()]) this.raw(b, s);
         return;
       }
       case "term": {
         const at = this.attaches.get(m.attachId);
-        if (at && at.runnerId === runnerId) send(at.browser, { t: "term", attachId: m.attachId, data: m.data });
+        if (at && at.runnerId === runnerId) this.out(at.browser, { t: "term", attachId: m.attachId, data: m.data });
         // Output for an attach nobody owns: tell the runner to close it.
-        else send(sock, { t: "detach", attachIds: [m.attachId] });
+        else this.out(sock, { t: "detach", attachIds: [m.attachId] });
         return;
       }
       case "termEnd": {
         const at = this.attaches.get(m.attachId);
         if (!at || at.runnerId !== runnerId) return;
         this.dropAttach(m.attachId);
-        send(at.browser, { t: "termEnd", attachId: m.attachId, reason: m.reason });
+        this.out(at.browser, { t: "termEnd", attachId: m.attachId, reason: m.reason });
         return;
       }
     }
@@ -201,7 +204,7 @@ export class Relay {
       // The same runner again (a restart, or it noticed a dead connection before we did): the
       // newer connection wins. Its old routes are gone; browsers re-subscribe from the runners update.
       this.runnerOf.delete(prev.sock);
-      prev.sock.close(4000, "replaced by a newer connection");
+      prev.sock.close(CLOSE_REPLACED, "replaced by a newer connection with the same runner id");
       this.forgetRunner(id, "The runner reconnected.");
     }
     const was = this.runnerOf.get(sock);
@@ -210,8 +213,12 @@ export class Relay {
       this.forgetRunner(was, "The runner changed its id.");
     }
     this.runnerOf.set(sock, id);
-    this.runners.set(id, { sock, info: { ...info, connectedAt: this.now() } });
-    this.log(`runner ${id} connected (${info.hostname}; ${info.harnesses.map((h) => `${h.id} ${h.version}`).join(", ") || "no harnesses"})`);
+    // A repeated hello on the same connection (harnesses changed) is the same connection: keeping
+    // connectedAt tells browsers there's nothing to subscribe to again.
+    const connectedAt = prev?.sock === sock ? prev.info.connectedAt : this.now();
+    this.runners.set(id, { sock, info: { ...info, connectedAt } });
+    if (prev?.sock !== sock)
+      this.log(`runner ${id} (${info.name}) connected from ${info.hostname}; ${info.harnesses.map((h) => `${h.id} ${h.version}`).join(", ") || "no harnesses"}`);
     this.broadcastRunners();
   }
 
@@ -225,7 +232,7 @@ export class Relay {
     for (const [a, at] of this.attaches) {
       if (at.runnerId !== runnerId) continue;
       this.dropAttach(a);
-      send(at.browser, { t: "termEnd", attachId: a, reason: why });
+      this.out(at.browser, { t: "termEnd", attachId: a, reason: why });
     }
     for (const [id, p] of this.pending) if (p.runnerId === runnerId) this.settle(id, { ok: false, error: why });
   }
@@ -240,17 +247,32 @@ export class Relay {
     const b = this.browsers.get(p.browser);
     if (!r.ok && p.key && b) {
       // A failed subscribe or attach leaves no route behind.
-      if (p.op === "subscribe") this.unsubscribe(p.browser, b, p.key);
+      if (p.op === "subscribe" && this.unsubscribe(p.browser, b, p.key)) this.tellUnwatched([p.key]);
       if (p.op === "openTerminal") this.dropAttach(p.key);
     }
-    if (b) send(p.browser, { t: "result", id: p.browserRpcId, ok: r.ok, data: r.data, error: r.error });
+    if (b) this.out(p.browser, { t: "result", id: p.browserRpcId, ok: r.ok, data: r.data, error: r.error });
   }
 
-  private unsubscribe(sock: Socket, b: BrowserConn, key: string) {
+  /** True when this was the session's last subscriber. */
+  private unsubscribe(sock: Socket, b: BrowserConn, key: string): boolean {
     b.subs.delete(key);
     const set = this.subscribers.get(key);
-    set?.delete(sock);
-    if (set?.size === 0) this.subscribers.delete(key);
+    if (!set?.delete(sock) || set.size > 0) return false;
+    this.subscribers.delete(key);
+    return true;
+  }
+
+  /** Tells each runner which of its sessions nobody watches any more. */
+  private tellUnwatched(keys: string[]) {
+    const byRunner = new Map<string, string[]>();
+    for (const k of keys) {
+      const [runnerId, sessionId] = k.split("\u0000") as [string, string];
+      byRunner.set(runnerId, [...(byRunner.get(runnerId) ?? []), sessionId]);
+    }
+    for (const [runnerId, sessionIds] of byRunner) {
+      const r = this.runners.get(runnerId);
+      if (r) this.out(r.sock, { t: "unwatched", sessionIds });
+    }
   }
 
   private dropAttach(attachId: string) {
@@ -262,7 +284,21 @@ export class Relay {
 
   private broadcastRunners() {
     const s = JSON.stringify({ t: "runners", runners: this.runnerList() } satisfies ServerToBrowser);
-    for (const b of this.browsers.keys()) b.send(s);
+    for (const b of [...this.browsers.keys()]) this.raw(b, s);
+  }
+
+  private out(sock: Socket, m: ServerToBrowser | ServerToRunner) {
+    this.raw(sock, JSON.stringify(m));
+  }
+
+  /**
+   * Never drops a frame silently: a socket whose buffer is full is closed instead (the protocol's
+   * slow-socket policy). Its close handler then clears its routes like any disconnect.
+   */
+  private raw(sock: Socket, data: string) {
+    if (sock.send(data) !== 0) return;
+    this.log("closing a socket that can't keep up");
+    sock.close(CLOSE_TOO_SLOW, "too slow");
   }
 
   /** For tests and diagnostics. */
@@ -271,6 +307,3 @@ export class Relay {
   }
 }
 
-function send(sock: Socket, m: ServerToBrowser | ServerToRunner) {
-  sock.send(JSON.stringify(m));
-}

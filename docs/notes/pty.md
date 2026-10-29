@@ -36,9 +36,11 @@ through `data`, as in a real terminal.
 ## Caveats for P3
 
 - **No read-side flow control.** There is no pause/resume for `data`; Bun reads as fast as the
-  child writes. The runner must watch the WebSocket's buffered amount and, if a browser falls
-  far behind, drop that attach (the browser reattaches and tmux redraws the screen). tmux itself
-  redraws on attach, so dropping output is safe for the mirrored view.
+  child writes. The runner must watch its socket's buffered amount and, if it falls far behind,
+  end that attach (`termEnd`) rather than drop chunks. The relay follows the same rule
+  (`shared/protocol.ts`, slow sockets): a socket whose send buffer passes 8 MB is closed, never
+  fed partially. Either way the browser reattaches and tmux redraws the screen, so a terminal
+  stream never has a silent gap.
 - The `exit` callback in `TerminalOptions` reports PTY EOF (0 clean, 1 error), **not** the
   process's exit code. Use `proc.exited`.
 - `data` chunks can split UTF-8 sequences. Send bytes (base64, `shared/wire.ts`) and let

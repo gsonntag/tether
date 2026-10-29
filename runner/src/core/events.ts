@@ -11,6 +11,8 @@ export interface CoreEvents {
   requestClosed: { sessionId: string; requestId: string; outcome: "allowed" | "denied" | "answered" | "cancelled" };
   modeChanged: { sessionId: string; from: SessionMode; to: SessionMode };
   error: { sessionId?: string; message: string };
+  /** the last browser watching these sessions went away */
+  unwatched: { sessionIds: string[] };
 }
 
 export type CoreEventName = keyof CoreEvents;

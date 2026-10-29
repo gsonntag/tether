@@ -50,7 +50,7 @@ function runner(url: string, extra: Partial<ConstructorParameters<typeof Connect
   const conn = new Connection({
     url,
     token: "tok",
-    hello: async () => ({ id: "box", hostname: "box.local", version: "0", protocol: 1, harnesses: [] }),
+    hello: async () => ({ id: "box", name: "box", hostname: "box.local", version: "0", protocol: 1, harnesses: [] }),
     onRpc: async (op) => (op === "ping" ? { ok: true, data: "pong" } : { ok: false, error: "unknown" }),
     onState: (c) => states.push(c),
     log: (l) => logs.push(l),
@@ -126,4 +126,42 @@ test("a refused token is reported as such", async () => {
   conn.start();
   await until(() => logs.some((l) => l.includes("refused TETHER_TOKEN (403)")));
   expect(conn.connected).toBe(false);
+});
+
+test("replaced by another runner with the same id: backs off long and says why", async () => {
+  const s = fakeServer();
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs } = runner(s.url, { replacedBackoffMs: 400 });
+  conn.start();
+  await until(() => conn.connected);
+  s.socks[0]!.close(4000, "replaced by a newer connection with the same runner id");
+  await until(() => !conn.connected);
+  await until(() => logs.some((l) => l.includes("another runner connected with this runner's id")));
+  // Not the usual 1 s retry: nothing for a while, then it comes back.
+  await Bun.sleep(250);
+  expect(s.socks.length).toBe(1);
+  await until(() => conn.connected && s.socks.length === 2, 2000);
+});
+
+test("a dial that never opens is abandoned and retried", async () => {
+  // Accepts TCP but never answers the HTTP upgrade.
+  let accepted = 0;
+  const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: () => void accepted++, data() {} } });
+  cleanup.push(() => tcp.stop(true));
+  const { conn, logs } = runner(`http://127.0.0.1:${tcp.port}`, { dialTimeoutMs: 150 });
+  conn.start();
+  await until(() => logs.some((l) => l.startsWith("no answer from")), 3000);
+  await until(() => accepted >= 2, 4000);
+});
+
+test("unwatched sessions reach the handler", async () => {
+  const s = fakeServer();
+  cleanup.push(() => s.server.stop(true));
+  const seen: string[][] = [];
+  const { conn } = runner(s.url, { onUnwatched: (ids) => seen.push(ids) });
+  conn.start();
+  await until(() => conn.connected);
+  s.socks[0]!.send(JSON.stringify({ t: "unwatched", sessionIds: ["claude:x"] }));
+  await until(() => seen.length > 0);
+  expect(seen).toEqual([["claude:x"]]);
 });
