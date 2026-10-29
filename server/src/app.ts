@@ -2,7 +2,7 @@
 // and runners (an app service token), then hands every parsed frame to the relay.
 
 import type { Server, ServerWebSocket } from "bun";
-import { PROTOCOL_VERSION } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type PushKeys } from "../../shared/protocol";
 import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
 import { DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
@@ -18,6 +18,8 @@ export interface AppOptions {
   log?: (line: string) => void;
   /** dev mode (no Foliation identity); defaults to identity.ts's DEV */
   dev?: boolean;
+  /** the app's VAPID keys (push.ts); push is off without them */
+  push?: PushKeys;
 }
 
 /**
@@ -65,7 +67,7 @@ export function originAllowed(req: Request, extra: string[] = []): boolean {
 export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay } {
   const log = opts.log ?? ((l: string) => console.log(l));
   const dev = opts.dev ?? DEV;
-  const relay = opts.relay ?? new Relay({ log });
+  const relay = opts.relay ?? new Relay({ log, push: opts.push });
 
   const guard = (what: string, fn: () => void) => {
     try {

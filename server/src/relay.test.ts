@@ -35,7 +35,7 @@ function setup(opts: { rpcTimeoutMs?: number } = {}) {
   const runner = (id: string) => {
     const s = new FakeSocket(`runner:${id}`);
     relay.onRunnerMessage(s, { t: "hello", runner: runnerInfo(id) });
-    expect(s.take()).toEqual([{ t: "welcome" }]);
+    expect(s.take()).toEqual([{ t: "welcome" }, { t: "viewers", sessions: {} }]);
     return s;
   };
   const rpc = (b: FakeSocket, id: string, runnerId: string, op: string, args: unknown = {}) =>
@@ -640,5 +640,52 @@ describe("round 4: subscribe answers and routes", () => {
     fromRunner(r, { t: "result", id: f1.id, ok: false, error: "no" });
     expect(relay.stats().subscriptions).toBe(0);
     expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+  });
+});
+
+describe("presence and push keys", () => {
+  test("runners hear which devices look at their sessions; changes only", () => {
+    const { relay, browser, runner } = setup();
+    const r1 = runner("one");
+    const r2 = runner("two");
+    const a = browser("a");
+    const b = browser("b");
+    relay.onBrowserMessage(a, { t: "presence", deviceId: "dev-a", runnerId: "one", sessionId: "claude:s1" });
+    expect(r1.take("viewers")).toEqual([{ t: "viewers", sessions: { "claude:s1": ["dev-a"] } }]);
+    relay.onBrowserMessage(b, { t: "presence", deviceId: "dev-b", runnerId: "one", sessionId: "claude:s1" });
+    expect(r1.take("viewers")).toEqual([{ t: "viewers", sessions: { "claude:s1": ["dev-a", "dev-b"] } }]);
+    // The same again: nothing new to say.
+    relay.onBrowserMessage(b, { t: "presence", deviceId: "dev-b", runnerId: "one", sessionId: "claude:s1" });
+    expect(r1.take("viewers")).toEqual([]);
+    // b moves to the other runner: both hear.
+    relay.onBrowserMessage(b, { t: "presence", deviceId: "dev-b", runnerId: "two", sessionId: "codex:t" });
+    expect(r1.take("viewers")).toEqual([{ t: "viewers", sessions: { "claude:s1": ["dev-a"] } }]);
+    expect(r2.take("viewers")).toEqual([{ t: "viewers", sessions: { "codex:t": ["dev-b"] } }]);
+    // a hides its page, b disconnects.
+    relay.onBrowserMessage(a, { t: "presence", deviceId: "dev-a" });
+    expect(r1.take("viewers")).toEqual([{ t: "viewers", sessions: {} }]);
+    relay.removeBrowser(b);
+    expect(r2.take("viewers")).toEqual([{ t: "viewers", sessions: {} }]);
+  });
+
+  test("a runner that reconnects is told the viewers again", () => {
+    const { relay, browser, runner } = setup();
+    runner("one");
+    const a = browser("a");
+    relay.onBrowserMessage(a, { t: "presence", deviceId: "dev-a", runnerId: "one", sessionId: "x:1" });
+    const again = new FakeSocket("runner:one:2");
+    relay.onRunnerMessage(again, { t: "hello", runner: runnerInfo("one") });
+    expect(again.take()).toEqual([{ t: "welcome" }, { t: "viewers", sessions: { "x:1": ["dev-a"] } }]);
+  });
+
+  test("browsers get the public key, runners the pair", () => {
+    const push = { publicKey: "PUB", privateKey: "PRIV", subject: "mailto:x@y" };
+    const relay = new Relay({ push });
+    const b = new FakeSocket("b");
+    relay.addBrowser(b, { name: "b", email: "b@x" }, 1);
+    expect(b.take("hello")[0].push).toEqual({ publicKey: "PUB" });
+    const r = new FakeSocket("r");
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("one") });
+    expect(r.take("welcome")[0].push).toEqual(push);
   });
 });

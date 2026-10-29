@@ -6,7 +6,7 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
 
 export interface Socket {
   /** Bun's convention: bytes sent, -1 queued under backpressure, 0 dropped */
@@ -20,6 +20,8 @@ export interface RelayOptions {
   protocol?: number;
   log?: (line: string) => void;
   now?: () => number;
+  /** the app's VAPID keys (push.ts): the public one to browsers, the pair to runners */
+  push?: PushKeys;
 }
 
 interface RunnerConn {
@@ -42,6 +44,8 @@ interface BrowserConn {
   /** session key -> its route (see Route) */
   subs: Map<string, Route>;
   attaches: Set<string>;
+  /** what this device looks at (presence) */
+  presence?: { deviceId: string; runnerId?: string; sessionId?: string };
 }
 
 interface Pending {
@@ -71,8 +75,12 @@ export class Relay {
   private readonly protocol: number;
   private readonly log: (line: string) => void;
   private readonly now: () => number;
+  private readonly push?: PushKeys;
+  /** the viewers frame last sent to each runner, so only changes go out */
+  private viewersSent = new Map<string, string>();
 
   constructor(opts: RelayOptions = {}) {
+    this.push = opts.push;
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 120_000;
     this.protocol = opts.protocol ?? PROTOCOL_VERSION;
     this.log = opts.log ?? (() => {});
@@ -87,7 +95,7 @@ export class Relay {
 
   addBrowser(sock: Socket, user: { name: string; email: string }, protocol: number) {
     this.browsers.set(sock, { subs: new Map(), attaches: new Set() });
-    this.out(sock, { t: "hello", user, protocol });
+    this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
     this.out(sock, { t: "runners", runners: this.runnerList() });
   }
 
@@ -95,6 +103,7 @@ export class Relay {
     const b = this.browsers.get(sock);
     if (!b) return;
     this.browsers.delete(sock);
+    if (b.presence?.runnerId) this.sendViewers(b.presence.runnerId);
     this.tellUnwatched([...b.subs.keys()].filter((k) => this.unsubscribe(sock, b, k)));
     // Its PTYs have no one to draw for: the runners close them.
     const byRunner = new Map<string, string[]>();
@@ -116,6 +125,13 @@ export class Relay {
     const b = this.browsers.get(sock);
     if (!b) return;
     if (msg.t === "ping") return this.out(sock, { t: "pong" });
+    if (msg.t === "presence") {
+      const was = b.presence?.runnerId;
+      b.presence = { deviceId: msg.deviceId, ...(msg.runnerId && msg.sessionId ? { runnerId: msg.runnerId, sessionId: msg.sessionId } : {}) };
+      if (was && was !== msg.runnerId) this.sendViewers(was);
+      if (msg.runnerId) this.sendViewers(msg.runnerId);
+      return;
+    }
     const m = msg;
 
     const reply = (r: Omit<ResultMsg, "t" | "id">) => this.out(sock, { t: "result", id: m.id, ...r });
@@ -229,6 +245,7 @@ export class Relay {
     this.runnerOf.delete(sock);
     if (!id || this.runners.get(id)?.sock !== sock) return;
     this.runners.delete(id);
+    this.viewersSent.delete(id);
     this.forgetRunner(id, "The runner disconnected.");
     this.log(`runner ${id} disconnected`);
     this.broadcastRunners();
@@ -262,7 +279,10 @@ export class Relay {
     // connectedAt tells browsers there's nothing to subscribe to again.
     const connectedAt = prev?.sock === sock ? prev.info.connectedAt : this.now();
     this.runners.set(id, { sock, info: { ...info, connectedAt } });
-    this.out(sock, { t: "welcome" });
+    this.out(sock, { t: "welcome", ...(this.push ? { push: this.push } : {}) });
+    // A new connection starts with no viewers: tell it all of them.
+    if (prev?.sock !== sock) this.viewersSent.delete(id);
+    this.sendViewers(id);
     if (prev?.sock !== sock)
       this.log(`runner ${id} (${info.name}) connected from ${info.hostname}; ${info.harnesses.map((h) => `${h.id} ${h.version}`).join(", ") || "no harnesses"}`);
     this.broadcastRunners();
@@ -336,6 +356,23 @@ export class Relay {
       const r = this.runners.get(runnerId);
       if (r) this.out(r.sock, { t: "unwatched", sessionIds });
     }
+  }
+
+  /** Which devices look at which of a runner's sessions: sent to it when that changed. */
+  private sendViewers(runnerId: string) {
+    const r = this.runners.get(runnerId);
+    if (!r) return;
+    const sessions: Record<string, string[]> = {};
+    for (const b of this.browsers.values()) {
+      const p = b.presence;
+      if (p?.runnerId !== runnerId || !p.sessionId) continue;
+      const list = (sessions[p.sessionId] ??= []);
+      if (!list.includes(p.deviceId)) list.push(p.deviceId);
+    }
+    const frame = JSON.stringify({ t: "viewers", sessions } satisfies ServerToRunner);
+    if (this.viewersSent.get(runnerId) === frame) return;
+    this.viewersSent.set(runnerId, frame);
+    this.raw(r.sock, frame);
   }
 
   private dropAttach(attachId: string) {
