@@ -226,6 +226,27 @@ const steps = {
     ok("scrolled up mid-stream: the view stayed put; Jump to latest followed the rest to the bottom");
     await p.close();
   },
+  async drag() {
+    // A finger drag moves the view a few pixels per event: even within the bottom 40 px, any move
+    // up must stop following, while a long reply streams (review round 2).
+    const p = await page(phone, session);
+    await p.locator(".t-msg").first().waitFor();
+    await composer(p).fill("Count from 1 to 300, one number per line, no other text.");
+    await p.getByRole("button", { name: "Send" }).click();
+    await p.waitForFunction(() => /\b20\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
+    for (let i = 0; i < 30; i++) {
+      await p.locator(".t-scroll").evaluate((e, s) => (e.scrollTop -= s), Number(process.env.DRAG_STEP ?? 15));
+      await p.waitForTimeout(30);
+    }
+    const at = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
+    await p.waitForTimeout(800);
+    const later = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
+    const jumpShown = await p.getByRole("button", { name: "Jump to latest" }).count();
+    if (Math.abs(later - at) > 4 || !jumpShown) fail(`slow drag up: view moved ${at} -> ${later}, Jump to latest shown: ${jumpShown}`);
+    ok(`dragged up 30x${process.env.DRAG_STEP ?? 15}px mid-stream: the view stayed at ${at}, Jump to latest showed`);
+    await idle(p);
+    await p.close();
+  },
   async compacted() {
     const id = process.env.COMPACTED_SESSION;
     if (!id) return console.log("skip compacted (set COMPACTED_SESSION and COMPACTED_FIRST)");
@@ -254,7 +275,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "paging", "compacted", "layout"]) {
+  for (const name of pick.length ? pick : ["new", "stream", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "drag", "paging", "compacted", "layout"]) {
     if (!session && !["new", "paging", "compacted", "layout"].includes(name) && process.env.SESSION) session = `${BASE}/#/s/tether-dev/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();
