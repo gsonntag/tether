@@ -1,0 +1,494 @@
+// P4 end-to-end (Codex) against a local dev stack and the REAL shared Codex daemon, desktop (1280)
+// and phone (375):
+//   PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p4.mjs [step…]
+// Needs a server, a dev runner (with TETHER_TMUX_SOCKET) and vite (docs/acceptance/P4.md Setup).
+// Environment:
+//   BASE            the web app (default http://127.0.0.1:5183)
+//   RUNNER          the dev runner's id (default tether-dev-p4)
+//   SCRATCH         a scratch project folder (default ~/.local/share/tether-dev-p4/projects/scratch)
+//   TMUX_SOCKET     the dev runner's tmux socket (default tether-dev-p4)
+//   MODEL           the Codex model (default gpt-6-luna: the cheapest the daemon lists); effort Low
+//   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
+//   SHOTS           where screenshots go
+// Steps (in order; later ones use the session `new` makes):
+//   new stream approve deny steer terminal tuiApprove tetherApprove phone subagent restart quit fresh stored
+// It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
+
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+
+const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
+const BASE = process.env.BASE ?? "http://127.0.0.1:5183";
+const RUNNER = process.env.RUNNER ?? "tether-dev-p4";
+const SOCKET = process.env.TMUX_SOCKET ?? "tether-dev-p4";
+const SHOTS = process.env.SHOTS ?? "/tmp/tether-e2e-p4";
+const SCRATCH = process.env.SCRATCH ?? `${process.env.HOME}/.local/share/tether-dev-p4/projects/scratch`;
+const MODEL = process.env.MODEL ?? "gpt-6-luna";
+const RESTART = process.env.RESTART_RUNNER;
+mkdirSync(SHOTS, { recursive: true });
+
+const browser = await chromium.launch();
+const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+const errors = [];
+const page = async (ctx, url = BASE) => {
+  const p = await ctx.newPage();
+  p.on("pageerror", (e) => errors.push(String(e)));
+  await p.goto(url);
+  return p;
+};
+const shot = (p, name) => p.screenshot({ path: `${SHOTS}/${name}.png` });
+const ok = (msg) => console.log(`ok  ${msg}`);
+const fail = (msg) => {
+  throw new Error(msg);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const noOverflow = async (p, where) => {
+  const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  if (w > 1) fail(`${where}: page scrolls sideways by ${w}px`);
+};
+const composer = (p) => p.locator("textarea.t-input[aria-label=Message]");
+const idle = (p, ms = 120_000) => p.locator('button[aria-label="Send"]').waitFor({ timeout: ms });
+async function send(p, text) {
+  await composer(p).fill(text);
+  await composer(p).press("Enter");
+}
+const card = (p) => p.locator(".t-req").first();
+const button = (scope, name) => scope.getByRole("button", { name, exact: true });
+const MOD = (name) => `(performance.getEntriesByType("resource").map((e) => e.name).find((n) => n.includes("/src/${name}")) ?? "/src/${name}")`;
+const scratch = (f) => `${SCRATCH}/${f}`;
+const waitFile = async (f, ms = 90_000) => {
+  const t = Date.now();
+  while (!existsSync(scratch(f))) {
+    if (Date.now() - t > ms) fail(`${f} never appeared`);
+    await sleep(500);
+  }
+  return readFileSync(scratch(f), "utf8");
+};
+
+let session; // the session URL made in `new`
+const sessionId = () => decodeURIComponent(session.split("/").pop());
+const tuiName = (id = sessionId()) => `t-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+
+/** The session's live state as the page has it. */
+const liveState = (p) =>
+  p.evaluate(async (store) => {
+    const { useStore } = await import(eval(store));
+    const id = decodeURIComponent(location.hash.split("/").pop());
+    const v = Object.entries(useStore.getState().views).find(([k]) => k.endsWith(`\u0000${id}`))?.[1];
+    return v?.state ?? null;
+  }, MOD("store.ts"));
+const waitState = async (p, pred, what, ms = 60_000) => {
+  const end = Date.now() + ms;
+  let st;
+  while (Date.now() < end) {
+    st = await liveState(p);
+    if (st && pred(st)) return st;
+    await sleep(300);
+  }
+  fail(`${what}: state is ${JSON.stringify(st && { mode: st.mode, status: st.status, terminal: st.terminal, requests: st.requests?.length })}`);
+};
+/** An op straight through the page's connection. */
+const rpcVia = (p, op, args) =>
+  p.evaluate(
+    async ([runnerId, op, args, conn]) => {
+      const { rpc } = await import(eval(conn));
+      try {
+        return { ok: await rpc(runnerId, op, args) };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    [RUNNER, op, args, MOD("connection.ts")],
+  );
+const screen = (p, key) =>
+  p.evaluate((key) => {
+    const t = globalThis.__tetherTerms?.get(key);
+    if (!t) return null;
+    const b = t.buffer.active;
+    const out = [];
+    for (let i = 0; i < t.rows; i++) out.push(b.getLine(b.viewportY + i)?.translateToString(true) ?? "");
+    return { lines: out, cols: t.cols, rows: t.rows };
+  }, key);
+const waitScreen = async (p, key, re, what, ms = 60_000) => {
+  const end = Date.now() + ms;
+  let s;
+  while (Date.now() < end) {
+    s = await screen(p, key);
+    if (s && re.test(s.lines.join("\n"))) return s;
+    await sleep(250);
+  }
+  fail(`${what}: the terminal shows:\n${s?.lines.filter((l) => l.trim()).join("\n") ?? "(no terminal)"}`);
+};
+const tmux = (...args) => spawnSync("tmux", ["-L", SOCKET, ...args], { encoding: "utf8" });
+const capture = (name = tuiName()) => tmux("capture-pane", "-p", "-t", `=${name}:`).stdout;
+const waitCapture = async (re, what, ms = 60_000, name = tuiName()) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (re.test(capture(name))) return;
+    await sleep(300);
+  }
+  fail(`${what}: tmux shows:\n${capture(name).split("\n").filter((l) => l.trim()).slice(-15).join("\n")}`);
+};
+const openPanel = async (p) => {
+  const chip = p.locator(".t-chip-term");
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await chip.click();
+  await p.locator(".t-term-panel").waitFor();
+};
+const typeInTerm = async (p, text, enter = true) => {
+  await p.locator(".t-term-box").click();
+  await p.keyboard.type(text, { delay: 15 });
+  if (enter) {
+    await sleep(200);
+    await p.keyboard.press("Enter");
+  }
+};
+const transcriptText = (p) => p.locator(".t-scroll").innerText();
+/** The messages as the page renders them (to compare devices). */
+const rendered = (p) => p.locator(".t-msg").allInnerTexts();
+
+/** A new Codex session through the dialog: cheap model, Ask first, effort Low before any turn. */
+async function newCodexSession(p, { terminal = false } = {}) {
+  await p.getByRole("button", { name: "New session" }).first().click();
+  const runnerSelect = p.locator(".t-form select.t-select", { has: p.locator(`option[value="${RUNNER}"]`) });
+  if (await runnerSelect.count()) await runnerSelect.selectOption(RUNNER);
+  await p.getByRole("radio", { name: "Codex" }).click();
+  await p.locator("#t-new-path").fill(SCRATCH);
+  await p.waitForFunction((m) => [...document.querySelectorAll(".t-form select option")].some((o) => o.value === m), MODEL, { timeout: 30_000 });
+  await p.locator(".t-form select.t-select", { has: p.locator(`option[value="${MODEL}"]`) }).selectOption(MODEL);
+  await p.locator(".t-form select.t-select", { has: p.locator('option[value="untrusted"]') }).selectOption("untrusted");
+  if (terminal) await p.locator(".t-check input").check();
+  await shot(p, terminal ? "new-terminal-dialog" : "new-dialog");
+  await button(p, "Create").click();
+  await p.waitForURL(/#\/s\/.*codex/, { timeout: 60_000 });
+  const url = p.url();
+  const id = decodeURIComponent(url.split("/").pop());
+  // Low effort before anything runs (the folder's Codex config may say otherwise).
+  const r = await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+  if (r.error) fail(`setEffort: ${r.error}`);
+  await waitState(p, (s) => s.effort === "low", "effort low");
+  return url;
+}
+
+const steps = {
+  async new() {
+    for (const f of ["approved.txt", "denied.txt", "tui.txt", "tether.txt", "restart.txt"]) rmSync(scratch(f), { force: true });
+    const p = await page(desktop);
+    session = await newCodexSession(p);
+    const head = await p.locator(".t-header").innerText();
+    if (!/GPT-6-Luna|gpt-6-luna/i.test(head) || !/Ask first/.test(head) || !/Low/.test(head)) fail(`header: ${head}`);
+    if (!(await composer(p).getAttribute("placeholder")).includes("Message")) fail("no composer");
+    await p.getByText("What should Codex do?").waitFor({ timeout: 10_000 });
+    await shot(p, "new-desktop");
+    ok(`new Codex session (Codex picked in New session; header Model GPT-6-Luna, Effort Low, Mode Ask first): ${sessionId()}`);
+    await p.close();
+  },
+
+  async stream() {
+    // P1 acceptance on Codex: start on desktop, close the tab, open on the phone mid-turn and see it
+    // stream; both devices show identical transcripts after the turn.
+    const a = await page(desktop, session);
+    await composer(a).waitFor();
+    await send(a, "Count from 1 to 60, one number per line, nothing else.");
+    await a.locator('button[aria-label="Stop"]').waitFor({ timeout: 30_000 });
+    await a.close();
+    const b = await page(phone, session);
+    await waitState(b, (s) => s.status === "running", "running on the phone", 30_000).catch(() => {});
+    await b.getByText("60", { exact: false }).first().waitFor({ timeout: 90_000 });
+    await idle(b);
+    await noOverflow(b, "phone transcript");
+    await shot(b, "stream-phone");
+    const d = await page(desktop, session);
+    await idle(d);
+    await sleep(500);
+    const [x, y] = [await rendered(d), await rendered(b)];
+    if (JSON.stringify(x) !== JSON.stringify(y)) fail(`transcripts differ:\n${x.join("\n---\n")}\n===\n${y.join("\n---\n")}`);
+    ok(`started on desktop, tab closed, the phone picked it up and saw it finish; ${x.length} messages identical on both`);
+    await b.close();
+    await d.close();
+  },
+
+  async approve() {
+    // P2 acceptance on Codex: a request on both devices; answered on the phone, it clears on desktop;
+    // a second answer says Already answered.
+    const a = await page(desktop, session);
+    const b = await page(phone, session);
+    await composer(a).waitFor();
+    await send(a, "Use the shell to run exactly: echo approved > approved.txt   Then reply with one word: done.");
+    await card(a).waitFor({ timeout: 90_000 });
+    await card(b).waitFor({ timeout: 10_000 });
+    const title = await card(a).locator(".t-req-title").innerText();
+    if (!/Codex wants to run a command/.test(title)) fail(`request title: ${title}`);
+    if (!(await card(a).innerText()).includes("echo approved > approved.txt")) fail("the card doesn't show the command");
+    const [ra] = (await liveState(a)).requests;
+    await shot(a, "approve-desktop");
+    await shot(b, "approve-phone");
+    await noOverflow(b, "phone with a request");
+    await button(card(b), "Approve").tap();
+    await card(a).waitFor({ state: "detached", timeout: 10_000 });
+    const again = await rpcVia(a, "answerRequest", { sessionId: sessionId(), requestId: ra.id, allow: true });
+    if (!/^Already answered/.test(again.error ?? "")) fail(`a second answer said: ${JSON.stringify(again)}`);
+    await idle(a);
+    if (!/approved/.test(await waitFile("approved.txt"))) fail("approved.txt is wrong");
+    ok(`"${title}" showed on desktop and phone; approved on the phone, it cleared on desktop; a second answer: "${again.error}"; Codex ran the command`);
+    await a.close();
+    await b.close();
+  },
+
+  async deny() {
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Use the shell to run exactly: echo no > denied.txt   Then reply in one short sentence.");
+    await card(p).waitFor({ timeout: 90_000 });
+    await button(card(p), "Deny with reason").click();
+    await card(p).getByRole("textbox", { name: "Reason" }).fill("Don't write files. Reply with just the word UNDERSTOOD.");
+    await card(p).getByRole("textbox", { name: "Reason" }).press("Enter");
+    await card(p).waitFor({ state: "detached", timeout: 10_000 });
+    await p.locator(".t-msg", { hasText: "Don't write files" }).first().waitFor({ timeout: 30_000 });
+    await idle(p, 120_000);
+    if (existsSync(scratch("denied.txt"))) fail("denied.txt exists after the denial");
+    if (!/UNDERSTOOD/.test(await transcriptText(p))) fail("Codex didn't read the reason");
+    // A plain Deny stops the turn.
+    await send(p, "Use the shell to run exactly: echo no > denied.txt");
+    await card(p).waitFor({ timeout: 90_000 });
+    await button(card(p), "Deny").click();
+    await card(p).waitFor({ state: "detached", timeout: 10_000 });
+    await idle(p, 60_000);
+    if (existsSync(scratch("denied.txt"))) fail("denied.txt exists after Deny");
+    ok("Deny with reason: the reason went into the turn (shown as Tether's) and Codex followed it; a plain Deny ended the turn");
+    await p.close();
+  },
+
+  async steer() {
+    // turn/steer: a message into the running turn (the op the P5 composer will use).
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Use the shell to run exactly: sleep 4 && echo slept   Then reply with one short sentence.");
+    await card(p).waitFor({ timeout: 90_000 });
+    const r = await rpcVia(p, "steer", { sessionId: sessionId(), text: "Also end your reply with the word BANANA." });
+    if (r.error) fail(`steer: ${r.error}`);
+    await button(card(p), "Approve").click();
+    await idle(p);
+    const t = await transcriptText(p);
+    const last = t.slice(t.lastIndexOf("sleep 4"));
+    if (!last.includes("Also end your reply with the word BANANA.")) fail("the steer isn't in the transcript");
+    if (!/BANANA\s*$/m.test(last)) fail(`the reply didn't follow the steer:\n${last}`);
+    const idleSteer = await rpcVia(p, "steer", { sessionId: sessionId(), text: "x" });
+    if (!/Nothing is running/.test(idleSteer.error ?? "")) fail(`steer while idle: ${JSON.stringify(idleSteer)}`);
+    ok("steered into the running turn: the message shows in place and the reply follows it; steering an idle session is refused");
+    await p.close();
+  },
+
+  async terminal() {
+    // P3 on Codex (shared): the Terminal button opens `codex resume` beside Tether, with no handoff;
+    // typing in the TUI and in Tether both work.
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await p.locator(".t-chip-term").click();
+    if (await p.locator(".t-term-ask").count()) fail("a shared terminal asked before opening");
+    await p.locator(".t-term-panel").waitFor();
+    await waitScreen(p, sessionId(), /Ask Codex|›/, "Codex's TUI in the panel", 60_000);
+    await waitState(p, (s) => s.mode === "live" && s.terminal?.kind === "shared", "live with a shared terminal");
+    const argv = tmux("display", "-p", "-t", `=${tuiName()}:`, "#{pane_start_command}").stdout;
+    if (!argv.includes(`resume --remote unix:// ${sessionId().split(":")[1]}`) || !argv.includes(`-m ${MODEL}`)) fail(`TUI command: ${argv}`);
+    if (await p.locator(".t-term-banner").count()) fail("a handoff banner shows for a shared terminal");
+    if ((await composer(p).getAttribute("placeholder")) !== "Message") fail("the composer isn't Tether's own");
+    await shot(p, "terminal-desktop");
+    await noOverflow(p, "desktop with the terminal");
+    // Typed in the TUI: Tether sees the turn (user message and reply).
+    await typeInTerm(p, "Reply with just: FROM-TUI-OK");
+    await p.locator(".t-msg", { hasText: "Reply with just: FROM-TUI-OK" }).first().waitFor({ timeout: 30_000 });
+    await waitState(p, (s) => s.status === "running", "running (a turn started in the TUI)", 30_000).catch(() => {});
+    await idle(p);
+    await p.locator(".t-msg.assistant", { hasText: "FROM-TUI-OK" }).first().waitFor({ timeout: 30_000 });
+    // Typed in Tether: the TUI shows it.
+    await send(p, "Reply with just: FROM-TETHER-OK");
+    await idle(p);
+    await waitCapture(/FROM-TETHER-OK[\s\S]*FROM-TETHER-OK/, "the TUI shows Tether's message and the reply");
+    ok(`Terminal opens Codex's TUI beside Tether (${argv.trim().split(" ").slice(1, 5).join(" ")} …), no prompt, no handoff, mode stays live; a turn typed in the TUI shows in Tether and one sent from Tether shows in the TUI`);
+    await p.close();
+  },
+
+  async tuiApprove() {
+    // An approval answered in the TUI clears in Tether.
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Use the shell to run exactly: echo tui > tui.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    await waitCapture(/Would you like to run|Yes, proceed/, "the TUI asks too");
+    await shot(p, "tui-approve-before");
+    tmux("send-keys", "-t", `=${tuiName()}:`, "y");
+    await card(p).waitFor({ state: "detached", timeout: 15_000 });
+    await idle(p);
+    if (!/tui/.test(await waitFile("tui.txt"))) fail("tui.txt is wrong");
+    ok("the approval showed in Tether and in the TUI; answered in the TUI (y), it cleared in Tether and the command ran");
+    await p.close();
+  },
+
+  async tetherApprove() {
+    // An approval answered in Tether clears in the TUI.
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Use the shell to run exactly: echo tether > tether.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    await waitCapture(/Would you like to run/, "the TUI asks too");
+    await button(card(p), "Approve").click();
+    await card(p).waitFor({ state: "detached", timeout: 10_000 });
+    await idle(p);
+    const end = Date.now() + 15_000;
+    while (/Would you like to run/.test(capture()) && Date.now() < end) await sleep(300);
+    if (/Would you like to run/.test(capture())) fail("the TUI still asks after Tether answered");
+    if (!/tether/.test(await waitFile("tether.txt"))) fail("tether.txt is wrong");
+    ok("answered in Tether: the TUI's prompt went away and the command ran");
+    await p.close();
+  },
+
+  async phone() {
+    // The shared terminal on a phone, beside desktop.
+    const d = await page(desktop, session);
+    await openPanel(d);
+    await waitScreen(d, sessionId(), /›/, "desktop TUI");
+    const ph = await page(phone, session);
+    await composer(ph).waitFor();
+    await ph.locator(".t-chip-term").tap();
+    await ph.locator(".t-term-panel").waitFor();
+    await waitScreen(ph, sessionId(), /›/, "phone TUI");
+    await ph.locator(".t-keybar").waitFor();
+    await noOverflow(ph, "phone terminal");
+    await shot(ph, "terminal-phone");
+    await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
+    await composer(ph).waitFor();
+    await noOverflow(ph, "phone session");
+    await shot(ph, "session-phone");
+    ok("the shared TUI opens full screen on the phone beside desktop's, with the key bar, and no sideways scroll");
+    await ph.close();
+    await d.close();
+  },
+
+  async subagent() {
+    // Subagents are child threads: a child session with its own turns, linked from the parent.
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    // Auto: `ls` runs without asking. (In Ask first, Codex 0.165 fails a subagent's approval
+    // requests at once: docs/acceptance/P4.md, known gaps.)
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: sessionId(), mode: "auto" })).error) fail("setPermissionMode auto");
+    await waitState(p, (s) => s.permissionMode === "auto", "mode Auto");
+    await send(p, "Spawn exactly one subagent with your agent tool, with the task: list the files in this folder with `ls` and report their names. Wait for it, then reply with its report in one line.");
+    const childOf = () =>
+      p.evaluate(async (store) => {
+        const { useStore } = await import(eval(store));
+        const id = decodeURIComponent(location.hash.split("/").pop());
+        const v = Object.entries(useStore.getState().views).find(([k]) => k.endsWith(`\u0000${id}`))?.[1];
+        return v?.window?.messages.flatMap((m) => m.parts).find((x) => x.type === "tool" && x.childSessionId)?.childSessionId;
+      }, MOD("store.ts"));
+    let child;
+    for (let i = 0; i < 240 && !(child = await childOf()); i++) await sleep(500);
+    if (!child) fail("no subagent card linked to a child session");
+    // Approvals the subagent asks for (ls is safe, but just in case) are answered here.
+    while (!(await p.locator('button[aria-label="Send"]').isVisible())) {
+      if (await card(p).isVisible()) await button(card(p), "Approve").click();
+      await sleep(500);
+    }
+    const c = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(child)}`);
+    await c.locator(".t-msg", { hasText: "ls" }).first().waitFor({ timeout: 30_000 });
+    await shot(c, "subagent-desktop");
+    const list = await rpcVia(c, "listSessions", { parentSessionId: sessionId() });
+    if (!list.ok?.sessions.some((s) => s.id === child)) fail(`the subagent isn't listed under its parent: ${JSON.stringify(list)}`);
+    const steerDone = await rpcVia(c, "steer", { sessionId: child, text: "x" });
+    if (!/finished|Nothing is running/.test(steerDone.error ?? "")) fail(`steering a finished subagent: ${JSON.stringify(steerDone)}`);
+    await rpcVia(p, "setPermissionMode", { sessionId: sessionId(), mode: "untrusted" });
+    ok(`a subagent thread (${child}) is a child session: linked from the parent's card, listed under it, its own transcript shows its ls; a finished one takes no steer`);
+    await c.close();
+    await p.close();
+  },
+
+  async restart() {
+    // A runner restart with an approval open: the thread lives on in the daemon, the runner rejoins
+    // it, the daemon asks again, and answering it lets the same turn go on.
+    if (!RESTART) return console.log("skip restart (set RESTART_RUNNER)");
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Use the shell to run exactly: echo restart > restart.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    const [before] = (await liveState(p)).requests;
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    await sleep(3000);
+    await card(p).waitFor({ timeout: 60_000 });
+    const st = await waitState(p, (s) => s.requests.length === 1 && s.mode === "live", "the request back, live", 60_000);
+    if (st.requests[0].id !== before.id) fail("the request came back with another id");
+    if (/runner restarted/.test(await transcriptText(p))) fail("a cut-off notice for a turn that went on");
+    await button(card(p), "Approve").click();
+    await idle(p);
+    if (!/restart/.test(await waitFile("restart.txt"))) fail("restart.txt is wrong");
+    const t = await transcriptText(p);
+    if (/From Tether|approved your request/.test(t.slice(t.lastIndexOf("echo restart")))) fail("the answer went as a message, not to the waiting turn");
+    ok("runner restarted mid-approval: rejoined the thread, the same request showed again (same id), approving it let the same turn finish");
+    // The TUI outlived the restart and is still shared.
+    if (tmux("has-session", "-t", `=${tuiName()}`).status === 0) await waitState(p, (s) => s.terminal?.kind === "shared", "the TUI readopted", 30_000);
+    await p.close();
+  },
+
+  async quit() {
+    const p = await page(desktop, session);
+    await openPanel(p);
+    await waitScreen(p, sessionId(), /›/, "the TUI");
+    await button(p.locator(".t-term-panel"), "Quit Codex").click();
+    await waitState(p, (s) => !s.terminal, "no terminal after Quit Codex", 30_000);
+    if (tmux("has-session", "-t", `=${tuiName()}`).status === 0) fail("the TUI's tmux session is still there");
+    await send(p, "Reply with just: STILL-HERE");
+    await idle(p);
+    await p.locator(".t-msg.assistant", { hasText: "STILL-HERE" }).first().waitFor({ timeout: 30_000 });
+    ok("Quit Codex: the TUI quit and Tether went on driving the same thread");
+    await p.close();
+  },
+
+  async fresh() {
+    // A new session started in the terminal: Tether makes the thread, the TUI joins it at once.
+    const p = await page(desktop);
+    const url = await newCodexSession(p, { terminal: true });
+    const id = decodeURIComponent(url.split("/").pop());
+    await p.locator(".t-term-panel").waitFor({ timeout: 30_000 });
+    await waitScreen(p, id, /›/, "the TUI on a new thread", 60_000);
+    await typeInTerm(p, "Reply with just: FRESH-OK");
+    await p.locator(".t-msg.assistant", { hasText: "FRESH-OK" }).first().waitFor({ timeout: 90_000 });
+    await shot(p, "fresh-desktop");
+    ok(`New session → Start in the terminal: the TUI joined a thread Tether made (${id}); its first turn shows in Tether`);
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await p.close();
+  },
+
+  async stored() {
+    // Discovery: the session shows in the sidebar and its folder, and opens stored without a process.
+    const p = await page(desktop);
+    const projects = await rpcVia(p, "listProjects", {});
+    if (!projects.ok.projects.some((x) => x.path === SCRATCH && x.harnesses.includes("codex"))) fail("the scratch folder isn't a Codex project");
+    const list = await rpcVia(p, "listSessions", { projectPath: SCRATCH });
+    const row = list.ok.sessions.find((s) => s.id === sessionId());
+    if (!row) fail("the session isn't listed in its folder");
+    // Its title: the name Codex's TUI gave it, or its first message.
+    await p.locator(".t-row", { hasText: row.title.slice(0, 20) }).first().waitFor({ timeout: 30_000 });
+    await shot(p, "sidebar-desktop");
+    ok(`discovery: the scratch folder is a Codex project and the session is listed in it and in the sidebar ("${row.title}")`);
+    await p.close();
+  },
+};
+
+const pick = process.argv.slice(2);
+try {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "stored"]) {
+    if (!session && name !== "new" && name !== "fresh") {
+      session = process.env.SESSION;
+      if (!session) fail(`${name} needs a session: run new first or set SESSION`);
+    }
+    console.log(`-- ${name}`);
+    await steps[name]();
+  }
+  if (errors.length) fail(`page errors:\n${errors.join("\n")}`);
+  console.log(`all passed; screenshots in ${SHOTS}`);
+} catch (e) {
+  console.error(`FAIL ${e.message}`);
+  if (session) console.error(`session: ${session}`);
+  process.exitCode = 1;
+} finally {
+  await browser.close();
+}
