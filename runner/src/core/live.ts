@@ -59,12 +59,32 @@ export class LiveControl {
     if (!text?.trim()) throw new Error("Type a message first.");
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("Subagents can't take messages yet. Message the main session instead.");
-    if (s.state.status !== "idle") throw new Error("Claude is still working. Stop it first, or wait for it to finish.");
-    await this.core.load(s);
-    const d = await this.ensureDriver(s);
-    this.core.touch(s, { updatedAt: this.core.now() });
-    await d.send(text);
-    s.fresh = false;
+    // Checked and claimed with no await in between, so two sends can't both start a turn.
+    if (s.state.status !== "idle" || s.sending) throw new Error("Claude is still working. Stop it first, or wait for it to finish.");
+    s.sending = true;
+    s.cancelSend = false;
+    // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
+    this.status(s, "running");
+    try {
+      await this.core.load(s);
+      const d = await this.ensureDriver(s);
+      if (s.cancelSend) return this.status(s, "idle");
+      this.core.touch(s, { updatedAt: this.core.now() });
+      await d.send(text);
+      s.fresh = false;
+    } catch (e) {
+      this.status(s, "idle");
+      throw e;
+    } finally {
+      s.sending = false;
+      s.cancelSend = false;
+    }
+  }
+
+  /** A status change made by the core itself (not the driver), with the same consequences. */
+  private status(s: Session, status: LiveState["status"]) {
+    const before = s.state.status;
+    if (s.setState({ status })) this.statusChanged(s, before);
   }
 
   async interrupt(id: string) {
@@ -76,6 +96,11 @@ export class LiveControl {
       if (!s.childRunning || !parent?.driver?.stopSubagent) return;
       await parent.driver.stopSubagent(s.summary.nativeId);
       return;
+    }
+    // Stopped while Claude is still starting: the message never goes out.
+    if (s.sending && !s.driver) {
+      s.cancelSend = true;
+      return this.status(s, "idle");
     }
     await s.driver?.interrupt();
   }
@@ -132,9 +157,11 @@ export class LiveControl {
     } catch (e: any) {
       const error = e?.message ?? String(e);
       s.apply({ type: "msg", msg: notice(`Couldn't start ${s.summary.harness === "claude" ? "Claude Code" : s.summary.harness}: ${error}`, "error") });
-      s.setState({ error });
+      // Not live after all: stored, tailing its store if someone watches it, and evictable.
+      s.setState({ error, mode: "stored", status: "idle" });
       this.core.touch(s);
-      if (!this.core.watched.has(s.id)) this.core.tail(s);
+      this.core.tail(s);
+      this.core.scheduleEvict(s);
       throw e;
     }
     s.driver = d;

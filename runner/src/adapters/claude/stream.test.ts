@@ -46,10 +46,9 @@ class TestSink implements Sink {
 
 function replay(name: string, nativeId = "S") {
   const sink = new TestSink();
-  let reloads = 0;
-  const s = new ClaudeStream(sink, { nativeId, reload: () => reloads++ });
+  const s = new ClaudeStream(sink, { nativeId });
   for (const m of fixture(name)) s.handle(m);
-  return { sink, stream: s, reloads };
+  return { sink, stream: s };
 }
 
 const texts = (m: Msg) => m.parts.map((p) => (p.type === "tool" ? `tool:${p.name}:${p.status}` : `${p.type}:${(p as any).text}`));
@@ -104,4 +103,15 @@ test("a subagent becomes a child with its own exact turns; the main turn stays r
   expect(stream.running.size).toBe(0);
   // No subagent message leaked into the main transcript.
   expect(sink.t.messages.some((m) => cm.some((c) => c.id === m.id))).toBe(false);
+});
+
+test("a compaction mid-session keeps the conversation and marks the spot", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  for (const m of fixture("reply.jsonl")) s.handle(m);
+  const before = sink.t.messages.map((m) => m.id);
+  s.handle({ type: "system", subtype: "compact_boundary", uuid: "b-1", compact_metadata: { trigger: "auto" } });
+  expect(sink.t.messages.map((m) => m.id)).toEqual([...before, "b-1"]);
+  expect(sink.events.some((e) => e.type === "reset")).toBe(false);
+  expect(sink.t.messages.at(-1)).toMatchObject({ role: "notice", parts: [{ text: "Context compacted." }] });
 });

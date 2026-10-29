@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
-import { readHistory } from "./history";
 import { ClaudeStream } from "./stream";
 
 /** User messages for the SDK, pushed as they're sent; the iterator waits between them. */
@@ -58,7 +57,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId, reload: () => void this.reload() });
+    this.stream = new ClaudeStream(sink, { nativeId });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
@@ -134,12 +133,6 @@ export class ClaudeDriver implements Driver {
     this.onExit?.(error);
   }
 
-  private async reload() {
-    try {
-      const messages = await readHistory(this.nativeId, this.projectPath);
-      this.sink.event({ type: "reset", messages, hasOlder: false });
-    } catch {}
-  }
 
   async send(text: string) {
     if (this.closed) throw new Error("Claude Code isn't running.");

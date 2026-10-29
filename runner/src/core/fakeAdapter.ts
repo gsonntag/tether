@@ -93,6 +93,8 @@ export class FakeAdapter implements Adapter {
   /** what each send does; default: a short reply, then idle */
   script: (text: string) => Step[] = (text) => [say(`a-${text}`, `echo ${text}`), idle];
   startError?: string;
+  /** starts wait for this (a slow harness start) */
+  startGate?: Promise<void>;
   private next = 0;
 
   addStored(nativeId: string, msgs: Msg[], over: Partial<SessionSummary> = {}) {
@@ -133,9 +135,11 @@ export class FakeAdapter implements Adapter {
     return { model: "default" };
   }
   async start(_p: string, nativeId: string, opts: StartOpts, sink: Sink) {
+    await this.startGate;
     return this.make(nativeId, opts, sink);
   }
   async resume(nativeId: string, _p: string, opts: StartOpts, sink: Sink) {
+    await this.startGate;
     return this.make(nativeId, opts, sink);
   }
   private make(nativeId: string, opts: StartOpts, sink: Sink) {

@@ -1,13 +1,14 @@
 // A stored Claude Code session (or one of its subagents) as a transcript, read without starting
-// Claude: the SDK's getSessionMessages / getSubagentMessages build the conversation chain from the
-// JSONL (rewinds and branches included), and entryMeta reads what that API leaves out (each entry's
-// time and flags) from the file itself.
+// Claude. A session's own file is read by jsonl.ts (incrementally, and across compactions, which
+// the SDK's getSessionMessages stops at); a subagent's by the SDK's getSubagentMessages, with
+// entryMeta reading what that API leaves out (each entry's time and flags).
 //
 // Message ids match what the live stream uses (stream.ts), so a session that goes from live to
 // stored and back keeps its ids: an assistant message is its API message id (Claude Code writes one
 // entry per content block, all with that id), a user message its entry's uuid.
 
-import { getSessionMessages, getSubagentMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSubagentMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
 import { assistantPart, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
@@ -99,8 +100,22 @@ export async function readHistory(nativeId: string, projectPath: string): Promis
     linkSubagents(msgs, session, storedSubagents(session, projectPath));
     return msgs;
   }
-  const [list, text] = await Promise.all([getSessionMessages(session, { dir: projectPath, includeSystemMessages: true }), fileText(sessionFile(session, projectPath))]);
-  const msgs = historyMessages(list, entryMeta(text));
+  const file = sessionFile(session, projectPath);
+  const msgs = file ? chainMessages((await readStore(file)).chain()) : [];
   linkSubagents(msgs, session, storedSubagents(session, projectPath));
   return msgs;
+}
+
+/** A session file's conversation (jsonl.ts, across compactions) as a transcript. */
+export function chainMessages(chain: Entry[]): Msg[] {
+  const meta: ReturnType<typeof entryMeta> = { flags: new Map(), times: new Map() };
+  const list: Pick<SessionMessage, "type" | "uuid" | "message" | "parent_tool_use_id">[] = [];
+  for (const e of chain) {
+    if (e.type !== "user" && e.type !== "assistant" && e.type !== "system") continue;
+    const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    if (Number.isFinite(t)) meta.times.set(e.uuid, t);
+    if (e.isMeta || e.isCompactSummary || e.origin) meta.flags.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
+    list.push({ type: e.type as SessionMessage["type"], uuid: e.uuid, message: e.type === "system" ? { subtype: e.subtype } : e.message, parent_tool_use_id: null });
+  }
+  return historyMessages(list, meta);
 }

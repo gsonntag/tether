@@ -19,8 +19,6 @@ import { assistantPart, blockText, mergePart, notice, toolResults, userMessage }
 export interface StreamHost {
   /** the session's native id (subagents are `<this>/<agent id>`) */
   nativeId: string;
-  /** the transcript was rewritten (compaction): reread it from the store */
-  reload(): void;
 }
 
 interface Thread {
@@ -164,7 +162,9 @@ export class ClaudeStream {
         sink.state({ status: m.state === "running" ? "running" : m.state === "requires_action" ? "waiting" : "idle" });
         return;
       case "compact_boundary":
-        this.host.reload();
+        // Claude continues from a summary; the conversation so far stays on screen, as in the
+        // store (history.ts reads across compactions), with the same notice at the spot.
+        sink.event({ type: "msg", msg: notice(m.uuid ?? `n-compact-${Date.now()}`, Date.now(), "Context compacted.") });
         return;
       case "task_started":
         if (AGENT_TASKS.has(m.task_type) || m.subagent_type) this.agentStarted(m);

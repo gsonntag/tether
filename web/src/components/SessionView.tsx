@@ -56,7 +56,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }
 
   const state = view.state;
-  const running = state.status === "running";
+  // "waiting" (Claude waits on a request; its UI comes in P2) is busy too: Stop, not Send.
+  const running = state.status === "running" || state.status === "waiting";
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
   const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (

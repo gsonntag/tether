@@ -391,3 +391,69 @@ test("a turn cut off by a runner restart is reported when the session reopens", 
   expect(snap.messages.at(-1)).toMatchObject({ role: "notice", level: "warning" });
   expect((snap.messages.at(-1)!.parts[0] as any).text).toContain("runner restarted");
 });
+
+describe("review round 1", () => {
+  test("two sends at once: one starts the turn, the other is refused", async () => {
+    const { adapter, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [say("a1", "hi")];
+    const results = await Promise.allSettled([live.send("claude:s1", "one"), live.send("claude:s1", "two")]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(adapter.drivers).toHaveLength(1);
+    expect(adapter.drivers[0]!.sent).toHaveLength(1);
+  });
+
+  test("Stop while Claude is still starting: the message never goes out, the session is idle", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    let release!: () => void;
+    adapter.startGate = new Promise((r) => (release = r));
+    const sending = live.send("claude:s1", "go");
+    await Bun.sleep(5);
+    const s = await core.open("claude:s1");
+    expect(s.state.status).toBe("running"); // shown as working (with Stop) while it starts
+    await live.interrupt("claude:s1");
+    expect(s.state.status).toBe("idle");
+    release();
+    await sending;
+    expect(adapter.drivers[0]!.sent).toEqual([]);
+    expect(s.state.status).toBe("idle");
+  });
+
+  test("a failed resume of a watched stored session keeps tailing its store; a failed new session is stored and evictable", async () => {
+    const { adapter, core, live } = setup({ evictMs: 10 });
+    adapter.addStored("s1", [user("m0")]);
+    await core.subscribe("claude:s1");
+    adapter.startError = "boom";
+    await expect(live.send("claude:s1", "go")).rejects.toThrow("boom");
+    expect(adapter.watchers.has("s1")).toBe(true);
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: tmpdir() });
+    const n = core.sessions.get(sessionId)!;
+    expect(n.state).toMatchObject({ mode: "stored", status: "idle", error: "boom" });
+    await Bun.sleep(40);
+    expect(core.sessions.has(sessionId)).toBe(false);
+  });
+
+  test("Tether's own notices survive the store changing under them", async () => {
+    const { adapter, core, live, events } = setup();
+    adapter.addStored("s1", [user("m0")]);
+    adapter.script = () => [ask("Bash", { command: "ls" }), idle];
+    const v = new Viewer(await core.subscribe("claude:s1"));
+    await live.send("claude:s1", "go");
+    // Back to stored; the store then grows (a terminal continues the session).
+    adapter.drivers[0]!.onExit?.();
+    adapter.write("s1", [user("m0"), user("u1", "go"), user("t1", "from the terminal")]);
+    v.apply(events("claude:s1"));
+    const roles = v.w.messages.map((m) => `${m.role}:${m.id.startsWith("n-") ? "tether" : m.id}`);
+    expect(roles).toEqual(["user:m0", "user:u1", "notice:tether", "user:t1"]);
+  });
+
+  test("a session opened by an op without subscribing leaves memory again", async () => {
+    const { adapter, core, live } = setup({ evictMs: 10 });
+    adapter.addStored("s1", []);
+    await live.setModel("claude:s1", "haiku");
+    expect(core.sessions.has("claude:s1")).toBe(true);
+    await Bun.sleep(40);
+    expect(core.sessions.has("claude:s1")).toBe(false);
+  });
+});

@@ -103,17 +103,44 @@ export class Transcript {
   }
 }
 
+/** More changes than this from one store change: one reset instead of a message each. */
+export const DIFF_RESET_OVER = 50;
+
+/**
+ * A message as the store and the live stream both describe it: without its time and streaming
+ * flag (live and stored differ there), thinking text (Claude Code stores it empty), and with
+ * keys in a fixed order.
+ */
+function canonical(m: Msg): string {
+  const { ts: _t, streaming: _s, ...rest } = m;
+  const parts = m.parts.map((p) => (p.type === "thinking" ? { ...p, text: "" } : p));
+  return stable({ ...rest, parts });
+}
+
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+  if (v && typeof v === "object")
+    return `{${Object.keys(v)
+      .filter((k) => (v as any)[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stable((v as any)[k])}`)
+      .join(",")}}`;
+  return JSON.stringify(v) ?? "null";
+}
+
 /**
  * The events that turn transcript `from` into `to` (a stored session whose file changed): new
  * messages appended at the end, changed ones replaced in place. Anything else (messages removed or
- * reordered: a rewind, a compaction) is a reset.
+ * reordered: a rewind) is a reset, and so is a change touching more than DIFF_RESET_OVER messages
+ * (a session that just went from live to stored would otherwise resend every message).
  */
 export function diffTranscripts(from: readonly Msg[], to: Msg[]): TranscriptEvent[] {
+  const reset: TranscriptEvent[] = [{ type: "reset", messages: to, hasOlder: false }];
   const pos = new Map(to.map((m, i) => [m.id, i]));
   // Every old message must still be there, at the same place.
-  for (let i = 0; i < from.length; i++) if (pos.get(from[i]!.id) !== i) return [{ type: "reset", messages: to, hasOlder: false }];
+  for (let i = 0; i < from.length; i++) if (pos.get(from[i]!.id) !== i) return reset;
   const out: TranscriptEvent[] = [];
-  for (let i = 0; i < from.length; i++) if (JSON.stringify(from[i]) !== JSON.stringify(to[i])) out.push({ type: "msg", msg: to[i]! });
+  for (let i = 0; i < from.length; i++) if (canonical(from[i]!) !== canonical(to[i]!)) out.push({ type: "msg", msg: to[i]! });
   for (let i = from.length; i < to.length; i++) out.push({ type: "msg", msg: to[i]! });
-  return out;
+  return out.length > DIFF_RESET_OVER ? reset : out;
 }

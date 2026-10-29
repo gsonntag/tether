@@ -17,7 +17,7 @@ function live(fixture: string) {
   const t = new Transcript();
   const children: string[] = [];
   const sink: any = { event: (e: any) => t.apply(e), message: (id: string) => t.get(id), state() {}, request: async () => ({ allow: true }), subagent: (s: any) => (children.push(s.nativeId), { ...sink, event() {}, ended() {} }) };
-  const s = new ClaudeStream(sink, { nativeId: fixture === "subagent.jsonl" ? SUB : "x", reload() {} });
+  const s = new ClaudeStream(sink, { nativeId: fixture === "subagent.jsonl" ? SUB : "x" });
   for (const l of readFileSync(join(import.meta.dir, "fixtures", fixture), "utf8").split("\n").filter(Boolean)) s.handle(JSON.parse(l));
   return { msgs: t.messages, children };
 }

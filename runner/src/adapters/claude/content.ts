@@ -55,7 +55,9 @@ export function injected(text: string, flags: EntryFlags, id: string, ts: number
   // session and Claude's answer do), so the stored view doesn't either.
   if (flags.origin?.kind === "task-notification" || t.startsWith("<task-notification>")) return null;
   if (t.startsWith("[Request interrupted")) return notice(id, ts, "Interrupted");
-  if (flags.isCompactSummary) return notice(id, ts, "Conversation compacted: Claude continues from a summary of the earlier part.");
+  // The summary Claude continues from after a compaction: the boundary's "Context compacted."
+  // notice marks the spot, live and stored alike.
+  if (flags.isCompactSummary) return null;
   if (t.startsWith("<system-reminder>") || t.startsWith("<local-command-caveat>")) return null;
   if (t.startsWith("<local-command-stdout>")) {
     const out = tag(t, "local-command-stdout");

@@ -18,7 +18,7 @@ import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
-import { Session } from "./session";
+import { Session, withOverlay } from "./session";
 import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
 
@@ -190,6 +190,9 @@ export class SessionCore {
     const raced = this.sessions.get(id);
     if (raced) return raced;
     const s = this.add(new Session({ ...row, mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    // Opened by an op that doesn't subscribe (send, a setting, a page): it leaves memory again
+    // unless it's watched or live by then (the eviction checks when it fires).
+    this.scheduleEvict(s);
     return s;
   }
 
@@ -228,10 +231,10 @@ export class SessionCore {
       .readHistory(s.summary.nativeId, s.summary.projectPath)
       .then((msgs) => {
         // A turn that was running when the runner (or the harness) stopped: say so where it ended.
-        if (!s.live && this.o.prefs.get(s.id).running)
-          msgs = [...msgs, { id: `n-cut-${s.id}`, role: "notice", level: "warning", ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text", text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] }];
+        if (!s.live && this.o.prefs.get(s.id).running && !s.overlay.some((o) => o.msg.id === `n-cut-${s.id}`))
+          s.overlay.push({ after: msgs.at(-1)?.id, msg: { id: `n-cut-${s.id}`, role: "notice", level: "warning", ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text", text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] } });
         // A live driver may have created it meanwhile (send right after open).
-        s.transcript ??= new Transcript(msgs);
+        s.transcript ??= new Transcript(withOverlay(msgs, s.overlay));
         return s.transcript;
       })
       .finally(() => (s.loading = undefined));
@@ -267,7 +270,7 @@ export class SessionCore {
     if (s.unwatch || !this.watched.has(s.id)) return;
     s.unwatch = this.adapter(s.summary.harness).watchHistory(s.summary.nativeId, s.summary.projectPath, (msgs) => {
       if (s.live || s.childRunning || !s.transcript) return;
-      for (const e of diffTranscripts(s.transcript.messages, msgs)) s.apply(e);
+      for (const e of diffTranscripts(s.transcript.messages, withOverlay(msgs, s.overlay))) s.apply(e);
       this.touch(s);
     });
   }
