@@ -377,7 +377,8 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
 `!npm test` in the composer runs **right away** as a one-off `$SHELL -c` in the session's folder,
 on the runner, even while the agent is mid-turn (`runShell`). It gets no stdin and has no time cap;
 it runs in a process group of its own and gets the runner's environment without Tether's secrets.
-At most 5 run at once per session. Only the owner can run one (the same auth as sending).
+At most 5 run at once per session (counted as they start, so commands sent together can't pass it).
+Only the owner can run one (the same auth as sending).
 
 - **Composer:** once the text starts with `!` the box visibly becomes a shell prompt (monospace,
   green, a "Shell" hint saying where it runs and when the agent gets the output) and Enter (or
@@ -385,7 +386,8 @@ At most 5 run at once per session. Only the owner can run one (the same auth as 
   leading `!`, which is the way in on a phone. Attachments wait for the next message.
 - **The card:** a message of yours that only Tether has (kept with Tether's notices): the command,
   its output streaming in, how it ended (exit code, signal, stopped), a **Stop** button while it
-  runs (SIGTERM to the whole process group, SIGKILL 2 s later), and where its output is:
+  runs (SIGTERM to the whole process group, then SIGKILL to the group 2 s later whatever happened
+  meanwhile, so a child that ignores SIGTERM goes too), and where its output is:
   **Running → Waiting in queue → Sent to <Agent>**, or **Not sent** with why (you removed it from the
   queue, the queue was full, it couldn't start, the runner restarted while it ran).
 - **To the agent:** when it ends, the command and its output go to the agent as a message through
@@ -395,15 +397,29 @@ At most 5 run at once per session. Only the owner can run one (the same auth as 
   "Output of `$ npm test`" and can't be edited (only cancelled). Where the agent got it, the
   transcript shows one quiet line, "Output of `$ npm test` sent to Claude", the message inside. Both
   harnesses behave alike (the message starts with a marker the readers recognize, like Tether's own
-  messages).
+  messages). Titles never show a marker: a session that starts with a command's output is titled
+  "$ npm test" (Claude's first prompt, Codex's thread name). Text a person types that starts with a
+  marker gets a zero-width space in front, so it never passes for Tether's, and a turn that came from
+  elsewhere (another session, a channel) is never read as Tether's whatever it starts with.
 - **Bounds:** output is kept as its first and last bytes with the middle counted and dropped, so a
   runaway command can't exhaust memory or a frame. The card shows 16 KB + 44 KB (under the 64 KB part
   limit) and streams as appended deltas of at most 16 KB every 100 ms (once cut in the middle, the
   whole card output at most once a second); notices.json keeps 4 KB + 12 KB of a finished card; the
-  agent gets 8 KB + 22 KB with a "[… 1.2 MB of output cut from the middle …]" note.
-- **Restarts:** a graceful runner stop ends running commands (SIGTERM) and their cards as Not sent;
-  after a crash the next start does the same to any card still saved as running. Nothing stays
-  "Running". Output already queued survives in runner.json and goes as usual.
+  agent gets 8 KB + 22 KB with a "[… 1.2 MB of output cut from the middle …]" note. Output is read
+  as raw bytes, at most 16 MB a second (a runaway `yes` waits on its pipe rather than keeping the
+  runner busy), and decoded only when it goes out; escape sequences split between chunks are kept
+  whole, then stripped.
+- **The hint** says when the output gets there: "when it finishes", "when this turn ends", "when
+  you go Back to Tether" (the TUI drives), or "waits in the queue, paused after Stop" (the actual
+  hold reason).
+- **Restarts:** a graceful runner stop ends running commands (SIGTERM, then SIGKILL before it exits)
+  and their cards as **Cut off · Not sent: The runner stopped while it ran**. A running card is saved
+  with its process group and the leader's start time, and its output is saved every 2 s; after a
+  crash the next start kills a group still alive (only when the leader's start time matches, or the
+  leader is gone) and ends the card the same way, with what it had printed. Nothing stays "Running".
+  Output already queued survives in runner.json and goes as usual. Command cards are kept (30 per
+  session) apart from the 50 notices, and notices.json is written at most once a second while cards
+  change (at once when one settles).
 
 ## 10. UI
 
