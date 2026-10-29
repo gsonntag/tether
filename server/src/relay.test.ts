@@ -573,3 +573,72 @@ describe("malformed frames", () => {
     expect(relay.stats().pending).toBe(0);
   });
 });
+
+describe("round 4: subscribe answers and routes", () => {
+  test("a subscribe that succeeds after its unsubscribe tells the runner unwatched again", () => {
+    const { browser, runner, rpc, fromRunner } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [f] = r.take("rpc");
+    rpc(a, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+    fromRunner(r, { t: "result", id: f.id, ok: true, data: {} });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+  });
+
+  test("...but not when another browser still watches the session", () => {
+    const { browser, runner, rpc, fromRunner } = setup();
+    const a = browser("a");
+    const b = browser("b");
+    const r = runner("box");
+    rpc(b, "1", "box", "subscribe", { sessionId: "claude:x" });
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [, fa] = r.take("rpc");
+    rpc(a, "2", "box", "unsubscribe", { sessionId: "claude:x" });
+    fromRunner(r, { t: "result", id: fa.id, ok: true, data: {} });
+    expect(r.take()).toEqual([]);
+  });
+
+  test("a browser that leaves mid-subscribe: the late success is unwatched too", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [f] = r.take("rpc");
+    relay.removeBrowser(a);
+    r.take();
+    fromRunner(r, { t: "result", id: f.id, ok: true, data: {} });
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+    expect(relay.stats().pending).toBe(0);
+  });
+
+  test("two subscribes in flight: the first failing keeps the route for the second, which succeeds", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    rpc(a, "2", "box", "subscribe", { sessionId: "claude:x" });
+    const [f1, f2] = r.take("rpc");
+    fromRunner(r, { t: "result", id: f1.id, ok: false, error: "busy" });
+    expect(relay.stats().subscriptions).toBe(1);
+    fromRunner(r, { t: "result", id: f2.id, ok: true, data: {} });
+    a.take();
+    fromRunner(r, { t: "event", sessionId: "claude:x", seq: 1, event: { type: "state", state: {} } });
+    expect(a.take("event")).toHaveLength(1);
+  });
+
+  test("two subscribes in flight that both fail leave no route", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    rpc(a, "2", "box", "subscribe", { sessionId: "claude:x" });
+    const [f1, f2] = r.take("rpc");
+    fromRunner(r, { t: "result", id: f2.id, ok: false, error: "no" });
+    expect(relay.stats().subscriptions).toBe(1);
+    fromRunner(r, { t: "result", id: f1.id, ok: false, error: "no" });
+    expect(relay.stats().subscriptions).toBe(0);
+    expect(r.take()).toEqual([{ t: "unwatched", sessionIds: ["claude:x"] }]);
+  });
+});

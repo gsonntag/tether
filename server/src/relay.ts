@@ -27,9 +27,20 @@ interface RunnerConn {
   info: RunnerInfo;
 }
 
+/**
+ * One browser's subscription to one session. A new object each time the route is made, so an
+ * answer can tell whether the route it was sent for still exists.
+ */
+interface Route {
+  /** a subscribe for it has succeeded: failures from then on (a refresh) never remove it */
+  confirmed: boolean;
+  /** subscribes for it still waiting for the runner */
+  inFlight: number;
+}
+
 interface BrowserConn {
-  /** session key -> the route's token: which subscribe created it (see settle) */
-  subs: Map<string, number>;
+  /** session key -> its route (see Route) */
+  subs: Map<string, Route>;
   attaches: Set<string>;
 }
 
@@ -40,8 +51,8 @@ interface Pending {
   op: OpName;
   /** the session a subscribe is for, or the attach an openTerminal opens */
   key?: string;
-  /** a subscribe that created its route: that route's token */
-  token?: number;
+  /** a subscribe: the route it was sent for */
+  route?: Route;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -96,7 +107,9 @@ export class Relay {
       const r = this.runners.get(runnerId);
       if (r) this.out(r.sock, { t: "detach", attachIds });
     }
-    for (const [id, p] of this.pending) if (p.browser === sock) (clearTimeout(p.timer), this.pending.delete(id));
+    // Its rpcs are answered to nobody, except subscribes: their answer still has to reach
+    // settleSubscribe, which tells the runner `unwatched` if it started watching for nobody.
+    for (const [id, p] of this.pending) if (p.browser === sock && p.op !== "subscribe") (clearTimeout(p.timer), this.pending.delete(id));
   }
 
   onBrowserMessage(sock: Socket, msg: BrowserToServer) {
@@ -110,7 +123,7 @@ export class Relay {
     if (!runner) return reply({ ok: false, error: "That runner is offline." });
     const args = { ...(m.args as Record<string, unknown>) };
     let key: string | undefined;
-    let token: number | undefined;
+    let route: Route | undefined;
 
     if ((m.op === "subscribe" || m.op === "unsubscribe") && (typeof args.sessionId !== "string" || !args.sessionId))
       return reply({ ok: false, error: "sessionId is required." });
@@ -124,15 +137,11 @@ export class Relay {
       case "subscribe": {
         // Registered before the runner answers, so no event between its snapshot and the answer is lost.
         const k = subKey(m.runnerId, args.sessionId as string);
-        // Subscribing again (a fresh snapshot) reuses the route; only a subscribe that created it
-        // may take it down when it fails, or a failed refresh would cut off a working subscription.
-        // A route also survives being removed and made again while this subscribe is in flight:
-        // the token tells the routes apart.
-        if (!b.subs.has(k)) {
-          key = k;
-          token = ++this.seq;
-          b.subs.set(k, token);
-        }
+        // Subscribing again (a fresh snapshot) reuses the route (see settle for when it goes).
+        key = k;
+        route = b.subs.get(k);
+        if (!route) b.subs.set(k, (route = { confirmed: false, inFlight: 0 }));
+        route.inFlight++;
         let set = this.subscribers.get(k);
         if (!set) this.subscribers.set(k, (set = new Set()));
         set.add(sock);
@@ -156,7 +165,7 @@ export class Relay {
 
     const id = `s${++this.seq}`;
     const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), this.rpcTimeoutMs);
-    this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, token, timer });
+    this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, route, timer });
     this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
 
@@ -282,13 +291,29 @@ export class Relay {
     this.pending.delete(id);
     clearTimeout(p.timer);
     const b = this.browsers.get(p.browser);
-    if (!r.ok && p.key && b) {
-      // A failed subscribe or attach leaves no route behind.
-      // Only the route this subscribe made: not one an unsubscribe already removed, nor a newer one.
-      if (p.op === "subscribe" && b.subs.get(p.key) === p.token && this.unsubscribe(p.browser, b, p.key)) this.tellUnwatched([p.key]);
-      if (p.op === "openTerminal") this.dropAttach(p.key);
-    }
+    if (p.op === "subscribe" && p.key && p.route) this.settleSubscribe(p.browser, b, p.key, p.route, r.ok);
+    // A failed attach leaves no route behind.
+    if (!r.ok && p.key && p.op === "openTerminal") this.dropAttach(p.key);
     if (b) this.out(p.browser, { t: "result", id: p.browserRpcId, ok: r.ok, data: r.data, error: r.error });
+  }
+
+  /**
+   * A subscribe's answer, for its route:
+   * - success: the route is confirmed. If the route is gone meanwhile (unsubscribed, the browser
+   *   left) and nobody else watches the session, the runner just started watching for nobody:
+   *   tell it `unwatched` again.
+   * - failure: the route goes only if no subscribe for it ever succeeded and none is still in
+   *   flight, so a failed refresh never cuts off a working (or about to work) subscription.
+   */
+  private settleSubscribe(sock: Socket, b: BrowserConn | undefined, key: string, route: Route, ok: boolean) {
+    route.inFlight--;
+    const current = b?.subs.get(key) === route;
+    if (ok) {
+      if (current) route.confirmed = true;
+      else if (!this.subscribers.get(key)?.size) this.tellUnwatched([key]);
+      return;
+    }
+    if (current && !route.confirmed && route.inFlight === 0 && this.unsubscribe(sock, b!, key)) this.tellUnwatched([key]);
   }
 
   /** True when this was the session's last subscriber. */

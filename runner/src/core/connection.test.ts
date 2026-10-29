@@ -209,3 +209,34 @@ test("a hello that is refused every time backs off instead of retrying every sec
   const delays = logs.filter((l) => l.startsWith("retrying in")).map((l) => parseFloat(l.slice(12)));
   expect(delays[2]!).toBeGreaterThan(delays[0]! * 2);
 }, 10_000);
+
+test("an answer over the frame limit goes out as an error; the connection survives", async () => {
+  const s = fakeServer();
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs } = runner(s.url, { onRpc: async () => ({ ok: true, data: "x".repeat(17 * 1024 * 1024) }) });
+  conn.start();
+  await until(() => conn.connected);
+  s.socks[0]!.send(JSON.stringify({ t: "rpc", id: "s1", op: "ping", args: {} }));
+  await until(() => s.frames.some((m) => m.t === "result"));
+  expect(s.frames.find((m) => m.t === "result")).toEqual({ t: "result", id: "s1", ok: false, error: "The answer was too large to send." });
+  expect(logs.some((l) => l.includes("too large to send"))).toBe(true);
+  expect(conn.connected).toBe(true);
+});
+
+test("events are capped on the way out, and one still too big becomes resync", async () => {
+  const s = fakeServer();
+  cleanup.push(() => s.server.stop(true));
+  const { conn } = runner(s.url);
+  conn.start();
+  await until(() => conn.connected);
+  const huge = "h".repeat(20 * 1024 * 1024);
+  conn.send({ t: "event", sessionId: "claude:1", seq: 1, event: { type: "msg", isNew: true, msg: { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: huge }] } } });
+  // A field no cap knows about (summary titles are small by contract) trips the last-resort guard.
+  conn.send({ t: "event", sessionId: "claude:1", seq: 2, event: { type: "state", state: { error: huge } } });
+  await until(() => s.frames.filter((m) => m.t === "event").length === 2);
+  const [capped, guarded] = s.frames.filter((m) => m.t === "event");
+  expect(capped.event.msg.parts[0].truncated).toBe(huge.length);
+  expect(JSON.stringify(capped).length).toBeLessThan(100 * 1024);
+  expect(guarded).toEqual({ t: "event", sessionId: "claude:1", seq: 2, event: { type: "resync" } });
+  expect(conn.connected).toBe(true);
+});

@@ -23,7 +23,8 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
-import type { HarnessId, Msg, Part, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+import type { PartChunk } from "./limits";
+import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
 export const CLOSE_REPLACED = 4000;
@@ -69,8 +70,13 @@ export interface Ops {
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
   subscribe: { args: { sessionId: string; limit?: number }; result: SessionSnapshot };
-  /** a part whose content a snapshot or event cut short (`truncated` set), in full */
-  fullPart: { args: { sessionId: string; msgId: string; part: number }; result: Part };
+  /**
+   * A part in full, when a snapshot or event cut it short (`truncated`, `inputTruncated`) or left
+   * it out (`partsOmitted`). It comes as a slice of its JSON from `offset`, at most about 1 MB per
+   * answer: ask again from `offset + chunk.length` until `done`, then parse the joined string
+   * (shared/limits.ts `partChunk`).
+   */
+  fullPart: { args: { sessionId: string; msgId: string; part: number; offset?: number }; result: PartChunk };
   /** an older page of a transcript: up to `limit` messages before the message `before` */
   history: { args: { sessionId: string; before: string; limit?: number }; result: { messages: Msg[]; hasOlder: boolean } };
   /** stop receiving a session's events (answered by the server) */

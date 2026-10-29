@@ -30,6 +30,7 @@ export function applyToWindow(w: TranscriptWindow, e: SessionEvent): TranscriptW
         parts: m.parts.map((p) => (p.type === "tool" && p.id === e.toolId ? { ...p, ...e.patch, type: "tool" as const, id: p.id } : p)),
       }));
     case "state":
+    case "resync": // the caller subscribes again
       return w;
   }
 }

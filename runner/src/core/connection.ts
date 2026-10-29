@@ -6,6 +6,7 @@
 // that came in on an older connection is dropped: the server that asked has forgotten it, and its
 // id may now name a different rpc.
 
+import { capEvent, guardFrame } from "../../../shared/limits";
 import { CLOSE_PROTOCOL, CLOSE_REPLACED, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
@@ -76,12 +77,22 @@ export class Connection {
     ws?.close(1001, "runner stopping");
   }
 
-  /** Sends on the current connection; false (and nothing sent) when there isn't one. */
+  /**
+   * Sends on the current connection; false (and nothing sent) when there isn't one. Session events
+   * are capped, and nothing over the frame limit ever goes out (shared/limits.ts).
+   */
   send(m: RunnerToServer): boolean {
     const ws = this.ws;
     if (!this.ready || !ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify(m));
+    if (m.t === "event") m = { ...m, event: capEvent(m.event) };
+    this.write(ws, m);
     return true;
+  }
+
+  private write(ws: WebSocket, m: RunnerToServer) {
+    const { frame, replaced } = guardFrame(m);
+    if (replaced) this.log(`a ${m.t} frame was too large to send; ${frame === null ? "dropped it" : `sent ${m.t === "event" ? "resync" : "an error"} instead`}`);
+    if (frame !== null) ws.send(frame);
   }
 
   private dial() {
@@ -174,7 +185,7 @@ export class Connection {
   private async answer(sock: WebSocket, id: string, op: string, args: unknown) {
     const r = await this.opts.onRpc(op, args);
     if (this.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
-    sock.send(JSON.stringify({ t: "result", id, ...r } satisfies RunnerToServer));
+    this.write(sock, { t: "result", id, ...r });
   }
 
   private beat(sock: WebSocket) {

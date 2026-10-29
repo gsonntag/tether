@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSnapshot } from "../../shared/transcript";
-import { Subscriptions } from "./subscriptions";
+import { resubscriber, Subscriptions } from "./subscriptions";
 
 const snap = (seq: number) => ({ seq }) as unknown as SessionSnapshot;
 const noUnsub = async () => null;
@@ -61,4 +61,41 @@ test("a snapshot for a session closed in the meantime is dropped", async () => {
   release(snap(1));
   await Bun.sleep(0);
   expect(got).toBe(0);
+});
+
+test("two watchers of one session share a subscription; it ends with the last one", async () => {
+  const subscribes: string[] = [];
+  const unsubs: string[] = [];
+  const subs = new Subscriptions(async (r, s) => (subscribes.push(s), snap(subscribes.length)), async (r, s) => unsubs.push(s));
+  const a: number[] = [];
+  const b: number[] = [];
+  const closeA = subs.watch({ runnerId: "r", sessionId: "claude:1", onSnapshot: (x) => a.push(x.seq) });
+  await Bun.sleep(0);
+  const closeB = subs.watch({ runnerId: "r", sessionId: "claude:1", onSnapshot: (x) => b.push(x.seq) });
+  await Bun.sleep(0);
+  // The second watcher's fresh snapshot reaches both.
+  expect(a).toEqual([1, 2]);
+  expect(b).toEqual([2]);
+  expect(subs.size).toBe(1);
+  closeA();
+  expect(unsubs).toEqual([]);
+  subs.resubscribe();
+  await Bun.sleep(0);
+  expect(a).toEqual([1, 2]);
+  expect(b).toEqual([2, 3]);
+  closeB();
+  expect(unsubs).toEqual(["claude:1"]);
+  expect(subs.size).toBe(0);
+});
+
+test("page load: hello resubscribes everything once; the runners list right after doesn't repeat it", () => {
+  const calls: (string[] | undefined)[] = [];
+  const r = resubscriber({ resubscribe: (ids?: string[]) => void calls.push(ids) });
+  r.hello();
+  r.runners(["a", "b"]);
+  expect(calls).toEqual([undefined]);
+  // Later, a runner reconnecting on its own does resubscribe its sessions.
+  r.runners(["a"]);
+  r.runners([]);
+  expect(calls).toEqual([undefined, ["a"]]);
 });

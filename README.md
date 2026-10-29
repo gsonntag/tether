@@ -36,8 +36,8 @@ mkdir -p ~/.local/share/tether-dev && echo '{"runnerId":"tether-dev","name":"tet
 (cd web && bun install && bunx vite)                      # http://127.0.0.1:5180
 ```
 
-Without `FOLIATION_ISSUER` the server runs in dev mode: it listens on loopback only, every
-browser is treated as the owner, and runners authenticate with `Authorization: Bearer dev`
+Without `FOLIATION_ISSUER` the server runs in dev mode: it listens on loopback only, answers
+only requests addressed to `localhost`/`127.0.0.1`, treats every browser as the owner, and runners authenticate with `Authorization: Bearer dev`
 (`TETHER_DEV_RUNNER_TOKEN` changes it). Set `TETHER_URL` and `TETHER_TOKEN` explicitly for a
 dev runner: your shell may carry production values.
 
@@ -65,8 +65,9 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 
 | Variable | Default | |
 |---|---|---|
-| `TETHER_URL` | `http://localhost:8790` | the app's base URL |
-| `TETHER_TOKEN` | `dev` | the runner's service token |
+| `TETHER_URL` | required | the app's base URL |
+| `TETHER_TOKEN` | required | the runner's service token |
+| `TETHER_DEV` | | `1`: fall back to `http://localhost:8790` and token `dev` when the two above are unset |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
 
 Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;

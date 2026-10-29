@@ -9,10 +9,20 @@ import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
 
+// No silent defaults outside dev: a runner that quietly dialled localhost with token "dev" would
+// look healthy while serving nobody.
+const DEV = process.env.TETHER_DEV === "1";
+const url = process.env.TETHER_URL || (DEV ? "http://localhost:8790" : "");
+const token = process.env.TETHER_TOKEN || (DEV ? "dev" : "");
+if (!url || !token) {
+  console.error(`Set ${[!url && "TETHER_URL", !token && "TETHER_TOKEN"].filter(Boolean).join(" and ")} (the app's URL and a runner service token), or TETHER_DEV=1 for a local dev server.`);
+  process.exit(1);
+}
+
 const config = loadConfig();
 const runner = createRunner({
-  url: process.env.TETHER_URL || "http://localhost:8790",
-  token: process.env.TETHER_TOKEN || "dev",
+  url,
+  token,
   runnerId: config.runnerId,
   name: displayName(config),
   version: pkg.version,

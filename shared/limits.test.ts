@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { capMessage, capPart, IMAGE_DATA_MAX, newestPage, PART_TEXT_MAX } from "./limits";
-import type { Msg } from "./transcript";
+import { capEvent, capInput, capMessage, capPart, capRequest, fetchFullPart, FRAME_BYTES_MAX, guardFrame, IMAGE_DATA_MAX, INPUT_JSON_MAX, INPUT_STRING_MAX, MESSAGE_BYTES_MAX, newestPage, PAGE_BYTES_MAX, partChunk, PART_CHUNK_MAX, PART_TEXT_MAX } from "./limits";
+import type { Msg, Part, ToolPart } from "./transcript";
 
 test("big text, tool output and images are cut short and marked with their full length", () => {
   const big = "x".repeat(PART_TEXT_MAX + 10);
@@ -34,4 +34,89 @@ test("a page is cut by count and by bytes, newest kept, never empty", () => {
 test("capMessage keeps a small message as is", () => {
   const x = m("a");
   expect(capMessage(x)).toBe(x);
+});
+
+// ---------- round 4: every path stays under the frame limit ----------
+
+
+const MB = 1024 * 1024;
+const bytes = (v: unknown) => JSON.stringify(v).length;
+const tool = (over: Partial<ToolPart> = {}): ToolPart => ({ type: "tool", id: "t", name: "Write", kind: "write", input: {}, status: "done", ...over });
+
+test("tool input: long strings trimmed, shape kept, marked", () => {
+  const content = "c".repeat(5 * MB);
+  const p = capPart(tool({ input: { file_path: "/a.ts", content } })) as ToolPart;
+  expect(p.inputTruncated).toBe(true);
+  expect((p.input as any).file_path).toBe("/a.ts");
+  expect((p.input as any).content.length).toBe(INPUT_STRING_MAX + 1);
+  // Many medium strings that are each under the string cap still end up as a bounded preview.
+  const wide = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`k${i}`, "x".repeat(INPUT_STRING_MAX)]));
+  const c = capInput(wide);
+  expect(c.truncated).toBe(true);
+  expect(bytes(c.value)).toBeLessThan(INPUT_JSON_MAX + 100);
+  // Small inputs are returned as is.
+  const small = { command: "ls" };
+  expect(capInput(small)).toEqual({ value: small, truncated: false });
+});
+
+test("request inputs are capped too", () => {
+  const r = capRequest({ id: "r", sessionId: "s", kind: "approval", tool: "Edit", input: { old_string: "o".repeat(3 * MB), new_string: "n" }, openedAt: 0 });
+  expect(r.inputTruncated).toBe(true);
+  expect(bytes(r)).toBeLessThan(INPUT_JSON_MAX);
+  const state = capEvent({ type: "state", state: { requests: [{ id: "r", sessionId: "s", kind: "approval", input: "z".repeat(3 * MB), openedAt: 0 }] } });
+  expect(bytes(state)).toBeLessThan(INPUT_JSON_MAX);
+});
+
+test("tool patch events are capped", () => {
+  const e = capEvent({ type: "tool", msgId: "m", toolId: "t", patch: { output: "o".repeat(20 * MB), input: { content: "i".repeat(20 * MB) } } });
+  expect(bytes(e)).toBeLessThan(200 * 1024);
+  expect(e).toMatchObject({ patch: { truncated: 20 * MB, inputTruncated: true } });
+});
+
+test("a message with very many parts keeps the first ones up to the budget and marks the rest", () => {
+  const parts: Part[] = Array.from({ length: 400 }, (_, i) => ({ type: "text", text: `${i}`.padEnd(60 * 1024, "-") }));
+  const msg = capMessage({ id: "m", role: "assistant", ts: 0, parts });
+  expect(bytes(msg)).toBeLessThan(MESSAGE_BYTES_MAX + 70 * 1024);
+  expect(msg.parts.length + msg.partsOmitted!).toBe(400);
+  expect((msg.parts[0] as any).text.startsWith("0-")).toBe(true);
+  // A page of such messages stays within the page budget.
+  const page = newestPage(Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, role: "assistant" as const, ts: 0, parts })), 50);
+  expect(bytes(page.messages)).toBeLessThan(PAGE_BYTES_MAX + MESSAGE_BYTES_MAX);
+});
+
+test("msg and reset events are capped", () => {
+  const huge: Part = { type: "text", text: "h".repeat(20 * MB) };
+  expect(bytes(capEvent({ type: "msg", msg: { id: "m", role: "user", ts: 0, parts: [huge] } }))).toBeLessThan(100 * 1024);
+  const reset = capEvent({ type: "reset", hasOlder: false, messages: Array.from({ length: 100 }, (_, i) => ({ id: `m${i}`, role: "user" as const, ts: 0, parts: [huge] })) });
+  expect(bytes(reset)).toBeLessThan(PAGE_BYTES_MAX + 100 * 1024);
+  expect(reset).toMatchObject({ hasOlder: true });
+});
+
+test("fullPart comes back whole in bounded slices", async () => {
+  const part = tool({ input: { content: "é".repeat(3 * MB) }, output: "o".repeat(2 * MB) });
+  let calls = 0;
+  const got = await fetchFullPart(async (offset) => {
+    calls++;
+    const c = partChunk(part, offset);
+    expect(c.chunk.length).toBeLessThanOrEqual(PART_CHUNK_MAX);
+    return c;
+  });
+  expect(got).toEqual(part);
+  expect(calls).toBeGreaterThan(4);
+  await expect(fetchFullPart(async () => ({ chunk: "", offset: 5, total: 10, done: false }))).rejects.toThrow();
+});
+
+test("the frame guard turns oversized results into errors and events into resync", () => {
+  const big = "x".repeat(FRAME_BYTES_MAX + 1);
+  expect(JSON.parse(guardFrame({ t: "result", id: "s1", ok: true, data: big }).frame!)).toEqual({ t: "result", id: "s1", ok: false, error: "The answer was too large to send." });
+  expect(JSON.parse(guardFrame({ t: "event", sessionId: "c:1", seq: 9, event: { type: "msg", msg: { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: big }] } } }).frame!)).toEqual({
+    t: "event",
+    sessionId: "c:1",
+    seq: 9,
+    event: { type: "resync" },
+  });
+  expect(guardFrame({ t: "summary", summary: { kind: "all", epoch: "e", seq: 1, sessions: [{ title: big } as any] } })).toEqual({ frame: null, replaced: true });
+  // Multi-byte text counts in bytes: 3 MB of 3-byte characters is 9 MB.
+  expect(JSON.parse(guardFrame({ t: "result", id: "s2", ok: true, data: "€".repeat(3 * MB) }).frame!).ok).toBe(false);
+  expect(guardFrame({ t: "ping" })).toEqual({ frame: '{"t":"ping"}', replaced: false });
 });

@@ -30,6 +30,8 @@ export interface ToolPart {
   parentToolId?: string;
   /** `output` was cut short (shared/limits.ts): its full length; `fullPart` fetches it */
   truncated?: number;
+  /** `input` was cut short (long strings trimmed, or replaced by a preview); `fullPart` has it whole */
+  inputTruncated?: boolean;
 }
 
 /**
@@ -57,6 +59,11 @@ export interface Msg {
   /** assistant: the turn ended in this error */
   error?: string;
   streaming?: boolean;
+  /**
+   * Parts at the end left out to keep the message small (shared/limits.ts): `parts` holds the
+   * first ones, and parts[parts.length …] can be fetched one by one with `fullPart`.
+   */
+  partsOmitted?: number;
 }
 
 // ---------- live state ----------
@@ -74,6 +81,8 @@ export interface Request {
   question?: string;
   options?: string[];
   openedAt: number;
+  /** `input` was cut short to travel (shared/limits.ts) */
+  inputTruncated?: boolean;
 }
 
 export interface QueuedMessage {
@@ -147,7 +156,12 @@ export type SessionEvent =
   | { type: "tool"; msgId: string; toolId: string; patch: Partial<ToolPart> }
   | { type: "state"; state: Partial<LiveState> }
   /** replace the transcript (after compaction): the newest window, as in a snapshot */
-  | { type: "reset"; messages: Msg[]; hasOlder: boolean };
+  | { type: "reset"; messages: Msg[]; hasOlder: boolean }
+  /**
+   * The real event was too big to send (shared/limits.ts, frame guard). It still takes its seq;
+   * subscribers subscribe again for a fresh (capped) snapshot.
+   */
+  | { type: "resync" };
 
 // Events always refer to messages by id. One that patches a message outside what the browser has
 // loaded (an older page it never fetched) is simply skipped: the page carries the current text
