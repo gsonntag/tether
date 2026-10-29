@@ -71,7 +71,7 @@ class TermAdapter extends FakeAdapter {
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
-function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string } = {}) {
+function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; hookSocket?: string } = {}) {
   const adapter = o.adapter ?? new TermAdapter();
   const tmux = o.tmux ?? new FakeTmux();
   const bus = new EventBus<CoreEvents>();
@@ -83,7 +83,7 @@ function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string }
   const core = new SessionCore({ adapters: [adapter], bus, send, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
   const broker = new RequestBroker([], { saved: prefs.requests(), persist: (l) => prefs.setRequests(l) });
   const live = new LiveControl(core, broker, { idleMs: 60_000 });
-  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", log: () => {} });
+  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", enterDelayMs: 0, log: () => {} });
   cleanups.push(() => (term.stop(), core.stop()));
   const modes: string[] = [];
   bus.on("modeChanged", (e) => modes.push(`${e.from}->${e.to}`));
@@ -185,6 +185,22 @@ describe("handoff (Claude)", () => {
       { id: "m2", role: "assistant", ts: 2, parts: [{ type: "text", text: "from the TUI" }] },
     ]);
     expect(frames.some((f) => f.t === "event" && f.event.type === "msg" && f.event.msg.id === "m2")).toBe(true);
+  });
+
+  test("typing into a TUI that just started waits for its SessionStart", async () => {
+    const { adapter, live, term, tmux } = setup({ hookSocket: join(mkdtempSync(join(tmpdir(), "tether-hk-")), "hooks.sock") });
+    await term.start();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const typing = live.send("claude:s1", "hello");
+    await Bun.sleep(30);
+    expect(tmux.typed).toEqual([]);
+    term.report({ sessionId: "claude:s1", event: "SessionStart", source: "resume" });
+    await typing;
+    expect(tmux.typed).toEqual([["t-claude-s1", "hello"]]);
+    // Later messages don't wait.
+    await live.send("claude:s1", "again");
+    expect(tmux.typed.length).toBe(2);
   });
 
   test("hooks: a prompt runs, a permission prompt needs you, a tool resumes, Stop ends the turn", async () => {

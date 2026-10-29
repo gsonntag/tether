@@ -45,6 +45,10 @@ export interface TerminalOptions {
   quitTimeoutMs?: number;
   /** the shell a project shell runs */
   shell?: string;
+  /** the pause between typed text and its Enter */
+  enterDelayMs?: number;
+  /** how long typing waits for a new TUI's SessionStart */
+  startWaitMs?: number;
   log?: (line: string) => void;
 }
 
@@ -59,6 +63,12 @@ export class TerminalControl {
   /** Back to Tether under way */
   private returning = new Set<string>();
   private entering = new Map<string, Promise<void>>();
+  /**
+   * TUIs just started: typing waits until they report SessionStart (or a few seconds pass). Text
+   * that arrives before the TUI puts its terminal in raw mode comes through as a pasted line, and
+   * its Enter as a newline.
+   */
+  private starting = new Map<string, { ready: Promise<void>; done: () => void }>();
   private poll?: ReturnType<typeof setInterval>;
   private polling = false;
   private readonly log: (line: string) => void;
@@ -223,6 +233,7 @@ export class TerminalControl {
       if (handoff && !s.live && s.state.mode === "live") this.o.live.setMode(s, "stored", { status: "idle", error });
       throw new Error(error);
     }
+    if (handoff && this.hooks) this.expectStart(s.id);
     this.adopt(s);
     if (handoff && s.state.queue.length) s.setState({ queueHeld: true });
   }
@@ -301,11 +312,28 @@ export class TerminalControl {
 
   // ---------------- typing into the TUI ----------------
 
+  /** Typing waits for this TUI to report that it started (SessionStart), at most a few seconds. */
+  private expectStart(id: string) {
+    let done!: () => void;
+    const ready = new Promise<void>((r) => (done = r));
+    const t = setTimeout(() => finish(), this.o.startWaitMs ?? 8000);
+    const finish = () => {
+      clearTimeout(t);
+      if (this.starting.get(id)?.ready === ready) this.starting.delete(id);
+      done();
+    };
+    this.starting.set(id, { ready, done: finish });
+  }
+
   /** The composer in terminal mode: the text, then Enter (SPEC §8, §9). */
   private async type(s: Session, text: string) {
     const name = tuiName(s.id);
     if (!this.tuis.has(s.id)) throw new Error("The terminal has closed.");
+    await this.starting.get(s.id)?.ready;
     await this.o.tmux.type(name, text);
+    // A beat between the text and Enter: a TUI that reads a burst as a paste (Claude) would take
+    // the Enter as a newline, and one still starting up may drop it.
+    await Bun.sleep(this.o.enterDelayMs ?? 150);
     await this.o.tmux.keys(name, "Enter");
   }
 
@@ -322,6 +350,10 @@ export class TerminalControl {
     const term = s.state.terminal;
     if (r.nativeId && r.nativeId !== s.summary.nativeId && r.event !== "SessionEnd") this.log(`${s.id}: the TUI is now on session ${r.nativeId} (${r.event}${r.source ? ` ${r.source}` : ""})`);
     switch (r.event) {
+      case "SessionStart":
+        // Its input is live a moment after it says it started.
+        setTimeout(() => this.starting.get(s.id)?.done(), 300);
+        break;
       case "UserPromptSubmit":
         // Something was typed: the store has the session from here on.
         s.fresh = false;
