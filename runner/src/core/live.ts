@@ -141,9 +141,16 @@ export class LiveControl {
       // Stopped before the message went out (interrupt already set idle and freed the session):
       // the caller hears it wasn't sent (a queued message goes back, your text stays in the box).
       if (s.cancelSend === me) throw new SendCancelled();
+      // Joined a turn another client (Codex's TUI) started: busy, as if it had been live all along.
+      if (d.turnRunning?.()) {
+        s.sending = undefined;
+        throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working on a turn started elsewhere. Stop it first, or wait for it to finish.`);
+      }
       await this.confirmSettings(s, d);
       if (s.cancelSend === me) throw new SendCancelled();
       this.core.touch(s, { updatedAt: this.core.now() });
+      // Handed to the harness from here: its turn starts (a change now is against that turn).
+      s.sentOut = me;
       await d.send(withAttachments(text, attachments), attachments);
       s.fresh = false;
     } catch (e) {
@@ -154,6 +161,7 @@ export class LiveControl {
       throw e;
     } finally {
       if (s.sending === me) s.sending = undefined;
+      if (s.sentOut === me) s.sentOut = undefined;
       if (s.cancelSend === me) s.cancelSend = undefined;
     }
   }
@@ -368,10 +376,10 @@ export class LiveControl {
 
   private async setting(id: string, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const s = await this.core.open(id);
-    if (s.summary.parentSessionId) throw new Error("A subagent runs with its parent's settings.");
-    // A handoff TUI drives (SPEC §8): it was launched with its settings and takes no others from
-    // Tether, so a change here would only pretend.
-    if (s.state.mode === "terminal" && s.capabilities.terminal === "handoff") {
+    if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
+    // A handoff TUI drives (SPEC §8), or is being started: it takes no settings from Tether, so a
+    // change here would only pretend.
+    if ((s.state.mode === "terminal" || this.terminal?.blocked(s)) && s.capabilities.terminal === "handoff") {
       const hint = this.core.adapter(s.summary.harness).terminalSettingsHint;
       throw new Error(`${HARNESS_LABELS[s.summary.harness]}'s terminal is driving. Change it there${hint ? ` (${hint})` : ""}.`);
     }
@@ -418,10 +426,12 @@ export class LiveControl {
   /**
    * A setting changes while a turn runs on a harness where that counts from the next turn
    * (capabilities.settingsApply "nextTurn"): the turn's own value is kept beside it, so it shows
-   * honestly ("Read only from the next turn") until the turn ends.
+   * honestly ("Read only from the next turn") until the turn ends. Only for a turn that really runs
+   * (not a send still starting one), and only when the harness doesn't report the running turn's
+   * settings itself (capabilities.persistent: it does, as `turnSettings`, knowing them exactly).
    */
   private noteTurnSettings(s: Session, patch: StartOpts) {
-    if (s.capabilities.settingsApply !== "nextTurn" || s.state.status === "idle" || s.summary.parentSessionId) return;
+    if (s.capabilities.settingsApply !== "nextTurn" || s.capabilities.persistent || s.state.status === "idle" || (s.sending && s.sentOut !== s.sending) || s.summary.parentSessionId) return;
     const turn = { ...s.state.turnSettings };
     for (const k of ["model", "effort", "permissionMode"] as const) {
       const v = patch[k];
@@ -435,7 +445,8 @@ export class LiveControl {
 
   /** A change rolled back: the turn's own values are what shows again. */
   private rollBackTurnSettings(s: Session, shown: StartOpts) {
-    if (!s.state.turnSettings) return;
+    // A harness that reports the turn's settings itself keeps them right.
+    if (!s.state.turnSettings || s.capabilities.persistent) return;
     const turn = { ...s.state.turnSettings };
     for (const k of Object.keys(shown) as (keyof StartOpts)[]) if (turn[k] === shown[k]) delete turn[k];
     s.setState({ turnSettings: Object.keys(turn).length ? turn : undefined });
@@ -644,8 +655,6 @@ export class LiveControl {
             s.rolledBack = undefined;
             s.apply({ type: "msg", msg: notice(`${HARNESS_LABELS[s.summary.harness]} applied your earlier change to the ${late.map((k) => (k === "permissionMode" ? "mode" : k)).join(" and ")} after all.`) });
           }
-          // Changed elsewhere (Codex's TUI) mid-turn: the running turn still has its old values.
-          this.noteTurnSettings(s, reported);
           const p = core.o.prefs.get(s.id);
           const done = {
             ...(p.model !== undefined && (patch.model ?? patch.modelResolved) === p.model ? { model: undefined } : {}),
@@ -677,8 +686,8 @@ export class LiveControl {
     if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
-      // The next turn runs with the settings as shown.
-      if (s.state.turnSettings) s.setState({ turnSettings: undefined });
+      // The next turn runs with the settings as shown; not while its subagents still run on the old ones.
+      if (s.state.turnSettings && !s.driver?.busy()) s.setState({ turnSettings: undefined });
       const stopped = s.stopped;
       s.stopped = false;
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });
@@ -751,6 +760,9 @@ export class LiveControl {
     this.core.touch(c, { updatedAt: this.core.now() });
     this.core.o.bus.emit("turnEnded", { sessionId: c.id });
     this.core.scheduleEvict(c);
+    // The last subagent of a finished turn: nothing runs on the turn's settings any more.
+    const parent = c.summary.parentSessionId ? this.core.sessions.get(c.summary.parentSessionId) : undefined;
+    if (parent?.state.turnSettings && parent.state.status === "idle" && !parent.driver?.busy()) parent.setState({ turnSettings: undefined });
   }
 }
 

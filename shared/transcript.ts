@@ -246,7 +246,13 @@ export interface LiveState {
    * (capabilities.settingsApply "nextTurn"): what the running turn still runs with. Cleared when the
    * turn ends.
    */
-  turnSettings?: { model?: string; effort?: string; permissionMode?: string };
+  turnSettings?: {
+    model?: string;
+    effort?: string;
+    permissionMode?: string;
+    /** the running turn has more access than the session now shows (Tether offers to stop it) */
+    looser?: boolean;
+  };
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }

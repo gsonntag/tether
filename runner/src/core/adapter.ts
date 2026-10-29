@@ -92,6 +92,8 @@ export interface Driver {
   relayedBy?(nativeId: string, tool: ToolPart, text?: string): boolean;
   /** the harness's own TUI is about to join this live session (capabilities.terminal "shared") */
   beforeTerminal?(): Promise<void>;
+  /** a turn is running in the harness right now (one another client started, found on joining) */
+  turnRunning?(): boolean;
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */
   busy(): boolean;
   close(): Promise<void>;

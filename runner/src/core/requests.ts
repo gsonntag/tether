@@ -157,7 +157,7 @@ export class RequestDesk {
     const chain = this.chain(s);
     const root = this.core.sessions.get(chain.at(-1)!) ?? s;
     const request: Request = { ...r, id: randomUUID(), sessionId: s.id, openedAt: this.core.now(), ...(s.summary.parentSessionId ? { agent: s.summary.title } : {}) };
-    const { source: _s, requestId: _r, ...d } = await this.broker.decide(request, chain, { projectPath: root.summary.projectPath, permissionMode: root.state.permissionMode }, signal);
+    const { source: _s, requestId: _r, ...d } = await this.broker.decide(request, chain, { projectPath: root.summary.projectPath, permissionMode: root.state.turnSettings?.permissionMode ?? root.state.permissionMode }, signal);
     return d;
   }
 

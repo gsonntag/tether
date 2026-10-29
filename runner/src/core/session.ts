@@ -25,6 +25,8 @@ export class Session {
   /** loading the transcript */
   loading?: Promise<Transcript>;
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** the send whose message has been handed to the harness (its turn has started) */
+  sentOut?: object;
   /** setting changes, one at a time (each waits for the harness to take it) */
   settingChain?: Promise<unknown>;
   /** settings Tether rolled back because the harness didn't take them in time: a late report says so */

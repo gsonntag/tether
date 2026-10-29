@@ -68,6 +68,11 @@ export class FakeDriver implements Driver {
     this.stopped.push(id);
     this.children.get(id)?.ended?.();
   }
+  /** a turn another client started is running (found on joining) */
+  runningElsewhere = false;
+  turnRunning() {
+    return this.runningElsewhere;
+  }
   busy() {
     return this.isBusy;
   }

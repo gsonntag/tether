@@ -331,11 +331,9 @@ describe("a setting changed while live: shown only as the harness takes it, neve
   });
 });
 
-const adapterDriver = (s: { driver?: unknown }) => s.driver as import("./fakeAdapter").FakeDriver;
-
 describe("a setting changed during a turn (capabilities.settingsApply)", () => {
   async function running(caps: Partial<HarnessCapabilities>) {
-    const t = setup({ persistent: true, ...caps });
+    const t = setup({ ...caps });
     t.adapter.addStored("s1", []);
     const h = held();
     t.adapter.script = () => [h.step, idle];
@@ -353,9 +351,6 @@ describe("a setting changed during a turn (capabilities.settingsApply)", () => {
     // Changed back to what the turn runs with: nothing differs.
     await live.setPermissionMode("claude:s1", "full-access");
     expect(s.state.turnSettings).toBeUndefined();
-    // Changed elsewhere (the harness reports it, e.g. Codex's TUI) mid-turn: noted the same way.
-    adapterDriver(s).sink.state({ permissionMode: "auto" });
-    expect(s.state).toMatchObject({ permissionMode: "auto", turnSettings: { permissionMode: "full-access" } });
     await live.setPermissionMode("claude:s1", "read-only");
     expect(s.state.turnSettings).toEqual({ permissionMode: "full-access" });
     h.release();
@@ -385,5 +380,83 @@ describe("a setting changed during a turn (capabilities.settingsApply)", () => {
     (await u.core.open("claude:s1")).setState({ terminal: { kind: "shared" } });
     await u.live.setPermissionMode("claude:s1", "plan");
     expect(u.adapter.drivers[0]!.settings.permissionMode).toBe("plan");
+  });
+});
+
+describe("P4 review 5: never running looser than shown", () => {
+  test("a send that joins a turn another client started is refused, and the session shows it running", async () => {
+    const { adapter, core, live } = setup({ persistent: true, settingsApply: "nextTurn" });
+    adapter.addStored("s1", []);
+    const orig = adapter.resume.bind(adapter);
+    adapter.resume = async (...a: Parameters<FakeAdapter["resume"]>) => {
+      const d = (await orig(...a)) as import("./fakeAdapter").FakeDriver;
+      d.runningElsewhere = true;
+      d.sink.state({ status: "running", turnSettings: { permissionMode: "full-access", looser: true } });
+      return d;
+    };
+    await expect(live.send("claude:s1", "write it")).rejects.toThrow("still working on a turn started elsewhere");
+    const s = await core.open("claude:s1");
+    expect(adapter.drivers[0]!.sent).toEqual([]);
+    expect(s.state).toMatchObject({ mode: "live", status: "running", turnSettings: { permissionMode: "full-access", looser: true } });
+  });
+
+  test("the turn's note stays while its subagents still run on its settings, and goes when the last ends", async () => {
+    const { adapter, core, live } = setup({ persistent: true, settingsApply: "nextTurn" });
+    adapter.addStored("s1", []);
+    adapter.script = () => [toolCall("m", "toolu_A", "Agent"), subagent("child-1", "toolu_A"), (sink) => sink.state({ turnSettings: { permissionMode: "full-access" } }), idle];
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    const d = adapter.drivers[0]!;
+    // The main turn ended while its subagent runs (the driver is busy): the note stays.
+    d.isBusy = true;
+    s.setState({ turnSettings: { permissionMode: "full-access" } });
+    d.sink.state({ status: "running" });
+    d.sink.state({ status: "idle" });
+    expect(s.state.turnSettings).toEqual({ permissionMode: "full-access" });
+    d.isBusy = false;
+    d.children.get("child-1")!.ended!();
+    expect(s.state.turnSettings).toBeUndefined();
+  });
+
+  test("a change made while a send is still starting the turn isn't noted against a turn that doesn't run yet", async () => {
+    const { adapter, core, live } = setup({ settingsApply: "nextTurn" });
+    adapter.addStored("s1", []);
+    let open!: () => void;
+    adapter.startGate = new Promise<void>((r) => (open = r));
+    const sending = live.send("claude:s1", "go");
+    await Bun.sleep(5);
+    const setting = live.setPermissionMode("claude:s1", "plan");
+    await Bun.sleep(5);
+    const s = await core.open("claude:s1");
+    expect(s.state.permissionMode).toBe("plan");
+    expect(s.state.turnSettings).toBeUndefined();
+    open();
+    await sending;
+    await setting;
+  });
+
+  test("while a handoff TUI is being started, settings are refused too", async () => {
+    const { adapter, core, live } = setup({ terminal: "handoff" });
+    adapter.addStored("s1", []);
+    live.terminal = { blocked: () => "Handing over to the terminal…" } as any;
+    const s = await core.open("claude:s1");
+    await expect(live.setPermissionMode("claude:s1", "plan")).rejects.toThrow("terminal is driving");
+    expect(s.state.permissionMode).toBeUndefined();
+  });
+
+  test("policy steps see the mode the running turn has, not the one for the next turn", async () => {
+    const adapter = new FakeAdapter();
+    adapter.capabilities = { ...FAKE_CAPS, persistent: true, settingsApply: "nextTurn" };
+    const bus = new EventBus<CoreEvents>();
+    const prefsFile = join(mkdtempSync(join(tmpdir(), "tether-caps-")), "runner.json");
+    saveConfig({ runnerId: "test" }, prefsFile);
+    const core = new SessionCore({ adapters: [adapter], bus, send: () => true, epoch: "e1", prefs: new Prefs(prefsFile, 0), evictMs: 50, log: () => {} });
+    const seen: (string | undefined)[] = [];
+    const live = new LiveControl(core, new RequestBroker([(_r, ctx) => (seen.push(ctx.permissionMode), { verdict: "allow", source: "rule" })]), {});
+    cleanups.push(() => core.stop());
+    adapter.addStored("s1", []);
+    adapter.script = () => [(sink) => sink.state({ permissionMode: "read-only", turnSettings: { permissionMode: "full-access" } }), async (sink) => void (await sink.request({ kind: "approval", tool: "bash", input: {} })), idle];
+    await live.send("claude:s1", "go");
+    expect(seen).toEqual(["full-access"]);
   });
 });
