@@ -29,80 +29,81 @@ export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, {
  */
 export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
 
-/** A horizontal rule of Claude's prompt box: nothing but the line (not the /effort picker's slider). */
-const RULE = /^\s*[─━]{8,}\s*$/;
 /**
- * A spinner line, in its own form only: one of Claude's spinner glyphs, one word (two for
- * "Compacting conversation…") ending in "…", then at most its "(…" tail, which may wrap: "✻
- * Brewing…", "· Determining… (running PreToolUse hook · 16s · ↓ 213 tokens)", "✢ Lollygagging… (1m
- * 4s · esc to interrupt)", "✻ Compacting conversation…". Not text that happens to hold a "…" ("-
- * Let me think…", "→ Loading…", a prompt echoed with "❯"), and not the done line ("✻ Churned for
- * 49s").
+ * A rule of Claude's prompt box: a line of "─", or one carrying a label ("──── kestrel-test ─" after
+ * /rename, "─── History 89/89 ───" while ↑ recalls a prompt). Not the /effort picker's slider
+ * ("────▲────": no spaces around its mark).
  */
-const SPINNER = /^\s*[·✢✳✶✻✽]\s{1,3}\p{L}[\p{L}'’-]*(?: \p{L}[\p{L}'’-]*)?…(?:\s+\(.*)?\s*$/u;
-/** A dialog's own footer (pickers and questions alike). */
+const RULE = /^\s*─{3,}(?: \S(?:.*\S)? ─+)?\s*$/;
+const isRule = (l: string) => RULE.test(l) && (l.match(/─/g)?.length ?? 0) >= 8;
+/**
+ * A spinner line, in its own form only: one of Claude's spinner glyphs ("*" on Linux where macOS
+ * shows "✳"), one word (two for "Compacting conversation…") ending in "…", then at most its "(…"
+ * tail, which may wrap. Only used to keep a readopted TUI from passing for idle.
+ */
+const SPINNER = /^\s*[·✢✳✶✻✽*]\s{1,3}\p{L}[\p{L}'’-]*(?: \p{L}[\p{L}'’-]*)?…(?:\s+\(.*)?\s*$/u;
+/** A dialog's own footer (menus and questions alike). */
 const DIALOG_FOOTER = /Esc to cancel|Esc to clear|Enter to select|Enter to confirm|Enter to set|to navigate|to adjust|to select ·/;
+/** Footers of Claude's own menus (/model, /permissions, /config, /effort), which ask nothing. */
+const MENU_FOOTER = /Enter to set|to adjust|Type to filter|←\/→ to switch|Esc to clear|Space to preview/;
 /** An option of a numbered list ("  2. No"), and the cursor on one ("❯ 1. Yes"). */
 const OPTION = /^\s*(?:❯\s*)?\d+[.)]\s/;
 const CURSOR_OPTION = /^\s*❯\s*\d+[.)]\s/;
-/** What a question says right above its choices. */
-const QUESTION = /\?\s*$|Do you want to|Would you like to|trust this folder/;
+/** The empty box's hint ('Try "write a test for <filepath>"'), which isn't typed text. */
+const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
 
 /**
- * Reads Claude's TUI (verified on 2.1.312, at 45 to 120 columns), by its structure only, so that
- * text in Claude's answer or in the person's prompt never decides the status:
- * - the prompt box is a "❯" line right under a rule, closed by a rule below, with nothing of a
- *   dialog under it (no choices, no dialog footer): then `busy` if a spinner shows just above it (or
- *   "esc to interrupt" in the status lines under it), else `idle`; whatever is in the box (even
- *   "1. Reply…", "Do you want to…") is only what is typed;
- * - no prompt box: `asking` for a question (a list with the cursor on a choice and a question right
- *   above it: permission prompts, plan approval, AskUserQuestion; the trust question), `picker` for
- *   Claude's own menus (/model, /resume, /permissions, /config, /effort: a dialog footer, no
- *   question), else `unknown`.
+ * Reads Claude's TUI (verified on 2.1.312, at 40 to 200 columns) for one job: whether the composer
+ * may type into it. The status never comes from here (hooks say it); a wrong "no" is safe, a wrong
+ * "yes" is not, so only a clearly recognized prompt box counts:
+ * - the box is a "❯" (or "!" in shell mode) line right under a rule, closed by a rule, at the
+ *   bottom: under it only the status lines (a few, no rule, no choices, no dialog footer, no "❯").
+ *   Its `prompt` says how it is: `normal`, `shell` ("!"), `history` (↑ recalled a prompt), `search`
+ *   (Ctrl+R). `input` is what is typed in it (the empty box's hint is not). `busy` if a spinner
+ *   shows just above it or "esc to interrupt" in the status lines, else `idle`;
+ * - no box: `asking` for a numbered choice list under a dialog's rule that isn't one of Claude's
+ *   menus, or the trust question; `picker` for Claude's menus; else `unknown`.
  */
 export function claudeScreen(screen: string): ScreenRead {
   const lines = screen.replace(/\s+$/, "").split("\n");
-  // The prompt box: the last "❯" line right under a rule, closed by a rule, no dialog under it.
   let box = -1;
   let close = -1;
   for (let i = lines.length - 1; i > 0 && box < 0; i--) {
-    if (!/^\s*❯/.test(lines[i]!) || !RULE.test(lines[i - 1]!)) continue;
+    if (!/^\s*[❯!](\s|$)/.test(lines[i]!) || !isRule(lines[i - 1]!)) continue;
     let k = i + 1;
-    while (k < Math.min(lines.length, i + 30) && !RULE.test(lines[k]!)) k++;
-    if (k >= lines.length || !RULE.test(lines[k]!)) continue;
-    const under = lines.slice(k + 1);
-    if (under.some((l) => OPTION.test(l) || DIALOG_FOOTER.test(l))) continue;
+    while (k < Math.min(lines.length, i + 30) && !isRule(lines[k]!)) k++;
+    if (k >= lines.length) continue;
+    const under = lines.slice(k + 1).filter((l) => l.trim());
+    if (under.length > 8 || under.some((l) => isRule(l) || /^\s*❯/.test(l) || OPTION.test(l) || DIALOG_FOOTER.test(l))) continue;
     box = i;
     close = k;
   }
   if (box < 0) {
-    // A question: the cursor on a numbered choice, and a question in the dialog above the choices
-    // (from the rule that starts the dialog; options and their wrapped lines aside).
-    const cur = lines.findLastIndex((l) => CURSOR_OPTION.test(l));
-    if (cur >= 0) {
-      let top = cur;
-      while (top > 0 && cur - top < 25 && !RULE.test(lines[top - 1]!)) top--;
-      if (lines.slice(top, cur).some((l) => !OPTION.test(l) && QUESTION.test(l))) return { state: "asking", body: screen };
-    }
-    // The trust question ("❯ No, exit / Yes, I trust this folder").
     const foot = lines.slice(-8);
+    const menu = foot.some((l) => MENU_FOOTER.test(l));
+    // A question: the cursor on a numbered choice inside a dialog (under its rule), not a menu.
+    const cur = lines.findLastIndex((l) => CURSOR_OPTION.test(l));
+    if (cur >= 0 && !menu && lines.slice(Math.max(0, cur - 25), cur).some((l) => isRule(l))) return { state: "asking", body: screen };
+    // The trust question ("❯ No, exit / Yes, I trust this folder").
     if (lines.slice(-14).some((l) => /trust this folder/.test(l)) && foot.some((l) => /Enter to confirm/.test(l))) return { state: "asking", body: screen };
-    if (foot.some((l) => DIALOG_FOOTER.test(l)) || cur >= 0) return { state: "picker", body: screen };
+    if (menu || cur >= 0 || foot.some((l) => DIALOG_FOOTER.test(l))) return { state: "picker", body: screen };
     return { state: "unknown", body: screen };
   }
   const above = lines.slice(0, box - 1);
   const body = above.join("\n");
-  // What is typed in the box: its lines up to the closing rule, without the "❯ " and indentation.
-  const typed = lines
-    .slice(box, close)
-    .map((l, n) => l.replace(n === 0 ? /^\s*❯\s?/ : /^\s+/, ""))
-    .join("\n")
-    .trimEnd();
-  // Just above the box: the spinner, the todo list under it, tips. Under it: the status lines.
-  const near = above.slice(-15);
   const status = lines.slice(close + 1);
-  if (near.some((l) => SPINNER.test(l)) || status.some((l) => /esc to interrupt/i.test(l))) return { state: "busy", body, input: typed };
-  return { state: "idle", body, input: typed };
+  const top = lines[box - 1]!;
+  const prompt = /^\s*!/.test(lines[box]!) ? "shell" : /─ History \d+\/\d+ ─/.test(top) ? "history" : status.some((l) => /search prompts:/.test(l)) ? "search" : "normal";
+  // What is typed in the box: its lines up to the closing rule, without the "❯ " and indentation.
+  let typed = lines
+    .slice(box, close)
+    .map((l, n) => l.replace(n === 0 ? /^\s*[❯!]\s?/ : /^\s+/, ""))
+    .join("\n")
+    .trim();
+  if (PLACEHOLDER.test(typed)) typed = "";
+  const near = above.slice(-15);
+  const busy = near.some((l) => SPINNER.test(l)) || status.some((l) => /esc to interrupt/i.test(l));
+  return { state: busy ? "busy" : "idle", body, input: typed, prompt };
 }
 
 /** Whether the screen shows Claude idle at its prompt (see claudeScreen). */

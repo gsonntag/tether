@@ -163,6 +163,8 @@ export interface ScreenRead {
   body: string;
   /** what is typed at the prompt (idle or busy), when the harness can tell */
   input?: string;
+  /** the prompt's mode (idle or busy): `normal`, or a shell line, a recalled prompt, a history search */
+  prompt?: "normal" | "shell" | "history" | "search";
 }
 
 /** One step of quitting a TUI: tmux key names, literal text, or a pause. */
@@ -176,9 +178,9 @@ export interface TerminalLaunch {
   /** what submits typed text (the composer in terminal mode); default: Enter */
   submit?: QuitStep[];
   /**
-   * Reads the TUI's screen (tmux capture-pane). Used, guardedly, where no hook says what happened
-   * (an interrupt, a refused prompt, a dialog answered in the TUI), and to keep the composer from
-   * typing into a dialog.
+   * Reads the TUI's screen (tmux capture-pane), to decide whether the composer may type into it
+   * (only its plain, empty prompt). It never sets the status; after a runner restart it may only
+   * keep a session from passing for idle, or add Needs you for a question on screen.
    */
   screen?: (screen: string) => ScreenRead;
   /** type the composer's text as a bracketed paste (a dialog that opens meanwhile ignores it) */

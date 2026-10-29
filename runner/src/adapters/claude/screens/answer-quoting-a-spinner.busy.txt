@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1001/p3fix/scratch
+
+
+❯ Reply with exactly these three lines and nothing else, keeping the leading
+  symbols:
+  · Pondering…
+  ✻ Brewing… (3s · esc to interrupt)
+  done
+
+● · Pondering…
+  ✻ Brewing… (3s · esc to interrupt)
+  done
+
+✻ Worked for 1s · done 10:40 PM
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 | scratch@master (+1 -1) | 48k/1m (4%) | effort: med | $0.00 15s …
+  ⏸ manual mode on · ← 2 agents
+                                                                           /rc
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

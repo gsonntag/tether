@@ -1,0 +1,40 @@
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Brewed for 2s · done 10:45 PM
+
+❯ Use the Read tool to read /etc/hostname. Do nothing else.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Cogitated for 1s · done 10:45 PM
+
+❯ Create a file zz3.txt containing hi, using the Write tool. Do nothing else.
+
+● Write(zz3.txt)
+  ⎿  User rejected write to zz3.txt
+      1 hi
+
+✻ Churned for 3s · done 10:46 PM
+
+❯ Use the AskUserQuestion tool right away with one question, multiSelect true,
+  question text exactly "Pick the colors you like." (no question mark), header
+  "Colors", options Red, Green, Blue. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────
+←  ☐ Colors  ✔ Submit  →
+
+Pick the colors you like.
+
+❯ 1. [ ] Red
+         The color red
+  2. [ ] Green
+         The color green
+  3. [ ] Blue
+         The color blue
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+

@@ -19,7 +19,7 @@ import { LiveControl } from "../core/live";
 import { Prefs } from "../core/prefs";
 import { SessionCore } from "../core/sessions";
 import { FakePty } from "./attach.test";
-import { ANSWER_THERE, ASKED_MEANWHILE, NOT_AT_PROMPT, NOT_STARTED, NOT_TYPED, PICKER_OPEN, STILL_WORKING, TerminalControl } from "./control";
+import { ANSWER_THERE, ASKED_MEANWHILE, BOX_NOT_EMPTY, HISTORY_OPEN, NOT_AT_PROMPT, NOT_STARTED, NOT_TYPED, PICKER_OPEN, SHELL_MODE, storeSaysTurnOver, TerminalControl } from "./control";
 import { Tmux, type TmuxSession } from "./tmux";
 
 /** tmux in memory: sessions, what was typed, keys pressed. A TUI "quits" on its quit text. */
@@ -77,11 +77,12 @@ class FakeTmux extends Tmux {
 
 /**
  * The fake TUI's screen: IDLE (or nothing yet) at its prompt, ASK a question, PICK a menu, ODD neither; anything
- * else working. "BOX:<text>" is what is typed at its prompt.
+ * else working. "BOX:<text>" is what is typed at its prompt; SHELL and HIST its prompt's mode.
  */
 const fakeScreen = (screen: string): ScreenRead => ({
   state: !screen || screen.includes("IDLE") ? "idle" : screen.includes("ASK") ? "asking" : screen.includes("PICK") ? "picker" : screen.includes("ODD") ? "unknown" : "busy",
   body: screen,
+  ...(screen.includes("SHELL") ? { prompt: "shell" as const } : screen.includes("HIST") ? { prompt: "history" as const } : {}),
   ...(screen.includes("BOX:") ? { input: screen.split("BOX:")[1] } : {}),
 });
 
@@ -120,7 +121,7 @@ function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; 
   const core = new SessionCore({ adapters: [adapter], bus, send, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
   const broker = new RequestBroker([], { saved: prefs.requests(), persist: (l) => prefs.setRequests(l) });
   const live = new LiveControl(core, broker, { idleMs: 60_000 });
-  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", enterDelayMs: 0, startWaitMs: o.startWaitMs, quietMs: o.quietMs, screenRetryMs: o.screenRetryMs ?? 1, typedWaitMs: o.typedWaitMs ?? 100, settleMs: o.settleMs, log: () => {} });
+  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", enterDelayMs: 0, startWaitMs: o.startWaitMs, screenRetryMs: o.screenRetryMs ?? 1, typedWaitMs: o.typedWaitMs ?? 100, log: () => {} });
   cleanups.push(() => (term.stop(), core.stop()));
   const modes: string[] = [];
   bus.on("modeChanged", (e) => modes.push(`${e.from}->${e.to}`));
@@ -503,11 +504,12 @@ describe("review round 1", () => {
     await first.term.end("claude:s1", true);
     first.term.stop();
     first.core.stop();
+    // The store shows the turn still going (the prompt, no answer yet).
     const adapter = new TermAdapter();
-    adapter.addStored("s1", []);
+    adapter.addStored("s1", [{ id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "count" }] }]);
     const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
     await second.term.readopt();
-    expect(state(second.core, "claude:s1").terminal?.returnWhenIdle).toBe(true);
+    expect(state(second.core, "claude:s1")).toMatchObject({ status: "running", terminal: { returnWhenIdle: true } });
     second.term.report({ sessionId: "claude:s1", event: "Stop" });
     await until(() => state(second.core, "claude:s1").mode === "live");
   });
@@ -574,28 +576,6 @@ describe("review round 2: turns that end without a Stop hook", () => {
     expect(state(core, "claude:s1").terminal?.attention).toBeUndefined();
   });
 
-  test("no hook for a while and the screen shows the idle prompt twice: the turn is over", async () => {
-    const { adapter, core, term, tmux } = setup({ quietMs: 0 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
-    tmux.screens.set("t-claude-s1", "working…");
-    await Bun.sleep(60);
-    expect(state(core, "claude:s1").status).toBe("running");
-    tmux.screens.set("t-claude-s1", "IDLE ❯");
-    await until(() => state(core, "claude:s1").status === "idle");
-  });
-
-  test("a hook resets the clock: a busy TUI that just reported isn't second-guessed", async () => {
-    const { adapter, core, term, tmux } = setup({ quietMs: 10_000 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
-    tmux.screens.set("t-claude-s1", "IDLE ❯");
-    await Bun.sleep(60);
-    expect(state(core, "claude:s1").status).toBe("running");
-  });
-
   test("a Back to Tether that already went doesn't fire again on a later turn", async () => {
     const { adapter, core, term } = setup();
     adapter.addStored("s1", []);
@@ -614,24 +594,6 @@ describe("review round 2: turns that end without a Stop hook", () => {
 });
 
 describe("review round 3", () => {
-  test("a spinner or a hook running is never idle; idle needs a still screen on two checks", async () => {
-    const { adapter, core, term, tmux } = setup({ quietMs: 0 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
-    tmux.screens.set("t-claude-s1", "running PreToolUse hook");
-    await Bun.sleep(80);
-    expect(state(core, "claude:s1").status).toBe("running");
-    // A screen that keeps changing (a timer) isn't taken for idle.
-    let n = 0;
-    const tick = setInterval(() => tmux.screens.set("t-claude-s1", `IDLE ${n++}`), 3);
-    await Bun.sleep(80);
-    clearInterval(tick);
-    expect(state(core, "claude:s1").status).toBe("running");
-    tmux.screens.set("t-claude-s1", "IDLE");
-    await until(() => state(core, "claude:s1").status === "idle");
-  });
-
   test("a dialog (plan approval) is never idle, and the composer doesn't type into it", async () => {
     const { adapter, core, live, term, tmux } = setup({ quietMs: 0 });
     adapter.addStored("s1", []);
@@ -639,8 +601,8 @@ describe("review round 3", () => {
     term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
     tmux.screens.set("t-claude-s1", "ASK");
     await Bun.sleep(80);
-    // Needs you at once, from the screen (Claude's own Notification comes seconds later).
-    expect(state(core, "claude:s1")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs you in the terminal." } });
+    // The screen doesn't set the status (hooks do: PermissionRequest, Notification).
+    expect(state(core, "claude:s1").status).toBe("running");
     await expect(live.send("claude:s1", "3")).rejects.toThrow(ANSWER_THERE);
     expect(tmux.typed).toEqual([]);
   });
@@ -653,25 +615,6 @@ describe("review round 3", () => {
     tmux.screens.set("t-claude-s1", "ODD");
     await expect(live.send("claude:s1", "hi")).rejects.toThrow(NOT_AT_PROMPT);
     expect(tmux.typed).toEqual([]);
-  });
-
-  test("Needs you clears when the dialog was answered in the TUI (it went away), not before it showed", async () => {
-    const { adapter, core, term, tmux } = setup({ quietMs: 60_000 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
-    // The hook came before the dialog is drawn: still waiting.
-    term.report({ sessionId: "claude:s1", event: "Notification", notificationType: "permission_prompt", message: "Claude needs your permission to use Bash" });
-    tmux.screens.set("t-claude-s1", "working");
-    await Bun.sleep(60);
-    expect(state(core, "claude:s1").status).toBe("waiting");
-    tmux.screens.set("t-claude-s1", "ASK");
-    await Bun.sleep(40);
-    expect(state(core, "claude:s1").status).toBe("waiting");
-    // Approved in the TUI: the tool runs (a long one: no hook for a while).
-    tmux.screens.set("t-claude-s1", "working");
-    await until(() => state(core, "claude:s1").status === "running");
-    expect(state(core, "claude:s1").terminal?.attention).toBeUndefined();
   });
 
   test("after /clear, the old session's own TUI gets its own hooks (each TUI names itself)", async () => {
@@ -736,24 +679,6 @@ describe("review round 3", () => {
     await until(() => state(second.core, "claude:s1").mode === "live");
   });
 
-  test("Back when done, pending over a restart, with the turn still running: it goes when the turn ends", async () => {
-    const tmux = new FakeTmux();
-    const first = setup({ tmux });
-    first.adapter.addStored("s1", []);
-    await first.term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    first.term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
-    await first.term.end("claude:s1", true);
-    first.term.stop();
-    first.core.stop();
-    tmux.screens.set("t-claude-s1", "working");
-    const adapter = new TermAdapter();
-    adapter.addStored("s1", []);
-    const second = setup({ tmux, adapter, prefsFile: first.prefsFile, quietMs: 0 });
-    await second.term.readopt();
-    expect(state(second.core, "claude:s1")).toMatchObject({ mode: "terminal", status: "running", terminal: { returnWhenIdle: true } });
-    tmux.screens.set("t-claude-s1", "IDLE");
-    await until(() => state(second.core, "claude:s1").mode === "live");
-  });
 });
 
 describe("review round 4", () => {
@@ -774,58 +699,14 @@ describe("review round 4", () => {
     tmux.afterType = (name, text) => setTimeout(() => tmux.screens.set(name, `IDLE BOX:${text.replace(/ /g, "\n ")}`), 60);
     await live.send("claude:s1", "hello there");
     expect(tmux.pressed).toEqual([["t-claude-s1", "Enter"]]);
-    // Text that never shows: no Enter.
-    tmux.afterType = undefined;
-    tmux.screens.set("t-claude-s1", "IDLE BOX:something else");
+    // Text that never shows as typed: no Enter (and it stays there, so the next send is refused).
+    tmux.screens.set("t-claude-s1", "IDLE BOX:");
+    tmux.afterType = (name) => tmux.screens.set(name, "IDLE BOX:something else");
     await expect(live.send("claude:s1", "lost")).rejects.toThrow(NOT_TYPED);
+    await expect(live.send("claude:s1", "next")).rejects.toThrow(BOX_NOT_EMPTY);
     expect(tmux.pressed.length).toBe(1);
   });
 
-  test("after a runner restart the screen says what a readopted TUI does: asking, working, unsure, idle", async () => {
-    const tmux = new FakeTmux();
-    const first = setup({ tmux });
-    for (const id of ["s1", "s2", "s3", "s4"]) {
-      first.adapter.addStored(id, []);
-      await first.term.open({ sessionId: `claude:${id}`, attachId: `a-${id}`, cols: 80, rows: 24 });
-    }
-    first.term.stop();
-    first.core.stop();
-    tmux.screens.set("t-claude-s1", "ASK");
-    tmux.screens.set("t-claude-s2", "working");
-    tmux.screens.set("t-claude-s3", "ODD");
-    tmux.screens.set("t-claude-s4", "IDLE");
-    const adapter = new TermAdapter();
-    for (const id of ["s1", "s2", "s3", "s4"]) adapter.addStored(id, []);
-    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
-    await second.term.readopt();
-    expect(state(second.core, "claude:s1")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs you in the terminal." } });
-    expect(state(second.core, "claude:s2").status).toBe("running");
-    expect(state(second.core, "claude:s3").status).toBe("running");
-    expect(state(second.core, "claude:s4").status).toBe("idle");
-    // Back to Tether on the working one asks first (the web asks for any status but idle).
-    await expect(second.term.end("claude:s2", true)).resolves.toBeUndefined();
-    expect(state(second.core, "claude:s2").terminal?.returnWhenIdle).toBe(true);
-    expect(tmux.sessions.has("t-claude-s2")).toBe(true);
-  });
-
-  test("a turn Claude starts by itself shows as working; Back to Tether then asks instead of killing it", async () => {
-    const { adapter, core, term, tmux } = setup({ settleMs: 0, quietMs: 60_000 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    expect(state(core, "claude:s1").status).toBe("idle");
-    tmux.screens.set("t-claude-s1", "working");
-    await until(() => state(core, "claude:s1").status === "running");
-  });
-
-  test("Back to Tether on an idle status whose screen shows work: refused with 'still working', the TUI lives", async () => {
-    const { adapter, core, term, tmux } = setup({ settleMs: 60_000 });
-    adapter.addStored("s1", []);
-    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
-    tmux.screens.set("t-claude-s1", "working");
-    await expect(term.end("claude:s1")).rejects.toThrow(STILL_WORKING);
-    expect(state(core, "claude:s1")).toMatchObject({ mode: "terminal", status: "running" });
-    expect(tmux.sessions.has("t-claude-s1")).toBe(true);
-  });
 });
 
 describe("review round 5", () => {
@@ -863,6 +744,134 @@ describe("review round 5", () => {
     await second.term.readopt();
     expect(state(second.core, "claude:s1")).toMatchObject({ status: "idle", terminal: { kind: "handoff" } });
     expect(state(second.core, "claude:s1").terminal?.attention).toBeUndefined();
+  });
+});
+
+describe("review round 6: the status comes from hooks, the screen only gates typing", () => {
+  const user = (id: string, text = "hi") => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  const answer = (id: string, text = "ok") => ({ id, role: "assistant" as const, ts: 2, parts: [{ type: "text" as const, text }] });
+
+  test("the screen never changes the status: an idle-looking screen mid-turn, a spinner-looking answer, a dialog gone", async () => {
+    const { adapter, core, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    tmux.screens.set("t-claude-s1", "IDLE");
+    await Bun.sleep(120);
+    expect(state(core, "claude:s1").status).toBe("running");
+    term.report({ sessionId: "claude:s1", event: "Stop" });
+    tmux.screens.set("t-claude-s1", "· Pondering…");
+    await Bun.sleep(120);
+    expect(state(core, "claude:s1").status).toBe("idle");
+    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    term.report({ sessionId: "claude:s1", event: "PermissionRequest", toolName: "Write" });
+    tmux.screens.set("t-claude-s1", "working");
+    await Bun.sleep(120);
+    expect(state(core, "claude:s1")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs your permission to use Write" } });
+  });
+
+  test("Needs you from PermissionRequest at once, announced once; a tool going ahead (PreToolUse) clears it", async () => {
+    const { adapter, core, term, ev } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", toolName: "AskUserQuestion" });
+    expect(state(core, "claude:s1").status).toBe("running");
+    term.report({ sessionId: "claude:s1", event: "PermissionRequest", toolName: "AskUserQuestion" });
+    expect(state(core, "claude:s1")).toMatchObject({ status: "waiting", terminal: { attention: "Claude is asking you something." } });
+    term.report({ sessionId: "claude:s1", event: "Notification", notificationType: "permission_prompt", message: "Claude needs your permission" });
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual(["attention:Claude is asking you something."]);
+    expect(state(core, "claude:s1").terminal?.attention).toBe("Claude is asking you something.");
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", toolName: "Write" });
+    expect(state(core, "claude:s1").status).toBe("running");
+    expect(state(core, "claude:s1").terminal?.attention).toBeUndefined();
+    // A background subagent's tool after the turn: no turn invented.
+    term.report({ sessionId: "claude:s1", event: "Stop" });
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", toolName: "Bash" });
+    expect(state(core, "claude:s1").status).toBe("idle");
+  });
+
+  test("the store says whether a turn is over", () => {
+    expect(storeSaysTurnOver([])).toBe(true);
+    expect(storeSaysTurnOver([user("u"), answer("a")])).toBe(true);
+    expect(storeSaysTurnOver([user("u")])).toBe(false);
+    expect(storeSaysTurnOver([user("u"), { id: "a", role: "assistant", ts: 2, parts: [{ type: "tool", id: "t", name: "Bash", kind: "shell", input: {}, status: "running" }] } as any])).toBe(false);
+    expect(storeSaysTurnOver([user("u"), { id: "n", role: "notice", ts: 2, parts: [{ type: "text", text: "Interrupted" }] }])).toBe(true);
+  });
+
+  test("after a restart: idle only if the store says the turn is over (and the screen agrees); else Working; a question adds Needs you", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux });
+    const ids = ["s1", "s2", "s3", "s4", "s5"];
+    for (const id of ids) {
+      first.adapter.addStored(id, []);
+      await first.term.open({ sessionId: `claude:${id}`, attachId: `a-${id}`, cols: 80, rows: 24 });
+    }
+    first.term.stop();
+    first.core.stop();
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", [user("u"), answer("a")]); // over, screen idle: idle
+    adapter.addStored("s2", [user("u")]); // still going: Working
+    adapter.addStored("s3", [user("u"), answer("a")]); // over by the store, but the screen works: Working
+    adapter.addStored("s4", [user("u")]); // a question on screen: Needs you
+    adapter.addStored("s5", [user("u"), answer("a")]); // a menu open: idle
+    tmux.screens.set("t-claude-s1", "IDLE");
+    tmux.screens.set("t-claude-s2", "IDLE");
+    tmux.screens.set("t-claude-s3", "working");
+    tmux.screens.set("t-claude-s4", "ASK");
+    tmux.screens.set("t-claude-s5", "PICK");
+    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
+    await second.term.readopt();
+    const st = (id: string) => state(second.core, `claude:${id}`);
+    expect(st("s1").status).toBe("idle");
+    expect(st("s2").status).toBe("running");
+    expect(st("s3").status).toBe("running");
+    expect(st("s4")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs you in the terminal." } });
+    expect(st("s5").status).toBe("idle");
+    // Working is only cleared by a hook (or the interrupt marker), never by the screen.
+    await Bun.sleep(100);
+    expect(st("s2").status).toBe("running");
+    second.term.report({ sessionId: "claude:s2", event: "Stop" });
+    expect(st("s2").status).toBe("idle");
+  });
+
+  test("Back when done over a restart goes at once if the store says the turn ended", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux });
+    first.adapter.addStored("s1", []);
+    await first.term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    first.term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    await first.term.end("claude:s1", true);
+    first.term.stop();
+    first.core.stop();
+    tmux.screens.set("t-claude-s1", "IDLE");
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", [user("u"), answer("a")]);
+    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
+    await second.term.readopt();
+    await until(() => state(second.core, "claude:s1").mode === "live");
+  });
+
+  test("the composer types only into Claude's plain, empty prompt", async () => {
+    const { adapter, live, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    for (const [screen, why] of [
+      ["IDLE SHELL BOX:", SHELL_MODE],
+      ["IDLE HIST BOX:1. Reply with just ONE.", HISTORY_OPEN],
+      ["IDLE BOX:a draft", BOX_NOT_EMPTY],
+      ["PICK", PICKER_OPEN],
+      ["ASK", ANSWER_THERE],
+      ["ODD", NOT_AT_PROMPT],
+    ] as const) {
+      tmux.screens.set("t-claude-s1", screen);
+      await expect(live.send("claude:s1", "hi")).rejects.toThrow(why);
+    }
+    expect(tmux.typed).toEqual([]);
+    tmux.screens.set("t-claude-s1", "working BOX:");
+    tmux.afterType = (name, text) => tmux.screens.set(name, `working BOX:${text}`);
+    await live.send("claude:s1", "while it works");
+    expect(tmux.typed).toEqual([["t-claude-s1", "while it works"]]);
   });
 });
 

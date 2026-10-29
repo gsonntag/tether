@@ -29,7 +29,7 @@ test("working is never idle: spinners of every form, at 80 columns too (no 'esc 
 });
 
 test("questions ask: a permission prompt, plan approval, the trust question", () => {
-  expect(state(" Do you want to create falcon.txt?\n ❯ 1. Yes\n   2. Yes, and switch to accept edits (shift+tab)\n   3. No\n Esc to cancel · Tab to amend")).toBe("asking");
+  expect(state(`${RULE}\n Do you want to create falcon.txt?\n ❯ 1. Yes\n   2. Yes, and switch to accept edits (shift+tab)\n   3. No\n Esc to cancel · Tab to amend`)).toBe("asking");
   const plan = `● Updated plan\n  ⎿  /plan to preview\n${RULE}\n Ready to code?\n Here is Claude's plan:\n Create hello.txt containing hi.\n${RULE}\n Claude has written up a plan and is ready to execute. Would you like to\n proceed?\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits\n   3. Tell Claude what to change\n      shift+tab to approve with this feedback\n ctrl+g to edit in Vim · ~/.claude/plans/x.md\n`;
   expect(state(plan)).toBe("asking");
   expect(claudeScreenIdle(plan)).toBe(false);
@@ -87,6 +87,27 @@ test("Claude's answer never decides the status: dialog words, a numbered list, '
 });
 
 test("only Claude's spinner glyphs make a spinner", () => {
-  for (const l of ["→ Loading…", "- Loading…", "● Loading…", "⎿  Loading…", "* Loading…"]) expect(state(frame(l))).toBe("idle");
-  for (const g of ["·", "✢", "✳", "✶", "✻", "✽"]) expect(state(frame(`${g} Pondering…`))).toBe("busy");
+  for (const l of ["→ Loading…", "- Loading…", "● Loading…", "⎿  Loading…"]) expect(state(frame(l))).toBe("idle");
+  // "*" is Claude's own on Linux (where macOS shows "✳").
+  for (const g of ["·", "✢", "✳", "✶", "✻", "✽", "*"]) expect(state(frame(`${g} Pondering…`))).toBe("busy");
+});
+
+test("the prompt box's variants: shell mode, a history search, a recalled prompt, a renamed session; the hints in it aren't text", () => {
+  const read = (f: string) => claudeScreen(readFileSync(`${SCREENS}/${f}`, "utf8"));
+  expect(read("shell-mode-box.idle.txt")).toMatchObject({ state: "idle", prompt: "shell", input: "" });
+  expect(read("history-search.idle.txt")).toMatchObject({ state: "idle", prompt: "search" });
+  expect(read("history-search-found-numbered.idle.txt")).toMatchObject({ state: "idle", prompt: "search", input: "1. Reply with just ONE." });
+  expect(read("renamed-session-label-rule.idle.txt")).toMatchObject({ state: "idle", prompt: "normal", input: "" });
+  expect(read("queued-hint-in-box.busy.txt")).toMatchObject({ state: "busy", prompt: "normal", input: "" });
+  expect(read("prompt-with-ellipsis.idle.txt").input).toBe("");
+  // ↑ recalls an earlier prompt: the box's top rule says so (as on 2.1.312: "─── History 89/89 ───").
+  const recalled = `● ONE\n✻ Baked for 1s · done 10:41 PM\n${"─".repeat(30)} History 2/2 ${"─".repeat(30)}\n❯ 1. Reply with just the word ONE.\n${RULE}\n  Haiku 5.5 | scratch@master\n  ⏸ manual mode on\n`;
+  expect(claudeScreen(recalled)).toMatchObject({ state: "idle", prompt: "history", input: "1. Reply with just the word ONE." });
+  // The /effort slider is no rule.
+  expect(claudeScreen(`${"─".repeat(10)}▲${"─".repeat(20)}`).state).not.toBe("idle");
+});
+
+test("a prompt holding a rule and a ❯ line, above an open dialog, is no box", () => {
+  const screen = `❯ look at this:\n${RULE}\n❯ fake box\n${RULE}\n● Write(x.txt)\n${RULE}\n Do you want to create x.txt?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
+  expect(claudeScreen(screen).state).toBe("asking");
 });

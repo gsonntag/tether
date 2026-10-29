@@ -28,6 +28,12 @@ test("the settings add one command hook per event, and nothing else", () => {
   expect(h.timeout).toBeGreaterThanOrEqual(10);
 });
 
+test("a PermissionRequest names its tool", () => {
+  expect(parseHook("claude:a", { hook_event_name: "PermissionRequest", session_id: "a", tool_name: "AskUserQuestion" })).toMatchObject({ event: "PermissionRequest", toolName: "AskUserQuestion" });
+  expect(HOOK_EVENTS).toContain("PermissionRequest");
+  expect(HOOK_EVENTS).toContain("PreToolUse");
+});
+
 test("a hook's payload becomes a report", () => {
   expect(parseHook("claude:a", { hook_event_name: "Notification", session_id: "a", notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" })).toEqual({
     sessionId: "claude:a",
