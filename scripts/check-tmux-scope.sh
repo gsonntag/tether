@@ -18,3 +18,11 @@ if tmux -L $SOCK has-session -t =sh-check-1 2>/dev/null; then
 else
   echo "FAIL: stopping the unit killed the tmux server"; exit 1
 fi
+
+# The race from P3 review 2: the last session ends just as the next starts. The server must never
+# be started by new-session (inside the unit) instead of by the scope-wrapped start-server.
+RACE=tether-scope-race-$$
+systemd-run --user --quiet --wait --unit=$RACE -p KillMode=mixed -p WorkingDirectory="$PWD" \
+  --setenv=PATH="$PATH" --setenv=HOME="$HOME" "$(command -v bun)" scripts/tmux-scope-probe.ts $RACE race ${N:-30} >/dev/null 2>&1 \
+  && echo "ok  ${N:-30} racing starts: every tmux server was outside the unit" \
+  || { echo "FAIL: a tmux server started inside the unit:"; journalctl --user -u $RACE --no-pager -o cat | grep race; exit 1; }

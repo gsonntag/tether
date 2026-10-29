@@ -300,7 +300,11 @@ export class SessionCore {
     s.unwatch = this.adapter(s.summary.harness).watchHistory(s.summary.nativeId, s.summary.projectPath, (msgs) => {
       if (s.live || s.childRunning || !s.transcript) return;
       this.prune(s, msgs);
-      for (const e of diffTranscripts(s.transcript.messages, settleStopped(withOverlay(msgs, s.overlay)))) s.apply(e);
+      for (const e of diffTranscripts(s.transcript.messages, settleStopped(withOverlay(msgs, s.overlay)))) {
+        const out = s.apply(e);
+        // New messages from the store are news too (a TUI's turn, in terminal mode).
+        if (out?.type === "msg" && out.isNew) this.o.bus.emit("message", { sessionId: s.id, msg: out.msg });
+      }
       this.touch(s);
     });
   }

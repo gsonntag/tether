@@ -92,3 +92,22 @@ test("a path too long for a Unix socket falls back to a short, stable one, and s
   expect(res.status).toBe(204);
   expect(hookSocketPath(join(dir, "short.sock"))).toBe(join(dir, "short.sock"));
 });
+
+test("the fallback directory must be private, owned by this user, and not a link", () => {
+  const long = join(dir, "y".repeat(120), "hooks.sock");
+  const was = process.env.XDG_RUNTIME_DIR;
+  try {
+    const loose = join(dir, "loose");
+    require("node:fs").mkdirSync(loose, { mode: 0o755 });
+    require("node:fs").chmodSync(loose, 0o755);
+    process.env.XDG_RUNTIME_DIR = loose;
+    expect(() => hookSocketPath(long, () => {})).toThrow(/private directory/);
+    const link = join(dir, "link");
+    require("node:fs").symlinkSync(dir, link);
+    process.env.XDG_RUNTIME_DIR = link;
+    expect(() => hookSocketPath(long, () => {})).toThrow(/private directory/);
+  } finally {
+    if (was === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = was;
+  }
+});

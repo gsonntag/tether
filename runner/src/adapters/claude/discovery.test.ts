@@ -40,6 +40,9 @@ test("projects, subagents and single rows", async () => {
 test("titles: yours, then Claude's, then the first prompt", () => {
   expect(titleOf({ customTitle: "Mine", summary: "Claude's", firstPrompt: "x" })).toBe("Mine");
   expect(titleOf({ summary: "Claude's\nsummary", firstPrompt: "x" } as any)).toBe("Claude's summary");
-  expect(titleOf({ firstPrompt: "<command-name>/compact</command-name><command-args>now</command-args>" } as any)).toBe("/compact now");
+  // A slash command isn't a title.
+  expect(titleOf({ firstPrompt: "<command-name>/compact</command-name><command-args>now</command-args>" } as any)).toBe("Untitled");
+  expect(titleOf({ firstPrompt: "<command-name>/clear</command-name>" } as any)).toBe("Untitled");
+  expect(titleOf({ firstPrompt: "/clear", summary: "Fresh start" } as any)).toBe("Fresh start");
   expect(titleOf({} as any)).toBe("Untitled");
 });

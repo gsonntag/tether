@@ -29,6 +29,17 @@ export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, {
  */
 export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
 
+/**
+ * Claude's TUI at its prompt with nothing going on: a "❯" input line, no spinner line ("✻ Brewing…
+ * (12s · esc to interrupt)"), no dialog (a permission prompt, a picker). Verified on 2.1.312.
+ */
+export function claudeScreenIdle(screen: string): boolean {
+  if (/esc to interrupt/i.test(screen)) return false;
+  if (/…\s*\(\d/.test(screen)) return false;
+  if (/Do you want to|Esc to cancel|Enter to confirm|Enter to select/i.test(screen)) return false;
+  return /^\s*❯/m.test(screen);
+}
+
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;
 
@@ -140,6 +151,6 @@ export const claudeAdapter: Adapter = {
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
     if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId));
-    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT };
+    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, idle: claudeScreenIdle };
   },
 };

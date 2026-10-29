@@ -8,7 +8,7 @@
 // The socket's path doesn't change across runner restarts, so a TUI that outlives the runner still
 // reaches the next one.
 
-import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,11 @@ export function hookSocketPath(wanted: string, log: (l: string) => void = consol
   try {
     mkdirSync(base, { recursive: true, mode: 0o700 });
   } catch {}
+  // A shared place (/tmp): only a directory of our own, private and not a link, will do.
+  const st = lstatSync(base, { throwIfNoEntry: false });
+  const uid = process.getuid?.();
+  if (!st || st.isSymbolicLink() || !st.isDirectory() || (uid !== undefined && st.uid !== uid) || (st.mode & 0o077) !== 0)
+    throw new Error(`${base} isn't a private directory of this user (owner, mode or a link); the hooks socket can't go there`);
   const short = join(base, `tether-${new Bun.CryptoHasher("sha256").update(wanted).digest("hex").slice(0, 12)}.sock`);
   log(`WARNING: the hooks socket path ${wanted} is too long for a Unix socket (${Buffer.byteLength(wanted)} bytes, at most ${SOCKET_PATH_MAX}); using ${short} instead`);
   return short;

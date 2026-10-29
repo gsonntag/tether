@@ -140,4 +140,10 @@ export interface TerminalLaunch {
   quit?: QuitStep[];
   /** what submits typed text (the composer in terminal mode); default: Enter */
   submit?: QuitStep[];
+  /**
+   * Whether the TUI's screen (tmux capture-pane) shows it idle at its prompt: no turn running, no
+   * dialog open. Used to put the status right when no hook says the turn ended (an interrupt, a
+   * refused prompt).
+   */
+  idle?: (screen: string) => boolean;
 }

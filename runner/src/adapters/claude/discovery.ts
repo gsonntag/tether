@@ -12,7 +12,9 @@ import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** The title the sidebar shows: yours (/rename), Claude's, or the first prompt. */
 export function titleOf(s: Pick<SDKSessionInfo, "customTitle" | "summary" | "firstPrompt">): string {
-  const raw = s.customTitle || s.summary || cleanUserText(s.firstPrompt ?? "") || "Untitled";
+  // A slash command (/clear, /model) says nothing about the session.
+  const first = cleanUserText(s.firstPrompt ?? "").trim();
+  const raw = s.customTitle || s.summary || (first.startsWith("/") ? "" : first) || "Untitled";
   return raw.replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled";
 }
 

@@ -52,6 +52,8 @@ export interface TerminalOptions {
   enterDelayMs?: number;
   /** how long typing waits for a new TUI's SessionStart */
   startWaitMs?: number;
+  /** how long without a hook before a busy TUI's screen is looked at */
+  quietMs?: number;
   log?: (line: string) => void;
 }
 
@@ -63,6 +65,8 @@ export const ANSWER_THERE = "Claude is asking something in the terminal. Answer 
 /** A just-started TUI that never reported in: most likely Claude's "trust this folder" question. */
 export const NOT_STARTED = "Claude Code hasn't started yet. If it asks whether to trust this folder, answer in the terminal.";
 export const HANDING_OFF = "The session is moving to the terminal. Type there in a moment.";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The model family of a model id or alias ("claude-haiku-5-5" -> "haiku"). */
 const family = (m?: string) => m?.match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase();
@@ -78,6 +82,9 @@ export class TerminalControl {
   private unconfirmed = new Set<string>();
   /** a TUI's launch session -> the session it is on now (after /clear or /resume; hooks name the launch) */
   private moved = new Map<string, string>();
+  /** when a hook last reported, per session; and how many checks in a row found its TUI idle */
+  private heard = new Map<string, number>();
+  private idleSeen = new Map<string, number>();
   /** messages being typed into a TUI, per session: each text goes in with its Enter */
   private typing = new Map<string, Promise<void>>();
   /** new shells are numbered one at a time */
@@ -105,6 +112,12 @@ export class TerminalControl {
     };
     // The relay forgot every attach with the connection: their PTYs have nobody to draw for.
     o.core.o.bus.on("disconnected", () => this.attaches.closeAll());
+    // Claude fires no Stop when a turn is interrupted: the store's marker says the turn is over.
+    o.core.o.bus.on("message", ({ sessionId, msg }) => {
+      if (msg.role !== "notice" || !/^Interrupted\b/.test((msg.parts[0] as any)?.text ?? "")) return;
+      const s = o.core.sessions.get(sessionId);
+      if (s) this.turnOver(s, "interrupted");
+    });
   }
 
   private nameOf(id: string) {
@@ -138,8 +151,8 @@ export class TerminalControl {
 
   async start() {
     if (this.o.hookSocket) {
-      this.hooks = new HookServer(this.o.hookSocket, (r) => this.report(r));
       try {
+        this.hooks = new HookServer(this.o.hookSocket, (r) => this.report(r), this.log);
         this.hooks.start();
       } catch (e: any) {
         this.log(`terminal hooks are off: can't listen on ${this.o.hookSocket}: ${e?.message ?? e}`);
@@ -466,9 +479,30 @@ export class TerminalControl {
     await this.runSteps(name, submit, false);
   }
 
-  /** Stop in terminal mode: Esc in the TUI (Claude stops its turn). */
+  /** Stop in terminal mode: Esc in the TUI (Claude stops its turn; no hook says so). */
   private async interrupt(s: Session) {
-    if (this.tuis.has(s.id)) await this.o.tmux.keys(this.nameOf(s.id), "Escape");
+    if (!this.tuis.has(s.id)) return;
+    await this.o.tmux.keys(this.nameOf(s.id), "Escape");
+    this.turnOver(s, "stopped from Tether");
+  }
+
+  /**
+   * The TUI's turn is over though no Stop hook said so (an interrupt, a refused prompt): idle, the
+   * question gone, and a Back to Tether that waited for it goes ahead.
+   */
+  private turnOver(s: Session, why: string) {
+    const term = s.state.terminal;
+    if (!this.tuis.has(s.id) || s.state.mode !== "terminal" || !term || s.state.status === "idle") return;
+    this.log(`${s.id}: the TUI's turn is over (${why})`);
+    this.status(s, "idle", { ...term, attention: undefined, returnWhenIdle: undefined });
+    this.afterTurn(s, term);
+  }
+
+  /** A turn ended: Back to Tether, if it was waiting for that, goes now (and only once). */
+  private afterTurn(s: Session, term: NonNullable<LiveState["terminal"]>) {
+    if (!term.returnWhenIdle) return;
+    void this.o.tmux.tag(this.nameOf(s.id), "return", undefined).catch(() => {});
+    void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
   }
 
   // ---------------- hooks: status in terminal mode ----------------
@@ -484,7 +518,10 @@ export class TerminalControl {
     const s = this.o.core.sessions.get(id);
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
-    if (r.event === "SessionStart" && r.nativeId && r.nativeId !== s.summary.nativeId) {
+    this.heard.set(s.id, this.o.core.now());
+    this.idleSeen.delete(s.id);
+    // Only a real session id moves the terminal (it becomes a Tether session id and a file name).
+    if (r.event === "SessionStart" && r.nativeId && r.nativeId !== s.summary.nativeId && UUID.test(r.nativeId)) {
       void this.rebind(s, r.nativeId, r.source).catch((e) => this.log(`${s.id}: couldn't follow the TUI to ${r.nativeId}: ${e?.message ?? e}`));
       return;
     }
@@ -510,8 +547,7 @@ export class TerminalControl {
       case "Stop":
       case "StopFailure":
         this.status(s, "idle", { ...term, attention: undefined, returnWhenIdle: undefined });
-        if (term.returnWhenIdle) void this.o.tmux.tag(this.nameOf(s.id), "return", undefined).catch(() => {});
-        if (term.returnWhenIdle) void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
+        this.afterTurn(s, term);
         break;
     }
   }
@@ -540,7 +576,8 @@ export class TerminalControl {
     if (launch !== old.id) this.moved.delete(old.id);
     await this.o.tmux.tag(name, "launch", launch).catch(() => {});
     await this.o.tmux.tag(name, "session", newId).catch(() => {});
-    this.adopt(n, name);
+    // Back to Tether when it's done still holds: for the session the TUI is on now.
+    this.adopt(n, name, !!old.state.terminal?.returnWhenIdle);
     await core.load(old).catch(() => {});
     const why = source === "clear" ? "after /clear" : source === "resume" ? "with /resume" : "";
     old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });
@@ -602,8 +639,29 @@ export class TerminalControl {
       }
       const live = new Set((await this.o.tmux.list()).map((t) => t.name));
       for (const [id, name] of [...this.tuis]) if (!live.has(name) && !this.returning.has(id)) await this.gone(id);
+      for (const [id, name] of [...this.tuis]) if (live.has(name)) await this.reconcile(id, name);
     } finally {
       this.polling = false;
+    }
+  }
+
+  /**
+   * A TUI said it was working or waiting, and no hook has spoken for a while: if its screen shows it
+   * idle at its prompt on two checks in a row, the turn is over.
+   */
+  private async reconcile(id: string, name: string) {
+    const s = this.o.core.sessions.get(id);
+    if (!s || s.state.mode !== "terminal" || s.state.status === "idle" || this.returning.has(id)) return void this.idleSeen.delete(id);
+    if (this.o.core.now() - (this.heard.get(id) ?? 0) < (this.o.quietMs ?? 15_000)) return;
+    const idle = this.launch(s).idle;
+    if (!idle) return;
+    const screen = await this.o.tmux.capture(name).catch(() => "");
+    if (!screen || !idle(screen)) return void this.idleSeen.delete(id);
+    const n = (this.idleSeen.get(id) ?? 0) + 1;
+    this.idleSeen.set(id, n);
+    if (n >= 2) {
+      this.idleSeen.delete(id);
+      this.turnOver(s, "the TUI is idle at its prompt");
     }
   }
 

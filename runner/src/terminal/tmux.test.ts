@@ -70,6 +70,27 @@ test("sessions are created tagged, listed, typed into, and killed", async () => 
   expect(await tmux.list()).toEqual([]);
 });
 
+test("the server is started on its own, stays up between sessions, and looks like tmux, not like what runs in it", async () => {
+  await tmux.killServer();
+  const t = new Tmux({ socket: tmux.socket, wrapStart: (argv) => ["env", "INVOCATION_ID=x", "JOURNAL_STREAM=1:2", ...argv] });
+  await t.create({ name: "t-claude-title", cwd: dir, argv: ["sh", "-c", "sleep 30 # claude --resume x"], tags: { kind: "tui", session: "claude:x", project: dir } });
+  const pid = Bun.spawnSync(t.argv("display", "-p", "#{pid}")).stdout.toString().trim();
+  const title = (await Bun.file(`/proc/${pid}/cmdline`).text()).replace(/\0/g, " ");
+  expect(title).toContain("start-server");
+  expect(title).not.toContain("claude");
+  // No systemd markers for the shells and TUIs it runs.
+  const env = Bun.spawnSync(t.argv("show-environment", "-g")).stdout.toString();
+  expect(env).not.toMatch(/^INVOCATION_ID=/m);
+  expect(env).not.toMatch(/^JOURNAL_STREAM=/m);
+  await t.kill("t-claude-title");
+  // Still up with no session left: the next session's command is only a client.
+  expect(await t.running()).toBe(true);
+  expect(Bun.spawnSync(t.argv("show-options", "-gv", "exit-empty")).stdout.toString().trim()).toBe("off");
+  await t.create({ name: "sh-semi-1", cwd: `${dir}`, argv: ["sh"], tags: { kind: "shell", project: `${dir};`, n: "1" } });
+  expect((await t.list()).find((x) => x.name === "sh-semi-1")?.projectPath).toBe(`${dir};`);
+  await t.killServer();
+});
+
 test("two sessions started at once share one server", async () => {
   await Promise.all([1, 2, 3].map((n) => tmux.create({ name: `sh-race-${n}`, cwd: dir, argv: ["sh"], tags: { kind: "shell", project: dir, n: String(n) } })));
   expect((await tmux.list()).map((t) => t.name).sort()).toEqual(["sh-race-1", "sh-race-2", "sh-race-3"]);

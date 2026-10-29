@@ -43,7 +43,7 @@ export type Exec = (argv: string[], opts?: { input?: string }) => Promise<ExecRe
 export const TMUX_SOCKET = process.env.TETHER_TMUX_SOCKET || "tether";
 
 /** systemd's per-unit markers, and tmux's own (a runner started inside tmux must not look nested). */
-const DROP_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "TMUX", "TMUX_PANE"]);
+const DROP_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "TMUX", "TMUX_PANE"]);
 
 /** The environment for tmux (and so for everything in it): the runner's, minus Tether's secrets. */
 export function cleanEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
@@ -139,17 +139,44 @@ export class Tmux {
     return r.stdout;
   }
 
-  /** The server is up (it has at least one session). */
+  /** The server is up. `show-options` never starts one (only start-server, new-session and attach do). */
   async running(): Promise<boolean> {
-    return (await this.run(["list-sessions", "-F", "#{session_name}"])).code === 0;
+    return (await this.run(["show-options", "-gv", "exit-empty"])).code === 0;
   }
 
-  private async configure() {
-    if (this.configured) return;
-    // One round trip: tmux runs ";"-separated commands in order.
-    const args = SERVER_OPTIONS.flatMap((o, i) => (i ? [";", ...o] : o));
-    await this.must(args);
-    this.configured = true;
+  /**
+   * The server's settings, as one ";"-chained command: Tether's options, `exit-empty off` (so the
+   * server never exits between sessions and no later command has to start one), and no systemd
+   * markers in the environment shells inherit.
+   */
+  private serverSetup(): string[] {
+    const cmds = [...SERVER_OPTIONS, ["set", "-g", "exit-empty", "off"], ...[...DROP_ENV].map((k) => ["set-environment", "-g", "-u", k])];
+    return cmds.flatMap((o, i) => (i ? [";", ...o] : o));
+  }
+
+  /**
+   * Makes sure the server runs, started on its own (`start-server`, under systemd in a scope of its
+   * own so stopping the runner's unit leaves it) and configured. Every other command is then only a
+   * client: new-session or attach never get to start a server inside the runner's cgroup. Its
+   * process title is this start-server command, so nothing matching "claude" kills it.
+   */
+  ensureServer(): Promise<void> {
+    const prev = this.starting;
+    const mine = (async () => {
+      await prev?.catch(() => {});
+      if (await this.running()) {
+        // Up already (it outlived the runner, or an older runner started it): configured once.
+        if (!this.configured) await this.must(this.serverSetup());
+        this.configured = true;
+        return;
+      }
+      const argv = this.argv("start-server", ";", ...this.serverSetup());
+      const r = await this.exec(this.wrapStart ? this.wrapStart(argv) : argv);
+      if (r.code !== 0) throw new Error(`tmux start-server: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
+      this.configured = true;
+    })();
+    this.starting = mine;
+    return mine;
   }
 
   /** Tether's sessions on the socket (others there are ignored). */
@@ -186,26 +213,13 @@ export class Tmux {
    * options. The first one starts (and configures) the server.
    */
   async create(o: { name: string; cwd: string; argv: string[]; env?: Record<string, string>; cols?: number; rows?: number; tags: Record<string, string> }) {
-    const args = ["new-session", "-d", "-s", o.name, "-c", o.cwd, "-x", String(clamp(o.cols, 80)), "-y", String(clamp(o.rows, 24))];
-    for (const [k, v] of Object.entries(o.env ?? {})) args.push("-e", `${k}=${v}`);
+    const args = ["new-session", "-d", "-s", o.name, "-c", tmuxArg(o.cwd), "-x", String(clamp(o.cols, 80)), "-y", String(clamp(o.rows, 24))];
+    for (const [k, v] of Object.entries(o.env ?? {})) args.push("-e", tmuxArg(`${k}=${v}`));
     args.push("--", ...o.argv.map(tmuxArg));
     // Tagged in the same invocation, so a list never sees it untagged.
-    for (const [k, v] of Object.entries(o.tags)) args.push(";", "set-option", "-t", o.name, `@tether_${k}`, v);
-    const start = async () => {
-      const up = await this.running();
-      const argv = this.argv(...args);
-      const r = await this.exec(!up && this.wrapStart ? this.wrapStart(argv) : argv);
-      if (r.code !== 0) throw new Error(`tmux new-session: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
-      if (!up) this.configured = false;
-    };
-    const prev = this.starting;
-    const mine = (async () => {
-      await prev?.catch(() => {});
-      await start();
-    })();
-    this.starting = mine;
-    await mine;
-    await this.configure();
+    for (const [k, v] of Object.entries(o.tags)) args.push(";", "set-option", "-t", o.name, `@tether_${k}`, tmuxArg(v));
+    await this.ensureServer();
+    await this.must(args);
   }
 
   /** Sets (or with undefined, clears) one of a session's @tether_* tags. */
@@ -242,6 +256,7 @@ export class Tmux {
   /** Stops the whole server (tests and dev cleanup only). */
   async killServer() {
     await this.run(["kill-server"]);
+    this.starting = undefined;
     this.configured = false;
   }
 }
