@@ -193,6 +193,47 @@ describe("the queue", () => {
     await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1);
   });
 
+  test("a harness that dies mid-turn ends the turn as failed: the queue holds, Home says failed", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "one");
+    await live.queue.add("claude:s1", "two", []);
+    const ended: any[] = [];
+    core.o.bus.on("turnEnded", (e) => ended.push(e));
+    driver().onExit?.("Claude Code stopped: killed");
+    const s = await core.open("claude:s1");
+    expect(ended).toEqual([{ sessionId: "claude:s1", error: "Claude Code stopped: killed" }]);
+    await until(() => s.state.queueHeldBy === "failed");
+    expect(core.book.get("claude:s1")?.unread).toBe("failed");
+  });
+
+  test("a turn cut off by a restart holds the queue even when something loads the session first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    await a.live.send("claude:s1", "one");
+    await a.live.queue.add("claude:s1", "two", []);
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    // A browser subscribes before the queue is restored (load clears `running`).
+    await b.core.subscribe("claude:s1");
+    await b.live.queue.restore();
+    expect((await b.core.open("claude:s1")).state.queueHeldBy).toBe("restart");
+  });
+
+  test("a paused queue stays paused through a terminal round trip", async () => {
+    const { adapter, live, core } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "one");
+    await live.queue.add("claude:s1", "two", []);
+    await live.interrupt("claude:s1");
+    const s = await core.open("claude:s1");
+    live.queue.hold(s, "terminal");
+    expect(s.state.queueHeldBy).toBe("stopped");
+  });
+
   test("subagents have none", async () => {
     const { adapter, live } = setup();
     adapter.addStored("kid", [], { parentSessionId: "claude:s1" });

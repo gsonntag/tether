@@ -89,7 +89,7 @@ export interface Driver {
    * pass `text` on to the subagent, and whether a tool call of the main agent's is that delivery.
    */
   relayMessage?(nativeId: string, text: string): string;
-  relayedBy?(nativeId: string, tool: ToolPart): boolean;
+  relayedBy?(nativeId: string, tool: ToolPart, text?: string): boolean;
   /** the harness's own TUI is about to join this live session (capabilities.terminal "shared") */
   beforeTerminal?(): Promise<void>;
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */

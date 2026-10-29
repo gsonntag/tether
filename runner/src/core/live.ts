@@ -52,7 +52,7 @@ export class LiveControl {
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
   /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
-  private relays = new Map<string, { childId: string; nativeId: string; msgId: string }[]>();
+  private relays = new Map<string, { childId: string; nativeId: string; msgId: string; text: string }[]>();
 
   constructor(
     private core: SessionCore,
@@ -137,7 +137,10 @@ export class LiveControl {
       await d.send(withAttachments(text, attachments), attachments);
       s.fresh = false;
     } catch (e) {
-      if (s.sending === me) this.status(s, "idle");
+      if (s.sending === me) {
+        s.turnError = (e as Error)?.message ?? String(e);
+        this.status(s, "idle");
+      }
       throw e;
     } finally {
       if (s.sending === me) s.sending = undefined;
@@ -181,7 +184,7 @@ export class LiveControl {
     if (!d.relayMessage || !d.relayedBy) throw new Error("Subagents can't take messages here. Message the main session instead.");
     const ask = FROM_TETHER + d.relayMessage(child.summary.nativeId, text);
     const msgId = `n-relay-${randomUUID()}`;
-    const entry = { childId: child.id, nativeId: child.summary.nativeId, msgId };
+    const entry = { childId: child.id, nativeId: child.summary.nativeId, msgId, text };
     const list = this.relays.get(parent.id) ?? [];
     list.push(entry);
     this.relays.set(parent.id, list);
@@ -202,7 +205,7 @@ export class LiveControl {
     if (!list?.length || !d?.relayedBy) return;
     for (const p of parts) {
       if (p.type !== "tool") continue;
-      const hit = list.find((r) => d.relayedBy!(r.nativeId, p));
+      const hit = list.find((r) => d.relayedBy!(r.nativeId, p, r.text));
       if (hit) this.relayDone(sessionId, hit, "delivered");
     }
   }
@@ -431,7 +434,16 @@ export class LiveControl {
     clearTimeout(s.idleTimer);
     // Its subagents ran in its process: they're done too.
     for (const c of this.core.sessions.values()) if (c.summary.parentSessionId === s.id && c.childRunning) this.childEnded(c);
-    this.setMode(s, "stored", { status: "idle", ...(error ? { error } : {}) });
+    // Messages to its subagents that the main agent never passed on won't be now.
+    for (const r of [...(this.relays.get(s.id) ?? [])]) this.relayDone(s.id, r, "failed");
+    const before = s.state.status;
+    this.setMode(s, "stored", { ...(error ? { error } : {}) });
+    // A turn the process took down with it ended (failed when it says why): Home, the queue and
+    // notifications hear, as for any turn end. Not at shutdown: the turn is cut off, not over.
+    if (before !== "idle" && !this.stopping) {
+      if (error) s.turnError = error;
+      this.status(s, "idle");
+    } else if (before !== "idle") s.setState({ status: "idle" });
     if (s.fresh) {
       // Never got a message: nothing of it is in any store.
       this.core.book.remove([s.id]);

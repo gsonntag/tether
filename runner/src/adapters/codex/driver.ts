@@ -7,6 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
+import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
@@ -19,7 +20,7 @@ import { CodexStream } from "./stream";
 /** A message as Codex's input: its text, and the attached images Codex reads from disk. */
 const input = (text: string, attachments: Attachment[] = []) => [
   { type: "text", text, text_elements: [] },
-  ...attachments.filter((a) => NATIVE_IMAGE_TYPES.has(a.mimeType)).map((a) => ({ type: "localImage", path: a.path })),
+  ...attachments.filter((a) => NATIVE_IMAGE_TYPES.has(a.mimeType) && a.size <= NATIVE_IMAGE_MAX).map((a) => ({ type: "localImage", path: a.path })),
 ];
 
 /** What Codex says when a thread has nothing on disk yet (no turn, no name). */

@@ -104,8 +104,9 @@ export const pushModule: Module = {
     ctx.ops.register("pushSubscribe", (a) => {
       const sub = a.subscription as any;
       const endpoint = str(sub?.endpoint, "subscription.endpoint");
-      // A push service is https; plain http only to this machine (a test push service).
-      if (!/^https:\/\//.test(endpoint) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(endpoint)) throw new Error("That isn't a push endpoint.");
+      // A push service is https; a dev runner also takes plain http to this machine (a test push service).
+      const local = process.env.TETHER_DEV === "1" && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(endpoint);
+      if (!/^https:\/\//.test(endpoint) && !local) throw new Error("That isn't a push endpoint.");
       store.add({ deviceId: str(a.deviceId, "deviceId"), endpoint, keys: { p256dh: str(sub?.keys?.p256dh, "keys.p256dh"), auth: str(sub?.keys?.auth, "keys.auth") }, label: typeof a.label === "string" ? a.label.slice(0, 120) : undefined });
       return null;
     });

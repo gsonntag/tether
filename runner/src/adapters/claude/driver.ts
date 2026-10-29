@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
 import { fromTether } from "../../../../shared/fromTether";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
-import { AttachmentStore } from "../../core/attachments";
+import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
@@ -170,7 +170,7 @@ export class ClaudeDriver implements Driver {
   /** A message to Claude Code, shown in the transcript under the uuid it stores it with. */
   private push(text: string, attachments: Attachment[]) {
     const uuid = randomUUID();
-    const images = attachments.map((a) => AttachmentStore.nativeImage(a)).filter((x): x is { mimeType: string; data: string } => !!x);
+    const images = nativeImages(attachments);
     // Tether's own message (an answer passed on after a restart) shows as Tether's, as stored ones do.
     const tether = fromTether(text);
     const parts: Part[] = [{ type: "text", text: tether ?? canonicalCommand(text) }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
@@ -186,11 +186,15 @@ export class ClaudeDriver implements Driver {
     return `Please pass this message from the user to your running subagent ${agent} right now: call the SendMessage tool with to: "${agent}" and the message below exactly as written, then carry on with what you were doing. Don't answer it yourself.\n\n${text}`;
   }
 
-  /** The main agent's SendMessage call to that subagent. */
-  relayedBy(nativeId: string, tool: ToolPart) {
+  /** The main agent's SendMessage call to that subagent, carrying the message. */
+  relayedBy(nativeId: string, tool: ToolPart, text?: string) {
     const agent = this.stream.taskOf(nativeId);
-    const to = (tool.input as any)?.to;
-    return tool.name === "SendMessage" && !!agent && typeof to === "string" && (to === agent || to.endsWith(agent) || this.stream.nameOfAgent(agent) === to);
+    const input = (tool.input ?? {}) as { to?: unknown; message?: unknown };
+    if (tool.name !== "SendMessage" || !agent || typeof input.to !== "string") return false;
+    if (input.to !== agent && this.stream.nameOfAgent(agent) !== input.to) return false;
+    // The main agent may message it on its own too: this one carries (the start of) your text.
+    const norm = (x: string) => x.replace(/\s+/g, " ").trim().slice(0, 60);
+    return !text || (typeof input.message === "string" && norm(input.message).includes(norm(text)));
   }
 
   async interrupt() {

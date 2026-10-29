@@ -23,11 +23,14 @@ export interface QueueHost {
 export class MessageQueue {
   /** sessions whose next message is going out */
   private draining = new Set<string>();
+  /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
+  private cutOff: Set<string>;
 
   constructor(
     private core: SessionCore,
     private host: QueueHost,
   ) {
+    this.cutOff = new Set(core.o.prefs.running());
     const bus = core.o.bus;
     bus.on("turnEnded", ({ sessionId, error, stopped }) => {
       const s = core.sessions.get(sessionId);
@@ -103,6 +106,9 @@ export class MessageQueue {
   /** The queue waits (Stop, a handoff, a failed turn, a restart). */
   hold(s: Session, by: HeldBy) {
     if (!s.state.queue.length || (s.state.queueHeld && s.state.queueHeldBy === by)) return;
+    // A queue you paused stays paused through a terminal round trip (Back to Tether releases only
+    // what the terminal held).
+    if (by === "terminal" && s.state.queueHeld) return;
     this.save(s, s.state.queue, by);
   }
 
@@ -115,9 +121,13 @@ export class MessageQueue {
   /** At start: saved queues show again; one whose turn a restart cut off waits for you. */
   async restore() {
     for (const id of this.core.o.prefs.queued()) {
-      const s = await this.core.open(id).catch(() => undefined);
+      const s = await this.core.open(id).catch((e) => {
+        // Gone for good (deleted): its queue goes too.
+        if (/isn't on this runner|isn't a session id|can't drive/i.test(String(e?.message))) this.core.o.prefs.set(id, { queue: undefined, queueHeldBy: undefined });
+        return undefined;
+      });
       if (!s) continue;
-      if (this.core.o.prefs.get(id).running && !s.capabilities.persistent) this.hold(s, "restart");
+      if (this.cutOff.has(id) && !s.capabilities.persistent) this.hold(s, "restart");
       this.core.touch(s);
       this.later(id);
     }
@@ -141,8 +151,10 @@ export class MessageQueue {
     try {
       await this.host.send(id, next!.text, next!.attachments ?? []);
     } catch (e: any) {
-      // Back at the front, and the queue waits: whatever stopped it would stop the rest too.
-      this.save(s, [next!, ...s.state.queue], "failed");
+      // Back at the front. A turn that started meanwhile (you sent something) just means later;
+      // anything else holds the queue: whatever stopped it would stop the rest too.
+      const busy = s.state.status !== "idle" || !!s.sending;
+      this.save(s, [next!, ...s.state.queue], busy ? undefined : "failed");
       this.core.log(`${id}: a queued message didn't go out: ${e?.message ?? e}`);
     } finally {
       this.draining.delete(id);

@@ -44,6 +44,24 @@ export interface ChunkArgs {
 }
 
 const MAX_OPEN = 40;
+/** Raw bytes of an image sent as an image: 5 MB once base64 (the Anthropic API's per-image cap). */
+export const NATIVE_IMAGE_MAX = Math.floor((5 * 1024 * 1024 * 3) / 4) - 1024;
+/** Raw bytes of all images sent as images with one message; the rest go by path. */
+export const NATIVE_IMAGES_TOTAL = 15 * 1024 * 1024;
+
+/** The images of a message that go to the harness as images (within the caps), in order. */
+export function nativeImages(list: Attachment[]): { attachment: Attachment; mimeType: string; data: string }[] {
+  const out: { attachment: Attachment; mimeType: string; data: string }[] = [];
+  let total = 0;
+  for (const a of list) {
+    if (total + a.size > NATIVE_IMAGES_TOTAL) continue;
+    const img = AttachmentStore.nativeImage(a);
+    if (!img) continue;
+    total += a.size;
+    out.push({ attachment: a, ...img });
+  }
+  return out;
+}
 const IDLE_MS = 10 * 60_000;
 
 /**
@@ -60,7 +78,17 @@ export class AttachmentStore {
   private uploads = new Map<string, Upload>();
   private sweeper?: ReturnType<typeof setInterval>;
 
-  constructor(readonly dir: string) {}
+  readonly dir: string;
+
+  /** `dir` is resolved (symlinks too), so files checked by their real path compare against it. */
+  constructor(dir: string) {
+    let real = dir;
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      real = realpathSync(dir);
+    } catch {}
+    this.dir = real;
+  }
 
   sessionDir(sessionId: string) {
     return join(this.dir, sessionKey(sessionId));
@@ -151,9 +179,12 @@ export class AttachmentStore {
     });
   }
 
-  /** An image attachment's bytes as base64, when it is one a harness takes natively and isn't huge. */
+  /**
+   * An image attachment's bytes as base64, when it is one a harness takes natively and small enough
+   * for the model APIs (5 MB of base64 per image); a bigger one goes by its path only.
+   */
   static nativeImage(a: Attachment): { mimeType: string; data: string } | undefined {
-    if (!NATIVE_IMAGE_TYPES.has(a.mimeType)) return undefined;
+    if (!NATIVE_IMAGE_TYPES.has(a.mimeType) || a.size > NATIVE_IMAGE_MAX) return undefined;
     try {
       return { mimeType: a.mimeType, data: readFileSync(a.path).toString("base64") };
     } catch {
