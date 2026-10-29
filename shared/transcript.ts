@@ -103,13 +103,24 @@ export interface SessionSummary {
   requests?: number;
 }
 
+/**
+ * A session as a subscriber first sees it. `messages` is only the newest window (at most the
+ * subscribe's `limit`), never the whole transcript, so opening a long session stays fast on a
+ * phone. Older messages come page by page from `history` as the reader scrolls up.
+ */
 export interface SessionSnapshot {
   session: SessionSummary;
+  /** the newest messages, oldest first */
   messages: Msg[];
+  /** there are messages before `messages[0]` (fetch them with `history`) */
+  hasOlder: boolean;
   state: LiveState;
   /** the seq of the last event folded into this snapshot */
   seq: number;
 }
+
+/** How many messages a snapshot or a history page carries unless asked otherwise. */
+export const TRANSCRIPT_PAGE = 50;
 
 // ---------- session events (runner -> server -> subscribed browsers) ----------
 
@@ -120,5 +131,9 @@ export type SessionEvent =
   | { type: "delta"; msgId: string; part: number; text: string }
   | { type: "tool"; msgId: string; toolId: string; patch: Partial<ToolPart> }
   | { type: "state"; state: Partial<LiveState> }
-  /** replace the transcript (after compaction) */
-  | { type: "reset"; messages: Msg[] };
+  /** replace the transcript (after compaction): the newest window, as in a snapshot */
+  | { type: "reset"; messages: Msg[]; hasOlder: boolean };
+
+// Events always refer to messages by id. One that patches a message outside what the browser has
+// loaded (an older page it never fetched) is simply skipped: the page carries the current text
+// when it's fetched.

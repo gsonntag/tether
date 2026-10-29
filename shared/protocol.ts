@@ -14,7 +14,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
-import type { HarnessId, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Bumped when a change needs runner, server and web to move together. */
 export const PROTOCOL_VERSION = 1;
@@ -48,8 +48,10 @@ export interface User {
 export interface Ops {
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
-  /** start receiving a session's events; answers with a fresh snapshot */
-  subscribe: { args: { sessionId: string }; result: SessionSnapshot };
+  /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
+  subscribe: { args: { sessionId: string; limit?: number }; result: SessionSnapshot };
+  /** an older page of a transcript: up to `limit` messages before the message `before` */
+  history: { args: { sessionId: string; before: string; limit?: number }; result: { messages: Msg[]; hasOlder: boolean } };
   /** stop receiving a session's events (answered by the server) */
   unsubscribe: { args: { sessionId: string }; result: null };
   /** attach this browser to a terminal; the server fills in attachId */

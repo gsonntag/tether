@@ -1,0 +1,34 @@
+{
+  "name": "tether-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p . && vite build",
+    "preview": "vite preview",
+    "test": "bun test",
+    "typecheck": "tsc -p .",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "0.6.6",
+    "@astryxdesign/theme-neutral": "0.6.6",
+    "@heroicons/react": "^2.2.0",
+    "@stylexjs/stylex": "^0.19.1",
+    "react": "19",
+    "react-dom": "19",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@astryxdesign/cli": "0.6.6",
+    "@types/bun": "^1.4.2",
+    "@types/react": "19",
+    "@types/react-dom": "19",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3"
+  },
+  "patchedDependencies": {
+    "@astryxdesign/core@0.6.6": "patches/@astryxdesign%2Fcore@0.6.6.patch"
+  }
+}

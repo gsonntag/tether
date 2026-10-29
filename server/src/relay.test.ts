@@ -350,7 +350,7 @@ describe("runner replacement", () => {
     a.take();
     const fresh = runner("box");
     expect(a.take("termEnd")).toEqual([{ t: "termEnd", attachId, reason: "The runner reconnected." }]);
-    fromRunner(fresh, { t: "event", sessionId: "claude:x", seq: 1, event: { type: "reset", messages: [] } });
+    fromRunner(fresh, { t: "event", sessionId: "claude:x", seq: 1, event: { type: "reset", messages: [], hasOlder: false } });
     expect(a.take("event")).toEqual([]);
     expect(relay.stats()).toMatchObject({ subscriptions: 0, attaches: 0 });
   });

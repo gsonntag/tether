@@ -10,7 +10,7 @@ import { Relay } from "./relay";
 type Conn = { kind: "browser" | "runner"; viewer: Viewer };
 
 const relay = new Relay({ log: (line) => console.log(line) });
-const port = Number(process.env.PORT ?? 8790);
+const port = Number(process.env.PORT) || 8790;
 
 const server = Bun.serve<Conn>({
   port,
