@@ -14,6 +14,7 @@
 import { resolve } from "node:path";
 import { fromTether } from "../../../../shared/fromTether";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
+import { attachedImage } from "../../core/attachments";
 import { classifyTool } from "../toolKind";
 
 /** Codex runs shell commands as `/bin/bash -lc '<script>'`: the card shows the script. */
@@ -133,21 +134,39 @@ export function itemPart(item: any, cwd: string): Part | undefined {
 }
 
 /** A user message's text: its text inputs (images and skills as a word). */
-export function userText(item: any): string {
+export function userText(item: any, withImages = true): string {
   return (item.content ?? [])
-    .map((c: any) => (c.type === "text" ? c.text : c.type === "image" || c.type === "localImage" ? "[image]" : c.type === "skill" || c.type === "mention" ? `$${c.name}` : ""))
+    .map((c: any) => (c.type === "text" ? c.text : (c.type === "image" || c.type === "localImage") && withImages ? "[image]" : c.type === "skill" || c.type === "mention" ? `$${c.name}` : ""))
     .filter(Boolean)
     .join("\n");
 }
 
+/** The image parts of a user message (data: URLs, and local files Tether attached). */
+function imageParts(item: any): Part[] {
+  const out: Part[] = [];
+  for (const c of item.content ?? []) {
+    if (c.type === "localImage" && typeof c.path === "string") {
+      // An image Tether attached is read back from the runner's attachments folder.
+      const img = attachedImage(c.path);
+      if (img) out.push({ type: "image", ...img });
+    } else if (c.type === "image" && typeof c.url === "string") {
+      const m = /^data:([\w/+.-]+);base64,(.*)$/s.exec(c.url);
+      if (m) out.push({ type: "image", mimeType: m[1]!, data: m[2]! });
+    }
+  }
+  return out;
+}
+
 /** A userMessage item as a transcript message (Tether's own messages marked as such). */
 export function userMsg(item: any, ts: number): Msg | undefined {
-  const text = userText(item);
-  if (!text) return undefined;
+  const images = imageParts(item);
+  // Images shown as images aren't also "[image]" in the text.
+  const text = userText(item, images.length === 0);
+  if (!text && !images.length) return undefined;
   const tether = fromTether(text);
   return tether !== undefined
     ? { id: `u-${item.id}`, role: "user", ts, origin: { kind: "tether" }, parts: [{ type: "text", text: tether }] }
-    : { id: `u-${item.id}`, role: "user", ts, parts: [{ type: "text", text }] };
+    : { id: `u-${item.id}`, role: "user", ts, parts: [...(text ? [{ type: "text" as const, text }] : []), ...images] };
 }
 
 export const compactionNotice = (id: string, ts: number): Msg => ({ id: `c-${id}`, role: "notice", level: "info", ts, parts: [{ type: "text", text: "Context compacted." }] });

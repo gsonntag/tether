@@ -14,6 +14,9 @@ export class SummaryBook {
   private rows = new Map<string, SessionSummary>();
   private seq = 0;
 
+  /** what the core adds to every row (read state, inbox.ts) */
+  decorate: (s: SessionSummary) => SessionSummary = (s) => s;
+
   constructor(
     readonly epoch: string,
     private broadcast: (u: SummaryUpdate) => void,
@@ -40,10 +43,16 @@ export class SummaryBook {
 
   /** Adds or changes rows; only real changes go out. */
   upsert(rows: SessionSummary[]) {
+    rows = rows.map((r) => this.decorate(r));
     const changed = rows.filter((r) => JSON.stringify(this.rows.get(r.id)) !== JSON.stringify(r));
     if (!changed.length) return;
     for (const r of changed) this.rows.set(r.id, r);
     this.broadcast({ kind: "upsert", epoch: this.epoch, seq: ++this.seq, sessions: changed });
+  }
+
+  /** Rows whose decoration changed go out again. */
+  redecorate(ids: string[]) {
+    this.upsert(ids.map((id) => this.rows.get(id)).filter((r): r is SessionSummary => !!r));
   }
 
   remove(ids: string[]) {

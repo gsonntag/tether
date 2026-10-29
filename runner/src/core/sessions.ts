@@ -19,6 +19,7 @@ import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
 import { NoticeStore, pruneOverlay, settleStopped, withOverlay } from "./notices";
+import { MessageQueue } from "./queue";
 import { Session } from "./session";
 import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
@@ -133,7 +134,7 @@ export class SessionCore {
   /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
   private owned(id: string) {
     const s = this.sessions.get(id);
-    return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
+    return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
   }
 
   async listProjects(): Promise<ProjectInfo[]> {
@@ -195,7 +196,7 @@ export class SessionCore {
     if (!row) throw new Error("That session isn't on this runner any more.");
     const prefs = this.o.prefs.get(id);
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), ...MessageQueue.saved(prefs), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -344,7 +345,7 @@ export class SessionCore {
 
   /** Kept in memory: live, running, waiting on a person, in a terminal, or watched. */
   private held(s: Session) {
-    return s.live || s.childRunning || s.state.requests.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
+    return s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
   }
 
   /**
@@ -380,9 +381,10 @@ export class SessionCore {
 
   /** The session's row changed (status, mode, title, activity): the sidebar hears. */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, ...rest } = { ...s.summary, ...patch };
     const n = s.state.requests.length;
-    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}) };
+    const q = s.state.queue.length;
+    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

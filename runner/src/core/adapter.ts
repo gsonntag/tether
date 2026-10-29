@@ -2,7 +2,8 @@
 // and stream into the shared transcript shapes; they never talk to the UI or the relay. The core
 // branches only on `capabilities`, never on the harness id.
 
-import type { HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary } from "../../../shared/transcript";
+import type { Attachment } from "../../../shared/attachments";
+import type { HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary, ToolPart } from "../../../shared/transcript";
 
 /** Transcript events a driver reports. The core numbers them (seq) and keeps the transcript. */
 export type TranscriptEvent = Extract<SessionEvent, { type: "msg" | "delta" | "tool" | "reset" }>;
@@ -67,9 +68,14 @@ export interface Sink {
 
 export interface Driver {
   readonly nativeId: string;
-  /** starts a turn */
-  send(text: string): Promise<void>;
-  steer?(text: string): Promise<void>;
+  /**
+   * Starts a turn. `attachments` are files under the runner's attachments folder; the text already
+   * lists them (shared/attachments.ts withAttachments), and images the harness reads natively go to
+   * it as images too.
+   */
+  send(text: string, attachments?: Attachment[]): Promise<void>;
+  /** a message into the running turn (capabilities.canSteer) */
+  steer?(text: string, attachments?: Attachment[]): Promise<void>;
   interrupt(): Promise<void>;
   setModel(model: string): Promise<void>;
   setEffort?(effort: string): Promise<void>;
@@ -77,7 +83,13 @@ export interface Driver {
   /** stops one running subagent (capabilities.subagents.stop) */
   stopSubagent?(nativeId: string): Promise<void>;
   /** a message into a running subagent's turn, as the person (capabilities.subagents.steer "direct") */
-  steerSubagent?(nativeId: string, text: string): Promise<void>;
+  steerSubagent?(nativeId: string, text: string, attachments?: Attachment[]): Promise<void>;
+  /**
+   * capabilities.subagents.steer "via-parent" (SPEC §6a): the message that asks the main agent to
+   * pass `text` on to the subagent, and whether a tool call of the main agent's is that delivery.
+   */
+  relayMessage?(nativeId: string, text: string): string;
+  relayedBy?(nativeId: string, tool: ToolPart): boolean;
   /** the harness's own TUI is about to join this live session (capabilities.terminal "shared") */
   beforeTerminal?(): Promise<void>;
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */

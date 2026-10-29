@@ -1,10 +1,11 @@
 // The runner's directory and its small state file (SPEC §4): runner.json, mode 600: the runner's
-// id, per-session prefs and open requests (later: queued messages). Never transcripts.
+// id, per-session prefs, queued messages, read state and open requests. Never transcripts.
 
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
+import type { QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
@@ -34,6 +35,14 @@ export interface SessionPrefs {
   permissionMode?: string;
   /** a turn was running: still set at start means it was cut off (a runner restart, a crash) */
   running?: boolean;
+  /** messages waiting to go out after the running turn (SPEC §9) */
+  queue?: QueuedMessage[];
+  /** the queue waits until released, and why (LiveState.queueHeldBy) */
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  /** a turn ended and nobody has looked since (Home's inbox) */
+  unread?: "finished" | "failed";
+  /** the failed turn's error */
+  failure?: string;
   /** last touched; old entries are dropped */
   at?: number;
 }

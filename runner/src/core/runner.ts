@@ -37,6 +37,8 @@ export interface RunnerOptions {
   prefsFile?: string;
   /** where Tether's own notices are kept (CONFIG_DIR/notices.json); in memory when absent */
   noticesFile?: string;
+  /** where attachments are stored (CONFIG_DIR/attachments); tests pass a temp folder */
+  attachmentsDir?: string;
   /** the request broker's policy steps (SPEC §7); none in the core */
   policy?: PolicyStep[];
   /** session core tuning, for tests */
@@ -76,7 +78,8 @@ export function createRunner(o: RunnerOptions) {
     onUnwatched: (sessionIds) => bus.emit("unwatched", { sessionIds }),
     // The server forgot every route with the old connection, so after a reconnect nobody watches
     // anything until browsers subscribe again: the core stops tails on `disconnected`.
-    onState: (connected) => bus.emit(connected ? "connected" : "disconnected", {}),
+    onState: (connected, push) => (connected ? bus.emit("connected", { push }) : bus.emit("disconnected", {})),
+    onViewers: (sessions) => bus.emit("viewers", { sessions }),
     ...o.connection,
   });
 
@@ -94,7 +97,7 @@ export function createRunner(o: RunnerOptions) {
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir });
   registerSessionOps(ops, core, live);
   const t = o.terminal || undefined;
   const terminal =
@@ -132,10 +135,22 @@ export function createRunner(o: RunnerOptions) {
     live,
     harnesses: () => harnesses,
     terminal,
+    /** what modules may know about sessions (modules/index.ts ModuleContext) */
+    look: {
+      session: (id: string) => {
+        const s = core.sessions.get(id);
+        if (!s) return undefined;
+        const last = s.transcript?.messages.findLast((m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && p.text.trim()));
+        const lastText = last?.parts.findLast((p) => p.type === "text" && p.text.trim());
+        return { summary: s.summary, status: s.state.status, requests: s.state.requests.map((r) => r.id), ...(lastText?.type === "text" ? { lastText: lastText.text.trim() } : {}) };
+      },
+      viewersOf: (id: string) => live.read.viewersOf(id),
+    },
     start: async () => {
       core.startDiscovery();
       void live.desk.restore();
-      void live.rejoin();
+      // Queues come back after the sessions that kept running are joined again.
+      void live.rejoin().finally(() => live.queue.restore());
       // Before connecting, so the first summary already shows readopted terminals.
       await terminal?.start();
       conn.start();
@@ -145,6 +160,7 @@ export function createRunner(o: RunnerOptions) {
       clearInterval(timer);
       terminal?.stop();
       core.stop();
+      live.attachments.stop();
       await live.closeAll().catch(() => {});
       core.o.prefs.flush();
       conn.stop();

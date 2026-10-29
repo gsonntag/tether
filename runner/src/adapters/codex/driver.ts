@@ -6,6 +6,7 @@
 // another client (the TUI) answers first (serverRequest/resolved).
 
 import { existsSync } from "node:fs";
+import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
 import { FROM_TETHER } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
@@ -15,7 +16,11 @@ import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION }
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 
-const input = (text: string) => [{ type: "text", text, text_elements: [] }];
+/** A message as Codex's input: its text, and the attached images Codex reads from disk. */
+const input = (text: string, attachments: Attachment[] = []) => [
+  { type: "text", text, text_elements: [] },
+  ...attachments.filter((a) => NATIVE_IMAGE_TYPES.has(a.mimeType)).map((a) => ({ type: "localImage", path: a.path })),
+];
 
 /** What Codex says when a thread has nothing on disk yet (no turn, no name). */
 const NO_ROLLOUT = /no rollout found/i;
@@ -208,11 +213,11 @@ export class CodexDriver implements Driver {
 
   // ---------------- driving ----------------
 
-  async send(text: string) {
+  async send(text: string, attachments: Attachment[] = []) {
     if (this.closed) throw new Error("This Codex session isn't connected.");
     this.sink.state({ status: "running", error: undefined });
     try {
-      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text) });
+      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments) });
       this.materialized = true;
     } catch (e: any) {
       this.sink.state({ status: "idle" });
@@ -220,14 +225,14 @@ export class CodexDriver implements Driver {
     }
   }
 
-  async steer(text: string) {
-    await this.steerTurn(this.nativeId, text);
+  async steer(text: string, attachments: Attachment[] = []) {
+    await this.steerTurn(this.nativeId, text, attachments);
   }
 
-  private async steerTurn(threadId: string, text: string) {
+  private async steerTurn(threadId: string, text: string, attachments: Attachment[] = []) {
     const turnId = threadId === this.nativeId ? this.stream.main.turnId : this.stream.child(threadId)?.turnId;
     if (!turnId) throw new Error("Nothing is running to steer. Send it as a new message instead.");
-    await this.rpc.call("turn/steer", { threadId, input: input(text), expectedTurnId: turnId });
+    await this.rpc.call("turn/steer", { threadId, input: input(text, attachments), expectedTurnId: turnId });
   }
 
   async interrupt() {
@@ -260,8 +265,8 @@ export class CodexDriver implements Driver {
     if (turnId) await this.rpc.call("turn/interrupt", { threadId: nativeId, turnId });
   }
 
-  async steerSubagent(nativeId: string, text: string) {
-    await this.steerTurn(nativeId, text);
+  async steerSubagent(nativeId: string, text: string, attachments: Attachment[] = []) {
+    await this.steerTurn(nativeId, text, attachments);
   }
 
   /**

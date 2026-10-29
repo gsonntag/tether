@@ -26,8 +26,38 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("newSession", (a) =>
     live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true }),
   );
-  ops.register("send", async (a) => (await live.send(str(a.sessionId, "sessionId"), typeof a.text === "string" ? a.text : ""), null));
-  ops.register("steer", async (a) => (await live.steer(str(a.sessionId, "sessionId"), typeof a.text === "string" ? a.text : ""), null));
+  const text = (v: unknown) => (typeof v === "string" ? v : "");
+  /** Attachments a message names, checked against the session's own folder (a subagent's: its main session's too). */
+  const files = async (sessionId: string, list: unknown) => {
+    if (list === undefined) return [];
+    const s = await core.open(sessionId);
+    return live.attachments.check([sessionId, ...(s.summary.parentSessionId ? [s.summary.parentSessionId] : [])], list);
+  };
+  ops.register("send", async (a) => {
+    const id = str(a.sessionId, "sessionId");
+    await live.send(id, text(a.text), await files(id, a.attachments), { stop: a.stop === true });
+    return null;
+  });
+  ops.register("steer", async (a) => {
+    const id = str(a.sessionId, "sessionId");
+    await live.steer(id, text(a.text), await files(id, a.attachments));
+    return null;
+  });
+  ops.register("queue", async (a) => {
+    const id = str(a.sessionId, "sessionId");
+    return live.queue.add(id, text(a.text), await files(id, a.attachments));
+  });
+  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), text(a.text)), null));
+  ops.register("cancelQueued", async (a) => (await live.queue.cancel(str(a.sessionId, "sessionId"), str(a.id, "id")), null));
+  ops.register("moveQueued", async (a) => (await live.queue.move(str(a.sessionId, "sessionId"), str(a.id, "id"), optNum(a.to) ?? 0), null));
+  ops.register("resumeQueue", async (a) => (await live.queue.resume(str(a.sessionId, "sessionId")), null));
+  ops.register("uploadAttachment", async (a) => {
+    const id = str(a.sessionId, "sessionId");
+    // The session must exist: nothing is written for a made-up id.
+    await core.open(id);
+    return live.attachments.receive({ sessionId: id, uploadId: str(a.uploadId, "uploadId"), name: text(a.name), mimeType: text(a.mimeType), size: optNum(a.size) ?? 0, offset: optNum(a.offset) ?? -1, data: text(a.data) });
+  });
+  ops.register("setRead", async (a) => (live.read.set(str(a.sessionId, "sessionId"), a.read === false), null));
   ops.register("interrupt", async (a) => (await live.interrupt(str(a.sessionId, "sessionId")), null));
   ops.register("setModel", async (a) => (await live.setModel(str(a.sessionId, "sessionId"), str(a.model, "model")), null));
   ops.register("setEffort", async (a) => (await live.setEffort(str(a.sessionId, "sessionId"), str(a.effort, "effort")), null));

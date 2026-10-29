@@ -335,7 +335,8 @@ export class TerminalControl {
     this.log(`${s.id}: started its TUI in tmux (${name})`);
     if (handoff && this.hooks) this.expectStart(s.id);
     this.adopt(s, name);
-    if (handoff && s.state.queue.length) s.setState({ queueHeld: true });
+    // What waits in the queue waits for Back to Tether (SPEC §8).
+    if (handoff) this.o.live.queue.hold(s, "terminal");
   }
 
   /** The session's TUI runs in tmux: its state says so. */

@@ -68,6 +68,13 @@ export class Prefs {
       .map(([id]) => id);
   }
 
+  /** Sessions with messages waiting in their queue. */
+  queued(): string[] {
+    return Object.entries(this.map)
+      .filter(([, p]) => Array.isArray(p.queue) && p.queue.length > 0)
+      .map(([id]) => id);
+  }
+
   set(id: string, patch: SessionPrefs) {
     this.map[id] = { ...this.map[id], ...patch, at: Date.now() };
     for (const k of Object.keys(this.map[id]!) as (keyof SessionPrefs)[]) if (this.map[id]![k] === undefined) delete this.map[id]![k];

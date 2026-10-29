@@ -8,10 +8,16 @@
 // sessions (SPEC §6a).
 
 import { randomUUID } from "node:crypto";
+import { withAttachments, type Attachment } from "../../../shared/attachments";
+import { FROM_TETHER } from "../../../shared/fromTether";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
+import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import type { Driver, Sink, StartOpts, SubagentStart } from "./adapter";
+import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
+import { ReadState } from "./inbox";
+import { MessageQueue } from "./queue";
 import { RequestDesk } from "./requests";
 import { Session } from "./session";
 import type { SessionCore } from "./sessions";
@@ -40,16 +46,29 @@ export class LiveControl {
   private readonly idleMs: number;
   terminal?: TerminalSeam;
   readonly desk: RequestDesk;
+  readonly queue: MessageQueue;
+  readonly read: ReadState;
+  readonly attachments: AttachmentStore;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
+  /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
+  private relays = new Map<string, { childId: string; nativeId: string; msgId: string }[]>();
 
   constructor(
     private core: SessionCore,
     broker: RequestBroker,
-    opts: { idleMs?: number } = {},
+    opts: { idleMs?: number; attachmentsDir?: string } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
-    this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
+    this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
+    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }) });
+    this.read = new ReadState(core);
+    this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
+    AttachmentStore.current = this.attachments;
+    const bus = core.o.bus;
+    bus.on("message", ({ sessionId, msg }) => this.relayCheck(sessionId, msg.parts));
+    bus.on("toolCall", ({ sessionId, tool }) => this.relayCheck(sessionId, [tool]));
+    bus.on("turnEnded", ({ sessionId }) => this.relayTurnEnded(sessionId));
   }
 
   // ---------------- ops ----------------
@@ -80,19 +99,31 @@ export class LiveControl {
     return { sessionId: s.id };
   }
 
-  async send(id: string, text: string) {
-    if (!text?.trim()) throw new Error("Type a message first.");
+  /**
+   * Starts a turn. `stop`: Stop and send now (SPEC §9). A message you send releases a queue held
+   * after Stop or a failed turn: it goes on after this turn (`queued`: the queue's own sends;
+   * `tether`: sent on your behalf, which releases nothing).
+   */
+  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean } = {}) {
+    if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
+    if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const s = await this.core.open(id);
-    // A subagent the harness lets you message directly: into its running turn (SPEC §6a).
-    if (s.summary.parentSessionId) return this.steer(id, text);
+    // A subagent the harness lets you message: into its running turn (SPEC §6a).
+    if (s.summary.parentSessionId) return this.steer(id, text, attachments);
     // Moving to or from the terminal: the message goes wherever the session ends up, never to an
     // SDK process started beside a TUI, nor to a TUI that is quitting.
     const moving = this.terminal?.settled(s);
     if (moving) await moving;
     // The TUI drives: the message is typed there (SPEC §9).
-    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
+    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, withAttachments(text, attachments));
+    if (o.stop && (s.state.status !== "idle" || s.sending)) {
+      await this.interrupt(id);
+      const until = this.core.now() + 15_000;
+      while ((s.state.status !== "idle" || s.sending) && this.core.now() < until) await Bun.sleep(100);
+    }
     // Checked and claimed with no await in between, so two sends can't both start a turn.
     if (s.state.status !== "idle" || s.sending) throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
+    if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
     const me = {};
     s.sending = me;
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
@@ -103,7 +134,7 @@ export class LiveControl {
       // Stopped before the message went out (interrupt already set idle and freed the session).
       if (s.cancelSend === me) return;
       this.core.touch(s, { updatedAt: this.core.now() });
-      await d.send(text);
+      await d.send(withAttachments(text, attachments), attachments);
       s.fresh = false;
     } catch (e) {
       if (s.sending === me) this.status(s, "idle");
@@ -118,20 +149,82 @@ export class LiveControl {
    * A message into the running turn (capabilities.canSteer), or into a subagent's own turn
    * (capabilities.subagents.steer "direct"). It can't be taken back once the harness has it.
    */
-  async steer(id: string, text: string) {
-    if (!text?.trim()) throw new Error("Type a message first.");
+  async steer(id: string, text: string, attachments: Attachment[] = []) {
+    if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
+    if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const s = await this.core.open(id);
     const parentId = s.summary.parentSessionId;
     if (parentId) {
-      if (s.capabilities.subagents.steer !== "direct") throw new Error("Subagents can't take messages here. Message the main session instead.");
+      const how = s.capabilities.subagents.steer;
+      if (!how) throw new Error("Subagents can't take messages here. Message the main session instead.");
       const parent = this.core.sessions.get(parentId);
-      if (!s.childRunning || !parent?.driver?.steerSubagent) throw new Error("This subagent has finished. Message the main session instead.");
-      return parent.driver.steerSubagent(s.summary.nativeId, text);
+      if (!s.childRunning || !parent?.driver) throw new Error("This subagent has finished. Message the main session instead.");
+      if (how === "via-parent") return this.relay(parent, s, withAttachments(text, attachments));
+      if (!parent.driver.steerSubagent) throw new Error("Subagents can't take messages here. Message the main session instead.");
+      return parent.driver.steerSubagent(s.summary.nativeId, withAttachments(text, attachments), attachments);
     }
     if (!s.capabilities.canSteer) throw new Error(`${AGENT_NAMES[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
-    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
+    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, withAttachments(text, attachments));
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
-    await s.driver.steer(text);
+    await s.driver.steer(withAttachments(text, attachments), attachments);
+  }
+
+  // ---------------- subagents steered through the main agent (SPEC §6a) ----------------
+
+  /**
+   * Asks the main agent to pass a message on to a running subagent (subagents.steer "via-parent").
+   * The message shows in the subagent's view as yours, "sending" until the main agent's delivering
+   * tool call is seen, or "failed" when its turn ends without one.
+   */
+  private async relay(parent: Session, child: Session, text: string) {
+    const d = parent.driver!;
+    if (!d.relayMessage || !d.relayedBy) throw new Error("Subagents can't take messages here. Message the main session instead.");
+    const ask = FROM_TETHER + d.relayMessage(child.summary.nativeId, text);
+    const msgId = `n-relay-${randomUUID()}`;
+    const entry = { childId: child.id, nativeId: child.summary.nativeId, msgId };
+    const list = this.relays.get(parent.id) ?? [];
+    list.push(entry);
+    this.relays.set(parent.id, list);
+    child.apply({ type: "msg", msg: { id: msgId, role: "user", ts: this.core.now(), relay: "sending", parts: [{ type: "text", text }] } });
+    try {
+      if (parent.state.status !== "idle" && d.steer) await d.steer(ask);
+      else await this.send(parent.id, ask, [], { tether: true });
+    } catch (e) {
+      this.relayDone(parent.id, entry, "failed");
+      throw e;
+    }
+  }
+
+  /** A tool call of a main session's: one of its pending relays delivered? */
+  private relayCheck(sessionId: string, parts: Msg["parts"]) {
+    const list = this.relays.get(sessionId);
+    const d = this.core.sessions.get(sessionId)?.driver;
+    if (!list?.length || !d?.relayedBy) return;
+    for (const p of parts) {
+      if (p.type !== "tool") continue;
+      const hit = list.find((r) => d.relayedBy!(r.nativeId, p));
+      if (hit) this.relayDone(sessionId, hit, "delivered");
+    }
+  }
+
+  /** The main agent's turn ended: what it didn't pass on (and isn't about to) wasn't delivered. */
+  private relayTurnEnded(sessionId: string) {
+    if (!this.relays.get(sessionId)?.length) return;
+    // A relay that arrived as the turn ended starts a turn of its own: give it that turn.
+    setTimeout(() => {
+      const s = this.core.sessions.get(sessionId);
+      if (s && s.state.status !== "idle") return;
+      for (const r of [...(this.relays.get(sessionId) ?? [])]) this.relayDone(sessionId, r, "failed");
+    }, 3000).unref?.();
+  }
+
+  private relayDone(parentId: string, r: { childId: string; msgId: string }, how: "delivered" | "failed") {
+    const list = (this.relays.get(parentId) ?? []).filter((x) => x !== r);
+    if (list.length) this.relays.set(parentId, list);
+    else this.relays.delete(parentId);
+    const c = this.core.sessions.get(r.childId);
+    const m = c?.transcript?.get(r.msgId);
+    if (c && m) c.apply({ type: "msg", msg: { ...m, relay: how } });
   }
 
   /** A status change made by the core itself (not the driver), with the same consequences. */
@@ -154,6 +247,9 @@ export class LiveControl {
     if (s.state.mode === "terminal" && this.terminal) return this.terminal.interrupt(s);
     // Whatever it asked is moot now (the harness stops waiting too).
     this.desk.stop(id);
+    // Stop keeps the queue, held, until you send (SPEC §9).
+    this.queue.hold(s, "stopped");
+    if (s.state.status !== "idle" || s.sending) s.stopped = true;
     // Stopped while Claude is still starting: the message never goes out.
     if (s.sending && !s.driver) {
       // Free at once: a send right after this goes ahead (on the same start).
@@ -374,7 +470,13 @@ export class LiveControl {
     return {
       event: (e) => {
         const out = s.apply(e);
-        if (out?.type === "msg") bus.emit("message", { sessionId: s.id, msg: out.msg });
+        if (out?.type === "msg") {
+          // The turn failed: its turnEnded says why (Home and notifications show it).
+          const m = out.msg;
+          const failed = m.error ?? (m.role === "notice" && m.level === "error" ? m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ") : undefined);
+          if (failed && s.state.status !== "idle") s.turnError = failed;
+          bus.emit("message", { sessionId: s.id, msg: m });
+        }
         if (out?.type === "tool") {
           const tool = s.transcript?.get(e.type === "tool" ? e.msgId : "")?.parts.find((p) => p.type === "tool" && p.id === (e as any).toolId);
           if (tool?.type === "tool") bus.emit("toolCall", { sessionId: s.id, msgId: (e as any).msgId, tool });
@@ -414,7 +516,10 @@ export class LiveControl {
     if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
-      bus.emit("turnEnded", { sessionId: s.id, error: s.state.error });
+      const stopped = s.stopped;
+      s.stopped = false;
+      bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });
+      s.turnError = undefined;
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

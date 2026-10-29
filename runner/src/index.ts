@@ -31,6 +31,7 @@ const runner = createRunner({
   detectHarnesses: () => detectHarnesses(),
   adapters: [claudeAdapter, codexAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
+  attachmentsDir: join(CONFIG_DIR, "attachments"),
   // Hooks of TUIs in terminal mode report here (terminal/hooks.ts); the path outlives restarts.
   terminal: { hookSocket: join(CONFIG_DIR, "hooks.sock") },
 });
@@ -41,7 +42,7 @@ chmodSync(CONFIG_DIR, 0o700);
 const stopModules = await startModules(MODULES, (m) => {
   const dataDir = join(CONFIG_DIR, "modules", m.name);
   mkdirSync(dataDir, { recursive: true });
-  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`) };
+  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, ...runner.look };
 });
 
 console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);

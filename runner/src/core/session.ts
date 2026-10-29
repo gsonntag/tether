@@ -32,6 +32,10 @@ export class Session {
   sending?: object;
   /** the send Stop cancelled before its message went out */
   cancelSend?: object;
+  /** the person stopped the running turn (its turnEnded says so) */
+  stopped = false;
+  /** the running turn's error, as the harness reported it (for turnEnded) */
+  turnError?: string;
   /**
    * Messages only Tether has (its notices: denials, errors, a turn cut off; ids "n-…"), each
    * after the message it followed. The store doesn't have them, so they're laid over every

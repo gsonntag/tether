@@ -7,7 +7,7 @@
 // id may now name a different rpc.
 
 import { capEvent, guardFrame } from "../../../shared/limits";
-import { CLOSE_PROTOCOL, CLOSE_REPLACED, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
   /** the app's base URL, e.g. https://tether--me.foliation.dev or http://localhost:8790 */
@@ -19,8 +19,10 @@ export interface ConnectionOptions {
   onDetach?: (attachIds: string[]) => void;
   /** no browser watches these sessions any more */
   onUnwatched?: (sessionIds: string[]) => void;
-  /** connected, after hello; or disconnected */
-  onState?: (connected: boolean) => void;
+  /** connected, after hello (with the app's push keys, when it has them); or disconnected */
+  onState?: (connected: boolean, push?: PushKeys) => void;
+  /** which devices look at which sessions (presence) */
+  onViewers?: (sessions: Record<string, string[]>) => void;
   log?: (line: string) => void;
   heartbeatMs?: number;
   /** no frame from the server for this long means the connection is dead */
@@ -155,8 +157,9 @@ export class Connection {
         this.ready = true;
         this.attempt = 0;
         this.log(`connected to ${this.opts.url} as ${this.helloName}`);
-        this.opts.onState?.(true);
-      } else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
+        this.opts.onState?.(true, m.push);
+      } else if (m.t === "viewers") this.opts.onViewers?.(m.sessions ?? {});
+      else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
       else if (m.t === "detach") this.opts.onDetach?.(m.attachIds);
       else if (m.t === "unwatched") this.opts.onUnwatched?.(m.sessionIds);
     };

@@ -4,8 +4,10 @@
 
 import { query, type CanUseTool, type PermissionMode, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
+import type { Attachment } from "../../../../shared/attachments";
 import { fromTether } from "../../../../shared/fromTether";
-import type { Msg } from "../../../../shared/transcript";
+import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
+import { AttachmentStore } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
@@ -149,16 +151,46 @@ export class ClaudeDriver implements Driver {
     this.onExit?.(error);
   }
 
-  async send(text: string) {
+  async send(text: string, attachments: Attachment[] = []) {
     if (this.closed) throw new Error("Claude Code isn't running.");
+    this.sink.state({ status: "running", error: undefined });
+    this.push(text, attachments);
+  }
+
+  /**
+   * Into the running turn (SPEC §9): with streaming input, Claude Code takes a message that arrives
+   * mid-turn at its next step (it stores it as a queued command), or starts a turn with it if the
+   * turn ended meanwhile.
+   */
+  async steer(text: string, attachments: Attachment[] = []) {
+    if (this.closed) throw new Error("Claude Code isn't running.");
+    this.push(text, attachments);
+  }
+
+  /** A message to Claude Code, shown in the transcript under the uuid it stores it with. */
+  private push(text: string, attachments: Attachment[]) {
     const uuid = randomUUID();
-    // In the transcript under the uuid Claude Code stores it with, so stored and live ids agree.
+    const images = attachments.map((a) => AttachmentStore.nativeImage(a)).filter((x): x is { mimeType: string; data: string } => !!x);
     // Tether's own message (an answer passed on after a restart) shows as Tether's, as stored ones do.
     const tether = fromTether(text);
-    const shown: Msg = tether !== undefined ? { id: uuid, role: "user", ts: Date.now(), origin: { kind: "tether" }, parts: [{ type: "text", text: tether }] } : { id: uuid, role: "user", ts: Date.now(), parts: [{ type: "text", text: canonicalCommand(text) }] };
+    const parts: Part[] = [{ type: "text", text: tether ?? canonicalCommand(text) }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
+    const shown: Msg = { id: uuid, role: "user", ts: Date.now(), ...(tether !== undefined ? { origin: { kind: "tether" } } : {}), parts };
     this.sink.event({ type: "msg", msg: shown });
-    this.sink.state({ status: "running", error: undefined });
-    this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid, origin: { kind: "human" } } as SDKUserMessage);
+    const content = images.length ? [{ type: "text", text }, ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mimeType, data: i.data } }))] : text;
+    this.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid, origin: { kind: "human" } } as SDKUserMessage);
+  }
+
+  /** Asking the main agent to pass a message on to a subagent (SPEC §6a, steer "via-parent"). */
+  relayMessage(nativeId: string, text: string) {
+    const agent = this.stream.taskOf(nativeId) ?? nativeId;
+    return `Please pass this message from the user to your running subagent ${agent} right now: call the SendMessage tool with to: "${agent}" and the message below exactly as written, then carry on with what you were doing. Don't answer it yourself.\n\n${text}`;
+  }
+
+  /** The main agent's SendMessage call to that subagent. */
+  relayedBy(nativeId: string, tool: ToolPart) {
+    const agent = this.stream.taskOf(nativeId);
+    const to = (tool.input as any)?.to;
+    return tool.name === "SendMessage" && !!agent && typeof to === "string" && (to === agent || to.endsWith(agent) || this.stream.nameOfAgent(agent) === to);
   }
 
   async interrupt() {

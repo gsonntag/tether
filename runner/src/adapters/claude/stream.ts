@@ -38,6 +38,8 @@ export class ClaudeStream {
   private agents = new Map<string, Thread>();
   /** subagent task id by the tool call that started it */
   private agentByTool = new Map<string, string>();
+  /** the name each subagent was started with (Agent's `name` input), by task id */
+  private agentNames = new Map<string, string>();
   /** running tasks (subagents, shells, …) */
   readonly running = new Set<string>();
   /** tasks background_tasks_changed has listed: only those can end by dropping off its list */
@@ -245,6 +247,8 @@ export class ClaudeStream {
     });
     this.agents.set(taskId, { sink, finals: new Map(), tools: new Map() });
     if (m.tool_use_id) this.agentByTool.set(m.tool_use_id, taskId);
+    const name = m.tool_use_id ? (parentThread.sink.message(parentThread.tools.get(m.tool_use_id) ?? "")?.parts.find((p: any) => p.type === "tool" && p.id === m.tool_use_id) as any)?.input?.name : undefined;
+    if (typeof name === "string" && name) this.agentNames.set(taskId, name);
   }
 
   private subagentFrame(m: any, parentTool: string) {
@@ -276,12 +280,18 @@ export class ClaudeStream {
   /** Everything is done: what was kept about ended subagents goes (a long session has hundreds). */
   private turnEnded() {
     this.endedAgents.clear();
+    for (const id of [...this.agentNames.keys()]) if (!this.agents.has(id)) this.agentNames.delete(id);
     for (const [tool, task] of this.agentByTool) if (!this.agents.has(task)) this.agentByTool.delete(tool);
   }
 
   /** A running subagent's sink, by its agent id (canUseTool's agentID). */
   sinkOfAgent(agentId: string): Sink | undefined {
     return this.agents.get(agentId)?.sink;
+  }
+
+  /** The name a subagent was started with (Agent's `name`), by task id. */
+  nameOfAgent(taskId: string): string | undefined {
+    return this.agentNames.get(taskId);
   }
 
   /** The task id of a subagent by its native id (`<session>/<task>`). */
