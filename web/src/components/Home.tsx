@@ -78,7 +78,7 @@ function Inbox() {
       ) : (
         <div className="t-inbox" role="list">
           {rows.map((r) => (
-            <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem">
+            <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem" data-session={r.id}>
               <button type="button" className="t-inbox-main" onClick={() => openSession(r.runnerId, r.id)}>
                 <span className="t-inbox-kind">{KIND_LABEL[r.inbox]}</span>
                 <span className="t-row-title">{r.title || "Untitled"}</span>

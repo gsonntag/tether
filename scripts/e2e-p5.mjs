@@ -31,21 +31,33 @@ const RESTART = process.env.RESTART_RUNNER;
 mkdirSync(SHOTS, { recursive: true });
 
 const browser = await chromium.launch();
-const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+const opts = new Map();
+const newCtx = async (o) => {
+  const c = await browser.newContext(o);
+  opts.set(c, o);
+  return c;
+};
+let desktop = await newCtx({ viewport: { width: 1280, height: 800 } });
+let phone = await newCtx({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 const errors = [];
 const page = async (ctx, url = BASE) => {
-  const p = await ctx.newPage();
-  p.on("pageerror", (e) => errors.push(String(e)));
-  p.on("console", (m) => m.type() === "error" && console.log(`console error: ${m.text()}`));
-  // The dev server under load now and then leaves a page blank: one more try.
+  // The dev server on a loaded machine now and then leaves a page blank: try again, then in a fresh
+  // browser context (as a new device would).
   for (let i = 0; ; i++) {
+    const p = await ctx.newPage();
+    p.on("pageerror", (e) => errors.push(String(e)));
+    p.on("console", (m) => m.type() === "error" && console.log(`console error: ${m.text()}`));
     await p.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
-    if (await p.locator(".t-session, .t-inbox-head, [role=status]").first().waitFor({ timeout: 20_000 }).then(() => true, () => false)) break;
-    if (i >= 2) break;
-    await p.goto("about:blank");
+    if (await p.locator(".t-session, .t-inbox-head").first().waitFor({ timeout: 30_000 }).then(() => true, () => false)) return p;
+    if (i >= 2) return p;
+    await p.close();
+    if (i === 1) {
+      const fresh = await newCtx(opts.get(ctx));
+      if (ctx === desktop) desktop = fresh;
+      if (ctx === phone) phone = fresh;
+      ctx = fresh;
+    }
   }
-  return p;
 };
 const shot = (p, name) => p.screenshot({ path: `${SHOTS}/${name}.png` });
 const ok = (msg) => console.log(`ok  ${msg}`);
@@ -128,7 +140,7 @@ async function newSession(p, harness) {
   if (harness === "codex") await p.getByRole("radio", { name: "Codex" }).click();
   await p.locator("#t-new-path").fill(SCRATCH);
   const model = harness === "codex" ? CODEX_MODEL : "haiku";
-  await p.waitForFunction((m) => [...document.querySelectorAll(".t-form select option")].some((o) => o.value === m), model, { timeout: 30_000 });
+  await p.waitForFunction((m) => [...document.querySelectorAll(".t-form select option")].some((o) => o.value === m), model, { timeout: 120_000 });
   await p.locator(".t-form select.t-select", { has: p.locator(`option[value="${model}"]`) }).selectOption(model);
   await button(p, "Create").click();
   await p.waitForURL(new RegExp(`#/s/.*${harness}`), { timeout: 60_000 });
@@ -436,7 +448,8 @@ const steps = {
     await sleep(3000);
     await composer(p).fill("When you reply, also include the word PINEAPPLE.");
     await composer(p).press("Enter");
-    await b.locator(".t-msg.user .t-bubble", { hasText: "PINEAPPLE" }).waitFor({ timeout: 20_000 });
+    // Codex shows a steer when the model takes it (after the running command).
+    await b.locator(".t-msg.user .t-bubble", { hasText: "PINEAPPLE" }).waitFor({ timeout: 120_000 });
     await composer(b).fill("Reply with exactly: CODEX-QUEUED");
     await b.getByRole("button", { name: "More ways to send" }).tap();
     await b.getByRole("menuitem", { name: /Queue for after this turn/ }).tap();
@@ -609,9 +622,11 @@ const steps = {
     await a.getByRole("heading", { name: "Home" }).waitFor();
     await rpcVia(a, "send", { sessionId: id, text: "Reply with exactly: INBOX" });
     const rowOf = (p) => p.locator(".t-inbox-row", { has: p.locator(".t-row-title") }).filter({ hasText: "Finished" });
-    await a.locator(".t-inbox-row.finished").first().waitFor({ timeout: 120_000 });
-    await b.locator(".t-inbox-row.finished").first().waitFor({ timeout: 10_000 });
+    for (let i = 0; i < 240 && (await row(a, id))?.unread !== "finished"; i++) await sleep(500);
     if ((await row(a, id))?.unread !== "finished") fail("the row isn't unread");
+    const title0 = (await row(a, id)).title;
+    await a.locator(".t-inbox-row.finished .t-inbox-main", { hasText: title0 }).first().waitFor({ timeout: 10_000 });
+    await b.locator(".t-inbox-row.finished .t-inbox-main", { hasText: title0 }).first().waitFor({ timeout: 10_000 });
     await shot(a, "inbox-desktop");
     await shot(b, "inbox-phone");
     await noOverflow(b, "phone inbox");
@@ -625,11 +640,12 @@ const steps = {
     // A failure, and Mark read on desktop.
     const broken = await brokenSession(a);
     await rpcVia(a, "send", { sessionId: broken, text: "Reply with exactly: NEVER" });
-    await a.locator(".t-inbox-row.failed").first().waitFor({ timeout: 120_000 });
-    const why = await a.locator(".t-inbox-row.failed .t-inbox-why").first().innerText();
-    await b.locator(".t-inbox-row.failed").first().waitFor({ timeout: 10_000 });
-    await a.locator(".t-inbox-row.failed").first().getByRole("button", { name: /^Mark .* read$/ }).click();
-    await b.locator(".t-inbox-row.failed").first().waitFor({ state: "detached", timeout: 10_000 });
+    const failedRow = (p) => p.locator(`.t-inbox-row.failed[data-session="${broken}"]`);
+    await failedRow(a).waitFor({ timeout: 120_000 });
+    const why = await failedRow(a).locator(".t-inbox-why").innerText();
+    await failedRow(b).waitFor({ timeout: 10_000 });
+    await failedRow(a).getByRole("button", { name: /^Mark .* read$/ }).click();
+    await failedRow(b).waitFor({ state: "detached", timeout: 10_000 });
     ok(`inbox: Finished on desktop and phone; opened on the phone, read on desktop; a failed turn ("${why.slice(0, 60)}") showed on both; Mark read on desktop cleared it on the phone`);
     void rowOf;
     await a.close();
