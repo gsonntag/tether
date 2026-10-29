@@ -6,6 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { FROM_TETHER } from "../../../shared/fromTether";
+import { parseSessionId } from "../../../shared/ids";
 import { HARNESS_LABELS, type Msg, type Request, type RequestAnswer } from "../../../shared/transcript";
 import type { Decision, RequestAsk } from "./adapter";
 import type { RequestBroker } from "./broker";
@@ -73,7 +74,17 @@ export class RequestDesk {
           const s = core.sessions.get(r.sessionId);
           s?.apply({ type: "msg", msg: notice(`${sourceLabel(how.source)} ${outcome} ${this.harness(r.sessionId)}'s request to ${describeRequest(r)}${how.reason ? `: ${how.reason}` : "."}`, outcome === "denied" ? "warning" : "info") });
         }
-        if (how.restored && how.answer && how.source === "person") void this.passOn(r, how.answer, how.chain.at(-1)!);
+        // A harness that keeps turns going itself (capabilities.persistent) asks again when the
+        // runner rejoins: the answer waits for that (the broker keeps it), and is never sent on as a
+        // message, which could run something twice.
+        if (how.restored && how.answer && how.source === "person" && !this.persistent(how.chain.at(-1)!)) void this.passOn(r, how.answer, how.chain.at(-1)!);
+      },
+      // The harness asked again and got the restored answer directly: the message passing it on
+      // (held for the turn to end) mustn't go too.
+      predecidedUsed: (requestId, root) => {
+        const list = this.held.get(root)?.filter((h) => h.requestId !== requestId);
+        if (list?.length) this.held.set(root, list);
+        else this.held.delete(root);
       },
     };
     // Answers kept for the harness asking again hold only for the turn that passes them on: any
@@ -154,9 +165,15 @@ export class RequestDesk {
     this.broker.answer(requestId, a);
   }
 
-  /** The harness stopped waiting on these (a turn stopped, a driver went away). */
-  cancel(match: (r: Request, chain: string[], restored: boolean) => boolean) {
-    this.broker.cancel(match);
+  /** The harness stopped waiting on these (a turn stopped, a driver went away), or answered them elsewhere. */
+  cancel(match: (r: Request, chain: string[], restored: boolean) => boolean, outcome: "cancelled" | "elsewhere" = "cancelled") {
+    this.broker.cancel(match, outcome);
+  }
+
+  /** A session whose harness keeps its turns going without the runner. */
+  private persistent(sessionId: string) {
+    const h = parseSessionId(sessionId)?.harness;
+    return !!h && !!this.core.o.adapters.find((a) => a.id === h)?.capabilities.persistent;
   }
 
   /** The session and every session above it. */

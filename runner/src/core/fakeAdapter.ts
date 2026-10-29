@@ -147,8 +147,12 @@ export class FakeAdapter implements Adapter {
     this.watchers.set(nativeId, onChange);
     return () => this.watchers.delete(nativeId);
   }
-  async defaults() {
-    return { model: "default" };
+  /** a session's own settings (a harness that keeps them per session) */
+  sessionDefaults?: StartOpts;
+  defaultsAsked: { projectPath: string; nativeId?: string }[] = [];
+  async defaults(projectPath: string, nativeId?: string): Promise<StartOpts> {
+    this.defaultsAsked.push({ projectPath, nativeId });
+    return nativeId && this.sessionDefaults ? this.sessionDefaults : { model: "default" };
   }
   async start(_p: string, nativeId: string, opts: StartOpts, sink: Sink) {
     await this.startGate;

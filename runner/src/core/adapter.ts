@@ -102,8 +102,11 @@ export interface Adapter {
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
-  /** settings a stored session will start with (the harness's own config), for its live state */
-  defaults(projectPath: string): Promise<StartOpts>;
+  /**
+   * The settings a stored session has, for its live state before it starts: the harness's own config
+   * for the folder, or (`nativeId`, for a harness that keeps settings per session) that session's.
+   */
+  defaults(projectPath: string, nativeId?: string): Promise<StartOpts>;
   // live driving
   start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;

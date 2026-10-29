@@ -30,6 +30,7 @@ function setup(caps: Partial<HarnessCapabilities> = {}, o: { idleMs?: number; pr
   const prefs = new Prefs(prefsFile, 0);
   const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m), true), epoch: "e1", prefs, evictMs: 50, log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { idleMs: o.idleMs ?? 60_000 });
+  live.reaskMs = 5;
   cleanups.push(() => core.stop());
   return { adapter, core, live, prefs, prefsFile, frames };
 }
@@ -167,5 +168,42 @@ describe("persistent harnesses (capabilities.persistent)", () => {
     const s = await core.open("claude:s1");
     await core.load(s);
     expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "warning" });
+  });
+});
+
+describe("settings the harness keeps per session (capabilities.persistent)", () => {
+  test("a stored session shows the session's own settings, and starting sends only what you set in Tether", async () => {
+    const { adapter, core, live } = setup({ persistent: true });
+    adapter.addStored("s1", []);
+    adapter.sessionDefaults = { model: "luna", effort: "low", permissionMode: "read-only" };
+    const s = await core.open("claude:s1");
+    expect(s.state).toMatchObject({ model: "luna", effort: "low", permissionMode: "read-only" });
+    expect(adapter.defaultsAsked.at(-1)).toEqual({ projectPath: "/p", nativeId: "s1" });
+    await live.send("claude:s1", "hi");
+    expect(adapter.drivers[0]!.opts).toEqual({});
+  });
+
+  test("a setting made in Tether is sent once; after the harness reports it, the harness's value rules", async () => {
+    const { adapter, core, live, prefs } = setup({ persistent: true });
+    adapter.addStored("s1", []);
+    await live.setEffort("claude:s1", "medium");
+    expect(prefs.get("claude:s1").effort).toBe("medium");
+    await live.send("claude:s1", "hi");
+    expect(adapter.drivers[0]!.opts).toEqual({ effort: "medium" });
+    // The harness reports the session's settings (applied): Tether won't send them again.
+    adapter.drivers[0]!.sink.state({ effort: "medium", model: "luna" });
+    expect(prefs.get("claude:s1").effort).toBeUndefined();
+    // Changed elsewhere (Codex's TUI): shown, and not undone at the next start.
+    adapter.drivers[0]!.sink.state({ effort: "high" });
+    expect((await core.open("claude:s1")).state.effort).toBe("high");
+    expect(prefs.get("claude:s1").effort).toBeUndefined();
+  });
+
+  test("a harness that doesn't keep them: a mode it reports (a plan approved) is kept for the next start", async () => {
+    const { adapter, live, prefs } = setup({ persistent: false });
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "hi");
+    adapter.drivers[0]!.sink.state({ permissionMode: "acceptEdits" });
+    expect(prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
   });
 });

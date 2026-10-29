@@ -13,7 +13,7 @@ import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { HarnessId, LiveState, Msg, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
-import { HARNESS_LABELS, TRANSCRIPT_PAGE } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
@@ -194,7 +194,7 @@ export class SessionCore {
     const row = this.book.get(id) ?? (await a.sessionInfo(parsed.nativeId).catch(() => undefined));
     if (!row) throw new Error("That session isn't on this runner any more.");
     const prefs = this.o.prefs.get(id);
-    const defaults = await a.defaults(row.projectPath).catch(() => ({}) as StartOpts);
+    const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
     const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
@@ -247,10 +247,10 @@ export class SessionCore {
         // A harness that keeps turns going without the runner (capabilities.persistent) wasn't cut off.
         if (!s.live && !s.sending && !s.capabilities.persistent && this.o.prefs.get(s.id).running) {
           const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
-          const name = HARNESS_LABELS[s.summary.harness];
+          const agent = AGENT_NAMES[s.summary.harness];
           const text = s.state.requests.length
-            ? `The runner restarted while ${name} was waiting for you. Answer below and ${name} picks up from there.`
-            : `This turn stopped because the runner restarted or ${name} exited. Send a message to continue.`;
+            ? `The runner restarted while ${agent} was waiting for you. Answer below and ${agent} picks up from there.`
+            : `This turn stopped because the runner restarted or ${HARNESS_LABELS[s.summary.harness]} exited. Send a message to continue.`;
           const n = { turnOf: prompt?.id, msg: { id: `n-cut-${s.id}-${prompt?.id ?? "x"}`, role: "notice" as const, level: "warning" as const, ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text" as const, text }] } };
           if (!s.overlay.some((o) => o.msg.id === n.msg.id)) {
             s.overlay.push(n);

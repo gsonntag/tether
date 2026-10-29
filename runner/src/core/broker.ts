@@ -56,6 +56,8 @@ export interface BrokerHooks {
    * `restored`: nobody was waiting on it (it came back after a restart): the core passes the answer on.
    */
   closed(r: Request, outcome: RequestOutcome, how: { source: string; reason?: string; restored: boolean; answer?: RequestAnswer; chain: string[] }): void;
+  /** the harness asked again and an answer given after a restart decided it (whatever passed it on is moot) */
+  predecidedUsed?(requestId: string, root: string): void;
 }
 
 export const ALREADY_ANSWERED = "Already answered.";
@@ -167,6 +169,7 @@ export class RequestBroker {
     const pre = this.predecided.findIndex((p) => p.root === root && p.asker === request.sessionId && p.key === key);
     if (pre >= 0) {
       const [p] = this.predecided.splice(pre, 1);
+      this.hooks.predecidedUsed?.(p!.requestId, root);
       return { ...p!.decision, source: "person", requestId: p!.requestId };
     }
     if (signal?.aborted) return this.gone(request.id);

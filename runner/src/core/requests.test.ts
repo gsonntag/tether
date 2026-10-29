@@ -446,3 +446,95 @@ describe("requests across a runner restart", () => {
     ).toBe("[From Tether] The user answered:\n- A? 1\n- B? 2");
   });
 });
+
+describe("persistent harnesses (capabilities.persistent): the harness asks again itself", () => {
+  /** A request open when the runner stopped, on a harness that keeps its turns going. */
+  async function restartedWithRequest() {
+    const prefsFile = newPrefsFile();
+    const caps = { ...new FakeAdapter().capabilities, persistent: true };
+    const first = new FakeAdapter();
+    first.capabilities = caps;
+    const before = setup({ prefsFile, adapter: first });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "rm build" })];
+    void before.live.send("claude:s1", "go");
+    await tick();
+    const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+    await before.live.closeAll();
+    before.core.o.prefs.flush();
+    const adapter = new FakeAdapter();
+    adapter.capabilities = caps;
+    adapter.addStored("s1", [{ id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "go" }] }]);
+    const after = setup({ prefsFile, adapter });
+    after.live.reaskMs = 30;
+    await after.live.desk.restore();
+    return { after, adapter, id };
+  }
+
+  test("rejoined, the harness asks again: the same request, answered straight to it, no message", async () => {
+    const { after, adapter, id } = await restartedWithRequest();
+    const rejoining = after.live.rejoin();
+    await tick();
+    const d = adapter.drivers[0]!;
+    void ask("Bash", { command: "rm build" })(d.sink, d);
+    await tick();
+    expect((await after.core.open("claude:s1")).state.requests.map((r) => r.id)).toEqual([id]);
+    await after.live.answerRequest("claude:s1", id, { allow: true });
+    await tick();
+    expect(d.decisions).toEqual([{ allow: true }]);
+    expect(d.sent).toEqual([]);
+    await rejoining;
+    expect(after.closed.map((c) => c.outcome)).toEqual(["allowed"]);
+  });
+
+  test("not asked again (answered in the harness's own TUI meanwhile): it closes as answered elsewhere, and says so", async () => {
+    const { after, adapter, id } = await restartedWithRequest();
+    await after.live.rejoin();
+    expect(after.closed).toEqual([{ sessionId: "claude:s1", requestId: id, outcome: "elsewhere", source: "tether" }]);
+    const s = await after.core.open("claude:s1");
+    expect(s.transcript!.messages.at(-1)!.parts[0]).toMatchObject({ text: "A request was answered elsewhere while Tether was away." });
+    await expect(after.live.answerRequest("claude:s1", id, { allow: true })).rejects.toThrow("no longer open");
+    expect(adapter.drivers[0]!.sent).toEqual([]);
+  });
+
+  test("answered before the harness asks again: never sent as a message; the ask gets the answer at once", async () => {
+    const { after, adapter, id } = await restartedWithRequest();
+    await after.live.answerRequest("claude:s1", id, { allow: true });
+    const rejoining = after.live.rejoin();
+    await tick();
+    const d = adapter.drivers[0]!;
+    await ask("Bash", { command: "rm build" })(d.sink, d);
+    expect(d.decisions).toEqual([{ allow: true }]);
+    expect(d.sent).toEqual([]);
+    await rejoining;
+  });
+});
+
+test("an answer passed on after a restart isn't also sent as a message once the harness used it", async () => {
+  const prefsFile = newPrefsFile();
+  const before = setup({ prefsFile });
+  before.adapter.addStored("s1", []);
+  before.adapter.script = () => [ask("Bash", { command: "a" })];
+  void before.live.send("claude:s1", "go");
+  await tick();
+  const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+  await before.live.closeAll();
+
+  const adapter = new FakeAdapter();
+  adapter.addStored("s1", []);
+  const after = setup({ prefsFile, adapter });
+  await after.live.desk.restore();
+  // A turn runs (the person sent something else); the answer waits for it to end…
+  let release!: () => void;
+  adapter.script = () => [async () => new Promise<void>((r) => (release = r)), ask("Bash", { command: "a" }), idle];
+  const sending = after.live.send("claude:s1", "busy");
+  await tick();
+  await after.live.answerRequest("claude:s1", id, { allow: true });
+  // …but the harness asks the same within this turn and gets it there.
+  release();
+  await sending;
+  await Bun.sleep(50);
+  const d = adapter.drivers[0]!;
+  expect(d.decisions).toEqual([{ allow: true }]);
+  expect(d.sent).toEqual(["busy"]);
+});

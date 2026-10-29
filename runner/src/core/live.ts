@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
-import { HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import type { Driver, Sink, StartOpts, SubagentStart } from "./adapter";
 import type { RequestBroker } from "./broker";
 import { RequestDesk } from "./requests";
@@ -92,7 +92,7 @@ export class LiveControl {
     // The TUI drives: the message is typed there (SPEC §9).
     if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
     // Checked and claimed with no await in between, so two sends can't both start a turn.
-    if (s.state.status !== "idle" || s.sending) throw new Error(`${HARNESS_LABELS[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
+    if (s.state.status !== "idle" || s.sending) throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
     const me = {};
     s.sending = me;
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
@@ -128,7 +128,7 @@ export class LiveControl {
       if (!s.childRunning || !parent?.driver?.steerSubagent) throw new Error("This subagent has finished. Message the main session instead.");
       return parent.driver.steerSubagent(s.summary.nativeId, text);
     }
-    if (!s.capabilities.canSteer) throw new Error(`${HARNESS_LABELS[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
+    if (!s.capabilities.canSteer) throw new Error(`${AGENT_NAMES[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
     if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
     await s.driver.steer(text);
@@ -191,22 +191,43 @@ export class LiveControl {
    * (capabilities.persistent) are joined again, so their requests and status reach Tether.
    */
   async rejoin() {
-    for (const id of this.core.o.prefs.running()) {
+    const persistent = (id: string) => {
       const harness = parseSessionId(id)?.harness;
-      if (!harness || !this.core.o.adapters.find((a) => a.id === harness)?.capabilities.persistent) continue;
-      try {
-        const s = await this.core.open(id);
-        await this.core.load(s);
-        await this.ensureDriver(s);
-        this.core.log(`rejoined ${id}`);
-        // It finished while the runner was away.
-        if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
-      } catch (e: any) {
-        this.core.log(`couldn't rejoin ${id}: ${e?.message ?? e}`);
-        this.core.o.prefs.set(id, { running: undefined });
-      }
-    }
+      return !!harness && !!this.core.o.adapters.find((a) => a.id === harness)?.capabilities.persistent;
+    };
+    // Turns that were running, and sessions with requests saved from before the restart.
+    const ids = [...new Set([...this.core.o.prefs.running(), ...this.desk.broker.sessions(true)])].filter(persistent);
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const s = await this.core.open(id);
+          await this.core.load(s);
+          await this.ensureDriver(s);
+          this.core.log(`rejoined ${id}`);
+          // It finished while the runner was away.
+          if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
+        } catch (e: any) {
+          this.core.log(`couldn't rejoin ${id}: ${e?.message ?? e}`);
+          this.core.o.prefs.set(id, { running: undefined });
+        }
+        // The harness asks again what it still waits on, right after the rejoin. A saved request it
+        // doesn't ask again was answered elsewhere (its own TUI) while Tether was away.
+        await Bun.sleep(this.reaskMs);
+        let n = 0;
+        this.desk.cancel((_r, chain, restored) => restored && chain.at(-1) === id && ++n > 0, "elsewhere");
+        if (n) {
+          const s = this.core.sessions.get(id);
+          if (s) {
+            await this.core.load(s).catch(() => {});
+            s.apply({ type: "msg", msg: notice(n === 1 ? "A request was answered elsewhere while Tether was away." : `${n} requests were answered elsewhere while Tether was away.`) });
+          }
+        }
+      }),
+    );
   }
+
+  /** How long a rejoined harness has to ask again what it still waits on. */
+  reaskMs = 5000;
 
   /** Closes every live session (runner shutdown): their harnesses flush their stores. */
   async closeAll() {
@@ -263,7 +284,10 @@ export class LiveControl {
 
   private async startDriver(s: Session): Promise<Driver> {
     const a = this.core.adapter(s.summary.harness);
-    const opts: StartOpts = { model: s.state.model, effort: s.state.effort, permissionMode: s.state.permissionMode };
+    // Only what you set in Tether: the rest is the harness's own (its config, or the session's
+    // settings it keeps itself), never overwritten by what Tether merely showed.
+    const p = this.core.o.prefs.get(s.id);
+    const opts: StartOpts = { ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) };
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
@@ -359,12 +383,20 @@ export class LiveControl {
       message: (id) => s.transcript?.get(id),
       state: (patch) => {
         const before = s.state.status;
+        // A harness that keeps the session's settings itself (capabilities.persistent) reports them:
+        // that's the truth from now on, and a setting made in Tether has been applied, so it isn't
+        // sent again at the next start (where it could undo a change made elsewhere meanwhile).
+        if (s.capabilities.persistent && !s.summary.parentSessionId) {
+          const done = { ...(patch.model || patch.modelResolved ? { model: undefined } : {}), ...(patch.effort ? { effort: undefined } : {}), ...(patch.permissionMode ? { permissionMode: undefined } : {}) };
+          const p = core.o.prefs.get(s.id);
+          if (Object.keys(done).some((k) => (p as any)[k] !== undefined)) core.o.prefs.set(s.id, done);
+        }
         const changed = s.setState(patch);
         if (!changed) return;
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
         else if (changed.model || changed.modelResolved || changed.permissionMode) core.touch(s);
         // The harness changed its own mode (a plan approved): kept, so the next start uses it.
-        if (changed.permissionMode && !s.summary.parentSessionId) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
+        if (changed.permissionMode && !s.summary.parentSessionId && !s.capabilities.persistent) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },
       request: (r, signal) => this.desk.ask(s, r, signal),
       nativeId: (id) => {
