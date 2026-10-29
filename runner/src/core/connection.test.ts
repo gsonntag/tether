@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import { backoffDelay, Connection } from "./connection";
+import { PROTOCOL_VERSION } from "../../../shared/protocol";
 
 test("backoff doubles from 1 s to a 30 s cap, with jitter", () => {
   const mid = () => 0.5;
@@ -54,7 +55,7 @@ function runner(url: string, extra: Partial<ConstructorParameters<typeof Connect
   const conn = new Connection({
     url,
     token: "tok",
-    hello: async () => ({ id: "box", name: "box", hostname: "box.local", version: "0", protocol: 1, harnesses: [] }),
+    hello: async () => ({ id: "box", name: "box", hostname: "box.local", version: "0", protocol: PROTOCOL_VERSION, harnesses: [] }),
     onRpc: async (op) => (op === "ping" ? { ok: true, data: "pong" } : { ok: false, error: "unknown" }),
     onState: (c) => states.push(c),
     log: (l) => logs.push(l),

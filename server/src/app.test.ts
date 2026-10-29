@@ -3,6 +3,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { loopbackHost, originAllowed, startApp } from "./app";
 import { Relay } from "./relay";
+import { PROTOCOL_VERSION } from "../../shared/protocol";
 
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
@@ -33,7 +34,7 @@ const until = async (cond: () => boolean, ms = 3000) => {
   }
 };
 
-const hello = { t: "hello", runner: { id: "u1", name: "box", hostname: "box", version: "0", protocol: 1, harnesses: [] } };
+const hello = { t: "hello", runner: { id: "u1", name: "box", hostname: "box", version: "0", protocol: PROTOCOL_VERSION, harnesses: [] } };
 
 test("a malformed result from the runner fails the browser's rpc at once", async () => {
   const { base } = app();
@@ -55,7 +56,7 @@ test("malformed runner and browser frames are dropped and the server keeps worki
   const browser = await open(`ws://${base}/api/ws`);
   const junk = [
     '{"t":"hello","runner":{"id":"x"}}',
-    '{"t":"hello","runner":{"id":"x","hostname":"h","version":"0","protocol":1,"harnesses":[null,{"id":"claude"}]}}',
+    `{"t":"hello","runner":{"id":"x","hostname":"h","version":"0","protocol":${PROTOCOL_VERSION},"harnesses":[null,{"id":"claude"}]}}`,
     '{"t":"event","sessionId":"s","seq":"1","event":{}}',
     '{"t":"result"}',
     "not json",

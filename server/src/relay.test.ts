@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BrowserToServer, RunnerInfo, RunnerToServer } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type BrowserToServer, type RunnerInfo, type RunnerToServer } from "../../shared/protocol";
 import { Relay, type Socket } from "./relay";
 
 class FakeSocket implements Socket {
@@ -23,7 +23,7 @@ class FakeSocket implements Socket {
   }
 }
 
-const runnerInfo = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: `${id}.local`, version: "0.0.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1.0" }] });
+const runnerInfo = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: `${id}.local`, version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.0" }] });
 
 function setup(opts: { rpcTimeoutMs?: number } = {}) {
   const relay = new Relay({ rpcTimeoutMs: opts.rpcTimeoutMs ?? 1000, now: () => 1000 });
@@ -494,9 +494,9 @@ describe("subscribe again", () => {
 
 describe("protocol version", () => {
   test("a runner speaking another protocol is refused with a reason and never listed", () => {
-    const relay = new Relay({ protocol: 2 });
+    const relay = new Relay({ protocol: PROTOCOL_VERSION + 1 });
     const a = new FakeSocket("a");
-    relay.addBrowser(a, { name: "a", email: "" }, 2);
+    relay.addBrowser(a, { name: "a", email: "" }, PROTOCOL_VERSION + 1);
     a.take();
     const r = new FakeSocket("r");
     relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
@@ -505,12 +505,12 @@ describe("protocol version", () => {
     expect(relay.runnerList()).toEqual([]);
     expect(a.take("runners")).toEqual([]);
     const newer = new FakeSocket("n");
-    relay.onRunnerMessage(newer, { t: "hello", runner: { ...runnerInfo("box"), protocol: 3 } });
+    relay.onRunnerMessage(newer, { t: "hello", runner: { ...runnerInfo("box"), protocol: PROTOCOL_VERSION + 2 } });
     expect(newer.closed?.reason).toContain("update the app");
   });
 
   test("a runner already connected that says hello with another protocol is removed", () => {
-    const relay = new Relay({ protocol: 1 });
+    const relay = new Relay({ protocol: PROTOCOL_VERSION });
     const r = new FakeSocket("r");
     relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
     relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), protocol: 9 } });
