@@ -10,7 +10,7 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
-import { assistantPart, blockText, commandOutput, notice, toolResults, userMessage, type EntryFlags } from "./content";
+import { assistantPart, blockText, commandOutput, joinBash, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** Each entry's time, and the flags Claude Code stores on it, by uuid. */
@@ -60,7 +60,7 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
         if (owner && i >= 0) owner.parts[i] = { ...(owner.parts[i] as ToolPart), status: r.status, output: r.output };
       }
       const u = userMessage(msg.content, m.uuid, ts, meta.flags.get(m.uuid));
-      if (u) out.push(u);
+      if (u && !joinBash(out, u)) out.push(u);
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
       out.push(notice(m.uuid, ts, "Context compacted."));
     } else if (m.type === "system" && msg?.subtype === "local_command" && typeof msg.content === "string") {
@@ -73,9 +73,13 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
   for (let i = out.length - 1; i >= 0; i--)
     if (out[i]!.role === "notice" && /^Compacted\b/.test((out[i]!.parts[0] as any)?.text ?? "") && (isCompacted(out[i - 1]) || isCompacted(out[i - 2]))) out.splice(i, 1);
   // Claude Code writes a /compact prompt after the compaction it asked for; shown (as live) first.
+  // Sometimes it also wrote the plain prompt before the compaction: then that one is shown alone.
+  const userText = (m?: Msg) => (m?.role === "user" ? ((m.parts[0] as any)?.text ?? "") : undefined);
   for (let i = 0; i + 1 < out.length; i++) {
     const [n, u] = [out[i]!, out[i + 1]!];
-    if (n.role === "notice" && (n.parts[0] as any)?.text === "Context compacted." && u.role === "user" && /^\/compact\b/.test((u.parts[0] as any)?.text ?? "")) [out[i], out[i + 1]] = [u, n];
+    if (!isCompacted(n) || !/^\/compact\b/.test(userText(u) ?? "")) continue;
+    if (userText(out[i - 1])?.trim() === userText(u)!.trim()) out.splice(i + 1, 1);
+    else [out[i], out[i + 1]] = [u, n];
   }
   // A call left running before the last message never finished (the process stopped).
   const lastId = out.at(-1)?.id;

@@ -252,3 +252,40 @@ test("a prompt delivered mid-turn (a queued_command attachment) shows where it r
   // Its id is the one Claude Code gives the prompt (source_uuid); the task's report stays hidden.
   expect(msgs.map((m) => `${m.id}:${(m.parts.find((p) => p.type === "text") as any)?.text ?? ""}`)).toEqual(["u1:first", "msg_a1:", "src1:also this", "msg_a2:done"]);
 });
+
+/** A session file from raw entries, read as a transcript. */
+async function readRows(rows: any[]) {
+  const path = join(mkdtempSync(join(tmpdir(), "tether-rows-")), "s.jsonl");
+  writeFileSync(path, rows.map((r, i) => JSON.stringify({ timestamp: new Date(1_800_000_000_000 + i * 1000).toISOString(), ...r })).join("\n") + "\n");
+  const f = new StoreFile(path);
+  await f.update();
+  return chainMessages(f.chain());
+}
+
+test("a `!` command reads as Claude Code shows it: `! cmd`, then its output", async () => {
+  const u = (uuid: string, parentUuid: string | null, content: string) => ({ uuid, parentUuid, type: "user", message: { role: "user", content } });
+  const msgs = await readRows([
+    u("b1", null, "<bash-input>ls &amp;&amp; echo hi</bash-input>"),
+    u("b2", "b1", "<bash-stdout>a.txt\nhi</bash-stdout><bash-stderr>warn: x &lt;y&gt;</bash-stderr>"),
+    u("b3", "b2", "keep going\n\n<bash-input>git push</bash-input>\n<bash-stdout></bash-stdout><bash-stderr>Everything up-to-date</bash-stderr>"),
+  ]);
+  const show = (p: any) => (p.type === "tool" ? `${p.kind}:${p.status}:${p.command}:${p.output}` : p.text);
+  expect(msgs.map((m) => `${m.id}|${m.parts.map(show).join("|")}`)).toEqual([
+    "b1|! ls && echo hi|shell:done:ls && echo hi:a.txt\nhi\nwarn: x <y>",
+    "b3|keep going|! git push|shell:done:git push:Everything up-to-date",
+  ]);
+});
+
+test("/compact written both before and after its compaction shows once, before the notice", async () => {
+  const msgs = await readRows([
+    { uuid: "u1", parentUuid: null, type: "user", message: { role: "user", content: "hi" } },
+    { uuid: "a1", parentUuid: "u1", type: "assistant", message: { id: "msg_a1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
+    { uuid: "c1", parentUuid: "a1", type: "user", message: { role: "user", content: "/compact" } },
+    { uuid: "cb", parentUuid: null, logicalParentUuid: "a1", type: "system", subtype: "compact_boundary", content: "Conversation compacted" },
+    { uuid: "s1", parentUuid: "cb", type: "user", isCompactSummary: true, message: { role: "user", content: "This session is being continued…" } },
+    { uuid: "c2", parentUuid: "s1", type: "user", message: { role: "user", content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>" } },
+    { uuid: "o1", parentUuid: "c2", type: "user", message: { role: "user", content: "<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>" } },
+    { uuid: "u2", parentUuid: "o1", type: "user", message: { role: "user", content: "next" } },
+  ]);
+  expect(msgs.map((m) => `${m.role}:${(m.parts[0] as any)?.text}`)).toEqual(["user:hi", "assistant:hello", "user:/compact", "notice:Context compacted.", "user:next"]);
+});

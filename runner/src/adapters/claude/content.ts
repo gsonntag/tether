@@ -109,10 +109,58 @@ export function userMessage(content: unknown, id: string, ts: number, flags: Ent
   }
   const parts: Part[] = [];
   for (const b of blocks) {
-    if (b?.type === "text" && typeof b.text === "string" && b.text) parts.push({ type: "text", text: cleanUserText(b.text) });
+    if (b?.type === "text" && typeof b.text === "string" && b.text) parts.push(...(bashParts(b.text, id) ?? [{ type: "text" as const, text: cleanUserText(b.text) }]));
     else if (b?.type === "image" && b.source?.type === "base64") parts.push({ type: "image", mimeType: b.source.media_type, data: b.source.data });
   }
   return parts.length ? { id, role: "user", parts, ts } : undefined;
+}
+
+const BASH = /<bash-input>([\s\S]*?)<\/bash-input>|<bash-stdout>([\s\S]*?)<\/bash-stdout>\s*(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?|<bash-stderr>([\s\S]*?)<\/bash-stderr>/g;
+const ENTITIES: Record<string, string> = { "&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&#39;": "'" };
+const unescape = (s: string) => s.replace(/&(?:lt|gt|amp|quot|#39);/g, (e) => ENTITIES[e]!);
+
+/**
+ * A command you ran with `!` in Claude Code, as it shows it: "! cmd", then its output (a shell
+ * card; done, as the exit code isn't stored, and tools write to stderr when they succeed). Claude
+ * Code stores the command and its output as two entries (sometimes one, after text you typed);
+ * `joinBash` puts an output under its command. Undefined when the text has none.
+ */
+export function bashParts(text: string, id: string): Part[] | undefined {
+  if (!/<bash-(?:input|stdout|stderr)>/.test(text)) return undefined;
+  const parts: Part[] = [];
+  let last = 0;
+  let n = 0;
+  let cmd: string | undefined;
+  const prose = (t: string) => void (t.trim() && parts.push({ type: "text", text: t.trim() }));
+  for (const m of text.matchAll(BASH)) {
+    prose(text.slice(last, m.index));
+    last = m.index! + m[0].length;
+    if (m[1] !== undefined) {
+      cmd = unescape(m[1].trim());
+      parts.push({ type: "text", text: `! ${cmd}` });
+      continue;
+    }
+    const out = unescape((m[2] ?? "").trim());
+    const err = unescape((m[3] ?? m[4] ?? "").trim());
+    parts.push({ type: "tool", id: `${id}:bash${n++}`, name: "Bash", kind: "shell", input: cmd ? { command: cmd } : {}, ...(cmd ? { command: cmd } : {}), status: "done", output: [out, err].filter(Boolean).join("\n") });
+  }
+  prose(text.slice(last));
+  return parts;
+}
+
+/**
+ * A `!` command's output (a message of only its shell card) joins the "! cmd" message just before
+ * it, with the command filled in. True when it did.
+ */
+export function joinBash(out: Msg[], m: Msg): boolean {
+  const prev = out.at(-1);
+  const card = m.parts[0];
+  if (m.role !== "user" || m.parts.length !== 1 || card?.type !== "tool" || !card.id.startsWith(`${m.id}:bash`) || card.command) return false;
+  const last = prev?.role === "user" && !prev.origin ? prev.parts.at(-1) : undefined;
+  if (last?.type !== "text" || !last.text.startsWith("! ")) return false;
+  const command = last.text.slice(2);
+  prev!.parts.push({ ...card, input: { command }, command });
+  return true;
 }
 
 /** The tool_result blocks of a user entry: which call, done or failed, and its output. */
