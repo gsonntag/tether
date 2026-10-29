@@ -145,7 +145,7 @@ const waitCard = async (p, state, what, ms = 60_000) => {
 /** Runs a `!` command from the composer (typed with the !, Enter). */
 async function bang(p, command, { tap = false } = {}) {
   if (tap) {
-    await p.getByRole("button", { name: "Shell command" }).tap();
+    await p.getByRole("button", { name: "Shell command", exact: true }).tap();
     await composer(p).pressSequentially(command);
     await button(p.locator(".t-composer"), "Run").tap();
   } else {
@@ -195,11 +195,11 @@ const steps = {
     await p.locator(".t-composer.shell").waitFor();
     const hint = await p.locator(".t-shell-hint").innerText();
     if (!/Runs now in[\s\S]*scratch[\s\S]*goes to Claude/.test(hint)) fail(`the shell hint says: ${hint}`);
-    if ((await p.getByRole("button", { name: "Shell command" }).getAttribute("aria-pressed")) !== "true") fail("the shell toggle isn't on");
+    if ((await p.getByRole("button", { name: "Shell command", exact: true }).getAttribute("aria-pressed")) !== "true") fail("the shell toggle isn't on");
     await button(p.locator(".t-composer"), "Run").waitFor();
     await shot(p, "shell-mode-desktop");
     // The toggle takes the ! off again.
-    await p.getByRole("button", { name: "Shell command" }).click();
+    await p.getByRole("button", { name: "Shell command", exact: true }).click();
     if ((await composer(p).inputValue()) !== "") fail("the toggle didn't remove the !");
     if (await p.locator(".t-composer.shell").count()) fail("still a shell prompt without the !");
     await bang(p, "echo P5B-$((6*7))-OK; pwd");
@@ -328,7 +328,7 @@ const steps = {
   async phone() {
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
-    const toggle = ph.getByRole("button", { name: "Shell command" });
+    const toggle = ph.getByRole("button", { name: "Shell command", exact: true });
     await toggle.waitFor();
     await bang(ph, "echo PHONE-SHELL-OK", { tap: true });
     await waitCard(ph, "sent", "phone card", 60_000);
