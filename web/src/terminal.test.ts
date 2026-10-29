@@ -129,6 +129,20 @@ test("a terminal that exited ends for good; one that exited while away is not st
   expect(d.status).toBe("ended");
 });
 
+test("opened while the runner is away, it attaches when the runner is back", async () => {
+  const f = fake();
+  const v = view();
+  f.setRunner(false);
+  const c = new TermConn("r1", { sessionId: "claude:s" }, v.cb, f.deps);
+  await c.open(90, 30, true);
+  expect(f.calls).toEqual([]);
+  expect(c.status).toBe("reconnecting");
+  f.setRunner(true);
+  await tick();
+  expect(f.calls[0]).toEqual({ op: "openTerminal", args: { sessionId: "claude:s", cols: 90, rows: 30, stop: true } });
+  expect(c.status).toBe("open");
+});
+
 test("the first attach's error reaches the caller (the busy prompt's race)", async () => {
   const f = fake();
   f.failWith("A turn is running. Stop it to open the terminal.");

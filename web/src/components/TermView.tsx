@@ -93,6 +93,7 @@ export const TermView = forwardRef<
           setStatus({ s, why });
           onStatus?.(s);
         },
+        failed: (m) => onError?.(m),
       },
       deps,
     );

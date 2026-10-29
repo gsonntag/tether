@@ -16,6 +16,7 @@
 // Every terminal is its own tmux session (tmux.ts), so it survives a runner restart: at start the
 // runner lists them and readopts the TUIs. Each attached browser gets its own PTY (attach.ts).
 
+import { existsSync } from "node:fs";
 import { parseSessionId } from "../../../shared/ids";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState } from "../../../shared/transcript";
@@ -211,6 +212,8 @@ export class TerminalControl {
     const name = tuiName(s.id);
     // Already there (another device opened it, or it outlived a runner restart).
     if (await this.o.tmux.has(name)) return this.adopt(s);
+    // Checked before anything is handed over: tmux would start the TUI elsewhere.
+    if (!existsSync(s.summary.projectPath)) throw new Error(`The session's folder ${s.summary.projectPath} doesn't exist any more.`);
     const handoff = s.capabilities.terminal === "handoff";
     if (handoff && !o.fresh) {
       const busy = s.state.status !== "idle" || !!s.sending;

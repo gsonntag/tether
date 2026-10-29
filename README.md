@@ -70,6 +70,7 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 | `TETHER_DEV` | | `1`: fall back to `http://localhost:8790` and token `dev` when the two above are unset |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
 | `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
+| `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals live on (`tmux -L <socket>`); give a dev runner its own |
 
 Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;
 by default only pages on the app's own host may open one.
@@ -98,3 +99,23 @@ runner restart with a request open, and plan approval. See its header and `docs/
 `scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
 local stack (vite on :5180; it starts and stops the server and runners itself):
 `PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p0.mjs`.
+
+## Terminal mode (P3)
+
+The **Terminal** chip on a session opens the harness's own TUI in a panel (xterm.js), beside the
+transcript on desktop and full screen on a phone (with a key bar). Needs `tmux` on the runner's
+machine. For Claude it is a handoff: the SDK process closes, `claude --resume <id>` runs in tmux,
+and the transcript is read-only (tailed from the store) until **Back to Tether** quits the TUI and
+the session goes live again on the same id. The panel also holds plain shells per project (**+**).
+
+Every terminal is its own tmux session on the socket `TETHER_TMUX_SOCKET` (default `tether`),
+tagged with `@tether_*` options, so terminals and shells outlive the runner: a restarted runner
+readopts them. Under systemd the runner starts the tmux server in a scope of its own
+(`systemd-run --user --scope`), so stopping the unit (`KillMode=mixed`) leaves it running. The tmux
+server and everything in it get the runner's environment without `TETHER_*`.
+
+Claude's TUI is launched with `--settings` adding hooks for this launch only (never your
+`~/.claude/settings.json`): they report prompts, "needs you" and turn ends to the runner over
+`<config dir>/hooks.sock`. Checks: [docs/acceptance/P3.md](docs/acceptance/P3.md); end to end:
+`scripts/e2e-p3.mjs`.
+

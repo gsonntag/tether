@@ -56,8 +56,14 @@ class FakeTmux extends Tmux {
 
 const QUIT: QuitStep[] = [{ keys: ["Escape"] }, { text: "/exit" }, { keys: ["Enter"] }];
 
+/** Stored sessions' folder: it must exist for a terminal to open there. */
+const PROJ = mkdtempSync(join(tmpdir(), "tether-p-"));
+
 class TermAdapter extends FakeAdapter {
   launches: { nativeId: string; opts: TerminalOpts }[] = [];
+  override addStored(nativeId: string, msgs: Parameters<FakeAdapter["addStored"]>[1], over: Parameters<FakeAdapter["addStored"]>[2] = {}) {
+    return super.addStored(nativeId, msgs, { projectPath: PROJ, ...over });
+  }
   constructor(caps?: Partial<HarnessCapabilities>) {
     super();
     if (caps) this.capabilities = { ...this.capabilities, ...caps };
@@ -124,7 +130,7 @@ describe("handoff (Claude)", () => {
     const t = tmux.sessions.get("t-claude-s1")!;
     expect(t.argv).toEqual(["tui", "--resume", "s1"]);
     expect([t.cols, t.rows]).toEqual([120, 40]);
-    expect(t).toMatchObject({ kind: "tui", sessionId: "claude:s1", projectPath: "/p" });
+    expect(t).toMatchObject({ kind: "tui", sessionId: "claude:s1", projectPath: PROJ });
     expect(state(core, "claude:s1")).toMatchObject({ mode: "terminal", status: "idle", terminal: { kind: "handoff" } });
     expect(modes).toEqual(["stored->live", "live->terminal"]);
     // The browser's PTY attaches to that tmux session.
@@ -314,6 +320,16 @@ describe("handoff (Claude)", () => {
     await term.end(sessionId);
     expect(state(core, sessionId).mode).toBe("live");
     expect(adapter.drivers.length).toBe(1);
+  });
+
+  test("a session whose folder is gone isn't handed over", async () => {
+    const { adapter, core, live, term, tmux } = setup();
+    adapter.addStored("s1", [], { projectPath: "/nonexistent/tether-test" });
+    await live.send("claude:s1", "hi");
+    await expect(term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 })).rejects.toThrow(/doesn't exist/);
+    expect(tmux.sessions.size).toBe(0);
+    expect(adapter.drivers[0]!.closed).toBe(false);
+    expect(state(core, "claude:s1").mode).toBe("live");
   });
 
   test("subagents have no terminal of their own", async () => {

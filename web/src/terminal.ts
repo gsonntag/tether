@@ -28,6 +28,8 @@ export interface TermCallbacks {
   /** the screen is about to be drawn again from scratch (a reattach) */
   reset(): void;
   status(s: TermStatus, why?: string): void;
+  /** a first attach that waited for the runner failed (the runner's message) */
+  failed?(message: string): void;
 }
 
 interface Wiring {
@@ -73,6 +75,8 @@ export class TermConn {
   private resizeTimer?: ReturnType<typeof setTimeout>;
   /** the first attach succeeded: later ones are reattaches */
   private attachedOnce = false;
+  /** the first attach waits for the runner (it was offline when the view opened) */
+  private first?: { stop: boolean };
   private w: Wiring;
 
   constructor(
@@ -98,6 +102,12 @@ export class TermConn {
   async open(cols: number, rows: number, stop = false): Promise<void> {
     this.cols = cols;
     this.rows = rows;
+    // The runner (or the link) is away: attach when it's back rather than fail now.
+    if (!this.d.linkOpen() || !this.d.runnerOnline(this.runnerId)) {
+      this.first = { stop };
+      this.set("reconnecting", "Waiting for the runner…");
+      return;
+    }
     await this.attach(stop, false);
   }
 
@@ -151,8 +161,18 @@ export class TermConn {
   }
 
   private retry() {
-    if (this.closed || this.status === "ended" || this.attachId || this.attaching || !this.attachedOnce) return;
+    if (this.closed || this.status === "ended" || this.attachId || this.attaching) return;
     if (!this.d.linkOpen() || !this.d.runnerOnline(this.runnerId)) return;
+    if (this.first) {
+      const { stop } = this.first;
+      this.first = undefined;
+      this.attach(stop, false).catch((e: Error) => {
+        this.set("ended", e.message);
+        this.cb.failed?.(e.message);
+      });
+      return;
+    }
+    if (!this.attachedOnce) return;
     this.attach(false, true).catch((e: Error) => {
       // Gone for good (exited meanwhile) or the runner can't: say so; a later reconnect tries again.
       if (/closed/i.test(e.message)) this.set("ended", "The terminal has closed.");
