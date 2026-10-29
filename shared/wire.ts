@@ -40,8 +40,8 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
       return isStr(m.attachId) && typeof m.data === "string" ? (m as RunnerToServer) : null;
     case "termEnd":
       return isStr(m.attachId) ? (m as RunnerToServer) : null;
-    case "pong":
-      return { t: "pong" };
+    case "ping":
+      return { t: "ping" };
   }
   return null;
 }

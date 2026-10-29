@@ -105,7 +105,8 @@ export type ServerToRunner =
   | { t: "rpc"; id: string; op: OpName; args: unknown }
   /** these attaches lost their browser: close their PTYs */
   | { t: "detach"; attachIds: string[] }
-  | { t: "ping" };
+  /** answers the runner's keepalive ping */
+  | { t: "pong" };
 
 export type RunnerToServer =
   | { t: "hello"; runner: Omit<RunnerInfo, "connectedAt"> }
@@ -114,4 +115,5 @@ export type RunnerToServer =
   | { t: "summary"; summary: SummaryUpdate }
   | { t: "term"; attachId: string; data: string }
   | { t: "termEnd"; attachId: string; reason?: string }
-  | { t: "pong" };
+  /** keepalive; the server answers pong, so a dead connection shows up as silence */
+  | { t: "ping" };

@@ -145,6 +145,7 @@ export class Relay {
 
   onRunnerMessage(sock: Socket, m: RunnerToServer) {
     if (m.t === "hello") return this.hello(sock, m.runner);
+    if (m.t === "ping") return send(sock, { t: "pong" });
     const runnerId = this.runnerOf.get(sock);
     // Nothing counts before hello, and nothing from a connection a newer one replaced.
     if (!runnerId || this.runners.get(runnerId)?.sock !== sock) return;

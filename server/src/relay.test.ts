@@ -62,12 +62,15 @@ describe("connections", () => {
     expect(b.sent).toEqual([]);
   });
 
-  test("ping is answered by the server", () => {
-    const { relay, browser } = setup();
+  test("pings from browsers and runners are answered by the server", () => {
+    const { relay, browser, runner } = setup();
     const b = browser("a");
+    const r = runner("box");
     b.take();
     relay.onBrowserMessage(b, { t: "ping" });
+    relay.onRunnerMessage(r, { t: "ping" });
     expect(b.take()).toEqual([{ t: "pong" }]);
+    expect(r.take()).toEqual([{ t: "pong" }]);
   });
 });
 
