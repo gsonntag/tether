@@ -359,9 +359,25 @@ export class LiveControl {
   private async setting(id: string, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent runs with its parent's settings.");
+    // A handoff TUI drives (SPEC §8): it was launched with its settings and takes no others from
+    // Tether, so a change here would only pretend.
+    if (s.state.mode === "terminal" && s.capabilities.terminal === "handoff") {
+      const hint = this.core.adapter(s.summary.harness).terminalSettingsHint;
+      throw new Error(`${HARNESS_LABELS[s.summary.harness]}'s terminal is driving. Change it there${hint ? ` (${hint})` : ""}.`);
+    }
+    // One change at a time per session: each waits for the harness to take it (or not) before the next.
+    const run = (s.settingChain ?? Promise.resolve()).catch(() => {}).then(() => this.applySetting(s, patch, apply));
+    s.settingChain = run;
+    return run;
+  }
+
+  private async applySetting(s: Session, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
+    const id = s.id;
     const before = this.core.o.prefs.get(id);
     const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
     this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
+    s.rolledBack = undefined;
+    this.noteTurnSettings(s, patch);
     s.setState(patch);
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
@@ -378,12 +394,41 @@ export class LiveControl {
       }
     } catch (e: any) {
       // Not applied: what every device shows, and what the next start sends, go back to how they
-      // were, so nothing runs with settings other than those shown.
+      // were, so nothing runs with settings other than those shown. A late confirmation still
+      // counts (the sink says so).
       const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
       this.core.o.prefs.set(id, undo);
+      s.rolledBack = patch;
+      this.rollBackTurnSettings(s, shown);
       s.setState(shown);
       throw new Error(`${HARNESS_LABELS[s.summary.harness]} didn't take that setting (${e?.message ?? e}). It's unchanged.`);
     }
+  }
+
+  /**
+   * A setting changes while a turn runs on a harness where that counts from the next turn
+   * (capabilities.settingsApply "nextTurn"): the turn's own value is kept beside it, so it shows
+   * honestly ("Read only from the next turn") until the turn ends.
+   */
+  private noteTurnSettings(s: Session, patch: StartOpts) {
+    if (s.capabilities.settingsApply !== "nextTurn" || s.state.status === "idle" || s.summary.parentSessionId) return;
+    const turn = { ...s.state.turnSettings };
+    for (const k of ["model", "effort", "permissionMode"] as const) {
+      const v = patch[k];
+      if (v === undefined || v === s.state[k]) continue;
+      if (!(k in turn) && s.state[k] !== undefined) turn[k] = s.state[k];
+      // Changed back to what the turn runs with: nothing differs any more.
+      if (turn[k] === v) delete turn[k];
+    }
+    s.setState({ turnSettings: Object.keys(turn).length ? turn : undefined });
+  }
+
+  /** A change rolled back: the turn's own values are what shows again. */
+  private rollBackTurnSettings(s: Session, shown: StartOpts) {
+    if (!s.state.turnSettings) return;
+    const turn = { ...s.state.turnSettings };
+    for (const k of Object.keys(shown) as (keyof StartOpts)[]) if (turn[k] === shown[k]) delete turn[k];
+    s.setState({ turnSettings: Object.keys(turn).length ? turn : undefined });
   }
 
   /** How long a live setting change may take before it counts as failed (and is rolled back). */
@@ -395,7 +440,8 @@ export class LiveControl {
    * Before a live send, on a harness that confirms settings itself (capabilities.persistent): a
    * setting made in Tether that it hasn't confirmed yet (its pref is still pending) is applied again
    * and waited for. A turn never runs with settings other than those shown: if it can't be
-   * confirmed, the send fails and says so.
+   * confirmed, the change is dropped, the session shows what the harness last confirmed, and this
+   * send fails saying so (the next one goes out on the confirmed settings).
    */
   private async confirmSettings(s: Session, d: Driver) {
     if (!s.capabilities.persistent) return;
@@ -416,9 +462,14 @@ export class LiveControl {
     } catch {}
     const left = pending();
     if (!left.length) return;
-    const what = left.map((k) => (k === "permissionMode" ? "mode" : k)).join(" and ");
-    const error = `${HARNESS_LABELS[s.summary.harness]} hasn't confirmed your new ${what} yet, so nothing was sent. Try again in a moment.`;
-    throw new Error(error);
+    // Given up on: it goes, and the session shows what the harness last confirmed.
+    const back: StartOpts = Object.fromEntries(left.map((k) => [k, s.confirmed?.[k]]));
+    this.core.o.prefs.set(s.id, Object.fromEntries(left.map((k) => [k, undefined])));
+    s.rolledBack = Object.fromEntries(left.map((k) => [k, p[k]]));
+    const label = (k: (typeof left)[number]) => (k === "permissionMode" ? "mode" : k);
+    const was = left.map((k) => `${label(k)} ${back[k] ?? "as it was"}`).join(", ");
+    if (Object.values(back).some((v) => v !== undefined)) s.setState(Object.fromEntries(Object.entries(back).filter(([, v]) => v !== undefined)));
+    throw new Error(`${HARNESS_LABELS[s.summary.harness]} didn't confirm your new ${left.map(label).join(" and ")}, so it's back to ${was} and nothing was sent. Send again to go ahead with that, or change it again.`);
   }
 
   /**
@@ -575,6 +626,16 @@ export class LiveControl {
         // A setting made in Tether is kept (and sent at each start) until the harness reports it
         // applied: then it isn't sent again, where it could undo a change made elsewhere since.
         if (s.capabilities.persistent && !s.summary.parentSessionId) {
+          const reported = { ...(patch.model ?? patch.modelResolved ? { model: patch.model ?? patch.modelResolved } : {}), ...(patch.effort ? { effort: patch.effort } : {}), ...(patch.permissionMode ? { permissionMode: patch.permissionMode } : {}) };
+          s.confirmed = { ...s.confirmed, ...reported };
+          // A change Tether had given up on (rolled back) that the harness applied after all.
+          const late = (Object.keys(reported) as (keyof StartOpts)[]).filter((k) => s.rolledBack?.[k] !== undefined && s.rolledBack[k] === reported[k]);
+          if (late.length) {
+            s.rolledBack = undefined;
+            s.apply({ type: "msg", msg: notice(`${HARNESS_LABELS[s.summary.harness]} applied your earlier change to the ${late.map((k) => (k === "permissionMode" ? "mode" : k)).join(" and ")} after all.`) });
+          }
+          // Changed elsewhere (Codex's TUI) mid-turn: the running turn still has its old values.
+          this.noteTurnSettings(s, reported);
           const p = core.o.prefs.get(s.id);
           const done = {
             ...(p.model !== undefined && (patch.model ?? patch.modelResolved) === p.model ? { model: undefined } : {}),
@@ -606,6 +667,8 @@ export class LiveControl {
     if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
+      // The next turn runs with the settings as shown.
+      if (s.state.turnSettings) s.setState({ turnSettings: undefined });
       const stopped = s.stopped;
       s.stopped = false;
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });

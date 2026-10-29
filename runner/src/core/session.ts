@@ -3,7 +3,7 @@
 // every change goes out through `emit` with the next seq.
 
 import type { HarnessCapabilities, LiveState, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
-import type { Driver, TranscriptEvent } from "./adapter";
+import type { Driver, StartOpts, TranscriptEvent } from "./adapter";
 import type { OverlayNotice } from "./notices";
 import { capState } from "../../../shared/limits";
 import { Transcript } from "./transcript";
@@ -25,6 +25,12 @@ export class Session {
   /** loading the transcript */
   loading?: Promise<Transcript>;
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** setting changes, one at a time (each waits for the harness to take it) */
+  settingChain?: Promise<unknown>;
+  /** settings Tether rolled back because the harness didn't take them in time: a late report says so */
+  rolledBack?: StartOpts;
+  /** the settings the harness last reported (capabilities.persistent): what a failed change goes back to */
+  confirmed?: StartOpts;
   /** a subagent that is still running in its parent's process */
   childRunning = false;
   /** a new session that hasn't had a message yet: nothing of it is in any store */

@@ -267,19 +267,57 @@ describe("a setting changed while live: shown only as the harness takes it, neve
     expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
   });
 
-  test("a pending setting (made while it started) is applied and confirmed before the send; else nothing is sent", async () => {
-    const { live, d, prefs } = await live_({ persistent: true });
+  test("a pending setting is applied and confirmed before the send; never confirmed: dropped, shown as confirmed, nothing sent", async () => {
+    const { live, d, prefs, s } = await live_({ persistent: true });
     // Left pending (as when a change made while stored couldn't be confirmed yet).
     prefs.set("claude:s1", { permissionMode: "read-only" });
+    s.setState({ permissionMode: "read-only" });
     const applied: string[] = [];
-    d.setPermissionMode = async (m) => void applied.push(m);
-    await expect(live.send("claude:s1", "next")).rejects.toThrow("hasn't confirmed your new mode yet, so nothing was sent");
+    d.onSetting = (_k, v) => void applied.push(v);
+    await expect(live.send("claude:s1", "next")).rejects.toThrow("didn't confirm your new mode, so it's back to mode auto and nothing was sent");
     expect(d.sent).toEqual(["hi"]);
     expect(applied).toEqual(["read-only"]);
-    // Confirmed late (within the wait): the send goes ahead.
-    d.setPermissionMode = async (m) => void setTimeout(() => d.sink.state({ permissionMode: m }), 30);
+    // Dropped: shown as what the harness confirmed, and the next send goes out on that.
+    expect(s.state.permissionMode).toBe("auto");
+    expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
     await live.send("claude:s1", "next");
     expect(d.sent).toEqual(["hi", "next"]);
+    // Confirmed late after all: the true value shows, and it's said.
+    d.sink.state({ permissionMode: "read-only" });
+    expect(s.state.permissionMode).toBe("read-only");
+    expect(s.transcript!.messages.some((m) => (m.parts[0] as any)?.text === "Claude Code applied your earlier change to the mode after all.")).toBe(true);
+  });
+
+  test("a pending setting confirmed within the wait: the send goes ahead", async () => {
+    const { live, d, prefs } = await live_({ persistent: true });
+    prefs.set("claude:s1", { permissionMode: "read-only" });
+    d.onSetting = (k, v) => void setTimeout(() => d.sink.state({ [k]: v }), 30);
+    await live.send("claude:s1", "next");
+    expect(d.sent).toEqual(["hi", "next"]);
+    expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
+  });
+
+  test("rolled back after a timeout, then confirmed late: the true value shows and it's said", async () => {
+    const { live, d, s } = await live_({ persistent: true });
+    d.onSetting = undefined;
+    await expect(live.setPermissionMode("claude:s1", "read-only")).rejects.toThrow("It's unchanged.");
+    expect(s.state.permissionMode).toBe("auto");
+    d.sink.state({ permissionMode: "read-only" });
+    expect(s.state.permissionMode).toBe("read-only");
+    expect(s.transcript!.messages.at(-1)!.parts[0]).toMatchObject({ text: "Claude Code applied your earlier change to the mode after all." });
+  });
+
+  test("changes made one after another are applied one at a time, in order", async () => {
+    const { live, d } = await live_({ persistent: true });
+    const order: string[] = [];
+    d.onSetting = async (k, v) => {
+      order.push(`start ${v}`);
+      await Bun.sleep(v === "read-only" ? 30 : 1);
+      order.push(`done ${v}`);
+      d.sink.state({ [k]: v });
+    };
+    await Promise.all([live.setPermissionMode("claude:s1", "read-only"), live.setPermissionMode("claude:s1", "full-access")]);
+    expect(order).toEqual(["start read-only", "done read-only", "start full-access", "done full-access"]);
   });
 
   test("a harness that doesn't confirm (Claude): a failed change is rolled back; a taken one stands", async () => {
@@ -290,5 +328,62 @@ describe("a setting changed while live: shown only as the harness takes it, neve
     };
     await expect(live.setPermissionMode("claude:s1", "plan")).rejects.toThrow("It's unchanged.");
     expect(s.state.permissionMode).toBe("auto");
+  });
+});
+
+const adapterDriver = (s: { driver?: unknown }) => s.driver as import("./fakeAdapter").FakeDriver;
+
+describe("a setting changed during a turn (capabilities.settingsApply)", () => {
+  async function running(caps: Partial<HarnessCapabilities>) {
+    const t = setup({ persistent: true, ...caps });
+    t.adapter.addStored("s1", []);
+    const h = held();
+    t.adapter.script = () => [h.step, idle];
+    await t.live.setPermissionMode("claude:s1", "full-access");
+    const sending = t.live.send("claude:s1", "go");
+    await Bun.sleep(5);
+    const s = await t.core.open("claude:s1");
+    return { ...t, s, h, sending };
+  }
+
+  test('"nextTurn": the running turn\'s own value shows beside the change until the turn ends', async () => {
+    const { live, s, h, sending } = await running({ settingsApply: "nextTurn" });
+    await live.setPermissionMode("claude:s1", "read-only");
+    expect(s.state).toMatchObject({ permissionMode: "read-only", turnSettings: { permissionMode: "full-access" } });
+    // Changed back to what the turn runs with: nothing differs.
+    await live.setPermissionMode("claude:s1", "full-access");
+    expect(s.state.turnSettings).toBeUndefined();
+    // Changed elsewhere (the harness reports it, e.g. Codex's TUI) mid-turn: noted the same way.
+    adapterDriver(s).sink.state({ permissionMode: "auto" });
+    expect(s.state).toMatchObject({ permissionMode: "auto", turnSettings: { permissionMode: "full-access" } });
+    await live.setPermissionMode("claude:s1", "read-only");
+    expect(s.state.turnSettings).toEqual({ permissionMode: "full-access" });
+    h.release();
+    await sending;
+    expect(s.state.turnSettings).toBeUndefined();
+    expect(s.state.permissionMode).toBe("read-only");
+  });
+
+  test('"now" (default): a change applies to the running turn; nothing extra shows', async () => {
+    const { live, s, h, sending } = await running({});
+    await live.setPermissionMode("claude:s1", "read-only");
+    expect(s.state.turnSettings).toBeUndefined();
+    h.release();
+    await sending;
+  });
+
+  test("while a handoff TUI drives, settings are refused (it takes none from Tether); shared is fine", async () => {
+    const t = setup({ terminal: "handoff" });
+    t.adapter.addStored("s1", []);
+    const s = await t.core.open("claude:s1");
+    s.setState({ mode: "terminal", terminal: { kind: "handoff" } });
+    await expect(t.live.setPermissionMode("claude:s1", "plan")).rejects.toThrow("Claude Code's terminal is driving. Change it there.");
+    expect(s.state.permissionMode).toBeUndefined();
+    const u = setup({ terminal: "shared" });
+    u.adapter.addStored("s1", []);
+    await u.live.send("claude:s1", "hi");
+    (await u.core.open("claude:s1")).setState({ terminal: { kind: "shared" } });
+    await u.live.setPermissionMode("claude:s1", "plan");
+    expect(u.adapter.drivers[0]!.settings.permissionMode).toBe("plan");
   });
 });

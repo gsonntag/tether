@@ -128,6 +128,8 @@ export interface Adapter {
    * model picked in its TUI can be carried back to the session. Absent: any.
    */
   ownModel?(model: string): boolean;
+  /** where settings change in this harness's own TUI, for a refusal while it drives ("/model, Shift+Tab") */
+  terminalSettingsHint?: string;
   /**
    * A new session's native id: chosen by Tether (Claude: a UUID; SPEC §6 terminal), or made by the
    * harness when it picks its own ids (Codex: a thread in its daemon, which `start` then joins).

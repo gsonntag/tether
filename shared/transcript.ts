@@ -41,6 +41,12 @@ export interface HarnessCapabilities {
    * when the runner stopped goes on, and the runner rejoins it when it starts again.
    */
   persistent?: boolean;
+  /**
+   * When a setting changed during a turn takes effect: "now" (default; Claude Code applies it to the
+   * running turn) or "nextTurn" (Codex fixes a turn's settings when it starts). With "nextTurn" the
+   * running turn's own values show beside the change (LiveState.turnSettings).
+   */
+  settingsApply?: "now" | "nextTurn";
 }
 
 // ---------- transcript ----------
@@ -235,6 +241,12 @@ export interface LiveState {
    */
   queueHeld?: boolean;
   queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  /**
+   * Settings changed while a turn runs, on a harness where that takes effect from the next turn
+   * (capabilities.settingsApply "nextTurn"): what the running turn still runs with. Cleared when the
+   * turn ends.
+   */
+  turnSettings?: { model?: string; effort?: string; permissionMode?: string };
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }
