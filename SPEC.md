@@ -1,0 +1,422 @@
+# Tether: core spec (rebuild)
+
+Status: agreed after a grilling session, 2026-10-29. This replaces the v1 codebase (`~/web-coder`,
+preserved on the `v1` branch) with fresh history on `main`, built incrementally. v2 takes over
+production at the end of P1. v1 is not kept running alongside.
+
+## 1. What Tether is
+
+Run coding agents on your own machines and drive them from any browser, desktop or phone. You can
+close the tab and the agent keeps working. Open the same session on several devices and they all
+stay in sync. Every harness looks the same in Tether's transcript. A **Terminal** button opens the
+harness's real terminal UI for anything Tether doesn't show.
+
+### Decisions
+
+| Topic | Decision |
+|---|---|
+| Name | Tether (app slug `tether`, env `TETHER_*`, config `~/.config/tether`) |
+| Repo | `gsonntag/tether`. v1 lives on the `v1` branch and the `v1-final` tag. v2 is fresh history on `main`, the default branch. `master` is deleted. Local checkout `~/tether`. v1 code is referenced and copied over deliberately, never wholesale (§12) |
+| Harnesses in the core | Claude Code and Codex. Others come later through the same adapter interface |
+| Primary UI | Tether's own unified transcript, the same for every harness |
+| Consistency vs harness strengths | **A harness's own strengths win over identical behavior.** When one harness can do something better (e.g. Codex sharing a live thread with its TUI), use it, behind an adapter capability flag |
+| Harness-specific features | Through the **Terminal** button: the harness's real TUI, mirrored (§8). A plain shell per project is an option in the same panel |
+| Approvals | Each harness's own permission modes; Tether relays prompts to any device. Every decision goes through one runner-side pipeline so the **Tether judge can be added back later** (§7) |
+| Phone | First-class for both driving and checking in. Every core feature must work on a phone |
+| Hosting | Same as v1: Foliation app `tether` (UI and relay) plus a runner that dials out with an app service token |
+| Terminal security | Owner-only Foliation sign-in, like everything else. No extra per-device step |
+| Sessions resumed outside Tether | Not detected or prevented. Running `claude --resume` on a session Tether is driving is on you |
+| Several runners | The protocol supports them from day one (`runnerId` everywhere). The UI shows runner choice only when more than one is connected. Cloud containers later = a provisioner module that starts runners in containers |
+| Stack | Same as v1: Bun (server, runner), React + Vite + Astryx (web). Keep the frontend light so it can change |
+
+### Non-goals for the core
+
+Fallback chains and cross-harness handoff, the judge, master context (shared memory),
+the MCP registry, cross-harness subagents, `/goal` `/loop` `/schedule` `/review`, plan review,
+forks, and libraries (hooks, commands, subagent definitions). Each may come back later as a
+module (§3). None of them may require editing the session core.
+
+## 2. Principles
+
+1. **A small core, with features as modules.** The session core does lifecycle, transcript, requests
+   and messaging. Every other feature subscribes to session events and calls a narrow API. No file
+   grows past about 800 lines. If one has to, the design is wrong.
+2. **The harness's store is the source of truth for the transcript.** Tether never keeps its own copy
+   of a conversation. It reads Claude's JSONL and Codex's rollout files. That makes terminal
+   sessions, CLI sessions and Tether sessions the same thing.
+3. **The runner owns live state. The server is a stateless relay.** Redeploying the app never
+   interrupts an agent.
+4. **Every feature is tested against the real harness.** Unit tests with recorded fixtures are
+   necessary but not enough. Each phase has acceptance checks run against real `claude` and `codex`
+   (§11).
+5. **Harness strengths over uniformity.** The transcript looks the same for every harness, but
+   behavior may differ where a harness does something better. Differences are declared as adapter
+   capabilities (`canSteer`, `terminal: "handoff" | "shared"`, …), never special-cased in the core.
+6. **Direct UI.** No confirm dialogs or undo toasts, no status-bar chatter. Transient status goes
+   inline in the chat. Use human labels ("Opus 5.5", "High").
+
+## 3. Architecture
+
+```
+browser ──wss──► server (Foliation app: UI + relay) ◄──wss── runner (your machine) ──► claude / codex
+       (Foliation sign-in, owners only)               (app service token)          └─► tmux (terminal mode)
+```
+
+```
+tether/
+  shared/     protocol types (wire format), used by all three
+  server/     relay: auth, routes rpc and events, no session state
+  runner/
+    src/core/       connection, session registry, session lifecycle, request broker, message queue
+    src/adapters/   claude/, codex/ (each: driver, history reader, discovery, terminal launch)
+    src/terminal/   tmux control, PTY bridge, handoff
+    src/modules/    later features (notifications, checkpoints, judge, …) subscribe to core events
+  web/        React UI
+```
+
+**Core events, inside the runner.** The session core emits typed events on an in-process bus:
+`turnStarted`, `turnEnded`, `message`, `toolCall`, `requestOpened`, `requestClosed`, `modeChanged`
+(live, terminal or stored), `error`. Modules subscribe to these. The core never imports a module.
+
+## 4. Domain model
+
+- **Runner:** one machine. `id`, hostname, available harnesses, connected flag.
+- **Project:** a folder on the runner. It is discovered from the harness stores plus any folders you add.
+- **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
+  `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
+
+| Mode | Who drives | What Tether shows |
+|---|---|---|
+| `stored` | nobody | transcript read from the store; opening never starts a process |
+| `live` | Tether, through the harness's programmatic interface (Agent SDK, `codex app-server`) | live transcript, composer, requests |
+| `terminal` | the real TUI in tmux | mirrored terminal, plus a read-only live transcript tailed from the store |
+
+Transitions: `stored → live` (send something), `live → stored` (idle 5 minutes, process closes),
+`live ⇄ terminal` (Terminal button, §8), `stored → terminal` (Terminal button on a stored session),
+`terminal → stored` (the TUI exits).
+
+Runner state on disk (`~/.config/tether/runner.json`, mode 600) is small: runner id, which
+sessions are in which mode, per-session prefs (model, effort, permission mode), queued
+messages, and open requests. **Not** transcripts.
+
+## 5. Protocol (shared/)
+
+### Envelope
+
+Browser → server → runner: `{ t: "rpc", id, runnerId, op, args }`, which gets `{ t: "result", id, ok, data?, error? }`.
+Runner → server → browsers: `{ t: "event", runnerId, sessionId, seq, event }`.
+
+**Subscriptions.** A browser subscribes to the sessions it has open (`subscribe` / `unsubscribe`
+ops). The server forwards session events only to subscribers, and forwards a small `summary` stream
+(the sidebar and Home) to every browser. Terminal output is never broadcast (§8).
+
+**Sync.** Each session has a monotonically increasing `seq`. On subscribe, the runner sends a
+`snapshot { session, messages, state, seq }`. The browser applies events with `seq = last + 1`
+and re-subscribes for a fresh snapshot on any gap or reconnect. This one rule handles tab close,
+phone sleep, network changes and multi-device sync.
+
+### Transcript
+
+v1's `Msg` / `Part` model is kept, but trimmed: parts are `text`, `thinking`, `image`, and `tool`
+(`id`, `name`, `kind`, `input`, `status`, `output`, `command?`, `path?`, `parentToolId?`).
+`kind` (`shell`, `edit`, `write`, `read`, `search`, `fetch`, `todo`, `task`, `other`) is how the UI renders
+tool calls from every harness the same way. Messages have roles `user`, `assistant` and `notice`.
+
+Session events: `msg` (upsert by id), `delta` (streamed text), `tool` (patch a tool part), `state`
+(patch live state), `reset` (replace the transcript, after compaction).
+
+### Live state
+
+`mode`, `status` (`idle`, `running` or `waiting`), `model`, `effort`, `permissionMode`, `requests[]` (open
+approvals and questions), `queue[]` (waiting messages), `terminal?` (attach info), `error?`.
+
+### Core ops
+
+`listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `send`, `steer`,
+`queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
+`setPermissionMode`, `listModels`, `deleteSession`, `openTerminal`, `closeTerminal`,
+`terminalInput`, `terminalResize`.
+
+## 6. Adapters
+
+```ts
+interface Adapter {
+  id: HarnessId;
+  /** what this harness does better or differently; the core branches only on these */
+  capabilities: { canSteer: boolean; terminal: "handoff" | "shared" };
+  available(): Promise<boolean>;
+  // discovery and history: read-only, no process
+  listProjects(): Promise<StoredProject[]>;
+  listSessions(projectPath: string): Promise<SessionSummary[]>;
+  readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
+  watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
+  // live driving
+  start(projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
+  resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
+  listModels(): Promise<ModelInfo>;
+  // terminal mode
+  terminalCommand(nativeId: string | undefined, projectPath: string, opts: StartOpts): { argv: string[]; env?: Record<string, string> };
+}
+
+interface Driver {
+  nativeId: string;
+  send(text: string, attachments?: Attachment[]): Promise<void>;   // starts a turn
+  steer?(text: string): Promise<void>;                                // into the running turn
+  interrupt(): Promise<void>;
+  setModel(m: string): Promise<void>;
+  setEffort?(e: string): Promise<void>;
+  setPermissionMode(m: string): Promise<void>;
+  close(): Promise<void>;
+}
+```
+
+The driver reports through the `Sink`: transcript events, status, and **permission requests**, which
+it hands to the request broker as a Promise and waits on (§7). Adapters never talk to the UI or the
+relay directly.
+
+### Claude Code
+
+- **Drive:** Claude Agent SDK `query()` with streaming input, so a running turn can take more
+  messages (steer). Resume with `resume: nativeId`. `interrupt()`, `setModel()` and
+  `setPermissionMode()` on the query.
+- **Permissions:** native modes (`default`, `acceptEdits`, `plan`, `bypassPermissions`, plus
+  `auto` where the SDK offers it). `canUseTool` goes to the request broker.
+- **History:** `~/.claude/projects/<slug>/<id>.jsonl`. The parser and fixtures come from v1.
+- **Terminal:** `terminal: "handoff"`. `claude --resume <id>` in the project folder. A new session
+  started in the terminal gets `claude --session-id <uuid>` so Tether picks its id.
+
+### Codex
+
+- **Drive:** the **shared local app-server daemon**, not a private `app-server` process. Its control
+  socket is `~/.codex/app-server-control/app-server-control.sock` and speaks **WebSocket over a Unix
+  socket** (HTTP upgrade, then JSON-RPC text frames; `codex app-server proxy` only relays raw bytes, so
+  Tether does the WS handshake itself). Methods: `thread/start`, `thread/resume` (rejoins a thread
+  that's already loaded), `turn/start`, `turn/steer`, `turn/interrupt`, `thread/settings/update`,
+  `model/list`, `thread/unsubscribe`. Several connections can subscribe to one thread at once, and
+  each sees every event (confirmed by probe, 2026-10-29). Threads live in the daemon, so they
+  survive a runner restart. If the daemon isn't running, start it (`codex app-server daemon`).
+  A thread with no turns yet can't be resumed ("no rollout found").
+- **Permissions:** native approval policy and sandbox. `item/commandExecution/requestApproval`,
+  `item/fileChange/requestApproval` and `item/tool/requestUserInput` go to the request broker.
+- **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
+- **Terminal:** `terminal: "shared"`. `codex resume <id>` in the project folder attaches the TUI to the
+  same live thread through the daemon. Tether keeps driving; there is no handoff and no read-only mode.
+  To verify with a real turn in P4: approval requests reach every connection and clear everywhere
+  (`serverRequest/resolved`), and `turn/steer` works from either side.
+
+## 7. Requests: approvals and questions
+
+One **request broker** per runner. Every permission prompt and question from any driver becomes a
+`Request { id, sessionId, kind: "approval" | "question", tool?, input?, question?, options?, openedAt }`.
+
+```
+driver ─► broker.decide(request) ─► [policy steps] ─► person (any device) ─► answer ─► driver
+```
+
+- **Policy steps** form an ordered list of functions `(request) => allow | deny(reason) | undecided`. The core
+  ships with **none**: every request goes to a person. The Tether judge, rules, "Always allow", and
+  timed full access come back later as policy steps. They plug in here and need no changes to
+  adapters or the UI. Design the step type now so it can carry a reason and a source (`"judge"`,
+  `"rule"`) for display.
+- **Answers** are idempotent by request id. The first answer wins, and a later one gets
+  `"Already answered"`. Open requests are saved in runner.json and survive a runner restart (the
+  driver is resumed and the harness asks again, so the broker matches by tool and input).
+- **UI:** open requests sit just above the composer and never scroll away. Approve, Deny, and
+  "Deny with reason". Questions show their options as buttons and also allow free text.
+- **Permission modes** are each harness's own, picked from a menu per session with human labels.
+
+## 8. Terminal mode
+
+### What the button does
+
+The **Terminal** button on a session opens the harness's real TUI, mirrored in the browser
+(xterm.js), resumed on the same session. While it's open, the structured view stays visible as a
+**read-only live transcript** (tailed from the store) with a banner: "Driving in the terminal".
+
+### Shared (Codex)
+
+The TUI joins the live thread next to Tether. Both can type, both see everything, and nothing changes
+mode. Closing the terminal just detaches.
+
+### Handoff (Claude: live → terminal)
+
+Two processes can't drive the same session at once, so control moves:
+
+1. **Turn in progress, or messages queued:** ask, inline, with no modal: "Stop this turn and open the
+   terminal? 2 queued messages will wait until you're back." The buttons are **Stop and open terminal**
+   and **Keep working**. Leave out the parts that don't apply ("Stop this turn and open the terminal?",
+   or "Open the terminal? 2 queued messages will wait until you're back."). Queued messages are held,
+   never discarded, each one cancellable, and the composer sends them on return. Open requests are
+   cancelled (the TUI will ask again). When idle with an empty queue, the terminal opens right away.
+2. The runner closes the driver (`Driver.close()`), so the harness flushes its store.
+3. It starts the TUI in tmux: `tmux -L tether new-session -d -s <sessionKey> -c <projectPath> -- <argv>`.
+4. The mode becomes `terminal`, the adapter's `watchHistory` feeds the read-only transcript, and the
+   browser attaches (below).
+
+**Back to Tether (terminal → live).** A "Back to Tether" button:
+1. If the TUI is mid-turn, it says so and offers to wait.
+2. It sends the TUI its quit sequence (`/exit` + Enter for Claude; Codex's equivalent), then kills the
+   tmux session after 5 seconds.
+3. It resumes the driver on the same `nativeId`. The mode becomes `live`.
+
+If the TUI exits by itself (you typed `/exit`), the mode becomes `stored`.
+
+### Project shells
+
+The terminal panel has tabs: the session's TUI, then the project's shells. **+** opens a plain
+`$SHELL` in the project folder (`tmux -L tether` window `shell:<projectKey>:<n>`). Shells belong to the
+project, not the session. They persist across closing the panel and runner restarts until you close
+them (× on the tab, or `exit`), so a dev server left running is still there next time.
+
+The tmux server is separate from the runner, so **terminal sessions survive a runner restart**.
+On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
+
+### Streaming
+
+- Each attached browser gets its own PTY running `tmux -L tether attach -t <sessionKey>`, opened
+  by the runner. Use Bun's PTY support (`Bun.spawn` with a terminal; verify in P0) or `node-pty`.
+- Output goes runner → server → **that browser only** as `{ t: "term", attachId, data }` (base64
+  chunks). Input and resize go back as `terminalInput` / `terminalResize`. The relay forwards these
+  by `attachId` and never broadcasts or stores them.
+- **Sizing:** the tether tmux server is set to `window-size latest`, so the device you're typing on
+  sets the size. Switching devices reflows. Phone and desktop are treated equally.
+- **Phone:** a key bar above the keyboard (Esc, Tab, ↑, ↓, Ctrl-C, Ctrl-D, Enter) and Tether's
+  composer, which in terminal mode types the text into the PTY followed by Enter (tmux
+  `send-keys -l`). Long replies on a phone don't need the TUI's own input box.
+
+### Requests and notifications in terminal mode
+
+- **Codex (shared):** Tether stays attached to the thread, so requests, status and notifications work
+  as in live mode.
+- **Claude (handoff):** approvals are answered **in the terminal**, by the TUI itself. To keep
+  notifications and Home working, the runner launches the TUI with `--settings` adding
+  `Notification` and `Stop` hooks that report to the runner's loopback endpoint ("needs you", "turn ended").
+
+Later, a Claude `PreToolUse` hook can route terminal approvals through the same broker
+(and the judge). That isn't in the core.
+
+## 9. Messaging
+
+| State | Enter | Other |
+|---|---|---|
+| idle | send | |
+| running (harness can steer) | steer into the running turn | menu: Queue for after this turn, Stop and send now |
+| running (no steer) | queue | |
+| terminal mode | type into the PTY | |
+
+- The **queue** is held on the runner, in order. Any device can edit, reorder or cancel waiting
+  messages. Queued messages go out one per turn. Stop keeps the queue, held, until you send.
+- A steer can't be taken back once the harness has it.
+- Desktop keys: Enter send or steer, Tab queue (when the box has text), ⌘/Ctrl+Enter stop and send now,
+  Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+- **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
+  screenshots are a main use. Chunks go over RPC and are stored under
+  `~/.config/tether/attachments/<session>/`. They go to the harness natively where supported, and as
+  paths otherwise.
+
+## 10. UI
+
+- **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long
+  ago, status dot), with projects below. Search. New session (pick a project, harness, model).
+- **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
+  diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
+  permission mode and the **Terminal** button. Always follow the bottom unless you scroll up.
+- **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
+- **Home** (P5): one ranked inbox: requests, then finished-unread, then working.
+- **Responsive:** one layout that works at 375 px. Every action reachable by touch.
+
+## 11. Phases
+
+### How each phase is built
+
+1. **Implement**, by an implementation subagent briefed with this spec and the phase's scope. The
+   coordinating session keeps the design consistent across phases and holds the design decisions.
+2. **Review**, by a separate agent with fresh eyes, given the spec and the diff, not my reasoning.
+3. **Fix** everything major or important it finds, then run **another fresh review agent**. Repeat
+   until a review surfaces nothing major or important.
+4. **Write the manual checks** in `docs/acceptance/P<n>.md`, as thorough as possible: every flow,
+   phone and desktop, two devices at once, reconnects, runner restarts, errors, edge cases, each with
+   exact steps and the expected result.
+5. **Test it myself**, starting from the most core flows and working outward, with Playwright
+   (desktop and phone viewports) against real `claude` and `codex` on cheap models (Haiku, Codex mini).
+   I don't stop to wait for manual testing between phases.
+
+Development happens on an isolated stack: a local server, a dev runner with its own config directory
+and runner id, and its own tmux socket. Unit tests use recorded fixtures. A fake harness that replays
+recorded event streams is used where it makes sync, queue and request tests deterministic.
+
+**P0: Skeleton.** Repo setup (`v1` branch and `v1-final` tag, fresh `main` as the default branch, delete `master`),
+shared protocol, relay (copied from v1's server and simplified), runner connecting with a service
+token, dev mode (local server, `TETHER_TOKEN=dev`), the web shell with a runner list. Verify Bun's PTY
+support (`Bun.Terminal`). At the end, point the Foliation app `tether` at `main`.
+*Accept:* the runner shows as connected in the browser, the server redeploys without the runner
+noticing, and a reconnect works.
+
+**P1: Claude, live.** Discovery (projects, sessions), opening a stored session (no process), new
+session, send, streaming transcript, interrupt, model, effort and permission mode, idle close. Sync by
+snapshot plus seq.
+*Accept:* start a turn on desktop, close the tab, open on the phone mid-turn and see it stream; both
+devices show identical transcripts after the turn; a session started in a terminal `claude` shows up.
+**Cutover at the end of P1:** check that v1's `tether-runner` has no running sessions (wait or report if
+it does), deploy v2 to the `tether` app, replace the `tether-runner` unit with v2's runner, and use v2
+from then on.
+
+**P2: Requests.** The request broker (with the empty policy-step list), approvals and
+questions from any device, idempotent answers, surviving a runner restart.
+*Accept:* in `default` mode, an edit request appears on both devices; answering on the phone clears
+it on desktop; a second answer says "Already answered".
+
+**P3: Terminal mode.** tmux control, PTY bridge, handoff both ways, read-only tail, phone key bar,
+composer into the PTY, hooks for turn-end and "needs you", the stop-and-open prompt with held queued
+messages, project shells.
+*Accept:* open the terminal mid-session, use a Claude-only feature (e.g. `/model` picker), go back to
+Tether, and the next message continues the same conversation; the terminal survives a runner restart;
+phone and desktop attach together without a garbled layout; a project shell running a dev server is
+still there after closing the panel.
+
+**P4: Codex.** The second adapter, through the daemon, with the shared terminal.
+*Accept:* P1–P3 acceptance passes on Codex. The only core differences come from capability flags.
+Typing in the TUI and in Tether on the same thread both work, and an approval answered on either side
+clears on the other.
+
+**P5: Daily-driver features.** Steer and queue, attachments, web push notifications (requests,
+finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
+
+**Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
+the Changes view and file panel, fallback chains, pi, opencode and other harnesses, `/goal` etc.
+
+## 12. Carried over from v1 (`~/web-coder`)
+
+Copy and adapt, with tests:
+- `server/src/index.ts` and `identity.ts`: the relay pattern and Foliation identity (add subscriptions and terminal routing).
+- `web/src/shared/protocol.ts`: `Msg`, `Part`, `SessionEvent`, `SessionSnapshot` only.
+- `runner/src/adapters/claude.ts`, `codex.ts`: the protocol knowledge (SDK options, app-server
+  methods, history parsing, quirks) and their fixtures. Not their structure.
+- `runner/src/toolKind.ts`, `checkpoint.ts` (later), `attachments.ts` (P5).
+- The service-token setup (`docs/foliation-app-service-tokens.md`) and the systemd unit.
+
+Leave behind: `runner/src/session.ts` (rewrite as the core, §3), the guard (it returns as policy steps),
+and everything in the non-goals list.
+
+**Lessons recorded:** no god file; a feature must not change the session core; every harness is
+tested for real before it counts as supported; don't build six adapters before two are solid.
+
+## 13. Resolved questions
+
+1. **Codex terminal notifications:** moot, because Tether stays attached to the shared thread.
+2. **New sessions in terminal mode:** Claude takes `--session-id <uuid>`. Codex threads are created by
+   Tether through the daemon, and the TUI resumes them.
+3. **Terminal auth:** owner-only sign-in. No extra step.
+4. **Several runners:** in the protocol now, in the UI when a second runner exists.
+
+Still to verify by experiment (not decisions): Codex approval fan-out and cross-connection steer
+(P4), and how daemon and CLI version mismatches behave.
+
+## 14. Working agreement
+
+- I build P0 through P5 autonomously, testing as I go. I don't wait for manual testing between
+  phases. I report when everything is done, or earlier only if I'm blocked on a decision that's
+  yours or on something I'm not allowed to do.
+- Allowed without asking: commit, push to `main` (which deploys once the app follows it), the cutover
+  at the end of P1, real test turns on cheap models, an isolated dev runner and tmux socket.
+- Ask first: anything that spends notable quota on expensive models; anything outside this project.
