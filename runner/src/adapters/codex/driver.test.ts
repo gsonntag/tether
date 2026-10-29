@@ -18,7 +18,19 @@ class FakeDaemon {
     "thread/start": () => ({ thread: { id: "NEW", status: { type: "idle" } }, model: "gpt-6-luna", approvalPolicy: "on-request", sandbox: { type: "readOnly" } }),
     "turn/start": () => ({ turn: { id: "t9" } }),
   };
+  /** the thread's settings as the daemon has them (thread/settings/update changes them and says so) */
+  settings: any = { model: "gpt-6-luna", effort: "low", approvalPolicy: "untrusted", sandboxPolicy: { type: "workspaceWrite" } };
+  /** what thread/settings/update ignores (as the daemon does nothing for a field it rejects) */
+  ignore = new Set<string>();
+  /** no thread/settings/updated at all */
+  silent = false;
   constructor() {
+    this.answers["thread/settings/update"] = (p) => {
+      const { threadId, ...rest } = p;
+      for (const k of Object.keys(rest)) if (!this.ignore.has(k)) this.settings[k] = rest[k];
+      if (!this.silent) queueMicrotask(() => this.say({ method: "thread/settings/updated", params: { threadId, threadSettings: { ...this.settings } } }));
+      return {};
+    };
     this.rpc.wire = {
       send: (text) => {
         const m = JSON.parse(text);
@@ -47,24 +59,58 @@ function useDaemon() {
   setConnector(async () => daemon.rpc);
 }
 
-test("resume keeps the thread's own settings: nothing sent but approvals routed to clients; the state is the thread's", async () => {
+test("resume keeps the thread's own settings: nothing sent; the state is the thread's", async () => {
   useDaemon();
-  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "never", sandbox: { type: "readOnly", networkAccess: false } });
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "never", approvalsReviewer: "user", sandbox: { type: "readOnly", networkAccess: false } });
   const sink = new TestSink();
   await CodexDriver.open(MAIN, CWD, {}, sink, true);
-  expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, approvalsReviewer: "user", excludeTurns: true });
+  expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, excludeTurns: true });
   expect(daemon.calls("thread/settings/update")).toEqual([]);
   // A combination no preset has is shown as it is (never loosened to a preset).
   expect(sink.states[0]).toEqual({ model: "gpt-6-luna", modelResolved: "gpt-6-luna", effort: "low", permissionMode: "never+read-only" });
 });
 
-test("resume with settings you made in Tether: those, and only those, are applied", async () => {
+test("settings you changed in Tether are applied after the resume (the daemon ignores them on a loaded thread) and confirmed", async () => {
   useDaemon();
   const sink = new TestSink();
-  await CodexDriver.open(MAIN, CWD, { permissionMode: "auto", effort: "medium" }, sink, true);
-  expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, approvalsReviewer: "user", approvalPolicy: "on-request", sandbox: "workspace-write", excludeTurns: true });
-  expect(daemon.calls("thread/settings/update")).toEqual([{ threadId: MAIN, effort: "medium" }]);
-  expect(sink.states[0]).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
+  await CodexDriver.open(MAIN, CWD, { permissionMode: "auto", effort: "medium", model: "gpt-6-sol" }, sink, true);
+  expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, excludeTurns: true });
+  expect(daemon.calls("thread/settings/update")).toEqual([{ threadId: MAIN, model: "gpt-6-sol", effort: "medium", approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } }]);
+  expect(sink.states.at(-1)).toEqual({ model: "gpt-6-sol", modelResolved: "gpt-6-sol", effort: "medium", permissionMode: "auto" });
+});
+
+test("a change Codex doesn't apply or confirm fails the start: nothing runs looser than you chose", async () => {
+  useDaemon();
+  daemon.ignore.add("approvalPolicy").add("sandboxPolicy");
+  await expect(CodexDriver.open(MAIN, CWD, { permissionMode: "read-only" }, new TestSink(), true)).rejects.toThrow("Codex didn't apply your permissions. Nothing was sent.");
+  useDaemon();
+  daemon.silent = true;
+  const t0 = Date.now();
+  const p = CodexDriver.open(MAIN, CWD, { effort: "high" }, new TestSink(), true);
+  await expect(p).rejects.toThrow("didn't confirm");
+  expect(Date.now() - t0).toBeGreaterThan(1000);
+}, 15_000);
+
+test('"Default" is the daemon\'s default model, applied, and shown as Default while it runs it', async () => {
+  useDaemon();
+  daemon.answers["model/list"] = () => ({ data: [{ id: "gpt-6.1-sol", isDefault: true }, { id: "gpt-6-luna" }] });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, { model: "default" }, sink, true);
+  expect(daemon.calls("thread/settings/update")[0]).toEqual({ threadId: MAIN, model: "gpt-6.1-sol" });
+  expect(sink.states.at(-1)).toMatchObject({ model: "default", modelResolved: "gpt-6.1-sol" });
+  await d.setModel("gpt-6-luna");
+  await Bun.sleep(5);
+  expect(sink.states.at(-1)).toMatchObject({ model: "gpt-6-luna" });
+  await d.setModel("default");
+  await Bun.sleep(5);
+  expect(sink.states.at(-1)).toMatchObject({ model: "default", modelResolved: "gpt-6.1-sol" });
+});
+
+test("Codex's automatic reviewer on the thread: approvals are routed back to clients", async () => {
+  useDaemon();
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "m", approvalPolicy: "on-request", approvalsReviewer: "auto_review", sandbox: { type: "readOnly" } });
+  await CodexDriver.open(MAIN, CWD, {}, new TestSink(), true);
+  expect(daemon.calls("thread/settings/update")).toEqual([{ threadId: MAIN, approvalsReviewer: "user" }]);
 });
 
 test("an approval answered in another client (Codex's TUI) closes as resolved elsewhere, and Tether sends no answer", async () => {
@@ -228,4 +274,57 @@ test("rejoined mid-turn with a subagent running: its turn is found, so stop and 
   await d.stopSubagent("C");
   expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "C", turnId: "ct" }]);
   expect(sink.children.get("C")!.t.messages[0]!.parts[0]).toMatchObject({ type: "tool", status: "running" });
+});
+
+test("a subagent's request that arrives before its spawn: shown in the subagent once it's known", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  daemon.say({ id: 31, method: "item/commandExecution/requestApproval", params: { threadId: "C", turnId: "ct", itemId: "e1", command: "ls" } });
+  await Bun.sleep(50);
+  expect(sink.asks).toHaveLength(0);
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_1", kind: "started", agentThreadId: "C", agentPath: "/root/scan" } } });
+  await Bun.sleep(400);
+  const child = sink.children.get("C")!;
+  expect(child.asks.map((a) => a.ask.command)).toEqual(["ls"]);
+  child.asks[0]!.resolve({ allow: true });
+  await Bun.sleep(5);
+  expect(daemon.replies(31)).toEqual([{ id: 31, result: { decision: "accept" } }]);
+  // One answered elsewhere before it could be shown: never shown, never answered here.
+  daemon.say({ id: 32, method: "item/commandExecution/requestApproval", params: { threadId: "D", itemId: "e2", command: "pwd" } });
+  daemon.say({ method: "serverRequest/resolved", params: { threadId: "D", requestId: 32 } });
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_2", kind: "started", agentThreadId: "D", agentPath: "/root/two" } } });
+  await Bun.sleep(400);
+  expect(sink.children.get("D")!.asks).toEqual([]);
+  expect(daemon.replies(32)).toEqual([]);
+});
+
+test("the placeholder name survives a runner restart: renamed after the first turn all the same", async () => {
+  useDaemon();
+  const id = await createThread(CWD, {});
+  const d = await CodexDriver.open(id, CWD, {}, new TestSink(), false);
+  await d.beforeTerminal();
+  // A new runner: a new driver on the same thread.
+  useDaemon();
+  daemon.answers["thread/resume"] = () => ({ thread: { id, status: { type: "idle" } }, model: "m", approvalsReviewer: "user" });
+  await CodexDriver.open(id, CWD, {}, new TestSink(), true);
+  daemon.answers["thread/read"] = () => ({ thread: { id, name: "New session", preview: "First words" } });
+  daemon.say({ method: "turn/completed", params: { threadId: id, turn: { id: "t1", status: "completed" } } });
+  await Bun.sleep(5);
+  expect(daemon.calls("thread/name/set").map((p) => p.name)).toEqual(["First words"]);
+});
+
+test("a thread with no turn yet: the settings Tether started it with, else unknown (never Codex's config)", async () => {
+  useDaemon();
+  const { threadSettings } = await import("./discovery");
+  daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, model: "gpt-6-luna", reasoningEffort: "high" } });
+  expect(await threadSettings("OTHER")).toEqual({ model: "gpt-6-luna", effort: "high", permissionMode: "unknown" });
+  const id = await createThread(CWD, { model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
+  expect(await threadSettings(id)).toEqual({ model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
+  await CodexDriver.open(id, CWD, {}, new TestSink(), false);
+  // A runner restart before its first turn: its start settings are applied again on resume.
+  daemon.answers["thread/resume"] = () => ({ thread: { id, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "high", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "workspaceWrite" } });
+  await CodexDriver.open(id, CWD, {}, new TestSink(), true);
+  expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ effort: "low", approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" } });
 });

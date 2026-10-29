@@ -11,8 +11,9 @@ import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
-import { dropCache, PLACEHOLDER_NAME } from "./discovery";
-import { codexMode, modeOf, sandboxPolicy, type CodexModel } from "./modes";
+import { dropCache, hasTurnContext, PLACEHOLDER_NAME } from "./discovery";
+import { knownMode, modeOf, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
+import { remember, remembered } from "./remember";
 import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
@@ -26,17 +27,20 @@ const input = (text: string, attachments: Attachment[] = []) => [
 /** What Codex says when a thread has nothing on disk yet (no turn, no name). */
 const NO_ROLLOUT = /no rollout found/i;
 
-/** The thread settings to start or resume with (a missing field: the thread's or Codex's own). */
-function settings(opts: StartOpts) {
+/** The settings a new thread starts with (a missing field: Codex's own config). */
+function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
   if (opts.model && opts.model !== "default") out.model = opts.model;
-  if (opts.permissionMode) {
-    const m = codexMode(opts.permissionMode);
+  const m = knownMode(opts.permissionMode);
+  if (m) {
     out.approvalPolicy = m.approvalPolicy;
     out.sandbox = m.sandbox;
   }
   return out;
 }
+
+/** How long Codex has to confirm settings Tether applied. */
+const CONFIRM_MS = Number(process.env.TETHER_CODEX_CONFIRM_MS ?? 8_000);
 
 /** Threads Tether created (newId) that no driver has taken yet. */
 const pending = new Map<string, { rpc: CodexRpc; started: any; timer: ReturnType<typeof setTimeout> }>();
@@ -46,8 +50,10 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   if (!existsSync(projectPath)) throw new Error(`There's no folder ${projectPath} on this runner.`);
   const rpc = await connect();
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...settings(opts) });
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts) });
     const id: string = started.thread.id;
+    // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
+    remember(id, { start: opts });
     // Nobody took it (the session failed to open): let it go.
     const timer = setTimeout(() => {
       pending.delete(id);
@@ -82,6 +88,7 @@ export class CodexDriver implements Driver {
     materialized: boolean,
   ) {
     this.materialized = materialized;
+    this.placeholder = !!remembered(nativeId)?.placeholder;
     this.stream = new CodexStream(sink, projectPath, nativeId);
     this.stream.onSettings = (s) => this.settingsChanged(s);
     rpc.onNotify((m, p) => this.notify(m, p));
@@ -102,14 +109,22 @@ export class CodexDriver implements Driver {
       pending.delete(nativeId);
       clearTimeout(p.timer);
       const d = new CodexDriver(nativeId, projectPath, p.rpc, sink, false);
-      await d.started(p.started, opts);
+      try {
+        await d.started(p.started, opts);
+      } catch (e) {
+        d.closed = true;
+        p.rpc.close();
+        throw e;
+      }
       return d;
     }
     if (!resume) throw new Error("This new Codex session is gone (the daemon may have restarted). Start a new one.");
     const rpc = await connect();
     const d = new CodexDriver(nativeId, projectPath, rpc, sink, true);
     try {
-      const r = await rpc.call("thread/resume", { threadId: nativeId, ...settings(opts), excludeTurns: true }).catch((e: any) => {
+      // Joined as it is: the daemon ignores settings passed here when another client has the thread
+      // loaded (Codex's TUI), so changes are applied after, and checked (started).
+      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw e;
       });
@@ -134,20 +149,69 @@ export class CodexDriver implements Driver {
   }
 
   /**
-   * After start or resume: an effort set in Tether is applied, and the thread's settings as they
-   * are now become the session's (the thread is the truth; Tether only changes what you change).
+   * After start or resume: what you changed in Tether (`opts`; for a new thread with no turn yet,
+   * also what it started with) is applied with thread/settings/update and confirmed by the
+   * daemon's thread/settings/updated before anything is sent. What isn't confirmed fails the start:
+   * a turn never runs with looser settings than you chose. Then the thread's settings as they are
+   * become the session's (the thread is the truth; Tether only changes what you change).
    */
   private async started(r: any, opts: StartOpts) {
-    let effort = r.reasoningEffort ?? undefined;
-    if (opts.effort && opts.effort !== effort) {
-      await this.rpc.call("thread/settings/update", { threadId: this.nativeId, effort: opts.effort }).catch(() => {});
-      effort = opts.effort;
+    const start = remembered(this.nativeId)?.start;
+    const want: StartOpts = { ...(start && !(await hasTurnContext(r.thread)) ? start : {}), ...opts };
+    const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
+    if (want.model === "default") this.alias = "default";
+    const model = want.model === "default" ? await this.defaultId() : want.model;
+    const mode = knownMode(want.permissionMode);
+    const patch: Record<string, unknown> = {};
+    if (model && model !== cur.model) patch.model = model;
+    if (want.effort && want.effort !== cur.effort) patch.effort = want.effort;
+    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox)) Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox) });
+    // Approvals come to clients (Tether, the TUI), not Codex's automatic reviewer.
+    if (cur.reviewer && cur.reviewer !== "user") patch.approvalsReviewer = "user";
+    let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox };
+    if (Object.keys(patch).length) {
+      const seen = this.nextSettings(CONFIRM_MS);
+      try {
+        await this.rpc.call("thread/settings/update", { threadId: this.nativeId, ...patch });
+      } catch (e: any) {
+        throw new Error(`Codex didn't take your settings (${e?.message ?? e}). Nothing was sent.`);
+      }
+      const s = await seen;
+      if (!s) throw new Error("Codex didn't confirm your settings. Nothing was sent; try again.");
+      now = s;
+      const missed = [
+        patch.model && s.model !== patch.model ? `model ${patch.model}` : "",
+        patch.effort && s.effort !== patch.effort ? `effort ${patch.effort}` : "",
+        patch.approvalPolicy && (s.approvalPolicy !== mode!.approvalPolicy || sandboxOf(s.sandboxPolicy) !== mode!.sandbox) ? "permissions" : "",
+      ].filter(Boolean);
+      if (missed.length) throw new Error(`Codex didn't apply your ${missed.join(", ")}. Nothing was sent.`);
     }
-    const mode = modeOf(r.approvalPolicy, r.sandbox);
-    this.sink.state({
-      ...(r.model ? { model: r.model, modelResolved: r.model } : {}),
-      ...(effort ? { effort } : {}),
-      ...(mode ? { permissionMode: mode } : {}),
+    this.settingsChanged(now);
+  }
+
+  /** The model "Default" stands for (model/list's default). */
+  private async defaultId(): Promise<string | undefined> {
+    this.defaultModel ??= ((await this.rpc.call("model/list", {}).catch(() => ({ data: [] }))).data as CodexModel[]).find((m) => m.isDefault)?.id;
+    return this.defaultModel;
+  }
+
+  /** "default" while the thread runs the default model because you picked Default. */
+  private alias?: string;
+
+  /** Waiters for the thread's next thread/settings/updated. */
+  private settingsWaiters: ((s: any) => void)[] = [];
+
+  private nextSettings(ms: number): Promise<any | undefined> {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => {
+        this.settingsWaiters = this.settingsWaiters.filter((w) => w !== done);
+        resolve(undefined);
+      }, ms);
+      const done = (s: any) => {
+        clearTimeout(t);
+        resolve(s);
+      };
+      this.settingsWaiters.push(done);
     });
   }
 
@@ -155,7 +219,12 @@ export class CodexDriver implements Driver {
 
   private notify(method: string, p: any) {
     if (method === "serverRequest/resolved") return this.resolved(String(p.requestId));
-    if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME) this.placeholder = false;
+    if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME && this.placeholder) {
+      this.placeholder = false;
+      remember(this.nativeId, { placeholder: undefined });
+    }
+    // Its first turn wrote its settings to its rollout: they can be read back from there now.
+    if (method === "turn/completed" && p.threadId === this.nativeId && remembered(this.nativeId)?.start) remember(this.nativeId, { start: undefined });
     if (method === "turn/completed" && p.threadId === this.nativeId && this.placeholder) void this.namePlaceholder();
     if (method === "thread/closed" && p.threadId === this.nativeId && !this.closed) {
       this.closed = true;
@@ -169,8 +238,13 @@ export class CodexDriver implements Driver {
   /** Settings changed on the thread (here, or /model and /approvals in Codex's TUI). */
   private settingsChanged(s: any) {
     const mode = modeOf(s.approvalPolicy, s.sandboxPolicy);
+    const waiters = this.settingsWaiters.splice(0);
+    for (const w of waiters) w(s);
+    // Default stays Default while it runs the default model (a model picked since ends it).
+    if (s.model && this.alias === "default" && s.model !== this.defaultModel) this.alias = undefined;
+    const model = s.model && this.alias === "default" ? "default" : s.model;
     this.sink.state({
-      ...(s.model ? { model: s.model, modelResolved: s.model } : {}),
+      ...(s.model ? { model, modelResolved: s.model } : {}),
       ...(s.effort ? { effort: s.effort } : {}),
       ...(mode ? { permissionMode: mode } : {}),
     });
@@ -180,13 +254,24 @@ export class CodexDriver implements Driver {
   private request(method: string, p: any, id: number | string): Promise<unknown> | null {
     // Not about this thread (account, auth, …): another client may answer it; Tether never does.
     const thread: string | undefined = p?.threadId;
-    const sink = !thread ? undefined : thread === this.nativeId ? this.sink : this.stream.child(thread)?.sink;
-    if (!sink) return null;
+    if (!thread) return null;
+    if (thread === this.nativeId || this.stream.child(thread)) return this.ask(method, p, id, thread);
+    // A subagent's, before its spawn was reported: it shows in its own view once that comes, else
+    // in the main session's (never lost, never answered on its own).
+    return (async () => {
+      for (let i = 0; i < 40 && !this.stream.child(thread) && !this.closed; i++) await Bun.sleep(250);
+      return this.ask(method, p, id, thread);
+    })();
+  }
+
+  private ask(method: string, p: any, id: number | string, thread: string): Promise<unknown> {
+    const sink = thread === this.nativeId ? this.sink : (this.stream.child(thread)?.sink ?? this.sink);
     // What Tether can't show (an MCP form, a link, a method it doesn't know): left for Codex's TUI,
     // with a card saying so. Declining from Tether is the one answer it can give.
     const ask = (ASKS.has(method) && codexAsk(method, p, this.projectPath, p.itemId ? this.stream.patch(thread!, p.itemId) : undefined)) || cantShow(method, p);
     const ac = new AbortController();
     const key = String(id);
+    if (this.resolvedEarly.delete(key)) return Promise.resolve(undefined);
     this.asks.set(key, ac);
     return sink.request(ask, ac.signal).then(async (d) => {
       this.asks.delete(key);
@@ -202,9 +287,16 @@ export class CodexDriver implements Driver {
     });
   }
 
+  /** requests answered elsewhere before Tether showed them (a subagent's, waiting for its spawn) */
+  private resolvedEarly = new Set<string>();
+
   private resolved(requestId: string) {
     const ac = this.asks.get(requestId);
-    if (!ac) return;
+    if (!ac) {
+      this.resolvedEarly.add(requestId);
+      if (this.resolvedEarly.size > 200) this.resolvedEarly.delete(this.resolvedEarly.values().next().value!);
+      return;
+    }
     this.asks.delete(requestId);
     ac.abort(RESOLVED_ELSEWHERE);
   }
@@ -251,10 +343,10 @@ export class CodexDriver implements Driver {
   async setModel(model: string) {
     let id = model;
     if (model === "default") {
-      this.defaultModel ??= ((await this.rpc.call("model/list", {}).catch(() => ({ data: [] }))).data as CodexModel[]).find((m) => m.isDefault)?.id;
-      if (!this.defaultModel) return;
-      id = this.defaultModel;
+      id = (await this.defaultId()) ?? "";
+      if (!id) throw new Error("Codex didn't say which model is its default.");
     }
+    this.alias = model === "default" ? "default" : undefined;
     await this.rpc.call("thread/settings/update", { threadId: this.nativeId, model: id });
   }
 
@@ -263,7 +355,8 @@ export class CodexDriver implements Driver {
   }
 
   async setPermissionMode(mode: string) {
-    const m = codexMode(mode);
+    const m = knownMode(mode);
+    if (!m) throw new Error(`Codex has no permission mode ${mode}.`);
     await this.rpc.call("thread/settings/update", { threadId: this.nativeId, approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: "user" });
   }
 
@@ -285,10 +378,11 @@ export class CodexDriver implements Driver {
     await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: PLACEHOLDER_NAME });
     this.materialized = true;
     this.placeholder = true;
+    remember(this.nativeId, { placeholder: true });
   }
 
-  /** The thread still carries the placeholder name (nobody named it since). */
-  private placeholder = false;
+  /** The thread still carries the placeholder name (nobody named it since); kept across restarts. */
+  private placeholder: boolean;
 
   /**
    * After the first turn: the placeholder can't be cleared (Codex refuses an empty name), so the
@@ -296,6 +390,7 @@ export class CodexDriver implements Driver {
    */
   private async namePlaceholder() {
     this.placeholder = false;
+    remember(this.nativeId, { placeholder: undefined });
     const t: any = await this.rpc.call("thread/read", { threadId: this.nativeId }).catch(() => undefined);
     const name = t?.thread?.name;
     const first = String(t?.thread?.preview ?? "").replace(/\s+/g, " ").trim().slice(0, 80);

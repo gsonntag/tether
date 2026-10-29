@@ -28,6 +28,17 @@ export const DEFAULT_MODE = "auto";
 
 export const modeChoices = (): Choice[] => Object.values(CODEX_MODES).map(({ id, label, description }) => ({ id, label, description }));
 
+/** A mode id's settings, or undefined for one Tether doesn't know (e.g. "unknown"): never a guess. */
+export function knownMode(id: string | undefined): CodexMode | undefined {
+  if (!id) return undefined;
+  if (CODEX_MODES[id]) return CODEX_MODES[id];
+  const [a, s] = id.split("+");
+  return a && s && POLICIES.has(a) && SANDBOXES.has(s) ? { approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode } : undefined;
+}
+
+/** A thread whose permissions aren't known (no turn yet, nothing remembered). */
+export const UNKNOWN_MODE = "unknown";
+
 const POLICIES = new Set(["untrusted", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 

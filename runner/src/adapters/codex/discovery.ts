@@ -8,7 +8,8 @@ import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transc
 import { call } from "./daemon";
 import type { StartOpts } from "../../core/adapter";
 import { agentName, historyMsgs } from "./items";
-import { modeOf, sandboxOf } from "./modes";
+import { modeOf, sandboxOf, UNKNOWN_MODE } from "./modes";
+import { remember, remembered } from "./remember";
 
 /** Thread sources listed as sessions (Codex's default leaves out app-server clients such as Tether). */
 const SOURCES = ["cli", "vscode", "exec", "appServer"];
@@ -66,12 +67,26 @@ export async function listThreads(o: { cwd?: string; since?: number; max?: numbe
   return out.slice(0, max);
 }
 
-let cache: { at: number; threads: any[] } | undefined;
-const CACHE_MS = 5_000;
+/**
+ * Listing threads is slow on a big store (thread/list can take 10–20 s), so lists are shared: one
+ * call at a time per kind of list, and the result kept a while. The runner's background discovery
+ * (a `since` list) is kept for a minute; a folder list someone opened, a few seconds.
+ */
+const lists = new Map<string, { at: number; p: Promise<any[]> }>();
+const LIST_MS = 5_000;
+export const DISCOVERY_MS = 60_000;
+
+function sharedList(key: string, maxAge: number, load: () => Promise<any[]>): Promise<any[]> {
+  const had = lists.get(key);
+  if (had && Date.now() - had.at < maxAge) return had.p;
+  const p = load();
+  lists.set(key, { at: Date.now(), p });
+  p.catch(() => lists.get(key)?.p === p && lists.delete(key));
+  return p;
+}
 
 export async function codexProjects(): Promise<ProjectInfo[]> {
-  const threads = cache && Date.now() - cache.at < CACHE_MS ? cache.threads : await listThreads();
-  cache = { at: Date.now(), threads };
+  const threads = await sharedList("all", LIST_MS * 6, () => listThreads());
   const by = new Map<string, ProjectInfo>();
   for (const t of threads) {
     if (!t.cwd) continue;
@@ -84,11 +99,29 @@ export async function codexProjects(): Promise<ProjectInfo[]> {
 }
 
 export async function codexSessions(opts: { projectPath?: string; since?: number } = {}): Promise<SessionSummary[]> {
-  return (await listThreads({ cwd: opts.projectPath, since: opts.since })).map(summaryOf);
+  // Discovery's `since` moves every pass; a minute-old list from a slightly earlier `since` is as good.
+  const key = opts.projectPath ? `cwd:${opts.projectPath}` : opts.since ? "recent" : "all";
+  const threads = await sharedList(key, opts.since && !opts.projectPath ? DISCOVERY_MS : LIST_MS, () => listThreads({ cwd: opts.projectPath, since: opts.since }));
+  return threads.map(summaryOf);
 }
 
+/** Reads of one thread a moment apart (opening a session reads it for its row and its settings) share one call. */
+const reads = new Map<string, { at: number; p: Promise<any | undefined> }>();
+const READ_SHARE_MS = 2_000;
+
 /** A thread's metadata (no turns); undefined when the daemon doesn't know it. */
-export async function readThread(nativeId: string): Promise<any | undefined> {
+export function readThread(nativeId: string): Promise<any | undefined> {
+  const now = Date.now();
+  for (const [k, v] of reads) if (now - v.at > READ_SHARE_MS) reads.delete(k);
+  const had = reads.get(nativeId);
+  if (had) return had.p;
+  const p = readThreadNow(nativeId);
+  reads.set(nativeId, { at: now, p });
+  p.catch(() => reads.delete(nativeId));
+  return p;
+}
+
+async function readThreadNow(nativeId: string): Promise<any | undefined> {
   try {
     return (await call("thread/read", { threadId: nativeId, includeTurns: false }))?.thread;
   } catch (e: any) {
@@ -196,18 +229,36 @@ const SETTINGS_TAIL = 2_000_000;
 export async function threadSettings(nativeId: string): Promise<StartOpts | undefined> {
   const t = await readThread(nativeId);
   if (!t) return undefined;
-  let r: ReturnType<typeof rolloutSettings> = {};
-  if (typeof t.path === "string") {
-    const f = Bun.file(t.path);
-    r = rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
+  const r = await rolloutOf(t);
+  if (r.approvalPolicy) {
+    // Its first turn recorded them: what Tether remembered from its start isn't needed any more.
+    if (remembered(nativeId)?.start) remember(nativeId, { start: undefined });
+    const model = r.model ?? t.model ?? undefined;
+    const effort = r.effort ?? t.reasoningEffort ?? undefined;
+    const mode = modeOf(r.approvalPolicy, r.sandbox);
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: mode ?? UNKNOWN_MODE };
   }
-  const model = r.model ?? t.model ?? undefined;
-  const effort = r.effort ?? t.reasoningEffort ?? undefined;
-  const mode = modeOf(r.approvalPolicy, r.sandbox);
-  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(mode ? { permissionMode: mode } : {}) };
+  // No turn yet: what Tether started it with, if Tether did; else not known (never Codex's config,
+  // which may not be what the thread has).
+  const start = remembered(nativeId)?.start ?? {};
+  const model = start.model ?? t.model ?? undefined;
+  const effort = start.effort ?? t.reasoningEffort ?? undefined;
+  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: start.permissionMode ?? UNKNOWN_MODE };
+}
+
+/** A thread's settings as its rollout's end records them. */
+async function rolloutOf(t: any): Promise<ReturnType<typeof rolloutSettings>> {
+  if (typeof t?.path !== "string") return {};
+  const f = Bun.file(t.path);
+  return rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
+}
+
+/** Whether a thread's first turn has recorded its settings. */
+export async function hasTurnContext(t: any): Promise<boolean> {
+  return !!(await rolloutOf(t)).approvalPolicy;
 }
 
 /** Forget the cached thread list (a thread was created). */
 export function dropCache() {
-  cache = undefined;
+  lists.clear();
 }

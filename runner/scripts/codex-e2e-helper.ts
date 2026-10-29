@@ -1,13 +1,15 @@
 // For scripts/e2e-p4.mjs: talks to the Codex daemon directly, as another client would.
 //   bun scripts/codex-e2e-helper.ts make <folder> <model>   a thread with one short turn, read-only sandbox, Low; prints its id
 //   bun scripts/codex-e2e-helper.ts settings <thread id>     its settings as its rollout last recorded them (JSON)
+//   bun scripts/codex-e2e-helper.ts hold <thread id> <ms>    keeps the thread loaded from another client (as Codex's TUI would)
+// `make` takes a sandbox as a 4th argument (default read-only).
 import { connect, resetShared } from "../src/adapters/codex/daemon";
 import { readThread, rolloutSettings } from "../src/adapters/codex/discovery";
 
 const [cmd, a, b] = process.argv.slice(2);
 if (cmd === "make") {
   const rpc = await connect("tether-e2e-helper");
-  const st = await rpc.call("thread/start", { cwd: a, model: b, approvalPolicy: "on-request", sandbox: "read-only", approvalsReviewer: "user" });
+  const st = await rpc.call("thread/start", { cwd: a, model: b, approvalPolicy: "on-request", sandbox: process.argv[5] ?? "read-only", approvalsReviewer: "user" });
   const id = st.thread.id;
   let done = false;
   rpc.onNotify((m, p) => m === "turn/completed" && p.threadId === id && (done = true));
@@ -15,6 +17,12 @@ if (cmd === "make") {
   for (let i = 0; i < 240 && !done; i++) await Bun.sleep(250);
   rpc.close();
   console.log(id);
+} else if (cmd === "hold") {
+  const rpc = await connect("tether-e2e-holder");
+  await rpc.call("thread/resume", { threadId: a, excludeTurns: true });
+  console.log("holding");
+  await Bun.sleep(Number(b ?? 60_000));
+  rpc.close();
 } else if (cmd === "settings") {
   const t = await readThread(a!);
   console.log(JSON.stringify(rolloutSettings(await Bun.file(t.path).text())));

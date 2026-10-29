@@ -8,7 +8,7 @@ import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
 import { codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
-import { codexMode, modeOf, modelList, type CodexModel } from "./modes";
+import { knownMode, modeOf, modelList, type CodexModel } from "./modes";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -59,7 +59,7 @@ export const codexAdapter: Adapter = {
   async defaults(projectPath, nativeId): Promise<StartOpts> {
     if (nativeId) {
       const own = await threadSettings(nativeId).catch(() => undefined);
-      if (own && Object.keys(own).length) return own;
+      if (own) return own;
     }
     const r: any = await call("config/read", { cwd: projectPath }).catch(() => undefined);
     const c = r?.config ?? {};
@@ -91,10 +91,8 @@ export const codexAdapter: Adapter = {
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false", "-c", `approvals_reviewer=${toml("user")}`];
     if (opts.model && opts.model !== "default") argv.push("-m", opts.model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
-    if (opts.permissionMode) {
-      const m = codexMode(opts.permissionMode);
-      if (CLI_POLICIES.has(m.approvalPolicy)) argv.push("-a", m.approvalPolicy, "-s", m.sandbox);
-    }
+    const m = knownMode(opts.permissionMode);
+    if (m && CLI_POLICIES.has(m.approvalPolicy)) argv.push("-a", m.approvalPolicy, "-s", m.sandbox);
     return { argv, quit: CODEX_QUIT };
   },
 };

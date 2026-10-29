@@ -45,5 +45,6 @@ const MODES: Record<string, string> = {
   "read-only": "Read only",
   untrusted: "Ask first",
   "full-access": "Full access",
+  unknown: "Unknown",
 };
 export const permissionModeLabel = (m: string | undefined) => (m ? (MODES[m] ?? cap(m)) : "Ask first");
