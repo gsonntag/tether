@@ -10,6 +10,7 @@ import { Connection, type ConnectionOptions } from "./connection";
 import type { CoreEvents } from "./events";
 import { LiveControl } from "./live";
 import { OpRegistry } from "./ops";
+import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { registerSessionOps } from "./sessionOps";
 import { SessionCore } from "./sessions";
@@ -30,6 +31,8 @@ export interface RunnerOptions {
   adapters?: Adapter[];
   /** where per-session settings are kept (runner.json); tests pass a temp file */
   prefsFile?: string;
+  /** where Tether's own notices are kept (CONFIG_DIR/notices.json); in memory when absent */
+  noticesFile?: string;
   /** the request broker's policy steps (SPEC §7); none in the core */
   policy?: PolicyStep[];
   /** session core tuning, for tests */
@@ -74,6 +77,7 @@ export function createRunner(o: RunnerOptions) {
     send: (m) => conn.send(m),
     epoch,
     prefs: new Prefs(o.prefsFile),
+    notices: o.noticesFile ? new NoticeStore(o.noticesFile) : undefined,
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,

@@ -115,3 +115,13 @@ test("a compaction mid-session keeps the conversation and marks the spot", () =>
   expect(sink.events.some((e) => e.type === "reset")).toBe(false);
   expect(sink.t.messages.at(-1)).toMatchObject({ role: "notice", parts: [{ text: "Context compacted." }] });
 });
+
+test("a turn another session puts in is marked with its origin, as in the store", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  s.handle({ type: "user", uuid: "p1", parent_tool_use_id: null, origin: { kind: "peer", from: "a1", name: "general-purpose", body: "[Subagent hand-back] preamble. The report follows:\n  All done." }, message: { role: "user", content: "Another Claude session sent a message:\n<agent-message from=\"a1\">x</agent-message>" } });
+  expect(sink.t.get("p1")).toMatchObject({ role: "user", origin: { kind: "peer", name: "general-purpose" }, parts: [{ type: "text", text: "All done." }] });
+  // Your own prompt echoed with origin human is not repeated (the driver added it).
+  s.handle({ type: "user", uuid: "h1", parent_tool_use_id: null, origin: { kind: "human" }, message: { role: "user", content: "hi" } });
+  expect(sink.t.get("h1")).toBeUndefined();
+});

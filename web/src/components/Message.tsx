@@ -75,6 +75,23 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const missing = Array.from({ length: omitted }, (_, i) => msg.parts.length + i).filter((i) => !full[i]);
   const cutFor = (i: number) => (isCut(parts[i]!) && !full[i] ? <CutNote loading={loading.includes(i)} error={error} onLoad={() => load([i])} /> : undefined);
 
+  if (msg.role === "user" && msg.origin) {
+    // Not something you typed: another session's message, a channel, a report.
+    const who = msg.origin.kind === "peer" ? "From another session" : msg.origin.kind === "channel" ? "From a channel" : "From the system";
+    return (
+      <div className="t-msg from">
+        <div className="t-from-head">
+          {who}
+          {msg.origin.name ? ` · ${msg.origin.name}` : ""}
+        </div>
+        <div className="t-parts">
+          {parts.map((p, i) => (
+            <PartView key={i} part={p} streaming={false} cut={cutFor(i)} root={projectPath} />
+          ))}
+        </div>
+      </div>
+    );
+  }
   if (msg.role === "user") {
     return (
       <div className="t-msg user">

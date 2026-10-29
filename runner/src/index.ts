@@ -30,6 +30,7 @@ const runner = createRunner({
   detectHarnesses: () => detectHarnesses(),
   // Codex arrives in P4.
   adapters: [claudeAdapter],
+  noticesFile: join(CONFIG_DIR, "notices.json"),
 });
 
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });

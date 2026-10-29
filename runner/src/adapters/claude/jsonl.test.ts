@@ -14,8 +14,9 @@ beforeAll(() => (process.env.CLAUDE_CONFIG_DIR = STORE));
 
 test("a compacted session shows every segment, oldest first, with a notice at each compaction", async () => {
   const msgs = await readHistory("c0mpac7e-0000-4000-8000-000000000001", "/compacted");
-  // The SDK's walk stopped at the last compaction: 4 prompts. The whole conversation has 246.
-  expect(msgs.filter((m) => m.role === "user").length).toBe(246);
+  // The SDK's walk stopped at the last compaction: 4 prompts. The whole conversation has 247
+  // (one of them queued mid-turn, on a branch beside the conversation).
+  expect(msgs.filter((m) => m.role === "user").length).toBe(247);
   const notices = msgs.map((m, i) => [i, m] as const).filter(([, m]) => m.role === "notice" && (m.parts[0] as any).text === "Context compacted.");
   expect(notices).toHaveLength(2);
   // Conversation before the first, between, and after the second.
@@ -69,4 +70,80 @@ test("a growing file is read incrementally and matches a full read; a rewrite is
   renameSync(other, path);
   await f.update();
   expect(chainMessages(f.chain()).filter((m) => m.role === "user").length).toBe(1);
+});
+
+/** A tiny session file from [uuid, parent, type, text] rows (in the order they were written). */
+function file(rows: [string, string | null, "user" | "assistant", string | { tool_result: true }, string?][]) {
+  const dir = mkdtempSync(join(tmpdir(), "tether-branch-"));
+  const path = join(dir, "b.jsonl");
+  writeFileSync(
+    path,
+    rows
+      .map(([uuid, parentUuid, type, text, origin], i) =>
+        JSON.stringify({
+          uuid,
+          ...(origin ? { origin: { kind: origin } } : {}),
+          parentUuid,
+          type,
+          timestamp: new Date(1_800_000_000_000 + i * 1000).toISOString(),
+          message:
+            type === "assistant"
+              ? { id: `msg_${uuid}`, role: "assistant", content: [{ type: "text", text }] }
+              : { role: "user", content: typeof text === "string" ? text : [{ type: "tool_result", tool_use_id: "t", content: "ok" }] },
+        }),
+      )
+      .join("\n") + "\n",
+  );
+  return path;
+}
+
+const texts = async (path: string) => {
+  const f = new StoreFile(path);
+  await f.update();
+  return chainMessages(f.chain()).map((m) => (m.parts[0] as any)?.text ?? m.role);
+};
+
+test("a prompt queued while a turn ran is kept with its reply, in the order written", async () => {
+  // u1 -> a1 (tool call) ; the queued prompt q hangs off a1 while the tool runs ; the turn goes on.
+  const path = file([
+    ["u1", null, "user", "first"],
+    ["a1", "u1", "assistant", "running a tool"],
+    ["q", "a1", "user", "queued question"],
+    ["qa", "q", "assistant", "answer to the queued question"],
+    ["r1", "a1", "user", { tool_result: true }],
+    ["a2", "r1", "assistant", "done"],
+  ]);
+  expect(await texts(path)).toEqual(["first", "running a tool", "queued question", "answer to the queued question", "done"]);
+});
+
+test("an edited, retried or rewound prompt is not shown; the newer one is", async () => {
+  const path = file([
+    ["u1", null, "user", "first"],
+    ["a1", "u1", "assistant", "reply"],
+    ["old", "a1", "user", "old wording"],
+    ["olda", "old", "assistant", "old answer"],
+    ["new", "a1", "user", "new wording"],
+    ["newa", "new", "assistant", "new answer"],
+  ]);
+  expect(await texts(path)).toEqual(["first", "reply", "new wording", "new answer"]);
+});
+
+test("a branch starting at an injected turn (a task notification beside a subagent's report) is kept", async () => {
+  const path = file([
+    ["u1", null, "user", "first"],
+    ["a1", "u1", "assistant", "reply"],
+    ["tn", "a1", "user", "<task-notification>x", "task-notification"],
+    ["peer", "a1", "user", "Another Claude session sent a message", "peer"],
+    ["q", "tn", "user", "a question asked meanwhile"],
+    ["qa", "q", "assistant", "its answer"],
+    ["pa", "peer", "assistant", "about the report"],
+  ]);
+  const t = await texts(path);
+  expect(t).toContain("a question asked meanwhile");
+  expect(t).toContain("its answer");
+  expect(t.at(-1)).toBe("about the report");
+  // The report is marked as not yours.
+  const f = new StoreFile(path);
+  await f.update();
+  expect(chainMessages(f.chain()).find((m) => m.id === "peer")).toMatchObject({ role: "user", origin: { kind: "peer" } });
 });

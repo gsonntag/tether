@@ -61,23 +61,24 @@ export class LiveControl {
     if (s.summary.parentSessionId) throw new Error("Subagents can't take messages yet. Message the main session instead.");
     // Checked and claimed with no await in between, so two sends can't both start a turn.
     if (s.state.status !== "idle" || s.sending) throw new Error("Claude is still working. Stop it first, or wait for it to finish.");
-    s.sending = true;
-    s.cancelSend = false;
+    const me = {};
+    s.sending = me;
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
     this.status(s, "running");
     try {
       await this.core.load(s);
       const d = await this.ensureDriver(s);
-      if (s.cancelSend) return this.status(s, "idle");
+      // Stopped before the message went out (interrupt already set idle and freed the session).
+      if (s.cancelSend === me) return;
       this.core.touch(s, { updatedAt: this.core.now() });
       await d.send(text);
       s.fresh = false;
     } catch (e) {
-      this.status(s, "idle");
+      if (s.sending === me) this.status(s, "idle");
       throw e;
     } finally {
-      s.sending = false;
-      s.cancelSend = false;
+      if (s.sending === me) s.sending = undefined;
+      if (s.cancelSend === me) s.cancelSend = undefined;
     }
   }
 
@@ -99,7 +100,9 @@ export class LiveControl {
     }
     // Stopped while Claude is still starting: the message never goes out.
     if (s.sending && !s.driver) {
-      s.cancelSend = true;
+      // Free at once: a send right after this goes ahead (on the same start).
+      s.cancelSend = s.sending;
+      s.sending = undefined;
       return this.status(s, "idle");
     }
     await s.driver?.interrupt();
@@ -133,8 +136,10 @@ export class LiveControl {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent runs with its parent's settings.");
     this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
-    if (s.driver) await apply(s.driver);
     s.setState(patch);
+    // Starting with the old settings right now: applied as soon as it's up.
+    const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
+    if (d) await apply(d);
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */

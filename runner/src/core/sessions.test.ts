@@ -13,6 +13,7 @@ import type { CoreEvents } from "./events";
 import { ask, FakeAdapter, idle, say, stream, subagent, subagentEnds, toolCall, toolDone } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
+import { NoticeStore } from "./notices";
 import { saveConfig } from "../config";
 import { SessionCore } from "./sessions";
 
@@ -456,4 +457,76 @@ describe("review round 1", () => {
     await Bun.sleep(40);
     expect(core.sessions.has("claude:s1")).toBe(false);
   });
+});
+
+describe("review round 2", () => {
+  test("Tether's notices survive the session leaving memory and the runner restarting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-notices-"));
+    const noticesFile = join(dir, "notices.json");
+    const make = () => {
+      const adapter = new FakeAdapter();
+      adapter.addStored("s1", [user("m0")]);
+      const bus = new EventBus<CoreEvents>();
+      const prefsFile = join(dir, "runner.json");
+      saveConfig({ runnerId: "t" }, prefsFile);
+      const core = new SessionCore({ adapters: [adapter], bus, send: () => true, epoch: "e", prefs: new Prefs(prefsFile), notices: new NoticeStore(noticesFile), evictMs: 10, log: () => {} });
+      cleanups.push(() => core.stop());
+      return { adapter, core, live: new LiveControl(core, new RequestBroker()) };
+    };
+    const a = make();
+    await a.core.subscribe("claude:s1");
+    await a.live.send("claude:s1", "go");
+    a.adapter.drivers[0]!.onExit?.("Claude Code stopped: boom");
+    a.core.unwatch("claude:s1");
+    await Bun.sleep(40);
+    expect(a.core.sessions.has("claude:s1")).toBe(false);
+    const again = await a.core.subscribe("claude:s1");
+    expect(again.messages.some((m) => (m.parts[0] as any)?.text === "Claude Code stopped: boom")).toBe(true);
+    a.core.stop();
+    const b = make();
+    const fresh = await b.core.subscribe("claude:s1");
+    expect(fresh.messages.some((m) => (m.parts[0] as any)?.text === "Claude Code stopped: boom")).toBe(true);
+  });
+
+  test("a turn cut off: output its orphaned process writes later stays above the notice", async () => {
+    const first = setup();
+    first.adapter.addStored("s1", [user("m0")]);
+    first.adapter.script = () => [say("a1", "working…")];
+    await first.live.send("claude:s1", "go");
+    first.core.o.prefs.flush();
+    const adapter = new FakeAdapter();
+    adapter.addStored("s1", [user("m0"), user("u1", "go")]);
+    const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, epoch: "e2", prefs: new Prefs((first.core.o.prefs as any).file), log: () => {} });
+    cleanups.push(() => core.stop());
+    const v = new Viewer(await core.subscribe("claude:s1"));
+    expect(v.w.messages.at(-1)!.role).toBe("notice");
+    // The orphaned Claude finishes writing its step.
+    adapter.write("s1", [user("m0"), user("u1", "go"), say0("late", "late output")]);
+    const s = await core.open("claude:s1");
+    expect(s.transcript!.messages.map((m) => m.id.startsWith("n-") ? "notice" : m.id)).toEqual(["m0", "u1", "late", "notice"]);
+  });
+});
+
+function say0(id: string, text: string): Msg {
+  return { id, role: "assistant", ts: 0, parts: [{ type: "text", text }] };
+}
+
+test("a setting changed while Claude starts is applied once it's up; Stop then send right away works", async () => {
+  const { adapter, core, live } = setup();
+  adapter.addStored("s1", []);
+  let release!: () => void;
+  adapter.startGate = new Promise((r) => (release = r));
+  const first = live.send("claude:s1", "one");
+  await Bun.sleep(5);
+  const setting = live.setModel("claude:s1", "haiku");
+  await live.interrupt("claude:s1");
+  // Not "still working": the cancelled send freed the session.
+  const second = live.send("claude:s1", "two");
+  release();
+  await Promise.all([first, setting, second]);
+  const d = adapter.drivers[0]!;
+  expect(adapter.drivers).toHaveLength(1);
+  expect(d.settings.model).toBe("haiku");
+  expect(d.sent).toEqual(["two"]);
+  expect((await core.open("claude:s1")).state.model).toBe("haiku");
 });

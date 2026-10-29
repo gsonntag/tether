@@ -10,7 +10,7 @@
 import { getSubagentMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
-import { assistantPart, notice, toolResults, userMessage, type EntryFlags } from "./content";
+import { assistantPart, commandOutput, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** Each entry's time and the flags getSessionMessages drops, by uuid. */
@@ -69,7 +69,19 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
       if (u) out.push(u);
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
       out.push(notice(m.uuid, ts, "Context compacted."));
+    } else if (m.type === "system" && msg?.subtype === "local_command" && typeof msg.content === "string") {
+      const text = commandOutput(msg.content);
+      if (text) out.push(notice(m.uuid, ts, text));
     }
+  }
+  // /compact's "Compacted (…)" output only repeats the compaction notice (the live stream never sends it).
+  const isCompacted = (m?: Msg) => m?.role === "notice" && (m.parts[0] as any)?.text === "Context compacted.";
+  for (let i = out.length - 1; i >= 0; i--)
+    if (out[i]!.role === "notice" && /^Compacted\b/.test((out[i]!.parts[0] as any)?.text ?? "") && (isCompacted(out[i - 1]) || isCompacted(out[i - 2]))) out.splice(i, 1);
+  // Claude Code writes a /compact prompt after the compaction it asked for; shown (as live) first.
+  for (let i = 0; i + 1 < out.length; i++) {
+    const [n, u] = [out[i]!, out[i + 1]!];
+    if (n.role === "notice" && (n.parts[0] as any)?.text === "Context compacted." && u.role === "user" && /^\/compact\b/.test((u.parts[0] as any)?.text ?? "")) [out[i], out[i + 1]] = [u, n];
   }
   // A call left running before the last message never finished (the process stopped).
   const lastId = out.at(-1)?.id;
@@ -115,7 +127,7 @@ export function chainMessages(chain: Entry[]): Msg[] {
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
     if (Number.isFinite(t)) meta.times.set(e.uuid, t);
     if (e.isMeta || e.isCompactSummary || e.origin) meta.flags.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
-    list.push({ type: e.type as SessionMessage["type"], uuid: e.uuid, message: e.type === "system" ? { subtype: e.subtype } : e.message, parent_tool_use_id: null });
+    list.push({ type: e.type as SessionMessage["type"], uuid: e.uuid, message: e.type === "system" ? { subtype: e.subtype, content: e.message?.content } : e.message, parent_tool_use_id: null });
   }
   return historyMessages(list, meta);
 }

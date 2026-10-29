@@ -632,3 +632,15 @@
     font-size: 16px; /* no zoom on focus in iOS Safari */
   }
 }
+
+/* A turn Claude Code added that you didn't type (another session, a channel). */
+.t-msg.from {
+  border-left: 2px solid var(--color-border, #444);
+  padding: 4px 0 4px 12px;
+  margin: 8px 0;
+}
+.t-msg.from .t-from-head {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}

@@ -18,7 +18,8 @@ import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
-import { Session, withOverlay } from "./session";
+import { NoticeStore, withOverlay } from "./notices";
+import { Session } from "./session";
 import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
 
@@ -30,6 +31,8 @@ export interface CoreOptions {
   /** this runner process's summary epoch */
   epoch: string;
   prefs: Prefs;
+  /** Tether's own notices, kept across eviction and restarts (in memory only when absent) */
+  notices?: NoticeStore;
   /** how often discovery looks for sessions started elsewhere */
   discoverMs?: number;
   /** how long an unwatched stored session's transcript stays in memory */
@@ -61,8 +64,10 @@ export class SessionCore {
   private discovering?: Promise<void>;
   readonly log: (line: string) => void;
   readonly now: () => number;
+  readonly notices: NoticeStore;
 
   constructor(readonly o: CoreOptions) {
+    this.notices = o.notices ?? new NoticeStore();
     this.log = o.log ?? ((l) => console.log(l));
     this.now = o.now ?? Date.now;
     this.book = new SummaryBook(o.epoch, (summary) => void o.send({ t: "summary", summary }), this.now);
@@ -88,6 +93,7 @@ export class SessionCore {
 
   stop() {
     clearInterval(this.discoverTimer);
+    this.notices.flush();
     for (const t of this.evictTimers.values()) clearTimeout(t);
     for (const s of this.sessions.values()) {
       s.unwatch?.();
@@ -198,6 +204,8 @@ export class SessionCore {
 
   /** Registers a session object (new, opened, or a live subagent). */
   add(s: Session): Session {
+    if (!s.overlay.length) s.overlay = this.notices.get(s.id);
+    s.noticeAdded = (n) => this.notices.add(s.id, n);
     this.sessions.set(s.id, s);
     this.seqs.delete(s.id);
     return s;
@@ -231,8 +239,16 @@ export class SessionCore {
       .readHistory(s.summary.nativeId, s.summary.projectPath)
       .then((msgs) => {
         // A turn that was running when the runner (or the harness) stopped: say so where it ended.
-        if (!s.live && this.o.prefs.get(s.id).running && !s.overlay.some((o) => o.msg.id === `n-cut-${s.id}`))
-          s.overlay.push({ after: msgs.at(-1)?.id, msg: { id: `n-cut-${s.id}`, role: "notice", level: "warning", ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text", text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] } });
+        // Anchored to the end of that turn: what an orphaned process still writes lands above it.
+        if (!s.live && !s.sending && this.o.prefs.get(s.id).running) {
+          const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
+          const n = { turnOf: prompt?.id, msg: { id: `n-cut-${s.id}-${prompt?.id ?? "x"}`, role: "notice" as const, level: "warning" as const, ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text" as const, text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] } };
+          if (!s.overlay.some((o) => o.msg.id === n.msg.id)) {
+            s.overlay.push(n);
+            this.notices.add(s.id, n);
+          }
+          this.o.prefs.set(s.id, { running: undefined });
+        }
         // A live driver may have created it meanwhile (send right after open).
         s.transcript ??= new Transcript(withOverlay(msgs, s.overlay));
         return s.transcript;

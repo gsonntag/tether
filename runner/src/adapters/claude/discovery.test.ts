@@ -8,18 +8,18 @@ beforeAll(() => (process.env.CLAUDE_CONFIG_DIR = join(import.meta.dir, "fixtures
 
 test("sessions are listed with titles and the time of their last message", async () => {
   const list = await claudeSessions();
-  expect(list.map((s) => s.id).sort()).toEqual(["claude:0baf46c3-634f-4340-bced-ec08230ff082", "claude:5a8f3ee4-822a-495e-97e2-732d675538ac", "claude:abbefbf3-72fa-4be1-9f18-7caab9dcb09b"]);
+  expect(list.map((s) => s.id).sort()).toEqual(["claude:0baf46c3-634f-4340-bced-ec08230ff082", "claude:5a8f3ee4-822a-495e-97e2-732d675538ac", "claude:a8d21b1b-b9ed-4f99-a554-acb8bf137c86", "claude:abbefbf3-72fa-4be1-9f18-7caab9dcb09b"]);
   const sub = list.find((s) => s.nativeId === SUB)!;
   expect(sub).toMatchObject({ harness: "claude", projectPath: DIR, title: "Line count for README.md and math.ts", mode: "stored", status: "idle" });
   // The last message's time (2026-10-29), not the copy's mtime.
   expect(new Date(sub.updatedAt).toISOString().slice(0, 10)).toBe("2026-10-29");
   expect(await claudeSessions({ since: Date.now() + 1000 })).toEqual([]);
-  expect((await claudeSessions({ projectPath: DIR })).length).toBe(3);
+  expect((await claudeSessions({ projectPath: DIR })).length).toBe(4);
 });
 
 test("projects, subagents and single rows", async () => {
   const projects = await claudeProjects();
-  expect(projects.find((p) => p.path === DIR)).toMatchObject({ name: "scratch", sessions: 3, harnesses: ["claude"] });
+  expect(projects.find((p) => p.path === DIR)).toMatchObject({ name: "scratch", sessions: 4, harnesses: ["claude"] });
   const kids = claudeSubagents(SUB, DIR);
   expect(kids).toHaveLength(1);
   expect(kids[0]).toMatchObject({ parentSessionId: `claude:${SUB}`, agentType: "general-purpose", mode: "stored" });

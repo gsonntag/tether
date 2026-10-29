@@ -38,7 +38,19 @@ export function mergePart(old: Part | undefined, next: Part): Part {
 export interface EntryFlags {
   isMeta?: boolean;
   isCompactSummary?: boolean;
-  origin?: { kind?: string; name?: string; server?: string };
+  origin?: { kind?: string; name?: string; server?: string; from?: string; body?: string };
+}
+
+/**
+ * A turn another sender put in (a peer session, a channel, …) as a message marked with its origin,
+ * its text as the sender wrote it: without Claude Code's wrapper and preamble.
+ */
+function fromElsewhere(text: string, o: NonNullable<EntryFlags["origin"]>, id: string, ts: number): Msg {
+  const wrapped = text.match(/<agent-message[^>]*>([\s\S]*?)(?:<\/agent-message>|$)/)?.[1];
+  let body = o.body ?? wrapped ?? text;
+  body = body.replace(/^\[Subagent hand-back\][\s\S]*?The report follows:\s*/, "").replace(/^ {2}/gm, "").trim();
+  const name = o.name ?? o.server ?? o.from;
+  return { id, role: "user", ts, origin: { kind: o.kind!, ...(name ? { name } : {}) }, parts: [{ type: "text", text: body }] };
 }
 
 const tag = (text: string, name: string) => text.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`))?.[1]?.trim();
@@ -55,6 +67,7 @@ export function injected(text: string, flags: EntryFlags, id: string, ts: number
   // session and Claude's answer do), so the stored view doesn't either.
   if (flags.origin?.kind === "task-notification" || t.startsWith("<task-notification>")) return null;
   if (t.startsWith("[Request interrupted")) return notice(id, ts, "Interrupted");
+  if (flags.origin?.kind && flags.origin.kind !== "human") return fromElsewhere(text, flags.origin, id, ts);
   // The summary Claude continues from after a compaction: the boundary's "Context compacted."
   // notice marks the spot, live and stored alike.
   if (flags.isCompactSummary) return null;
@@ -101,4 +114,11 @@ export function userMessage(content: unknown, id: string, ts: number, flags: Ent
 export function toolResults(content: unknown): { toolId: string; status: "done" | "error"; output: string }[] {
   if (!Array.isArray(content)) return [];
   return content.filter((b: any) => b?.type === "tool_result" && typeof b.tool_use_id === "string").map((b: any) => ({ toolId: b.tool_use_id, status: b.is_error ? ("error" as const) : ("done" as const), output: blockText(b.content) }));
+}
+
+/** A slash command's output as Claude Code stores it (inside <local-command-stdout>), plain. */
+export function commandOutput(text: string): string {
+  const inner = text.match(/<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/)?.[1] ?? text;
+  // Terminal styling (dim, bold) means nothing here.
+  return inner.replace(/\u001b\[[0-9;]*m/g, "").trim();
 }

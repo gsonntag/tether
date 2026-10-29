@@ -124,15 +124,28 @@ export class ClaudeDriver implements Driver {
   private async pump() {
     let error: string | undefined;
     try {
-      for await (const m of this.q) this.stream.handle(m);
+      for await (const m of this.q) {
+        try {
+          this.stream.handle(m);
+        } catch (e: any) {
+          // Tether's bug, not Claude's: stop this process cleanly and say so.
+          console.error(`claude ${this.nativeId}: couldn't handle a ${(m as any)?.type}${(m as any)?.subtype ? `/${(m as any).subtype}` : ""} message:`, e);
+          error = `Tether couldn't follow Claude Code's output (${e?.message ?? e}), so it closed the session. Send again to resume it.`;
+          this.closed = true;
+          this.input.end();
+          try {
+            this.q.close();
+          } catch {}
+          break;
+        }
+      }
     } catch (e: any) {
-      error = this.why(`Claude Code stopped: ${e?.message ?? e}`);
+      if (!error) error = this.why(`Claude Code stopped: ${e?.message ?? e}`);
     }
-    if (this.closed) return;
+    if (this.closed && !error) return;
     this.closed = true;
     this.onExit?.(error);
   }
-
 
   async send(text: string) {
     if (this.closed) throw new Error("Claude Code isn't running.");

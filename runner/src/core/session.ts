@@ -4,6 +4,7 @@
 
 import type { HarnessCapabilities, LiveState, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import type { Driver, TranscriptEvent } from "./adapter";
+import type { OverlayNotice } from "./notices";
 import { Transcript } from "./transcript";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -27,16 +28,18 @@ export class Session {
   childRunning = false;
   /** a new session that hasn't had a message yet: nothing of it is in any store */
   fresh = false;
-  /** a send is starting the harness or handing it the message */
-  sending = false;
-  /** Stop came while `sending`, before the message went out */
-  cancelSend = false;
+  /** the send that is starting the harness or handing it the message (a token per send) */
+  sending?: object;
+  /** the send Stop cancelled before its message went out */
+  cancelSend?: object;
   /**
    * Messages only Tether has (its notices: denials, errors, a turn cut off; ids "n-…"), each
    * after the message it followed. The store doesn't have them, so they're laid over every
    * transcript read from it instead of being diffed away.
    */
-  overlay: { msg: Msg; after?: string }[] = [];
+  overlay: OverlayNotice[] = [];
+  /** a notice joined the overlay (the core keeps them in notices.json) */
+  noticeAdded?: (n: OverlayNotice) => void;
 
   constructor(
     summary: SessionSummary,
@@ -68,7 +71,11 @@ export class Session {
     }
     const last = this.transcript.messages.at(-1)?.id;
     const out = this.transcript.apply(e);
-    if (out?.type === "msg" && out.isNew && isTetherNotice(out.msg)) this.overlay.push({ msg: out.msg, after: last });
+    if (out?.type === "msg" && out.isNew && isTetherNotice(out.msg)) {
+      const n = { msg: out.msg, after: last };
+      this.overlay.push(n);
+      this.noticeAdded?.(n);
+    }
     if (out) this.emit(out);
     return out;
   }
@@ -98,16 +105,3 @@ export class Session {
 /** A notice only Tether has (not in the harness's store). */
 export const isTetherNotice = (m: Msg) => m.role === "notice" && m.id.startsWith("n-");
 
-/** A transcript read from the store with Tether's own notices put back where they were. */
-export function withOverlay(store: Msg[], overlay: Session["overlay"]): Msg[] {
-  if (!overlay.length) return store;
-  const out = [...store];
-  const have = new Set(out.map((m) => m.id));
-  for (const { msg, after } of overlay) {
-    if (have.has(msg.id)) continue;
-    const i = after ? out.findIndex((m) => m.id === after) : -1;
-    out.splice(i < 0 ? out.length : i + 1, 0, msg);
-    have.add(msg.id);
-  }
-  return out;
-}

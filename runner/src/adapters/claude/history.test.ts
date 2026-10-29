@@ -59,3 +59,10 @@ test("a stored session links its Agent call to the subagent, whose own transcrip
   // The live child id is the same native id.
   expect(live("subagent.jsonl").children[0]!.split("/")[0]).toBe(SUB);
 });
+
+test("slash commands read as the live view showed them: output as notices, /compact before its notice", async () => {
+  // A real session: /context, a prompt, /compact, a prompt (scripts/parity-claude.ts checked live = stored).
+  const msgs = await readHistory("a8d21b1b-b9ed-4f99-a554-acb8bf137c86", DIR);
+  const rows = msgs.map((m) => `${m.role}:${((m.parts[0] as any)?.text ?? "").split("\n")[0]}`);
+  expect(rows).toEqual(["user:/context", "notice:## Context Usage", "user:Say ok.", "assistant:", "user:/compact", "notice:Context compacted.", "user:Say done.", "assistant:Done."]);
+});

@@ -50,6 +50,8 @@ function entryOf(line: string): Entry | undefined {
     if (e.origin) out.origin = e.origin;
   } else if (e.type === "system") {
     out.subtype = e.subtype;
+    // A slash command's output (/context, /cost, …), shown as a notice.
+    if (e.subtype === "local_command" && typeof e.content === "string") out.message = { content: e.content };
   }
   return out;
 }
@@ -61,6 +63,8 @@ export class StoreFile {
   readonly entries = new Map<string, Entry>();
   /** user and assistant entries of the main thread, in file order */
   private messages: Entry[] = [];
+  /** entries by parent, in file order */
+  private children = new Map<string, Entry[]>();
   private lines = 0;
 
   constructor(readonly path: string) {}
@@ -102,6 +106,7 @@ export class StoreFile {
     this.offset = 0;
     this.entries.clear();
     this.messages = [];
+    this.children.clear();
     this.lines = 0;
   }
 
@@ -110,6 +115,11 @@ export class StoreFile {
     if (!e) return false;
     e.order = ++this.lines;
     this.entries.set(e.uuid, e);
+    if (e.parentUuid) {
+      const list = this.children.get(e.parentUuid);
+      if (list) list.push(e);
+      else this.children.set(e.parentUuid, [e]);
+    }
     if ((e.type === "user" || e.type === "assistant") && !e.isSidechain) this.messages.push(e);
     return true;
   }
@@ -126,14 +136,39 @@ export class StoreFile {
       else if (cur.type === "system" && cur.subtype === "compact_boundary") cur = this.lastMessageBefore(cur.order);
       else cur = undefined;
     }
-    // Oldest first, each entry once, where it first happened.
+    // Branches written beside the conversation, not instead of it: a prompt queued while a turn
+    // ran (or a task notification) hangs off the running turn, and its reply hangs off it.
+    for (const b of this.sideBranches(visited)) walk.push(...b);
+    // Each entry once, in the order it was written (a child is always written after its parent).
     const seen = new Set<string>();
     const out: Entry[] = [];
-    for (let i = walk.length - 1; i >= 0; i--) {
-      const e = walk[i]!;
+    for (const e of walk) {
       if (seen.has(e.uuid)) continue;
       seen.add(e.uuid);
       out.push(e);
+    }
+    return out.sort((a, b) => a.order - b.order);
+  }
+
+  /**
+   * User turns off the main chain whose parent is on it (a prompt queued mid-turn, a task
+   * notification arriving beside a subagent's report), each with what followed it. Except those
+   * abandoned: an edit, retry or rewind continues the chain from the same parent with a newer
+   * prompt you typed, and Claude Code no longer shows the old branch.
+   */
+  private sideBranches(onChain: Set<string>): Entry[][] {
+    const out: Entry[][] = [];
+    for (const e of this.messages) {
+      if (onChain.has(e.uuid) || !isPrompt(e) || !e.parentUuid || !onChain.has(e.parentUuid)) continue;
+      const main = (this.children.get(e.parentUuid) ?? []).find((c) => onChain.has(c.uuid));
+      if (main && isPrompt(main) && !main.origin && !main.isMeta && main.order > e.order) continue;
+      const branch: Entry[] = [];
+      const seen = new Set<string>();
+      for (let cur: Entry | undefined = e; cur && !seen.has(cur.uuid) && !onChain.has(cur.uuid); cur = this.children.get(cur.uuid)?.at(-1)) {
+        seen.add(cur.uuid);
+        branch.push(cur);
+      }
+      out.push(branch);
     }
     return out;
   }
@@ -156,7 +191,8 @@ export class StoreFile {
 
 const cache = new Map<string, StoreFile>();
 
-const CACHE_MAX = 8;
+/** Files kept parsed (a long session holds tens of MB): the watched ones and a few recent. */
+const CACHE_MAX = 4;
 
 /** The file, brought up to date (cached, so repeated reads parse only what was appended). */
 export async function readStore(path: string): Promise<StoreFile> {
@@ -167,4 +203,12 @@ export async function readStore(path: string): Promise<StoreFile> {
   while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
   await f.update();
   return f;
+}
+
+/** A user turn: a user entry with text (typed, or injected by Claude Code), not tool results. */
+function isPrompt(e: Entry): boolean {
+  if (e.type !== "user") return false;
+  const c = e.message?.content;
+  if (typeof c === "string") return true;
+  return Array.isArray(c) && c.some((b: any) => b?.type === "text") && !c.some((b: any) => b?.type === "tool_result");
 }

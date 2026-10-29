@@ -13,7 +13,7 @@
 
 import type { Msg } from "../../../../shared/transcript";
 import type { Sink } from "../../core/adapter";
-import { assistantPart, blockText, mergePart, notice, toolResults, userMessage } from "./content";
+import { assistantPart, blockText, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
 /** What the stream needs from the driver around it. */
 export interface StreamHost {
@@ -116,6 +116,13 @@ export class ClaudeStream {
   private assistant(t: Thread, m: any) {
     const msg = m.message;
     if (!Array.isArray(msg?.content)) return;
+    // A slash command's output (/context, /cost…): Claude Code stores it as a local_command entry
+    // with this frame's uuid, shown as a notice (history.ts).
+    if (msg.model === "<synthetic>" && !m.error && m.uuid) {
+      const text = commandOutput(blockText(msg.content));
+      if (text) t.sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
+      return;
+    }
     const id: string = msg.id ?? m.uuid;
     if (m.error) this.lastError = blockText(msg.content) || String(m.error);
     const have = t.sink.message(id);
@@ -144,7 +151,7 @@ export class ClaudeStream {
     // Our own prompts are added when sent; anything else with text is something Claude Code says.
     if (!m.uuid || toolResults(content).length) return;
     const u = userMessage(content, m.uuid, Date.now(), { isMeta: m.isSynthetic, origin: m.origin });
-    if (u && u.role === "notice") t.sink.event({ type: "msg", msg: u });
+    if (u && (u.role === "notice" || u.origin)) t.sink.event({ type: "msg", msg: u });
   }
 
   private system(m: any) {
@@ -161,6 +168,12 @@ export class ClaudeStream {
         this.stateEvents = true;
         sink.state({ status: m.state === "running" ? "running" : m.state === "requires_action" ? "waiting" : "idle" });
         return;
+      case "local_command_output": {
+        // A command's own output (/compact's "Compacted"), stored as a local_command entry.
+        const text = typeof m.content === "string" ? commandOutput(m.content) : "";
+        if (text && m.uuid) sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
+        return;
+      }
       case "compact_boundary":
         // Claude continues from a summary; the conversation so far stays on screen, as in the
         // store (history.ts reads across compactions), with the same notice at the spot.

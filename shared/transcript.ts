@@ -83,6 +83,11 @@ export interface Msg {
   error?: string;
   streaming?: boolean;
   /**
+   * user: a turn the harness added that you didn't type (another session's message, a channel,
+   * a subagent's report): who it's from. The UI shows it apart from your own messages.
+   */
+  origin?: { kind: string; name?: string };
+  /**
    * Parts at the end left out to keep the message small (shared/limits.ts): `parts` holds the
    * first ones, and parts[parts.length …] can be fetched one by one with `fullPart`.
    */
