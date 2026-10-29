@@ -34,12 +34,13 @@ const RULE = /^\s*[─━]{8,}/;
 /** The prompt box's input line ("❯ " and whatever is typed), not a selection ("❯ 1. Yes"). */
 const INPUT = /^\s*❯(?!\s*\d+\.)(\s|$)/;
 /**
- * A spinner line: one glyph, then a word or more ending in "…", with or without the "(16s · ↓ 213
- * tokens)" tail: "✻ Brewing…", "· Determining… (running PreToolUse hook · 16s)", "✻ Compacting
- * conversation…", and a tool still running ("⎿  Waiting…"). The done line ("✻ Churned for 49s") has
- * no "…".
+ * A spinner line, in its own form only: one glyph, then one word (two for "Compacting
+ * conversation…") ending in "…", then at most its "(…)" tail: "✻ Brewing…", "· Determining…
+ * (running PreToolUse hook · 16s · ↓ 213 tokens)", "✻ Compacting conversation…", a tool still
+ * running ("⎿  Waiting…"). Not text that happens to hold a "…" ("- Let me think…", "● Quick one…
+ * reply with…", a prompt echoed with "❯"), and not the done line ("✻ Churned for 49s").
  */
-const SPINNER = /^\s*[^\s\w"'`(\[]\s+\S[^\n]*…/;
+const SPINNER = /^\s*[^\s\p{L}\p{N}"'`(\[\-–—•●❯>|]\s{1,3}\p{L}[\p{L}'’-]*(?: \p{L}[\p{L}'’-]*)?…(?:\s+\(.*)?\s*$/u;
 /** A selection list (permission prompts, plan approval, pickers) and dialogs' own footers. */
 const ASKING = /^\s*❯\s*\d+\.\s|Esc to cancel|Enter to confirm|Enter to select|Enter to set|Would you like to|Do you want to/m;
 
@@ -63,10 +64,14 @@ export function claudeScreen(screen: string): ScreenRead {
   if (box < 0) return { state: ASKING.test(screen) ? "asking" : "unknown", body: screen };
   const above = lines.slice(0, box - 1);
   const body = above.join("\n");
+  // What is typed in the box: its lines up to the closing rule, without the "❯ " and indentation.
+  const input: string[] = [];
+  for (let k = box; k < lines.length && !RULE.test(lines[k]!); k++) input.push(lines[k]!.replace(k === box ? /^\s*❯\s?/ : /^\s+/, ""));
+  const typed = input.join("\n").trimEnd();
   // Just above the box: the spinner, the todo list under it, tips.
   const near = above.slice(-15);
-  if (/esc to interrupt/i.test(screen) || near.some((l) => SPINNER.test(l))) return { state: "busy", body };
-  return { state: "idle", body };
+  if (/esc to interrupt/i.test(screen) || near.some((l) => SPINNER.test(l))) return { state: "busy", body, input: typed };
+  return { state: "idle", body, input: typed };
 }
 
 /** Whether the screen shows Claude idle at its prompt (see claudeScreen). */
@@ -185,6 +190,6 @@ export const claudeAdapter: Adapter = {
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
     if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui));
-    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, screen: claudeScreen };
+    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, screen: claudeScreen, paste: true };
   },
 };

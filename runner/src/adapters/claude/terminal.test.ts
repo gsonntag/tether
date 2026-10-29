@@ -46,3 +46,26 @@ test("anything else is unknown, never idle", () => {
   expect(state(" ▐▛███▜▌   Claude Code v2.1.312\n")).toBe("unknown");
   expect(state("Transcript view · ctrl+o to toggle")).toBe("unknown");
 });
+
+// Whole screens tmux captured from Claude 2.1.312 in P3 review round 4; the name says what they show.
+import { readdirSync, readFileSync } from "node:fs";
+const SCREENS = `${import.meta.dir}/screens`;
+for (const f of readdirSync(SCREENS)) {
+  const want = f.split(".").at(-2);
+  test(`real screen ${f}: ${want}`, () => {
+    expect(state(readFileSync(`${SCREENS}/${f}`, "utf8"))).toBe(want as any);
+  });
+}
+
+test("a line of an answer or a prompt holding a … is no spinner", () => {
+  expect(state(frame("● - first item…\n  - second item…\n  - Let me think…\n✻ Sautéed for 2s · done 6:38 PM"))).toBe("idle");
+  expect(state(frame("❯ Quick one… reply with just the word hi.\n● hi"))).toBe("idle");
+  expect(state(frame("● Quick one… reply with…"))).toBe("idle");
+  // The spinner's tail may wrap at narrow widths.
+  expect(state(frame("✻ Ebbing… (running SessionStart hooks… 0/3 ·\n0s)"))).toBe("busy");
+});
+
+test("what is typed in the box", () => {
+  expect(claudeScreen(`● OK\n${RULE}\n❯ Run the shell command sleep 30 with Bash, then reply\n  with just DONE.\n${RULE}\n`).input).toBe("Run the shell command sleep 30 with Bash, then reply\nwith just DONE.");
+  expect(claudeScreen(frame("● OK")).input).toBe("");
+});

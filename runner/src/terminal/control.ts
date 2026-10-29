@@ -54,8 +54,12 @@ export interface TerminalOptions {
   startWaitMs?: number;
   /** how long without a hook before a busy TUI's screen is looked at */
   quietMs?: number;
+  /** how long after a hook an idle TUI's busy screen may count as a turn (its spinner lingers) */
+  settleMs?: number;
   /** the pause before a screen that is neither at the prompt nor asking is looked at again */
   screenRetryMs?: number;
+  /** how long typed text gets to show in the TUI's prompt before Enter is given up */
+  typedWaitMs?: number;
   log?: (line: string) => void;
 }
 
@@ -68,6 +72,14 @@ export const ANSWER_THERE = "Claude is asking something in the terminal. Answer 
 export const NOT_STARTED = "Claude Code hasn't started yet. If it asks whether to trust this folder, answer in the terminal.";
 /** The TUI shows neither its prompt nor a question (a picker, a full-screen view, still drawing). */
 export const NOT_AT_PROMPT = "Claude Code isn't at its prompt in the terminal (something is open there). Finish it there first.";
+/** A dialog opened between typing and Enter: Enter would have answered it, so nothing was sent. */
+export const ASKED_MEANWHILE = "Claude asked something in the terminal just as you sent. Nothing was sent; answer it there first.";
+/** The typed text never showed at the prompt (the TUI was busy redrawing): Enter wasn't pressed. */
+export const NOT_TYPED = "Your text didn't show up at Claude Code's prompt, so it wasn't sent. Look at the terminal.";
+/** Back to Tether while the screen shows the TUI working though no hook said so. */
+export const STILL_WORKING = "Claude Code is still working in the terminal.";
+/** A dialog seen on screen before Claude's Notification hook says what it is. */
+export const ASKING_THERE = "Claude needs you in the terminal.";
 export const HANDING_OFF = "The session is moving to the terminal. Type there in a moment.";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -92,6 +104,8 @@ export class TerminalControl {
   /** sessions "waiting" whose TUI showed its dialog: once the dialog is gone, they aren't waiting */
   private askSeen = new Set<string>();
   private askGone = new Map<string, number>();
+  /** idle sessions whose TUI's screen shows it working, checks in a row */
+  private busySeen = new Map<string, number>();
   /** messages being typed into a TUI, per session: each text goes in with its Enter */
   private typing = new Map<string, Promise<void>>();
   /** new shells are numbered one at a time */
@@ -226,7 +240,20 @@ export class TerminalControl {
     }
     const going = this.returning.get(s.id);
     if (going) return going;
-    const p = this.quit(s).finally(() => this.returning.delete(s.id));
+    // Idle as far as hooks know: the screen may say otherwise (a turn Claude started by itself, or
+    // one the runner didn't see start). Then Back to Tether asks first, like for any turn. Checked
+    // as part of going back, so nothing is typed into the TUI meanwhile.
+    const check = !whenIdle && term.kind === "handoff" && s.state.status === "idle";
+    const p = (async () => {
+      if (check) {
+        const seen = await this.readScreen(s, this.nameOf(s.id), 1);
+        if (seen?.state === "busy" || seen?.state === "asking") {
+          this.fromScreen(s, seen.state);
+          throw new Error(STILL_WORKING);
+        }
+      }
+      await this.quit(s);
+    })().finally(() => this.returning.delete(s.id));
     this.returning.set(s.id, p);
     return p;
   }
@@ -438,13 +465,16 @@ export class TerminalControl {
     return this.runSteps(name, steps, true);
   }
 
-  private async runSteps(name: string, steps: QuitStep[], untilGone: boolean) {
+  private async runSteps(name: string, steps: QuitStep[], untilGone: boolean, beforeKeys?: () => Promise<void>) {
     for (const [i, st] of steps.entries()) {
       // Quit already: the rest would go nowhere.
       if (untilGone && i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
       if ("waitMs" in st && !st.waitMs) continue;
       if ("waitMs" in st) await Bun.sleep(st.waitMs);
-      else if ("keys" in st) await this.o.tmux.keys(name, ...st.keys);
+      else if ("keys" in st) {
+        await beforeKeys?.();
+        await this.o.tmux.keys(name, ...st.keys);
+      }
       else await this.o.tmux.type(name, st.text);
     }
   }
@@ -489,10 +519,32 @@ export class TerminalControl {
     if (this.unconfirmed.has(s.id)) throw new Error(NOT_STARTED);
     if (seen?.state === "asking") throw new Error(ANSWER_THERE);
     if (seen?.state === "unknown") throw new Error(NOT_AT_PROMPT);
-    await this.o.tmux.type(name, text);
+    const launch = this.launch(s);
+    await this.o.tmux.type(name, text, !!launch.paste);
     // The harness says how to submit it (Claude: a beat, End, Enter); by default a beat and Enter.
-    const submit = this.launch(s).submit ?? [{ waitMs: this.o.enterDelayMs ?? 150 }, { keys: ["Enter"] }];
-    await this.runSteps(name, submit, false);
+    const submit = launch.submit ?? [{ waitMs: this.o.enterDelayMs ?? 150 }, { keys: ["Enter"] }];
+    // Each key goes only to the prompt with the text in it: a dialog that opened meanwhile (a tool
+    // asking) would take End as "No" and Enter as its answer.
+    await this.runSteps(name, submit, false, launch.screen ? () => this.stillAtPrompt(s, name, text) : undefined);
+  }
+
+  /**
+   * Just before a key of the submit: the TUI is at its prompt with the text in its box. A dialog
+   * means nothing is sent (the paste went nowhere, or waits in the box behind it).
+   */
+  private async stillAtPrompt(s: Session, name: string, text: string) {
+    const flat = (t: string) => t.replace(/\s+/g, "");
+    const want = flat(text).slice(-40);
+    const until = Date.now() + (this.o.typedWaitMs ?? 1500);
+    for (;;) {
+      const seen = await this.readScreen(s, name, 1);
+      if (seen?.state === "asking") throw new Error(ASKED_MEANWHILE);
+      const ok = seen && (seen.state === "idle" || seen.state === "busy");
+      // A long or multi-line paste shows as "[Pasted text #1 …]".
+      if (ok && (seen.input === undefined || flat(seen.input).includes(want) || /\[Pasted text/.test(seen.input))) return;
+      if (Date.now() > until) throw new Error(seen?.state === "unknown" ? NOT_AT_PROMPT : NOT_TYPED);
+      await Bun.sleep(50);
+    }
   }
 
   /**
@@ -665,7 +717,14 @@ export class TerminalControl {
       if (t.launchedFor && t.launchedFor !== s.id) this.moved.set(t.launchedFor, s.id);
       this.adopt(s, t.name, t.returnWhenIdle);
       this.log(`readopted the terminal of ${s.id}`);
-      if (t.returnWhenIdle && s.capabilities.terminal === "handoff") await this.resumeReturn(s, t.name);
+      if (s.capabilities.terminal !== "handoff") continue;
+      if (t.returnWhenIdle) await this.resumeReturn(s, t.name);
+      else {
+        // No hook told this runner what the TUI is doing: its screen does. Unsure is working (the
+        // screen's idle check ends that), never idle (Back to Tether would kill a turn).
+        const seen = await this.readScreen(s, t.name);
+        if (seen && seen.state !== "idle") this.fromScreen(s, seen.state === "asking" ? "asking" : "busy");
+      }
     }
   }
 
@@ -681,8 +740,26 @@ export class TerminalControl {
       void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
       return;
     }
-    s.setState({ status: "running" });
-    this.o.core.touch(s);
+    this.fromScreen(s, seen?.state === "asking" ? "asking" : "busy");
+  }
+
+  /**
+   * The screen shows the TUI working or asking where no hook said so: the status follows (no turn
+   * events: this isn't a turn starting, only one being found).
+   */
+  private fromScreen(s: Session, what: "busy" | "asking") {
+    const term = s.state.terminal;
+    if (!term || s.state.mode !== "terminal") return;
+    if (what === "asking") {
+      if (s.state.status === "waiting") return;
+      this.askSeen.add(s.id);
+      this.askGone.delete(s.id);
+      s.setState({ status: "waiting", terminal: { ...term, attention: term.attention ?? ASKING_THERE } });
+    } else {
+      if (s.state.status !== "idle") return;
+      s.setState({ status: "running" });
+    }
+    this.o.core.touch(s, { updatedAt: this.o.core.now() });
   }
 
   private startPoll() {
@@ -718,29 +795,53 @@ export class TerminalControl {
    */
   private async reconcile(id: string, name: string) {
     const s = this.o.core.sessions.get(id);
-    const clear = () => (this.idleSeen.delete(id), this.askSeen.delete(id), this.askGone.delete(id));
-    if (!s || s.state.mode !== "terminal" || s.state.status === "idle" || this.returning.has(id) || !s.state.terminal) return void clear();
+    const clear = () => (this.idleSeen.delete(id), this.askSeen.delete(id), this.askGone.delete(id), this.busySeen.delete(id));
+    if (!s || s.state.mode !== "terminal" || this.returning.has(id) || !s.state.terminal || s.capabilities.terminal !== "handoff") return void clear();
     if (!this.launch(s).screen) return;
-    if (s.state.status === "waiting") {
+    const seen = await this.readScreen(s, name, 1);
+    if (!seen || s.state.mode !== "terminal" || !s.state.terminal) return;
+    const status = s.state.status;
+    if (status === "waiting") {
       this.idleSeen.delete(id);
-      const seen = await this.readScreen(s, name, 1);
-      if (seen?.state === "asking") {
+      if (seen.state === "asking") {
         this.askSeen.add(id);
         this.askGone.delete(id);
         return;
       }
-      if (!this.askSeen.has(id) || !seen || seen.state === "unknown") return void this.askGone.delete(id);
+      if (!this.askSeen.has(id) || seen.state === "unknown") return void this.askGone.delete(id);
       const n = (this.askGone.get(id) ?? 0) + 1;
       this.askGone.set(id, n);
-      if (n < 2 || s.state.status !== "waiting" || !s.state.terminal) return;
+      if (n < 2) return;
       clear();
       this.log(`${s.id}: the TUI's question was answered there`);
       this.status(s, "running", { ...s.state.terminal, attention: undefined });
       return;
     }
-    if (this.o.core.now() - (this.heard.get(id) ?? 0) < (this.o.quietMs ?? 15_000)) return;
-    const seen = await this.readScreen(s, name, 1);
-    if (!seen || seen.state !== "idle") return void this.idleSeen.delete(id);
+    // A dialog on screen is Needs you at once (Claude's Notification comes seconds later); not the
+    // trust question of a TUI still starting (the composer says what to do there).
+    if (seen.state === "asking" && (this.unconfirmed.has(id) || this.starting.has(id))) return;
+    if (seen.state === "asking") {
+      clear();
+      this.fromScreen(s, "asking");
+      return;
+    }
+    const quietFor = this.o.core.now() - (this.heard.get(id) ?? 0);
+    if (status === "idle") {
+      // Working though no hook said a turn started (Claude went on by itself: a background shell or
+      // subagent finished): a spinner on two checks in a row, a few seconds after the last hook.
+      this.idleSeen.delete(id);
+      if (seen.state !== "busy" || quietFor < (this.o.settleMs ?? 3000)) return void this.busySeen.delete(id);
+      const n = (this.busySeen.get(id) ?? 0) + 1;
+      this.busySeen.set(id, n);
+      if (n < 2) return;
+      this.busySeen.delete(id);
+      this.log(`${s.id}: the TUI works though no hook said so`);
+      this.status(s, "running", { ...s.state.terminal });
+      return;
+    }
+    this.busySeen.delete(id);
+    if (quietFor < (this.o.quietMs ?? 15_000)) return;
+    if (seen.state !== "idle") return void this.idleSeen.delete(id);
     const last = this.idleSeen.get(id);
     if (!last || last.body !== seen.body) return void this.idleSeen.set(id, { n: 1, body: seen.body });
     this.idleSeen.delete(id);

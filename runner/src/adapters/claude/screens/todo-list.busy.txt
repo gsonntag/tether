@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /…/p/projects/hookproj
+
+
+❯ First create a todo/task list of 20 short tasks named step 1 to step 20 with your task-tracking tool (TodoWrite or
+  TaskCreate, whichever you have). Then use the Bash tool to run exactly echo hi, once. Then reply with just DONE.
+
+✻ Gesticulating… (running SessionStart hooks… 0/3 · 0s)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ← 2 agents                                                                     ◐ medium · /effort
+                                                                                                       /rc connecting…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

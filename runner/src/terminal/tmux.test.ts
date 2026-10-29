@@ -113,3 +113,13 @@ test("an option this tmux refuses is skipped and logged; the rest apply and term
     SERVER_OPTIONS.pop();
   }
 });
+
+test("tags and pastes target a session by its exact name, never a sibling by prefix", async () => {
+  await tmux.create({ name: "t-claude-y-ab12", cwd: dir, argv: ["sh"], tags: { kind: "tui", session: "claude:y2", project: dir } });
+  await expect(tmux.tag("t-claude-y", "return", "1")).rejects.toThrow();
+  expect((await tmux.list()).find((t) => t.name === "t-claude-y-ab12")?.returnWhenIdle).toBeUndefined();
+  await tmux.type("t-claude-y-ab12", "echo pasted-$((6*7))", true);
+  await tmux.keys("t-claude-y-ab12", "Enter");
+  await until(async () => (await tmux.capture("t-claude-y-ab12")).includes("pasted-42"));
+  await tmux.kill("t-claude-y-ab12");
+});

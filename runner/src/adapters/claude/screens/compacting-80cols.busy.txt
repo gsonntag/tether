@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /…/scratchpad/p3rev4/projects/scratch
+
+
+❯ Write a 200-word paragraph about herons.
+
+● Herons are long-legged wading birds found on every continent except
+  Antarctica, and they are among the most patient hunters in the animal kingdom.
+  Standing motionless in shallow water, a heron can wait for minutes or even
+  hours before striking with a lightning-fast jab of its dagger-like bill to
+  snatch a fish, frog, or crustacean. Their necks are folded into a distinctive
+  S-curve at rest and extend smoothly when they lunge, a feature that helps them
+  reach prey while staying hidden in reeds and marsh grass. Many species, such
+  as the great blue heron, are large, reaching nearly four feet tall with
+  wingspans of six feet, yet they fly with slow, deliberate wingbeats, their
+  necks tucked back against their shoulders. Herons are also remarkably
+  adaptable, nesting in colonies high in trees or on cliffs and sometimes in
+  mixed groups with egrets and ibises. Their presence often signals healthy
+  wetlands, since they depend on clean water and abundant prey. Across cultures,
+  herons have inspired myths and symbols of solitude, vigilance, and grace.
+  Watching one stand perfectly still at the water's edge is a reminder that
+  patience, when paired with precise timing, can be its own kind of power.
+
+✻ Brewed for 4s · done 6:35 PM
+
+❯ /compact
+
+· Compacting conversation… (0s)
+  ⎿  Tip: Use git worktrees to run multiple Claude sessions in parallel.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 | scratch@master | 46k/1m (4%) | effort: med | $0.00 8s | 5h 21% …
+  ⏸ manual mode on · ← 2 agents
+                                                            ◐ medium · /effort
+                                                                           /rc
+
+

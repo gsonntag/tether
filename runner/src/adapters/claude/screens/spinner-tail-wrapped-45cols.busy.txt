@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /…/p3rev4/projects/hookproj
+
+
+❯ Use the Bash tool to run exactly echo hi,
+  once. Then reply with just DONE.
+
+✻ Ebbing… (running SessionStart hooks… 0/3 ·
+0s)
+
+─────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────
+  Haiku 5.5 | hookproj | 0/1m (0%) | effor…
+  ⏸ manual mode on · ← 2 agents
+                         ◐ medium · /effort
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

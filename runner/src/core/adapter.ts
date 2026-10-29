@@ -158,6 +158,8 @@ export interface TerminalOpts extends StartOpts {
 export interface ScreenRead {
   state: "idle" | "busy" | "asking" | "unknown";
   body: string;
+  /** what is typed at the prompt (idle or busy), when the harness can tell */
+  input?: string;
 }
 
 /** One step of quitting a TUI: tmux key names, literal text, or a pause. */
@@ -176,4 +178,6 @@ export interface TerminalLaunch {
    * typing into a dialog.
    */
   screen?: (screen: string) => ScreenRead;
+  /** type the composer's text as a bracketed paste (a dialog that opens meanwhile ignores it) */
+  paste?: boolean;
 }

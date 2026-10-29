@@ -234,14 +234,14 @@ export class Tmux {
     for (const [k, v] of Object.entries(o.env ?? {})) args.push("-e", tmuxArg(`${k}=${v}`));
     args.push("--", ...o.argv.map(tmuxArg));
     // Tagged in the same invocation, so a list never sees it untagged.
-    for (const [k, v] of Object.entries(o.tags)) args.push(";", "set-option", "-t", o.name, `@tether_${k}`, tmuxArg(v));
+    for (const [k, v] of Object.entries(o.tags)) args.push(";", "set-option", "-t", `=${o.name}:`, `@tether_${k}`, tmuxArg(v));
     await this.ensureServer();
     await this.must(args);
   }
 
   /** Sets (or with undefined, clears) one of a session's @tether_* tags. */
   async tag(name: string, key: string, value: string | undefined) {
-    await this.must(value === undefined ? ["set-option", "-u", "-t", name, `@tether_${key}`] : ["set-option", "-t", name, `@tether_${key}`, tmuxArg(value)]);
+    await this.must(value === undefined ? ["set-option", "-u", "-t", `=${name}:`, `@tether_${key}`] : ["set-option", "-t", `=${name}:`, `@tether_${key}`, tmuxArg(value)]);
   }
 
   async kill(name: string) {
@@ -253,10 +253,13 @@ export class Tmux {
     if (keys.length) await this.must(["send-keys", "-t", `=${name}:`, ...keys]);
   }
 
-  /** Text typed as is: one line with send-keys -l; several as a bracketed paste. */
-  async type(name: string, text: string): Promise<void> {
+  /**
+   * Text typed as is: one line with send-keys -l; several, or any with `paste`, as a bracketed
+   * paste (a TUI's dialog ignores a paste, where typed digits would pick its options).
+   */
+  async type(name: string, text: string, paste = false): Promise<void> {
     if (!text) return;
-    if (!text.includes("\n")) {
+    if (!paste && !text.includes("\n")) {
       await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", tmuxArg(text)]);
       return;
     }
