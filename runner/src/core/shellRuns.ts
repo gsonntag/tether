@@ -19,7 +19,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { utf8Length } from "../../../shared/limits";
+import { jsonBytes, stripControls } from "../../../shared/limits";
 import {
   OutputBuffer,
   SHELL_AGENT_HEAD,
@@ -135,9 +135,10 @@ export class ShellRuns {
 
   /** Runs `command` in the session's folder now; its card's message id. */
   async run(sessionId: string, command: string): Promise<{ id: string }> {
-    command = command.trim();
+    // Control characters (but tab and newlines) never run or wait: each would take 6 bytes in a frame.
+    command = stripControls(command).trim();
     if (!command) throw new Error("Type a command after the !.");
-    if (utf8Length(command) > SHELL_COMMAND_MAX) throw new Error("That command is too long.");
+    if (jsonBytes(command) > SHELL_COMMAND_MAX) throw new Error("That command is too long.");
     // The slot is taken before anything waits, so commands sent together can't pass the limit.
     const taken = this.slots.get(sessionId) ?? 0;
     if (taken >= SHELL_RUNS_MAX) throw new Error(`At most ${SHELL_RUNS_MAX} commands can run at once here. Stop one first.`);

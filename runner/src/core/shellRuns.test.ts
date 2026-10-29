@@ -226,6 +226,34 @@ describe("! commands", () => {
     expect(t.shell(id).omitted).toBeGreaterThan(1_000_000);
   });
 
+  test("49 queued outputs of commands full of control characters or long ones: the session still opens", async () => {
+    const t = setup();
+    const s = await t.core.open("claude:s1");
+    await t.live.send("claude:s1", "busy");
+    const ids: string[] = [];
+    for (let i = 0; i < 49; i++) {
+      const command = i % 2 ? `true #${"\x01".repeat(7990)}` : `true #${"x".repeat(7900)}`;
+      const { id } = await t.runs.run("claude:s1", command);
+      ids.push(id);
+      await until(() => t.shell(id).state === "queued" || t.shell(id).state === "notSent");
+    }
+    // Control characters never ran nor wait.
+    expect(t.tool(ids[1]!).command).toBe("true #");
+    expect(s.state.queue.length).toBe(49);
+    const snap = JSON.stringify(s.snapshot(50));
+    expect(snap.length).toBeLessThan(1024 * 1024);
+    const wire = s.snapshot(50).state.queue;
+    expect(Math.max(...wire.map((m) => JSON.stringify(m.shell?.command ?? "").length))).toBeLessThanOrEqual(520);
+    // The runner keeps the command whole.
+    expect(s.state.queue[0]!.shell!.command.length).toBe(7906);
+  });
+
+  test("a command of control characters is too long only by what's left of it; JSON-escaped size counts", async () => {
+    const t = setup();
+    await expect(t.runs.run("claude:s1", "\x01\x02")).rejects.toThrow(/Type a command/);
+    await expect(t.runs.run("claude:s1", `echo ${'"'.repeat(5000)}`)).rejects.toThrow(/too long/);
+  });
+
   test("no stdin: a command reading it gets end of file", async () => {
     const t = setup();
     const { id } = await t.runs.run("claude:s1", "cat; echo done");

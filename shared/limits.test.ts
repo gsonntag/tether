@@ -153,3 +153,13 @@ test("fullPart notices a part that changed between slices even at the same lengt
 test("the frame limit leaves room under the relay's send buffer", () => {
   expect(FRAME_BYTES_MAX * 3).toBeLessThanOrEqual(12 * MB);
 });
+
+test("a queued command's output travels with its command cut too, and counts toward the queue", async () => {
+  const { capQueued, capQueue, queuedBytes, QUEUED_COMMAND_WIRE } = await import("./limits");
+  const m = { id: "q", text: "out", queuedAt: 1, shell: { command: `x${'"'.repeat(5000)}`, cardId: "n-sh-1" } };
+  expect(queuedBytes(m)).toBeGreaterThan(10_000);
+  const c = capQueued(m);
+  expect(JSON.stringify(c.shell!.command).length - 2).toBeLessThanOrEqual(QUEUED_COMMAND_WIRE);
+  expect(c.shell!.command.endsWith("…")).toBe(true);
+  expect(capQueue([m])[0]!.shell!.cardId).toBe("n-sh-1");
+});

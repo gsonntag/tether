@@ -171,9 +171,18 @@ function cutJson(s: string, max: number): string {
 /** C0 control characters (but tab and newlines) and DEL: never kept in queued text. */
 export const stripControls = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 
-/** A waiting message as it travels: long text cut (the runner keeps it whole), marked. */
+/** A queued `!` command's text in a state frame (`shell.command`), at most (JSON bytes). */
+export const QUEUED_COMMAND_WIRE = 512;
+
+/** Bytes a waiting message takes in a frame: its text and, for a `!` command's output, the command. */
+export const queuedBytes = (m: QueuedMessage) => jsonBytes(m.text) + (m.shell ? jsonBytes(m.shell.command) : 0);
+
+/** A waiting message as it travels: long text cut (the runner keeps it whole), marked; a long command cut too. */
 export function capQueued(m: QueuedMessage, max = QUEUED_TEXT_WIRE): QueuedMessage {
-  return jsonBytes(m.text) > max ? { ...m, text: cutJson(m.text, max), truncated: m.truncated ?? utf8Length(m.text) } : m;
+  let out = jsonBytes(m.text) > max ? { ...m, text: cutJson(m.text, max), truncated: m.truncated ?? utf8Length(m.text) } : m;
+  const cmdMax = Math.min(QUEUED_COMMAND_WIRE, max);
+  if (out.shell && jsonBytes(out.shell.command) > cmdMax) out = { ...out, shell: { ...out.shell, command: `${cutJson(out.shell.command, cmdMax - 3)}…` } };
+  return out;
 }
 
 /**
@@ -182,7 +191,7 @@ export function capQueued(m: QueuedMessage, max = QUEUED_TEXT_WIRE): QueuedMessa
  */
 export function capQueue(q: QueuedMessage[]): QueuedMessage[] {
   let out = q.map((m) => capQueued(m));
-  if (out.reduce((n, m) => n + jsonBytes(m.text), 0) > QUEUE_BYTES_MAX) out = out.map((m) => capQueued(m, 1024));
+  if (out.reduce((n, m) => n + queuedBytes(m), 0) > QUEUE_BYTES_MAX) out = out.map((m) => capQueued(m, 1024));
   return out;
 }
 

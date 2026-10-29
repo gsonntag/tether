@@ -9,10 +9,10 @@
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
 import { formatSize } from "../../../shared/attachments";
-import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, stripControls } from "../../../shared/limits";
+import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, queuedBytes, stripControls } from "../../../shared/limits";
 
-/** Bytes a queue's text takes in a frame (JSON escapes included). */
-export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + jsonBytes(m.text), 0);
+/** Bytes a queue takes in a frame (JSON escapes included; a `!` command's command too). */
+export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + queuedBytes(m), 0);
 import type { LiveState, QueuedMessage } from "../../../shared/transcript";
 import type { Session } from "./session";
 import type { SessionCore } from "./sessions";
@@ -81,7 +81,7 @@ export class MessageQueue {
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     if (s.state.queue.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
-    this.roomFor(s.state.queue, text);
+    this.roomFor(s.state.queue, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether.
     this.save(s, [...s.state.queue, m], !s.state.queueHeld && s.state.mode === "terminal" ? "terminal" : undefined);
@@ -226,8 +226,8 @@ export class MessageQueue {
   }
 
   /** Refuses text that would take the queue past QUEUE_BYTES_MAX (its state must always travel). */
-  private roomFor(others: QueuedMessage[], text: string) {
-    if (queueBytes(others) + jsonBytes(text) > QUEUE_BYTES_MAX)
+  private roomFor(others: QueuedMessage[], text: string, extra = 0) {
+    if (queueBytes(others) + jsonBytes(text) + extra > QUEUE_BYTES_MAX)
       throw new Error(`The waiting messages can be at most ${formatSize(QUEUE_BYTES_MAX)} of text together. Send or cancel some first, or attach long text as a file.`);
   }
 
