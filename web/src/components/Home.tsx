@@ -88,7 +88,7 @@ function Inbox() {
                   {many && <span className="t-proj">· {runners.find((x) => x.id === r.runnerId)?.name ?? r.runnerId}</span>}
                   <span>· {shortAgo(r.updatedAt, now)}</span>
                   {r.inbox === "needs" && (r.requests ?? 0) > 1 && <span>· {r.requests} requests</span>}
-                  {(r.queued ?? 0) > 0 && <span>· {r.queued} queued</span>}
+                  {(r.queued ?? 0) > 0 && <span>· {r.queued} queued{r.queuePaused ? ", paused" : ""}</span>}
                 </span>
                 {r.inbox === "failed" && r.failure && <span className="t-inbox-why">{r.failure}</span>}
               </button>

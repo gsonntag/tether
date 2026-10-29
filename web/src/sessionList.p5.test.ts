@@ -15,12 +15,14 @@ test("the inbox: needs you, then failed, finished, working; across runners; main
       s("busy", { status: "running", mode: "live", updatedAt: 9 }),
       s("asks", { requests: 1, status: "waiting", updatedAt: 7 }),
       s("kid", { requests: 1, parentSessionId: "asks" }),
+      s("paused", { queued: 2, queuePaused: true, updatedAt: 8 }),
     ]),
     b: st([s("broke", { unread: "failed", failure: "Rate limited", updatedAt: 3 }), s("term", { mode: "terminal", status: "waiting", updatedAt: 4 })]),
   });
   expect(rows.map((r) => [r.runnerId, r.id, r.inbox])).toEqual([
     ["b", "term", "needs"],
     ["a", "asks", "needs"],
+    ["a", "paused", "needs"],
     ["b", "broke", "failed"],
     ["a", "done", "finished"],
     ["a", "done-old", "finished"],

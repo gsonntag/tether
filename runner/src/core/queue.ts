@@ -34,6 +34,10 @@ export class MessageQueue {
   private draining = new Set<string>();
   /** the message going out, by session: still in runner.json until the harness has it */
   private going = new Map<string, QueuedMessage>();
+  /** messages cancelled while going out: dropped if they don't get there */
+  private cancelledGoing = new Set<string>();
+  /** how often each session's queue was released (you sent something): a Stop older than that doesn't hold */
+  private releases = new Map<string, number>();
   /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
   private cutOff: Set<string>;
 
@@ -98,6 +102,14 @@ export class MessageQueue {
 
   async cancel(id: string, msgId: string) {
     const s = await this.root(id);
+    // The message going out right now: cancelled if it doesn't get there (it's never put back), and
+    // out of runner.json now. Once the harness has it, it can't be taken back.
+    const going = this.going.get(s.id);
+    if (going?.id === msgId) {
+      this.cancelledGoing.add(msgId);
+      this.persist(s);
+      return;
+    }
     const m = s.state.queue.find((x) => x.id === msgId);
     this.save(s, s.state.queue.filter((x) => x.id !== msgId));
     if (m) this.gone?.(s, m, "cancelled");
@@ -133,6 +145,7 @@ export class MessageQueue {
 
   /** You sent something yourself: a queue held after Stop or a failure goes on after it. */
   release(s: Session) {
+    this.releases.set(s.id, (this.releases.get(s.id) ?? 0) + 1);
     if (!s.state.queueHeld && !s.state.queueHeldBy) return;
     this.save(s, s.state.queue, null);
   }
@@ -175,21 +188,29 @@ export class MessageQueue {
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once
     // the harness has it: a runner killed in between still has it waiting.
     this.going.set(id, next!);
+    const released = this.releases.get(id) ?? 0;
     this.save(s, rest, undefined, { persist: false });
     try {
       await this.host.send(id, next!.text, next!.attachments ?? []);
       this.going.delete(id);
+      this.cancelledGoing.delete(next!.id);
       this.persist(s);
       this.gone?.(s, next!, "sent");
     } catch (e: any) {
       this.going.delete(id);
-      // Back at the front. Stopped while the harness started: held, as after any Stop. A turn that
-      // started meanwhile (you sent something) just means later; anything else holds the queue:
-      // whatever stopped it would stop the rest too.
+      const cancelled = this.cancelledGoing.delete(next!.id);
+      // Back at the front (unless you cancelled it meanwhile). Stopped while the harness started:
+      // held, as after any Stop, unless you sent something since (Stop and send now): then it
+      // follows that message. A turn that started meanwhile just means later; anything else holds
+      // the queue: whatever stopped it would stop the rest too.
       const busy = s.state.status !== "idle" || !!s.sending;
-      const how: HeldBy | undefined = e?.name === "SendCancelled" || e?.message === "Stopped before it went out." ? "stopped" : busy ? undefined : "failed";
-      this.save(s, [next!, ...s.state.queue], how);
-      this.core.log(`${id}: a queued message didn't go out: ${e?.message ?? e}`);
+      const stoppedHere = e?.name === "SendCancelled" || e?.message === "Stopped before it went out.";
+      const how: HeldBy | undefined = stoppedHere ? ((this.releases.get(id) ?? 0) !== released ? undefined : "stopped") : busy ? undefined : "failed";
+      if (cancelled) {
+        this.persist(s);
+        this.gone?.(s, next!, "cancelled");
+      } else this.save(s, [next!, ...s.state.queue], how);
+      if (how === undefined) this.later(id);
     } finally {
       this.going.delete(id);
       this.draining.delete(id);
@@ -232,7 +253,7 @@ export class MessageQueue {
   private persist(s: Session) {
     // A message going out stays saved (at the front) until the harness has it, whatever else changes.
     const going = this.going.get(s.id);
-    const q = going ? [going, ...s.state.queue] : s.state.queue;
+    const q = going && !this.cancelledGoing.has(going.id) ? [going, ...s.state.queue] : s.state.queue;
     this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, queue: q.length ? q : undefined, queueHeldBy: s.state.queue.length ? s.state.queueHeldBy : undefined });
     this.core.o.prefs.flush();
   }

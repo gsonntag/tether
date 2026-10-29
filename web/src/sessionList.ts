@@ -62,7 +62,7 @@ export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   for (const r of rows(summaries)) {
     if (r.parentSessionId) continue;
     const kind: InboxKind | undefined =
-      (r.requests ?? 0) > 0 || r.status === "waiting" ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" ? "finished" : r.status === "running" ? "working" : undefined;
+      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" ? "finished" : r.status === "running" ? "working" : undefined;
     if (kind) out.push({ ...r, inbox: kind });
   }
   const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3 };

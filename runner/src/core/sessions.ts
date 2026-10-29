@@ -381,10 +381,10 @@ export class SessionCore {
 
   /** The session's row changed (status, mode, title, activity): the sidebar hears. */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, ...rest } = { ...s.summary, ...patch };
     const n = s.state.requests.length;
     const q = s.state.queue.length;
-    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}) };
+    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

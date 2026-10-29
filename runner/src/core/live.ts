@@ -305,6 +305,8 @@ export class LiveControl {
       return !!harness && !!this.core.o.adapters.find((a) => a.id === harness)?.capabilities.persistent;
     };
     // Turns that were running, and sessions with requests saved from before the restart.
+    // A turn a restart cut off (its harness didn't keep it going): on Home, for you to pick up.
+    for (const id of this.core.o.prefs.running()) if (!persistent(id) && parseSessionId(id)) this.read.set(id, { failure: "The runner restarted mid-turn." });
     const ids = [...new Set([...this.core.o.prefs.running(), ...this.desk.broker.sessions(true)])].filter(persistent);
     await Promise.all(ids.map((id) => this.rejoinOne(id)));
   }

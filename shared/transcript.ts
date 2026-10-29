@@ -273,6 +273,8 @@ export interface SessionSummary {
   failure?: string;
   /** messages waiting in its queue */
   queued?: number;
+  /** its queue is paused for you (after Stop, a failure or a restart): Home shows it as needing you */
+  queuePaused?: boolean;
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
   parentSessionId?: string;
   parentToolId?: string;

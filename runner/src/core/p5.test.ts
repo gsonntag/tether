@@ -297,6 +297,48 @@ describe("the queue", () => {
     expect(adapter.drivers[0]?.sent ?? []).toEqual([]);
   });
 
+  test("Stop and send now while a queued message's harness starts: the queue follows NOW", async () => {
+    const { adapter, live, core, driver, end } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.add("claude:s1", "first", []);
+    const s = await core.open("claude:s1");
+    await live.queue.hold(s, "restart");
+    let release!: () => void;
+    adapter.startGate = new Promise((r) => (release = r));
+    await live.queue.resume("claude:s1");
+    await until(() => !!s.sending);
+    const now = live.send("claude:s1", "NOW", [], { stop: true });
+    await Bun.sleep(20);
+    release();
+    await now;
+    await until(() => s.state.queue.length === 1);
+    expect(s.state.queueHeld).toBeUndefined();
+    expect(driver().sent).toEqual(["NOW"]);
+    end();
+    await until(() => driver().sent.length === 2);
+    expect(driver().sent).toEqual(["NOW", "first"]);
+  });
+
+  test("a cancel from another device while a message goes out: dropped if it doesn't get there", async () => {
+    const { adapter, live, core, prefs } = setup();
+    adapter.addStored("s1", []);
+    const q = await live.queue.add("claude:s1", "first", []);
+    const s = await core.open("claude:s1");
+    await live.queue.hold(s, "restart");
+    let release!: () => void;
+    adapter.startGate = new Promise((r) => (release = r));
+    await live.queue.resume("claude:s1");
+    await until(() => !!s.sending);
+    await live.queue.cancel("claude:s1", q.id);
+    // Out of runner.json at once.
+    expect(JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue).toBeUndefined();
+    await live.interrupt("claude:s1");
+    release();
+    await Bun.sleep(100);
+    // Stopped before it got there: not put back.
+    expect(s.state.queue).toEqual([]);
+  });
+
   test("control characters never wait, and a queue measured as it travels always opens", async () => {
     const { adapter, live, core } = setup();
     adapter.addStored("s1", []);
@@ -489,6 +531,23 @@ describe("read state", () => {
     live.read.set("claude:s1", true);
     expect(row().unread).toBe("finished");
     expect(summaries().some((u) => u.kind === "upsert" && u.sessions.some((x) => x.unread === "failed"))).toBe(true);
+  });
+
+  test("a turn a restart cut off, and a paused queue, show on Home", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    await a.live.send("claude:s1", "one");
+    await a.live.queue.add("claude:s1", "two", []);
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    await b.core.discover();
+    const row = b.core.book.get("claude:s1")!;
+    expect(row).toMatchObject({ unread: "failed", failure: "The runner restarted mid-turn.", queued: 1, queuePaused: true });
   });
 
   test("looking at a subagent reads its main session", async () => {
