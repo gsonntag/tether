@@ -26,7 +26,8 @@ const agentOf = (sessionId: string) => AGENT_NAMES[parseSessionId(sessionId)?.ha
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
 /** Looks like a path, URL, key, token, secret or an assignment: never in a notification. */
-const UNSAFE = /[\\/=:@$`|<>{}]|https?|\bsk-|token|secret|passw|api.?key|bearer|credential|[A-Za-z0-9+_-]{20,}|[0-9a-f]{12,}/i;
+const UNSAFE =
+  /[\\/=:@$`|<>{}[\]~]|https?|\bsk-|token|secret|passw|api.?key|bearer|credential|[A-Za-z0-9+_-]{20,}|[0-9a-f]{12,}|[\p{L}\p{N}_-]\.[\p{L}\p{N}_-]|(^|[\s"'(])\.[\p{L}\p{N}_]/iu;
 
 /**
  * A harness's own short description of a shell step, when it is safe to show on a lock screen:
@@ -45,6 +46,19 @@ export function safeDescription(desc: unknown, command: unknown): string | undef
 }
 
 /**
+ * A session's title as a notification may show it: the title when it is short and safe (no path,
+ * URL, host, dotfile, key, secret or command-like text), else the project folder's name and the agent
+ * ("web-coder · Claude"). Codex titles are your first message verbatim; Claude's are written by the
+ * model from it; `!` sessions start "[Shell command run from Tether] … $ cmd".
+ */
+export function safeTitle(title: string | undefined, projectPath: string, agent: string): string {
+  const t = (title ?? "").trim().replace(/\s+/g, " ");
+  if (t && t.length <= 60 && !UNSAFE.test(t) && !/[;&*#%^]|\bsudo\b|\brm\b|--?\w/.test(t)) return t;
+  const folder = projectPath.replace(/\/+$/, "").split("/").pop() || "Tether";
+  return `${folder} · ${agent}`;
+}
+
+/**
  * What a request needs, as a notification says it: never the command, a path, the file's contents
  * or the question itself (a phone may show it on its lock screen). For a shell step, the harness's
  * own short description when it is safe (Claude's Bash `description`; Codex's approval reason),
@@ -58,8 +72,15 @@ export function requestBody(r: Request, agent: string, harness: string = "claude
   if (shell) {
     const command = r.command ?? input.command;
     // Claude's `reason` is its own rule's wording ("Path is outside…"), not a step description.
-    const own = safeDescription(input.description, command) ?? (harness === "codex" ? safeDescription(r.reason, command) : undefined);
-    return own ? `${agent} asks to: ${own}` : `${agent} wants to run a command.`;
+    const theirs = [input.description, harness === "codex" ? r.reason : undefined].filter((x): x is string => typeof x === "string");
+    const own = theirs.map((x) => safeDescription(x, command)).find(Boolean);
+    if (own) return `${agent} asks to: ${own}`;
+    // Not shown as is (a host, a file, …): what kind of step it is, from its words.
+    // (Codex's approval reasons say what kind: "Network access to <host>", "Read the .env file".)
+    const said = harness === "codex" && typeof r.reason === "string" ? r.reason : "";
+    if (/network|internet|download|\bonline\b/i.test(said)) return `${agent} wants network access.`;
+    if (/^\s*(read|look at|open|view|cat)\b/i.test(said)) return `${agent} wants to read a file.`;
+    return `${agent} wants to run a command.`;
   }
   const files = Array.isArray(input.files) ? input.files.length : 0;
   switch (r.toolKind) {
@@ -108,12 +129,17 @@ export class Notifier {
     );
   }
 
-  /** A session's title, with its main session's for a subagent. */
+  /**
+   * A session's title as a push says it (safeTitle). A subagent is "a subagent" under its main
+   * session's title: its own title is model-written from its task.
+   */
   title(id: string): string {
     const s = this.ctx.session(id)?.summary;
     if (!s) return "Tether";
-    const parent = s.parentSessionId ? this.ctx.session(s.parentSessionId)?.summary : undefined;
-    return parent ? `${parent.title || "Untitled"} · ${s.title}` : s.title || "Untitled";
+    const agent = agentOf(id);
+    const main = s.parentSessionId ? this.ctx.session(s.parentSessionId)?.summary : undefined;
+    if (s.parentSessionId) return `${main ? safeTitle(main.title, main.projectPath, agent) : safeTitle(undefined, s.projectPath, agent)} · a subagent`;
+    return safeTitle(s.title, s.projectPath, agent);
   }
 
   async request(r: Request) {

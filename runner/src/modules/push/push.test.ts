@@ -33,8 +33,8 @@ function setup(viewers: Record<string, string[]> = {}) {
   store.add(sub("laptop"));
   const sender = new FakeSender();
   const sessions: Record<string, any> = {
-    "claude:s1": { summary: { id: "claude:s1", title: "Fix the build" }, status: "idle", requests: ["r1"] },
-    "claude:s1/k": { summary: { id: "claude:s1/k", title: "Count lines", parentSessionId: "claude:s1" }, status: "running", requests: ["r2"] },
+    "claude:s1": { summary: { id: "claude:s1", title: "Fix the build", projectPath: "/home/me/web-coder" }, status: "idle", requests: ["r1"] },
+    "claude:s1/k": { summary: { id: "claude:s1/k", title: "Count lines in /etc/passwd", parentSessionId: "claude:s1", projectPath: "/home/me/web-coder" }, status: "running", requests: ["r2"] },
   };
   const n = new Notifier({ runnerId: "box", log: () => {}, session: (id) => sessions[id], viewersOf: (id) => viewers[id] ?? [] }, store, sender);
   return { n, store, sender, sessions };
@@ -54,7 +54,7 @@ describe("what gets sent, to whom", () => {
     const { n, sender } = setup({ "claude:s1": ["phone"] });
     await n.request({ id: "r2", sessionId: "claude:s1/k", kind: "question", question: "Which one?", openedAt: 1 });
     expect(sender.sent.map(([d]) => d)).toEqual(["laptop"]);
-    expect(sender.sent[0]![1]).toMatchObject({ title: "Fix the build · Count lines", body: "Claude has a question for you." });
+    expect(sender.sent[0]![1]).toMatchObject({ title: "Fix the build · a subagent", body: "Claude has a question for you." });
   });
 
   test("a request already closed sends nothing", async () => {
@@ -160,6 +160,29 @@ describe("the push itself", () => {
     expect(pushSubject("", "https://tether--me.foliation.dev/")).toBe("https://tether--me.foliation.dev");
     expect(pushSubject(undefined, "http://localhost:8794")).toBe("mailto:tether@example.com");
   });
+});
+
+test("titles in pushes: no paths, hosts, dotfiles, keys or commands; else the folder and the agent", async () => {
+  const { safeTitle } = await import(".");
+  const fb = (t: string) => safeTitle(t, "/home/me/web-coder", "Claude");
+  expect(fb("Fix the build")).toBe("Fix the build");
+  for (const t of [
+    "Look at /etc/hostname with key sk-live-ABCDEF123456 and tell me",
+    "/etc/hostname file",
+    "[Shell command run from Tether] … $ cat /etc/hostname",
+    "Check example.com status",
+    "Read the .env file",
+    "Rotate TOKEN=abc",
+    "x".repeat(61),
+  ])
+    expect([t, fb(t)]).toEqual([t, "web-coder · Claude"]);
+});
+
+test("Codex network and file reasons fall back to what kind of step", () => {
+  const r = (x: Partial<Request>): Request => ({ id: "r", sessionId: "s", kind: "approval", openedAt: 1, toolKind: "shell", tool: "shell", input: { command: "curl x" }, ...x });
+  expect(requestBody(r({ reason: "Network access to api.github.com" }), "Codex", "codex")).toBe("Codex wants network access.");
+  expect(requestBody(r({ reason: "Read the .env file" }), "Codex", "codex")).toBe("Codex wants to read a file.");
+  expect(requestBody(r({ input: { command: "ls", description: "Show github.com status" } }), "Claude")).toBe("Claude wants to run a command.");
 });
 
 test("failures say what kind, never the raw error", () => {
