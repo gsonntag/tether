@@ -31,8 +31,11 @@ export class TestSink implements Sink {
       signal?.addEventListener("abort", () => resolve({ allow: false, reason: "aborted" }));
     });
   }
+  /** whether the spawn's tool card was in the transcript when each subagent opened (the core links it) */
+  cardFirst: boolean[] = [];
   subagent(s: SubagentStart): Sink {
     this.starts.push(s);
+    this.cardFirst.push(!!this.t.findTool(s.parentToolId));
     let c = this.children.get(s.nativeId);
     if (!c) this.children.set(s.nativeId, (c = new TestSink()));
     return c;

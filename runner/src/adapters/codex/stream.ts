@@ -210,10 +210,11 @@ export class CodexStream {
         v.patches.set(item.id, item);
         break;
     }
-    this.spawned(v, item);
     const part = itemPart(item, this.cwd);
     // Text and thinking get their part from their first delta: many stay empty.
     if (part && (part.type === "tool" || shown(part))) this.addPart(v, item.id, part);
+    // After its card is in the transcript, so the core can link the card to the child session.
+    this.spawned(v, item);
   }
 
   private itemCompleted(v: ThreadView, item: any) {

@@ -37,6 +37,7 @@ test("a subagent (Codex 0.165: subAgentActivity) becomes a child session with it
   const child = "01a187dc-6349-73e2-a799-b0c7f39831e1";
   const { sink, s } = await replay("subagent.jsonl", main);
   expect(sink.starts).toEqual([{ nativeId: child, parentToolId: "call_fa9237e0df3b4499937cdd0fd135f87e", title: "list_files" }]);
+  expect(sink.cardFirst).toEqual([true]);
   const c = sink.children.get(child)!;
   // Its events arrived before its spawn was reported: none lost.
   expect(c.t.messages.flatMap((m) => m.parts.map((p) => (p.type === "tool" ? `tool:${p.command}` : p.type)))).toEqual(["tool:ls", "text"]);
@@ -58,6 +59,7 @@ test("a subagent (Codex 0.162: spawnAgent calls): child session, its report on t
   const child = "01a124f7-28d9-70d2-8a53-ae9e96f325ef";
   const { sink } = await replay("subagent-0.162.jsonl", main, "/tmp/act-repo");
   expect(sink.starts[0]).toMatchObject({ nativeId: child, title: expect.stringContaining("In /tmp/act-repo, run `ls`") });
+  expect(sink.cardFirst).toEqual([true]);
   const c = sink.children.get(child)!;
   expect(c.t.messages[0]).toMatchObject({ role: "user" });
   expect(c.t.messages.flatMap((m) => m.parts).filter((p) => p.type === "tool").map((p: any) => p.command).sort()).toEqual(["ls", "wc -l math.ts"]);

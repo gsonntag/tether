@@ -41,5 +41,9 @@ const MODES: Record<string, string> = {
   bypassPermissions: "Bypass permissions",
   auto: "Auto",
   dontAsk: "Don't ask",
+  // Codex's presets (runner/src/adapters/codex/modes.ts)
+  "read-only": "Read only",
+  untrusted: "Ask first",
+  "full-access": "Full access",
 };
 export const permissionModeLabel = (m: string | undefined) => (m ? (MODES[m] ?? cap(m)) : "Ask first");
