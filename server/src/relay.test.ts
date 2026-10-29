@@ -61,7 +61,7 @@ describe("connections", () => {
     const b = browser("a");
     b.take();
     const r = new FakeSocket("anon");
-    relay.onRunnerMessage(r, { t: "summary", summary: { kind: "all", sessions: [] } });
+    relay.onRunnerMessage(r, { t: "summary", summary: { kind: "all", seq: 1, sessions: [] } });
     expect(b.sent).toEqual([]);
   });
 
@@ -238,8 +238,8 @@ describe("subscriptions", () => {
     const a = browser("a");
     const b = browser("b");
     const r = runner("box");
-    fromRunner(r, { t: "summary", summary: { kind: "remove", ids: ["claude:x"] } });
-    for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", ids: ["claude:x"] } }]);
+    fromRunner(r, { t: "summary", summary: { kind: "remove", seq: 1, ids: ["claude:x"] } });
+    for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", seq: 1, ids: ["claude:x"] } }]);
   });
 });
 
@@ -467,7 +467,53 @@ describe("slow sockets", () => {
     const a = browser("a");
     const r = runner("box");
     a.sendResult = -1;
-    fromRunner(r, { t: "summary", summary: { kind: "all", sessions: [] } });
+    fromRunner(r, { t: "summary", summary: { kind: "all", seq: 1, sessions: [] } });
     expect(a.closed).toBeUndefined();
+  });
+});
+
+describe("subscribe again", () => {
+  test("a failed refresh of a working subscription keeps it", () => {
+    const { browser, runner, rpc, fromRunner, relay } = setup();
+    const a = browser("a");
+    const r = runner("box");
+    rpc(a, "1", "box", "subscribe", { sessionId: "claude:x" });
+    const [f1] = r.take("rpc");
+    fromRunner(r, { t: "result", id: f1.id, ok: true, data: {} });
+    rpc(a, "2", "box", "subscribe", { sessionId: "claude:x" });
+    const [f2] = r.take("rpc");
+    fromRunner(r, { t: "result", id: f2.id, ok: false, error: "busy" });
+    expect(r.take()).toEqual([]);
+    a.take();
+    fromRunner(r, { t: "event", sessionId: "claude:x", seq: 1, event: { type: "state", state: {} } });
+    expect(a.take("event")).toHaveLength(1);
+    expect(relay.stats().subscriptions).toBe(1);
+  });
+});
+
+describe("protocol version", () => {
+  test("a runner speaking another protocol is refused with a reason and never listed", () => {
+    const relay = new Relay({ protocol: 2 });
+    const a = new FakeSocket("a");
+    relay.addBrowser(a, { name: "a", email: "" }, 2);
+    a.take();
+    const r = new FakeSocket("r");
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    expect(r.closed?.code).toBe(4003);
+    expect(r.closed?.reason).toContain("update the runner");
+    expect(relay.runnerList()).toEqual([]);
+    expect(a.take("runners")).toEqual([]);
+    const newer = new FakeSocket("n");
+    relay.onRunnerMessage(newer, { t: "hello", runner: { ...runnerInfo("box"), protocol: 3 } });
+    expect(newer.closed?.reason).toContain("update the app");
+  });
+
+  test("a runner already connected that says hello with another protocol is removed", () => {
+    const relay = new Relay({ protocol: 1 });
+    const r = new FakeSocket("r");
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), protocol: 9 } });
+    expect(relay.runnerList()).toEqual([]);
+    expect(r.closed?.code).toBe(4003);
   });
 });

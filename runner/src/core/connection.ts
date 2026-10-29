@@ -6,7 +6,7 @@
 // that came in on an older connection is dropped: the server that asked has forgotten it, and its
 // id may now name a different rpc.
 
-import { CLOSE_REPLACED, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
   /** the app's base URL, e.g. https://tether--me.foliation.dev or http://localhost:8790 */
@@ -28,6 +28,8 @@ export interface ConnectionOptions {
   dialTimeoutMs?: number;
   /** how long to wait after another runner with our id replaced us */
   replacedBackoffMs?: number;
+  /** how long to wait after the server refused our protocol version */
+  protocolBackoffMs?: number;
   WebSocket?: typeof WebSocket;
   fetch?: typeof fetch;
 }
@@ -147,6 +149,12 @@ export class Connection {
         // turn, and the two would take turns forever: wait long, and say why.
         const wait = this.opts.replacedBackoffMs ?? 60_000;
         this.log(`another runner connected with this runner's id (${ev.reason}). Each runner needs its own runnerId in runner.json. Retrying in ${wait / 1000}s.`);
+        return this.scheduleRetry(wait);
+      }
+      if (ev.code === CLOSE_PROTOCOL) {
+        // Retrying won't help until one side is updated; keep trying rarely in case the app is.
+        const wait = this.opts.protocolBackoffMs ?? 5 * 60_000;
+        this.log(`the server refused this runner: ${ev.reason}. Retrying in ${wait / 1000}s.`);
         return this.scheduleRetry(wait);
       }
       if (was || opened) this.log(`disconnected (${ev.code}${ev.reason ? ` ${ev.reason}` : ""})`);

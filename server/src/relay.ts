@@ -6,7 +6,7 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { CLOSE_REPLACED, CLOSE_TOO_SLOW, TERMINAL_OPS, type BrowserToServer, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
 
 export interface Socket {
   /** Bun's convention: bytes sent, -1 queued under backpressure, 0 dropped */
@@ -16,6 +16,8 @@ export interface Socket {
 
 export interface RelayOptions {
   rpcTimeoutMs?: number;
+  /** the protocol version runners must speak */
+  protocol?: number;
   log?: (line: string) => void;
   now?: () => number;
 }
@@ -52,11 +54,13 @@ export class Relay {
   private pending = new Map<string, Pending>();
   private seq = 0;
   private readonly rpcTimeoutMs: number;
+  private readonly protocol: number;
   private readonly log: (line: string) => void;
   private readonly now: () => number;
 
   constructor(opts: RelayOptions = {}) {
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 120_000;
+    this.protocol = opts.protocol ?? PROTOCOL_VERSION;
     this.log = opts.log ?? (() => {});
     this.now = opts.now ?? Date.now;
   }
@@ -115,10 +119,13 @@ export class Relay {
       }
       case "subscribe": {
         // Registered before the runner answers, so no event between its snapshot and the answer is lost.
-        key = subKey(m.runnerId, args.sessionId as string);
-        b.subs.add(key);
-        let set = this.subscribers.get(key);
-        if (!set) this.subscribers.set(key, (set = new Set()));
+        const k = subKey(m.runnerId, args.sessionId as string);
+        // Subscribing again (a fresh snapshot) reuses the route; only a subscribe that created it
+        // may take it down when it fails, or a failed refresh would cut off a working subscription.
+        if (!b.subs.has(k)) key = k;
+        b.subs.add(k);
+        let set = this.subscribers.get(k);
+        if (!set) this.subscribers.set(k, (set = new Set()));
         set.add(sock);
         break;
       }
@@ -198,6 +205,14 @@ export class Relay {
   }
 
   private hello(sock: Socket, info: Omit<RunnerInfo, "connectedAt">) {
+    if (info.protocol !== this.protocol) {
+      // A runner from another protocol version would misread frames: refuse it, and say which side to update.
+      const newer = info.protocol > this.protocol ? "the app" : "the runner";
+      this.log(`refused runner ${info.id} (${info.name}): protocol ${info.protocol}, expected ${this.protocol}`);
+      if (this.runnerOf.get(sock) === info.id) this.removeRunner(sock);
+      sock.close(CLOSE_PROTOCOL, `protocol mismatch: the app speaks ${this.protocol}, the runner ${info.protocol}; update ${newer}`);
+      return;
+    }
     const id = info.id;
     const prev = this.runners.get(id);
     if (prev && prev.sock !== sock) {

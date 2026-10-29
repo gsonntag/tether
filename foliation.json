@@ -4,8 +4,9 @@
   "icon": "🧑‍💻",
   "frontend": { "dir": "web" },
   "backend": {
-    "dir": "server",
-    "entry": "src/index.ts",
+    "dir": ".",
+    "entry": "server/src/index.ts",
+    "install": "cd server && bun install --frozen-lockfile",
     "healthcheck": "/api/health"
   },
   "resources": { "memory_mb": 512 }

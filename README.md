@@ -50,7 +50,8 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 ## Production (Foliation)
 
 1. Deploy the app from this directory (`foliation.json`; `.folignore` leaves out `runner/` and
-   `docs/`). Only the app's owners can use the UI, because it runs commands on their machines.
+   `docs/`). The backend's build context is the repository root, not `server/`, because the
+   server imports `shared/` at runtime; its dependencies install from `server/`. Only the app's owners can use the UI, because it runs commands on their machines.
 2. Create a runner token (an app service token, `docs/foliation-app-service-tokens.md` in v1):
    `fol tokens create tether --service runner --role editor`. Its name must be `runner` or
    `runner-<name>`.

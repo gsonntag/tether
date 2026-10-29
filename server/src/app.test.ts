@@ -1,7 +1,7 @@
 // The server's front door over real sockets (dev mode: no FOLIATION_ISSUER in tests).
 
 import { afterEach, expect, test } from "bun:test";
-import { originAllowed, startApp } from "./app";
+import { loopbackHost, originAllowed, startApp } from "./app";
 import { Relay } from "./relay";
 
 const stops: (() => void)[] = [];
@@ -103,4 +103,26 @@ test("production without FOLIATION_AUDIENCE refuses to start", async () => {
   });
   expect(await proc.exited).toBe(1);
   expect(await new Response(proc.stderr).text()).toContain("FOLIATION_AUDIENCE");
+});
+
+test("dev mode: a request addressed to any non-loopback host is refused (DNS rebinding)", async () => {
+  const { base } = app();
+  const port = base.split(":")[1];
+  for (const host of ["evil.example", `evil.example:${port}`, "10.0.0.5", "127.0.0.1.evil.example", "localhost.evil.example"]) {
+    const me = await fetch(`http://${base}/api/me`, { headers: { Host: host } });
+    expect(me.status).toBe(403);
+    await expect(open(`ws://${base}/api/ws`, { headers: { Host: host, Origin: `http://${host}` } })).rejects.toThrow();
+  }
+  for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`, "localhost"]) {
+    expect((await fetch(`http://${base}/api/me`, { headers: { Host: host } })).status).toBe(200);
+  }
+  await open(`ws://${base}/api/ws`, { headers: { Host: `localhost:${port}`, Origin: `http://localhost:${port}` } });
+  // The health check stays open (Foliation probes it).
+  expect((await fetch(`http://${base}/api/health`, { headers: { Host: "evil.example" } })).status).toBe(200);
+});
+
+test("loopback host names", () => {
+  const req = (host: string) => new Request("http://x/", { headers: { host } });
+  expect(["localhost:5180", "127.0.0.1", "[::1]:8790"].map((h) => loopbackHost(req(h)))).toEqual([true, true, true]);
+  expect(["evil.example", "127.0.0.2", "localhost.evil", ""].map((h) => loopbackHost(req(h)))).toEqual([false, false, false, false]);
 });

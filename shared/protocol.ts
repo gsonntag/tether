@@ -29,6 +29,8 @@ import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } fr
 export const CLOSE_REPLACED = 4000;
 /** Close code for a socket whose send buffer passed the limit. */
 export const CLOSE_TOO_SLOW = 4002;
+/** Close code for a runner whose protocol version differs from the server's. */
+export const CLOSE_PROTOCOL = 4003;
 
 /** Bumped when a change needs runner, server and web to move together. */
 export const PROTOCOL_VERSION = 1;
@@ -88,12 +90,17 @@ export const TERMINAL_OPS = ["closeTerminal", "terminalInput", "terminalResize"]
 
 // ---------- summary channel (runner -> every browser) ----------
 
-/** The sidebar and Home: small, broadcast to every browser. */
+/**
+ * The sidebar and Home: small, broadcast to every browser. `seq` counts the runner's summary
+ * changes (from 1 per runner process), so a list fetched by one rpc and updates broadcast around it
+ * can be put in order: anything not newer than what a browser has is stale (shared/summary.ts).
+ * A browser that arrives later asks for the whole list, which carries the seq it is current to.
+ */
 export type SummaryUpdate =
-  /** the runner's whole list, sent on connect */
-  | { kind: "all"; sessions: SessionSummary[] }
-  | { kind: "upsert"; sessions: SessionSummary[] }
-  | { kind: "remove"; ids: string[] };
+  /** the runner's whole list: broadcast on connect, and the answer to a list request */
+  | { kind: "all"; seq: number; sessions: SessionSummary[] }
+  | { kind: "upsert"; seq: number; sessions: SessionSummary[] }
+  | { kind: "remove"; seq: number; ids: string[] };
 
 // ---------- messages ----------
 

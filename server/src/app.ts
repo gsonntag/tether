@@ -16,6 +16,24 @@ export interface AppOptions {
   /** extra origins allowed to open the browser socket, e.g. a dev UI on another port */
   allowedOrigins?: string[];
   log?: (line: string) => void;
+  /** dev mode (no Foliation identity); defaults to identity.ts's DEV */
+  dev?: boolean;
+}
+
+/**
+ * Dev mode treats every browser as the owner, so it must only answer requests addressed to a
+ * loopback name. Otherwise a page on evil.example that rebinds its DNS to 127.0.0.1 would pass
+ * the same-origin check (its Origin and Host would both be evil.example) and become the owner.
+ */
+export function loopbackHost(req: Request): boolean {
+  const host = req.headers.get("host") ?? "";
+  let name: string;
+  try {
+    name = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+  return name === "localhost" || name === "127.0.0.1" || name === "[::1]";
 }
 
 /** A send buffer this full means the other side can't keep up: Bun closes it (protocol.ts, slow sockets). */
@@ -42,6 +60,7 @@ export function originAllowed(req: Request, extra: string[] = []): boolean {
 
 export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay } {
   const log = opts.log ?? ((l: string) => console.log(l));
+  const dev = opts.dev ?? DEV;
   const relay = opts.relay ?? new Relay({ log });
 
   const guard = (what: string, fn: () => void) => {
@@ -60,11 +79,12 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
     async fetch(req, srv) {
       const url = new URL(req.url);
       if (url.pathname === "/api/health") return Response.json({ ok: true });
+      if (dev && !loopbackHost(req)) return new Response("dev mode answers only localhost", { status: 403 });
 
       const viewer = await viewerFrom(req);
       if (url.pathname === "/api/me") {
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401 });
-        return Response.json({ name: viewer.name, email: viewer.email, allowed: isOwner(viewer), dev: DEV });
+        return Response.json({ name: viewer.name, email: viewer.email, allowed: isOwner(viewer), dev });
       }
       if (url.pathname === "/api/ws") {
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin socket refused", { status: 403 });

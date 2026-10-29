@@ -165,3 +165,16 @@ test("unwatched sessions reach the handler", async () => {
   await until(() => seen.length > 0);
   expect(seen).toEqual([["claude:x"]]);
 });
+
+test("refused for its protocol version: says so and backs off long", async () => {
+  const s = fakeServer();
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs } = runner(s.url, { protocolBackoffMs: 400 });
+  conn.start();
+  await until(() => conn.connected);
+  s.socks[0]!.close(4003, "protocol mismatch: the app speaks 2, the runner 1; update the runner");
+  await until(() => logs.some((l) => l.includes("the server refused this runner: protocol mismatch")));
+  await Bun.sleep(250);
+  expect(s.socks.length).toBe(1);
+  await until(() => s.socks.length === 2, 2000);
+});

@@ -155,3 +155,26 @@ test("a drop after being open doesn't check the sign-in", async () => {
   await Bun.sleep(20);
   expect(asked).toBe(0);
 });
+
+test("a dial that never opens is abandoned and redialled, without a sign-in check", async () => {
+  let asked = 0;
+  const { link, socks, states } = setup({ dialMs: 30, maxBackoffMs: 20 }, async () => (asked++, { status: 200, redirected: false, json: true, body: { allowed: true } }));
+  link.connect();
+  await until(() => socks.length >= 2, 1000);
+  expect(socks[0]!.closed).toBe(true);
+  expect(states.slice(0, 2)).toEqual(["connecting", "down"]);
+  expect(asked).toBe(0);
+});
+
+test("wake replaces a socket stuck connecting, and a late open of the old one is ignored", () => {
+  const { link, socks, states } = setup({ dialMs: 60_000 });
+  link.connect();
+  const stuck = socks[0]!;
+  link.wake();
+  expect(socks.length).toBe(2);
+  expect(stuck.closed).toBe(true);
+  stuck.open();
+  expect(states.at(-1)).toBe("connecting");
+  socks[1]!.open();
+  expect(states.at(-1)).toBe("open");
+});

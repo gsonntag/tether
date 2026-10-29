@@ -33,11 +33,13 @@ export interface LinkTimings {
   probeMs: number;
   rpcTimeoutMs: number;
   maxBackoffMs: number;
+  /** a socket still connecting after this long is abandoned and redialled */
+  dialMs: number;
 }
 
 const OPEN = 1;
 
-export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000 };
+export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000 };
 
 /** 0.5 s, 1 s, 2 s … up to the cap. */
 export const linkBackoff = (attempt: number, max: number) => Math.min(max, 500 * 2 ** Math.min(attempt, 10));
@@ -50,6 +52,7 @@ export class Link {
   private retry?: ReturnType<typeof setTimeout>;
   private pinger?: ReturnType<typeof setInterval>;
   private probe?: ReturnType<typeof setTimeout>;
+  private dial?: ReturnType<typeof setTimeout>;
   private lastHeard = 0;
   private rpcSeq = 0;
   private pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -107,9 +110,17 @@ export class Link {
     this.ws = sock;
     let opened = false;
     this.setState("connecting");
+    // A phone waking on a dead network can sit in CONNECTING for minutes.
+    clearTimeout(this.dial);
+    this.dial = setTimeout(() => {
+      if (this.ws !== sock || opened) return;
+      sock.close();
+      this.closed(true); // timed out, not refused: no sign-in check
+    }, this.t.dialMs);
 
     sock.onopen = () => {
       if (this.ws !== sock) return;
+      clearTimeout(this.dial);
       opened = true;
       this.attempt = 0;
       this.lastHeard = this.now();
@@ -156,6 +167,14 @@ export class Link {
       this.attempt = 0;
       return this.connect();
     }
+    if (this.state === "connecting" && this.ws.readyState !== OPEN) {
+      // Stuck dialling on the network we had before sleeping: start over on the current one.
+      const stale = this.ws;
+      this.ws = undefined;
+      stale.close();
+      this.attempt = 0;
+      return this.connect();
+    }
     if (this.ws.readyState !== OPEN || this.state !== "open") return;
     const sock = this.ws;
     clearTimeout(this.probe);
@@ -186,6 +205,7 @@ export class Link {
   }
 
   private cleanup() {
+    clearTimeout(this.dial);
     clearInterval(this.pinger);
     clearTimeout(this.probe);
     for (const p of this.pending.values()) (clearTimeout(p.timer), p.reject(new Error("Disconnected.")));

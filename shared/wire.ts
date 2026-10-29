@@ -63,7 +63,7 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
       if (!isId(m.sessionId) || !Number.isSafeInteger(m.seq) || !isObj(m.event) || !isStr(m.event.type)) return null;
       return { t: "event", sessionId: m.sessionId, seq: m.seq as number, event: m.event as unknown as SessionEvent };
     case "summary":
-      if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string)) return null;
+      if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string) || !Number.isSafeInteger(m.summary.seq)) return null;
       return { t: "summary", summary: m.summary as unknown as SummaryUpdate };
     case "term":
       return isId(m.attachId) && typeof m.data === "string" ? { t: "term", attachId: m.attachId, data: m.data } : null;
