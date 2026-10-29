@@ -1,5 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
+import { readHistory } from "./history";
 import { claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents, titleOf } from "./discovery";
 
 const DIR = "/home/ubuntu/.local/share/tether-dev/projects/scratch";
@@ -21,7 +22,14 @@ test("projects, subagents and single rows", async () => {
   const projects = await claudeProjects();
   expect(projects.find((p) => p.path === DIR)).toMatchObject({ name: "scratch", sessions: 5, harnesses: ["claude"] });
   const kids = claudeSubagents(SUB, DIR);
-  expect(kids).toHaveLength(1);
+  // The subagent, and a workflow's agent (subagents/workflows/<run>/), openable like any.
+  expect(kids).toHaveLength(2);
+  const wf = kids.find((k) => k.nativeId.includes("/wf_"))!;
+  expect(wf).toMatchObject({ nativeId: `${SUB}/wf_0000test-001/a0000000000000001`, title: "find:line-counts", agentType: "workflow-subagent", parentSessionId: `claude:${SUB}` });
+  expect(await claudeSessionInfo(wf.nativeId, DIR)).toEqual(wf);
+  const wfMsgs = await readHistory(wf.nativeId, DIR);
+  expect(wfMsgs.flatMap((m) => m.parts).find((p) => p.type === "tool")).toMatchObject({ name: "Bash", status: "done" });
+  kids.splice(kids.indexOf(wf), 1);
   expect(kids[0]).toMatchObject({ parentSessionId: `claude:${SUB}`, agentType: "general-purpose", mode: "stored" });
   expect(kids[0]!.parentToolId).toMatch(/^toolu_/);
   expect(await claudeSessionInfo(kids[0]!.nativeId, DIR)).toEqual(kids[0]);

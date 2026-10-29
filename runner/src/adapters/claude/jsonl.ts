@@ -84,11 +84,11 @@ export class StoreFile {
   private children = new Map<string, Entry[]>();
   private lines = 0;
 
-  /** a subagent's own file (subagents/agent-*.jsonl): every entry is its thread, all marked sidechain */
+  /** a subagent's own file (subagents/agent-*.jsonl, or a workflow's subagents/workflows/<run>/agent-*.jsonl): every entry is its thread, all marked sidechain */
   private readonly subagent: boolean;
 
   constructor(readonly path: string) {
-    this.subagent = /\/subagents\/agent-[^/]+\.jsonl$/.test(path);
+    this.subagent = /\/subagents\/(?:workflows\/[^/]+\/)?agent-[^/]+\.jsonl$/.test(path);
   }
 
   /** Reads what was appended since the last call. True when anything changed. */
