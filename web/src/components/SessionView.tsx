@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { HARNESS_LABELS } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
@@ -76,6 +76,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const state = view.state;
   const inTerminal = state.mode === "terminal";
   const harnessLabel = HARNESS_LABELS[summary.harness];
+  const agent = AGENT_NAMES[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
   const waiting = state.requests.length > 0;
   // Requests open with no turn running (they came back after a runner restart) are busy too:
@@ -101,7 +102,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
   const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (
     <div className="t-inline-status" style={{ padding: "16px 0" }}>
-      {isChild ? "Nothing here yet." : "No messages yet. What should Claude do?"}
+      {isChild ? "Nothing here yet." : `No messages yet. What should ${agent} do?`}
     </div>
   );
   const working = (running || (isChild && waiting)) && (
@@ -110,7 +111,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <>Waiting for you below.</>
       ) : (
         <>
-          <Spinner size="sm" /> {isChild ? "Working…" : "Claude is working…"}
+          <Spinner size="sm" /> {isChild ? "Working…" : `${agent} is working…`}
         </>
       )}
     </div>
@@ -149,7 +150,23 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={inTerminal ? empty : working || empty} />
         {terminalBar}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
-        {isChild ? (
+        {isChild && view.capabilities?.subagents.steer === "direct" && state.mode === "live" ? (
+          // A subagent the harness lets you message directly (SPEC §6a): into its running turn, as you.
+          <Composer
+            ref={composer}
+            draftKey={k}
+            running
+            steer
+            agent="The subagent"
+            disabled={offline}
+            onSend={async (text) => {
+              await rpc(runnerId, "steer", { sessionId, text });
+            }}
+            onStop={async () => {
+              await rpc(runnerId, "interrupt", { sessionId });
+            }}
+          />
+        ) : isChild ? (
           <div className="t-composer">
             <div className="t-composer-inner t-inline-status">A subagent's transcript. It takes its instructions from the main session.</div>
           </div>
@@ -161,6 +178,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             waiting={waiting && state.status !== "running"}
             disabled={offline ?? (state.terminal?.returning ? "Going back to Tether…" : undefined)}
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
+            agent={agent}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (text) => {
               await rpc(runnerId, "send", { sessionId, text });

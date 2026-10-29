@@ -1027,6 +1027,35 @@
   align-items: center;
   font-size: 14px;
 }
+/* A segmented choice (the new session's agent). */
+.t-seg {
+  display: flex;
+  border: 1px solid var(--t-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.t-seg-opt {
+  flex: 1;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.t-seg-opt + .t-seg-opt {
+  border-left: 1px solid var(--t-border);
+}
+.t-seg-opt.on {
+  background: var(--t-soft);
+  font-weight: 600;
+}
+.t-seg-opt:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
 
 @media (max-width: 767px) {
   .t-term-panel {

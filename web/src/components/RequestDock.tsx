@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import type { Request, RequestAnswer, RequestQuestion, ToolPart } from "../../../shared/transcript";
+import { agentOf, type Request, type RequestAnswer, type RequestQuestion, type ToolPart } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { Markdown } from "./Markdown";
@@ -15,25 +15,25 @@ import { shortPath, ToolDetails } from "./ToolCard";
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
 /** "Claude wants to edit math.ts" */
-export function requestTitle(r: Request, root?: string): string {
-  if (r.plan !== undefined) return r.title ?? "Claude's plan is ready";
+export function requestTitle(r: Request, root?: string, who = "Claude"): string {
+  if (r.plan !== undefined) return r.title ?? `${who}'s plan is ready`;
   const path = r.path ? shortPath(r.path, root) : undefined;
   const i = (r.input ?? {}) as Record<string, unknown>;
   switch (r.toolKind) {
     case "shell":
-      return "Claude wants to run a command";
+      return `${who} wants to run a command`;
     case "edit":
-      return path ? `Claude wants to edit ${path}` : "Claude wants to edit a file";
+      return path ? `${who} wants to edit ${path}` : `${who} wants to edit a file`;
     case "write":
-      return path ? `Claude wants to write ${path}` : "Claude wants to write a file";
+      return path ? `${who} wants to write ${path}` : `${who} wants to write a file`;
     case "read":
-      return path ? `Claude wants to read ${path}` : "Claude wants to read a file";
+      return path ? `${who} wants to read ${path}` : `${who} wants to read a file`;
     case "fetch":
-      return typeof i.url === "string" ? `Claude wants to fetch ${i.url}` : "Claude wants to search the web";
+      return typeof i.url === "string" ? `${who} wants to fetch ${i.url}` : `${who} wants to search the web`;
     case "task":
-      return "Claude wants to start a subagent";
+      return `${who} wants to start a subagent`;
     default:
-      return `Claude wants to use ${r.tool ?? "a tool"}`;
+      return `${who} wants to use ${r.tool ?? "a tool"}`;
   }
 }
 
@@ -101,7 +101,7 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
       )}
       {r.checking ? (
         <>
-          <div className="t-req-title">{isQuestion ? (r.question ?? "Claude has a question.") : requestTitle(r, root)}</div>
+          <div className="t-req-title">{isQuestion ? (r.question ?? `${agentOf(sessionId)} has a question.`) : requestTitle(r, root, agentOf(sessionId))}</div>
           <div className="t-inline-status">
             <Spinner size="sm" /> Checking…
           </div>
@@ -110,7 +110,7 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
         <Questions r={r} busy={busy} onAnswer={(answers) => void answer({ allow: true, answers })} onDismiss={() => void answer({ allow: false })} />
       ) : (
         <>
-          <div className="t-req-title">{requestTitle(r, root)}</div>
+          <div className="t-req-title">{requestTitle(r, root, agentOf(sessionId))}</div>
           {r.reason && <div className="t-req-reason">{r.reason}</div>}
           <ApprovalBody r={r} root={root} />
           {denying ? (
@@ -126,7 +126,7 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
                 rows={2}
                 autoFocus
                 value={reason}
-                placeholder="Tell Claude why, or what to do instead"
+                placeholder={`Tell ${agentOf(sessionId)} why, or what to do instead`}
                 aria-label="Reason"
                 onChange={(e) => setReason(e.target.value)}
                 onKeyDown={(e) => {
@@ -180,7 +180,7 @@ function ApprovalBody({ r, root }: { r: Request; root?: string }) {
 
 /** A question's options as buttons, plus your own answer. One single-choice question answers on a tap. */
 function Questions({ r, busy, onAnswer, onDismiss }: { r: Request; busy: boolean; onAnswer: (answers: string[]) => void; onDismiss: () => void }) {
-  const qs: RequestQuestion[] = r.questions?.length ? r.questions : [{ question: r.question ?? "Claude has a question.", options: (r.options ?? []).map((label) => ({ label })) }];
+  const qs: RequestQuestion[] = r.questions?.length ? r.questions : [{ question: r.question ?? `${agentOf(r.sessionId)} has a question.`, options: (r.options ?? []).map((label) => ({ label })) }];
   const quick = qs.length === 1 && !qs[0]!.multiSelect;
   const [picked, setPicked] = useState<string[][]>(() => qs.map(() => []));
   const [typed, setTyped] = useState<string[]>(() => qs.map(() => ""));

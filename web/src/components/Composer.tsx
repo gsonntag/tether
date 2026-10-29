@@ -1,6 +1,7 @@
 // The message box. Desktop: Enter sends, Shift+Enter is a newline, Esc on an empty box stops the
 // turn. Phones (coarse pointer): Enter is a newline and the button sends. While a turn runs the
-// button stops it (P1 has no steer or queue), and the text stays for later.
+// button stops it (P1 has no steer or queue), and the text stays for later. With `steer` (a
+// subagent the harness lets you message directly) Enter and the button send into the running turn.
 
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
@@ -17,8 +18,21 @@ const drafts = new Map<string, string>();
 
 export const Composer = forwardRef<
   ComposerHandle,
-  { draftKey: string; running: boolean; waiting?: boolean; disabled?: string; placeholder?: string; onSend: (text: string) => Promise<void>; onStop: () => Promise<void>; status?: React.ReactNode }
->(function Composer({ draftKey, running, waiting, disabled, placeholder, onSend, onStop, status }, ref) {
+  {
+    draftKey: string;
+    running: boolean;
+    waiting?: boolean;
+    disabled?: string;
+    placeholder?: string;
+    /** who works: "Claude is working…" */
+    agent?: string;
+    /** while running, Enter and the button send into the running turn instead of stopping it */
+    steer?: boolean;
+    onSend: (text: string) => Promise<void>;
+    onStop: () => Promise<void>;
+    status?: React.ReactNode;
+  }
+>(function Composer({ draftKey, running, waiting, disabled, placeholder, agent = "Claude", steer, onSend, onStop, status }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -48,7 +62,7 @@ export const Composer = forwardRef<
 
   const send = async () => {
     const t = text.trim();
-    if (!t || running || busy || disabled) return;
+    if (!t || (running && !steer) || busy || disabled) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -92,12 +106,14 @@ export const Composer = forwardRef<
             className="t-input"
             rows={1}
             value={text}
-            placeholder={disabled ?? (running ? (waiting ? "Waiting for your answer above" : "Claude is working… (Esc to stop)") : (placeholder ?? "Message"))}
+            placeholder={disabled ?? (running ? (waiting ? "Waiting for your answer above" : steer ? `${agent} is working… (Enter to steer, Esc to stop)` : `${agent} is working… (Esc to stop)`) : (placeholder ?? "Message"))}
             aria-label="Message"
             onChange={(e) => change(e.target.value)}
             onKeyDown={onKeyDown}
           />
-          {running ? (
+          {running && steer && text.trim() ? (
+            <IconButton label="Steer" tooltip="Send into the running turn (Enter)" variant="primary" icon={<Icon icon={ArrowUpIcon} />} isDisabled={busy || !!disabled} onClick={() => void send()} />
+          ) : running ? (
             <IconButton label="Stop" tooltip="Stop (Esc)" variant="secondary" icon={<Icon icon={StopIcon} />} onClick={() => void stop()} />
           ) : (
             <IconButton label="Send" tooltip="Send (Enter)" variant="primary" icon={<Icon icon={ArrowUpIcon} />} isDisabled={!text.trim() || busy || !!disabled} onClick={() => void send()} />
