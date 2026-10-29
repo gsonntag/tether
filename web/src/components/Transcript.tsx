@@ -80,8 +80,11 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
    * a write would stop the fling, so the move is accepted and becomes the new place.
    */
   const keep = (el: HTMLDivElement) => {
-    if (stick.current) pin(el);
-    else if (anchor.current && gesture.idle(performance.now())) {
+    // Following: not under a finger. On a busy phone the finger's first move can arrive after
+    // several pins, and each pin would yank the view back to the bottom under it.
+    if (stick.current) {
+      if (!gesture.down) pin(el);
+    } else if (anchor.current && gesture.idle(performance.now())) {
       const row = list.current?.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(anchor.current.id)}"]`);
       const top = row ? restoreTop(anchor.current, row.offsetTop, el.scrollTop) : undefined;
       if (top !== undefined) {
@@ -176,6 +179,9 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
 
   const touchEnd = () => {
     gesture.touch(false, performance.now());
+    // the finger held off a pin: catch up (pin checks first that the reader didn't move up)
+    const el = scroller.current;
+    if (el && stick.current) pin(el);
     settleLater();
   };
 

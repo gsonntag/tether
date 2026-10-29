@@ -2,8 +2,9 @@
 //
 // iOS Safari ends a momentum scroll the moment the page writes scrollTop, and it has no CSS scroll
 // anchoring, so the transcript writes scrollTop only when no finger is down and no scroll is in
-// flight: following the bottom, and putting the reader's row back after older messages arrive
-// above it. Older pages that arrive mid-fling wait (hidden) until the scroll settles.
+// flight: following the bottom (that one only needs the finger off: the stream's own pins are
+// scroll events too), and putting the reader's row back after older messages arrive above it.
+// Older pages that arrive mid-fling wait (hidden) until the scroll settles.
 
 /** Scroll activity: idle once no finger is down and no scroll event came for `quiet` ms. */
 export class Gesture {
@@ -17,6 +18,10 @@ export class Gesture {
   }
   scrolled(now: number) {
     this.last = now;
+  }
+  /** a finger is on the transcript */
+  get down(): boolean {
+    return this.touching;
   }
   idle(now: number): boolean {
     return !this.touching && now - this.last >= this.quiet;

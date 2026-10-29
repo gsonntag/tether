@@ -5,8 +5,10 @@ test("a gesture is idle only with no finger down and no scroll for a while", () 
   const g = new Gesture(150);
   expect(g.idle(0)).toBe(true);
   g.touch(true, 1000);
+  expect(g.down).toBe(true);
   expect(g.idle(5000)).toBe(false); // a finger resting on the screen
   g.touch(false, 5000);
+  expect(g.down).toBe(false);
   expect(g.idle(5100)).toBe(false); // momentum may follow the lift
   g.scrolled(5200);
   expect(g.idle(5300)).toBe(false);
