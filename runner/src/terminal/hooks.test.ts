@@ -115,3 +115,9 @@ test("the fallback directory must be private, owned by this user, and not a link
     else process.env.XDG_RUNTIME_DIR = was;
   }
 });
+
+test("a hook's permission_mode is read (and nothing odd passes)", () => {
+  const { parseHook } = require("./hooks");
+  expect(parseHook("claude:s1", { hook_event_name: "Stop", permission_mode: "acceptEdits" })).toMatchObject({ event: "Stop", permissionMode: "acceptEdits" });
+  expect(parseHook("claude:s1", { hook_event_name: "Stop", permission_mode: "a b; rm" }).permissionMode).toBeUndefined();
+});

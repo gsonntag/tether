@@ -36,6 +36,20 @@ export function knownMode(id: string | undefined): CodexMode | undefined {
   return a && s && POLICIES.has(a) && SANDBOXES.has(s) ? { approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode } : undefined;
 }
 
+const POLICY_RANK: Record<string, number> = { untrusted: 0, "on-request": 1, never: 2 };
+const SANDBOX_RANK: Record<string, number> = { "read-only": 0, "workspace-write": 1, "danger-full-access": 2 };
+
+/**
+ * Whether settings `a` give more access than `b` in either dimension: asking less (approval
+ * policy) or a wider sandbox. Compared by dimension, so it works for any combination, preset or not.
+ */
+export function looser(a: { approvalPolicy?: string; sandbox?: string }, b: { approvalPolicy?: string; sandbox?: string }): boolean {
+  const ap = (x?: string) => (x !== undefined ? POLICY_RANK[x] : undefined);
+  const sb = (x?: string) => (x !== undefined ? SANDBOX_RANK[x] : undefined);
+  const pa = ap(a.approvalPolicy), pb = ap(b.approvalPolicy), sa = sb(a.sandbox), sbb = sb(b.sandbox);
+  return (pa !== undefined && pb !== undefined && pa > pb) || (sa !== undefined && sbb !== undefined && sa > sbb);
+}
+
 /** A thread whose permissions aren't known (no turn yet, nothing remembered). */
 export const UNKNOWN_MODE = "unknown";
 

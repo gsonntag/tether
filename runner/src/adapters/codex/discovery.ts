@@ -255,6 +255,27 @@ export async function threadSettings(nativeId: string): Promise<StartOpts | unde
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: start.permissionMode ?? UNKNOWN_MODE };
 }
 
+/** A rollout's end (where its newest turn_context is). */
+export async function rolloutText(path: unknown): Promise<string> {
+  if (typeof path !== "string") return "";
+  const f = Bun.file(path);
+  return f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => "");
+}
+
+/** The settings one turn started with: its turn_context (undefined: not in this text). */
+export function turnContext(text: string, turnId: string): ReturnType<typeof rolloutSettings> | undefined {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]!;
+    if (!l.includes('"turn_context"') || !l.includes(turnId)) continue;
+    try {
+      const m = JSON.parse(l);
+      if (m?.type === "turn_context" && m.payload?.turn_id === turnId) return rolloutSettings(l);
+    } catch {}
+  }
+  return undefined;
+}
+
 /** A thread's settings as its rollout's end records them. */
 async function rolloutOf(t: any): Promise<ReturnType<typeof rolloutSettings>> {
   if (typeof t?.path !== "string") return {};

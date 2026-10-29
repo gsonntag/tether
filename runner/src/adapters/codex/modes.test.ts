@@ -40,3 +40,11 @@ test("a stored thread's settings from its rollout: the newest turn_context", asy
   expect(rolloutSettings(text)).toEqual({ model: "gpt-6-luna", effort: "low", approvalPolicy: "on-request", sandbox: "read-only" });
   expect(rolloutSettings("")).toEqual({});
 });
+
+test("looser, by dimension (approval policy and sandbox), for any combination", async () => {
+  const { looser } = await import("./modes");
+  expect(looser({ approvalPolicy: "never", sandbox: "read-only" }, { approvalPolicy: "on-request", sandbox: "read-only" })).toBe(true);
+  expect(looser({ approvalPolicy: "on-request", sandbox: "workspace-write" }, { approvalPolicy: "on-request", sandbox: "read-only" })).toBe(true);
+  expect(looser({ approvalPolicy: "untrusted", sandbox: "read-only" }, { approvalPolicy: "never", sandbox: "danger-full-access" })).toBe(false);
+  expect(looser({ approvalPolicy: "on-request", sandbox: "read-only" }, { approvalPolicy: "on-request", sandbox: "read-only" })).toBe(false);
+});

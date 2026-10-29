@@ -210,7 +210,9 @@ test("send, steer, interrupt and settings go to the thread; steering needs a run
   ]);
   // A setting changed in the TUI shows in Tether.
   daemon.say({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { model: "gpt-6-sol", effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } } } });
-  expect(sink.states.at(-1)).toEqual({ model: "gpt-6-sol", modelResolved: "gpt-6-sol", effort: "high", permissionMode: "full-access" });
+  expect(sink.states.at(-2)).toEqual({ model: "gpt-6-sol", modelResolved: "gpt-6-sol", effort: "high", permissionMode: "full-access" });
+  // A turn runs (t9): it keeps what it started with, shown beside the change (not looser: nothing to stop).
+  expect(sink.states.at(-1)).toEqual({ turnSettings: { model: "gpt-6-luna", effort: "low", permissionMode: "untrusted" } });
 });
 
 test("a subagent: stopped and steered on its own thread", async () => {
@@ -400,4 +402,48 @@ test("Default survives a restart: a stored session and a resumed one still show 
   const { codexAdapter } = await import("./index");
   daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, model: "gpt-6.1-sol" } });
   expect((await codexAdapter.defaults(CWD, MAIN)).model).toBe("default");
+});
+
+test("joining a turn already running: busy, and its own settings (its turn_context) shown beside the thread's", async () => {
+  useDaemon();
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const path = join(mkdtempSync(join(tmpdir(), "tether-ctx-")), "rollout.jsonl");
+  writeFileSync(path, [JSON.stringify({ timestamp: "2026-10-29T10:00:00Z", type: "turn_context", payload: { turn_id: "t1", model: "gpt-6-luna", effort: "low", approval_policy: "never", sandbox_policy: { type: "danger-full-access" } } }), '{"type":"event_msg"}'].join("\n"));
+  // Read only now (changed while the turn ran, elsewhere), the turn started with full access.
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "active" }, path }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "readOnly" } });
+  daemon.answers["thread/turns/list"] = () => ({ data: [{ id: "t1", status: "inProgress", items: [] }] });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(d.turnRunning()).toBe(true);
+  expect(sink.status).toBe("running");
+  expect(sink.states.at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true } });
+  // The turn ends: the note goes.
+  daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t1", status: "completed" } } });
+  expect(sink.states.at(-1)).toEqual({ turnSettings: undefined });
+  expect(d.turnRunning()).toBe(false);
+});
+
+test("a change mid-turn (here or in Codex's TUI) shows the turn's own value; subagents keep it until they end; Stop stops them too", async () => {
+  useDaemon();
+  daemon.settings = { model: "gpt-6-luna", effort: "low", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "never", approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  expect(sink.states.at(-1)).toEqual({ turnSettings: undefined });
+  // Codex's TUI picks read-only (the daemon reports it).
+  daemon.say({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { ...daemon.settings, approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" } } } });
+  expect(sink.states.at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true } });
+  // A subagent started in the turn outlives it.
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_1", kind: "started", agentThreadId: "C", agentPath: "/root/x" } } });
+  daemon.say({ method: "turn/started", params: { threadId: "C", turn: { id: "ct" } } });
+  daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t1", status: "completed" } } });
+  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true } });
+  // Stop: the subagent too.
+  await d.interrupt();
+  expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "C", turnId: "ct" }]);
+  daemon.say({ method: "turn/completed", params: { threadId: "C", turn: { id: "ct", status: "interrupted" } } });
+  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: undefined });
 });

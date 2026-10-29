@@ -614,6 +614,12 @@ export class TerminalControl {
     const s = this.o.core.sessions.get(id);
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
+    // The mode the TUI runs in now (Shift+Tab there changes it): shown, and kept for Back to Tether.
+    if (r.permissionMode && r.permissionMode !== s.state.permissionMode) {
+      s.setState({ permissionMode: r.permissionMode });
+      this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: r.permissionMode });
+      this.o.core.touch(s);
+    }
     this.heard.set(s.id, this.o.core.now());
     this.idleSeen.delete(s.id);
     if (r.event !== "SessionStart") {

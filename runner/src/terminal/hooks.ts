@@ -50,6 +50,8 @@ export interface HookReport {
   message?: string;
   /** SessionStart: startup, resume, clear, compact; SessionEnd: why */
   source?: string;
+  /** the TUI's permission mode as it is now (every hook carries it; Shift+Tab changes it) */
+  permissionMode?: string;
 }
 
 export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", "PostToolUse", "Stop", "StopFailure", "SessionEnd"] as const;
@@ -97,6 +99,8 @@ export function parseHook(sessionId: string | null, body: unknown, tui?: string 
   if (message) r.message = message;
   const source = str(b.source) ?? str(b.reason);
   if (source) r.source = source;
+  const mode = str(b.permission_mode);
+  if (mode && /^[A-Za-z-]{1,40}$/.test(mode)) r.permissionMode = mode;
   return r;
 }
 

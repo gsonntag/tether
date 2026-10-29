@@ -945,3 +945,14 @@ describe("project shells", () => {
     expect((await term.newShell(dir)).n).toBe(3);
   });
 });
+
+test("the TUI's permission mode (Shift+Tab there) comes with every hook: shown, refused from Tether, kept for Back to Tether", async () => {
+  const { adapter, core, live, term } = setup();
+  adapter.addStored("s1", []);
+  await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+  term.report({ sessionId: "claude:s1", event: "UserPromptSubmit", nativeId: "s1", permissionMode: "acceptEdits" });
+  expect(state(core, "claude:s1").permissionMode).toBe("acceptEdits");
+  expect(core.o.prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
+  await expect(live.setPermissionMode("claude:s1", "default")).rejects.toThrow("terminal is driving");
+  expect(state(core, "claude:s1").permissionMode).toBe("acceptEdits");
+});
