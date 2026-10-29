@@ -12,6 +12,10 @@ import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
 import { useChildren } from "./useChildren";
+import { bySubagentOrder, SubagentsPopover } from "./SubagentChips";
+
+/** Subagent rows shown under a session before "N more". */
+const CHILD_ROWS = 5;
 import { useNow } from "./useNow";
 
 const PAGE = 40;
@@ -80,6 +84,32 @@ export function Sidebar() {
   const children = useChildren(expanded?.runnerId, expanded?.sessionId);
   const selectedRow = expanded && rows.slice(0, shown).find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
   const childRow = (c: Row) => <SessionRow key={c.id} row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />;
+  // A session can have a hundred subagents: a few rows (running first, the open one always), the
+  // rest behind "N more", which opens the whole list.
+  const childRows = () => {
+    const sorted = bySubagentOrder(children);
+    const few = sorted.slice(0, CHILD_ROWS);
+    const open = selected && sorted.find((c) => c.id === selected.sessionId);
+    if (open && !few.includes(open)) few.push(open);
+    const rest = children.length - few.length;
+    return (
+      <>
+        {few.map(childRow)}
+        {rest > 0 && expanded && (
+          <SubagentsPopover
+            runnerId={expanded.runnerId}
+            children={children}
+            onPick={() => useStore.setState({ sidebarOpen: false })}
+            trigger={
+              <button type="button" className="t-more t-child-more">
+                {rest} more subagent{rest === 1 ? "" : "s"}
+              </button>
+            }
+          />
+        )}
+      </>
+    );
+  };
 
   return (
     <SideNav
@@ -138,7 +168,7 @@ export function Sidebar() {
           return (
             <Fragment key={`${r.runnerId}:${r.id}`}>
               <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} />
-              {isExp && children.map(childRow)}
+              {isExp && childRows()}
             </Fragment>
           );
         })}
@@ -155,7 +185,7 @@ export function Sidebar() {
             <span className="t-grow">Subagents of this session</span>
           </div>
           <div className="t-rows">
-            {children.map(childRow)}
+            {childRows()}
           </div>
         </>
       )}

@@ -73,3 +73,8 @@
     display: none;
   }
 }
+/* "N more subagents" under a session's subagent rows in the sidebar */
+.t-more.t-child-more {
+  padding-left: 28px;
+  font-size: 12px;
+}
