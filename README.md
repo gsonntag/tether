@@ -81,14 +81,19 @@ you send). The sidebar lists sessions with a message in the last 3 days plus eve
 search finds the rest. Sending takes a session live through the Agent SDK; it goes back to stored
 after 5 idle minutes (not while subagents or background tasks run). Per-session model, effort and
 permission mode are kept in `runner.json` (`sessions`); Tether's own notices (denials, errors, a turn cut off) in `notices.json`. Subagents are child sessions
-(`claude:<session>/<agent>`). P1 has no approval prompts: in modes that ask, requests are declined
-with a notice in the transcript.
+(`claude:<session>/<agent>`). Permission prompts and questions
+(SPEC §7) go to every device watching the session, above the composer; the first answer wins, and
+open requests survive a runner restart (kept in `runner.json`).
 
 ## End-to-end check
 
 P1: `bun scripts/smoke-p1.ts` (scripted browsers through the relay) and `node scripts/e2e-p1.mjs`
 (Playwright, desktop and phone) drive real Claude on Haiku against the dev stack; see their headers.
 `scripts/fake-runner.ts` serves canned sessions for UI work without a model.
+
+P2: `node scripts/e2e-p2.mjs` (Playwright, desktop and phone, real Claude on Haiku) checks requests:
+approvals on two devices, "Already answered", deny with reason, questions, a subagent's request, a
+runner restart with a request open, and plan approval. See its header and `docs/acceptance/P2.md`.
 
 `scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
 local stack (vite on :5180; it starts and stops the server and runners itself):
