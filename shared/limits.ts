@@ -10,7 +10,7 @@
 // The runner applies capEvent / newestPage to everything it sends.
 
 import type { RunnerToServer } from "./protocol";
-import type { LiveState, Msg, Part, Request, SessionEvent, ToolPart } from "./transcript";
+import type { LiveState, Msg, Part, QueuedMessage, Request, SessionEvent, ToolPart } from "./transcript";
 
 /** Text, thinking and tool output longer than this are cut to it. */
 export const PART_TEXT_MAX = 64 * 1024;
@@ -155,8 +155,13 @@ export function capRequest(r: Request): Request {
   return c.truncated ? { ...out, input: c.value, inputTruncated: true } : out;
 }
 
+/** A waiting message as it travels: long text cut (the runner keeps it whole), marked. */
+export function capQueued(m: QueuedMessage): QueuedMessage {
+  return over(m.text, QUEUED_TEXT_WIRE) ? { ...m, text: cutBytes(m.text, QUEUED_TEXT_WIRE), truncated: utf8Length(m.text) } : m;
+}
+
 export function capState(s: LiveState): LiveState {
-  return { ...s, requests: s.requests.map(capRequest) };
+  return { ...s, requests: s.requests.map(capRequest), queue: s.queue.map(capQueued) };
 }
 
 /** A session event as it travels. */
@@ -175,8 +180,13 @@ export function capEvent(e: SessionEvent): SessionEvent {
     case "delta":
       // A delta is a few tokens; one this big is a bug upstream, and is cut like a part.
       return over(e.text, PART_TEXT_MAX) ? { ...e, text: cut(e.text) } : e;
-    case "state":
-      return e.state.requests ? { ...e, state: { ...e.state, requests: e.state.requests.map(capRequest) } } : e;
+    case "state": {
+      if (!e.state.requests && !e.state.queue) return e;
+      const st = { ...e.state };
+      if (st.requests) st.requests = st.requests.map(capRequest);
+      if (st.queue) st.queue = st.queue.map(capQueued);
+      return { ...e, state: st };
+    }
     case "resync":
       return e;
   }
@@ -291,5 +301,12 @@ export const ATTACH_IMAGE_EDGE = 2048;
 export const ATTACH_SESSION_MAX = 2 * 1024 * 1024 * 1024;
 /** Waiting messages per session. */
 export const QUEUE_MAX = 50;
+/**
+ * All of a session's waiting messages together (UTF-8 bytes of their text): far under the frame
+ * limit, so a session's state always travels and the session always opens.
+ */
+export const QUEUE_BYTES_MAX = 1024 * 1024;
+/** A waiting message's text in a state frame; longer ones travel cut, marked `truncated`. */
+export const QUEUED_TEXT_WIRE = 16 * 1024;
 /** One message's text (sent, steered or queued). */
 export const MESSAGE_TEXT_MAX = 200 * 1024;

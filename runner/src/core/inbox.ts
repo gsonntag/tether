@@ -15,7 +15,13 @@ export class ReadState {
     core.book.decorate = (s) => this.decorate(s);
     bus.on("viewers", ({ sessions }) => {
       this.viewers = sessions;
-      for (const id of Object.keys(sessions)) if (this.core.o.prefs.get(id).unread) this.set(id, false);
+      // Looking at a subagent is looking at its main session too (as notifications count it).
+      const seen = new Set(Object.keys(sessions));
+      for (const id of Object.keys(sessions)) {
+        const parent = this.core.sessions.get(id)?.summary.parentSessionId;
+        if (parent) seen.add(parent);
+      }
+      for (const id of seen) if (this.core.o.prefs.get(id).unread) this.set(id, false);
     });
     bus.on("disconnected", () => (this.viewers = {}));
     bus.on("turnStarted", ({ sessionId }) => {

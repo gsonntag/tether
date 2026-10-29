@@ -185,6 +185,8 @@ export interface QueuedMessage {
   text: string;
   attachments?: Attachment[];
   queuedAt: number;
+  /** `text` was cut to travel (shared/limits.ts capQueued): its full UTF-8 length; the runner has it whole */
+  truncated?: number;
 }
 
 export interface TerminalState {

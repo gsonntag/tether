@@ -8,7 +8,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
-import { MESSAGE_TEXT_MAX, QUEUE_MAX } from "../../../shared/limits";
+import { formatSize } from "../../../shared/attachments";
+import { MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, utf8Length } from "../../../shared/limits";
+
+/** UTF-8 bytes of a queue's text. */
+export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + utf8Length(m.text), 0);
 import type { LiveState, QueuedMessage } from "../../../shared/transcript";
 import type { Session } from "./session";
 import type { SessionCore } from "./sessions";
@@ -64,6 +68,7 @@ export class MessageQueue {
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     if (s.state.queue.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
+    this.roomFor(s.state.queue, text);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether.
     this.save(s, [...s.state.queue, m], !s.state.queueHeld && s.state.mode === "terminal" ? "terminal" : undefined);
@@ -76,6 +81,7 @@ export class MessageQueue {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const m = this.find(s, msgId);
     if (!text.trim() && !m.attachments?.length) return this.cancel(id, msgId);
+    this.roomFor(s.state.queue.filter((x) => x.id !== msgId), text);
     this.save(s, s.state.queue.map((x) => (x.id === msgId ? { ...x, text } : x)));
   }
 
@@ -146,10 +152,12 @@ export class MessageQueue {
     if (s.state.mode === "terminal" || s.state.status !== "idle" || s.sending || s.starting) return;
     const [next, ...rest] = s.state.queue;
     this.draining.add(id);
-    // Out of the queue first: a second device sees it go, and a failure puts it back.
-    this.save(s, rest);
+    // Out of the shown queue at once (every device sees it go), but out of runner.json only once
+    // the harness has it: a runner killed in between still has it waiting.
+    this.save(s, rest, undefined, { persist: false });
     try {
       await this.host.send(id, next!.text, next!.attachments ?? []);
+      this.persist(s);
     } catch (e: any) {
       // Back at the front. A turn that started meanwhile (you sent something) just means later;
       // anything else holds the queue: whatever stopped it would stop the rest too.
@@ -169,18 +177,34 @@ export class MessageQueue {
     return s;
   }
 
+  /** Refuses text that would take the queue past QUEUE_BYTES_MAX (its state must always travel). */
+  private roomFor(others: QueuedMessage[], text: string) {
+    if (queueBytes(others) + utf8Length(text) > QUEUE_BYTES_MAX)
+      throw new Error(`The waiting messages can be at most ${formatSize(QUEUE_BYTES_MAX)} of text together. Send or cancel some first, or attach long text as a file.`);
+  }
+
   private find(s: Session, msgId: string): QueuedMessage {
     const m = s.state.queue.find((x) => x.id === msgId);
     if (!m) throw new Error("That message isn't waiting any more.");
     return m;
   }
 
-  /** The queue (and its hold: undefined keeps it, null clears it) into state, the row and runner.json. */
-  private save(s: Session, queue: QueuedMessage[], by?: HeldBy | null) {
+  /**
+   * The queue (and its hold: undefined keeps it, null clears it) into state, the row and
+   * runner.json, written at once (`persist: false`: state only, for a message going out).
+   */
+  private save(s: Session, queue: QueuedMessage[], by?: HeldBy | null, o: { persist?: boolean } = {}) {
     const heldBy = by === undefined ? s.state.queueHeldBy : (by ?? undefined);
     const held = !!heldBy && queue.length > 0;
     s.setState({ queue, queueHeld: held || undefined, queueHeldBy: held ? heldBy : undefined });
-    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, queue: queue.length ? queue : undefined, queueHeldBy: held ? heldBy : undefined });
+    if (o.persist !== false) this.persist(s);
     this.core.touch(s);
+  }
+
+  /** The session's queue as its state has it, into runner.json now. */
+  private persist(s: Session) {
+    const q = s.state.queue;
+    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, queue: q.length ? q : undefined, queueHeldBy: q.length ? s.state.queueHeldBy : undefined });
+    this.core.o.prefs.flush();
   }
 }

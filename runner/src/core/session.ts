@@ -5,6 +5,7 @@
 import type { HarnessCapabilities, LiveState, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import type { Driver, TranscriptEvent } from "./adapter";
 import type { OverlayNotice } from "./notices";
+import { capState } from "../../../shared/limits";
 import { Transcript } from "./transcript";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
@@ -104,7 +105,7 @@ export class Session {
 
   snapshot(limit: number): SessionSnapshot {
     const page = this.transcript ? this.transcript.newest(limit) : { messages: [] as Msg[], hasOlder: false };
-    return { session: this.summary, capabilities: this.capabilities, messages: page.messages, hasOlder: page.hasOlder, state: this.state, seq: this.seq };
+    return { session: this.summary, capabilities: this.capabilities, messages: page.messages, hasOlder: page.hasOlder, state: capState(this.state), seq: this.seq };
   }
 }
 
