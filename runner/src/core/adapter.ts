@@ -144,7 +144,18 @@ export interface TerminalOpts extends StartOpts {
    * Where the TUI reports turn ends and "needs you" (handoff harnesses, SPEC §8): the adapter
    * wires its harness's own hooks to POST there (terminal/hooks.ts).
    */
-  report?: { socketPath: string; sessionId: string };
+  report?: { socketPath: string; sessionId: string; tui?: string };
+}
+
+/**
+ * What a TUI's screen shows (tmux capture-pane): `idle` at its prompt with nothing running; `busy`
+ * working (its prompt still takes typing); `asking` a dialog or picker that typed text would answer;
+ * `unknown` anything else (starting, a full-screen view). `body` is the part that changes only when
+ * something happens (not a ticking footer), to tell a still screen from a moving one.
+ */
+export interface ScreenRead {
+  state: "idle" | "busy" | "asking" | "unknown";
+  body: string;
 }
 
 /** One step of quitting a TUI: tmux key names, literal text, or a pause. */
@@ -158,9 +169,9 @@ export interface TerminalLaunch {
   /** what submits typed text (the composer in terminal mode); default: Enter */
   submit?: QuitStep[];
   /**
-   * Whether the TUI's screen (tmux capture-pane) shows it idle at its prompt: no turn running, no
-   * dialog open. Used to put the status right when no hook says the turn ended (an interrupt, a
-   * refused prompt).
+   * Reads the TUI's screen (tmux capture-pane). Used, guardedly, where no hook says what happened
+   * (an interrupt, a refused prompt, a dialog answered in the TUI), and to keep the composer from
+   * typing into a dialog.
    */
-  idle?: (screen: string) => boolean;
+  screen?: (screen: string) => ScreenRead;
 }

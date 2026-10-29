@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState, Msg } from "../../../shared/transcript";
-import type { QuitStep, TerminalOpts } from "../core/adapter";
+import type { QuitStep, ScreenRead, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
 import type { Session } from "../core/session";
 import type { SessionCore } from "../core/sessions";
@@ -54,6 +54,8 @@ export interface TerminalOptions {
   startWaitMs?: number;
   /** how long without a hook before a busy TUI's screen is looked at */
   quietMs?: number;
+  /** the pause before a screen that is neither at the prompt nor asking is looked at again */
+  screenRetryMs?: number;
   log?: (line: string) => void;
 }
 
@@ -64,6 +66,8 @@ const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog"]);
 export const ANSWER_THERE = "Claude is asking something in the terminal. Answer it there.";
 /** A just-started TUI that never reported in: most likely Claude's "trust this folder" question. */
 export const NOT_STARTED = "Claude Code hasn't started yet. If it asks whether to trust this folder, answer in the terminal.";
+/** The TUI shows neither its prompt nor a question (a picker, a full-screen view, still drawing). */
+export const NOT_AT_PROMPT = "Claude Code isn't at its prompt in the terminal (something is open there). Finish it there first.";
 export const HANDING_OFF = "The session is moving to the terminal. Type there in a moment.";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -84,7 +88,10 @@ export class TerminalControl {
   private moved = new Map<string, string>();
   /** when a hook last reported, per session; and how many checks in a row found its TUI idle */
   private heard = new Map<string, number>();
-  private idleSeen = new Map<string, number>();
+  private idleSeen = new Map<string, { n: number; body: string }>();
+  /** sessions "waiting" whose TUI showed its dialog: once the dialog is gone, they aren't waiting */
+  private askSeen = new Set<string>();
+  private askGone = new Map<string, number>();
   /** messages being typed into a TUI, per session: each text goes in with its Enter */
   private typing = new Map<string, Promise<void>>();
   /** new shells are numbered one at a time */
@@ -325,7 +332,7 @@ export class TerminalControl {
     }
     // A new session that has nothing in the store yet starts under its id; anything else resumes.
     if (s.fresh && (await this.stored(s))) s.fresh = false;
-    const launch = this.launch(s, { fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id } : undefined });
+    const launch = this.launch(s, { fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined });
     try {
       await this.o.tmux.create({ name, cwd: s.summary.projectPath, argv: launch.argv, env: launch.env, cols: o.cols, rows: o.rows, tags: { kind: "tui", session: s.id, project: s.summary.projectPath } });
     } catch (e: any) {
@@ -476,11 +483,32 @@ export class TerminalControl {
     // Text typed into a dialog answers it ("1" approves): the person answers it there instead.
     if (s.state.status === "waiting" || s.state.terminal?.attention) throw new Error(ANSWER_THERE);
     await this.starting.get(s.id)?.ready;
+    const seen = await this.readScreen(s, name);
+    // SessionStart never came (lost, or Claude was slow): its prompt on screen says it started.
+    if (this.unconfirmed.has(s.id) && seen && (seen.state === "idle" || seen.state === "busy")) this.unconfirmed.delete(s.id);
     if (this.unconfirmed.has(s.id)) throw new Error(NOT_STARTED);
+    if (seen?.state === "asking") throw new Error(ANSWER_THERE);
+    if (seen?.state === "unknown") throw new Error(NOT_AT_PROMPT);
     await this.o.tmux.type(name, text);
     // The harness says how to submit it (Claude: a beat, End, Enter); by default a beat and Enter.
     const submit = this.launch(s).submit ?? [{ waitMs: this.o.enterDelayMs ?? 150 }, { keys: ["Enter"] }];
     await this.runSteps(name, submit, false);
+  }
+
+  /**
+   * The TUI's screen as its harness reads it (undefined: the harness can't tell). A screen that isn't
+   * at the prompt nor asking is looked at again for a moment (a redraw, a dialog closing).
+   */
+  private async readScreen(s: Session, name: string, tries = 4): Promise<ScreenRead | undefined> {
+    const read = this.launch(s).screen;
+    if (!read) return undefined;
+    let r: ScreenRead = { state: "unknown", body: "" };
+    for (let i = 0; i < tries; i++) {
+      if (i) await Bun.sleep(this.o.screenRetryMs ?? 400);
+      r = read(await this.o.tmux.capture(name).catch(() => ""));
+      if (r.state !== "unknown") return r;
+    }
+    return r;
   }
 
   /** Stop in terminal mode: Esc in the TUI (Claude stops its turn; no hook says so). */
@@ -514,16 +542,29 @@ export class TerminalControl {
   report(r: HookReport) {
     // Hooks keep the URL of the launch; the payload says which session the TUI is on now (it moves
     // with /clear and /resume).
-    const p = parseSessionId(r.sessionId);
-    const now = p && r.nativeId ? makeId(p.harness, r.nativeId) : r.sessionId;
-    let id = r.sessionId;
-    for (let i = 0; i < 100 && this.moved.has(id); i++) id = this.moved.get(id)!;
-    if (this.tuis.has(now) && this.tuis.get(now) === this.tuis.get(id)) id = now;
+    let id: string | undefined;
+    if (r.tui) {
+      // The TUI says which it is: whatever session it is on now (after /clear too), and only that.
+      id = [...this.tuis].find(([, name]) => name === r.tui)?.[0];
+      if (!id) return;
+    } else {
+      // TUIs started before hooks named their tmux session: by the launch, followed where it moved.
+      const p = parseSessionId(r.sessionId);
+      const now = p && r.nativeId ? makeId(p.harness, r.nativeId) : r.sessionId;
+      id = r.sessionId;
+      for (let i = 0; i < 100 && this.moved.has(id); i++) id = this.moved.get(id)!;
+      if (this.tuis.has(now) && this.tuis.get(now) === this.tuis.get(id)) id = now;
+    }
     const s = this.o.core.sessions.get(id);
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
     this.heard.set(s.id, this.o.core.now());
     this.idleSeen.delete(s.id);
+    if (r.event !== "SessionStart") {
+      // Any other hook from it: it has started (its SessionStart may have been lost).
+      this.unconfirmed.delete(s.id);
+      this.starting.get(s.id)?.done();
+    }
     // Only a real session id moves the terminal (it becomes a Tether session id and a file name).
     if (r.event === "SessionStart" && r.nativeId && r.nativeId !== s.summary.nativeId && UUID.test(r.nativeId)) {
       void this.rebind(s, r.nativeId, r.source).catch((e) => this.log(`${s.id}: couldn't follow the TUI to ${r.nativeId}: ${e?.message ?? e}`));
@@ -545,6 +586,8 @@ export class TerminalControl {
         break;
       case "Notification":
         if (!NEEDS_YOU.has(r.notificationType ?? "") && !(r.notificationType === undefined && /permission|approv/i.test(r.message ?? ""))) break;
+        this.askSeen.delete(s.id);
+        this.askGone.delete(s.id);
         this.status(s, "waiting", { ...term, attention: r.message ?? "Claude needs you in the terminal." });
         this.o.core.o.bus.emit("attention", { sessionId: s.id, message: r.message });
         break;
@@ -622,7 +665,24 @@ export class TerminalControl {
       if (t.launchedFor && t.launchedFor !== s.id) this.moved.set(t.launchedFor, s.id);
       this.adopt(s, t.name, t.returnWhenIdle);
       this.log(`readopted the terminal of ${s.id}`);
+      if (t.returnWhenIdle && s.capabilities.terminal === "handoff") await this.resumeReturn(s, t.name);
     }
+  }
+
+  /**
+   * Back to Tether was waiting for the turn when the runner stopped: if the TUI is at its prompt
+   * now it goes; otherwise the turn may still run (no hook told this runner), and its end (Stop, the
+   * marker, or the screen) takes it back.
+   */
+  private async resumeReturn(s: Session, name: string) {
+    const seen = await this.readScreen(s, name);
+    if (seen?.state === "idle") {
+      void this.o.tmux.tag(name, "return", undefined).catch(() => {});
+      void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
+      return;
+    }
+    s.setState({ status: "running" });
+    this.o.core.touch(s);
   }
 
   private startPoll() {
@@ -650,23 +710,41 @@ export class TerminalControl {
   }
 
   /**
-   * A TUI said it was working or waiting, and no hook has spoken for a while: if its screen shows it
-   * idle at its prompt on two checks in a row, the turn is over.
+   * Where no hook speaks, the screen, guardedly (hooks stay the truth):
+   * - waiting: once its dialog has been seen and then is gone on two checks in a row (answered in
+   *   the TUI), it is working again, "Needs you" cleared;
+   * - working, and no hook for a while: idle only if the screen shows the prompt with nothing going
+   *   on, unchanged, on two checks in a row (a spinner or a hook running is never idle).
    */
   private async reconcile(id: string, name: string) {
     const s = this.o.core.sessions.get(id);
-    if (!s || s.state.mode !== "terminal" || s.state.status === "idle" || this.returning.has(id)) return void this.idleSeen.delete(id);
-    if (this.o.core.now() - (this.heard.get(id) ?? 0) < (this.o.quietMs ?? 15_000)) return;
-    const idle = this.launch(s).idle;
-    if (!idle) return;
-    const screen = await this.o.tmux.capture(name).catch(() => "");
-    if (!screen || !idle(screen)) return void this.idleSeen.delete(id);
-    const n = (this.idleSeen.get(id) ?? 0) + 1;
-    this.idleSeen.set(id, n);
-    if (n >= 2) {
+    const clear = () => (this.idleSeen.delete(id), this.askSeen.delete(id), this.askGone.delete(id));
+    if (!s || s.state.mode !== "terminal" || s.state.status === "idle" || this.returning.has(id) || !s.state.terminal) return void clear();
+    if (!this.launch(s).screen) return;
+    if (s.state.status === "waiting") {
       this.idleSeen.delete(id);
-      this.turnOver(s, "the TUI is idle at its prompt");
+      const seen = await this.readScreen(s, name, 1);
+      if (seen?.state === "asking") {
+        this.askSeen.add(id);
+        this.askGone.delete(id);
+        return;
+      }
+      if (!this.askSeen.has(id) || !seen || seen.state === "unknown") return void this.askGone.delete(id);
+      const n = (this.askGone.get(id) ?? 0) + 1;
+      this.askGone.set(id, n);
+      if (n < 2 || s.state.status !== "waiting" || !s.state.terminal) return;
+      clear();
+      this.log(`${s.id}: the TUI's question was answered there`);
+      this.status(s, "running", { ...s.state.terminal, attention: undefined });
+      return;
     }
+    if (this.o.core.now() - (this.heard.get(id) ?? 0) < (this.o.quietMs ?? 15_000)) return;
+    const seen = await this.readScreen(s, name, 1);
+    if (!seen || seen.state !== "idle") return void this.idleSeen.delete(id);
+    const last = this.idleSeen.get(id);
+    if (!last || last.body !== seen.body) return void this.idleSeen.set(id, { n: 1, body: seen.body });
+    this.idleSeen.delete(id);
+    this.turnOver(s, "the TUI is idle at its prompt");
   }
 
   /** An attach's PTY ended by itself: its tmux session may be gone. */

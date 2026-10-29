@@ -49,10 +49,11 @@ for (const via of ["curl", "bun"] as const)
     const srv = new HookServer(sock, (r) => got.push(r));
     servers.push(srv);
     srv.start();
-    const cmd = hookCommand(sock, "claude:x y", via === "curl" ? Bun.which("curl") : null);
+    // The TUI's tmux name goes along, so the runner knows exactly which TUI reported.
+    const cmd = hookCommand(sock, "claude:x y", via === "curl" ? Bun.which("curl") : null, "t-claude-x-y-ab12");
     const p = Bun.spawn(["sh", "-c", cmd], { stdin: new TextEncoder().encode(JSON.stringify({ hook_event_name: "Stop", session_id: "x" })) });
     expect(await p.exited).toBe(0);
-    expect(got).toEqual([{ sessionId: "claude:x y", event: "Stop", nativeId: "x" }]);
+    expect(got).toEqual([{ sessionId: "claude:x y", tui: "t-claude-x-y-ab12", event: "Stop", nativeId: "x" }]);
   });
 
 test("a hook whose runner is down still exits 0", async () => {

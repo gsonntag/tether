@@ -102,6 +102,7 @@ export interface TmuxOptions {
    * (KillMode=mixed kills the unit's whole cgroup on stop) that's a scope of its own.
    */
   wrapStart?: (argv: string[]) => string[];
+  log?: (line: string) => void;
 }
 
 /** Under a systemd unit, start the tmux server in its own scope so stopping the runner leaves it. */
@@ -114,6 +115,7 @@ export class Tmux {
   readonly socket: string;
   private exec: Exec;
   private wrapStart?: (argv: string[]) => string[];
+  private logLine: (line: string) => void;
   private configured = false;
   /** starting the server is serialized: two first sessions at once must not start two */
   private starting?: Promise<unknown>;
@@ -122,6 +124,7 @@ export class Tmux {
     this.socket = o.socket ?? TMUX_SOCKET;
     this.exec = o.exec ?? defaultExec;
     this.wrapStart = o.wrapStart;
+    this.logLine = o.log ?? ((l) => console.log(l));
   }
 
   /** argv for a tmux command on Tether's socket (also used to attach a PTY). */
@@ -145,13 +148,29 @@ export class Tmux {
   }
 
   /**
-   * The server's settings, as one ";"-chained command: Tether's options, `exit-empty off` (so the
-   * server never exits between sessions and no later command has to start one), and no systemd
-   * markers in the environment shells inherit.
+   * The server's settings: Tether's options and no systemd markers in the environment shells
+   * inherit. `exit-empty off` (the server never exits between sessions, so no later command has to
+   * start one) goes with start-server itself.
    */
-  private serverSetup(): string[] {
-    const cmds = [...SERVER_OPTIONS, ["set", "-g", "exit-empty", "off"], ...[...DROP_ENV].map((k) => ["set-environment", "-g", "-u", k])];
-    return cmds.flatMap((o, i) => (i ? [";", ...o] : o));
+  private setupCommands(): string[][] {
+    return [...SERVER_OPTIONS, ...[...DROP_ENV].map((k) => ["set-environment", "-g", "-u", k])];
+  }
+
+  /**
+   * Applies the settings: in one round trip, or, if tmux refuses one (an option this version
+   * doesn't know), one at a time, the refused ones skipped and logged. A terminal without one of
+   * them still works.
+   */
+  private async configure() {
+    const cmds = this.setupCommands();
+    const all = await this.run(cmds.flatMap((o, i) => (i ? [";", ...o] : o)));
+    if (all.code !== 0) {
+      for (const c of cmds) {
+        const r = await this.run(c);
+        if (r.code !== 0) this.logLine(`tmux refused \`${c.join(" ")}\` (${(r.stderr || r.stdout).trim() || `exit ${r.code}`}); going on without it`);
+      }
+    }
+    this.configured = true;
   }
 
   /**
@@ -164,16 +183,14 @@ export class Tmux {
     const prev = this.starting;
     const mine = (async () => {
       await prev?.catch(() => {});
-      if (await this.running()) {
-        // Up already (it outlived the runner, or an older runner started it): configured once.
-        if (!this.configured) await this.must(this.serverSetup());
-        this.configured = true;
-        return;
+      if (!(await this.running())) {
+        const argv = this.argv("start-server", ";", "set", "-g", "exit-empty", "off");
+        const r = await this.exec(this.wrapStart ? this.wrapStart(argv) : argv);
+        if (r.code !== 0) throw new Error(`tmux start-server: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
+        this.configured = false;
       }
-      const argv = this.argv("start-server", ";", ...this.serverSetup());
-      const r = await this.exec(this.wrapStart ? this.wrapStart(argv) : argv);
-      if (r.code !== 0) throw new Error(`tmux start-server: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
-      this.configured = true;
+      // Up already (it outlived the runner, or an older runner started it): configured once.
+      if (!this.configured) await this.configure();
     })();
     this.starting = mine;
     return mine;

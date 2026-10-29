@@ -4,7 +4,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanEnv, projectKey, shellName, Tmux, tuiName } from "./tmux";
+import { cleanEnv, projectKey, SERVER_OPTIONS, shellName, Tmux, tuiName } from "./tmux";
 
 const tmux = new Tmux({ socket: `tether-test-${process.pid}` });
 const dir = mkdtempSync(join(tmpdir(), "tether-tmux-"));
@@ -95,4 +95,21 @@ test("two sessions started at once share one server", async () => {
   await Promise.all([1, 2, 3].map((n) => tmux.create({ name: `sh-race-${n}`, cwd: dir, argv: ["sh"], tags: { kind: "shell", project: dir, n: String(n) } })));
   expect((await tmux.list()).map((t) => t.name).sort()).toEqual(["sh-race-1", "sh-race-2", "sh-race-3"]);
   for (const n of [1, 2, 3]) await tmux.kill(`sh-race-${n}`);
+});
+
+test("an option this tmux refuses is skipped and logged; the rest apply and terminals open", async () => {
+  await tmux.killServer();
+  const logged: string[] = [];
+  SERVER_OPTIONS.push(["set", "-g", "no-such-option-tether", "1"]);
+  try {
+    const t = new Tmux({ socket: tmux.socket, log: (l) => logged.push(l) });
+    await t.create({ name: "sh-opt-1", cwd: dir, argv: ["sh"], tags: { kind: "shell", project: dir, n: "1" } });
+    expect(await t.has("sh-opt-1")).toBe(true);
+    expect(logged.join("\n")).toContain("no-such-option-tether");
+    expect(Bun.spawnSync(t.argv("show-options", "-gv", "window-size")).stdout.toString().trim()).toBe("latest");
+    expect(Bun.spawnSync(t.argv("show-options", "-gv", "status")).stdout.toString().trim()).toBe("off");
+    await t.killServer();
+  } finally {
+    SERVER_OPTIONS.pop();
+  }
 });

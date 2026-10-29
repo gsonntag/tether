@@ -39,6 +39,8 @@ export function hookSocketPath(wanted: string, log: (l: string) => void = consol
 export interface HookReport {
   /** the Tether session the TUI was launched for */
   sessionId: string;
+  /** the tmux session of the TUI that reported (exact even after /clear moved it on) */
+  tui?: string;
   /** Claude's hook event: UserPromptSubmit, Notification, PostToolUse, Stop, SessionStart, SessionEnd */
   event: string;
   /** the session id Claude reports (it changes with /clear) */
@@ -56,8 +58,8 @@ export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Notification", 
 export const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /** The shell command a hook runs: POST its stdin to the runner's socket, never failing the hook. */
-export function hookCommand(socketPath: string, sessionId: string, curl = Bun.which("curl")): string {
-  const url = `http://tether/hook?s=${encodeURIComponent(sessionId)}`;
+export function hookCommand(socketPath: string, sessionId: string, curl = Bun.which("curl"), tui?: string): string {
+  const url = `http://tether/hook?s=${encodeURIComponent(sessionId)}${tui ? `&t=${encodeURIComponent(tui)}` : ""}`;
   if (curl) return `${shq(curl)} -s -m 3 --unix-socket ${shq(socketPath)} -X POST -H 'content-type: application/json' --data-binary @- ${shq(url)} >/dev/null 2>&1; exit 0`;
   // No curl: Bun itself (the runner's own binary) does the same.
   const js = `await fetch(${JSON.stringify(url)},{method:"POST",unix:${JSON.stringify(socketPath)},body:await Bun.stdin.text()}).catch(()=>{})`;
@@ -72,20 +74,21 @@ export function hookCommand(socketPath: string, sessionId: string, curl = Bun.wh
 export const HOOK_TIMEOUT_S = 15;
 
 /** The `--settings` JSON that adds Tether's hooks to one launch. */
-export function hookSettings(socketPath: string, sessionId: string, curl?: string | null): string {
-  const command = hookCommand(socketPath, sessionId, curl === undefined ? Bun.which("curl") : curl);
+export function hookSettings(socketPath: string, sessionId: string, curl?: string | null, tui?: string): string {
+  const command = hookCommand(socketPath, sessionId, curl === undefined ? Bun.which("curl") : curl, tui);
   const hooks = Object.fromEntries(HOOK_EVENTS.map((e) => [e, [{ hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_S }] }]]));
   return JSON.stringify({ hooks });
 }
 
 /** Reads a hook's POST into a report (null: not one). */
-export function parseHook(sessionId: string | null, body: unknown): HookReport | null {
+export function parseHook(sessionId: string | null, body: unknown, tui?: string | null): HookReport | null {
   if (!sessionId || typeof body !== "object" || body === null) return null;
   const b = body as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 2000) : undefined);
   const event = str(b.hook_event_name);
   if (!event) return null;
   const r: HookReport = { sessionId, event };
+  if (tui) r.tui = tui;
   const nativeId = str(b.session_id);
   if (nativeId) r.nativeId = nativeId;
   const nt = str(b.notification_type);
@@ -123,7 +126,7 @@ export class HookServer {
         const url = new URL(req.url);
         if (req.method !== "POST" || url.pathname !== "/hook") return new Response("not found", { status: 404 });
         const body = await req.json().catch(() => null);
-        const r = parseHook(url.searchParams.get("s"), body);
+        const r = parseHook(url.searchParams.get("s"), body, url.searchParams.get("t"));
         if (r) {
           try {
             this.onReport(r);

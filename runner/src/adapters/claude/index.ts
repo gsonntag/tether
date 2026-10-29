@@ -4,7 +4,7 @@
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import type { Adapter, Driver, QuitStep, StartOpts } from "../../core/adapter";
+import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
 import { claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
@@ -29,16 +29,48 @@ export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, {
  */
 export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
 
+/** A horizontal rule of Claude's prompt box. */
+const RULE = /^\s*[─━]{8,}/;
+/** The prompt box's input line ("❯ " and whatever is typed), not a selection ("❯ 1. Yes"). */
+const INPUT = /^\s*❯(?!\s*\d+\.)(\s|$)/;
 /**
- * Claude's TUI at its prompt with nothing going on: a "❯" input line, no spinner line ("✻ Brewing…
- * (12s · esc to interrupt)"), no dialog (a permission prompt, a picker). Verified on 2.1.312.
+ * A spinner line: one glyph, then a word or more ending in "…", with or without the "(16s · ↓ 213
+ * tokens)" tail: "✻ Brewing…", "· Determining… (running PreToolUse hook · 16s)", "✻ Compacting
+ * conversation…", and a tool still running ("⎿  Waiting…"). The done line ("✻ Churned for 49s") has
+ * no "…".
  */
-export function claudeScreenIdle(screen: string): boolean {
-  if (/esc to interrupt/i.test(screen)) return false;
-  if (/…\s*\(\d/.test(screen)) return false;
-  if (/Do you want to|Esc to cancel|Enter to confirm|Enter to select/i.test(screen)) return false;
-  return /^\s*❯/m.test(screen);
+const SPINNER = /^\s*[^\s\w"'`(\[]\s+\S[^\n]*…/;
+/** A selection list (permission prompts, plan approval, pickers) and dialogs' own footers. */
+const ASKING = /^\s*❯\s*\d+\.\s|Esc to cancel|Enter to confirm|Enter to select|Enter to set|Would you like to|Do you want to/m;
+
+/**
+ * Reads Claude's TUI (verified on 2.1.312, at 53 to 120 columns). Idle only on a positive sign: the
+ * prompt box at the bottom (a dialog replaces it) with no spinner line above it and nothing saying
+ * it works ("esc to interrupt" only shows on wide screens). Anything not recognized is `unknown`,
+ * never idle.
+ */
+export function claudeScreen(screen: string): ScreenRead {
+  const lines = screen.replace(/\s+$/, "").split("\n");
+  // The prompt box: a rule, the input line(s), a rule; the last one on screen.
+  let box = -1;
+  for (let i = lines.length - 1; i > 0 && box < 0; i--) {
+    if (!INPUT.test(lines[i]!) || !RULE.test(lines[i - 1]!)) continue;
+    for (let k = i + 1; k < Math.min(lines.length, i + 20); k++) if (RULE.test(lines[k]!)) {
+      box = i;
+      break;
+    }
+  }
+  if (box < 0) return { state: ASKING.test(screen) ? "asking" : "unknown", body: screen };
+  const above = lines.slice(0, box - 1);
+  const body = above.join("\n");
+  // Just above the box: the spinner, the todo list under it, tips.
+  const near = above.slice(-15);
+  if (/esc to interrupt/i.test(screen) || near.some((l) => SPINNER.test(l))) return { state: "busy", body };
+  return { state: "idle", body };
 }
+
+/** Whether the screen shows Claude idle at its prompt (see claudeScreen). */
+export const claudeScreenIdle = (screen: string) => claudeScreen(screen).state === "idle";
 
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;
@@ -151,7 +183,7 @@ export const claudeAdapter: Adapter = {
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
-    if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId));
-    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, idle: claudeScreenIdle };
+    if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui));
+    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, screen: claudeScreen };
   },
 };
