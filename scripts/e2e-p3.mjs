@@ -360,9 +360,8 @@ const steps = {
     const d = await page(desktop, session);
     await openPanel(d);
     await d.locator(".t-term-panel").getByRole("button", { name: "New shell" }).click();
-    const tab = d.locator(".t-term-tab[aria-selected=true]");
-    await tab.waitFor();
-    if (!/^Shell \d+/.test(await tab.innerText())) fail(`tab says ${await tab.innerText()}`);
+    // The new shell's tab comes to the front.
+    await d.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const shellId = await d.evaluate(() => [...globalThis.__tetherTerms.keys()].find((k) => k.startsWith("sh-")));
     await waitScreen(d, shellId, /\$ *$|# *$|> *$/m, "a shell prompt", 15_000);
     await typeInTerm(d, `python3 -m http.server ${HTTP_PORT} --bind 127.0.0.1`);
@@ -392,7 +391,7 @@ const steps = {
     // Ctrl-C from the key bar stops it; × closes the shell.
     await ph.getByRole("button", { name: "Control C", exact: true }).tap();
     await waitScreen(ph, shellId, /KeyboardInterrupt|\^C/, "Ctrl-C reached the server");
-    await ph.locator(".t-term-x").first().tap();
+    await ph.getByRole("button", { name: `Close shell ${shellId.split("-").pop()}`, exact: true }).tap();
     for (let i = 0; i < 20 && tmux("has-session", "-t", `=${shellId}`).status === 0; i++) await sleep(250);
     if (tmux("has-session", "-t", `=${shellId}`).status === 0) fail("the shell is still there after ×");
     ok(`a project shell ran python3 -m http.server; it kept serving after the panel closed${RESTART ? " and after a runner restart" : ""}; the phone reopened it (tab "python3"), ^C stopped it and × closed it`);
