@@ -179,6 +179,7 @@ describe("handoff (Claude)", () => {
     // Held, not discarded.
     expect(st.queue.map((q) => q.text)).toEqual(["later"]);
     expect(st.queueHeld).toBe(true);
+    expect(st.queueHeldBy).toBe("terminal");
   });
 
   test("a stored session opens straight into the terminal; a second device attaches to the same TUI", async () => {

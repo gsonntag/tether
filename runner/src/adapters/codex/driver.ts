@@ -65,6 +65,8 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
 export class CodexDriver implements Driver {
   readonly stream: CodexStream;
   private closed = false;
+  /** a turn/start went out just now: its turn/started may not have arrived yet */
+  private starting = false;
   /** open requests by the daemon's request id: aborted when another client answers */
   private asks = new Map<string, AbortController>();
   private defaultModel?: string;
@@ -218,7 +220,8 @@ export class CodexDriver implements Driver {
     if (this.closed) throw new Error("This Codex session isn't connected.");
     this.sink.state({ status: "running", error: undefined });
     try {
-      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments) });
+      this.starting = true;
+      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments) }).finally(() => setTimeout(() => (this.starting = false), 5000));
       this.materialized = true;
     } catch (e: any) {
       this.sink.state({ status: "idle" });
@@ -231,7 +234,10 @@ export class CodexDriver implements Driver {
   }
 
   private async steerTurn(threadId: string, text: string, attachments: Attachment[] = []) {
-    const turnId = threadId === this.nativeId ? this.stream.main.turnId : this.stream.child(threadId)?.turnId;
+    const current = () => (threadId === this.nativeId ? this.stream.main.turnId : this.stream.child(threadId)?.turnId);
+    // A turn Tether just started: the daemon says turn/started a moment later (slower when busy).
+    for (let i = 0; !current() && this.starting && i < 50; i++) await Bun.sleep(100);
+    const turnId = current();
     if (!turnId) throw new Error("Nothing is running to steer. Send it as a new message instead.");
     await this.rpc.call("turn/steer", { threadId, input: input(text, attachments), expectedTurnId: turnId });
   }

@@ -360,6 +360,7 @@ const steps = {
     await sleep(2000);
     await composer(a).fill("Reply with exactly: HELD");
     await composer(a).press("Tab");
+    await a.locator(".t-queued", { hasText: "HELD" }).waitFor();
     await composer(a).press("Escape");
     await waitState(a, (s) => s.status === "idle" && s.queueHeldBy === "stopped", "held after Stop", 30_000);
     await a.locator(".t-queue", { hasText: "Paused after Stop" }).waitFor();
@@ -392,9 +393,7 @@ const steps = {
     await a.locator(".t-queue", { hasText: "back from the terminal" }).waitFor();
     await sleep(4000);
     if ((await liveState(a)).queue.length !== 1) fail("the queue went out into the terminal");
-    // Back to Tether: the panel closes first so the banner's button shows.
-    await a.locator(".t-chip-term").click();
-    await button(a, "Back to Tether").click();
+    await button(a, "Back to Tether").first().click();
     await waitState(a, (s) => s.mode === "live" && s.queue.length === 0, "back live and the queue sent", 90_000);
     await a.locator(".t-msg.user .t-bubble", { hasText: "AFTER-TERMINAL" }).waitFor({ timeout: 30_000 });
     await idle(a);
