@@ -1,0 +1,107 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { LiveState, Msg } from "../../../../shared/transcript";
+import type { Sink, SubagentStart, TranscriptEvent } from "../../core/adapter";
+import { Transcript } from "../../core/transcript";
+import { ClaudeStream } from "./stream";
+
+const fixture = (name: string) =>
+  readFileSync(join(import.meta.dir, "fixtures", name), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+
+/** A sink that keeps a transcript and state the way the core does, and records subagents. */
+class TestSink implements Sink {
+  t = new Transcript();
+  st: Partial<LiveState> = {};
+  events: TranscriptEvent[] = [];
+  statuses: string[] = [];
+  children = new Map<string, { start: SubagentStart; sink: TestSink }>();
+  ended_ = false;
+  event(e: TranscriptEvent) {
+    this.events.push(e);
+    this.t.apply(e);
+  }
+  message(id: string) {
+    return this.t.get(id);
+  }
+  state(p: Partial<LiveState>) {
+    if (p.status && p.status !== this.st.status) this.statuses.push(p.status);
+    this.st = { ...this.st, ...p };
+  }
+  async request() {
+    return { allow: true as const };
+  }
+  subagent(s: SubagentStart) {
+    const sink = new TestSink();
+    this.children.set(s.nativeId, { start: s, sink });
+    return sink;
+  }
+  ended() {
+    this.ended_ = true;
+  }
+}
+
+function replay(name: string, nativeId = "S") {
+  const sink = new TestSink();
+  let reloads = 0;
+  const s = new ClaudeStream(sink, { nativeId, reload: () => reloads++ });
+  for (const m of fixture(name)) s.handle(m);
+  return { sink, stream: s, reloads };
+}
+
+const texts = (m: Msg) => m.parts.map((p) => (p.type === "tool" ? `tool:${p.name}:${p.status}` : `${p.type}:${(p as any).text}`));
+
+test("a reply streams into one message per API message, with final blocks merged", () => {
+  const { sink } = replay("reply.jsonl");
+  const msgs = sink.t.messages;
+  expect(msgs.map((m) => m.id.slice(0, 4))).toEqual(["msg_", "msg_"]);
+  const [first, second] = msgs;
+  expect(first!.parts.map((p) => p.type)).toEqual(["thinking", "text", "tool"]);
+  const read = first!.parts[2] as any;
+  expect(read).toMatchObject({ name: "Read", kind: "read", status: "done" });
+  expect(read.path).toContain("math.ts");
+  expect(read.output).toContain("export const add");
+  expect(texts(second!).at(-1)).toMatch(/^text:.*add/s);
+  expect(msgs.every((m) => !m.streaming)).toBe(true);
+  expect(first!.model).toBe("claude-haiku-5-5");
+  // Streaming happened: deltas came before the final blocks.
+  expect(sink.events.filter((e) => e.type === "delta").length).toBeGreaterThan(10);
+  expect(sink.st).toMatchObject({ modelResolved: "claude-haiku-5-5", permissionMode: "bypassPermissions", status: "idle" });
+});
+
+test("an interrupted turn ends with an Interrupted notice and no error", () => {
+  const { sink } = replay("interrupt.jsonl");
+  const msgs = sink.t.messages;
+  expect(msgs.at(-1)).toMatchObject({ role: "notice", level: "info", parts: [{ type: "text", text: "Interrupted" }] });
+  expect(msgs.some((m) => m.level === "error")).toBe(false);
+  expect((msgs[0]!.parts.find((p) => p.type === "text") as any).text.length).toBeGreaterThan(20);
+  expect(sink.statuses).toEqual(["running", "idle"]);
+});
+
+test("a subagent becomes a child with its own exact turns; the main turn stays running until it ends", () => {
+  const { sink, stream } = replay("subagent.jsonl", "S");
+  expect(sink.children.size).toBe(1);
+  const [[nativeId, child]] = [...sink.children];
+  expect(nativeId).toMatch(/^S\/[0-9a-f]+$/);
+  expect(child!.start).toMatchObject({ title: "Count lines in two files", agentType: "general-purpose" });
+  expect(child!.start.prompt).toContain("wc -l");
+  // The parent's Agent card is the call that started it.
+  const agentCall = sink.t.messages.flatMap((m) => m.parts).find((p) => p.type === "tool" && p.name === "Agent") as any;
+  expect(agentCall.id).toBe(child!.start.parentToolId);
+  expect(agentCall.kind).toBe("task");
+  // The child's transcript: its Bash call with the result, then its report.
+  const cm = child!.sink.t.messages;
+  const bash = cm.flatMap((m) => m.parts).find((p) => p.type === "tool") as any;
+  expect(bash).toMatchObject({ name: "Bash", kind: "shell", status: "done", command: "wc -l README.md math.ts" });
+  expect(bash.output).toContain("4 total");
+  expect(texts(cm.at(-1)!).join(" ")).toMatch(/README|math/);
+  expect(child!.sink.ended_).toBe(true);
+  // Main thread: never idle between the first result and the subagent's end.
+  expect(sink.statuses).toEqual(["running", "idle"]);
+  expect(stream.running.size).toBe(0);
+  // No subagent message leaked into the main transcript.
+  expect(sink.t.messages.some((m) => cm.some((c) => c.id === m.id))).toBe(false);
+});

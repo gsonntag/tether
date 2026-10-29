@@ -4,6 +4,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import pkg from "../package.json";
+import { claudeAdapter } from "./adapters/claude";
 import { detectHarnesses } from "./adapters/detect";
 import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { createRunner } from "./core/runner";
@@ -27,6 +28,8 @@ const runner = createRunner({
   name: displayName(config),
   version: pkg.version,
   detectHarnesses: () => detectHarnesses(),
+  // Codex arrives in P4.
+  adapters: [claudeAdapter],
 });
 
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
@@ -40,9 +43,13 @@ console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runn
 console.log(`harnesses: ${(await runner.harnesses()).map((h) => `${h.id} ${h.version}`).join(", ") || "none found"}`);
 runner.start();
 
+let stopping = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => {
+  process.on(sig, async () => {
+    if (stopping) process.exit(1); // a second Ctrl-C doesn't wait
+    stopping = true;
     stopModules();
-    runner.stop();
+    // Live sessions' harnesses are closed so they flush; a hung one doesn't hold the exit up.
+    await Promise.race([runner.stop(), Bun.sleep(5000)]);
     process.exit(0);
   });
