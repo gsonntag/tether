@@ -30,7 +30,14 @@ const ok = (msg) => console.log(`ok  ${msg}`);
 const fail = (msg) => {
   throw new Error(msg);
 };
-const transcriptText = (p) => p.$$eval(".t-msg", (els) => els.map((e) => e.innerText.trim()).join("\n---\n"));
+// The open session's data in the page's sync model (the DOM holds only what's on screen, which
+// differs by screen size), with times dropped.
+const transcriptText = (p) =>
+  p.evaluate(async () => {
+    const { useStore } = await import("/src/store.ts");
+    const views = Object.values(useStore.getState().views);
+    return JSON.stringify(views.map((v) => v.window.messages.map(({ ts, ...m }) => m)));
+  });
 const noOverflow = async (p, where) => {
   const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   if (w > 1) fail(`${where}: page scrolls sideways by ${w}px`);
@@ -108,16 +115,16 @@ const steps = {
   async reopen() {
     // Start a turn on desktop, close the tab, open on the phone mid-turn and see it stream.
     const a = await page(desktop, session);
-    await send(a, "Count from 1 to 40, one number per line, no other text.");
+    await send(a, "Count from 1 to 250, one number per line, no other text.");
     await a.waitForFunction(() => /\b3\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     await a.close();
     const b = await page(phone, session);
     await running(b, 15_000).catch(() => console.log("    (the turn ended before the phone opened)"));
     await idle(b);
-    await b.waitForFunction(() => /\b40\b/.test(document.body.innerText), null, { timeout: 30_000 });
+    await b.waitForFunction(() => /\b250\b/.test(document.body.innerText), null, { timeout: 30_000 });
     const c = await page(desktop, session);
     await idle(c);
-    await c.waitForFunction(() => /\b40\b/.test(document.body.innerText), null, { timeout: 30_000 });
+    await c.waitForFunction(() => /\b250\b/.test(document.body.innerText), null, { timeout: 30_000 });
     if ((await transcriptText(b)) !== (await transcriptText(c))) fail("phone and reopened desktop differ after the turn");
     ok("closed the desktop tab mid-turn; the phone picked it up and both match after");
     await b.close();
@@ -175,6 +182,66 @@ const steps = {
     ok(`paged a long session on the phone: saw ${ids.size} messages, ${dom} in the DOM at once`);
     await p.close();
   },
+  async phone() {
+    // Everything from the phone: send with the button (Enter is a newline there), follow the bottom.
+    const p = await page(phone, session);
+    await p.locator(".t-msg").first().waitFor();
+    await composer(p).fill("Count from 1 to 80, one number per line, no other text.");
+    await composer(p).press("Enter");
+    if (!(await composer(p).inputValue()).includes("\n")) fail("Enter on the phone should add a newline");
+    await composer(p).fill("Count from 1 to 80, one number per line, no other text.");
+    await p.getByRole("button", { name: "Send" }).click();
+    await running(p);
+    const gaps = [];
+    for (let i = 0; i < 12; i++) {
+      await p.waitForTimeout(400);
+      gaps.push(await p.locator(".t-scroll").evaluate((e) => Math.round(e.scrollHeight - e.scrollTop - e.clientHeight)));
+    }
+    await idle(p);
+    await p.waitForTimeout(300);
+    const end = await p.locator(".t-scroll").evaluate((e) => Math.round(e.scrollHeight - e.scrollTop - e.clientHeight));
+    if (end > 4 || gaps.some((g) => g > 80)) fail(`phone didn't follow the bottom: gaps while streaming ${gaps.join(",")}, at the end ${end}`);
+    await noOverflow(p, "phone session after a turn");
+    await shot(p, "phone-follow");
+    ok(`phone sent with the button and followed the bottom (gaps while streaming: ${gaps.join(",")}; at the end: ${end})`);
+    await p.close();
+  },
+  async scrollup() {
+    // Scrolled up while Claude streams: the view stays put, and Jump to latest brings it back.
+    const p = await page(phone, session);
+    await p.locator(".t-msg").first().waitFor();
+    await composer(p).fill("Count from 1 to 120, one number per line, no other text.");
+    await p.getByRole("button", { name: "Send" }).click();
+    await p.waitForFunction(() => /\b10\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
+    await p.locator(".t-scroll").evaluate((e) => (e.scrollTop -= 400));
+    const at = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
+    await p.waitForTimeout(1500);
+    const later = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
+    if (Math.abs(later - at) > 4) fail(`scrolled-up view moved from ${at} to ${later}`);
+    await p.getByRole("button", { name: "Jump to latest" }).click();
+    await idle(p);
+    await p.waitForTimeout(300);
+    const end = await p.locator(".t-scroll").evaluate((e) => Math.round(e.scrollHeight - e.scrollTop - e.clientHeight));
+    if (end > 4) fail(`after Jump to latest the view is ${end}px from the bottom`);
+    ok("scrolled up mid-stream: the view stayed put; Jump to latest followed the rest to the bottom");
+    await p.close();
+  },
+  async compacted() {
+    const id = process.env.COMPACTED_SESSION;
+    if (!id) return console.log("skip compacted (set COMPACTED_SESSION and COMPACTED_FIRST)");
+    const p = await page(phone, `${BASE}/#/s/tether-dev/${encodeURIComponent(id)}`);
+    await p.locator(".t-msg").first().waitFor({ timeout: 30_000 });
+    const first = process.env.COMPACTED_FIRST ?? "";
+    for (let i = 0; i < 200; i++) {
+      if (await p.getByText(first, { exact: false }).count()) break;
+      await p.locator(".t-scroll").evaluate((e) => (e.scrollTop = 0));
+      await p.waitForTimeout(150);
+    }
+    if (!(await p.getByText(first, { exact: false }).count())) fail("never reached the first message of the compacted session");
+    await shot(p, "compacted-top");
+    ok(`paged a compacted session back past both compactions to its first prompt ("${first}")`);
+    await p.close();
+  },
   async layout() {
     const p = await page(phone);
     await noOverflow(p, "phone home");
@@ -187,8 +254,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "twodev", "interrupt", "reopen", "subagent", "restart", "paging", "layout"]) {
-    if (!session && !["new", "paging", "layout"].includes(name) && process.env.SESSION) session = `${BASE}/#/s/tether-dev/${encodeURIComponent(process.env.SESSION)}`;
+  for (const name of pick.length ? pick : ["new", "stream", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "paging", "compacted", "layout"]) {
+    if (!session && !["new", "paging", "compacted", "layout"].includes(name) && process.env.SESSION) session = `${BASE}/#/s/tether-dev/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();
   }

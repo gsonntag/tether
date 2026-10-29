@@ -30,6 +30,9 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   const observed = useRef(new Set<HTMLElement>());
   const heights = useRef(new Map<string, number>());
   const stick = useRef(true);
+  /** the scroll position the last scroll event saw: only a move up means the reader left the bottom */
+  const lastTop = useRef(0);
+  const track = useRef<HTMLDivElement>(null);
   const anchor = useRef<Anchor | undefined>(undefined);
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const [view, setView] = useState({ top: 0, height: 800 });
@@ -103,18 +106,27 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   const onScroll = () => {
     const el = scroller.current!;
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stick.current = fromBottom < NEAR_BOTTOM;
+    // Content growing below (streaming text) also leaves a gap until it's pinned again; that isn't
+    // the reader scrolling up, so only a move up unsticks.
+    if (fromBottom < NEAR_BOTTOM) stick.current = true;
+    else if (el.scrollTop < lastTop.current - 1) stick.current = false;
+    lastTop.current = el.scrollTop;
     setAtBottom(stick.current);
     anchor.current = anchorAt(ids, offs, el.scrollTop - base());
     setView({ top: el.scrollTop, height: el.clientHeight });
     if (el.scrollTop < NEAR_TOP && w.hasOlder) void older();
   };
 
-  // The viewport's size (rotation, the keyboard on a phone, the composer growing).
+  // The viewport's size (rotation, the keyboard on a phone, the composer growing), and the content's:
+  // streaming markdown grows between renders, and the bottom is pinned again at once.
   useEffect(() => {
     const el = scroller.current!;
-    const ro = new ResizeObserver(() => setView({ top: el.scrollTop, height: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight;
+      setView({ top: el.scrollTop, height: el.clientHeight });
+    });
     ro.observe(el);
+    if (track.current) ro.observe(track.current);
     return () => ro.disconnect();
   }, []);
 
@@ -126,6 +138,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
 
   const jump = () => {
     stick.current = true;
+    lastTop.current = 0;
     setAtBottom(true);
     const el = scroller.current!;
     el.scrollTop = el.scrollHeight;
@@ -134,7 +147,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   return (
     <div className="t-scroll-wrap">
       <div className="t-scroll" ref={scroller} onScroll={onScroll} role="log" aria-label="Transcript" aria-live="off">
-        <div className="t-track">
+        <div className="t-track" ref={track}>
           {w.hasOlder && <div className="t-paging">{paging ? "Loading earlier messages…" : "Earlier messages"}</div>}
           <div ref={listTop} />
           <div style={{ height: offs[start] }} />
