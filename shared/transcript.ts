@@ -8,6 +8,15 @@ export const HARNESS_LABELS: Record<HarnessId, string> = {
   codex: "Codex",
 };
 
+/** The agent as a sentence names it: "Claude is working…", "Codex wants to run a command". */
+export const AGENT_NAMES: Record<HarnessId, string> = {
+  claude: "Claude",
+  codex: "Codex",
+};
+
+/** The agent's name for a session id (`codex:…` -> "Codex"). */
+export const agentOf = (sessionId: string | undefined): string => AGENT_NAMES[(sessionId?.split(":")[0] ?? "") as HarnessId] ?? "Claude";
+
 /**
  * What a harness does better or differently (SPEC §2.5, §6, §6a). The core and the UI branch only
  * on these, never on the harness id.
@@ -24,6 +33,11 @@ export interface HarnessCapabilities {
     stop: boolean;
     steer: "direct" | "via-parent" | false;
   };
+  /**
+   * The harness keeps sessions running itself, outside the runner (Codex's daemon): a turn running
+   * when the runner stopped goes on, and the runner rejoins it when it starts again.
+   */
+  persistent?: boolean;
 }
 
 // ---------- transcript ----------

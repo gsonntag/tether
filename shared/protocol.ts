@@ -115,6 +115,11 @@ export interface Ops {
   };
   /** starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI, then Enter (SPEC §9) */
   send: { args: { sessionId: string; text: string }; result: null };
+  /**
+   * A message into the running turn (capabilities.canSteer); on a subagent, into its own turn
+   * (capabilities.subagents.steer "direct"). It can't be taken back once the harness has it.
+   */
+  steer: { args: { sessionId: string; text: string }; result: null };
   /** stops the running turn; on a subagent, stops that subagent */
   interrupt: { args: { sessionId: string }; result: null };
   /** saved for the session and applied now when it is live, else when it next starts */
