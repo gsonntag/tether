@@ -67,7 +67,7 @@ const steps = {
     await selects.nth(0).selectOption("haiku");
     await selects.nth(1).selectOption("bypassPermissions");
     await shot(p, "new-dialog");
-    await p.getByRole("button", { name: "Create" }).click();
+    await p.getByRole("button", { name: "Create", exact: true }).click();
     await p.waitForURL(/#\/s\//, { timeout: 60_000 });
     session = p.url();
     if (!(await composer(p).evaluate((e) => e === document.activeElement))) fail("composer not focused after create");
