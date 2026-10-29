@@ -6,7 +6,7 @@
 //   SCRATCH         a scratch project folder (default ~/.local/share/tether-dev/projects/scratch)
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
-// Steps: new approve deny question multi subagent restart plan planApprove. Each real turn is small (Haiku).
+// Steps: new approve deny question multi subagent restart restartStop plan planApprove. Each real turn is small (Haiku).
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -87,9 +87,9 @@ const sessionId = () => decodeURIComponent(session.split("/").pop());
 
 const steps = {
   async new() {
-    for (const f of ["notes.txt", "sub.txt", "restart.txt", "denied.txt", "denied2.txt"]) rmSync(scratch(f), { force: true });
+    for (const f of ["notes.txt", "sub.txt", "restart.txt", "stop.txt", "denied.txt", "denied2.txt"]) rmSync(scratch(f), { force: true });
     const p = await page(desktop);
-    await p.getByRole("button", { name: "New session" }).first().click();
+    await p.getByRole("button", { name: "New session", exact: true }).first().click();
     await p.locator("#t-new-path").fill(SCRATCH);
     // Another runner may be connected: pick ours when the dialog asks.
     const runnerSelect = p.locator(".t-form select.t-select", { has: p.locator(`option[value="${RUNNER}"]`) });
@@ -97,7 +97,7 @@ const steps = {
     await p.waitForFunction(() => [...document.querySelectorAll(".t-form select option")].some((o) => o.value === "haiku"), null, { timeout: 30_000 });
     await p.locator(".t-form select.t-select", { has: p.locator('option[value="haiku"]') }).selectOption("haiku");
     await p.locator(".t-form select.t-select", { has: p.locator('option[value="acceptEdits"]') }).selectOption("default");
-    await p.getByRole("button", { name: "Create" }).click();
+    await p.getByRole("button", { name: "Create", exact: true }).click();
     await p.waitForURL(/#\/s\//, { timeout: 60_000 });
     session = p.url();
     const mode = await p.locator(".t-header").innerText();
@@ -254,16 +254,37 @@ const steps = {
     await card(a).waitFor({ state: "detached", timeout: 10_000 });
     if (!/after restart/.test(await waitFile("restart.txt", 120_000))) fail("restart.txt is wrong");
     await idle(a, 120_000);
-    ok("approved after the restart: the session resumed and Claude wrote restart.txt");
+    await a.getByText("From Tether, on your behalf").first().waitFor({ timeout: 10_000 });
+    if (await a.getByText(/AbortError/).count()) fail("the old Write card shows the SDK's abort error");
+    ok("approved after the restart: the session resumed with a message marked as Tether's, and Claude wrote restart.txt");
     await a.close();
     await b.close();
+  },
+
+  async restartStop() {
+    if (!RESTART) return console.log("skip restartStop (set RESTART_RUNNER)");
+    const p = await page(phone, session);
+    await composer(p).waitFor();
+    await composer(p).fill("Create a file stop.txt containing x, using the Write tool. Do nothing else.");
+    await p.getByRole("button", { name: "Send" }).click();
+    await card(p).waitFor({ timeout: 90_000 });
+    spawn("bash", ["-c", RESTART], { detached: true, stdio: "ignore" }).unref();
+    await p.getByText(/runner restarted while Claude was waiting/).waitFor({ timeout: 45_000 });
+    await card(p).waitFor({ timeout: 10_000 });
+    await p.getByRole("button", { name: "Stop", exact: true }).tap();
+    await card(p).waitFor({ state: "detached", timeout: 10_000 });
+    await idle(p, 10_000);
+    if (existsSync(scratch("stop.txt"))) fail("stop.txt was written");
+    ok("after a restart, Stop closes the restored request and leaves the session idle");
+    await p.close();
   },
 
   async plan() {
     const p = await page(desktop, session);
     await composer(p).waitFor();
     await p.getByRole("button", { name: /^Mode:/ }).click();
-    await p.getByRole("menuitemradio", { name: /^Plan/ }).click();
+    // Just after a runner restart the list of modes can take a while (Claude Code lists them).
+    await p.getByRole("menuitemradio", { name: /^Plan/ }).click({ timeout: 90_000 });
     await p.getByRole("button", { name: "Mode: Plan" }).waitFor({ timeout: 10_000 });
     await send(p, "Plan how to add a subtract function to math.ts, in at most three lines, then present the plan with ExitPlanMode. Don't implement it yet.");
     await card(p).waitFor({ timeout: 120_000 });
@@ -286,7 +307,8 @@ const steps = {
     const p = await page(desktop, session);
     await composer(p).waitFor();
     await p.getByRole("button", { name: /^Mode:/ }).click();
-    await p.getByRole("menuitemradio", { name: /^Plan/ }).click();
+    // Just after a runner restart the list of modes can take a while (Claude Code lists them).
+    await p.getByRole("menuitemradio", { name: /^Plan/ }).click({ timeout: 90_000 });
     await p.getByRole("button", { name: "Mode: Plan" }).waitFor({ timeout: 10_000 });
     await send(p, "Plan adding `export const subtract = (a: number, b: number) => a - b;` to math.ts, in one line, then present it with ExitPlanMode. Once approved, make exactly that edit and nothing else.");
     await card(p).locator(".t-req-plan").waitFor({ timeout: 120_000 });
@@ -327,7 +349,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "approve", "deny", "question", "multi", "subagent", "restart", "plan", "planApprove"]) {
+  for (const name of pick.length ? pick : ["new", "approve", "deny", "question", "multi", "subagent", "restart", "restartStop", "plan", "planApprove"]) {
     if (!session && name !== "new" && process.env.SESSION) session = `${BASE}/#/s/${RUNNER}/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();
