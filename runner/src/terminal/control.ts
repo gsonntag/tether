@@ -76,6 +76,8 @@ export class TerminalControl {
   private returning = new Map<string, Promise<void>>();
   /** TUIs that never reported SessionStart in time (the trust question, most likely) */
   private unconfirmed = new Set<string>();
+  /** a TUI's launch session -> the session it is on now (after /clear or /resume; hooks name the launch) */
+  private moved = new Map<string, string>();
   /** messages being typed into a TUI, per session: each text goes in with its Enter */
   private typing = new Map<string, Promise<void>>();
   /** new shells are numbered one at a time */
@@ -476,7 +478,9 @@ export class TerminalControl {
     // with /clear and /resume).
     const p = parseSessionId(r.sessionId);
     const now = p && r.nativeId ? makeId(p.harness, r.nativeId) : r.sessionId;
-    const id = this.tuis.has(now) ? now : r.sessionId;
+    let id = r.sessionId;
+    for (let i = 0; i < 100 && this.moved.has(id); i++) id = this.moved.get(id)!;
+    if (this.tuis.has(now) && this.tuis.get(now) === this.tuis.get(id)) id = now;
     const s = this.o.core.sessions.get(id);
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
@@ -530,6 +534,11 @@ export class TerminalControl {
     } else if (n.driver || n.starting) await this.o.live.release(n);
     this.tuis.delete(old.id);
     this.unconfirmed.delete(old.id);
+    // Its hooks go on naming the session it was launched for: remember where that is now.
+    const launch = [...this.moved].find(([, v]) => v === old.id)?.[0] ?? old.id;
+    this.moved.set(launch, newId);
+    if (launch !== old.id) this.moved.delete(old.id);
+    await this.o.tmux.tag(name, "launch", launch).catch(() => {});
     await this.o.tmux.tag(name, "session", newId).catch(() => {});
     this.adopt(n, name);
     await core.load(old).catch(() => {});
@@ -569,6 +578,7 @@ export class TerminalControl {
           continue;
         }
       }
+      if (t.launchedFor && t.launchedFor !== s.id) this.moved.set(t.launchedFor, s.id);
       this.adopt(s, t.name, t.returnWhenIdle);
       this.log(`readopted the terminal of ${s.id}`);
     }

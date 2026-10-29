@@ -51,6 +51,7 @@ class FakeTmux extends Tmux {
     if (!t) throw new Error(`no session ${name}`);
     if (key === "session") t.sessionId = value;
     if (key === "return") t.returnWhenIdle = value === "1" ? true : undefined;
+    if (key === "launch") t.launchedFor = value;
   }
   /** what went in, in order */
   log: string[] = [];
@@ -448,9 +449,23 @@ describe("review round 1", () => {
     expect(own.name).toMatch(/^t-claude-s1-/);
     expect(own.argv).toEqual(["tui", "--resume", "s1"]);
     await term.end("claude:s1");
-    await term.end("claude:s2");
-    expect(state(core, "claude:s2").mode).toBe("live");
-    expect(adapter.drivers.map((d) => d.nativeId)).toEqual(["s1", "s2"]);
+    // A second /clear (its hooks still name claude:s1), and a runner restart: still followed.
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "s3", source: "clear" });
+    await until(() => core.sessions.get("claude:s3")?.state.mode === "terminal");
+    expect(state(core, "claude:s2")).toMatchObject({ mode: "stored", continuedIn: "claude:s3" });
+    expect(tmux.sessions.get("t-claude-s1")).toMatchObject({ sessionId: "claude:s3", launchedFor: "claude:s1" });
+    const second = setup({ tmux, adapter, prefsFile: undefined });
+    await second.term.readopt();
+    second.term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "s4", source: "clear" });
+    await until(() => second.core.sessions.get("claude:s4")?.state.mode === "terminal");
+    second.term.report({ sessionId: "claude:s1", event: "UserPromptSubmit", nativeId: "s4" });
+    expect(state(second.core, "claude:s4").status).toBe("running");
+    // Back to Tether resumes the session the TUI is on now.
+    second.term.report({ sessionId: "claude:s1", event: "Stop", nativeId: "s4" });
+    adapter.addStored("s4", [{ id: "y", role: "user", ts: 1, parts: [{ type: "text", text: "x" }] }]);
+    await second.term.end("claude:s4");
+    expect(state(second.core, "claude:s4").mode).toBe("live");
+    expect(adapter.drivers.at(-1)!.nativeId).toBe("s4");
   });
 
   test("Back to Tether waiting for the turn survives a runner restart", async () => {

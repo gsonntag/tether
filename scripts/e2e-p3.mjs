@@ -375,7 +375,7 @@ const steps = {
     await p.locator(".t-term-panel").waitFor();
     await send(p, "Reply with just the word fresh.");
     await waitState(p, (s) => s.status === "idle", "idle", 90_000);
-    await p.getByText("fresh", { exact: true }).first().waitFor({ timeout: 60_000 });
+    await p.getByText(/^fresh\.?$/i).first().waitFor({ timeout: 60_000 });
     const q = await page(desktop, session);
     await q.locator(".t-msg.notice", { hasText: "continued in another session after /clear" }).last().waitFor({ timeout: 20_000 });
     const st = await liveState(q);
