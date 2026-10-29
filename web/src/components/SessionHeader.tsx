@@ -10,6 +10,7 @@ import type { Row } from "../sessionList";
 import { loadModels } from "../store";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { StatusDot } from "./SessionRow";
+import { SubagentChips } from "./SubagentChips";
 
 export function SessionHeader({ runnerId, session, state, models, children }: { runnerId: string; session: SessionSummary; state: LiveState; models?: ModelList; children: Row[] }) {
   const [error, setError] = useState<string>();
@@ -68,13 +69,7 @@ export function SessionHeader({ runnerId, session, state, models, children }: { 
             />
           </>
         )}
-        {children.map((c) => (
-          <button key={c.id} type="button" className="t-chip" title={c.title} onClick={() => openSession(runnerId, c.id)}>
-            <StatusDot status={c.status} />
-            <span className="t-chip-key">Subagent</span>
-            <span>{c.title || c.agentType || "Untitled"}</span>
-          </button>
-        ))}
+        <SubagentChips runnerId={runnerId} children={children} />
       </div>
       {error && <div className="t-inline-status error">{error}</div>}
     </div>
