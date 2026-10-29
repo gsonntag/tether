@@ -7,10 +7,10 @@
 //   SCRATCH         a scratch project folder Claude already trusts (default ~/.local/share/tether-dev-p3/projects/scratch)
 //   TMUX_SOCKET     the dev runner's tmux socket (default tether-dev-p3)
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
-//   HTTP_PORT       a free port for the shell's dev server (default 8793)
+//   HTTP_PORT       a free port for the shell's dev server (default 8899)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new keep midturn model phone composer back restart needsyou shell exit fresh
+//   new keep midturn model phone composer back restart needsyou clear shell exit fresh
 // Each real turn is small (Haiku).
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -23,7 +23,7 @@ const SOCKET = process.env.TMUX_SOCKET ?? "tether-dev-p3";
 const SHOTS = process.env.SHOTS ?? "/tmp/tether-e2e-p3";
 const SCRATCH = process.env.SCRATCH ?? `${process.env.HOME}/.local/share/tether-dev-p3/projects/scratch`;
 const RESTART = process.env.RESTART_RUNNER;
-const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8793);
+const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8899);
 mkdirSync(SHOTS, { recursive: true });
 
 const browser = await chromium.launch();
@@ -62,7 +62,9 @@ const MOD = (name) => `(performance.getEntriesByType("resource").map((e) => e.na
 
 let session; // the session URL made in `new`
 const sessionId = () => decodeURIComponent(session.split("/").pop());
-const tuiName = () => `t-${sessionId().replace(/[^A-Za-z0-9_-]/g, "-")}`;
+// The TUI's tmux session keeps the name it started with, also after /clear moves it on.
+let tuiOf;
+const tuiName = () => tuiOf ?? `t-${sessionId().replace(/[^A-Za-z0-9_-]/g, "-")}`;
 
 /** The session's live state as the page has it. */
 const liveState = (p) =>
@@ -271,7 +273,8 @@ const steps = {
     const p = await page(desktop, session);
     await composer(p).waitFor();
     await send(p, "What is the code word? Reply with just the word, in lowercase.");
-    await waitState(p, (s) => s.status === "running", "running (UserPromptSubmit hook)", 30_000).catch(() => {});
+    await waitState(p, (s) => s.status === "running" && s.mode === "terminal", "running (UserPromptSubmit hook)", 30_000);
+    await p.locator(".t-term-banner", { hasText: "working" }).waitFor({ timeout: 10_000 });
     await waitState(p, (s) => s.status === "idle" && s.mode === "terminal", "idle again (Stop hook)", 90_000);
     await p.getByText("pelican", { exact: true }).first().waitFor({ timeout: 30_000 });
     ok("the composer typed into the TUI; hooks reported running then idle; the transcript (tailed from the store) shows Claude's answer");
@@ -340,6 +343,8 @@ const steps = {
     await waitState(p, (s) => s.status === "waiting", "waiting (Notification hook)", 90_000);
     await p.locator(".t-term-banner.waiting", { hasText: "Needs you in the terminal" }).waitFor();
     await p.locator(".t-row .t-needs").first().waitFor({ timeout: 10_000 });
+    // Text from the composer would answer the dialog: it's refused until the dialog is answered.
+    await p.locator('textarea[placeholder*="asking something in the terminal"]').waitFor({ timeout: 5_000 });
     const ph = await page(phone, session);
     await ph.locator(".t-term-banner.waiting").waitFor({ timeout: 20_000 });
     await shot(p, "needsyou-desktop");
@@ -352,6 +357,34 @@ const steps = {
     if (!existsSync(`${SCRATCH}/needs.txt`)) fail("needs.txt wasn't written");
     ok("Claude's permission prompt in the TUI showed as Needs you (row, banner, phone); approved with the phone's ⏎ key, the turn finished and the row cleared");
     await ph.close();
+    await p.close();
+  },
+
+  async clear() {
+    // /clear in the TUI: Tether follows the new session; the old one points on to it.
+    const old = sessionId();
+    const p = await page(desktop, session);
+    await openPanel(p);
+    await waitState(p, (s) => s.mode === "terminal" && s.status === "idle", "terminal mode, idle", 60_000);
+    await waitScreen(p, old, /❯/, "the TUI");
+    await typeInTerm(p, "/clear");
+    await p.waitForFunction((o) => decodeURIComponent(location.hash.split("/").pop()) !== o, old, { timeout: 30_000 });
+    const now = decodeURIComponent(p.url().split("/").pop());
+    tuiOf = `t-${old.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    await waitState(p, (s) => s.mode === "terminal", "the new session in terminal mode", 30_000);
+    await p.locator(".t-term-panel").waitFor();
+    await send(p, "Reply with just the word fresh.");
+    await waitState(p, (s) => s.status === "idle", "idle", 90_000);
+    await p.getByText("fresh", { exact: true }).first().waitFor({ timeout: 60_000 });
+    const q = await page(desktop, session);
+    await q.locator(".t-msg.notice", { hasText: "continued in another session after /clear" }).last().waitFor({ timeout: 20_000 });
+    const st = await liveState(q);
+    if (st.mode !== "stored") fail(`the old session is ${st.mode}`);
+    await q.locator(".t-msg.notice .t-link", { hasText: "Open it" }).last().click();
+    await q.waitForURL((u) => decodeURIComponent(u.toString().split("/").pop()) === now);
+    session = p.url();
+    ok(`/clear in the TUI: the view followed to ${now} (typing and hooks work there), the old session is stored with a notice linking to it`);
+    await q.close();
     await p.close();
   },
 

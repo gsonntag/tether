@@ -10,7 +10,7 @@ import { mkdirSync } from "node:fs";
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5180";
 const SHOTS = process.env.SHOTS ?? "/tmp/tether-e2e-p1";
-const SCRATCH = `${process.env.HOME}/.local/share/tether-dev/projects/scratch`;
+const SCRATCH = process.env.SCRATCH ?? `${process.env.HOME}/.local/share/tether-dev/projects/scratch`;
 const LONG = process.env.LONG_SESSION; // claude:<id> of a long stored session, for paging
 const RESTART = process.env.RESTART_RUNNER; // a command that restarts the dev runner
 mkdirSync(SHOTS, { recursive: true });
