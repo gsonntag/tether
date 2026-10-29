@@ -67,3 +67,9 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 | `TETHER_TOKEN` | `dev` | the runner's service token |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
 | `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
+
+## End-to-end check
+
+`scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
+local stack (vite on :5180; it starts and stops the server and runners itself):
+`PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p0.mjs`.

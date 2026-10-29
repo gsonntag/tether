@@ -136,7 +136,9 @@ function closed(wasOpen: boolean) {
 async function checkAuth() {
   try {
     const res = await fetch("/api/me", { credentials: "same-origin" });
-    if (res.status === 401) return authListeners.forEach((f) => f("signedOut"));
+    // Signed out: our 401, or Foliation's edge answering with its sign-in page instead.
+    const json = res.headers.get("content-type")?.includes("json");
+    if (res.status === 401 || (res.ok && (res.redirected || !json))) return authListeners.forEach((f) => f("signedOut"));
     if (!res.ok) return;
     const me = (await res.json()) as { allowed?: boolean };
     authListeners.forEach((f) => f(me.allowed ? "ok" : "notOwner"));
