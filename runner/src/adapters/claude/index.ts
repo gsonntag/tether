@@ -4,7 +4,7 @@
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import type { Adapter, Driver, StartOpts } from "../../core/adapter";
+import type { Adapter, Driver, QuitStep, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
 import { claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
@@ -12,6 +12,13 @@ import { readHistory } from "./history";
 import { pinStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
+import { hookSettings } from "../../terminal/hooks";
+
+/**
+ * Quitting Claude's TUI whatever it shows: Esc closes a dialog or stops a turn, Ctrl-C clears what
+ * is typed, then /exit (verified on 2.1.312 with the /model picker open and text in the box).
+ */
+export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { text: "/exit" }, { keys: ["Enter"] }];
 
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;
@@ -116,11 +123,14 @@ export const claudeAdapter: Adapter = {
 
   newId: () => randomUUID(),
 
-  // Terminal mode arrives in P3; this is its seam (SPEC §6, §8).
+  // Terminal mode (SPEC §8): Claude's own TUI, handed the session. `--settings` adds Tether's hooks
+  // for this launch only, so turn ends and "needs you" reach the runner (terminal/hooks.ts).
   terminalCommand(nativeId, _projectPath, opts) {
-    const argv = [CLAUDE_BIN ?? "claude", ...(nativeId ? ["--resume", nativeId] : ["--session-id", randomUUID()])];
+    const argv = [CLAUDE_BIN ?? "claude", ...(opts.fresh ? ["--session-id", nativeId] : ["--resume", nativeId])];
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);
+    if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
-    return { argv };
+    if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId));
+    return { argv, quit: CLAUDE_QUIT };
   },
 };

@@ -22,8 +22,19 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
+/**
+ * What terminal mode lends live control (terminal/control.ts sets it): in terminal mode a message is
+ * typed into the TUI and Stop presses Esc there (SPEC §8, §9); a new session can start in the TUI.
+ */
+export interface TerminalSeam {
+  send(s: Session, text: string): Promise<void>;
+  interrupt(s: Session): Promise<void>;
+  startIn(s: Session): Promise<void>;
+}
+
 export class LiveControl {
   private readonly idleMs: number;
+  terminal?: TerminalSeam;
   readonly desk: RequestDesk;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
@@ -39,11 +50,23 @@ export class LiveControl {
 
   // ---------------- ops ----------------
 
-  async newSession(args: { harness: HarnessId; projectPath: string } & StartOpts): Promise<{ sessionId: string }> {
+  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean } & StartOpts): Promise<{ sessionId: string }> {
     const a = this.core.adapter(args.harness);
     const folder = this.core.folder(args.projectPath);
+    if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
     const s = this.core.create(args.harness, a.newId(), folder, { model: args.model, effort: args.effort, permissionMode: args.permissionMode });
     this.core.touch(s);
+    if (args.terminal) {
+      // Its TUI creates it (SPEC §8): no SDK process at all.
+      try {
+        await this.terminal!.startIn(s);
+      } catch (e) {
+        this.core.book.remove([s.id]);
+        this.core.sessions.delete(s.id);
+        throw e;
+      }
+      return { sessionId: s.id };
+    }
     // Started now, so a problem (not signed in, …) shows before anything is typed. A failure is
     // already in the session's state; the session still opens.
     await this.ensureDriver(s).catch(() => {});
@@ -54,6 +77,8 @@ export class LiveControl {
     if (!text?.trim()) throw new Error("Type a message first.");
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("Subagents can't take messages yet. Message the main session instead.");
+    // The TUI drives: the message is typed there (SPEC §9).
+    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
     // Checked and claimed with no await in between, so two sends can't both start a turn.
     if (s.state.status !== "idle" || s.sending) throw new Error("Claude is still working. Stop it first, or wait for it to finish.");
     const me = {};
@@ -94,6 +119,7 @@ export class LiveControl {
       await parent.driver.stopSubagent(s.summary.nativeId);
       return;
     }
+    if (s.state.mode === "terminal" && this.terminal) return this.terminal.interrupt(s);
     // Whatever it asked is moot now (the harness stops waiting too).
     this.desk.stop(id);
     // Stopped while Claude is still starting: the message never goes out.
@@ -146,6 +172,29 @@ export class LiveControl {
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
     if (d) await apply(d);
+  }
+
+  /**
+   * Hands a live session over (to its TUI, SPEC §8 handoff): the driver closes so the harness
+   * flushes its store, its open requests are cancelled (the TUI asks again) and its subagents end.
+   * The mode is left to the caller.
+   */
+  async release(s: Session) {
+    const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
+    clearTimeout(s.idleTimer);
+    this.desk.cancel((_r, chain) => chain.at(-1) === s.id);
+    for (const c of this.core.sessions.values()) if (c.summary.parentSessionId === s.id && c.childRunning) this.childEnded(c);
+    if (!d) return;
+    // Its exit isn't news: onExit checks that it's still the session's driver.
+    if (s.driver === d) s.driver = undefined;
+    try {
+      await d.close();
+    } catch {}
+  }
+
+  /** Live again on the same session (Back to Tether, SPEC §8). */
+  resumeLive(s: Session): Promise<Driver> {
+    return this.ensureDriver(s);
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */
@@ -216,7 +265,7 @@ export class LiveControl {
     this.core.scheduleEvict(s);
   }
 
-  private setMode(s: Session, mode: LiveState["mode"], extra: Partial<LiveState> = {}) {
+  setMode(s: Session, mode: LiveState["mode"], extra: Partial<LiveState> = {}) {
     const from = s.state.mode;
     s.setState({ mode, ...extra });
     this.core.touch(s);
@@ -272,7 +321,7 @@ export class LiveControl {
     const bus = this.core.o.bus;
     const now = s.state.status;
     // Kept in runner.json, so a turn cut off by a restart is reported when the session reopens.
-    if (!s.summary.parentSessionId && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
+    if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error });

@@ -77,6 +77,11 @@ export class Connection {
     ws?.close(1001, "runner stopping");
   }
 
+  /** Bytes waiting in the socket's send buffer (a terminal stream that falls behind ends, attach.ts). */
+  buffered(): number {
+    return this.ws?.bufferedAmount ?? 0;
+  }
+
   /**
    * Sends on the current connection; false (and nothing sent) when there isn't one. Session events
    * are capped, and nothing over the frame limit ever goes out (shared/limits.ts).

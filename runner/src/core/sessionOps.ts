@@ -24,7 +24,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("fullPart", async (a) => core.fullPart(await core.open(str(a.sessionId, "sessionId")), str(a.msgId, "msgId"), optNum(a.part) ?? -1, optNum(a.offset)));
   ops.register("listModels", (a) => live.listModels(harness(a.harness), optStr(a.sessionId)));
   ops.register("newSession", (a) =>
-    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode) }),
+    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true }),
   );
   ops.register("send", async (a) => (await live.send(str(a.sessionId, "sessionId"), typeof a.text === "string" ? a.text : ""), null));
   ops.register("interrupt", async (a) => (await live.interrupt(str(a.sessionId, "sessionId")), null));

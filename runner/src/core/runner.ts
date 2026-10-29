@@ -14,6 +14,10 @@ import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { registerSessionOps } from "./sessionOps";
 import { SessionCore } from "./sessions";
+import type { SpawnPty } from "../terminal/attach";
+import { TerminalControl } from "../terminal/control";
+import { registerTerminalOps } from "../terminal/ops";
+import { systemdScopeWrap, Tmux, TMUX_SOCKET } from "../terminal/tmux";
 
 export interface RunnerOptions {
   url: string;
@@ -37,6 +41,11 @@ export interface RunnerOptions {
   policy?: PolicyStep[];
   /** session core tuning, for tests */
   core?: { discoverMs?: number; evictMs?: number; idleMs?: number };
+  /**
+   * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
+   * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
+   */
+  terminal?: false | { tmux?: Tmux; hookSocket?: string | null; spawn?: SpawnPty; pollMs?: number; quitTimeoutMs?: number; shell?: string };
 }
 
 export function createRunner(o: RunnerOptions) {
@@ -63,7 +72,7 @@ export function createRunner(o: RunnerOptions) {
     log: o.log,
     hello: helloInfo,
     onRpc: (op, args) => ops.handle(op, args),
-    onDetach: () => {}, // terminals arrive in P3
+    onDetach: (ids) => terminal?.detach(ids),
     onUnwatched: (sessionIds) => bus.emit("unwatched", { sessionIds }),
     // The server forgot every route with the old connection, so after a reconnect nobody watches
     // anything until browsers subscribe again: the core stops tails on `disconnected`.
@@ -87,6 +96,24 @@ export function createRunner(o: RunnerOptions) {
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs });
   registerSessionOps(ops, core, live);
+  const t = o.terminal || undefined;
+  const terminal =
+    t && (t.tmux || Bun.which("tmux"))
+      ? new TerminalControl({
+          core,
+          live,
+          tmux: t.tmux ?? new Tmux({ wrapStart: systemdScopeWrap(TMUX_SOCKET) }),
+          send: (m) => conn.send(m),
+          buffered: () => conn.buffered(),
+          hookSocket: t.hookSocket ?? null,
+          spawn: t.spawn,
+          pollMs: t.pollMs,
+          quitTimeoutMs: t.quitTimeoutMs,
+          shell: t.shell,
+          log: o.log,
+        })
+      : undefined;
+  registerTerminalOps(ops, terminal);
 
   const timer = setInterval(async () => {
     const before = JSON.stringify(await harnesses);
@@ -104,14 +131,18 @@ export function createRunner(o: RunnerOptions) {
     core,
     live,
     harnesses: () => harnesses,
-    start: () => {
+    terminal,
+    start: async () => {
       core.startDiscovery();
       void live.desk.restore();
+      // Before connecting, so the first summary already shows readopted terminals.
+      await terminal?.start();
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */
     stop: async () => {
       clearInterval(timer);
+      terminal?.stop();
       core.stop();
       await live.closeAll().catch(() => {});
       core.o.prefs.flush();

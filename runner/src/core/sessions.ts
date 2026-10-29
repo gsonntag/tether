@@ -130,7 +130,7 @@ export class SessionCore {
   /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
   private owned(id: string) {
     const s = this.sessions.get(id);
-    return !!s && (s.live || s.childRunning || s.state.requests.length > 0);
+    return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
   }
 
   async listProjects(): Promise<ProjectInfo[]> {
@@ -275,7 +275,10 @@ export class SessionCore {
     this.cancelEvict(id);
     try {
       const s = await this.open(id);
+      const had = !!s.transcript;
       await this.load(s);
+      // In the terminal while nobody watched: the TUI wrote to the store meanwhile.
+      if (had && !s.unwatch && s.state.mode === "terminal") await this.syncFromStore(s);
       if (!s.live && !s.childRunning) this.tail(s);
       return s.snapshot(Math.max(1, Math.min(limit | 0 || TRANSCRIPT_PAGE, 200)));
     } catch (e) {
@@ -316,11 +319,11 @@ export class SessionCore {
   }
 
   scheduleEvict(s: Session) {
-    if (s.live || s.childRunning || s.state.requests.length || this.watched.has(s.id)) return;
+    if (this.held(s)) return;
     this.cancelEvict(s.id);
     const t = setTimeout(() => {
       this.evictTimers.delete(s.id);
-      if (s.live || s.childRunning || s.state.requests.length || this.watched.has(s.id) || this.sessions.get(s.id) !== s) return;
+      if (this.held(s) || this.sessions.get(s.id) !== s) return;
       this.sessions.delete(s.id);
       this.seqs.set(s.id, s.seq);
       // A new session that never got a message has nothing in any store: it's gone.
@@ -328,6 +331,25 @@ export class SessionCore {
     }, this.o.evictMs ?? 60_000);
     t.unref?.();
     this.evictTimers.set(s.id, t);
+  }
+
+  /** Kept in memory: live, running, waiting on a person, in a terminal, or watched. */
+  private held(s: Session) {
+    return s.live || s.childRunning || s.state.requests.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
+  }
+
+  /**
+   * Brings a loaded transcript up to date with the store (the TUI wrote to it while nobody
+   * tailed it). Nothing to do when it isn't loaded: it's read fresh when someone opens it.
+   */
+  async syncFromStore(s: Session) {
+    if (!s.transcript || s.live) return;
+    const msgs = await this.adapter(s.summary.harness)
+      .readHistory(s.summary.nativeId, s.summary.projectPath)
+      .catch(() => undefined);
+    if (!msgs || !s.transcript || s.live) return;
+    this.prune(s, msgs);
+    for (const e of diffTranscripts(s.transcript.messages, withOverlay(msgs, s.overlay))) s.apply(e);
   }
 
   private cancelEvict(id: string) {
@@ -352,7 +374,7 @@ export class SessionCore {
     const { requests: _, ...rest } = { ...s.summary, ...patch };
     const n = s.state.requests.length;
     s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}) };
-    if (s.live || s.childRunning || n || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
+    if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }
 

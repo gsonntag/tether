@@ -2,7 +2,7 @@
 // stream of sink calls on each send, so sync, paging and subagent tests are deterministic.
 
 import type { HarnessCapabilities, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
-import type { Adapter, Decision, Driver, Sink, StartOpts } from "./adapter";
+import type { Adapter, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
 
 /** One step of a scripted turn: called with the session's sink. */
 export type Step = (sink: Sink, d: FakeDriver) => void | Promise<void>;
@@ -161,7 +161,7 @@ export class FakeAdapter implements Adapter {
   newId() {
     return `new-${++this.next}`;
   }
-  terminalCommand() {
+  terminalCommand(_nativeId: string, _projectPath: string, _opts: TerminalOpts): TerminalLaunch {
     return { argv: ["true"] };
   }
 }

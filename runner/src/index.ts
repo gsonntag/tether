@@ -31,6 +31,8 @@ const runner = createRunner({
   // Codex arrives in P4.
   adapters: [claudeAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
+  // Hooks of TUIs in terminal mode report here (terminal/hooks.ts); the path outlives restarts.
+  terminal: { hookSocket: join(CONFIG_DIR, "hooks.sock") },
 });
 
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
@@ -42,7 +44,7 @@ const stopModules = await startModules(MODULES, (m) => {
 
 console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);
 console.log(`harnesses: ${(await runner.harnesses()).map((h) => `${h.id} ${h.version}`).join(", ") || "none found"}`);
-runner.start();
+await runner.start();
 
 let stopping = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const)

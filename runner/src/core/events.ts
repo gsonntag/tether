@@ -14,6 +14,11 @@ export interface CoreEvents {
   /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */
   requestClosed: { sessionId: string; requestId: string; outcome: RequestOutcome; source?: string; reason?: string };
   modeChanged: { sessionId: string; from: SessionMode; to: SessionMode };
+  /**
+   * The harness waits on the person outside Tether's requests (in terminal mode, Claude's TUI
+   * asks for permission or a choice, SPEC §8): "needs you", for notifications and Home.
+   */
+  attention: { sessionId: string; message?: string };
   error: { sessionId?: string; message: string };
   /** the last browser watching these sessions went away */
   unwatched: { sessionIds: string[] };

@@ -106,6 +106,26 @@ export interface Adapter {
   listModels(driver?: Driver): Promise<ModelList>;
   /** a new session's native id, chosen by Tether (Claude: a UUID; SPEC §6 terminal) */
   newId(): string;
-  // terminal mode (P3)
-  terminalCommand(nativeId: string | undefined, projectPath: string, opts: StartOpts): { argv: string[]; env?: Record<string, string> };
+  // terminal mode (SPEC §8): how to run the harness's own TUI on a session, in tmux
+  terminalCommand(nativeId: string, projectPath: string, opts: TerminalOpts): TerminalLaunch;
+}
+
+export interface TerminalOpts extends StartOpts {
+  /** a new session: the TUI creates it under `nativeId` (Claude: --session-id) instead of resuming */
+  fresh?: boolean;
+  /**
+   * Where the TUI reports turn ends and "needs you" (handoff harnesses, SPEC §8): the adapter
+   * wires its harness's own hooks to POST there (terminal/hooks.ts).
+   */
+  report?: { socketPath: string; sessionId: string };
+}
+
+/** One step of quitting a TUI: tmux key names, literal text, or a pause. */
+export type QuitStep = { keys: string[] } | { text: string } | { waitMs: number };
+
+export interface TerminalLaunch {
+  argv: string[];
+  env?: Record<string, string>;
+  /** how to ask the TUI to quit (Back to Tether); the core kills it if it hasn't after a while */
+  quit?: QuitStep[];
 }
