@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { SavedRequest } from "./core/broker";
+import type { ClosedRequest, SavedRequest } from "./core/broker";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
 export const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
@@ -22,6 +22,8 @@ export interface RunnerConfig {
   sessions?: Record<string, SessionPrefs>;
   /** approvals and questions still waiting for a person (SPEC §7): they survive a restart */
   requests?: SavedRequest[];
+  /** recently closed request ids, so an answer arriving after a restart is still told "Already answered." */
+  closedRequests?: ClosedRequest[];
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */

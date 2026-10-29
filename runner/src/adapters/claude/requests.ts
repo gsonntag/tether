@@ -46,6 +46,8 @@ export function claudeAsk(tool: string, input: Record<string, unknown>, o: AskOp
       kind: "approval",
       title: "Claude's plan is ready",
       plan: str(input.plan) ?? "",
+      // Approved plainly, Claude Code leaves plan mode for Ask first.
+      approveMode: "default",
       approveAs: [{ id: "acceptEdits", label: "Approve and accept edits", description: "Leave plan mode; file edits go ahead without asking" }],
     };
   // blockedPath is only the path that made it ask (often inside the project), not a reason.

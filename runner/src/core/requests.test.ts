@@ -34,7 +34,7 @@ function setup(o: { prefsFile?: string; adapter?: FakeAdapter; policy?: PolicySt
   const prefsFile = o.prefsFile ?? newPrefsFile();
   const prefs = new Prefs(prefsFile);
   const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m.t === "event" ? { ...m, event: capEvent(m.event) } : m), true), epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
-  const broker = new RequestBroker(o.policy ?? [], { saved: prefs.requests(), persist: (l) => prefs.setRequests(l) });
+  const broker = new RequestBroker(o.policy ?? [], { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (l, c) => prefs.setRequests(l, c) });
   const live = new LiveControl(core, broker, { idleMs: 60_000 });
   cleanups.push(() => core.stop());
   const events = (id: string) => frames.filter((f): f is Extract<RunnerToServer, { t: "event" }> => f.t === "event" && f.sessionId === id);
@@ -202,7 +202,7 @@ describe("requests in sessions", () => {
     expect(adapter.drivers[0]!.lastDecision).toEqual({ allow: true });
     const n = (await core.open("claude:s1")).transcript!.messages.at(-1)!;
     expect(n).toMatchObject({ role: "notice", level: "info" });
-    expect((n.parts[0] as any).text).toBe("A rule allowed Claude's request to run `ls`: ls is harmless");
+    expect((n.parts[0] as any).text).toBe("A rule allowed Claude Code's request to run `ls`: ls is harmless");
   });
 });
 
@@ -245,7 +245,7 @@ describe("requests across a runner restart", () => {
     await after.live.answerRequest("claude:s1", id, { allow: true });
     await Bun.sleep(30);
     const d = adapter.drivers[0]!;
-    expect(d.sent).toEqual(["Approved: go ahead and use Write on /p/notes.txt."]);
+    expect(d.sent).toEqual(["[From Tether] The user approved your request to use Write on /p/notes.txt. Go ahead."]);
     expect(d.lastDecision).toEqual({ allow: true });
     expect(after.closed).toEqual([{ sessionId: "claude:s1", requestId: id, outcome: "allowed", source: "person" }]);
     await expect(after.live.answerRequest("claude:s1", id, { allow: true })).rejects.toThrow(ALREADY_ANSWERED);
@@ -275,6 +275,78 @@ describe("requests across a runner restart", () => {
     expect(after.closed.map((c) => c.outcome)).toEqual(["cancelled"]);
   });
 
+  test("a plain deny after a restart sends nothing and keeps nothing: the same ask later is asked again", async () => {
+    const prefsFile = newPrefsFile();
+    const before = setup({ prefsFile });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "rm x" })];
+    void before.live.send("claude:s1", "go");
+    await tick();
+    const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+    await before.live.closeAll();
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("s1", []);
+    const after = setup({ prefsFile, adapter });
+    await after.live.desk.restore();
+    await after.live.answerRequest("claude:s1", id, { allow: false });
+    await tick();
+    expect(adapter.drivers).toHaveLength(0);
+    const s = await after.core.open("claude:s1");
+    expect((s.transcript ?? (await after.core.load(s))).messages.some((m) => (m.parts[0] as any)?.text === "You denied Claude Code's request to run `rm x`.")).toBe(true);
+    // Later the person asks for the same thing: it is asked, not denied unseen.
+    adapter.script = () => [ask("Bash", { command: "rm x" }), idle];
+    const sending = after.live.send("claude:s1", "remove x after all");
+    await tick();
+    expect(s.state.requests).toHaveLength(1);
+    await after.live.answerRequest("claude:s1", s.state.requests[0]!.id, { allow: true });
+    await sending;
+    expect(adapter.drivers[0]!.lastDecision).toEqual({ allow: true });
+  });
+
+  test("a turn you start yourself after answering a restored request drops the kept answer", async () => {
+    const prefsFile = newPrefsFile();
+    const before = setup({ prefsFile });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "ls" })];
+    void before.live.send("claude:s1", "go");
+    await tick();
+    const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+    await before.live.closeAll();
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("s1", []);
+    const after = setup({ prefsFile, adapter });
+    await after.live.desk.restore();
+    // The resume message's turn asks nothing; then you start a turn that asks the same.
+    adapter.script = (t) => (t.startsWith("[From Tether]") ? [idle] : [ask("Bash", { command: "ls" }), idle]);
+    await after.live.answerRequest("claude:s1", id, { allow: true });
+    await Bun.sleep(30);
+    expect(adapter.drivers[0]!.sent[0]).toStartWith("[From Tether]");
+    const s = await after.core.open("claude:s1");
+    const sending = after.live.send("claude:s1", "now list it");
+    await tick();
+    expect(s.state.requests).toHaveLength(1);
+    await after.live.answerRequest("claude:s1", s.state.requests[0]!.id, { allow: false, reason: "no" });
+    await sending;
+  });
+
+  test("closed ids are saved, so an answer after a restart is still told Already answered", async () => {
+    const prefsFile = newPrefsFile();
+    const before = setup({ prefsFile });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "ls" }), idle];
+    const sending = before.live.send("claude:s1", "go");
+    await tick();
+    const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+    await before.live.answerRequest("claude:s1", id, { allow: true });
+    await sending;
+    await before.live.closeAll();
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).closedRequests.map((c: any) => c.id)).toEqual([id]);
+    const after = setup({ prefsFile });
+    await expect(after.live.answerRequest("claude:s1", id, { allow: true })).rejects.toThrow(ALREADY_ANSWERED);
+  });
+
   test("requests of a session that no longer exists are dropped at start", async () => {
     const prefsFile = newPrefsFile();
     const p = new Prefs(prefsFile);
@@ -287,12 +359,12 @@ describe("requests across a runner restart", () => {
 
   test("the message a resumed session gets", () => {
     const base = { id: "r", sessionId: "s", openedAt: 1 };
-    expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false, reason: "use dir" })).toBe("I denied your request to run `ls`: use dir");
+    expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false, reason: "use dir" })).toBe("[From Tether] The user denied your request to run `ls` and said: use dir");
     expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false })).toBeUndefined();
-    expect(restoredMessage({ ...base, kind: "approval", tool: "ExitPlanMode", plan: "x" }, { allow: true })).toBe("Your plan is approved. Go ahead.");
-    expect(restoredMessage({ ...base, kind: "question", question: "Color?", questions: [{ question: "Color?", options: [] }] }, { allow: true, answers: ["Blue"] })).toBe('My answer to "Color?": Blue');
+    expect(restoredMessage({ ...base, kind: "approval", tool: "ExitPlanMode", plan: "x" }, { allow: true })).toBe("[From Tether] The user approved your plan. Go ahead.");
+    expect(restoredMessage({ ...base, kind: "question", question: "Color?", questions: [{ question: "Color?", options: [] }] }, { allow: true, answers: ["Blue"] })).toBe('[From Tether] The user answered "Color?": Blue');
     expect(
       restoredMessage({ ...base, kind: "question", questions: [{ question: "A?", options: [] }, { question: "B?", options: [] }] }, { allow: true, answers: ["1", "2"] }),
-    ).toBe("My answers:\n- A? 1\n- B? 2");
+    ).toBe("[From Tether] The user answered:\n- A? 1\n- B? 2");
   });
 });

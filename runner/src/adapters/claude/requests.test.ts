@@ -43,3 +43,7 @@ test("ExitPlanMode is a plan to approve; approving may switch the mode", () => {
     updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
   });
 });
+
+test("a plan approved plainly leaves plan mode for Ask first, as Claude Code does", () => {
+  expect(claudeAsk("ExitPlanMode", { plan: "x" }).approveMode).toBe("default");
+});

@@ -140,6 +140,10 @@ export interface Request {
   plan?: string;
   /** ways to approve that also switch the permission mode ("Approve and accept edits") */
   approveAs?: Choice[];
+  /** the mode a plain approval leaves the session in (approving a plan leaves plan mode) */
+  approveMode?: string;
+  /** a policy step is still deciding it: shown, but there is nothing to answer yet */
+  checking?: boolean;
   /** asked by a subagent: its title, for the parent's view */
   agent?: string;
 }

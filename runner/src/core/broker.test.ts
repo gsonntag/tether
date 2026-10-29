@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Request } from "../../../shared/transcript";
 import { RESOLVED_ELSEWHERE } from "./adapter";
-import { ALREADY_ANSWERED, DENIED, DISMISSED, NOT_OPEN, RequestBroker, requestKey, type BrokerHooks, type PolicyStep, type SavedRequest } from "./broker";
+import { ALREADY_ANSWERED, CHECKING_MS, DENIED, DISMISSED, NOT_OPEN, RequestBroker, requestKey, type BrokerHooks, type PolicyStep, type SavedRequest } from "./broker";
 
 const req = (id: string, over: Partial<Request> = {}): Request => ({ id, sessionId: "claude:s1", kind: "approval", tool: "Write", input: { file_path: "/p/a.txt", content: "hi" }, openedAt: 1, ...over });
 const ctx = { projectPath: "/p" };
@@ -147,5 +147,52 @@ describe("the request broker", () => {
     expect(b.forSession("claude:s2").map((r) => r.id)).toEqual(["x"]);
     b.answer("x", { allow: true });
     await q;
+  });
+});
+
+describe("slow policy steps", () => {
+  test("a step slower than CHECKING_MS shows the request as being checked, unanswerable, and gets the signal", async () => {
+    let seen: AbortSignal | undefined;
+    let release!: (v: any) => void;
+    const slow: PolicyStep = (_r, c) => ((seen = c.signal), new Promise((r) => (release = r)));
+    const saved: unknown[] = [];
+    const b = new RequestBroker([slow], { persist: (open) => saved.push(open) });
+    const ac = new AbortController();
+    const p = b.decide(req("r1"), ["s"], ctx, ac.signal);
+    await Bun.sleep(CHECKING_MS + 50);
+    expect(b.forSession("s")).toMatchObject([{ id: "r1", checking: true }]);
+    expect(() => b.answer("r1", { allow: true })).toThrow("still checking");
+    expect(seen).toBe(ac.signal);
+    release({ verdict: "undecided" });
+    await Bun.sleep(0);
+    // Undecided: now a person's to answer.
+    expect(b.forSession("s")[0]!.checking).toBeUndefined();
+    expect(saved.flat().length).toBeGreaterThan(0);
+    b.answer("r1", { allow: true });
+    expect(await p).toMatchObject({ allow: true });
+  });
+
+  test("a step that decides after showing Checking… removes it", async () => {
+    let release!: (v: any) => void;
+    const b = new RequestBroker([() => new Promise((r) => (release = r))]);
+    const p = b.decide(req("r1"), ["s"], ctx);
+    await Bun.sleep(CHECKING_MS + 50);
+    expect(b.forSession("s")).toHaveLength(1);
+    release({ verdict: "allow", source: "judge" });
+    expect(await p).toMatchObject({ allow: true, source: "judge" });
+    expect(b.forSession("s")).toEqual([]);
+  });
+
+  test("a failing save never leaves the driver waiting", async () => {
+    const b = new RequestBroker([], {
+      persist: () => {
+        throw new Error("disk full");
+      },
+      log: () => {},
+    });
+    const p = b.decide(req("r1"), ["s"], ctx);
+    await Bun.sleep(0);
+    b.answer("r1", { allow: true });
+    expect(await p).toMatchObject({ allow: true });
   });
 });

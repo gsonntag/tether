@@ -2,6 +2,7 @@
 // live stream (stream.ts), so a session reads the same either way. Ported from v1's claude.ts,
 // trimmed to P1's parts (text, thinking, image, tool).
 
+import { fromTether } from "../../../../shared/fromTether";
 import type { Msg, Part } from "../../../../shared/transcript";
 import { toolPart } from "../toolKind";
 
@@ -64,6 +65,9 @@ export const notice = (id: string, ts: number, text: string, level: Msg["level"]
  */
 export function injected(text: string, flags: EntryFlags, id: string, ts: number): Msg | null | undefined {
   const t = text.trimStart();
+  // A message Tether sent on your behalf (an answer passed on after a restart): Tether's, not yours.
+  const tether = fromTether(t);
+  if (tether !== undefined) return { id, role: "user", ts, origin: { kind: "tether" }, parts: [{ type: "text", text: tether }] };
   // A background task's report to Claude: the live stream never shows it (the subagent's own
   // session and Claude's answer do), so the stored view doesn't either.
   if (flags.origin?.kind === "task-notification" || t.startsWith("<task-notification>")) return null;
@@ -114,8 +118,17 @@ export function userMessage(content: unknown, id: string, ts: number, flags: Ent
 /** The tool_result blocks of a user entry: which call, done or failed, and its output. */
 export function toolResults(content: unknown): { toolId: string; status: "done" | "error"; output: string }[] {
   if (!Array.isArray(content)) return [];
-  return content.filter((b: any) => b?.type === "tool_result" && typeof b.tool_use_id === "string").map((b: any) => ({ toolId: b.tool_use_id, status: b.is_error ? ("error" as const) : ("done" as const), output: blockText(b.content) }));
+  return content
+    .filter((b: any) => b?.type === "tool_result" && typeof b.tool_use_id === "string")
+    .map((b: any) => {
+      const output = blockText(b.content);
+      // A permission prompt cut off by its process closing (a runner restart, the terminal taking
+      // over): the SDK's abort error says nothing useful; the request itself lives on.
+      return { toolId: b.tool_use_id, status: b.is_error ? ("error" as const) : ("done" as const), output: b.is_error && ABORTED_PROMPT.test(output) ? "" : output };
+    });
 }
+
+const ABORTED_PROMPT = /^Tool permission request failed: (?:Error: )?(?:AbortError|.*aborted)/i;
 
 /** A slash command's output as Claude Code stores it (inside <local-command-stdout>), plain. */
 export function commandOutput(text: string): string {

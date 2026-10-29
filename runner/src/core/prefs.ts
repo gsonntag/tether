@@ -5,7 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
-import type { SavedRequest } from "./broker";
+import type { ClosedRequest, SavedRequest } from "./broker";
 
 /** runner.json as it is, without creating it (index.ts's loadConfig does that at start). */
 function read(file: string): Partial<RunnerConfig> {
@@ -27,6 +27,7 @@ export class Prefs {
   private dirty = false;
 
   private open: SavedRequest[];
+  private closed: ClosedRequest[];
 
   constructor(
     private file = CONFIG_FILE,
@@ -35,6 +36,7 @@ export class Prefs {
     const cfg = read(file);
     this.map = { ...(cfg.sessions ?? {}) };
     this.open = Array.isArray(cfg.requests) ? cfg.requests : [];
+    this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
   }
 
   /** The open requests saved last time. */
@@ -42,9 +44,15 @@ export class Prefs {
     return [...this.open];
   }
 
-  /** The open requests now: written at once (a request matters more than a few ms). */
-  setRequests(list: SavedRequest[]) {
+  /** Request ids closed lately (saved last time). */
+  closedRequests(): ClosedRequest[] {
+    return [...this.closed];
+  }
+
+  /** The open requests now, and those closed lately: written at once (a request matters more than a few ms). */
+  setRequests(list: SavedRequest[], closed: ClosedRequest[] = this.closed) {
     this.open = list;
+    this.closed = closed;
     this.dirty = true;
     this.flush();
   }
@@ -76,7 +84,10 @@ export class Prefs {
     // Reread, so a name edited by hand meanwhile isn't overwritten.
     const cfg = read(this.file);
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
-    const { requests: _, ...rest } = cfg;
-    saveConfig({ ...rest, runnerId: cfg.runnerId, sessions: this.map, ...(this.open.length ? { requests: this.open } : {}) }, this.file);
+    const { requests: _, closedRequests: __, ...rest } = cfg;
+    saveConfig(
+      { ...rest, runnerId: cfg.runnerId, sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      this.file,
+    );
   }
 }

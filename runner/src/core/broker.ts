@@ -28,6 +28,8 @@ export interface PolicyContext {
   rootSessionId: string;
   projectPath: string;
   permissionMode?: string;
+  /** aborts when the harness stops waiting (the turn stopped): a slow step can give up */
+  signal?: AbortSignal;
 }
 
 export type PolicyStep = (r: Request, ctx: PolicyContext) => PolicyVerdict | Promise<PolicyVerdict>;
@@ -80,6 +82,15 @@ export const requestKey = (tool: string | undefined, input: unknown) => createHa
 interface Open extends SavedRequest {
   /** the driver waiting on it; absent for one restored after a restart */
   resolve?: (d: BrokerResult) => void;
+  /** a policy step is still deciding: shown as "Checking…", not answerable, never saved */
+  checking?: boolean;
+}
+
+/** A request that closed, kept (and saved) a while so a late answer is told why. */
+export interface ClosedRequest {
+  id: string;
+  outcome: RequestOutcome;
+  at: number;
 }
 
 /** An answer given to a restored request, kept for when the harness asks again. */
@@ -92,7 +103,12 @@ interface Predecided {
 }
 
 const CLOSED_KEPT = 2000;
+/** Closed ids saved in runner.json: at most this many, at most this old. */
+const CLOSED_SAVED = 200;
+const CLOSED_SAVED_MS = 60 * 60_000;
 const PREDECIDED_MS = 30 * 60_000;
+/** A policy step slower than this shows the request as "Checking…" meanwhile. */
+export const CHECKING_MS = 300;
 
 const noHooks: BrokerHooks = { changed() {}, opened() {}, closed() {} };
 
@@ -100,7 +116,7 @@ export class RequestBroker {
   hooks: BrokerHooks = noHooks;
   private open = new Map<string, Open>();
   /** recently closed requests by id: a second answer is told why it's too late */
-  private closedIds = new Map<string, RequestOutcome>();
+  private closedIds = new Map<string, ClosedRequest>();
   private predecided: Predecided[] = [];
   /** shutting down: what's open stays saved for the next start */
   private frozen = false;
@@ -108,11 +124,18 @@ export class RequestBroker {
 
   constructor(
     private steps: PolicyStep[] = [],
-    private o: { saved?: SavedRequest[]; persist?: (open: SavedRequest[]) => void; log?: (line: string) => void; now?: () => number } = {},
+    private o: {
+      saved?: SavedRequest[];
+      closed?: ClosedRequest[];
+      persist?: (open: SavedRequest[], closed: ClosedRequest[]) => void;
+      log?: (line: string) => void;
+      now?: () => number;
+    } = {},
   ) {
     this.now = o.now ?? Date.now;
     for (const r of o.saved ?? [])
       if (r?.request?.id && typeof r.key === "string" && Array.isArray(r.chain) && r.chain.length) this.open.set(r.request.id, { request: r.request, key: r.key, chain: r.chain });
+    for (const c of o.closed ?? []) if (c?.id && typeof c.at === "number" && this.now() - c.at < CLOSED_SAVED_MS) this.closedIds.set(c.id, c);
   }
 
   /** Open requests showing in a session (its own and its subagents'), oldest first. */
@@ -151,24 +174,41 @@ export class RequestBroker {
     if (restored) return this.wait(restored, signal);
 
     const shown = capRequest(request);
+    // A slow step: the request shows meanwhile as being checked, with nothing to answer yet.
+    const timer = this.steps.length
+      ? setTimeout(() => {
+          this.open.set(request.id, { request: { ...shown, checking: true }, key, chain, checking: true });
+          this.hooks.changed(chain);
+        }, CHECKING_MS)
+      : undefined;
+    const unshow = () => {
+      clearTimeout(timer);
+      if (this.open.get(request.id)?.checking && this.open.delete(request.id)) this.hooks.changed(chain);
+    };
     for (const step of this.steps) {
       let v: PolicyVerdict;
       try {
-        v = await step(request, { ...ctx, rootSessionId: root });
+        v = await step(request, { ...ctx, rootSessionId: root, ...(signal ? { signal } : {}) });
       } catch (e: any) {
         this.o.log?.(`a policy step failed, so it passes: ${e?.message ?? e}`);
         continue;
       }
       if (v.verdict === "undecided") continue;
+      unshow();
       if (signal?.aborted) return this.gone(request.id);
       const outcome = v.verdict === "allow" ? "allowed" : "denied";
       this.hooks.opened(shown);
       this.remember(request.id, outcome);
+      this.save();
       this.hooks.closed(shown, outcome, { source: v.source, reason: v.reason, restored: false, chain });
       return { ...(v.verdict === "allow" ? { allow: true as const } : { allow: false as const, reason: v.reason }), source: v.source, requestId: request.id };
     }
 
-    if (signal?.aborted) return this.gone(request.id);
+    clearTimeout(timer);
+    if (signal?.aborted) {
+      unshow();
+      return this.gone(request.id);
+    }
     const o: Open = { request: shown, key, chain };
     this.open.set(request.id, o);
     this.save();
@@ -200,9 +240,10 @@ export class RequestBroker {
   answer(requestId: string, a: RequestAnswer): Request {
     const o = this.open.get(requestId);
     if (!o) {
-      const was = this.closedIds.get(requestId);
+      const was = this.closedIds.get(requestId)?.outcome;
       throw new Error(was === "allowed" || was === "denied" || was === "answered" ? ALREADY_ANSWERED : NOT_OPEN);
     }
+    if (o.checking) throw new Error("Tether is still checking this request.");
     const r = o.request;
     let decision: Decision;
     if (a.allow) {
@@ -216,14 +257,17 @@ export class RequestBroker {
       else decision = reason ? { allow: false, reason: deniedBecause(reason) } : { allow: false, reason: DENIED, interrupt: true };
     }
     const outcome: RequestOutcome = !a.allow ? "denied" : r.kind === "question" ? "answered" : "allowed";
-    if (!o.resolve) this.predecided.push({ key: o.key, root: o.chain.at(-1)!, requestId, decision, at: this.now() });
+    // Restored after a restart: the answer is passed on with a message (core/requests.ts
+    // restoredMessage), and kept for when the harness asks the same again. A plain deny sends
+    // nothing, so nothing asks again in reply: it isn't kept, or a later ask would be denied unseen.
+    if (!o.resolve && (a.allow || a.reason?.trim())) this.predecided.push({ key: o.key, root: o.chain.at(-1)!, requestId, decision, at: this.now() });
     this.close(requestId, outcome, decision, "person", a);
     return r;
   }
 
   /** Closes open requests that match (their turn stopped, their driver went away, answered elsewhere). */
   cancel(match: (r: Request, chain: string[], restored: boolean) => boolean, outcome: "cancelled" | "elsewhere" = "cancelled") {
-    for (const o of [...this.open.values()]) if (match(o.request, o.chain, !o.resolve)) this.close(o.request.id, outcome);
+    for (const o of [...this.open.values()]) if (!o.checking && match(o.request, o.chain, !o.resolve)) this.close(o.request.id, outcome);
   }
 
   /** Answers kept for restored requests of this root session are dropped (its turn ended). */
@@ -249,12 +293,20 @@ export class RequestBroker {
   }
 
   private remember(id: string, outcome: RequestOutcome) {
-    this.closedIds.set(id, outcome);
+    this.closedIds.set(id, { id, outcome, at: this.now() });
     if (this.closedIds.size > CLOSED_KEPT) this.closedIds.delete(this.closedIds.keys().next().value!);
   }
 
+  /** Writes what's open (and the newest closed ids); a failure is logged, never thrown at a caller. */
   private save() {
-    if (this.frozen) return;
-    this.o.persist?.([...this.open.values()].map(({ request, key, chain }) => ({ request, key, chain })));
+    if (this.frozen || !this.o.persist) return;
+    try {
+      const open = [...this.open.values()].filter((o) => !o.checking).map(({ request, key, chain }) => ({ request, key, chain }));
+      const cutoff = this.now() - CLOSED_SAVED_MS;
+      const closed = [...this.closedIds.values()].filter((c) => c.at >= cutoff).slice(-CLOSED_SAVED);
+      this.o.persist(open, closed);
+    } catch (e: any) {
+      this.o.log?.(`couldn't save the open requests: ${e?.message ?? e}`);
+    }
   }
 }

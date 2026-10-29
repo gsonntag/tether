@@ -84,7 +84,7 @@ export function createRunner(o: RunnerOptions) {
     evictMs: o.core?.evictMs,
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
-  const broker = new RequestBroker(o.policy, { saved: prefs.requests(), persist: (open) => prefs.setRequests(open), log: o.log });
+  const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs });
   registerSessionOps(ops, core, live);
 
