@@ -11,7 +11,9 @@
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings stored
+//   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
+//   storedInject restartMid subOutlive claudeShiftTab stored
+// claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -534,6 +536,135 @@ const steps = {
     }
   },
 
+  async storedInject() {
+    // A send to a stored session whose thread runs a turn another client started (review 5, M1):
+    // refused as busy, with that turn's own settings shown, never slipped into it.
+    if (!RESTART) return console.log("skip storedInject (set RESTART_RUNNER)");
+    rmSync(scratch("inj.txt"), { force: true });
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Reply with just: READY");
+    await idle(p);
+    await p.close();
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    const other = spawn("bun", ["scripts/codex-e2e-helper.ts", "turn", id.slice(6), "Use the shell to run exactly: sleep 30   Then reply with one word: slept."], { cwd: new URL("../runner/", import.meta.url).pathname, stdio: "ignore" });
+    try {
+      await sleep(12_000);
+      const q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+      await composer(q).waitFor({ timeout: 60_000 });
+      if ((await rpcVia(q, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+      const sent = await rpcVia(q, "send", { sessionId: id, text: "Also run exactly: echo inj > inj.txt   then reply INJ." });
+      if (!/still working on a turn started elsewhere/.test(sent.error ?? "")) fail(`the send wasn't refused: ${JSON.stringify(sent)}`);
+      const st = await waitState(q, (x) => x.status === "running" && x.turnSettings?.permissionMode === "full-access", "running, with the turn's own mode shown", 30_000);
+      if (!st.turnSettings.looser) fail("not marked as running looser");
+      const head = await q.locator(".t-header").innerText();
+      if (!/Read only from the next turn/.test(head) || !/This turn still runs with Mode Full access/.test(head)) fail(`header: ${head}`);
+      await button(q.locator(".t-turn-settings"), "Stop this turn").waitFor();
+      await idle(q, 120_000);
+      await sleep(1500);
+      if (existsSync(scratch("inj.txt"))) fail("inj.txt was written");
+      ok("a send to a stored session whose thread runs another client's turn is refused as busy; that turn's Full access shows beside Read only, with Stop; nothing slipped into it");
+      await q.close();
+    } finally {
+      other.kill();
+    }
+  },
+
+  async restartMid() {
+    // A runner restart mid-turn keeps the note (review 5, I1): rebuilt from the turn's turn_context.
+    if (!RESTART) return console.log("skip restartMid (set RESTART_RUNNER)");
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Use the shell to run exactly this one command: sleep 25   Then reply with one word: done.");
+    await p.locator(".t-msg", { hasText: "sleep 25" }).first().waitFor({ timeout: 90_000 });
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+    await waitState(p, (x) => x.turnSettings?.permissionMode === "full-access", "the note before the restart", 15_000);
+    await p.close();
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    const q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(q).waitFor({ timeout: 60_000 });
+    const st = await waitState(q, (x) => x.status === "running" && x.turnSettings?.permissionMode === "full-access" && x.permissionMode === "read-only", "the note after the restart", 45_000);
+    if (!st.turnSettings.looser) fail("not marked looser after the restart");
+    await idle(q, 120_000);
+    await waitState(q, (x) => !x.turnSettings, "the note gone after the turn", 15_000);
+    ok("restarted mid-turn: rejoined, and the turn's own Full access still shows beside Read only until it ends");
+    await q.close();
+  },
+
+  async claudeShiftTab() {
+    // Claude's handoff TUI: a mode picked there (Shift+Tab) shows in Tether at its next hook (review 5,
+    // I3); Tether's own settings are refused while it drives; the model says "Set in the terminal".
+    const CL = process.env.CLAUDE_SCRATCH;
+    if (!CL) return console.log("skip claudeShiftTab (set CLAUDE_SCRATCH to a folder Claude already trusts)");
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "claude", projectPath: CL, model: "haiku", permissionMode: "default", terminal: true });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await waitState(p, (s) => s.mode === "terminal", "terminal mode", 60_000);
+    const name = tuiName(id);
+    const end = Date.now() + 60_000;
+    while (Date.now() < end) {
+      const c = capture(name);
+      if (/trust this folder|Yes, I trust/i.test(c)) {
+        tmux("kill-session", "-t", `=${name}`);
+        fail("Claude asks to trust the folder: use a folder it already trusts (never accepted here)");
+      }
+      if (/shift\+tab|\? for shortcuts/i.test(c)) break;
+      await sleep(500);
+    }
+    tmux("send-keys", "-t", `=${name}:`, "BTab");
+    await waitCapture(/accept edits on/i, "the TUI in accept edits", 15_000, name);
+    tmux("send-keys", "-t", `=${name}:`, "-l", "Reply with just: OK");
+    await sleep(500);
+    tmux("send-keys", "-t", `=${name}:`, "Enter");
+    await waitState(p, (s) => s.permissionMode === "acceptEdits", "accept edits from the TUI's hook", 60_000);
+    const head = await p.locator(".t-header").innerText();
+    if (!/Accept edits/.test(head) || !/Set in the terminal/.test(head)) fail(`header: ${head}`);
+    const refused = await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "plan" });
+    if (!/terminal is driving/.test(refused.error ?? "")) fail(`not refused: ${JSON.stringify(refused)}`);
+    await shot(p, "claude-shifttab");
+    ok("Shift+Tab in Claude's TUI shows as Accept edits in Tether (from its hook), the model as Set in the terminal, and Tether's own change is refused while it drives");
+    tmux("kill-session", "-t", `=${name}`);
+    await p.close();
+  },
+
+  async subOutlive() {
+    // A subagent that outlives its parent's turn keeps the turn's settings (review 5, I2): the note
+    // and Stop stay while it runs, and Stop stops it too.
+    rmSync(scratch("sub.txt"), { force: true });
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Spawn exactly one subagent with your agent tool, with the task: run exactly `sleep 40; echo sub > sub.txt` in the shell, then report done. Do NOT wait for the subagent: as soon as it is spawned, reply with just the word SPAWNED and end your turn.");
+    await waitState(p, (x) => x.status === "idle", "the parent's turn over", 180_000);
+    const kids = (await rpcVia(p, "listSessions", { parentSessionId: id })).ok?.sessions ?? [];
+    if (!kids.some((k) => k.status === "running")) return console.log("skip subOutlive: the model waited for its subagent (nothing outlived the turn)"), await p.close();
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+    const st = await waitState(p, (x) => x.turnSettings?.permissionMode === "full-access", "the note while the subagent runs", 15_000);
+    if (!st.turnSettings.looser) fail("not looser");
+    await button(p.locator(".t-turn-settings"), "Stop this turn").click();
+    await waitState(p, (x) => !x.turnSettings, "the note gone once the subagent stopped", 30_000);
+    await sleep(45_000);
+    if (existsSync(scratch("sub.txt"))) fail("the subagent went on and wrote sub.txt");
+    ok("a subagent outliving its parent's turn keeps the note and Stop; Stop stopped it before it wrote");
+    await p.close();
+  },
+
   async stored() {
     // Discovery: the session shows in the sidebar and its folder, and opens stored without a process.
     const p = await page(desktop);
@@ -556,8 +687,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "stored"]) {
-    if (!session && name !== "new" && name !== "fresh" && name !== "settings") {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "claudeShiftTab", "stored"]) {
+    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "claudeShiftTab"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }
