@@ -14,7 +14,7 @@
 //   new stream approve deny steer terminal tuiApprove tetherApprove phone subagent restart quit fresh settings stored
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
@@ -136,7 +136,8 @@ const openPanel = async (p) => {
   await p.locator(".t-term-panel").waitFor();
 };
 const typeInTerm = async (p, text, enter = true) => {
-  await p.locator(".t-term-box").click();
+  // Forced: on a loaded machine the terminal box can keep refitting, and it's never covered.
+  await p.locator(".t-term-box").click({ force: true });
   await p.keyboard.type(text, { delay: 15 });
   if (enter) {
     await sleep(200);
@@ -448,7 +449,9 @@ const steps = {
     const url = await newCodexSession(p, { terminal: true });
     const id = decodeURIComponent(url.split("/").pop());
     await p.locator(".t-term-panel").waitFor({ timeout: 30_000 });
-    await waitScreen(p, id, /›/, "the TUI on a new thread", 60_000);
+    // Ready for input: its prompt line is drawn (Enter before that is lost).
+    await waitScreen(p, id, /Ask Codex to do anything/, "the TUI on a new thread", 60_000);
+    await sleep(1000);
     await typeInTerm(p, "Reply with just: FRESH-OK");
     await p.locator(".t-msg.assistant", { hasText: "FRESH-OK" }).first().waitFor({ timeout: 90_000 });
     await shot(p, "fresh-desktop");
@@ -474,14 +477,41 @@ const steps = {
     if (!/Read only/.test(head2) || !/Effort\s*Low/.test(head2)) fail(`header after a turn: ${head2}`);
     ok(`a thread made elsewhere (GPT-6-Luna, Low, read-only) shows its own settings before anything is sent, and a turn from Tether leaves them as they were (${JSON.stringify(after)})`);
     await p.close();
+
+    // A change made in Tether while the thread is held by another client (as Codex's TUI holds it):
+    // applied after the join and confirmed, so the turn runs with it.
+    const id2 = `codex:${helper("make", SCRATCH, MODEL, "workspace-write").split("\n").pop()}`;
+    const holder = spawn("bun", ["scripts/codex-e2e-helper.ts", "hold", id2.slice(6), "120000"], { cwd: new URL("../runner/", import.meta.url).pathname, stdio: "ignore" });
+    try {
+      await sleep(2000);
+      const q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id2)}`);
+      await composer(q).waitFor({ timeout: 30_000 });
+      if (!/Mode\s*Auto/.test(await q.locator(".t-header").innerText())) fail("the second thread isn't Auto");
+      const r = await rpcVia(q, "setPermissionMode", { sessionId: id2, mode: "read-only" });
+      if (r.error) fail(r.error);
+      await send(q, "Reply with just: TIGHT");
+      await idle(q);
+      await q.locator(".t-msg.assistant", { hasText: "TIGHT" }).first().waitFor({ timeout: 30_000 });
+      const s2 = JSON.parse(helper("settings", id2.slice(6)));
+      if (s2.sandbox !== "read-only") fail(`the turn ran with ${JSON.stringify(s2)}, not read-only`);
+      if (!/Mode\s*Read only/.test(await q.locator(".t-header").innerText())) fail("the header doesn't say Read only");
+      ok(`Read only chosen in Tether while another client held the thread: applied and confirmed before the turn, which ran read-only (${JSON.stringify(s2)})`);
+      await q.close();
+    } finally {
+      holder.kill();
+    }
   },
 
   async stored() {
     // Discovery: the session shows in the sidebar and its folder, and opens stored without a process.
     const p = await page(desktop);
-    const projects = await rpcVia(p, "listProjects", {});
+    // The page's connection to the runner is up before asking it anything.
+    let projects;
+    for (let i = 0; i < 60 && !(projects = await rpcVia(p, "listProjects", {})).ok; i++) await sleep(500);
+    if (!projects.ok) fail(`listProjects: ${projects.error}`);
     if (!projects.ok.projects.some((x) => x.path === SCRATCH && x.harnesses.includes("codex"))) fail("the scratch folder isn't a Codex project");
-    const list = await rpcVia(p, "listSessions", { projectPath: SCRATCH });
+    let list;
+    for (let i = 0; i < 20 && !(list = await rpcVia(p, "listSessions", { projectPath: SCRATCH })).ok; i++) await sleep(500);
     const row = list.ok.sessions.find((s) => s.id === sessionId());
     if (!row) fail("the session isn't listed in its folder");
     // Its title: the name Codex's TUI gave it, or its first message.

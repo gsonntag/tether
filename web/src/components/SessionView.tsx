@@ -201,7 +201,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               (state.terminal?.returning
                 ? "Going back to Tether…"
                 : inTerminal && (state.status === "waiting" || state.terminal?.attention)
-                  ? "Claude is asking something in the terminal. Answer it there."
+                  ? `${agent} is asking something in the terminal. Answer it there.`
                   : undefined)
             }
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
