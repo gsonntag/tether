@@ -23,6 +23,9 @@ test("the settings add one command hook per event, and nothing else", () => {
   expect(h.command).toContain("s=claude%3Aabc");
   // A hook must never fail (exit 2 from a Stop hook would keep Claude going).
   expect(h.command).toEndWith("exit 0");
+  // The POST is capped at 3 s; Claude's own limit leaves room to start curl on a loaded machine.
+  expect(h.command).toContain(" -m 3 ");
+  expect(h.timeout).toBeGreaterThanOrEqual(10);
 });
 
 test("a hook's payload becomes a report", () => {

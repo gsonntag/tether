@@ -106,6 +106,17 @@ const waitScreen = async (p, key, re, what, ms = 60_000) => {
 };
 const tmux = (...args) => spawnSync("tmux", ["-L", SOCKET, ...args], { encoding: "utf8" });
 const capture = (name) => tmux("capture-pane", "-p", "-t", `=${name}:`).stdout.replace(/\n+$/, "").split("\n");
+/** The pane's whole history as tmux has it (scrollback and screen). */
+const waitHistory = async (name, re, what, ms = 60_000) => {
+  const end = Date.now() + ms;
+  let h = "";
+  while (Date.now() < end) {
+    h = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", `=${name}:`).stdout;
+    if (re.test(h)) return;
+    await sleep(500);
+  }
+  fail(`${what}: tmux's history of ${name} doesn't match ${re}; it ends:\n${h.trimEnd().split("\n").slice(-15).join("\n")}`);
+};
 const windowSize = (name) => tmux("display", "-p", "-t", `=${name}:`, "#{window_width}x#{window_height}").stdout.trim();
 /**
  * Each screen line equals tmux's own view of the pane, within the window's width (a terminal bigger
@@ -199,8 +210,11 @@ const steps = {
     const ask = p.locator(".t-term-ask");
     await button(ask, "Stop and open terminal").click();
     await waitState(p, (s) => s.mode === "terminal" && s.terminal?.kind === "handoff", "mode terminal after Stop and open terminal");
-    await waitScreen(p, sessionId(), /Claude Code v\d/, "the TUI in the panel");
-    await waitScreen(p, sessionId(), /PELICAN/, "the TUI resumed the same conversation");
+    // The panel shows the TUI at its prompt. Its banner and the code word may have scrolled off the
+    // screen (a session reused with SESSION has a long history): they are looked for in tmux's.
+    await waitScreen(p, sessionId(), /❯/, "the TUI in the panel");
+    await waitHistory(tuiName(), /Claude Code v\d/, "the TUI's banner");
+    await waitHistory(tuiName(), /PELICAN/, "the TUI resumed the same conversation");
     await p.locator(".t-term-banner", { hasText: "Driving in the terminal" }).waitFor();
     if (!(await composer(p).getAttribute("placeholder")).includes("in the terminal")) fail("the composer doesn't say it types into the terminal");
     await shot(p, "midturn-desktop");

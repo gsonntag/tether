@@ -79,6 +79,35 @@ test("attaches, gets output for its attach only (early output included), types a
   expect(f.calls.at(-1)).toEqual({ op: "closeTerminal", args: { attachId: "a1" } });
 });
 
+test("a resize while the attach is on its way reaches the PTY once it's there", async () => {
+  const f = fake();
+  const c = new TermConn("r1", { sessionId: "claude:s" }, view().cb, f.deps);
+  const opening = c.open(73, 50);
+  // The panel's first fit, before openTerminal answers.
+  c.resize(74, 50);
+  await opening;
+  await Bun.sleep(80);
+  expect(f.calls[0]!.args).toMatchObject({ cols: 73, rows: 50 });
+  expect(f.calls.filter((x) => x.op === "terminalResize")).toEqual([{ op: "terminalResize", args: { attachId: c.attachId, cols: 74, rows: 50 } }]);
+  c.close();
+});
+
+test("a resize long before a slow attach answers isn't lost either", async () => {
+  const f = fake();
+  const rpc = f.deps.rpc;
+  f.deps.rpc = (async (r: string, op: string, args: any) => {
+    if (op === "openTerminal") await Bun.sleep(150);
+    return (rpc as any)(r, op, args);
+  }) as any;
+  const c = new TermConn("r1", { sessionId: "claude:s" }, view().cb, f.deps);
+  const opening = c.open(73, 50);
+  c.resize(74, 50);
+  await opening;
+  await Bun.sleep(80);
+  expect(f.calls.filter((x) => x.op === "terminalResize")).toEqual([{ op: "terminalResize", args: { attachId: c.attachId, cols: 74, rows: 50 } }]);
+  c.close();
+});
+
 test("a dropped link reattaches (reattach only) when it's back, and the screen starts over", async () => {
   const f = fake();
   const v = view();

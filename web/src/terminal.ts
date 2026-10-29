@@ -115,7 +115,9 @@ export class TermConn {
     this.attaching ??= (async () => {
       this.set(this.attachedOnce ? "reconnecting" : "connecting");
       try {
-        const r = await this.d.rpc(this.runnerId, "openTerminal", { ...this.target, cols: this.cols, rows: this.rows, ...(stop ? { stop } : {}), ...(reattach ? { reattach } : {}) });
+        const cols = this.cols;
+        const rows = this.rows;
+        const r = await this.d.rpc(this.runnerId, "openTerminal", { ...this.target, cols, rows, ...(stop ? { stop } : {}), ...(reattach ? { reattach } : {}) });
         if (this.closed) {
           void this.d.rpc(this.runnerId, "closeTerminal", { attachId: r.attachId }).catch(() => {});
           return;
@@ -128,6 +130,12 @@ export class TermConn {
         const e = this.w.early.get(r.attachId);
         this.w.early.delete(r.attachId);
         for (const c of e?.chunks ?? []) this.cb.data(c);
+        // Resized while the attach was on its way (the panel's first fit): that resize had no attach
+        // to go to, and the PTY would keep the old size.
+        if (this.cols !== cols || this.rows !== rows) {
+          clearTimeout(this.resizeTimer);
+          void this.d.rpc(this.runnerId, "terminalResize", { attachId: r.attachId, cols: this.cols, rows: this.rows }).catch(() => {});
+        }
       } finally {
         this.attaching = undefined;
       }

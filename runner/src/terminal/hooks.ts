@@ -64,10 +64,17 @@ export function hookCommand(socketPath: string, sessionId: string, curl = Bun.wh
   return `${shq(process.execPath)} -e ${shq(js)} >/dev/null 2>&1; exit 0`;
 }
 
+/**
+ * How long Claude lets a hook run, in seconds. The POST itself is capped at 3 s (curl -m 3) and is
+ * instant when the runner is up or gone; the rest is room for starting the process on a loaded
+ * machine, where 5 s was seen to run out and lose a SessionStart (Tether then missed a /clear).
+ */
+export const HOOK_TIMEOUT_S = 15;
+
 /** The `--settings` JSON that adds Tether's hooks to one launch. */
 export function hookSettings(socketPath: string, sessionId: string, curl?: string | null): string {
   const command = hookCommand(socketPath, sessionId, curl === undefined ? Bun.which("curl") : curl);
-  const hooks = Object.fromEntries(HOOK_EVENTS.map((e) => [e, [{ hooks: [{ type: "command", command, timeout: 5 }] }]]));
+  const hooks = Object.fromEntries(HOOK_EVENTS.map((e) => [e, [{ hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_S }] }]]));
   return JSON.stringify({ hooks });
 }
 
