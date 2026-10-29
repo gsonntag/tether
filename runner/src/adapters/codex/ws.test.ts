@@ -65,3 +65,13 @@ test("connecting where nothing listens fails with ENOENT", async () => {
   const err: any = await UnixWebSocket.connect("/tmp/tether-nothing-here.sock", { message() {}, close() {} }).catch((e) => e);
   expect(err?.code).toBe("ENOENT");
 });
+
+test("a daemon the runner starts under systemd starts in a scope of its own (it outlives a runner restart)", async () => {
+  const { daemonStartArgv } = await import("./daemon");
+  expect(daemonStartArgv({}, true).slice(-4)).toEqual(["codex", "app-server", "daemon", "start"].map((x, i) => (i === 0 ? expect.stringContaining("codex") : x)) as any);
+  expect(daemonStartArgv({}, true)[0]).not.toBe("systemd-run");
+  const scoped = daemonStartArgv({ INVOCATION_ID: "x" }, true);
+  expect(scoped.slice(0, 5)).toEqual(["systemd-run", "--user", "--scope", "--quiet", "--collect"]);
+  expect(scoped[5]).toMatch(/^--unit=tether-codex-daemon-\d+$/);
+  expect(daemonStartArgv({ INVOCATION_ID: "x" }, false)[0]).not.toBe("systemd-run");
+});

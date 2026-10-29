@@ -6,7 +6,9 @@ import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
 import { call } from "./daemon";
+import type { StartOpts } from "../../core/adapter";
 import { agentName, historyMsgs } from "./items";
+import { modeOf, sandboxOf } from "./modes";
 
 /** Thread sources listed as sessions (Codex's default leaves out app-server clients such as Tether). */
 const SOURCES = ["cli", "vscode", "exec", "appServer"];
@@ -161,6 +163,48 @@ export function watchThread(nativeId: string, projectPath: string, onChange: (ms
     stopped = true;
     clearInterval(t);
   };
+}
+
+/**
+ * A thread's settings as its rollout last recorded them (its newest turn_context): model, effort,
+ * approval policy and sandbox. Undefined fields: not recorded (a thread with no turn yet).
+ */
+export function rolloutSettings(text: string): { model?: string; effort?: string; approvalPolicy?: string; sandbox?: string } {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]!;
+    if (!l.includes('"turn_context"')) continue;
+    try {
+      const m = JSON.parse(l);
+      if (m?.type !== "turn_context") continue;
+      const p = m.payload ?? {};
+      return {
+        ...(typeof p.model === "string" ? { model: p.model } : {}),
+        ...(typeof p.effort === "string" ? { effort: p.effort } : {}),
+        ...(typeof p.approval_policy === "string" ? { approvalPolicy: p.approval_policy } : {}),
+        ...(sandboxOf(p.sandbox_policy) ? { sandbox: sandboxOf(p.sandbox_policy) } : {}),
+      };
+    } catch {}
+  }
+  return {};
+}
+
+/** How much of a rollout's end is read for its settings. */
+const SETTINGS_TAIL = 2_000_000;
+
+/** A stored thread's own settings (its rollout, else its metadata). */
+export async function threadSettings(nativeId: string): Promise<StartOpts | undefined> {
+  const t = await readThread(nativeId);
+  if (!t) return undefined;
+  let r: ReturnType<typeof rolloutSettings> = {};
+  if (typeof t.path === "string") {
+    const f = Bun.file(t.path);
+    r = rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
+  }
+  const model = r.model ?? t.model ?? undefined;
+  const effort = r.effort ?? t.reasoningEffort ?? undefined;
+  const mode = modeOf(r.approvalPolicy, r.sandbox);
+  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(mode ? { permissionMode: mode } : {}) };
 }
 
 /** Forget the cached thread list (a thread was created). */

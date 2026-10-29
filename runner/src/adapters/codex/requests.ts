@@ -88,5 +88,27 @@ export function codexAnswer(method: string, p: any, d: Decision): unknown {
   return undefined;
 }
 
-/** Elicitations Tether doesn't ask about (forms, links): declined so the turn goes on. */
+/** How an elicitation is declined. */
 export const DECLINE_ELICITATION = { action: "decline", content: null, _meta: null };
+
+/** The tool name of a request Tether can't show. */
+export const CANT_SHOW = "codex_request";
+
+/**
+ * A request Tether can't show (an MCP form or link, a method it doesn't know): a card that says so
+ * and points at the terminal, where Codex's TUI shows it. It stays open for the TUI to answer; from
+ * Tether it can only be declined.
+ */
+export function cantShow(method: string, p: any): RequestAsk {
+  const what = method === "mcpServer/elicitation/request" ? `${p?.serverName ?? "An MCP server"} ${p?.mode === "url" ? "wants you to open a link" : "needs some input"}` : `Codex is asking something (${method})`;
+  const detail = [str(p?.message), str(p?.url)].filter(Boolean).join("\n");
+  return {
+    kind: "question",
+    tool: CANT_SHOW,
+    input: { method },
+    question: `${what} that Tether can't show. Open the terminal to answer it there, or decline it here.`,
+    options: ["Decline"],
+    questions: [{ question: `${what} that Tether can't show. Open the terminal to answer it there, or decline it here.`, options: [{ label: "Decline" }] }],
+    ...(detail ? { reason: detail } : {}),
+  };
+}

@@ -11,11 +11,22 @@ const NOT_RUNNING = /isn't running/;
 
 let starting: Promise<void> | undefined;
 
+/**
+ * How the daemon is started. Under systemd (the production unit has KillMode=mixed) it starts in a
+ * transient scope of its own, as the tmux server does (terminal/tmux.ts), so a runner restart
+ * doesn't kill a daemon the runner happened to start: it's the user's daemon from then on.
+ */
+export function daemonStartArgv(env: Record<string, string | undefined> = process.env, hasSystemdRun = !!Bun.which("systemd-run")): string[] {
+  const argv = [HARNESS_BINS.codex, "app-server", "daemon", "start"];
+  if (!env.INVOCATION_ID || !hasSystemdRun) return argv;
+  return ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=tether-codex-daemon-${Date.now()}`, ...argv];
+}
+
 /** Starts the daemon when its socket isn't there (at most one start at a time). */
 async function startDaemon(): Promise<void> {
   starting ??= (async () => {
     try {
-      const p = Bun.spawn([HARNESS_BINS.codex, "app-server", "daemon", "start"], { stdout: "ignore", stderr: "pipe", stdin: "ignore" });
+      const p = Bun.spawn(daemonStartArgv(), { stdout: "ignore", stderr: "pipe", stdin: "ignore" });
       const timer = setTimeout(() => p.kill(), 30_000);
       const code = await p.exited;
       clearTimeout(timer);

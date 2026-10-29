@@ -8,14 +8,19 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { UnixWebSocket } from "./ws";
 
-export const DAEMON_SOCKET = process.env.CODEX_DAEMON_SOCKET ?? join(homedir(), ".codex", "app-server-control", "app-server-control.sock");
+/** Codex's home (`CODEX_HOME`, else ~/.codex): its daemon's control socket is in it. */
+export const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
+export const DAEMON_SOCKET = process.env.CODEX_DAEMON_SOCKET || join(CODEX_HOME, "app-server-control", "app-server-control.sock");
 
 export interface RpcError extends Error {
   code?: number;
 }
 
-/** What answers the daemon's requests; undefined means Tether doesn't handle that method. */
-export type ServerRequestHandler = (method: string, params: any, id: number | string) => Promise<unknown> | undefined;
+/**
+ * What answers the daemon's requests. undefined: Tether doesn't handle that method (answered with
+ * an error); null: left unanswered, for another client (Codex's TUI) to answer.
+ */
+export type ServerRequestHandler = (method: string, params: any, id: number | string) => Promise<unknown> | undefined | null;
 
 /** Anything that carries JSON text both ways (the daemon's WebSocket, or a test double). */
 export interface Wire {
@@ -81,6 +86,7 @@ export class CodexRpc {
   private serverRequest(m: any) {
     const reply = (body: object) => this.write({ id: m.id, ...body });
     const p = this.onRequest?.(m.method, m.params ?? {}, m.id);
+    if (p === null) return;
     if (!p) return reply({ error: { code: -32601, message: `Tether doesn't handle ${m.method}` } });
     p.then(
       (result) => (result === undefined ? undefined : reply({ result })),

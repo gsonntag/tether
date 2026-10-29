@@ -47,12 +47,24 @@ function useDaemon() {
   setConnector(async () => daemon.rpc);
 }
 
-test("resume: Tether's settings and approvals routed to it; the thread's own settings fill the rest", async () => {
+test("resume keeps the thread's own settings: nothing sent but approvals routed to clients; the state is the thread's", async () => {
+  useDaemon();
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "never", sandbox: { type: "readOnly", networkAccess: false } });
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, approvalsReviewer: "user", excludeTurns: true });
+  expect(daemon.calls("thread/settings/update")).toEqual([]);
+  // A combination no preset has is shown as it is (never loosened to a preset).
+  expect(sink.states[0]).toEqual({ model: "gpt-6-luna", modelResolved: "gpt-6-luna", effort: "low", permissionMode: "never+read-only" });
+});
+
+test("resume with settings you made in Tether: those, and only those, are applied", async () => {
   useDaemon();
   const sink = new TestSink();
-  await CodexDriver.open(MAIN, CWD, { permissionMode: "auto" }, sink, true);
+  await CodexDriver.open(MAIN, CWD, { permissionMode: "auto", effort: "medium" }, sink, true);
   expect(daemon.calls("thread/resume")[0]).toEqual({ threadId: MAIN, approvalsReviewer: "user", approvalPolicy: "on-request", sandbox: "workspace-write", excludeTurns: true });
-  expect(sink.states[0]).toEqual({ modelResolved: "gpt-6-luna", model: "gpt-6-luna", effort: "low" });
+  expect(daemon.calls("thread/settings/update")).toEqual([{ threadId: MAIN, effort: "medium" }]);
+  expect(sink.states[0]).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
 });
 
 test("an approval answered in another client (Codex's TUI) closes as resolved elsewhere, and Tether sends no answer", async () => {
@@ -89,11 +101,34 @@ test("answered in Tether: the daemon gets the decision; a denial's reason goes i
   await Bun.sleep(5);
   expect(daemon.replies(8)).toEqual([{ id: 8, result: { decision: "decline" } }]);
   expect(daemon.calls("turn/steer")[0]).toEqual({ threadId: MAIN, expectedTurnId: "t1", input: [{ type: "text", text: `${FROM_TETHER}The user denied this request and said: use trash`, text_elements: [] }] });
-  // Methods Tether doesn't handle are refused, not left hanging.
-  daemon.say({ id: 9, method: "item/tool/call", params: {} });
-  await Bun.sleep(5);
-  expect(daemon.replies(9)[0].error.code).toBe(-32601);
   void d;
+});
+
+test("what Tether can't show is left for Codex's TUI, with a card saying so; nothing is answered on its own", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  // Not about the thread (auth and the like): never answered here.
+  daemon.say({ id: 20, method: "account/chatgptAuthTokens/refresh", params: {} });
+  // An MCP form: a card pointing at the terminal, and no answer until someone gives one.
+  daemon.say({ id: 21, method: "mcpServer/elicitation/request", params: { threadId: MAIN, serverName: "gh", mode: "form", message: "Pick a repo", requestedSchema: {} } });
+  daemon.say({ id: 22, method: "item/unknownThing/request", params: { threadId: MAIN } });
+  await Bun.sleep(5);
+  expect(daemon.replies(20)).toEqual([]);
+  expect(daemon.replies(21)).toEqual([]);
+  expect(sink.asks.map((a) => a.ask.question)).toEqual([
+    "gh needs some input that Tether can't show. Open the terminal to answer it there, or decline it here.",
+    "Codex is asking something (item/unknownThing/request) that Tether can't show. Open the terminal to answer it there, or decline it here.",
+  ]);
+  expect(sink.asks[0]!.ask).toMatchObject({ kind: "question", options: ["Decline"], reason: "Pick a repo" });
+  // The TUI answers the form: the card closes, Tether says nothing.
+  daemon.say({ method: "serverRequest/resolved", params: { threadId: MAIN, requestId: 21 } });
+  expect(sink.asks[0]!.signal!.aborted).toBe(true);
+  // Declined in Tether: an error for the unknown method.
+  sink.asks[1]!.resolve({ allow: true, answers: ["Decline"] });
+  await Bun.sleep(5);
+  expect(daemon.replies(21)).toEqual([]);
+  expect(daemon.replies(22)[0].error.message).toContain("Declined");
 });
 
 test("send, steer, interrupt and settings go to the thread; steering needs a running turn", async () => {
@@ -117,7 +152,7 @@ test("send, steer, interrupt and settings go to the thread; steering needs a run
   ]);
   // A setting changed in the TUI shows in Tether.
   daemon.say({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { model: "gpt-6-sol", effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } } } });
-  expect(sink.states.at(-1)).toEqual({ modelResolved: "gpt-6-sol", effort: "high", permissionMode: "full-access" });
+  expect(sink.states.at(-1)).toEqual({ model: "gpt-6-sol", modelResolved: "gpt-6-sol", effort: "high", permissionMode: "full-access" });
 });
 
 test("a subagent: stopped and steered on its own thread", async () => {
@@ -160,4 +195,37 @@ test("the daemon connection drops: the session says so and goes stored", async (
   daemon.rpc.ended("socket closed");
   expect(exit).toContain("connection to the Codex daemon closed");
   await expect(d.send("x")).rejects.toThrow("isn't connected");
+});
+
+test("a new thread named only so the TUI could join is named after its first message once its first turn ends", async () => {
+  useDaemon();
+  const id = await createThread(CWD, {});
+  const d = await CodexDriver.open(id, CWD, {}, new TestSink(), false);
+  await d.beforeTerminal();
+  daemon.answers["thread/read"] = () => ({ thread: { id, name: "New session", preview: "Fix the   flaky test\nin ci" } });
+  daemon.say({ method: "turn/completed", params: { threadId: id, turn: { id: "t1", status: "completed" } } });
+  await Bun.sleep(5);
+  expect(daemon.calls("thread/name/set").map((p) => p.name)).toEqual(["New session", "Fix the flaky test in ci"]);
+  // Named by Codex meanwhile: left alone.
+  const d2 = await CodexDriver.open(await createThread(CWD, {}), CWD, {}, new TestSink(), false);
+  await d2.beforeTerminal();
+  daemon.say({ method: "thread/name/updated", params: { threadId: d2.nativeId, threadName: "Codex's own title" } });
+  daemon.say({ method: "turn/completed", params: { threadId: d2.nativeId, turn: { id: "t2", status: "completed" } } });
+  await Bun.sleep(5);
+  expect(daemon.calls("thread/name/set")).toHaveLength(3);
+});
+
+test("rejoined mid-turn with a subagent running: its turn is found, so stop and steer reach it", async () => {
+  useDaemon();
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "active" } }, model: "m" });
+  daemon.answers["thread/turns/list"] = (p) =>
+    p.threadId === MAIN
+      ? { data: [{ id: "t1", status: "inProgress", items: [{ type: "subAgentActivity", id: "call_1", kind: "started", agentThreadId: "C", agentPath: "/root/scan" }] }] }
+      : { data: [{ id: "ct", status: "inProgress", items: [{ type: "commandExecution", id: "x", command: "ls", status: "inProgress" }] }] };
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(sink.starts.map((s) => s.nativeId)).toEqual(["C"]);
+  await d.stopSubagent("C");
+  expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "C", turnId: "ct" }]);
+  expect(sink.children.get("C")!.t.messages[0]!.parts[0]).toMatchObject({ type: "tool", status: "running" });
 });

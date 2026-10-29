@@ -28,8 +28,20 @@ export const DEFAULT_MODE = "auto";
 
 export const modeChoices = (): Choice[] => Object.values(CODEX_MODES).map(({ id, label, description }) => ({ id, label, description }));
 
-/** A mode id's settings (an unknown id falls back to the default). */
-export const codexMode = (id: string | undefined): CodexMode => CODEX_MODES[id ?? ""] ?? CODEX_MODES[DEFAULT_MODE]!;
+const POLICIES = new Set(["untrusted", "on-request", "never"]);
+const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+
+/**
+ * A mode id's settings: a preset, or a thread's own combination none of them matches
+ * ("never+read-only", from modeOf). An unknown id falls back to the default.
+ */
+export function codexMode(id: string | undefined): CodexMode {
+  const preset = CODEX_MODES[id ?? ""];
+  if (preset) return preset;
+  const [a, s] = (id ?? "").split("+");
+  if (a && s && POLICIES.has(a) && SANDBOXES.has(s)) return { approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode };
+  return CODEX_MODES[DEFAULT_MODE]!;
+}
 
 /** The sandbox as thread/settings/update takes it. */
 export function sandboxPolicy(s: SandboxMode) {
@@ -47,11 +59,14 @@ export function sandboxOf(p: any): SandboxMode | undefined {
   return undefined;
 }
 
-/** The preset a thread's settings match (undefined: none of Tether's presets). */
+/**
+ * The mode a thread's settings are: one of the presets, or their own combination as
+ * "<policy>+<sandbox>" (shown as it is, and never loosened to a preset). Undefined when unknown.
+ */
 export function modeOf(approvalPolicy: unknown, sandbox: unknown): string | undefined {
   const sb = sandboxOf(sandbox);
-  if (typeof approvalPolicy !== "string" || !sb) return undefined;
-  return Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id;
+  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb) return undefined;
+  return Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
 }
 
 /** A model as model/list returns it. */

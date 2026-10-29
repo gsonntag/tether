@@ -72,6 +72,32 @@ export class CodexStream {
     return this.children.get(threadId);
   }
 
+  /** Every subagent thread this stream has opened. */
+  childIds(): string[] {
+    return [...this.children.keys()];
+  }
+
+  /**
+   * A subagent as resume found it (its spawn was in the turn seedTurn replayed): its running turn
+   * so far, so stop and steer reach it; with no turn running, it has ended.
+   */
+  seedChildTurn(threadId: string, turn: any | undefined) {
+    const v = this.children.get(threadId);
+    if (!v) return;
+    if (!turn || turn.status !== "inProgress") {
+      if (v.running) {
+        v.running = false;
+        v.sink.ended?.();
+      }
+      return;
+    }
+    this.turnStarted(v, turn);
+    for (const item of turn.items ?? []) {
+      this.itemStarted(v, item);
+      if (item.type !== "userMessage" && (item.status !== "inProgress" || item.type === "agentMessage" || item.type === "reasoning")) this.itemCompleted(v, item);
+    }
+  }
+
   /** Subagents with a turn running. */
   runningChildren(): ThreadView[] {
     return [...this.children.values()].filter((c) => c.running);

@@ -62,6 +62,18 @@ function tool(id: string, name: string, input: unknown, status: ToolPart["status
   return { type: "tool", id, name, input, status, ...classifyTool(name, input), ...(output ? { output } : {}), ...extra };
 }
 
+/** Codex's calls on its subagents, as their cards name them. */
+const COLLAB_NAMES: Record<string, string> = {
+  wait: "Wait for subagents",
+  sendInput: "Message a subagent",
+  sendMessage: "Message a subagent",
+  followupTask: "Follow-up for a subagent",
+  resumeAgent: "Resume a subagent",
+  closeAgent: "Close a subagent",
+  interruptAgent: "Stop a subagent",
+  listAgents: "List subagents",
+};
+
 /** The last part of a subagent's path ("/root/list_files" -> "list_files"). */
 export const pathLeaf = (p: unknown): string | undefined => (typeof p === "string" ? p.split("/").filter(Boolean).pop() : undefined);
 
@@ -101,7 +113,9 @@ export function itemPart(item: any, cwd: string): Part | undefined {
         .map(([, st]) => st?.message)
         .filter(Boolean)
         .join("\n\n");
-      return tool(item.id, `agents.${item.tool}`, { ...(item.prompt ? { prompt: item.prompt } : {}), agents: item.receiverThreadIds ?? [] }, toolStatus(item.status), reports || undefined);
+      // Waiting for, messaging or closing subagents: a task card (no link, no JSON), named for what it does.
+      const t = tool(item.id, COLLAB_NAMES[item.tool] ?? `Subagents: ${item.tool}`, item.prompt ? { prompt: item.prompt } : {}, toolStatus(item.status), reports || undefined);
+      return { ...t, kind: "task" };
     }
     case "subAgentActivity":
       // A subagent started (Codex ≥ 0.165 reports spawns this way): its card links to its session.

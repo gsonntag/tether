@@ -11,7 +11,7 @@ import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../.
 import { connect } from "./daemon";
 import { dropCache, PLACEHOLDER_NAME } from "./discovery";
 import { codexMode, modeOf, sandboxPolicy, type CodexModel } from "./modes";
-import { ASKS, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
+import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 
@@ -111,6 +111,11 @@ export class CodexDriver implements Driver {
         const t: any = await rpc.call("thread/turns/list", { threadId: nativeId, limit: 1, sortDirection: "desc", itemsView: "full" }).catch(() => undefined);
         const turn = t?.data?.[0];
         if (turn && turn.status === "inProgress") d.stream.seedTurn(turn);
+        // Its subagents (spawned in that turn): their running turns, so stop and steer reach them.
+        for (const child of d.stream.childIds()) {
+          const ct: any = await rpc.call("thread/turns/list", { threadId: child, limit: 1, sortDirection: "desc", itemsView: "full" }).catch(() => undefined);
+          d.stream.seedChildTurn(child, ct?.data?.[0]);
+        }
       }
     } catch (e) {
       d.closed = true;
@@ -120,15 +125,21 @@ export class CodexDriver implements Driver {
     return d;
   }
 
-  /** After start or resume: effort, the live settings, the default model. */
+  /**
+   * After start or resume: an effort set in Tether is applied, and the thread's settings as they
+   * are now become the session's (the thread is the truth; Tether only changes what you change).
+   */
   private async started(r: any, opts: StartOpts) {
-    if (opts.effort && opts.effort !== r.reasoningEffort) await this.rpc.call("thread/settings/update", { threadId: this.nativeId, effort: opts.effort }).catch(() => {});
+    let effort = r.reasoningEffort ?? undefined;
+    if (opts.effort && opts.effort !== effort) {
+      await this.rpc.call("thread/settings/update", { threadId: this.nativeId, effort: opts.effort }).catch(() => {});
+      effort = opts.effort;
+    }
     const mode = modeOf(r.approvalPolicy, r.sandbox);
     this.sink.state({
-      ...(r.model ? { modelResolved: r.model } : {}),
-      ...(opts.model ? {} : r.model ? { model: r.model } : {}),
-      ...(opts.effort ? {} : r.reasoningEffort ? { effort: r.reasoningEffort } : {}),
-      ...(opts.permissionMode || !mode ? {} : { permissionMode: mode }),
+      ...(r.model ? { model: r.model, modelResolved: r.model } : {}),
+      ...(effort ? { effort } : {}),
+      ...(mode ? { permissionMode: mode } : {}),
     });
   }
 
@@ -136,6 +147,8 @@ export class CodexDriver implements Driver {
 
   private notify(method: string, p: any) {
     if (method === "serverRequest/resolved") return this.resolved(String(p.requestId));
+    if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME) this.placeholder = false;
+    if (method === "turn/completed" && p.threadId === this.nativeId && this.placeholder) void this.namePlaceholder();
     if (method === "thread/closed" && p.threadId === this.nativeId && !this.closed) {
       this.closed = true;
       this.abortAll();
@@ -149,20 +162,21 @@ export class CodexDriver implements Driver {
   private settingsChanged(s: any) {
     const mode = modeOf(s.approvalPolicy, s.sandboxPolicy);
     this.sink.state({
-      ...(s.model ? { modelResolved: s.model } : {}),
+      ...(s.model ? { model: s.model, modelResolved: s.model } : {}),
       ...(s.effort ? { effort: s.effort } : {}),
       ...(mode ? { permissionMode: mode } : {}),
     });
   }
 
   /** The daemon asks (an approval, a question): the broker decides. */
-  private request(method: string, p: any, id: number | string): Promise<unknown> | undefined {
-    if (!ASKS.has(method)) return undefined;
-    const thread = p.threadId ?? this.nativeId;
-    const sink = thread === this.nativeId ? this.sink : this.stream.child(thread)?.sink;
-    if (!sink) return undefined;
-    const ask = codexAsk(method, p, this.projectPath, p.itemId ? this.stream.patch(thread, p.itemId) : undefined);
-    if (!ask) return Promise.resolve(DECLINE_ELICITATION);
+  private request(method: string, p: any, id: number | string): Promise<unknown> | null {
+    // Not about this thread (account, auth, …): another client may answer it; Tether never does.
+    const thread: string | undefined = p?.threadId;
+    const sink = !thread ? undefined : thread === this.nativeId ? this.sink : this.stream.child(thread)?.sink;
+    if (!sink) return null;
+    // What Tether can't show (an MCP form, a link, a method it doesn't know): left for Codex's TUI,
+    // with a card saying so. Declining from Tether is the one answer it can give.
+    const ask = (ASKS.has(method) && codexAsk(method, p, this.projectPath, p.itemId ? this.stream.patch(thread!, p.itemId) : undefined)) || cantShow(method, p);
     const ac = new AbortController();
     const key = String(id);
     this.asks.set(key, ac);
@@ -171,7 +185,11 @@ export class CodexDriver implements Driver {
       // Answered elsewhere (the TUI) or stopped: the daemon isn't waiting for this answer.
       if (ac.signal.aborted) return undefined;
       // Codex's "decline" tells the model nothing: a reason goes into the turn as a steer.
-      if (!d.allow && !d.interrupt && d.reason) void this.steerTurn(thread, `${FROM_TETHER}${d.reason}`).catch(() => {});
+      if (ask.tool === CANT_SHOW) {
+        if (method === "mcpServer/elicitation/request") return DECLINE_ELICITATION;
+        throw new Error("Declined in Tether.");
+      }
+      if (!d.allow && !d.interrupt && d.reason) void this.steerTurn(thread!, `${FROM_TETHER}${d.reason}`).catch(() => {});
       return codexAnswer(method, p, d);
     });
   }
@@ -254,6 +272,22 @@ export class CodexDriver implements Driver {
     if (this.materialized) return;
     await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: PLACEHOLDER_NAME });
     this.materialized = true;
+    this.placeholder = true;
+  }
+
+  /** The thread still carries the placeholder name (nobody named it since). */
+  private placeholder = false;
+
+  /**
+   * After the first turn: the placeholder can't be cleared (Codex refuses an empty name), so the
+   * thread is named after its first message, as Tether titles an unnamed one anyway.
+   */
+  private async namePlaceholder() {
+    this.placeholder = false;
+    const t: any = await this.rpc.call("thread/read", { threadId: this.nativeId }).catch(() => undefined);
+    const name = t?.thread?.name;
+    const first = String(t?.thread?.preview ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (name === PLACEHOLDER_NAME && first) await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: first }).catch(() => {});
   }
 
   busy() {

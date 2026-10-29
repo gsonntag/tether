@@ -42,40 +42,62 @@ export interface Frame {
   payload: Uint8Array;
 }
 
-/** Reads whole frames off a byte stream; keeps what's left for the next chunk. */
+/**
+ * Reads whole frames off a byte stream; keeps what's left for the next chunk. The bytes sit in one
+ * growable buffer read from an offset, so a big frame arriving in many chunks is copied about once,
+ * not once per chunk.
+ */
 export class FrameReader {
-  private buf = new Uint8Array(0);
+  private buf = new Uint8Array(64 * 1024);
+  private start = 0;
+  private end = 0;
+
+  private append(chunk: Uint8Array) {
+    if (this.end + chunk.length > this.buf.length) {
+      const unread = this.end - this.start;
+      const need = unread + chunk.length;
+      // Room after moving the unread bytes to the front, else a bigger buffer.
+      const next = need <= this.buf.length / 2 ? this.buf : new Uint8Array(Math.max(need * 2, this.buf.length));
+      if (next === this.buf) next.copyWithin(0, this.start, this.end);
+      else next.set(this.buf.subarray(this.start, this.end), 0);
+      this.buf = next;
+      this.start = 0;
+      this.end = unread;
+    }
+    this.buf.set(chunk, this.end);
+    this.end += chunk.length;
+  }
 
   push(chunk: Uint8Array): Frame[] {
-    const joined = new Uint8Array(this.buf.length + chunk.length);
-    joined.set(this.buf);
-    joined.set(chunk, this.buf.length);
-    this.buf = joined;
+    this.append(chunk);
     const out: Frame[] = [];
     for (;;) {
       const b = this.buf;
-      if (b.length < 2) break;
-      const masked = (b[1]! & 0x80) !== 0;
-      let len = b[1]! & 0x7f;
+      const at = this.start;
+      const have = this.end - at;
+      if (have < 2) break;
+      const masked = (b[at + 1]! & 0x80) !== 0;
+      let len = b[at + 1]! & 0x7f;
       let off = 2;
       if (len === 126) {
-        if (b.length < 4) break;
-        len = (b[2]! << 8) | b[3]!;
+        if (have < 4) break;
+        len = (b[at + 2]! << 8) | b[at + 3]!;
         off = 4;
       } else if (len === 127) {
-        if (b.length < 10) break;
-        const dv = new DataView(b.buffer, b.byteOffset);
+        if (have < 10) break;
+        const dv = new DataView(b.buffer, b.byteOffset + at);
         len = dv.getUint32(2) * 2 ** 32 + dv.getUint32(6);
         off = 10;
       }
-      const maskAt = off;
+      const maskAt = at + off;
       if (masked) off += 4;
-      if (b.length < off + len) break;
-      let payload = b.slice(off, off + len);
+      if (have < off + len) break;
+      let payload = b.slice(at + off, at + off + len);
       if (masked) payload = payload.map((x, i) => x ^ b[maskAt + (i & 3)]!);
-      out.push({ fin: (b[0]! & 0x80) !== 0, opcode: b[0]! & 0x0f, payload });
-      this.buf = b.slice(off + len);
+      out.push({ fin: (b[at]! & 0x80) !== 0, opcode: b[at]! & 0x0f, payload });
+      this.start = at + off + len;
     }
+    if (this.start === this.end) this.start = this.end = 0;
     return out;
   }
 }

@@ -6,7 +6,7 @@ import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
-import { codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, watchThread } from "./discovery";
+import { codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
 import { codexMode, modeOf, modelList, type CodexModel } from "./modes";
 
@@ -52,8 +52,15 @@ export const codexAdapter: Adapter = {
   readHistory: codexHistory,
   watchHistory: watchThread,
 
-  /** What a thread starts with: Codex's config for the folder. */
-  async defaults(projectPath): Promise<StartOpts> {
+  /**
+   * A thread's own settings (what it last ran with); for a folder, Codex's config. Shown before the
+   * session starts, and never sent back to the thread: it keeps its own (driver.ts).
+   */
+  async defaults(projectPath, nativeId): Promise<StartOpts> {
+    if (nativeId) {
+      const own = await threadSettings(nativeId).catch(() => undefined);
+      if (own && Object.keys(own).length) return own;
+    }
     const r: any = await call("config/read", { cwd: projectPath }).catch(() => undefined);
     const c = r?.config ?? {};
     const mode = modeOf(c.approval_policy ?? "on-request", c.sandbox_mode ?? "workspace-write");
@@ -80,7 +87,7 @@ export const codexAdapter: Adapter = {
   // model, effort and permissions are the session's (the CLI takes only some approval policies:
   // with "untrusted" the thread keeps its own). No update prompt: it would block the TUI.
   terminalCommand(nativeId, _projectPath, opts) {
-    const remote = process.env.CODEX_DAEMON_SOCKET ? `unix://${DAEMON_SOCKET}` : "unix://";
+    const remote = process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false", "-c", `approvals_reviewer=${toml("user")}`];
     if (opts.model && opts.model !== "default") argv.push("-m", opts.model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
