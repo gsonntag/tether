@@ -108,6 +108,8 @@ export const TermView = forwardRef<
       },
     );
     const ro = new ResizeObserver(() => {
+      // Hidden (a phone showing the chat): the PTY keeps its size until it shows again.
+      if (!el.clientWidth || !el.clientHeight) return;
       try {
         fit.fit();
       } catch {}

@@ -130,9 +130,16 @@ const waitCapture = async (re, what, ms = 60_000, name = tuiName()) => {
   }
   fail(`${what}: tmux shows:\n${capture(name).split("\n").filter((l) => l.trim()).slice(-15).join("\n")}`);
 };
+/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+const pickTerminal = async (p, tap = false) => {
+  const chip = p.locator(".t-chip-term");
+  await (tap ? chip.tap() : chip.click());
+  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
+  await (tap ? item.tap() : item.click());
+};
 const openPanel = async (p) => {
   const chip = p.locator(".t-chip-term");
-  if ((await chip.getAttribute("aria-pressed")) !== "true") await chip.click();
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
 };
 const typeInTerm = async (p, text, enter = true) => {
@@ -285,7 +292,7 @@ const steps = {
     // typing in the TUI and in Tether both work.
     const p = await page(desktop, session);
     await composer(p).waitFor();
-    await p.locator(".t-chip-term").click();
+    await pickTerminal(p);
     if (await p.locator(".t-term-ask").count()) fail("a shared terminal asked before opening");
     await p.locator(".t-term-panel").waitFor();
     await waitScreen(p, sessionId(), /Ask Codex|›/, "Codex's TUI in the panel", 60_000);
@@ -351,7 +358,7 @@ const steps = {
     await waitScreen(d, sessionId(), /›/, "desktop TUI");
     const ph = await page(phone, session);
     await composer(ph).waitFor();
-    await ph.locator(".t-chip-term").tap();
+    await pickTerminal(ph, true);
     await ph.locator(".t-term-panel").waitFor();
     await waitScreen(ph, sessionId(), /›/, "phone TUI");
     await ph.locator(".t-keybar").waitFor();

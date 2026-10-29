@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
+import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
@@ -9,7 +10,7 @@ import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
-import { TerminalPanel, type PanelState } from "./TerminalPanel";
+import { SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
 import { SessionHeader } from "./SessionHeader";
@@ -99,20 +100,52 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // whenever: never busy for the composer (SPEC §9).
   const running = !inTerminal && (state.status === "running" || state.status === "waiting" || waiting);
 
-  /** The Terminal button: the TUI tab, asking first when the session is busy (SPEC §8). */
+  const shared = view.capabilities?.terminal === "shared";
+  /**
+   * The agent's terminal: its TUI tab, asking first when the session is busy (SPEC §8). From the
+   * panel's own tab, the question shows in the panel and the panel stays open on that tab.
+   */
   const openTerminal = (stop = false) => {
     setAsk(null);
-    const handsOff = view.capabilities?.terminal !== "shared" && !inTerminal && !state.terminal;
+    const handsOff = !shared && !inTerminal && !state.terminal;
     const q = handsOff && !stop ? handoffPrompt(state.status !== "idle" || waiting, state.queue.length) : null;
-    if (q) return setAsk(q);
+    if (q) {
+      setPanel((p) => (p ? { ...p, tab: "tui", hidden: false } : p));
+      return setAsk(q);
+    }
     setPanel((p) => ({ tab: "tui", wantTui: true, stop, nonce: (p?.nonce ?? 0) + 1 }));
   };
-  const terminalChip = !summary.parentSessionId && (
-    <button type="button" className="t-chip t-chip-term" aria-pressed={!!panel} onClick={() => (panel ? setPanel(null) : openTerminal())}>
-      <span aria-hidden>❯_</span>
-      <span>Terminal</span>
-    </button>
-  );
+  /** A project shell beside the chat (SPEC §8): the session stays live in Tether, nothing is handed over. */
+  const openShell = () => {
+    setAsk(null);
+    setPanel((p) => ({ tab: SHELL_TAB, wantTui: !!p?.wantTui, nonce: (p?.nonce ?? 0) + 1 }));
+  };
+  const panelShown = !!panel && !panel.hidden;
+  const terminalChip =
+    !summary.parentSessionId &&
+    (panel ? (
+      // Open: the chip closes it (or, on a phone where it is tucked behind the chat, shows it again).
+      <button type="button" className="t-chip t-chip-term" aria-pressed={panelShown} onClick={() => setPanel(panelShown ? null : { ...panel, hidden: false })}>
+        <span aria-hidden>❯_</span>
+        <span>Terminal</span>
+      </button>
+    ) : (
+      <DropdownMenu
+        renderTrigger={(p) => (
+          <button type="button" className="t-chip t-chip-term" aria-pressed={false} {...p}>
+            <span aria-hidden>❯_</span>
+            <span>Terminal</span>
+          </button>
+        )}
+      >
+        <DropdownMenuItem label="Shell" description={`A shell in this folder, beside the chat. ${agent} stays driven from here.`} onClick={openShell} />
+        <DropdownMenuItem
+          label={`${agent} terminal`}
+          description={shared ? `${agent}'s own terminal UI, joined to this session. Tether keeps driving it too.` : `${agent}'s own terminal UI. It drives ${agent} until you go Back to Tether.`}
+          onClick={() => openTerminal()}
+        />
+      </DropdownMenu>
+    ));
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
   const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (
@@ -155,7 +188,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       <div className={`t-session-split${panel ? " with-terminal" : ""}`} ref={root}>
       <div className="t-session">
         <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={terminalChip} />
-        {ask && (
+        {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
             <Button label={ask.confirm} size="sm" variant="primary" onClick={() => openTerminal(true)} />
@@ -164,6 +197,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         )}
         <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={inTerminal ? empty : working || empty} />
         {terminalBar}
+        {panel?.hidden && (
+          // A phone, the shell tucked behind the chat: one tap back to it.
+          <button type="button" className="t-term-return" onClick={() => setPanel({ ...panel, hidden: false })}>
+            <span aria-hidden>❯_</span> {panel.tab === "tui" ? `Back to the ${agent} terminal` : "Back to the shell"}
+          </button>
+        )}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
         {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} />}
         {isChild && view.capabilities?.subagents.steer && state.mode === "live" ? (
@@ -230,8 +269,21 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           state={state}
           panel={panel}
           setPanel={setPanel}
+          shared={shared}
           onOpenTui={() => openTerminal()}
-          onClose={() => setPanel(null)}
+          onClose={() => {
+            setAsk(null);
+            setPanel(null);
+          }}
+          ask={
+            ask && (
+              <div className="t-term-ask" role="group" aria-label="Open the terminal">
+                <span>{ask.text}</span>
+                <Button label={ask.confirm} size="sm" variant="primary" onClick={() => openTerminal(true)} />
+                <Button label="Keep working" size="sm" variant="secondary" onClick={() => setAsk(null)} />
+              </div>
+            )
+          }
         />
       )}
       </div>

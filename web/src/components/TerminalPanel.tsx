@@ -1,24 +1,34 @@
-// The terminal panel (SPEC §8, §10): the session's TUI, then the project's shells, as tabs. Beside
-// the transcript on desktop, full screen on a phone, where a key bar and an input line stand in for
-// the keys and the long typing a phone keyboard is bad at.
+// The terminal panel (SPEC §8, §10): the agent's terminal (its TUI), then the project's shells, as
+// tabs. Beside the transcript on desktop, full screen on a phone, where a key bar and an input line
+// stand in for the keys and the long typing a phone keyboard is bad at, and Chat tucks the panel
+// away (still attached) for the transcript.
+//
+// Which surface drives the agent is always spelled out under the tabs: a shell never touches the
+// session (the chat drives); the agent's tab hands a handoff harness's session to its TUI (Back to
+// Tether hands it back; going to a shell tab doesn't), or joins a shared one beside Tether.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
-import { ArrowUpIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import { ArrowUpIcon, ChatBubbleLeftRightIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import type { ShellInfo } from "../../../shared/protocol";
-import { HARNESS_LABELS, type LiveState, type SessionSummary } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { useStore } from "../store";
 import { KEYS, type TermStatus } from "../terminal";
 import { TermView, type TermViewHandle } from "./TermView";
 import { useFitViewport } from "./useFitViewport";
 
-export type PanelTab = "tui" | string;
+export type PanelTab = "tui" | typeof SHELL_TAB | string;
+
+/** The tab to open on for "Shell": the project's first shell, or a new one when it has none. */
+export const SHELL_TAB = "shell";
 
 export interface PanelState {
   tab: PanelTab;
+  /** a phone showed the chat instead (Chat): the panel stays mounted, its terminals attached */
+  hidden?: boolean;
   /** mount the TUI's view: it hands the session over on its first attach */
   wantTui: boolean;
   /** stop a running turn on that first attach */
@@ -27,6 +37,7 @@ export interface PanelState {
   nonce: number;
 }
 
+const narrow = () => typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
 const touch = () => typeof matchMedia === "function" && (matchMedia("(pointer: coarse)").matches || matchMedia("(max-width: 767px)").matches);
 
 export function TerminalPanel({
@@ -37,6 +48,8 @@ export function TerminalPanel({
   setPanel,
   onOpenTui,
   onClose,
+  ask,
+  shared,
 }: {
   runnerId: string;
   session: SessionSummary;
@@ -46,8 +59,15 @@ export function TerminalPanel({
   /** opens the TUI tab the way the Terminal button does (asking first while a turn runs) */
   onOpenTui: () => void;
   onClose: () => void;
+  /** the question before handing a busy session to its TUI (asked from the agent's tab) */
+  ask?: React.ReactNode;
+  /** the harness's TUI joins the session beside Tether (capabilities.terminal "shared") rather than taking it over */
+  shared: boolean;
 }) {
   const [shells, setShells] = useState<ShellInfo[]>([]);
+  const [shellsLoaded, setShellsLoaded] = useState(false);
+  const tabNow = useRef(panel.tab);
+  tabNow.current = panel.tab;
   const [error, setError] = useState<string>();
   const [askBack, setAskBack] = useState(false);
   const [line, setLine] = useState("");
@@ -59,13 +79,18 @@ export function TerminalPanel({
   const tuiRuns = state.mode === "terminal" || !!state.terminal;
   const handoff = state.mode === "terminal";
   const harness = HARNESS_LABELS[session.harness];
+  const agent = AGENT_NAMES[session.harness];
   const showKeys = touch();
 
   const loadShells = useCallback(async () => {
     try {
       const { shells } = await rpc(runnerId, "listShells", { projectPath: session.projectPath });
       setShells(shells);
-    } catch {}
+      setShellsLoaded(true);
+    } catch (e) {
+      // "Shell" waits on this: say why it can't open one.
+      if (tabNow.current === SHELL_TAB) setError((e as Error).message);
+    }
   }, [runnerId, session.projectPath]);
 
   // Shells come and go on other devices too: looked at again every few seconds while open.
@@ -101,6 +126,22 @@ export function TerminalPanel({
         if (panel.tab === id) setPanel({ ...panel, tab: "tui" });
       }),
     );
+  // "Shell": the project's first shell, or a new one (once; a failure says why and stays).
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (tab !== SHELL_TAB || !shellsLoaded) return;
+    if (shells[0]) return setPanel({ ...panel, tab: shells[0].id });
+    if (autoTried.current) return;
+    autoTried.current = true;
+    void newShell();
+  }, [tab, shellsLoaded, shells]);
+
+  /** The agent's tab: its TUI when it runs (or is being opened), else open it (asking first when busy). */
+  const toTui = () => {
+    if (tuiRuns || panel.wantTui) return setPanel({ ...panel, tab: "tui" });
+    onOpenTui();
+  };
+
   const back = (whenIdle: boolean) => {
     setAskBack(false);
     void call(
@@ -138,13 +179,33 @@ export function TerminalPanel({
         ? "That shell has closed"
         : undefined;
   const waitingBack = !!state.terminal?.returnWhenIdle;
+  // Who drives the agent, said under the tabs (SPEC §8): unmistakable whichever tab is in front.
+  const who =
+    tab === "tui"
+      ? handoff
+        ? `${agent} terminal · it drives ${agent} now. The chat follows along; Back to Tether hands the session back.`
+        : state.terminal?.kind === "shared"
+          ? `${agent} terminal · joined to this session. Tether's chat drives ${agent} too.`
+          : undefined
+      : shell
+        ? handoff
+          ? `Shell ${shell.n} · a plain shell in this folder. ${agent} is still driven from the ${agent} terminal tab until Back to Tether.`
+          : `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat still drives ${agent}.`
+        : undefined;
 
   return (
-    <div className="t-term-panel" role="region" aria-label="Terminal" ref={root}>
+    <div className={`t-term-panel${panel.hidden ? " hidden" : ""}`} role="region" aria-label="Terminal" ref={root}>
       <div className="t-term-head">
         <div className="t-term-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === "tui"} className="t-term-tab" onClick={() => setPanel({ ...panel, tab: "tui" })}>
-            {harness}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "tui"}
+            className="t-term-tab"
+            title={handoff || tuiRuns ? undefined : shared ? `${agent}'s own terminal UI, joined to this session` : `Hands this session to ${agent}'s own terminal UI`}
+            onClick={toTui}
+          >
+            {agent} terminal
             {state.terminal?.attention && <span className="t-dot waiting" aria-label="Needs you" />}
           </button>
           {shells.map((s) => (
@@ -176,9 +237,19 @@ export function TerminalPanel({
             // A shared TUI (SPEC §8): quitting it leaves Tether driving, as it was all along.
             <Button label={returning ? "Quitting…" : `Quit ${harness}`} size="sm" variant="secondary" isDisabled={returning} onClick={() => back(false)} />
           )}
+          {narrow() && (
+            // A phone: the chat, with the terminal kept as it is behind it.
+            <Button label="Chat" size="sm" variant="secondary" icon={<Icon icon={ChatBubbleLeftRightIcon} size="sm" />} onClick={() => setPanel({ ...panel, hidden: true })} />
+          )}
           <IconButton label="Close terminal panel" tooltip="Close (the terminal keeps running)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
+      {who && (
+        <div className={`t-term-who${tab === "tui" && handoff ? " drives" : ""}`} role="status">
+          {who}
+        </div>
+      )}
+      {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
           <span>{harness} is still working in the terminal.</span>
@@ -205,10 +276,19 @@ export function TerminalPanel({
             />
           ) : (
             <div className="t-term-empty">
-              <span>{harness} isn't open in the terminal.</span>
-              <Button label={`Open ${harness} here`} variant="primary" onClick={onOpenTui} />
+              <span>{agent} isn't open in the terminal.</span>
+              <span className="t-term-empty-more">
+                {shared
+                  ? `${agent}'s own terminal UI joins this session beside Tether. Both can drive ${agent}.`
+                  : `Opening it hands this session to ${agent}'s own terminal UI: it drives ${agent} until you go Back to Tether, and the chat follows along.`}
+              </span>
+              {!ask && <Button label={`Open ${agent} terminal`} variant="primary" onClick={onOpenTui} />}
             </div>
           )
+        ) : tab === SHELL_TAB ? (
+          <div className="t-term-empty">
+            <span>Opening a shell…</span>
+          </div>
         ) : shell ? (
           <TermView key={shell.id} ref={view} runnerId={runnerId} target={{ shellId: shell.id }} />
         ) : (

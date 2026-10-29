@@ -1525,3 +1525,52 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------- P5b: Shell beside the chat vs the agent's terminal (SPEC §8) ---------- */
+
+/* Who drives the agent, under the panel's tabs. */
+.t-term-who {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid #2a2c31;
+  background: var(--color-background-card, #1d1f23);
+  color: var(--t-muted);
+}
+.t-term-who.drives {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-warning, #d4a017) 14%, var(--color-background-card, #1d1f23));
+}
+.t-term-empty-more {
+  max-width: 420px;
+  font-size: 13px;
+  color: #999;
+}
+/* A phone's way back to the terminal it tucked behind the chat. */
+.t-term-return {
+  all: unset;
+  box-sizing: border-box;
+  display: none;
+  align-self: center;
+  margin: 6px 12px 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--t-border);
+  background: var(--t-soft);
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-term-return:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+@media (max-width: 767px) {
+  .t-term-panel.hidden {
+    display: none;
+  }
+  .t-term-return {
+    display: inline-flex;
+    gap: 6px;
+  }
+}

@@ -69,6 +69,13 @@ const noOverflow = async (p, where) => {
   const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   if (w > 1) fail(`${where}: page scrolls sideways by ${w}px`);
 };
+/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+const pickTerminal = async (p, tap = false) => {
+  const chip = p.locator(".t-chip-term");
+  await (tap ? chip.tap() : chip.click());
+  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
+  await (tap ? item.tap() : item.click());
+};
 const composer = (p) => p.locator("textarea.t-input[aria-label=Message]");
 const idle = (p, ms = 120_000) => p.locator('button[aria-label="Send"]').waitFor({ timeout: ms });
 const running = (p, ms = 60_000) => p.locator('button[aria-label="Stop"], button[aria-label="Steer"], button[aria-label="Queue"]').first().waitFor({ timeout: ms });
@@ -396,7 +403,7 @@ const steps = {
     await composer(a).fill("Reply with exactly: AFTER-TERMINAL");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "AFTER-TERMINAL" }).waitFor();
-    await a.locator(".t-chip-term").click();
+    await pickTerminal(a);
     const ask = a.locator(".t-term-ask");
     await ask.waitFor();
     const q = await ask.innerText();

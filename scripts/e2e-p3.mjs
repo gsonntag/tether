@@ -134,9 +134,16 @@ const sameAsTmux = async (p, key, name, where) => {
     await sleep(250);
   }
 };
+/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+const pickTerminal = async (p, tap = false) => {
+  const chip = p.locator(".t-chip-term");
+  await (tap ? chip.tap() : chip.click());
+  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
+  await (tap ? item.tap() : item.click());
+};
 const openPanel = async (p) => {
   const chip = p.locator(".t-chip-term");
-  if ((await chip.getAttribute("aria-pressed")) !== "true") await chip.click();
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
 };
 /** Types into the terminal with the keyboard, as a person at the desktop would. */
@@ -178,7 +185,7 @@ const steps = {
     await composer(p).waitFor();
     await send(p, "Run the shell command `sleep 6 && echo slept` and then reply with just DONE.");
     await p.locator('button[aria-label="Stop"]').waitFor({ timeout: 30_000 });
-    await p.locator(".t-chip-term").click();
+    await pickTerminal(p);
     const ask = p.locator(".t-term-ask");
     await ask.waitFor();
     const text = await ask.innerText();
@@ -206,7 +213,7 @@ const steps = {
     // A turn that is surely still running when Terminal is clicked: a 30 s command (asked first).
     await send(p, "Run the shell command `sleep 30 && echo slept` with Bash, then reply with just DONE.");
     await p.locator('button[aria-label="Stop"]').waitFor({ timeout: 30_000 });
-    await p.locator(".t-chip-term").click();
+    await pickTerminal(p);
     const ask = p.locator(".t-term-ask");
     await button(ask, "Stop and open terminal").click();
     await waitState(p, (s) => s.mode === "terminal" && s.terminal?.kind === "handoff", "mode terminal after Stop and open terminal");
@@ -447,7 +454,7 @@ const steps = {
     // Reopened (on the phone this time): the shell is there, named by what runs in it.
     const ph = await page(phone, session);
     await ph.locator(".t-term-banner").waitFor({ timeout: 30_000 });
-    await ph.locator(".t-chip-term").tap();
+    await pickTerminal(ph, true);
     const shellTab = ph.locator(".t-term-tab", { hasText: "python3" });
     await shellTab.waitFor({ timeout: 10_000 });
     await shellTab.tap();
