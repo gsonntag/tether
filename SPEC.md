@@ -223,13 +223,15 @@ its subagents as children in the sidebar and in the session header.
 | Live turns | SDK frames with `parent_tool_use_id` / `agent_id`; set `forwardSubagentText: true` so text and thinking come through, not only tool calls | each subagent is its own thread (`parentThreadId`); its `item/*` events stream like any thread |
 | Past transcript | `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.jsonl` (+ `.meta.json`), or SDK `getSubagentMessages`. Thinking isn't saved there, so past thinking is empty | its rollout file, or `thread/read` / `thread/items/list` on the child thread id |
 | Stop | `stopTask(taskId)` | `turn/interrupt` on the child thread |
-| Steer | no API to message a subagent directly (see below) | `turn/steer` on the child thread, as you (verify in P4) |
+| Steer | via the main agent's `SendMessage` tool (see below) | `turn/steer` on the child thread, as you (verify in P4) |
 
-**Steering Claude subagents** (pending a decision, Q19): relay through the main agent. The subagent's
-message box steers the main agent with "Send this to subagent `<name>` now: …". Tether asks Claude to
-name its subagents so they're addressable, and the message appears in the subagent's view marked
-"Sent via the main agent". Later, if that proves unreliable: Tether-run subagents (each a real Tether
-session) as a module.
+**Steering Claude subagents** (decided): the SDK can't address a message to a subagent (tested
+2026-10-29: `parent_tool_use_id`, `agent_id` and `priority` on a pushed user message all go to the main
+thread). Instead the subagent's message box steers the main agent with a tight instruction to call
+Claude's own `SendMessage` tool to the subagent's agent id with exactly your text. The message shows in
+the subagent's view marked "Sent via the main agent", delivered once the `SendMessage` call is seen,
+or "Not delivered" if the main agent's turn ends without it. This is an implementation detail behind
+`steer: "via-parent"`, so it can be swapped for a native path if the SDK ever adds one.
 
 Adapter capabilities: `subagents: { view: boolean; stop: boolean; steer: "direct" | "via-parent" | false }`.
 Viewing comes in P1 (Claude) and P4 (Codex). Steering and stopping come with each adapter.
