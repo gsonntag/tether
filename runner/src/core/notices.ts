@@ -48,6 +48,34 @@ export class NoticeStore {
     this.timer.unref?.();
   }
 
+  /** A kept message changed (a `!` command's card moved on): saved as given, where it was. */
+  update(sessionId: string, msg: Msg) {
+    const e = this.map[sessionId];
+    const i = e?.notices.findIndex((x) => x.msg.id === msg.id) ?? -1;
+    if (!e || i < 0) return;
+    e.notices[i] = { ...e.notices[i]!, msg };
+    this.later();
+  }
+
+  /** Changes kept messages in every session (`fn` returns the new one, or undefined to keep it). */
+  rewrite(fn: (sessionId: string, msg: Msg) => Msg | undefined) {
+    let any = false;
+    for (const [id, e] of Object.entries(this.map))
+      e.notices = e.notices.map((n) => {
+        const m = fn(id, n.msg);
+        if (!m) return n;
+        any = true;
+        return { ...n, msg: m };
+      });
+    if (any) this.later();
+  }
+
+  private later() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), 300);
+    this.timer.unref?.();
+  }
+
   /** Replaces a session's notices (after pruning). */
   set(sessionId: string, notices: OverlayNotice[]) {
     const had = this.map[sessionId]?.notices ?? [];

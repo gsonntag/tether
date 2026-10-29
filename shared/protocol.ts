@@ -156,6 +156,14 @@ export interface Ops {
   pushStatus: { args: { endpoint: string }; result: { subscribed: boolean; ready: boolean } };
   /** Sends a test notification to one subscription. */
   pushTest: { args: { endpoint: string }; result: null };
+  /**
+   * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
+   * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)
+   * streams its output; when it ends, the command and its output go to the agent through the queue.
+   */
+  runShell: { args: { sessionId: string; command: string }; result: { id: string } };
+  /** Stops a running `!` command (its whole process group); what it printed still goes, marked stopped. */
+  stopShell: { args: { sessionId: string; id: string }; result: null };
   /** stops the running turn; on a subagent, stops that subagent */
   interrupt: { args: { sessionId: string }; result: null };
   /** saved for the session and applied now when it is live, else when it next starts */

@@ -12,7 +12,7 @@
 // Pure: tested from recorded daemon streams (fixtures/).
 
 import { resolve } from "node:path";
-import { fromTether } from "../../../../shared/fromTether";
+import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
 import { attachedImage } from "../../core/attachments";
 import { classifyTool } from "../toolKind";
@@ -163,9 +163,9 @@ export function userMsg(item: any, ts: number): Msg | undefined {
   // Images shown as images aren't also "[image]" in the text.
   const text = userText(item, images.length === 0);
   if (!text && !images.length) return undefined;
-  const tether = fromTether(text);
-  return tether !== undefined
-    ? { id: `u-${item.id}`, role: "user", ts, origin: { kind: "tether" }, parts: [{ type: "text", text: tether }] }
+  const tether = tetherOrigin(text);
+  return tether
+    ? { id: `u-${item.id}`, role: "user", ts, origin: tether.origin, parts: [{ type: "text", text: tether.text }] }
     : { id: `u-${item.id}`, role: "user", ts, parts: [...(text ? [{ type: "text" as const, text }] : []), ...images] };
 }
 

@@ -2,7 +2,7 @@
 // live stream (stream.ts), so a session reads the same either way. Ported from v1's claude.ts,
 // trimmed to P1's parts (text, thinking, image, tool).
 
-import { fromTether } from "../../../../shared/fromTether";
+import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part } from "../../../../shared/transcript";
 import { toolPart } from "../toolKind";
 
@@ -68,8 +68,8 @@ export const notice = (id: string, ts: number, text: string, level: Msg["level"]
 export function injected(text: string, flags: EntryFlags, id: string, ts: number): Msg | null | undefined {
   const t = text.trimStart();
   // A message Tether sent on your behalf (an answer passed on after a restart): Tether's, not yours.
-  const tether = fromTether(t);
-  if (tether !== undefined) return { id, role: "user", ts, origin: { kind: "tether" }, parts: [{ type: "text", text: tether }] };
+  const tether = tetherOrigin(t);
+  if (tether) return { id, role: "user", ts, origin: tether.origin, parts: [{ type: "text", text: tether.text }] };
   // A background task's report to Claude: the live stream never shows it (the subagent's own
   // session and Claude's answer do), so the stored view doesn't either.
   if (flags.origin?.kind === "task-notification" || t.startsWith("<task-notification>")) return null;

@@ -5,7 +5,7 @@
 import { query, type CanUseTool, type PermissionMode, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
-import { fromTether } from "../../../../shared/fromTether";
+import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
@@ -172,9 +172,9 @@ export class ClaudeDriver implements Driver {
     const uuid = randomUUID();
     const images = nativeImages(attachments);
     // Tether's own message (an answer passed on after a restart) shows as Tether's, as stored ones do.
-    const tether = fromTether(text);
-    const parts: Part[] = [{ type: "text", text: tether ?? canonicalCommand(text) }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
-    const shown: Msg = { id: uuid, role: "user", ts: Date.now(), ...(tether !== undefined ? { origin: { kind: "tether" } } : {}), parts };
+    const tether = tetherOrigin(text);
+    const parts: Part[] = [{ type: "text", text: tether?.text ?? canonicalCommand(text) }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
+    const shown: Msg = { id: uuid, role: "user", ts: Date.now(), ...(tether ? { origin: tether.origin } : {}), parts };
     this.sink.event({ type: "msg", msg: shown });
     const content = images.length ? [{ type: "text", text }, ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mimeType, data: i.data } }))] : text;
     this.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid, origin: { kind: "human" } } as SDKUserMessage);

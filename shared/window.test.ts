@@ -29,7 +29,9 @@ test("a late update to a message outside the window is ignored, not appended", (
 test("deltas, tool patches and resets", () => {
   let w = applyToWindow(win("m1"), { type: "delta", msgId: "m1", part: 0, text: "!" });
   expect(w.messages[0]!.parts[0]).toEqual({ type: "text", text: "m1!" });
-  expect(applyToWindow(w, { type: "delta", msgId: "m1", part: 1, text: "x" })).toEqual(w);
+  // On a tool part a delta appends to its output (a `!` command's card streaming).
+  expect((applyToWindow(w, { type: "delta", msgId: "m1", part: 1, text: "x" }).messages[0]!.parts[1] as any).output).toBe("x");
+  expect(applyToWindow(w, { type: "delta", msgId: "m1", part: 5, text: "x" })).toEqual(w);
   w = applyToWindow(w, { type: "tool", msgId: "m1", toolId: "t-m1", patch: { status: "done", output: "ok" } });
   expect(w.messages[0]!.parts[1]).toMatchObject({ type: "tool", id: "t-m1", status: "done", output: "ok" });
   w = applyToWindow(w, { type: "reset", messages: [msg("c1")], hasOlder: false });

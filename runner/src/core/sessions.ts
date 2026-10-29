@@ -343,9 +343,9 @@ export class SessionCore {
     this.evictTimers.set(s.id, t);
   }
 
-  /** Kept in memory: live, running, waiting on a person, in a terminal, or watched. */
+  /** Kept in memory: live, running (a turn or a `!` command), waiting on a person, in a terminal, or watched. */
   private held(s: Session) {
-    return s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
+    return s.live || s.childRunning || s.shellsRunning > 0 || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
   }
 
   /**

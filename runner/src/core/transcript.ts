@@ -55,8 +55,10 @@ export class Transcript {
       case "delta": {
         const m = this.get(e.msgId);
         const p = m?.parts[e.part];
-        if (!m || !p || (p.type !== "text" && p.type !== "thinking")) return null;
-        this.set(m, e.part, { ...p, text: p.text + e.text });
+        if (!m || !p) return null;
+        if (p.type === "tool") this.set(m, e.part, { ...p, output: (p.output ?? "") + e.text });
+        else if (p.type === "text" || p.type === "thinking") this.set(m, e.part, { ...p, text: p.text + e.text });
+        else return null;
         return e;
       }
       case "tool": {

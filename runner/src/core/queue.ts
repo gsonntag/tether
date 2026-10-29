@@ -25,6 +25,11 @@ export interface QueueHost {
 }
 
 export class MessageQueue {
+  /**
+   * A waiting message left the queue: it went out to the harness, or was cancelled (a `!` command's
+   * card says so, core/shellRuns.ts).
+   */
+  gone?: (s: Session, m: QueuedMessage, how: "sent" | "cancelled") => void;
   /** sessions whose next message is going out */
   private draining = new Set<string>();
   /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
@@ -63,13 +68,13 @@ export class MessageQueue {
 
   // ---------------- ops ----------------
 
-  async add(id: string, text: string, attachments: Attachment[]): Promise<{ id: string }> {
+  async add(id: string, text: string, attachments: Attachment[], o: { shell?: QueuedMessage["shell"] } = {}): Promise<{ id: string }> {
     const s = await this.root(id);
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     if (s.state.queue.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
     this.roomFor(s.state.queue, text);
-    const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), queuedAt: this.core.now() };
+    const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether.
     this.save(s, [...s.state.queue, m], !s.state.queueHeld && s.state.mode === "terminal" ? "terminal" : undefined);
     this.later(s.id);
@@ -80,6 +85,7 @@ export class MessageQueue {
     const s = await this.root(id);
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const m = this.find(s, msgId);
+    if (m.shell) throw new Error("A command's output can't be edited. Cancel it instead.");
     if (!text.trim() && !m.attachments?.length) return this.cancel(id, msgId);
     this.roomFor(s.state.queue.filter((x) => x.id !== msgId), text);
     this.save(s, s.state.queue.map((x) => (x.id === msgId ? { ...x, text } : x)));
@@ -87,7 +93,9 @@ export class MessageQueue {
 
   async cancel(id: string, msgId: string) {
     const s = await this.root(id);
+    const m = s.state.queue.find((x) => x.id === msgId);
     this.save(s, s.state.queue.filter((x) => x.id !== msgId));
+    if (m) this.gone?.(s, m, "cancelled");
   }
 
   async move(id: string, msgId: string, to: number) {
@@ -158,6 +166,7 @@ export class MessageQueue {
     try {
       await this.host.send(id, next!.text, next!.attachments ?? []);
       this.persist(s);
+      this.gone?.(s, next!, "sent");
     } catch (e: any) {
       // Back at the front. A turn that started meanwhile (you sent something) just means later;
       // anything else holds the queue: whatever stopped it would stop the rest too.

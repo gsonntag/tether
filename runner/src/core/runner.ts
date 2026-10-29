@@ -13,6 +13,7 @@ import { OpRegistry } from "./ops";
 import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { registerSessionOps } from "./sessionOps";
+import { registerShellOps, ShellRuns } from "./shellRuns";
 import { SessionCore } from "./sessions";
 import type { SpawnPty } from "../terminal/attach";
 import { TerminalControl } from "../terminal/control";
@@ -99,6 +100,8 @@ export function createRunner(o: RunnerOptions) {
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir });
   registerSessionOps(ops, core, live);
+  const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
+  registerShellOps(ops, shellRuns);
   const t = o.terminal || undefined;
   const terminal =
     t && (t.tmux || Bun.which("tmux"))
@@ -133,6 +136,7 @@ export function createRunner(o: RunnerOptions) {
     epoch,
     core,
     live,
+    shellRuns,
     harnesses: () => harnesses,
     terminal,
     /** what modules may know about sessions (modules/index.ts ModuleContext) */
@@ -157,6 +161,8 @@ export function createRunner(o: RunnerOptions) {
     /** Closes live sessions (their harnesses flush), then the connection. */
     stop: async () => {
       clearInterval(timer);
+      // Before the notices are written for the last time: their cards end as not sent.
+      shellRuns.stopAll();
       terminal?.stop();
       core.stop();
       live.attachments.stop();

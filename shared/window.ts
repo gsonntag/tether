@@ -21,10 +21,11 @@ export function applyToWindow(w: TranscriptWindow, e: SessionEvent): TranscriptW
     case "delta":
       return patchMsg(w, e.msgId, (m) => {
         const part = m.parts[e.part];
-        if (!part || (part.type !== "text" && part.type !== "thinking")) return m;
         // A part cut short holds only its start: the delta belongs after text this window doesn't
         // have. It stays cut (still marked `truncated`); fullPart has the whole of it.
-        if (part.truncated) return m;
+        if (!part || part.truncated) return m;
+        if (part.type === "tool") return { ...m, parts: replaceAt(m.parts, e.part, { ...part, output: (part.output ?? "") + e.text }) };
+        if (part.type !== "text" && part.type !== "thinking") return m;
         return { ...m, parts: replaceAt(m.parts, e.part, { ...part, text: part.text + e.text }) };
       });
     case "tool":

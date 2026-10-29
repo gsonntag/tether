@@ -37,6 +37,8 @@ export class Session {
   stopped = false;
   /** the running turn's error, as the harness reported it (for turnEnded) */
   turnError?: string;
+  /** `!` commands running in its folder (core/shellRuns.ts): it stays in memory meanwhile */
+  shellsRunning = 0;
   /**
    * Messages only Tether has (its notices: denials, errors, a turn cut off; ids "n-…"), each
    * after the message it followed. The store doesn't have them, so they're laid over every
@@ -109,6 +111,6 @@ export class Session {
   }
 }
 
-/** A notice only Tether has (not in the harness's store). */
-export const isTetherNotice = (m: Msg) => m.role === "notice" && m.id.startsWith("n-");
+/** A message only Tether has (not in the harness's store): its notices, and `!` command cards. */
+export const isTetherNotice = (m: Msg) => m.id.startsWith("n-") && (m.role === "notice" || !!m.shell);
 

@@ -2,6 +2,7 @@
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
 import type { Attachment } from "./attachments";
+import type { ShellRun } from "./shellRun";
 
 export type HarnessId = "claude" | "codex";
 
@@ -111,6 +112,12 @@ export interface Msg {
    */
   relay?: "sending" | "delivered" | "failed";
   /**
+   * user: a `!` command you ran from the composer (shared/shellRun.ts), its card: `parts[0]` is a
+   * shell tool part with the command and its output; this says where it is (running, queued for the
+   * agent, sent).
+   */
+  shell?: ShellRun;
+  /**
    * Parts at the end left out to keep the message small (shared/limits.ts): `parts` holds the
    * first ones, and parts[parts.length …] can be fetched one by one with `fullPart`.
    */
@@ -187,6 +194,8 @@ export interface QueuedMessage {
   queuedAt: number;
   /** `text` was cut to travel (shared/limits.ts capQueued): its full UTF-8 length; the runner has it whole */
   truncated?: number;
+  /** a `!` command's output on its way to the agent: the command, and its card's message id */
+  shell?: { command: string; cardId: string };
 }
 
 export interface TerminalState {
@@ -327,7 +336,7 @@ export type SessionEvent =
    * message the browser may not have loaded (an older page): ignored if it isn't loaded.
    */
   | { type: "msg"; msg: Msg; isNew?: boolean }
-  /** streamed text appended to a text or thinking part */
+  /** streamed text appended to a text or thinking part, or to a tool part's output */
   | { type: "delta"; msgId: string; part: number; text: string }
   | { type: "tool"; msgId: string; toolId: string; patch: Partial<ToolPart> }
   | { type: "state"; state: Partial<LiveState> }
