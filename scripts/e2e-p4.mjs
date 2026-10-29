@@ -11,7 +11,7 @@
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new stream approve deny steer terminal tuiApprove tetherApprove phone subagent restart quit fresh settings stored
+//   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings stored
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -249,10 +249,10 @@ const steps = {
     await send(p, "Use the shell to run exactly: echo no > denied.txt   Then reply in one short sentence.");
     await card(p).waitFor({ timeout: 90_000 });
     await button(card(p), "Deny with reason").click();
-    await card(p).getByRole("textbox", { name: "Reason" }).fill("Don't write files. Reply with just the word UNDERSTOOD.");
+    await card(p).getByRole("textbox", { name: "Reason" }).fill("Not this one, just for now: skip it and reply with just the word UNDERSTOOD.");
     await card(p).getByRole("textbox", { name: "Reason" }).press("Enter");
     await card(p).waitFor({ state: "detached", timeout: 10_000 });
-    await p.locator(".t-msg", { hasText: "Don't write files" }).first().waitFor({ timeout: 30_000 });
+    await p.locator(".t-msg", { hasText: "Not this one, just for now" }).first().waitFor({ timeout: 30_000 });
     await idle(p, 120_000);
     if (existsSync(scratch("denied.txt"))) fail("denied.txt exists after the denial");
     if (!/UNDERSTOOD/.test(await transcriptText(p))) fail("Codex didn't read the reason");
@@ -284,6 +284,31 @@ const steps = {
     const idleSteer = await rpcVia(p, "steer", { sessionId: sessionId(), text: "x" });
     if (!/Nothing is running/.test(idleSteer.error ?? "")) fail(`steer while idle: ${JSON.stringify(idleSteer)}`);
     ok("steered into the running turn: the message shows in place and the reply follows it; steering an idle session is refused");
+    await p.close();
+  },
+
+  async midturn() {
+    // Codex fixes a turn's settings when it starts (capabilities.settingsApply "nextTurn"): a change
+    // made mid-turn shows as counting from the next turn, with the turn's own value, and Stop offered
+    // when it tightens.
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: sessionId(), mode: "auto" })).error) fail("setPermissionMode auto");
+    await send(p, "Run `sleep 12` in the shell, then reply with just: SLEPT");
+    await p.locator('button[aria-label="Stop"]').waitFor({ timeout: 30_000 });
+    await p.locator(".t-header").getByRole("button", { name: /^Mode:/ }).click();
+    await p.getByRole("menuitemradio", { name: /Read only/ }).click();
+    const note = p.locator(".t-turn-settings");
+    await note.waitFor({ timeout: 15_000 });
+    const head = await p.locator(".t-header").innerText();
+    if (!/Read only from the next turn/.test(head) || !/This turn still runs with Mode Auto/.test(head)) fail(`header mid-turn: ${head}`);
+    await button(note, "Stop this turn").waitFor();
+    await shot(p, "midturn-desktop");
+    await idle(p, 120_000);
+    await note.waitFor({ state: "detached", timeout: 10_000 });
+    if (!/Mode\s*Read only/.test(await p.locator(".t-header").innerText())) fail("after the turn the header isn't Read only");
+    await rpcVia(p, "setPermissionMode", { sessionId: sessionId(), mode: "untrusted" });
+    ok('Read only picked mid-turn shows "Read only from the next turn", "This turn still runs with Mode Auto" and Stop this turn; after the turn it is just Read only');
     await p.close();
   },
 
@@ -531,7 +556,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "stored"]) {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "stored"]) {
     if (!session && name !== "new" && name !== "fresh" && name !== "settings") {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
