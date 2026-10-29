@@ -158,8 +158,15 @@ export const Composer = forwardRef<
     const sentText = text;
     try {
       await onSend("shell", command, []);
-      if (drafts.get(key) === sentText) drafts.delete(key);
-      if (keyRef.current === key && textRef.current === sentText) setText("");
+      // Typed on during the send: what was sent goes, what follows it stays.
+      const rest = (cur: string | undefined) => (cur === undefined ? undefined : cur.startsWith(sentText) ? cur.slice(sentText.length).replace(/^\s+/, "") : cur);
+      const left = rest(drafts.get(key));
+      if (left) drafts.set(key, left);
+      else drafts.delete(key);
+      if (keyRef.current === key) {
+        const now = rest(textRef.current) ?? "";
+        if (now !== textRef.current) setText(now);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -187,8 +194,15 @@ export const Composer = forwardRef<
     const sentFiles = new Set(files.filter((f) => f.attachment).map((f) => f.key));
     try {
       await onSend(kind, t, ready);
-      if (drafts.get(key) === sentText) drafts.delete(key);
-      if (keyRef.current === key && textRef.current === sentText) setText("");
+      // Typed on during the send: what was sent goes, what follows it stays.
+      const rest = (cur: string | undefined) => (cur === undefined ? undefined : cur.startsWith(sentText) ? cur.slice(sentText.length).replace(/^\s+/, "") : cur);
+      const left = rest(drafts.get(key));
+      if (left) drafts.set(key, left);
+      else drafts.delete(key);
+      if (keyRef.current === key) {
+        const now = rest(textRef.current) ?? "";
+        if (now !== textRef.current) setText(now);
+      }
       updateFiles(key, (l) => {
         for (const f of l) if (sentFiles.has(f.key) && f.preview) URL.revokeObjectURL(f.preview);
         return l.filter((f) => !sentFiles.has(f.key));

@@ -249,6 +249,9 @@ async function brokenSession(p) {
   return r.ok.sessionId;
 }
 
+/** Waits until the agent is inside its slow command (its card shows, running), instead of a fixed pause. */
+const inCommand = (p, re) => p.locator(".t-msg.assistant", { hasText: re }).last().waitFor({ timeout: 90_000 });
+
 // Claude Code refuses a bare `sleep`; this waits the same.
 const SLOW = (n, word) => `Use the Bash tool to run exactly: timeout ${n} tail -f /dev/null; echo waited   Then reply with exactly one word: ${word}`;
 
@@ -288,7 +291,7 @@ const steps = {
     await send(a, SLOW(12, "DONE"));
     await running(a);
     await waitState(a, (s) => s.status === "running", "running");
-    await sleep(2500);
+    await inCommand(a, /timeout 12 tail/);
     if (!/Enter to steer/.test(await composer(a).getAttribute("placeholder"))) fail("the composer doesn't offer steering");
     await composer(a).fill("After that, also reply with the word PINEAPPLE.");
     if ((await button(a, "Steer").count()) !== 1) fail("no Steer button with text in the box");
@@ -316,7 +319,7 @@ const steps = {
     await composer(a).waitFor();
     await send(a, SLOW(15, "FIRST"));
     await running(a);
-    await sleep(1500);
+    await inCommand(a, /timeout 15 tail/);
     await composer(a).fill("Reply with exactly: QUEUED-ONE");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "QUEUED-ONE" }).waitFor({ timeout: 10_000 });
@@ -362,7 +365,7 @@ const steps = {
     await composer(a).waitFor();
     await send(a, SLOW(30, "TOO-LATE"));
     await running(a);
-    await sleep(2000);
+    await inCommand(a, /timeout 30 tail/);
     await composer(a).fill("Reply with exactly: AFTER-NOW");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "AFTER-NOW" }).waitFor();
@@ -375,9 +378,9 @@ const steps = {
     const tail = t.slice(t.lastIndexOf("TOO-LATE"));
     if (!/NOW[\s\S]*AFTER-NOW/.test(tail)) fail(`order after stop-and-send: ${tail.slice(0, 400)}`);
     // Stop alone holds the queue until you send or resume.
-    await send(a, SLOW(30, "STOPPED"));
+    await send(a, SLOW(31, "STOPPED"));
     await running(a);
-    await sleep(2000);
+    await inCommand(a, /timeout 31 tail/);
     await composer(a).fill("Reply with exactly: HELD");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "HELD" }).waitFor();
@@ -399,7 +402,7 @@ const steps = {
     await composer(a).waitFor();
     await send(a, SLOW(20, "HANDOFF"));
     await running(a);
-    await sleep(1500);
+    await inCommand(a, /timeout 20 tail/);
     await composer(a).fill("Reply with exactly: AFTER-TERMINAL");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "AFTER-TERMINAL" }).waitFor();
@@ -434,7 +437,7 @@ const steps = {
     await composer(a).waitFor();
     await send(a, SLOW(25, "CUT"));
     await running(a);
-    await sleep(2000);
+    await inCommand(a, /timeout 25 tail/);
     await composer(a).fill("Reply with exactly: SURVIVED");
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "SURVIVED" }).waitFor();
@@ -460,7 +463,7 @@ const steps = {
     await send(p, "Use the shell to run exactly: sleep 12   Then reply with exactly one word: DONE");
     await running(p);
     await waitState(p, (s) => s.status === "running", "running");
-    await sleep(3000);
+    await inCommand(p, /sleep 12/);
     await composer(p).fill("When you reply, also include the word PINEAPPLE.");
     await composer(p).press("Enter");
     // Codex shows a steer when the model takes it (after the running command).
