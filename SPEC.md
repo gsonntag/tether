@@ -95,6 +95,10 @@ Transitions: `stored → live` (send something), `live → stored` (idle 5 minut
 `live ⇄ terminal` (Terminal button, §8), `stored → terminal` (Terminal button on a stored session),
 `terminal → stored` (the TUI exits).
 
+- **Subagent:** a session too, with `parentSessionId` and `parentToolId` (the tool call that started
+  it). It has the same transcript, paging and live events as any session, so the same view shows it.
+  Details in §6a.
+
 Runner state on disk (`~/.config/tether/runner.json`, mode 600) is small: runner id, which
 sessions are in which mode, per-session prefs (model, effort, permission mode), queued
 messages, and open requests. **Not** transcripts.
@@ -114,6 +118,10 @@ ops). The server forwards session events only to subscribers, and forwards a sma
 `snapshot { session, messages, state, seq }`. The browser applies events with `seq = last + 1`
 and re-subscribes for a fresh snapshot on any gap or reconnect. This one rule handles tab close,
 phone sleep, network changes and multi-device sync.
+
+**Paging.** Snapshots (and `reset`) carry only the newest messages (`TRANSCRIPT_PAGE = 50`) plus
+`hasOlder`. The `history` op fetches older pages as you scroll up. The browser renders only what's on
+screen, so long sessions open instantly.
 
 ### Transcript
 
@@ -203,6 +211,28 @@ relay directly.
   same live thread through the daemon. Tether keeps driving; there is no handoff and no read-only mode.
   To verify with a real turn in P4: approval requests reach every connection and clear everywhere
   (`serverRequest/resolved`), and `turn/steer` works from either side.
+
+## 6a. Subagents: precise turns and steering
+
+You can open any subagent and see its exact turns (every message, thought, tool call and result, in
+order), live while it runs and afterwards. The parent's tool card links to it, and the session shows
+its subagents as children in the sidebar and in the session header.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Live turns | SDK frames with `parent_tool_use_id` / `agent_id`; set `forwardSubagentText: true` so text and thinking come through, not only tool calls | each subagent is its own thread (`parentThreadId`); its `item/*` events stream like any thread |
+| Past transcript | `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.jsonl` (+ `.meta.json`), or SDK `getSubagentMessages`. Thinking isn't saved there, so past thinking is empty | its rollout file, or `thread/read` / `thread/items/list` on the child thread id |
+| Stop | `stopTask(taskId)` | `turn/interrupt` on the child thread |
+| Steer | no API to message a subagent directly (see below) | `turn/steer` on the child thread, as you (verify in P4) |
+
+**Steering Claude subagents** (pending a decision, Q19): relay through the main agent. The subagent's
+message box steers the main agent with "Send this to subagent `<name>` now: …". Tether asks Claude to
+name its subagents so they're addressable, and the message appears in the subagent's view marked
+"Sent via the main agent". Later, if that proves unreliable: Tether-run subagents (each a real Tether
+session) as a module.
+
+Adapter capabilities: `subagents: { view: boolean; stop: boolean; steer: "direct" | "via-parent" | false }`.
+Viewing comes in P1 (Claude) and P4 (Codex). Steering and stopping come with each adapter.
 
 ## 7. Requests: approvals and questions
 
@@ -348,7 +378,8 @@ recorded event streams is used where it makes sync, queue and request tests dete
 **P0: Skeleton.** Repo setup (`v1` branch and `v1-final` tag, fresh `main` as the default branch, delete `master`),
 shared protocol, relay (copied from v1's server and simplified), runner connecting with a service
 token, dev mode (local server, `TETHER_TOKEN=dev`), the web shell with a runner list. Verify Bun's PTY
-support (`Bun.Terminal`). At the end, point the Foliation app `tether` at `main`.
+support (`Bun.Terminal`). The app stays on `master` (v1) until the P1 cutover, because pointing it at
+`main` deploys v2 and stops v1 working.
 *Accept:* the runner shows as connected in the browser, the server redeploys without the runner
 noticing, and a reconnect works.
 
@@ -358,7 +389,7 @@ snapshot plus seq.
 *Accept:* start a turn on desktop, close the tab, open on the phone mid-turn and see it stream; both
 devices show identical transcripts after the turn; a session started in a terminal `claude` shows up.
 **Cutover at the end of P1:** check that v1's `tether-runner` has no running sessions (wait or report if
-it does), deploy v2 to the `tether` app, replace the `tether-runner` unit with v2's runner, and use v2
+it does), point the Foliation app `tether` at `main` (which deploys v2), delete `master`, replace the `tether-runner` unit with v2's runner, and use v2
 from then on.
 
 **P2: Requests.** The request broker (with the empty policy-step list), approvals and
