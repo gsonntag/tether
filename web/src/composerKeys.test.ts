@@ -17,7 +17,8 @@ test("Tab queues text; ⌘/Ctrl+Enter stops and sends now; Esc on an empty box s
   expect(keyAction(k("Tab"), "steer", desk)).toBe("queue");
   expect(keyAction(k("Tab"), "idle", desk)).toBe("queue");
   expect(keyAction(k("Tab"), "steer", { ...desk, hasText: false })).toBeNull();
-  expect(keyAction(k("Tab"), "terminal", desk)).toBeNull();
+  // While the TUI drives, Tab queues for Back to Tether (SPEC §8).
+  expect(keyAction(k("Tab"), "terminal", desk)).toBe("queue");
   expect(keyAction(k("Enter", { metaKey: true }), "steer", desk)).toBe("stopSend");
   expect(keyAction(k("Enter", { ctrlKey: true }), "queue", desk)).toBe("stopSend");
   expect(keyAction(k("Enter", { ctrlKey: true }), "idle", desk)).toBe("send");

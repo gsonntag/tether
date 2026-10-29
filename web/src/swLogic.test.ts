@@ -12,7 +12,7 @@ test("a notification links to its session", () => {
 
 test("what a notification says", () => {
   expect(tetherNotification({ kind: "request", title: "Fix it", body: "Claude wants to run ls", tag: "req-1", ts: 5 })).toMatchObject({ title: "Needs you · Fix it", options: { body: "Claude wants to run ls", tag: "req-1", renotify: true, timestamp: 5 } });
-  expect(tetherNotification({ kind: "failed", title: "Fix it" }).title).toBe("Failed · Fix it");
+  expect(tetherNotification({ kind: "failed", title: "Fix it", body: "Failed: rate limited." })).toMatchObject({ title: "Fix it", options: { body: "Failed: rate limited." } });
   expect(tetherNotification({ kind: "finished", title: "Fix it" }).title).toBe("Fix it");
 });
 

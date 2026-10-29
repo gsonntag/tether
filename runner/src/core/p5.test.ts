@@ -234,6 +234,51 @@ describe("the queue", () => {
     expect(s.state.queueHeldBy).toBe("stopped");
   });
 
+  test("its text is capped as a whole, and a big queue still opens (cut on the wire)", async () => {
+    const { adapter, live, core } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "busy");
+    const big = "語".repeat(150_000); // 450 KB of UTF-8
+    await live.queue.add("claude:s1", big, []);
+    await live.queue.add("claude:s1", big, []);
+    await expect(live.queue.add("claude:s1", big, [])).rejects.toThrow("at most 1.0 MB of text together");
+    const s = await core.open("claude:s1");
+    const small = await live.queue.add("claude:s1", "x", []);
+    await expect(live.queue.edit("claude:s1", small.id, "語".repeat(50_000))).rejects.toThrow("at most");
+    // A queue saved before the cap (or right at it) still travels: each text cut, marked.
+    const snap = await core.subscribe("claude:s1");
+    expect(snap.state.queue[0]!.truncated).toBe(450_000);
+    expect(JSON.stringify(snap).length).toBeLessThan(200_000);
+    const { capEvent } = await import("../../../shared/limits");
+    const ev = capEvent({ type: "state", state: { queue: s.state.queue } });
+    expect(ev.type === "state" && ev.state.queue![1]!.truncated).toBe(450_000);
+  });
+
+  test("a message going out leaves runner.json only once the harness has it", async () => {
+    const { adapter, live, core, prefs, driver, end } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "one");
+    await live.queue.add("claude:s1", "two", []);
+    // Written at once, not after a debounce.
+    expect(JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue.map((m: any) => m.text)).toEqual(["two"]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const d = driver();
+    const orig = d.send.bind(d);
+    d.send = async (t: string) => {
+      await gate;
+      return orig(t);
+    };
+    end();
+    const s = await core.open("claude:s1");
+    await until(() => s.state.queue.length === 0);
+    // Not yet accepted: still saved.
+    expect(JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue.map((m: any) => m.text)).toEqual(["two"]);
+    release();
+    await until(() => d.sent.length === 2);
+    await until(() => !JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue);
+  });
+
   test("subagents have none", async () => {
     const { adapter, live } = setup();
     adapter.addStored("kid", [], { parentSessionId: "claude:s1" });
@@ -308,6 +353,40 @@ describe("attachments", () => {
   });
 });
 
+describe("attachments, housekeeping", () => {
+  test("session folders are one-to-one; names are capped by bytes; partials are never attachments", async () => {
+    const { sessionKey } = await import("./attachments");
+    expect(sessionKey("claude:a.b")).not.toBe(sessionKey("claude:a_b"));
+    const { safeName, NAME_BYTES_MAX } = await import("../../../shared/attachments");
+    const { utf8Length } = await import("../../../shared/limits");
+    const n = safeName("写".repeat(100) + ".png");
+    expect(utf8Length(n)).toBeLessThanOrEqual(NAME_BYTES_MAX);
+    expect(n.endsWith(".png")).toBe(true);
+    const { adapter, live } = setup();
+    adapter.addStored("s1", []);
+    const { attachment } = await live.attachments.receive({ sessionId: "claude:s1", uploadId: "upload0009", name: "写".repeat(100) + ".txt", mimeType: "text/plain", size: 2, offset: 0, data: Buffer.from("hi").toString("base64") });
+    expect(attachment!.name.endsWith(".txt")).toBe(true);
+    const dir = live.attachments.sessionDir("claude:s1");
+    writeFileSync(join(dir, ".abcd1234.partial"), "x");
+    expect(() => live.attachments.check(["claude:s1"], [{ path: join(dir, ".abcd1234.partial") }])).toThrow("hasn't finished uploading");
+  });
+
+  test("uploads never sent go after a day; sent ones and running uploads stay", async () => {
+    const { adapter, live } = setup();
+    adapter.addStored("s1", []);
+    const up = (id: string, name: string) => live.attachments.receive({ sessionId: "claude:s1", uploadId: id, name, mimeType: "text/plain", size: 2, offset: 0, data: Buffer.from("hi").toString("base64") });
+    const sent = (await up("upload0001", "sent.txt")).attachment!;
+    const unsent = (await up("upload0002", "unsent.txt")).attachment!;
+    live.attachments.markUsed([sent]);
+    const { existsSync } = await import("node:fs");
+    live.attachments.sweepStored(Date.now() + 2 * 60 * 60 * 1000);
+    expect(existsSync(unsent.path)).toBe(true);
+    live.attachments.sweepStored(Date.now() + 25 * 60 * 60 * 1000);
+    expect(existsSync(unsent.path)).toBe(false);
+    expect(existsSync(sent.path)).toBe(true);
+  });
+});
+
 describe("read state", () => {
   test("a turn that ends while nobody looks is unread on every device until someone looks", async () => {
     const { adapter, live, core, bus, end, driver, summaries } = setup();
@@ -332,6 +411,18 @@ describe("read state", () => {
     live.read.set("claude:s1", true);
     expect(row().unread).toBe("finished");
     expect(summaries().some((u) => u.kind === "upsert" && u.sessions.some((x) => x.unread === "failed"))).toBe(true);
+  });
+
+  test("looking at a subagent reads its main session", async () => {
+    const { adapter, live, core, bus, end } = setup();
+    adapter.addStored("s1", []);
+    adapter.addStored("s1/k", [], { parentSessionId: "claude:s1" });
+    await live.send("claude:s1", "go");
+    end();
+    expect(core.book.get("claude:s1")?.unread).toBe("finished");
+    await core.open("claude:s1/k");
+    bus.emit("viewers", { sessions: { "claude:s1/k": ["phone"] } });
+    expect(core.book.get("claude:s1")?.unread).toBeUndefined();
   });
 
   test("a turn you stopped isn't unread", async () => {

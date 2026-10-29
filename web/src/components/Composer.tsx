@@ -71,6 +71,8 @@ export const Composer = forwardRef<
   const camera = useRef<HTMLInputElement>(null);
   const keyRef = useRef(draftKey);
   keyRef.current = draftKey;
+  const textRef = useRef(text);
+  textRef.current = text;
   useImperativeHandle(ref, () => ({ focus: () => box.current?.focus() }));
 
   const [forKey, setForKey] = useState(draftKey);
@@ -145,11 +147,19 @@ export const Composer = forwardRef<
     if (steerOnly && kind !== "steer") kind = "steer";
     setBusy(true);
     setError(undefined);
+    // What goes, and from which draft: only that is cleared afterwards. Text typed meanwhile, or
+    // another session's draft (the view moved on during a slow stop-and-send), stays.
+    const key = draftKey;
+    const sentText = text;
+    const sentFiles = new Set(files.filter((f) => f.attachment).map((f) => f.key));
     try {
       await onSend(kind, t, ready);
-      change("");
-      for (const f of draftFiles.get(draftKey) ?? []) if (f.preview) URL.revokeObjectURL(f.preview);
-      updateFiles(draftKey, () => []);
+      if (drafts.get(key) === sentText) drafts.delete(key);
+      if (keyRef.current === key && textRef.current === sentText) setText("");
+      updateFiles(key, (l) => {
+        for (const f of l) if (sentFiles.has(f.key) && f.preview) URL.revokeObjectURL(f.preview);
+        return l.filter((f) => !sentFiles.has(f.key));
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {

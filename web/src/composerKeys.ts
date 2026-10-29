@@ -4,7 +4,7 @@
 // | idle                       | send         | queue (= send now) | send       |             |
 // | running, the harness steers| steer        | queue       | stop and send now | stop        |
 // | running, no steer          | queue        | queue       | stop and send now | stop        |
-// | terminal                   | send (typed into the TUI)  |                   |             |
+// | terminal (TUI drives)      | send (typed into the TUI) | queue (held for Back to Tether, SPEC §8) |  |
 // Shift+Enter is a newline everywhere; on phones Enter is a newline and buttons send.
 
 export type ComposerMode = "idle" | "steer" | "queue" | "terminal";
@@ -26,7 +26,7 @@ export function keyAction(e: { key: string; shiftKey: boolean; metaKey: boolean;
     if (o.phone) return null;
     return o.hasText ? primaryAction(mode) : null;
   }
-  if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && o.hasText && mode !== "terminal") return "queue";
+  if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && o.hasText) return "queue";
   if (e.key === "Escape" && busy && !o.hasText) return "stop";
   return null;
 }

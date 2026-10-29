@@ -66,6 +66,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
               <>
                 <span className="t-queued-text">
                   {m.text || <em>No text</em>}
+                  {m.truncated ? "…" : null}
                   {m.attachments?.length ? <span className="t-queued-files"> · {m.attachments.length === 1 ? m.attachments[0]!.name : `${m.attachments.length} files`}</span> : null}
                 </span>
                 <span className="t-queued-tools">
@@ -74,7 +75,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                       <ArrowUpIcon aria-hidden />
                     </button>
                   )}
-                  <button
+                  {!m.truncated && <button
                     type="button"
                     className="t-icon-btn"
                     aria-label="Edit"
@@ -85,7 +86,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                     }}
                   >
                     <PencilIcon aria-hidden />
-                  </button>
+                  </button>}
                   <button type="button" className="t-icon-btn" aria-label="Cancel this message" title="Cancel" onClick={() => void call(() => rpc(runnerId, "cancelQueued", { sessionId, id: m.id }))}>
                     <XMarkIcon aria-hidden />
                   </button>
