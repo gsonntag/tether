@@ -8,6 +8,7 @@ import { openSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
+import { QueueList } from "./QueueList";
 import { TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
@@ -164,17 +165,20 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={inTerminal ? empty : working || empty} />
         {terminalBar}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
-        {isChild && view.capabilities?.subagents.steer === "direct" && state.mode === "live" ? (
-          // A subagent the harness lets you message directly (SPEC §6a): into its running turn, as you.
+        {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} />}
+        {isChild && view.capabilities?.subagents.steer && state.mode === "live" ? (
+          // A running subagent you can message (SPEC §6a): directly into its turn, or passed on by the
+          // main agent ("via-parent"); either way it shows here as yours.
           <Composer
             ref={composer}
             draftKey={k}
             running
-            steer
+            steerOnly
             agent="The subagent"
             disabled={offline}
-            onSend={async (text) => {
-              await rpc(runnerId, "steer", { sessionId, text });
+            uploadTo={{ runnerId, sessionId }}
+            onSend={async (_kind, text, attachments) => {
+              await rpc(runnerId, "steer", { sessionId, text, ...(attachments.length ? { attachments } : {}) });
             }}
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
@@ -190,6 +194,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             draftKey={k}
             running={running}
             waiting={waiting && state.status !== "running"}
+            canSteer={!!view.capabilities?.canSteer}
+            inTerminal={inTerminal}
             disabled={
               offline ??
               (state.terminal?.returning
@@ -200,9 +206,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             }
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
             agent={agent}
+            uploadTo={{ runnerId, sessionId }}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
-            onSend={async (text) => {
-              await rpc(runnerId, "send", { sessionId, text });
+            onSend={async (kind, text, list) => {
+              const attachments = list.length ? { attachments: list } : {};
+              if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
+              else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
+              else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });

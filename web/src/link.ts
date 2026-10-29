@@ -104,6 +104,14 @@ export class Link {
     });
   }
 
+  /** Sends a frame that needs no answer (presence); false when not connected. */
+  send(frame: unknown): boolean {
+    const sock = this.ws;
+    if (!sock || sock.readyState !== OPEN || this.state !== "open") return false;
+    sock.send(JSON.stringify(frame));
+    return true;
+  }
+
   connect() {
     clearTimeout(this.retry);
     const sock = this.deps.open(this.deps.url);

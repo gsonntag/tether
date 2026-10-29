@@ -6,6 +6,8 @@ import { PROTOCOL_VERSION, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
+import { startPresence, tellPresence } from "./presence";
+import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
@@ -46,6 +48,8 @@ interface State {
   newSessionOpen: boolean;
   /** the sidebar shows only this folder's sessions */
   projectFilter?: string;
+  /** the app's VAPID public key (hello); absent: the server has no push keys */
+  pushKey?: string;
 }
 
 export const useStore = create<State>(() => ({
@@ -71,8 +75,16 @@ export function start() {
   const resub = resubscriber(subscriptions);
   /** the next runners frame follows our own (re)connect: every runner's lists may be stale */
   let afterHello = false;
+  startPresence();
+  // A notification clicked while a Tether window is open: that window opens the session.
+  registerWorker((url) => {
+    const at = url.indexOf("#");
+    if (at >= 0) location.hash = url.slice(at);
+  });
   on("hello", (m) => {
-    set({ user: m.user, stale: m.protocol !== PROTOCOL_VERSION });
+    set({ user: m.user, stale: m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey });
+    // The server forgot what this device looked at with its old socket.
+    tellPresence(true);
     resub.hello();
     afterHello = true;
   });
@@ -86,6 +98,8 @@ export function start() {
     afterHello = false;
     saveKnown(runners);
     set({ runners });
+    // A runner that connected (or came back) hears of this device's subscription.
+    void syncPush(get().pushKey, runners.filter((r) => r.online && (back.includes(r.id) || !before.find((b) => b.id === r.id)?.online)).map((r) => r.id));
   });
   on("summary", (m) => {
     const cur = get().summaries[m.runnerId] ?? emptySummary();

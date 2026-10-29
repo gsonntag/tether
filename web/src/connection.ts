@@ -1,7 +1,7 @@
 // The page's one link to the relay (link.ts), wired to the browser: the socket URL, /api/me, and
 // waking on visibility and network changes.
 
-import type { OpArgs, OpName, OpResult, ServerToBrowser } from "../../shared/protocol";
+import type { BrowserToServer, OpArgs, OpName, OpResult, ServerToBrowser } from "../../shared/protocol";
 import { Link, type AuthState, type LinkState } from "./link";
 
 export type { AuthState, LinkState };
@@ -20,6 +20,9 @@ export const on = <T extends ServerToBrowser["t"]>(t: T, fn: (m: Extract<ServerT
 export const onLinkState = (fn: (s: LinkState) => void) => link.onState(fn);
 export const onAuth = (fn: (a: AuthState) => void) => link.onAuth(fn);
 export const connect = () => link.connect();
+
+/** A frame that needs no answer (presence); false when not connected. */
+export const sendFrame = (m: Exclude<BrowserToServer, { t: "rpc" }>) => link.send(m);
 
 /** Calls an op on a runner through the relay. */
 export const rpc = <K extends OpName>(runnerId: string, op: K, args: OpArgs<K>) => link.rpc(runnerId, op, args) as Promise<OpResult<K>>;

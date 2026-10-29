@@ -7,7 +7,8 @@ import { Markdown } from "./Markdown";
 import { hardBreaks } from "../breaks";
 import { checked } from "../parts";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { ExclamationTriangleIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
+import { ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
+import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
 import { useFullParts, useSessionCtx } from "./sessionContext";
 import { ToolCard } from "./ToolCard";
@@ -119,17 +120,46 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
     );
   }
   if (msg.role === "user") {
+    // Attachments are listed at the end of the text (shared/attachments.ts): shown as chips. Images
+    // the harness took as images show as images; the chips are for the other files.
+    const files: Attachment[] = [];
+    const hasImages = parts.some((p) => p.type === "image");
+    const shownParts = parts.map((p) => {
+      if (p.type !== "text") return p;
+      const split = splitAttachments(p.text);
+      files.push(...split.files);
+      return { ...p, text: split.text };
+    });
+    const chips = files.filter((f) => !(hasImages && isImageType(f.mimeType)));
     return (
       <div className="t-msg user">
-        {parts.map((p, i) =>
+        {shownParts.map((p, i) =>
           p.type === "text" ? (
-            <div key={i} className="t-bubble">
-              {p.text}
-              {cutFor(i)}
-            </div>
+            p.text ? (
+              <div key={i} className="t-bubble">
+                {p.text}
+                {cutFor(i)}
+              </div>
+            ) : null
           ) : (
             <PartView key={i} part={p} streaming={false} cut={cutFor(i)} />
           ),
+        )}
+        {chips.length > 0 && (
+          <div className="t-msg-files">
+            {chips.map((f) => (
+              <span key={f.path} className="t-file" title={f.path}>
+                <PaperClipIcon className="t-file-icon" aria-hidden />
+                <span className="t-file-name">{f.name}</span>
+                <span className="t-file-meta">{formatSize(f.size)}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {msg.relay && (
+          <div className={`t-relay ${msg.relay}`}>
+            {msg.relay === "sending" ? "Sending via the main agent…" : msg.relay === "delivered" ? "Sent via the main agent" : "Not delivered: the main agent didn't pass it on."}
+          </div>
         )}
       </div>
     );

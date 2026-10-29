@@ -46,3 +46,26 @@ export function mergeRows(a: Row[], b: Row[]): Row[] {
 
 /** The last part of a path: "/home/me/web" -> "web". */
 export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
+
+export type InboxKind = "needs" | "failed" | "finished" | "working";
+export interface InboxRow extends Row {
+  inbox: InboxKind;
+}
+
+/**
+ * Home's inbox (SPEC §10), across runners: what needs you (open requests, a TUI asking), then
+ * failed and finished turns nobody has looked at, then what is working. Main sessions only (a
+ * subagent's request counts in its parent's).
+ */
+export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
+  const out: InboxRow[] = [];
+  for (const r of rows(summaries)) {
+    if (r.parentSessionId) continue;
+    const kind: InboxKind | undefined =
+      (r.requests ?? 0) > 0 || r.status === "waiting" ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" ? "finished" : r.status === "running" ? "working" : undefined;
+    if (kind) out.push({ ...r, inbox: kind });
+  }
+  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3 };
+  // Waiting longest first; the rest newest first.
+  return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+}

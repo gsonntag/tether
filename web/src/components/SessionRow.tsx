@@ -37,7 +37,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   return (
     <button
       type="button"
-      className={`t-row${child ? " t-child" : ""}`}
+      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}`}
       aria-current={selected ? "page" : undefined}
       onClick={() => {
         openSession(row.runnerId, row.id);
@@ -51,6 +51,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
         {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
         <span>· {shortAgo(row.updatedAt, now)}</span>
         {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
+        {row.unread && !row.requests && row.status !== "waiting" && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
         <StatusDot status={row.status} requests={row.requests} />
       </span>
     </button>

@@ -18,6 +18,12 @@ export function parseRoute(hash: string): Route {
   return { page: "home" };
 }
 
+/** What a device looks at (presence.ts): a session while the page is visible, else nothing. */
+export function presenceFor(hash: string, visible: boolean): { runnerId?: string; sessionId?: string } {
+  const r = parseRoute(hash);
+  return visible && r.page === "session" ? { runnerId: r.runnerId, sessionId: r.sessionId } : {};
+}
+
 export function formatRoute(r: Route): string {
   return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : "#/";
 }
