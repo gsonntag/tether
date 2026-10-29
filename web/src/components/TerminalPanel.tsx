@@ -159,6 +159,10 @@ export function TerminalPanel({
               onClick={() => (state.status === "idle" ? back(false) : setAskBack(true))}
             />
           )}
+          {!handoff && state.terminal?.kind === "shared" && (
+            // A shared TUI (SPEC §8): quitting it leaves Tether driving, as it was all along.
+            <Button label={returning ? "Quitting…" : `Quit ${harness}`} size="sm" variant="secondary" isDisabled={returning} onClick={() => back(false)} />
+          )}
           <IconButton label="Close terminal panel" tooltip="Close (the terminal keeps running)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
