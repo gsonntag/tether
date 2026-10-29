@@ -10,7 +10,7 @@
 //   HTTP_PORT       a free port for the shell's dev server (default 8899)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new keep midturn model phone composer back restart needsyou clear shell exit fresh
+//   new keep midturn model phone composer back restart needsyou esc clear shell exit fresh
 // Each real turn is small (Haiku).
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -192,7 +192,8 @@ const steps = {
     // Acceptance: open the terminal mid-session (a turn running).
     const p = await page(desktop, session);
     await composer(p).waitFor();
-    await send(p, "Count from 1 to 300, one number per line, nothing else.");
+    // A turn that is surely still running when Terminal is clicked: a 30 s command (asked first).
+    await send(p, "Run the shell command `sleep 30 && echo slept` with Bash, then reply with just DONE.");
     await p.locator('button[aria-label="Stop"]').waitFor({ timeout: 30_000 });
     await p.locator(".t-chip-term").click();
     const ask = p.locator(".t-term-ask");
@@ -357,6 +358,31 @@ const steps = {
     if (!existsSync(`${SCRATCH}/needs.txt`)) fail("needs.txt wasn't written");
     ok("Claude's permission prompt in the TUI showed as Needs you (row, banner, phone); approved with the phone's ⏎ key, the turn finished and the row cleared");
     await ph.close();
+    await p.close();
+  },
+
+  async esc() {
+    // Turns that end without a Stop hook: Esc in the TUI mid-turn, and a permission prompt refused.
+    const p = await page(desktop, session);
+    await openPanel(p);
+    await waitState(p, (s) => s.mode === "terminal" && s.status === "idle", "terminal mode, idle", 60_000);
+    await send(p, "Count from 1 to 400, one number per line, nothing else.");
+    await waitState(p, (s) => s.status === "running", "running", 30_000);
+    await sleep(1500);
+    await p.locator(".t-term-box").click();
+    await p.keyboard.press("Escape");
+    const t0 = Date.now();
+    await waitState(p, (s) => s.status === "idle" && !s.terminal?.attention, "idle after Esc in the TUI", 40_000);
+    const a = Date.now() - t0;
+    rmSync(`${SCRATCH}/refused.txt`, { force: true });
+    await send(p, "Create a file refused.txt containing hi, using the Write tool. Do nothing else.");
+    await waitState(p, (s) => s.status === "waiting", "waiting on the permission prompt", 90_000);
+    await p.locator(".t-term-box").click();
+    await p.keyboard.press("Escape");
+    const t1 = Date.now();
+    await waitState(p, (s) => s.status === "idle" && !s.terminal?.attention, "idle after refusing in the TUI", 40_000);
+    if (existsSync(`${SCRATCH}/refused.txt`)) fail("refused.txt was written");
+    ok(`Esc mid-turn in the TUI went idle in ${(a / 1000).toFixed(1)}s; a refused permission prompt went idle in ${((Date.now() - t1) / 1000).toFixed(1)}s, Needs you cleared (no Stop hook for either)`);
     await p.close();
   },
 
