@@ -12,7 +12,10 @@
 // image inputs). The block is plain text, so the stored transcript still says what was attached, and
 // the transcript shows the block as chips instead of text (splitAttachments).
 
-import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX } from "./limits";
+import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX, cutBytes, utf8Length } from "./limits";
+
+/** A stored name's UTF-8 bytes at most (with the `<8 hex>-` prefix, far under the 255 a file name may have). */
+export const NAME_BYTES_MAX = 120;
 
 export interface Attachment {
   /** absolute path on the runner */
@@ -66,7 +69,8 @@ export function cleanMime(declared: string | undefined, name: string): string {
 
 /**
  * A name safe as one path component: no folders, no `..`, no control characters, no spaces (the
- * block lists paths unquoted), at most 100 characters (keeping the extension). Never empty.
+ * block lists paths unquoted), at most NAME_BYTES_MAX bytes of UTF-8 (keeping the extension).
+ * Never empty, never hidden (no leading dot).
  */
 export function safeName(name: string): string {
   const base = String(name ?? "").split(/[\\/]/).pop() ?? "";
@@ -77,9 +81,10 @@ export function safeName(name: string): string {
     .replace(/_+/g, "_")
     .replace(/^[._-]+/, "")
     .replace(/[._]+$/, "");
-  if (s.length > 100) {
-    const ext = /\.[\p{L}\p{N}]{1,10}$/u.exec(s)?.[0] ?? "";
-    s = s.slice(0, 100 - ext.length) + ext;
+  if (utf8Length(s) > NAME_BYTES_MAX) {
+    let ext = /\.[\p{L}\p{N}]{1,10}$/u.exec(s)?.[0] ?? "";
+    if (utf8Length(ext) > 40) ext = "";
+    s = cutBytes(s.slice(0, s.length - ext.length), NAME_BYTES_MAX - utf8Length(ext)).replace(/[._-]+$/, "") + ext;
   }
   return s || "file";
 }

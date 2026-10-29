@@ -140,14 +140,13 @@ export function createRunner(o: RunnerOptions) {
       session: (id: string) => {
         const s = core.sessions.get(id);
         if (!s) return undefined;
-        const last = s.transcript?.messages.findLast((m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && p.text.trim()));
-        const lastText = last?.parts.findLast((p) => p.type === "text" && p.text.trim());
-        return { summary: s.summary, status: s.state.status, requests: s.state.requests.map((r) => r.id), ...(lastText?.type === "text" ? { lastText: lastText.text.trim() } : {}) };
+        return { summary: s.summary, status: s.state.status, requests: s.state.requests.map((r) => r.id) };
       },
       viewersOf: (id: string) => live.read.viewersOf(id),
     },
     start: async () => {
       core.startDiscovery();
+      if (o.attachmentsDir) live.attachments.startHousekeeping();
       void live.desk.restore();
       // Queues come back after the sessions that kept running are joined again.
       void live.rejoin().finally(() => live.queue.restore());

@@ -4,15 +4,27 @@
 // under <config dir>/attachments/<session>/, never in a project, and every attachment a message
 // names is checked to be a file there (symlinks resolved) before it goes to a harness.
 
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { cleanMime, displayName, NATIVE_IMAGE_TYPES, safeName, sizeProblem, type Attachment } from "../../../shared/attachments";
 import { ATTACH_CHUNK, ATTACH_IMAGE_MAX, ATTACH_MAX, ATTACH_SESSION_MAX } from "../../../shared/limits";
 
-/** A session id as one folder name. */
-export const sessionKey = (sessionId: string) => String(sessionId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 160) || "_";
+/**
+ * A session id as one folder name: readable, and one-to-one (a hash of the whole id follows the
+ * readable part, so `claude:a.b` and `claude:a_b` never share a folder).
+ */
+export const sessionKey = (sessionId: string) => {
+  const id = String(sessionId);
+  return `${id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100)}-${createHash("sha256").update(id).digest("hex").slice(0, 16)}`;
+};
+
+/** An upload never sent with a message is deleted after this long. */
+export const UNSENT_MS = 24 * 60 * 60 * 1000;
+/** A partial file nobody is writing any more is deleted after this long. */
+const PARTIAL_MS = 60 * 60 * 1000;
+const isPartial = (name: string) => name.startsWith(".");
 
 const inside = (p: string, dir: string) => p.startsWith(dir.replace(/\/$/, "") + "/");
 
@@ -88,7 +100,82 @@ export class AttachmentStore {
       real = realpathSync(dir);
     } catch {}
     this.dir = real;
+    this.usedFile = join(real, "used.json");
+    try {
+      this.used = new Set(JSON.parse(readFileSync(this.usedFile, "utf8")));
+    } catch {
+      // First start with this list: whatever is here already counts as sent.
+      this.used = new Set(this.files().map((f) => f.path));
+      this.saveUsed();
+    }
   }
+
+  /** Files sent (or queued) with a message: kept. Others go after UNSENT_MS. */
+  private used: Set<string>;
+  private usedFile: string;
+
+  private saveUsed() {
+    try {
+      writeFileSync(this.usedFile, JSON.stringify([...this.used]), { mode: 0o600 });
+    } catch {}
+  }
+
+  /** Every stored file (partials too), with when it last changed. */
+  private files(): { path: string; name: string; dir: string; mtime: number }[] {
+    const out: { path: string; name: string; dir: string; mtime: number }[] = [];
+    let dirs: string[] = [];
+    try {
+      dirs = readdirSync(this.dir).map((d) => join(this.dir, d)).filter((d) => statSync(d).isDirectory());
+    } catch {}
+    for (const dir of dirs)
+      for (const name of readdirSync(dir)) {
+        try {
+          out.push({ path: join(dir, name), name, dir, mtime: statSync(join(dir, name)).mtimeMs });
+        } catch {}
+      }
+    return out;
+  }
+
+  /** These attachments went out with a message: they're kept. */
+  markUsed(list: Attachment[]) {
+    const before = this.used.size;
+    for (const a of list) this.used.add(a.path);
+    if (this.used.size !== before) this.saveUsed();
+  }
+
+  /**
+   * Housekeeping (at start and hourly): uploads never sent with a message go after UNSENT_MS,
+   * partial files nobody writes after an hour, and empty session folders.
+   */
+  sweepStored(now = Date.now()) {
+    const writing = new Set([...this.uploads.values()].map((u) => u.tmp));
+    for (const f of this.files()) {
+      const stale = isPartial(f.name) ? !writing.has(f.path) && now - f.mtime > PARTIAL_MS : !this.used.has(f.path) && now - f.mtime > UNSENT_MS;
+      if (!stale) continue;
+      try {
+        unlinkSync(f.path);
+      } catch {}
+    }
+    try {
+      for (const d of readdirSync(this.dir)) {
+        const dir = join(this.dir, d);
+        if (statSync(dir).isDirectory() && readdirSync(dir).length === 0) rmdirSync(dir);
+      }
+    } catch {}
+    const gone = [...this.used].filter((p) => !existsSync(p));
+    if (gone.length) {
+      gone.forEach((p) => this.used.delete(p));
+      this.saveUsed();
+    }
+  }
+
+  /** Starts the hourly housekeeping (sweepStored), with a pass now. */
+  startHousekeeping() {
+    this.sweepStored();
+    this.housekeeping ??= setInterval(() => this.sweepStored(), 60 * 60 * 1000);
+    this.housekeeping.unref?.();
+  }
+  private housekeeping?: ReturnType<typeof setInterval>;
 
   sessionDir(sessionId: string) {
     return join(this.dir, sessionKey(sessionId));
@@ -140,10 +227,17 @@ export class AttachmentStore {
     if (u.received < u.size) return {};
     const up = u;
     up.done = (async () => {
-      await fh.close();
-      // Read-only on disk too: an agent's shell can't overwrite what you attached.
-      await chmod(up.tmp, 0o400).catch(() => {});
-      await rename(up.tmp, up.final);
+      try {
+        await fh.close();
+        // Read-only on disk too: an agent's shell can't overwrite what you attached.
+        await chmod(up.tmp, 0o400).catch(() => {});
+        await rename(up.tmp, up.final);
+      } catch (e: any) {
+        // Nothing half-stored stays behind; the error names no paths on the runner.
+        await unlink(up.tmp).catch(() => {});
+        this.uploads.delete(key);
+        throw new Error(`The runner couldn't store ${up.name}${e?.code ? ` (${e.code})` : ""}. Try again.`);
+      }
       return { path: up.final, name: up.name, mimeType: up.mimeType, size: up.size };
     })();
     try {
@@ -172,6 +266,8 @@ export class AttachmentStore {
         throw new Error(`The attachment ${displayName(p)} is gone from the runner. Attach it again.`);
       }
       if (!dirs.some((d) => inside(real, d))) throw new Error("That attachment doesn't belong to this session.");
+      // A partial file (an upload still going, or one that failed) is never an attachment.
+      if (isPartial(real.split("/").pop() ?? "")) throw new Error("That file hasn't finished uploading.");
       const st = statSync(real);
       if (!st.isFile()) throw new Error("That attachment isn't a file.");
       const name = displayName(real);
@@ -216,6 +312,7 @@ export class AttachmentStore {
 
   stop() {
     clearInterval(this.sweeper);
+    clearInterval(this.housekeeping);
   }
 
   private startSweeper() {

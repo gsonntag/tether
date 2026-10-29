@@ -35,17 +35,24 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   };
   ops.register("send", async (a) => {
     const id = str(a.sessionId, "sessionId");
-    await live.send(id, text(a.text), await files(id, a.attachments), { stop: a.stop === true });
+    const list = await files(id, a.attachments);
+    await live.send(id, text(a.text), list, { stop: a.stop === true });
+    live.attachments.markUsed(list);
     return null;
   });
   ops.register("steer", async (a) => {
     const id = str(a.sessionId, "sessionId");
-    await live.steer(id, text(a.text), await files(id, a.attachments));
+    const list = await files(id, a.attachments);
+    await live.steer(id, text(a.text), list);
+    live.attachments.markUsed(list);
     return null;
   });
   ops.register("queue", async (a) => {
     const id = str(a.sessionId, "sessionId");
-    return live.queue.add(id, text(a.text), await files(id, a.attachments));
+    const list = await files(id, a.attachments);
+    const r = await live.queue.add(id, text(a.text), list);
+    live.attachments.markUsed(list);
+    return r;
   });
   ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), text(a.text)), null));
   ops.register("cancelQueued", async (a) => (await live.queue.cancel(str(a.sessionId, "sessionId"), str(a.id, "id")), null));
