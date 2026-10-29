@@ -19,7 +19,7 @@ import { LiveControl } from "../core/live";
 import { Prefs } from "../core/prefs";
 import { SessionCore } from "../core/sessions";
 import { FakePty } from "./attach.test";
-import { ANSWER_THERE, ASKED_MEANWHILE, NOT_AT_PROMPT, NOT_STARTED, NOT_TYPED, STILL_WORKING, TerminalControl } from "./control";
+import { ANSWER_THERE, ASKED_MEANWHILE, NOT_AT_PROMPT, NOT_STARTED, NOT_TYPED, PICKER_OPEN, STILL_WORKING, TerminalControl } from "./control";
 import { Tmux, type TmuxSession } from "./tmux";
 
 /** tmux in memory: sessions, what was typed, keys pressed. A TUI "quits" on its quit text. */
@@ -76,11 +76,11 @@ class FakeTmux extends Tmux {
 }
 
 /**
- * The fake TUI's screen: IDLE (or nothing yet) at its prompt, ASK a dialog, ODD neither; anything
+ * The fake TUI's screen: IDLE (or nothing yet) at its prompt, ASK a question, PICK a menu, ODD neither; anything
  * else working. "BOX:<text>" is what is typed at its prompt.
  */
 const fakeScreen = (screen: string): ScreenRead => ({
-  state: !screen || screen.includes("IDLE") ? "idle" : screen.includes("ASK") ? "asking" : screen.includes("ODD") ? "unknown" : "busy",
+  state: !screen || screen.includes("IDLE") ? "idle" : screen.includes("ASK") ? "asking" : screen.includes("PICK") ? "picker" : screen.includes("ODD") ? "unknown" : "busy",
   body: screen,
   ...(screen.includes("BOX:") ? { input: screen.split("BOX:")[1] } : {}),
 });
@@ -825,6 +825,44 @@ describe("review round 4", () => {
     await expect(term.end("claude:s1")).rejects.toThrow(STILL_WORKING);
     expect(state(core, "claude:s1")).toMatchObject({ mode: "terminal", status: "running" });
     expect(tmux.sessions.has("t-claude-s1")).toBe(true);
+  });
+});
+
+describe("review round 5", () => {
+  test("Claude's own menu (/model) is no question: no Needs you, the status stays, the composer is refused", async () => {
+    const { adapter, core, live, term, tmux } = setup({ settleMs: 0, quietMs: 0 });
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    tmux.screens.set("t-claude-s1", "PICK");
+    await Bun.sleep(80);
+    expect(state(core, "claude:s1").status).toBe("idle");
+    expect(state(core, "claude:s1").terminal?.attention).toBeUndefined();
+    await expect(live.send("claude:s1", "hi")).rejects.toThrow(PICKER_OPEN);
+    expect(tmux.typed).toEqual([]);
+    // Closed again: still idle, no turn invented.
+    tmux.screens.set("t-claude-s1", "IDLE");
+    await Bun.sleep(80);
+    expect(state(core, "claude:s1").status).toBe("idle");
+  });
+
+  test("a menu opened during a turn doesn't end it, and one open at a restart leaves the session idle", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux, quietMs: 0 });
+    first.adapter.addStored("s1", []);
+    await first.term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    first.term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    tmux.screens.set("t-claude-s1", "PICK");
+    await Bun.sleep(80);
+    expect(state(first.core, "claude:s1").status).toBe("running");
+    first.term.report({ sessionId: "claude:s1", event: "Stop" });
+    first.term.stop();
+    first.core.stop();
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", []);
+    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
+    await second.term.readopt();
+    expect(state(second.core, "claude:s1")).toMatchObject({ status: "idle", terminal: { kind: "handoff" } });
+    expect(state(second.core, "claude:s1").terminal?.attention).toBeUndefined();
   });
 });
 

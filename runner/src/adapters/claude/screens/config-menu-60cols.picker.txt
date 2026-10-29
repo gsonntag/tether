@@ -1,0 +1,40 @@
+  ⎿  Resume cancelled
+
+❯ /permissions
+  ⎿  Permissions dialog dismissed
+
+❯ /config
+
+────────────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+
+
+  ╭──────────────────────────────────────────────────────╮
+  │ ⌕ Search settings…                                   │
+  ╰──────────────────────────────────────────────────────╯
+
+  ❯ Auto-compact                      true
+    Idle compaction                   true
+    Continue automatically at usage…  true
+    Switch models when a message is…  Not asked yet ›
+    Show tips                         true
+    Claude-drafted feedback           notify
+    Reduce motion                     false
+    Thinking mode                     true
+    Thinking can't be turned off for Haiku 5.5
+    Prompt suggestions                true
+    Session recap                     true
+    Rewind code (checkpoints)         true
+    Dynamic workflows                 true
+    Ultracode keyword trigger         true
+    Dynamic workflow size             unrestricted
+    Artifacts                         true
+    Verbose output                    false
+    Terminal progress bar             true
+    Show turn duration                true
+    ↓ 27 more
+
+  Type to filter · Enter/↓ to select · ↑ to tabs · Esc to
+  clear
+
+

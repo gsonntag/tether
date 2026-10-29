@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1001/p3fix/scratch
+
+
+❯ /model
+  ⎿  Kept model as Haiku 5.5
+
+❯ /resume
+  ⎿  Resume cancelled
+
+❯ /permissions
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Permissions  Recently denied   Allow   Ask   Deny   Auto mode   Workspace
+
+  Claude Code won't ask before using allowed tools.
+  ╭───────────────────────────────────────────────╮
+  │ ⌕ Search…                                     │
+  ╰───────────────────────────────────────────────╯
+
+    1. Add a new rule…
+
+  ←/→ to switch · ↓ to select · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

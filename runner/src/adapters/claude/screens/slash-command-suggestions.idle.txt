@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1001/p3fix/scratch
+
+
+────────────────────────────────────────────────────────────
+❯ /model
+────────────────────────────────────────────────────────────
+  ❯ /model                  Set the AI model for Claude
+                            Code (currently Haiku 5.5)
+    …ling-revenue-metrics)  (posthog) Build reusable
+                            revenue models — MRR, ARR, gr…
+    …ing-dimension-tables)  (posthog) Build reusable
+                            dimension / lookup tables for…
+    …g-activation-metrics)  (posthog) Build reusable
+                            activation models — an activa…
+    …g-conversion-metrics)  (posthog) Build reusable
+                            conversion models — funnel/st…
+    …roduct-usage-metrics)  (posthog) Build reusable
+                            product-usage and engagement …
+    …arehouse-foundations)  (posthog) Shared foundations
+                            for building reusable data mo…
+    /auto-mode-setup        Teach auto mode about your
+                            environment, plus optional ru…
+    /code-review            3 free /ultrareview · Review
+                            the current diff or a PR for …
+    /vercel:ai-gateway      (vercel) Vercel AI Gateway
+                            guidance for setup, model dis…
+
+
+
+
+
+
+
+
+
+
+
+

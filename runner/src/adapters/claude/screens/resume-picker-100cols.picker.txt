@@ -1,0 +1,40 @@
+
+❯ /resume
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Resume session (1 of 16)
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ⌕ Search…                                                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+    scratch
+
+  ❯ f4edf992
+    7 minutes ago · master · 1.9KB
+
+    HERON word memory
+    8 minutes ago · master · 425KB
+
+    Greeting reply
+    40 minutes ago · master · 395KB
+
+    HERON word memory
+    45 minutes ago · master · 412.1KB
+
+    Interrupting Claude while it works
+    46 minutes ago · master · 395.9KB
+
+    Two-word reply test
+    48 minutes ago · master · 404.2KB
+
+    OTTER word memory
+    1 hour ago · master · 410.3KB
+
+    Fresh
+    1 hour ago · master · 399.4KB
+
+  ↓ Python sleep command test
+    2 hours ago · master · 396.6KB
+
+    Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to preview · Ctrl+R
+    to rename · Type to search · Esc to cancel
+

@@ -151,12 +151,13 @@ export interface TerminalOpts extends StartOpts {
 
 /**
  * What a TUI's screen shows (tmux capture-pane): `idle` at its prompt with nothing running; `busy`
- * working (its prompt still takes typing); `asking` a dialog or picker that typed text would answer;
+ * working (its prompt still takes typing); `asking` a question that typed text would answer;
+ * `picker` one of the harness's own menus (/model: it blocks typing, but nobody is asked anything);
  * `unknown` anything else (starting, a full-screen view). `body` is the part that changes only when
  * something happens (not a ticking footer), to tell a still screen from a moving one.
  */
 export interface ScreenRead {
-  state: "idle" | "busy" | "asking" | "unknown";
+  state: "idle" | "busy" | "asking" | "picker" | "unknown";
   body: string;
   /** what is typed at the prompt (idle or busy), when the harness can tell */
   input?: string;

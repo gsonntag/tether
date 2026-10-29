@@ -29,48 +29,79 @@ export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, {
  */
 export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
 
-/** A horizontal rule of Claude's prompt box. */
-const RULE = /^\s*[─━]{8,}/;
-/** The prompt box's input line ("❯ " and whatever is typed), not a selection ("❯ 1. Yes"). */
-const INPUT = /^\s*❯(?!\s*\d+\.)(\s|$)/;
+/** A horizontal rule of Claude's prompt box: nothing but the line (not the /effort picker's slider). */
+const RULE = /^\s*[─━]{8,}\s*$/;
 /**
- * A spinner line, in its own form only: one glyph, then one word (two for "Compacting
- * conversation…") ending in "…", then at most its "(…)" tail: "✻ Brewing…", "· Determining…
- * (running PreToolUse hook · 16s · ↓ 213 tokens)", "✻ Compacting conversation…", a tool still
- * running ("⎿  Waiting…"). Not text that happens to hold a "…" ("- Let me think…", "● Quick one…
- * reply with…", a prompt echoed with "❯"), and not the done line ("✻ Churned for 49s").
+ * A spinner line, in its own form only: one of Claude's spinner glyphs, one word (two for
+ * "Compacting conversation…") ending in "…", then at most its "(…" tail, which may wrap: "✻
+ * Brewing…", "· Determining… (running PreToolUse hook · 16s · ↓ 213 tokens)", "✢ Lollygagging… (1m
+ * 4s · esc to interrupt)", "✻ Compacting conversation…". Not text that happens to hold a "…" ("-
+ * Let me think…", "→ Loading…", a prompt echoed with "❯"), and not the done line ("✻ Churned for
+ * 49s").
  */
-const SPINNER = /^\s*[^\s\p{L}\p{N}"'`(\[\-–—•●❯>|]\s{1,3}\p{L}[\p{L}'’-]*(?: \p{L}[\p{L}'’-]*)?…(?:\s+\(.*)?\s*$/u;
-/** A selection list (permission prompts, plan approval, pickers) and dialogs' own footers. */
-const ASKING = /^\s*❯\s*\d+\.\s|Esc to cancel|Enter to confirm|Enter to select|Enter to set|Would you like to|Do you want to/m;
+const SPINNER = /^\s*[·✢✳✶✻✽]\s{1,3}\p{L}[\p{L}'’-]*(?: \p{L}[\p{L}'’-]*)?…(?:\s+\(.*)?\s*$/u;
+/** A dialog's own footer (pickers and questions alike). */
+const DIALOG_FOOTER = /Esc to cancel|Esc to clear|Enter to select|Enter to confirm|Enter to set|to navigate|to adjust|to select ·/;
+/** An option of a numbered list ("  2. No"), and the cursor on one ("❯ 1. Yes"). */
+const OPTION = /^\s*(?:❯\s*)?\d+[.)]\s/;
+const CURSOR_OPTION = /^\s*❯\s*\d+[.)]\s/;
+/** What a question says right above its choices. */
+const QUESTION = /\?\s*$|Do you want to|Would you like to|trust this folder/;
 
 /**
- * Reads Claude's TUI (verified on 2.1.312, at 53 to 120 columns). Idle only on a positive sign: the
- * prompt box at the bottom (a dialog replaces it) with no spinner line above it and nothing saying
- * it works ("esc to interrupt" only shows on wide screens). Anything not recognized is `unknown`,
- * never idle.
+ * Reads Claude's TUI (verified on 2.1.312, at 45 to 120 columns), by its structure only, so that
+ * text in Claude's answer or in the person's prompt never decides the status:
+ * - the prompt box is a "❯" line right under a rule, closed by a rule below, with nothing of a
+ *   dialog under it (no choices, no dialog footer): then `busy` if a spinner shows just above it (or
+ *   "esc to interrupt" in the status lines under it), else `idle`; whatever is in the box (even
+ *   "1. Reply…", "Do you want to…") is only what is typed;
+ * - no prompt box: `asking` for a question (a list with the cursor on a choice and a question right
+ *   above it: permission prompts, plan approval, AskUserQuestion; the trust question), `picker` for
+ *   Claude's own menus (/model, /resume, /permissions, /config, /effort: a dialog footer, no
+ *   question), else `unknown`.
  */
 export function claudeScreen(screen: string): ScreenRead {
   const lines = screen.replace(/\s+$/, "").split("\n");
-  // The prompt box: a rule, the input line(s), a rule; the last one on screen.
+  // The prompt box: the last "❯" line right under a rule, closed by a rule, no dialog under it.
   let box = -1;
+  let close = -1;
   for (let i = lines.length - 1; i > 0 && box < 0; i--) {
-    if (!INPUT.test(lines[i]!) || !RULE.test(lines[i - 1]!)) continue;
-    for (let k = i + 1; k < Math.min(lines.length, i + 20); k++) if (RULE.test(lines[k]!)) {
-      box = i;
-      break;
-    }
+    if (!/^\s*❯/.test(lines[i]!) || !RULE.test(lines[i - 1]!)) continue;
+    let k = i + 1;
+    while (k < Math.min(lines.length, i + 30) && !RULE.test(lines[k]!)) k++;
+    if (k >= lines.length || !RULE.test(lines[k]!)) continue;
+    const under = lines.slice(k + 1);
+    if (under.some((l) => OPTION.test(l) || DIALOG_FOOTER.test(l))) continue;
+    box = i;
+    close = k;
   }
-  if (box < 0) return { state: ASKING.test(screen) ? "asking" : "unknown", body: screen };
+  if (box < 0) {
+    // A question: the cursor on a numbered choice, and a question in the dialog above the choices
+    // (from the rule that starts the dialog; options and their wrapped lines aside).
+    const cur = lines.findLastIndex((l) => CURSOR_OPTION.test(l));
+    if (cur >= 0) {
+      let top = cur;
+      while (top > 0 && cur - top < 25 && !RULE.test(lines[top - 1]!)) top--;
+      if (lines.slice(top, cur).some((l) => !OPTION.test(l) && QUESTION.test(l))) return { state: "asking", body: screen };
+    }
+    // The trust question ("❯ No, exit / Yes, I trust this folder").
+    const foot = lines.slice(-8);
+    if (lines.slice(-14).some((l) => /trust this folder/.test(l)) && foot.some((l) => /Enter to confirm/.test(l))) return { state: "asking", body: screen };
+    if (foot.some((l) => DIALOG_FOOTER.test(l)) || cur >= 0) return { state: "picker", body: screen };
+    return { state: "unknown", body: screen };
+  }
   const above = lines.slice(0, box - 1);
   const body = above.join("\n");
   // What is typed in the box: its lines up to the closing rule, without the "❯ " and indentation.
-  const input: string[] = [];
-  for (let k = box; k < lines.length && !RULE.test(lines[k]!); k++) input.push(lines[k]!.replace(k === box ? /^\s*❯\s?/ : /^\s+/, ""));
-  const typed = input.join("\n").trimEnd();
-  // Just above the box: the spinner, the todo list under it, tips.
+  const typed = lines
+    .slice(box, close)
+    .map((l, n) => l.replace(n === 0 ? /^\s*❯\s?/ : /^\s+/, ""))
+    .join("\n")
+    .trimEnd();
+  // Just above the box: the spinner, the todo list under it, tips. Under it: the status lines.
   const near = above.slice(-15);
-  if (/esc to interrupt/i.test(screen) || near.some((l) => SPINNER.test(l))) return { state: "busy", body, input: typed };
+  const status = lines.slice(close + 1);
+  if (near.some((l) => SPINNER.test(l)) || status.some((l) => /esc to interrupt/i.test(l))) return { state: "busy", body, input: typed };
   return { state: "idle", body, input: typed };
 }
 

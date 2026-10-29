@@ -1,0 +1,40 @@
+  ⎿  Permissions dialog dismissed
+
+❯ /config
+  ⎿  Config dialog dismissed
+
+❯ /agents
+  ⎿  The /agents wizard has been removed.
+
+     Ask Claude to create or update subagents for you (e.g. "create a code-reviewer subagent that
+     ..."),
+     or edit the files directly:
+       • .claude/agents/       (this project)
+       • ~/.claude/agents/     (all projects)
+
+     Docs: https://code.claude.com/docs/en/sub-agents
+
+❯ /effort
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Effort
+
+                   Faster                             Smarter
+                   ──────────▲───────────────────────────────      Ultracode  off
+                   low     medium     high     xhigh      max      Tab to toggle
+
+                                  The default effort for this model
+
+
+  ←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+

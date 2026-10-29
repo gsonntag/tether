@@ -73,7 +73,9 @@ export const NOT_STARTED = "Claude Code hasn't started yet. If it asks whether t
 /** The TUI shows neither its prompt nor a question (a picker, a full-screen view, still drawing). */
 export const NOT_AT_PROMPT = "Claude Code isn't at its prompt in the terminal (something is open there). Finish it there first.";
 /** A dialog opened between typing and Enter: Enter would have answered it, so nothing was sent. */
-export const ASKED_MEANWHILE = "Claude asked something in the terminal just as you sent. Nothing was sent; answer it there first.";
+export const ASKED_MEANWHILE = "Claude asked something in the terminal just as you sent. Nothing was sent (your text is still here); answer it there first.";
+/** One of Claude's own menus (/model, /resume, …) is open in the TUI: typed text would go into it. */
+export const PICKER_OPEN = "A Claude Code menu (like /model) is open in the terminal. Close it there first.";
 /** The typed text never showed at the prompt (the TUI was busy redrawing): Enter wasn't pressed. */
 export const NOT_TYPED = "Your text didn't show up at Claude Code's prompt, so it wasn't sent. Look at the terminal.";
 /** Back to Tether while the screen shows the TUI working though no hook said so. */
@@ -518,6 +520,7 @@ export class TerminalControl {
     if (this.unconfirmed.has(s.id) && seen && (seen.state === "idle" || seen.state === "busy")) this.unconfirmed.delete(s.id);
     if (this.unconfirmed.has(s.id)) throw new Error(NOT_STARTED);
     if (seen?.state === "asking") throw new Error(ANSWER_THERE);
+    if (seen?.state === "picker") throw new Error(PICKER_OPEN);
     if (seen?.state === "unknown") throw new Error(NOT_AT_PROMPT);
     const launch = this.launch(s);
     await this.o.tmux.type(name, text, !!launch.paste);
@@ -539,6 +542,7 @@ export class TerminalControl {
     for (;;) {
       const seen = await this.readScreen(s, name, 1);
       if (seen?.state === "asking") throw new Error(ASKED_MEANWHILE);
+      if (seen?.state === "picker") throw new Error(PICKER_OPEN);
       const ok = seen && (seen.state === "idle" || seen.state === "busy");
       // A long or multi-line paste shows as "[Pasted text #1 …]".
       if (ok && (seen.input === undefined || flat(seen.input).includes(want) || /\[Pasted text/.test(seen.input))) return;
@@ -723,7 +727,7 @@ export class TerminalControl {
         // No hook told this runner what the TUI is doing: its screen does. Unsure is working (the
         // screen's idle check ends that), never idle (Back to Tether would kill a turn).
         const seen = await this.readScreen(s, t.name);
-        if (seen && seen.state !== "idle") this.fromScreen(s, seen.state === "asking" ? "asking" : "busy");
+        if (seen && seen.state !== "idle" && seen.state !== "picker") this.fromScreen(s, seen.state === "asking" ? "asking" : "busy");
       }
     }
   }
@@ -735,7 +739,7 @@ export class TerminalControl {
    */
   private async resumeReturn(s: Session, name: string) {
     const seen = await this.readScreen(s, name);
-    if (seen?.state === "idle") {
+    if (seen?.state === "idle" || seen?.state === "picker") {
       void this.o.tmux.tag(name, "return", undefined).catch(() => {});
       void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
       return;
@@ -808,7 +812,7 @@ export class TerminalControl {
         this.askGone.delete(id);
         return;
       }
-      if (!this.askSeen.has(id) || seen.state === "unknown") return void this.askGone.delete(id);
+      if (!this.askSeen.has(id) || seen.state === "unknown" || seen.state === "picker") return void this.askGone.delete(id);
       const n = (this.askGone.get(id) ?? 0) + 1;
       this.askGone.set(id, n);
       if (n < 2) return;
@@ -820,6 +824,8 @@ export class TerminalControl {
     // A dialog on screen is Needs you at once (Claude's Notification comes seconds later); not the
     // trust question of a TUI still starting (the composer says what to do there).
     if (seen.state === "asking" && (this.unconfirmed.has(id) || this.starting.has(id))) return;
+    // Claude's own menu (/model): nobody is asked anything and no turn runs; the status stays.
+    if (seen.state === "picker") return void (this.idleSeen.delete(id), this.busySeen.delete(id));
     if (seen.state === "asking") {
       clear();
       this.fromScreen(s, "asking");

@@ -28,12 +28,13 @@ test("working is never idle: spinners of every form, at 80 columns too (no 'esc 
   expect(state(frame("✶ Working… (3s)\n  ⎿  ☐ Read the file\n     ☐ Write the answer\n\n  ⎿  Tip: Run /ultrareview for a cloud-based review"))).toBe("busy");
 });
 
-test("dialogs ask: a permission prompt, plan approval, the model picker, the trust question", () => {
+test("questions ask: a permission prompt, plan approval, the trust question", () => {
   expect(state(" Do you want to create falcon.txt?\n ❯ 1. Yes\n   2. Yes, and switch to accept edits (shift+tab)\n   3. No\n Esc to cancel · Tab to amend")).toBe("asking");
   const plan = `● Updated plan\n  ⎿  /plan to preview\n${RULE}\n Ready to code?\n Here is Claude's plan:\n Create hello.txt containing hi.\n${RULE}\n Claude has written up a plan and is ready to execute. Would you like to\n proceed?\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits\n   3. Tell Claude what to change\n      shift+tab to approve with this feedback\n ctrl+g to edit in Vim · ~/.claude/plans/x.md\n`;
   expect(state(plan)).toBe("asking");
   expect(claudeScreenIdle(plan)).toBe(false);
-  expect(state("  ❯ 5.  Haiku 5.5 ✔\n  Enter to set as default · s to use this session only · Esc to cancel")).toBe("asking");
+  // Claude's own menus are pickers: they block typing but ask nobody anything.
+  expect(state("  ❯ 5.  Haiku 5.5 ✔\n  Enter to set as default · s to use this session only · Esc to cancel")).toBe("picker");
   expect(state(" Do you trust the files in this folder?\n ❯ 1. Yes, I trust this folder\n   2. No, exit\n Enter to confirm · Esc to cancel")).toBe("asking");
 });
 
@@ -68,4 +69,24 @@ test("a line of an answer or a prompt holding a … is no spinner", () => {
 test("what is typed in the box", () => {
   expect(claudeScreen(`● OK\n${RULE}\n❯ Run the shell command sleep 30 with Bash, then reply\n  with just DONE.\n${RULE}\n`).input).toBe("Run the shell command sleep 30 with Bash, then reply\nwith just DONE.");
   expect(claudeScreen(frame("● OK")).input).toBe("");
+});
+
+test("what is typed in the box is only typed: a numbered line, a list, dialog words, never a dialog", () => {
+  for (const typed of ["1. Reply with just the word ONE.", "2) Reply with just THREE.", "Steps:\n  1. first\n  2. second", "Do you want to refactor this?", "Would you like to know", "Enter to select · Esc to cancel", "esc to interrupt", "❯ 1. x"]) {
+    const r = claudeScreen(`● OK\n${RULE}\n❯ ${typed}\n${RULE}\n  Haiku 5.5 | scratch@master\n  ⏸ manual mode on\n`);
+    expect(r.state).toBe("idle");
+    expect(r.input!.replace(/\s+/g, " ")).toBe(typed.replace(/\s+/g, " "));
+  }
+});
+
+test("Claude's answer never decides the status: dialog words, a numbered list, 'esc to interrupt'", () => {
+  for (const ans of ["● Do you want to continue with option 2?", "● Would you like to proceed?", "  ❯ 1. First item", "● Press Enter to confirm your choice", "● Type esc to interrupt anytime", "  1. Red\n  2. Blue\n  Enter to select · Esc to cancel"])
+    expect(state(frame(`${ans}\n✻ Baked for 2s · done 1:00 PM`))).toBe("idle");
+  // "esc to interrupt" does count in the status lines under the box (wide screens).
+  expect(state(`● OK\n${RULE}\n❯ \n${RULE}\n  Haiku 5.5 · esc to interrupt\n`)).toBe("busy");
+});
+
+test("only Claude's spinner glyphs make a spinner", () => {
+  for (const l of ["→ Loading…", "- Loading…", "● Loading…", "⎿  Loading…", "* Loading…"]) expect(state(frame(l))).toBe("idle");
+  for (const g of ["·", "✢", "✳", "✶", "✻", "✽"]) expect(state(frame(`${g} Pondering…`))).toBe("busy");
 });

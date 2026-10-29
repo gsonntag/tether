@@ -1,0 +1,40 @@
+❯ /config
+  ⎿  Config dialog dismissed
+
+❯ /agents
+  ⎿  The /agents wizard has been removed.
+
+     Ask Claude to create or update subagents for you (e.g.
+     "create a code-reviewer subagent that ..."),
+     or edit the files directly:
+       • .claude/agents/       (this project)
+       • ~/.claude/agents/     (all projects)
+
+     Docs: https://code.claude.com/docs/en/sub-agents
+
+❯ /effort
+  ⎿  Cancelled
+
+❯ Steps:
+  Reply with exactly these lines and nothing else: Press
+  esc to interrupt Claude while it works. / 1. Red / 2.
+  Blue / Do you want to continue? / Would you like to
+  proceed? / Enter to select · Esc to cancel
+
+● Press esc to interrupt Claude while it works.
+  1. Red
+  2. Blue
+     Do you want to continue?
+     Would you like to proceed?
+     Enter to select · Esc to cancel
+
+✻ Sautéed for 2s · done 10:18 PM
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  Haiku 5.5 | scratch@master (+1 -1) | 49k/1m (4%) | effo…
+  ⏸ manual mode on · ← 2 agents
+                              Ctrl+Y to paste deleted text
+                                                       /rc
+
