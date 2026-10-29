@@ -105,11 +105,15 @@ export interface Ops {
    * A new session in a folder (a path on the runner; `~` is the home folder). The harness starts
    * right away so a problem (not signed in, no such folder) shows before you type.
    */
+  /**
+   * With `terminal`, the session starts in the harness's own TUI (Claude: `--session-id`) instead of
+   * through the SDK, in terminal mode (SPEC §8).
+   */
   newSession: {
-    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string };
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean };
     result: { sessionId: string };
   };
-  /** starts a turn; a stored session goes live first (SPEC §4) */
+  /** starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI, then Enter (SPEC §9) */
   send: { args: { sessionId: string; text: string }; result: null };
   /** stops the running turn; on a subagent, stops that subagent */
   interrupt: { args: { sessionId: string }; result: null };
@@ -123,13 +127,45 @@ export interface Ops {
    * in the harness's own UI) with "That request is no longer open."
    */
   answerRequest: { args: { sessionId: string; requestId: string } & RequestAnswer; result: null };
-  /** attach this browser to a terminal; the server fills in attachId */
-  openTerminal: { args: { sessionId: string; attachId?: string; cols: number; rows: number }; result: { attachId: string } };
+  /**
+   * Attaches this browser to a terminal (SPEC §8); the server fills in attachId. `sessionId`: the
+   * session's TUI. A session not in the terminal yet is handed to it first (handoff harnesses: the
+   * driver closes and the mode becomes terminal). While a turn runs that fails with TERMINAL_BUSY
+   * unless `stop` is set: then the turn is stopped first. `shellId`: one of the project's shells.
+   */
+  openTerminal: {
+    args: { sessionId?: string; shellId?: string; attachId?: string; cols: number; rows: number; stop?: boolean };
+    result: { attachId: string; target: string };
+  };
+  /**
+   * Back to Tether (SPEC §8): the TUI is asked to quit (killed after 5 s), and the session goes
+   * live again on the same conversation. `whenIdle`: wait for the TUI's turn to end first. For a
+   * shared terminal: the TUI quits and Tether goes on driving.
+   */
+  endTerminal: { args: { sessionId: string; whenIdle?: boolean }; result: null };
+  /** A project's plain shells (SPEC §8 Project shells), oldest first. */
+  listShells: { args: { projectPath: string }; result: { shells: ShellInfo[] } };
+  /** Opens a new shell in a project folder; attach to it with openTerminal({ shellId }). */
+  newShell: { args: { projectPath: string; cols?: number; rows?: number }; result: ShellInfo };
+  closeShell: { args: { shellId: string }; result: null };
   closeTerminal: { args: { attachId: string }; result: null };
   /** base64 bytes typed into an attached terminal */
   terminalInput: { args: { attachId: string; data: string }; result: null };
   terminalResize: { args: { attachId: string; cols: number; rows: number }; result: null };
 }
+
+/** A plain shell in a project folder, kept in tmux until closed. */
+export interface ShellInfo {
+  id: string;
+  projectPath: string;
+  /** its number in the project: "Shell 2" */
+  n: number;
+  /** what runs in it now ("bash", "python3") */
+  command?: string;
+}
+
+/** openTerminal's error while a turn runs and `stop` isn't set: the UI asks first (SPEC §8). */
+export const TERMINAL_BUSY = "A turn is running. Stop it to open the terminal.";
 
 export type OpName = keyof Ops;
 export type OpArgs<K extends OpName> = Ops[K]["args"];

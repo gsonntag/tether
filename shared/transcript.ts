@@ -162,6 +162,16 @@ export interface QueuedMessage {
   queuedAt: number;
 }
 
+export interface TerminalState {
+  kind: "handoff" | "shared";
+  /** Back to Tether is under way: the TUI was asked to quit */
+  returning?: boolean;
+  /** Back to Tether waits for the TUI's turn to end */
+  returnWhenIdle?: boolean;
+  /** the TUI is waiting on the person (a permission prompt, a question): what it said */
+  attention?: string;
+}
+
 export interface LiveState {
   mode: SessionMode;
   status: RunStatus;
@@ -173,8 +183,16 @@ export interface LiveState {
   permissionMode?: string;
   requests: Request[];
   queue: QueuedMessage[];
-  /** set while the session is in terminal mode */
-  terminal?: { kind: "handoff" | "shared" };
+  /**
+   * Set while the harness's TUI runs in a terminal (SPEC §8). "handoff": the session is in terminal
+   * mode and the TUI drives it; "shared": the TUI joined the live thread beside Tether.
+   */
+  terminal?: TerminalState;
+  /**
+   * Queued messages wait, untouched, until the person sends them (SPEC §8: they're held while the
+   * terminal drives and stay held after Back to Tether). The queue (P5) sends nothing while set.
+   */
+  queueHeld?: boolean;
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }
