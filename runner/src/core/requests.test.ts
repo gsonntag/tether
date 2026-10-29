@@ -497,6 +497,39 @@ describe("persistent harnesses (capabilities.persistent): the harness asks again
     expect(adapter.drivers[0]!.sent).toEqual([]);
   });
 
+  test("a rejoin that fails isn't taken as answered elsewhere: the request stays; a retry that works rejoins", async () => {
+    const { after, adapter, id } = await restartedWithRequest();
+    after.live.rejoinRetries = [20];
+    adapter.startError = "The Codex daemon isn't running.";
+    const rejoining = after.live.rejoin();
+    await Bun.sleep(10);
+    expect((await after.core.open("claude:s1")).state.requests.map((r) => r.id)).toEqual([id]);
+    adapter.startError = undefined;
+    await rejoining;
+    expect(adapter.drivers).toHaveLength(1);
+    // Rejoined, and not asked again within the window: answered elsewhere.
+    expect(after.closed.map((c) => c.outcome)).toEqual(["elsewhere"]);
+    // Failing every time: it stays open.
+    const again = await restartedWithRequest();
+    again.after.live.rejoinRetries = [5];
+    again.adapter.startError = "down";
+    await again.after.live.rejoin();
+    expect((await again.after.core.open("claude:s1")).state.requests.map((r) => r.id)).toEqual([again.id]);
+    expect(again.after.closed).toEqual([]);
+  });
+
+  test("an answer kept for a re-ask that never comes is dropped when the window closes", async () => {
+    const { after, adapter, id } = await restartedWithRequest();
+    await after.live.answerRequest("claude:s1", id, { allow: true });
+    await after.live.rejoin();
+    // Asked much later (another turn): asked, not decided by the stale answer.
+    const d = adapter.drivers[0]!;
+    void ask("Bash", { command: "rm build" })(d.sink, d);
+    await tick();
+    expect(d.decisions).toEqual([]);
+    expect((await after.core.open("claude:s1")).state.requests).toHaveLength(1);
+  });
+
   test("answered before the harness asks again: never sent as a message; the ask gets the answer at once", async () => {
     const { after, adapter, id } = await restartedWithRequest();
     await after.live.answerRequest("claude:s1", id, { allow: true });

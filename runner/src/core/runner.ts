@@ -123,7 +123,7 @@ export function createRunner(o: RunnerOptions) {
     harnesses = o.detectHarnesses();
     // A repeated hello on the same connection just updates what the browsers see.
     if (JSON.stringify(await harnesses) !== before) conn.send({ t: "hello", runner: await helloInfo() });
-  }, o.harnessCheckMs ?? 5 * 60_000);
+  }, o.harnessCheckMs ?? 60_000);
   timer.unref?.();
 
   return {

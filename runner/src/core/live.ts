@@ -296,34 +296,50 @@ export class LiveControl {
     };
     // Turns that were running, and sessions with requests saved from before the restart.
     const ids = [...new Set([...this.core.o.prefs.running(), ...this.desk.broker.sessions(true)])].filter(persistent);
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const s = await this.core.open(id);
-          await this.core.load(s);
-          await this.ensureDriver(s);
-          this.core.log(`rejoined ${id}`);
-          // It finished while the runner was away.
-          if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
-        } catch (e: any) {
-          this.core.log(`couldn't rejoin ${id}: ${e?.message ?? e}`);
-          this.core.o.prefs.set(id, { running: undefined });
-        }
-        // The harness asks again what it still waits on, right after the rejoin. A saved request it
-        // doesn't ask again was answered elsewhere (its own TUI) while Tether was away.
-        await Bun.sleep(this.reaskMs);
-        let n = 0;
-        this.desk.cancel((_r, chain, restored) => restored && chain.at(-1) === id && ++n > 0, "elsewhere");
-        if (n) {
-          const s = this.core.sessions.get(id);
-          if (s) {
-            await this.core.load(s).catch(() => {});
-            s.apply({ type: "msg", msg: notice(n === 1 ? "A request was answered elsewhere while Tether was away." : `${n} requests were answered elsewhere while Tether was away.`) });
-          }
-        }
-      }),
-    );
+    await Promise.all(ids.map((id) => this.rejoinOne(id)));
   }
+
+  /** Rejoins one session, trying again a few times (the harness's daemon may be slow or restarting). */
+  private async rejoinOne(id: string) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const s = await this.core.open(id);
+        await this.core.load(s);
+        await this.ensureDriver(s);
+        this.core.log(`rejoined ${id}`);
+        // It finished while the runner was away.
+        if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
+        break;
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        if (attempt >= this.rejoinRetries.length || /isn't on this runner|isn't a session id/.test(msg)) {
+          // Not rejoined: its saved requests stay as they are (nothing says they were answered).
+          this.core.log(`couldn't rejoin ${id}: ${msg}`);
+          this.core.o.prefs.set(id, { running: undefined });
+          return;
+        }
+        this.core.log(`couldn't rejoin ${id} yet (${msg}); trying again`);
+        await Bun.sleep(this.rejoinRetries[attempt]!);
+      }
+    }
+    // The harness asks again what it still waits on, right after the rejoin. A saved request it
+    // doesn't ask again was answered elsewhere (its own TUI) while Tether was away; an answer given
+    // here for one it never asks again is dropped too.
+    await Bun.sleep(this.reaskMs);
+    let n = 0;
+    this.desk.cancel((_r, chain, restored) => restored && chain.at(-1) === id && ++n > 0, "elsewhere");
+    this.desk.broker.forgetPredecided(id);
+    if (n) {
+      const s = this.core.sessions.get(id);
+      if (s) {
+        await this.core.load(s).catch(() => {});
+        s.apply({ type: "msg", msg: notice(n === 1 ? "A request was answered elsewhere while Tether was away." : `${n} requests were answered elsewhere while Tether was away.`) });
+      }
+    }
+  }
+
+  /** Pauses between rejoin attempts. */
+  rejoinRetries = [5_000, 20_000, 60_000, 180_000];
 
   /** How long a rejoined harness has to ask again what it still waits on. */
   reaskMs = 5000;
@@ -498,13 +514,17 @@ export class LiveControl {
       message: (id) => s.transcript?.get(id),
       state: (patch) => {
         const before = s.state.status;
-        // A harness that keeps the session's settings itself (capabilities.persistent) reports them:
-        // that's the truth from now on, and a setting made in Tether has been applied, so it isn't
-        // sent again at the next start (where it could undo a change made elsewhere meanwhile).
+        // A harness that keeps the session's settings itself (capabilities.persistent) reports them.
+        // A setting made in Tether is kept (and sent at each start) until the harness reports it
+        // applied: then it isn't sent again, where it could undo a change made elsewhere since.
         if (s.capabilities.persistent && !s.summary.parentSessionId) {
-          const done = { ...(patch.model || patch.modelResolved ? { model: undefined } : {}), ...(patch.effort ? { effort: undefined } : {}), ...(patch.permissionMode ? { permissionMode: undefined } : {}) };
           const p = core.o.prefs.get(s.id);
-          if (Object.keys(done).some((k) => (p as any)[k] !== undefined)) core.o.prefs.set(s.id, done);
+          const done = {
+            ...(p.model !== undefined && (patch.model ?? patch.modelResolved) === p.model ? { model: undefined } : {}),
+            ...(p.effort !== undefined && patch.effort === p.effort ? { effort: undefined } : {}),
+            ...(p.permissionMode !== undefined && patch.permissionMode === p.permissionMode ? { permissionMode: undefined } : {}),
+          };
+          if (Object.keys(done).length) core.o.prefs.set(s.id, done);
         }
         const changed = s.setState(patch);
         if (!changed) return;

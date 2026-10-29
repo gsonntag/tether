@@ -199,6 +199,17 @@ describe("settings the harness keeps per session (capabilities.persistent)", () 
     expect(prefs.get("claude:s1").effort).toBeUndefined();
   });
 
+  test("a setting the harness reports otherwise (not applied yet) stays, to be sent at the next start", async () => {
+    const { adapter, live, prefs } = setup({ persistent: true });
+    adapter.addStored("s1", []);
+    await live.setPermissionMode("claude:s1", "read-only");
+    await live.send("claude:s1", "hi");
+    adapter.drivers[0]!.sink.state({ permissionMode: "auto" });
+    expect(prefs.get("claude:s1").permissionMode).toBe("read-only");
+    adapter.drivers[0]!.sink.state({ permissionMode: "read-only" });
+    expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
+  });
+
   test("a harness that doesn't keep them: a mode it reports (a plan approved) is kept for the next start", async () => {
     const { adapter, live, prefs } = setup({ persistent: false });
     adapter.addStored("s1", []);

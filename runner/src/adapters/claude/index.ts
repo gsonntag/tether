@@ -142,6 +142,7 @@ export const claudeAdapter: Adapter = {
   },
 
   newId: () => randomUUID(),
+  ownModel: (model) => model.startsWith("claude"),
 
   // Terminal mode (SPEC §8): Claude's own TUI, handed the session. `--settings` adds Tether's hooks
   // for this launch only, so turn ends and "needs you" reach the runner (terminal/hooks.ts).

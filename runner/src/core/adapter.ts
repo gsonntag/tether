@@ -124,6 +124,11 @@ export interface Adapter {
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   listModels(driver?: Driver): Promise<ModelList>;
   /**
+   * Whether a model id in this harness's transcripts is one of its own (Claude: "claude-…"), so a
+   * model picked in its TUI can be carried back to the session. Absent: any.
+   */
+  ownModel?(model: string): boolean;
+  /**
    * A new session's native id: chosen by Tether (Claude: a UUID; SPEC §6 terminal), or made by the
    * harness when it picks its own ids (Codex: a thread in its daemon, which `start` then joins).
    */

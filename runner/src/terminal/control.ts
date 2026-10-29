@@ -416,7 +416,8 @@ export class TerminalControl {
       .adapter(s.summary.harness)
       .readHistory(s.summary.nativeId, s.summary.projectPath)
       .catch(() => [] as Msg[]);
-    const used = [...msgs].reverse().find((m) => m.role === "assistant" && m.model?.startsWith("claude"))?.model;
+    const own = this.o.core.adapter(s.summary.harness).ownModel ?? (() => true);
+    const used = [...msgs].reverse().find((m) => m.role === "assistant" && m.model && own(m.model))?.model;
     if (!used) return;
     const cur = s.state.modelResolved ?? s.state.model;
     const differs = family(cur) ? family(cur) !== family(used) : !!cur && cur !== "default" && cur !== used;
