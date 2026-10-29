@@ -148,9 +148,11 @@ export function capMessage(m: Msg): Msg {
 }
 
 export function capRequest(r: Request): Request {
-  if (r.input === undefined) return r;
+  let out = r;
+  if (r.plan !== undefined && over(r.plan, PART_TEXT_MAX)) out = { ...out, plan: cut(r.plan) };
+  if (r.input === undefined) return out;
   const c = capInput(r.input);
-  return c.truncated ? { ...r, input: c.value, inputTruncated: true } : r;
+  return c.truncated ? { ...out, input: c.value, inputTruncated: true } : out;
 }
 
 export function capState(s: LiveState): LiveState {

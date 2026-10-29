@@ -24,7 +24,7 @@
 // subscribe again for a fresh snapshot.
 
 import type { PartChunk } from "./limits";
-import type { HarnessId, ModelList, Msg, ProjectInfo, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
 export const CLOSE_REPLACED = 4000;
@@ -117,6 +117,12 @@ export interface Ops {
   setModel: { args: { sessionId: string; model: string }; result: null };
   setEffort: { args: { sessionId: string; effort: string }; result: null };
   setPermissionMode: { args: { sessionId: string; mode: string }; result: null };
+  /**
+   * Answers an open request (SPEC §7). The first answer wins: a request already answered, here or
+   * on another device, fails with "Already answered."; one that closed otherwise (stopped, resolved
+   * in the harness's own UI) with "That request is no longer open."
+   */
+  answerRequest: { args: { sessionId: string; requestId: string } & RequestAnswer; result: null };
   /** attach this browser to a terminal; the server fills in attachId */
   openTerminal: { args: { sessionId: string; attachId?: string; cols: number; rows: number }; result: { attachId: string } };
   closeTerminal: { args: { attachId: string }; result: null };

@@ -99,19 +99,58 @@ export interface Msg {
 export type SessionMode = "stored" | "live" | "terminal";
 export type RunStatus = "idle" | "running" | "waiting";
 
-/** An approval or question waiting for a person (SPEC §7). */
+/** One question of a question request, with the choices offered (the person may also type). */
+export interface RequestQuestion {
+  question: string;
+  /** a short tag for it ("Color") */
+  header?: string;
+  options: { label: string; description?: string }[];
+  /** several options may be picked */
+  multiSelect?: boolean;
+}
+
+/**
+ * An approval or question waiting for a person (SPEC §7). It shows in its own session and in every
+ * session above it (a subagent's request shows in its parent too); `sessionId` is the one that asked.
+ */
 export interface Request {
   id: string;
   sessionId: string;
   kind: "approval" | "question";
   tool?: string;
   input?: unknown;
+  /** the first question's text and options (`questions` has them all) */
   question?: string;
   options?: string[];
+  questions?: RequestQuestion[];
   openedAt: number;
   /** `input` was cut short to travel (shared/limits.ts) */
   inputTruncated?: boolean;
+  /** what the tool does, as the transcript's tool cards draw it */
+  toolKind?: ToolKind;
+  command?: string;
+  path?: string;
+  /** the tool call in the transcript this request is about */
+  toolId?: string;
+  /** a short line from the harness on what this is ("notes.txt") */
+  title?: string;
+  /** why the harness asks ("This command uses shell operators that require approval") */
+  reason?: string;
+  /** a plan to approve (leaving plan mode), as markdown */
+  plan?: string;
+  /** ways to approve that also switch the permission mode ("Approve and accept edits") */
+  approveAs?: Choice[];
+  /** asked by a subagent: its title, for the parent's view */
+  agent?: string;
 }
+
+/**
+ * How a person answers a request (the `answerRequest` op). Approve: `allow`, optionally switching to
+ * one of the request's `approveAs` modes. A question: `allow` with one answer per question (several
+ * picks joined by ", "). Deny: `allow: false`, with a reason Claude reads, or none (which stops the
+ * turn, as declining in the harness's own UI does).
+ */
+export type RequestAnswer = { allow: true; answers?: string[]; mode?: string } | { allow: false; reason?: string };
 
 export interface QueuedMessage {
   id: string;
