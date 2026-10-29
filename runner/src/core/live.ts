@@ -8,8 +8,8 @@
 // sessions (SPEC §6a).
 
 import { randomUUID } from "node:crypto";
-import { sessionId as makeId } from "../../../shared/ids";
-import type { HarnessId, LiveState, ModelList, Msg, RequestAnswer } from "../../../shared/transcript";
+import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
+import { HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import type { Driver, Sink, StartOpts, SubagentStart } from "./adapter";
 import type { RequestBroker } from "./broker";
 import { RequestDesk } from "./requests";
@@ -54,13 +54,16 @@ export class LiveControl {
     const a = this.core.adapter(args.harness);
     const folder = this.core.folder(args.projectPath);
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
-    const s = this.core.create(args.harness, a.newId(), folder, { model: args.model, effort: args.effort, permissionMode: args.permissionMode });
+    const opts: StartOpts = { model: args.model, effort: args.effort, permissionMode: args.permissionMode };
+    const s = this.core.create(args.harness, await a.newId(folder, opts), folder, opts);
     this.core.touch(s);
     if (args.terminal) {
-      // Its TUI creates it (SPEC §8): no SDK process at all.
+      // Its TUI creates it (SPEC §8): for a handoff harness, no SDK process at all; a shared TUI
+      // joins Tether's own connection to the session, which starts first (terminal/control.ts).
       try {
         await this.terminal!.startIn(s);
       } catch (e) {
+        await this.release(s).catch(() => {});
         this.core.book.remove([s.id]);
         this.core.sessions.delete(s.id);
         throw e;
@@ -76,11 +79,12 @@ export class LiveControl {
   async send(id: string, text: string) {
     if (!text?.trim()) throw new Error("Type a message first.");
     const s = await this.core.open(id);
-    if (s.summary.parentSessionId) throw new Error("Subagents can't take messages yet. Message the main session instead.");
+    // A subagent the harness lets you message directly: into its running turn (SPEC §6a).
+    if (s.summary.parentSessionId) return this.steer(id, text);
     // The TUI drives: the message is typed there (SPEC §9).
     if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
     // Checked and claimed with no await in between, so two sends can't both start a turn.
-    if (s.state.status !== "idle" || s.sending) throw new Error("Claude is still working. Stop it first, or wait for it to finish.");
+    if (s.state.status !== "idle" || s.sending) throw new Error(`${HARNESS_LABELS[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
     const me = {};
     s.sending = me;
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
@@ -100,6 +104,26 @@ export class LiveControl {
       if (s.sending === me) s.sending = undefined;
       if (s.cancelSend === me) s.cancelSend = undefined;
     }
+  }
+
+  /**
+   * A message into the running turn (capabilities.canSteer), or into a subagent's own turn
+   * (capabilities.subagents.steer "direct"). It can't be taken back once the harness has it.
+   */
+  async steer(id: string, text: string) {
+    if (!text?.trim()) throw new Error("Type a message first.");
+    const s = await this.core.open(id);
+    const parentId = s.summary.parentSessionId;
+    if (parentId) {
+      if (s.capabilities.subagents.steer !== "direct") throw new Error("Subagents can't take messages here. Message the main session instead.");
+      const parent = this.core.sessions.get(parentId);
+      if (!s.childRunning || !parent?.driver?.steerSubagent) throw new Error("This subagent has finished. Message the main session instead.");
+      return parent.driver.steerSubagent(s.summary.nativeId, text);
+    }
+    if (!s.capabilities.canSteer) throw new Error(`${HARNESS_LABELS[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
+    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
+    if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
+    await s.driver.steer(text);
   }
 
   /** A status change made by the core itself (not the driver), with the same consequences. */
@@ -152,6 +176,28 @@ export class LiveControl {
   async listModels(harness: HarnessId, sessionId?: string): Promise<ModelList> {
     const s = sessionId ? this.core.sessions.get(sessionId) : undefined;
     return this.core.adapter(s?.summary.harness ?? harness).listModels(s?.driver);
+  }
+
+  /**
+   * At start: sessions whose harness kept their turn going while the runner was away
+   * (capabilities.persistent) are joined again, so their requests and status reach Tether.
+   */
+  async rejoin() {
+    for (const id of this.core.o.prefs.running()) {
+      const harness = parseSessionId(id)?.harness;
+      if (!harness || !this.core.o.adapters.find((a) => a.id === harness)?.capabilities.persistent) continue;
+      try {
+        const s = await this.core.open(id);
+        await this.core.load(s);
+        await this.ensureDriver(s);
+        this.core.log(`rejoined ${id}`);
+        // It finished while the runner was away.
+        if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
+      } catch (e: any) {
+        this.core.log(`couldn't rejoin ${id}: ${e?.message ?? e}`);
+        this.core.o.prefs.set(id, { running: undefined });
+      }
+    }
   }
 
   /** Closes every live session (runner shutdown): their harnesses flush their stores. */
@@ -216,7 +262,7 @@ export class LiveControl {
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
       const error = e?.message ?? String(e);
-      s.apply({ type: "msg", msg: notice(`Couldn't start ${s.summary.harness === "claude" ? "Claude Code" : s.summary.harness}: ${error}`, "error") });
+      s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable.
       s.setState({ error, mode: "stored", status: "idle" });
       this.core.touch(s);
@@ -276,8 +322,9 @@ export class LiveControl {
     clearTimeout(s.idleTimer);
     s.idleTimer = setTimeout(() => {
       if (!s.driver) return;
-      // Not while a turn, a subagent or a background task runs: look again later.
-      if (s.state.status !== "idle" || s.driver.busy()) return this.scheduleIdle(s);
+      // Not while a turn, a subagent or a background task runs, nor while the harness's own TUI
+      // shares the session (it would lose what Tether relays): look again later.
+      if (s.state.status !== "idle" || s.driver.busy() || s.state.terminal) return this.scheduleIdle(s);
       void this.close(s);
     }, this.idleMs);
     s.idleTimer.unref?.();

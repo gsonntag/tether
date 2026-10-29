@@ -61,6 +61,13 @@ export class Prefs {
     return this.map[id] ?? {};
   }
 
+  /** Sessions whose turn was running when the runner last stopped. */
+  running(): string[] {
+    return Object.entries(this.map)
+      .filter(([, p]) => p.running)
+      .map(([id]) => id);
+  }
+
   set(id: string, patch: SessionPrefs) {
     this.map[id] = { ...this.map[id], ...patch, at: Date.now() };
     for (const k of Object.keys(this.map[id]!) as (keyof SessionPrefs)[]) if (this.map[id]![k] === undefined) delete this.map[id]![k];

@@ -76,6 +76,10 @@ export interface Driver {
   setPermissionMode(mode: string): Promise<void>;
   /** stops one running subagent (capabilities.subagents.stop) */
   stopSubagent?(nativeId: string): Promise<void>;
+  /** a message into a running subagent's turn, as the person (capabilities.subagents.steer "direct") */
+  steerSubagent?(nativeId: string, text: string): Promise<void>;
+  /** the harness's own TUI is about to join this live session (capabilities.terminal "shared") */
+  beforeTerminal?(): Promise<void>;
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */
   busy(): boolean;
   close(): Promise<void>;
@@ -104,8 +108,11 @@ export interface Adapter {
   start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   listModels(driver?: Driver): Promise<ModelList>;
-  /** a new session's native id, chosen by Tether (Claude: a UUID; SPEC §6 terminal) */
-  newId(): string;
+  /**
+   * A new session's native id: chosen by Tether (Claude: a UUID; SPEC §6 terminal), or made by the
+   * harness when it picks its own ids (Codex: a thread in its daemon, which `start` then joins).
+   */
+  newId(projectPath: string, opts: StartOpts): string | Promise<string>;
   // terminal mode (SPEC §8): how to run the harness's own TUI on a session, in tmux
   terminalCommand(nativeId: string, projectPath: string, opts: TerminalOpts): TerminalLaunch;
 }

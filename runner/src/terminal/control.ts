@@ -9,9 +9,10 @@
 // "needs you" (hooks.ts). Back to Tether asks the TUI to quit (killed after 5 s) and resumes the
 // driver on the same session: the mode becomes `live`. If the TUI exits by itself, `stored`.
 //
-// Shared (capabilities.terminal = "shared", Codex in P4): the TUI joins the live thread beside
-// Tether. Nothing changes mode and the driver keeps going; closing just detaches, and Back to
-// Tether only quits the TUI. The seam is here; the Codex adapter supplies the launch in P4.
+// Shared (capabilities.terminal = "shared", Codex): the TUI joins the live thread beside Tether.
+// The session goes live first if it isn't (Tether stays attached, so requests, status and the
+// transcript keep working), nothing changes mode, and both can type; closing just detaches, and
+// Back to Tether only quits the TUI.
 //
 // Every terminal is its own tmux session (tmux.ts), so it survives a runner restart: at start the
 // runner lists them and readopts the TUIs. Each attached browser gets its own PTY (attach.ts).
@@ -225,6 +226,12 @@ export class TerminalControl {
       }
       await this.o.live.release(s);
     }
+    if (!handoff) {
+      // Shared: Tether stays on the thread beside the TUI (requests, status and the transcript keep
+      // coming through it), so it is live first; the harness gets the thread ready to be joined.
+      const d = await this.o.live.resumeLive(s);
+      await d.beforeTerminal?.();
+    }
     // A new session that has nothing in the store yet starts under its id; anything else resumes.
     if (s.fresh && (await this.stored(s))) s.fresh = false;
     const launch = this.launch(s, { fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id } : undefined });
@@ -251,6 +258,8 @@ export class TerminalControl {
     } else {
       s.setState({ terminal: { kind: "shared" } });
       this.o.core.touch(s);
+      // Readopted after a runner restart: Tether joins the thread again too.
+      if (!s.driver && !s.starting) void this.o.live.resumeLive(s).catch((e) => this.log(`${s.id}: couldn't rejoin beside its terminal: ${e?.message ?? e}`));
     }
     this.startPoll();
   }

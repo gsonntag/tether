@@ -13,7 +13,7 @@ import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { HarnessId, LiveState, Msg, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
-import { TRANSCRIPT_PAGE } from "../../../shared/transcript";
+import { HARNESS_LABELS, TRANSCRIPT_PAGE } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
@@ -244,11 +244,13 @@ export class SessionCore {
       .then((msgs) => {
         // A turn that was running when the runner (or the harness) stopped: say so where it ended.
         // Anchored to the end of that turn: what an orphaned process still writes lands above it.
-        if (!s.live && !s.sending && this.o.prefs.get(s.id).running) {
+        // A harness that keeps turns going without the runner (capabilities.persistent) wasn't cut off.
+        if (!s.live && !s.sending && !s.capabilities.persistent && this.o.prefs.get(s.id).running) {
           const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
+          const name = HARNESS_LABELS[s.summary.harness];
           const text = s.state.requests.length
-            ? "The runner restarted while Claude was waiting for you. Answer below and Claude picks up from there."
-            : "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue.";
+            ? `The runner restarted while ${name} was waiting for you. Answer below and ${name} picks up from there.`
+            : `This turn stopped because the runner restarted or ${name} exited. Send a message to continue.`;
           const n = { turnOf: prompt?.id, msg: { id: `n-cut-${s.id}-${prompt?.id ?? "x"}`, role: "notice" as const, level: "warning" as const, ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text" as const, text }] } };
           if (!s.overlay.some((o) => o.msg.id === n.msg.id)) {
             s.overlay.push(n);

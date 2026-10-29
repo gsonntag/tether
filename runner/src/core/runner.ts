@@ -135,6 +135,7 @@ export function createRunner(o: RunnerOptions) {
     start: async () => {
       core.startDiscovery();
       void live.desk.restore();
+      void live.rejoin();
       // Before connecting, so the first summary already shows readopted terminals.
       await terminal?.start();
       conn.start();

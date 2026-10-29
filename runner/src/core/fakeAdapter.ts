@@ -36,6 +36,15 @@ export class FakeDriver implements Driver {
     this.sink.state({ status: "running" });
     for (const step of this.script(text)) await step(this.sink, this);
   }
+  steered: string[] = [];
+  /** subagent steers: [native id, text] */
+  steeredSubagents: [string, string][] = [];
+  async steer(text: string) {
+    this.steered.push(text);
+  }
+  async steerSubagent(nativeId: string, text: string) {
+    this.steeredSubagents.push([nativeId, text]);
+  }
   async interrupt() {
     this.interrupted++;
     this.sink.state({ status: "idle" });
@@ -158,8 +167,14 @@ export class FakeAdapter implements Adapter {
   async listModels(): Promise<ModelList> {
     return { models: [{ id: "default", label: "Default" }], efforts: [], permissionModes: [] };
   }
-  newId() {
-    return `new-${++this.next}`;
+  /** what newId was asked for (a harness that makes its own ids gets the folder and settings) */
+  newIds: { projectPath?: string; opts?: StartOpts }[] = [];
+  /** newId answers asynchronously (a harness that makes the session to learn its id) */
+  asyncIds = false;
+  newId(projectPath?: string, opts?: StartOpts): string | Promise<string> {
+    this.newIds.push({ projectPath, opts });
+    const id = `new-${++this.next}`;
+    return this.asyncIds ? Bun.sleep(1).then(() => id) : id;
   }
   terminalCommand(_nativeId: string, _projectPath: string, _opts: TerminalOpts): TerminalLaunch {
     return { argv: ["true"] };
