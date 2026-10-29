@@ -357,7 +357,7 @@ const steps = {
     if (!RESTART) return ok("restart skipped (no RESTART_RUNNER)");
     const p = await page(desktop, claude);
     await composer(p).waitFor();
-    await bang(p, "echo BEFORE-RESTART; sleep 600");
+    await bang(p, "echo BEFORE-RESTART; sleep 600.25");
     await card(p).locator(".t-shellcard-out", { hasText: "BEFORE-RESTART" }).waitFor({ timeout: 15_000 });
     execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
     await waitCard(p, "notSent", "after a runner restart", 90_000);
@@ -365,7 +365,8 @@ const steps = {
     if (!/runner stopped while it ran/.test(t) || !/Cut off/.test(t) || !t.includes("BEFORE-RESTART")) fail(`the card says: ${t}`);
     const st = await liveState(p);
     if (st.queue.length) fail("something was queued");
-    if (procs("sleep 600").length) fail("the command still runs after the restart");
+    await sleep(2500);
+    if (procs("sleep 600.25").length) fail("the command still runs after the restart");
     ok("runner restart while a command ran: the command was ended and the card says Cut off · Not sent: The runner stopped while it ran … (output kept), never stuck at Running; nothing was queued");
     await p.close();
   },

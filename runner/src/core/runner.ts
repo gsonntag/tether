@@ -161,14 +161,16 @@ export function createRunner(o: RunnerOptions) {
     /** Closes live sessions (their harnesses flush), then the connection. */
     stop: async () => {
       clearInterval(timer);
-      // Before the notices are written for the last time: their cards end as not sent.
-      shellRuns.stopAll();
+      // Before the notices are written for the last time: their cards end as not sent (and their
+      // process groups get SIGKILL 2 s on, waited for at the end).
+      const shells = shellRuns.stopAll();
       terminal?.stop();
       core.stop();
       live.attachments.stop();
       await live.closeAll().catch(() => {});
       core.o.prefs.flush();
       conn.stop();
+      await shells;
     },
   };
 }
