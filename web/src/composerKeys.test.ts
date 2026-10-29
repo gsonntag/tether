@@ -47,3 +47,12 @@ test("! text is a shell command: Enter runs it now, even mid-turn; the toggle ad
   expect(toggleShell("!npm test")).toBe("npm test");
   expect(toggleShell("")).toBe("!");
 });
+
+test("the shell hint says when the output reaches the agent, whatever holds the queue", async () => {
+  const { shellWhen } = await import("./composerKeys");
+  expect(shellWhen("Claude", { running: false, inTerminal: false })).toBe("the output goes to Claude when it finishes");
+  expect(shellWhen("Claude", { running: true, inTerminal: false })).toBe("the output goes to Claude when this turn ends");
+  expect(shellWhen("Claude", { running: false, inTerminal: true })).toBe("the output goes to Claude when you go Back to Tether");
+  expect(shellWhen("Codex", { running: false, inTerminal: false, heldBy: "stopped" })).toMatch(/waits in the queue, paused after Stop/);
+  expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restart" })).toMatch(/paused after a restart/);
+});

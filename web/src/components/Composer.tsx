@@ -16,7 +16,7 @@ import { ArrowUpIcon, ChevronDownIcon, StopIcon } from "@heroicons/react/24/soli
 import { CameraIcon, ClockIcon, CommandLineIcon, PaperClipIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, type Attachment } from "../../../shared/attachments";
 import { ATTACH_MAX } from "../../../shared/limits";
-import { composerMode, isShellText, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
+import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
 
 export interface ComposerHandle {
@@ -61,7 +61,7 @@ export const Composer = forwardRef<
     /** where attachments upload (none: no attaching) */
     uploadTo?: { runnerId: string; sessionId: string };
     /** `!` commands run here (none: no shell mode): the folder they run in, for the hint */
-    shell?: { folder: string };
+    shell?: { folder: string; heldBy?: string };
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
     onStop: () => Promise<void>;
     status?: React.ReactNode;
@@ -283,7 +283,7 @@ export const Composer = forwardRef<
           <div className="t-shell-hint" role="status">
             <span className="t-shell-badge">Shell</span>
             <span>
-              Runs now in <span className="t-path">{folderName(shell!.folder)}</span> · the output goes to {agent} {running && !inTerminal ? "when this turn ends" : "when it finishes"}
+              Runs now in <span className="t-path">{folderName(shell!.folder)}</span> · {shellWhen(agent, { running: running && !inTerminal, inTerminal, heldBy: shell!.heldBy })}
             </span>
           </div>
         )}

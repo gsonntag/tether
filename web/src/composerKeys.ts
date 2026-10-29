@@ -41,3 +41,20 @@ export function keyAction(e: { key: string; shiftKey: boolean; metaKey: boolean;
   if (e.key === "Escape" && busy && !o.hasText) return "stop";
   return null;
 }
+
+/** Why a held queue waits, as the shell hint says it (SPEC §9). */
+const HELD_HINT: Record<string, string> = {
+  stopped: "paused after Stop",
+  failed: "paused after a failed turn",
+  restart: "paused after a restart",
+};
+
+/**
+ * When a `!` command's output reaches the agent, as the shell hint says it: it goes through the
+ * queue, so it follows whatever holds the queue.
+ */
+export function shellWhen(agent: string, o: { running: boolean; inTerminal: boolean; heldBy?: string }): string {
+  if (o.inTerminal || o.heldBy === "terminal") return `the output goes to ${agent} when you go Back to Tether`;
+  if (o.heldBy) return `the output waits in the queue, ${HELD_HINT[o.heldBy] ?? "paused"} (Resume or send something to let it go)`;
+  return `the output goes to ${agent} ${o.running ? "when this turn ends" : "when it finishes"}`;
+}

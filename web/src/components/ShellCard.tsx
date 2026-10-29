@@ -56,7 +56,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
 
   const running = run.state === "running";
   const ended = running ? undefined : endedHow(run);
-  const failed = !running && (run.stopped || !!run.signal || (run.exitCode ?? 0) !== 0);
+  const failed = !running && (run.stopped || run.cutOff || !!run.signal || (run.exitCode ?? 0) !== 0);
   const where =
     run.state === "running"
       ? `Running · the output goes to ${agent} when it finishes`
@@ -81,7 +81,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
               <Button label={stopping ? "Stopping…" : "Stop"} size="sm" variant="secondary" icon={<Icon icon={StopIcon} size="sm" />} isDisabled={stopping} onClick={() => void stop()} />
             </>
           ) : (
-            <span className={`t-shellcard-exit${failed ? " failed" : ""}`}>{ended === "stopped" ? "Stopped" : ended}</span>
+            <span className={`t-shellcard-exit${failed ? " failed" : ""}`}>{ended === "stopped" ? "Stopped" : ended === "cut off" ? "Cut off" : ended}</span>
           )}
         </div>
         {output ? (

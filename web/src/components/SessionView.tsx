@@ -60,6 +60,15 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     openSession(runnerId, continuedIn);
   }, [loaded, continuedIn]);
 
+  // The TUI went away (Back to Tether, or it exited), whichever tab was in front: opening it again
+  // is a new handoff, asked first when busy, never a reattach to what was (SPEC §8).
+  const tuiRunsNow = !!view?.state && (view.state.mode === "terminal" || !!view.state.terminal);
+  const tuiRan = useRef(tuiRunsNow);
+  useEffect(() => {
+    if (tuiRan.current && !tuiRunsNow) setPanel((p) => (p?.wantTui ? { ...p, wantTui: false, stop: false } : p));
+    tuiRan.current = tuiRunsNow;
+  }, [tuiRunsNow]);
+
   useEffect(() => {
     if (harness && !models && linkOpen) void loadModels(runnerId, harness, sessionId);
   }, [harness, runnerId, linkOpen]);
@@ -246,7 +255,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
-            shell={{ folder: summary.projectPath }}
+            shell={{ folder: summary.projectPath, heldBy: state.queueHeld ? state.queueHeldBy : undefined }}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
