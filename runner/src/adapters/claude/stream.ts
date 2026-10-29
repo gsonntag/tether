@@ -38,8 +38,12 @@ export class ClaudeStream {
   private agents = new Map<string, Thread>();
   /** subagent task id by the tool call that started it */
   private agentByTool = new Map<string, string>();
-  /** running background tasks (subagents, shells, …) */
+  /** running tasks (subagents, shells, …) */
   readonly running = new Set<string>();
+  /** tasks background_tasks_changed has listed: only those can end by dropping off its list */
+  private background = new Set<string>();
+  /** subagents that ended, by task id: frames still arriving (a stop's interrupt, a last tool result) land here, never reopening them */
+  private endedAgents = new Map<string, Thread>();
   /** the message streaming on the main thread */
   private current?: string;
   /** session_state_changed frames arrive: they, not `result`, end turns */
@@ -180,7 +184,8 @@ export class ClaudeStream {
         sink.event({ type: "msg", msg: notice(m.uuid ?? `n-compact-${Date.now()}`, Date.now(), "Context compacted.") });
         return;
       case "task_started":
-        if (AGENT_TASKS.has(m.task_type) || m.subagent_type) this.agentStarted(m);
+        // Explicitly started again (a finished subagent resumed): a new run.
+        if (AGENT_TASKS.has(m.task_type) || m.subagent_type) this.agentStarted(m, true);
         if (m.task_id) this.running.add(m.task_id);
         return;
       case "task_updated":
@@ -190,11 +195,12 @@ export class ClaudeStream {
         this.taskEnded(m.task_id, m.status);
         return;
       case "background_tasks_changed":
-        // The level signal: whatever isn't listed has ended, even if its edge was missed.
+        // The level signal: a background task no longer listed has ended, even if its edge was
+        // missed. A foreground subagent is never listed, so only tasks listed before can drop off.
         if (Array.isArray(m.tasks)) {
           const now = new Set<string>(m.tasks.map((x: any) => x?.task_id).filter(Boolean));
-          for (const id of [...this.running]) if (!now.has(id)) this.taskEnded(id, "completed");
-          for (const id of now) this.running.add(id);
+          for (const id of [...this.background]) if (!now.has(id)) this.taskEnded(id, "completed");
+          for (const id of now) this.running.add(id), this.background.add(id);
         }
         return;
     }
@@ -220,9 +226,11 @@ export class ClaudeStream {
 
   // ---------------- subagents ----------------
 
-  private agentStarted(m: any) {
+  private agentStarted(m: any, again = false) {
     const taskId: string = m.task_id;
     if (!taskId || this.agents.has(taskId)) return;
+    if (this.endedAgents.has(taskId) && !again) return;
+    this.endedAgents.delete(taskId);
     const parentThread = (m.parent_task_id && this.agents.get(m.parent_task_id)) || this.main;
     const sink = parentThread.sink.subagent({
       nativeId: `${this.host.nativeId}/${taskId}`,
@@ -239,8 +247,10 @@ export class ClaudeStream {
     const taskId: string | undefined = m.agent_id ?? this.agentByTool.get(parentTool);
     if (!taskId) return;
     // Frames can come before task_started (or without it, from an older CLI): open it from them.
-    if (!this.agents.has(taskId)) this.agentStarted({ task_id: taskId, tool_use_id: parentTool, description: m.task_description, subagent_type: m.subagent_type });
-    const t = this.agents.get(taskId)!;
+    // Not after it ended: a stop's own frames follow its end.
+    if (!this.agents.has(taskId) && !this.endedAgents.has(taskId)) this.agentStarted({ task_id: taskId, tool_use_id: parentTool, description: m.task_description, subagent_type: m.subagent_type });
+    const t = this.agents.get(taskId) ?? this.endedAgents.get(taskId);
+    if (!t) return;
     if (m.type === "assistant") this.assistant(t, m);
     else this.user(t, m);
   }
@@ -248,9 +258,11 @@ export class ClaudeStream {
   private taskEnded(taskId: string | undefined, status?: string, error?: string) {
     if (!taskId) return;
     this.running.delete(taskId);
+    this.background.delete(taskId);
     const t = this.agents.get(taskId);
     if (!t) return;
     this.agents.delete(taskId);
+    this.endedAgents.set(taskId, t);
     if (status === "failed") t.sink.event({ type: "msg", msg: notice(`n-${taskId}-end`, Date.now(), error ? `The subagent failed: ${error}` : "The subagent failed.", "error") });
     if (status === "stopped") t.sink.event({ type: "msg", msg: notice(`n-${taskId}-end`, Date.now(), "Stopped") });
     // Its card in the parent can still say running for a background agent: its result came early.

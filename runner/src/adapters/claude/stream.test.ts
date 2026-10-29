@@ -18,7 +18,7 @@ class TestSink implements Sink {
   st: Partial<LiveState> = {};
   events: TranscriptEvent[] = [];
   statuses: string[] = [];
-  children = new Map<string, { start: SubagentStart; sink: TestSink }>();
+  children = new Map<string, { start: SubagentStart; sink: TestSink; opened: number }>();
   ended_ = false;
   event(e: TranscriptEvent) {
     this.events.push(e);
@@ -35,8 +35,9 @@ class TestSink implements Sink {
     return { allow: true as const };
   }
   subagent(s: SubagentStart) {
+    const had = this.children.get(s.nativeId);
     const sink = new TestSink();
-    this.children.set(s.nativeId, { start: s, sink });
+    this.children.set(s.nativeId, { start: s, sink, opened: (had?.opened ?? 0) + 1 });
     return sink;
   }
   ended() {
@@ -103,6 +104,21 @@ test("a subagent becomes a child with its own exact turns; the main turn stays r
   expect(stream.running.size).toBe(0);
   // No subagent message leaked into the main transcript.
   expect(sink.t.messages.some((m) => cm.some((c) => c.id === m.id))).toBe(false);
+});
+
+test("a stopped subagent stays stopped: its last frames land in it, its calls keep their results", () => {
+  // Real Claude (Haiku): a foreground subagent starts `sleep 90` in the background (its result comes
+  // at once), then waits with Monitor; stopTask stops it. Its interrupt frames come after its end.
+  const { sink, stream } = replay("stop.jsonl", "S");
+  expect(sink.children.size).toBe(1);
+  const [[, child]] = [...sink.children];
+  expect(child!.opened).toBe(1);
+  expect(child!.sink.ended_).toBe(true);
+  const tools = child!.sink.t.messages.flatMap((m) => m.parts).filter((p) => p.type === "tool").map((p: any) => `${p.name}:${p.status}`);
+  // The background Bash got its result before the stop, though a background shell was listed meanwhile.
+  expect(tools).toEqual(["Bash:done", "ToolSearch:done", "Monitor:error"]);
+  expect(child!.sink.t.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text)).toEqual(["Stopped", "Interrupted"]);
+  expect(stream.running.size).toBe(0);
 });
 
 test("a compaction mid-session keeps the conversation and marks the spot", () => {
