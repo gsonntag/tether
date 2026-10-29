@@ -31,4 +31,12 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("setModel", async (a) => (await live.setModel(str(a.sessionId, "sessionId"), str(a.model, "model")), null));
   ops.register("setEffort", async (a) => (await live.setEffort(str(a.sessionId, "sessionId"), str(a.effort, "effort")), null));
   ops.register("setPermissionMode", async (a) => (await live.setPermissionMode(str(a.sessionId, "sessionId"), str(a.mode, "mode")), null));
+  ops.register("answerRequest", async (args) => {
+    const a = args as Record<string, unknown>;
+    const reason = typeof a.reason === "string" ? a.reason.slice(0, 8000) : undefined;
+    const answers = Array.isArray(a.answers) ? (a.answers as unknown[]).slice(0, 20).map((x) => (typeof x === "string" ? x.slice(0, 8000) : "")) : undefined;
+    const answer = a.allow === true ? { allow: true as const, ...(answers ? { answers } : {}), ...(optStr(a.mode) ? { mode: optStr(a.mode) } : {}) } : { allow: false as const, ...(reason ? { reason } : {}) };
+    await live.answerRequest(str(a.sessionId, "sessionId"), str(a.requestId, "requestId"), answer);
+    return null;
+  });
 }

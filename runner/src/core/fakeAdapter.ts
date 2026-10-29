@@ -20,6 +20,7 @@ export class FakeDriver implements Driver {
   /** subagent sinks by native id */
   children = new Map<string, Sink>();
   lastDecision?: Decision;
+  decisions: Decision[] = [];
 
   constructor(
     readonly nativeId: string,
@@ -72,8 +73,14 @@ export const toolCall = (msgId: string, toolId: string, name = "Bash", input: un
   s.event({ type: "msg", msg: { id: msgId, role: "assistant", ts: 3, parts: [{ type: "tool", id: toolId, name, kind: name === "Agent" ? "task" : "shell", input, status: "running" }] } });
 export const toolDone = (msgId: string, toolId: string, output: string): Step => (s) => s.event({ type: "tool", msgId, toolId, patch: { status: "done", output } });
 export const idle: Step = (s) => s.state({ status: "idle" });
-export const ask = (tool: string, input: unknown): Step => async (s, d) => {
-  d.lastDecision = await s.request({ kind: "approval", tool, input });
+/** Asks for approval and waits; `signal` lets a test stop waiting, as a harness does. */
+export const ask = (tool: string, input: unknown, signal?: AbortSignal): Step => async (s, d) => {
+  d.lastDecision = await s.request({ kind: "approval", tool, input }, signal);
+  d.decisions.push(d.lastDecision);
+};
+export const askQuestion = (question: string, options: string[]): Step => async (s, d) => {
+  d.lastDecision = await s.request({ kind: "question", tool: "AskUserQuestion", input: { question }, question, options, questions: [{ question, options: options.map((label) => ({ label })) }] });
+  d.decisions.push(d.lastDecision);
 };
 export const subagent = (nativeId: string, parentToolId: string, steps: Step[] = []): Step => async (s, d) => {
   const c = s.subagent({ nativeId, parentToolId, title: "Count lines", agentType: "general-purpose", prompt: "Count the lines" });

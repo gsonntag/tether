@@ -71,18 +71,21 @@ export function createRunner(o: RunnerOptions) {
     ...o.connection,
   });
 
+  const prefs = new Prefs(o.prefsFile);
   const core = new SessionCore({
     adapters: o.adapters ?? [],
     bus,
     send: (m) => conn.send(m),
     epoch,
-    prefs: new Prefs(o.prefsFile),
+    prefs,
     notices: o.noticesFile ? new NoticeStore(o.noticesFile) : undefined,
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,
   });
-  const live = new LiveControl(core, new RequestBroker(o.policy), { idleMs: o.core?.idleMs });
+  // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
+  const broker = new RequestBroker(o.policy, { saved: prefs.requests(), persist: (open) => prefs.setRequests(open), log: o.log });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs });
   registerSessionOps(ops, core, live);
 
   const timer = setInterval(async () => {
@@ -103,6 +106,7 @@ export function createRunner(o: RunnerOptions) {
     harnesses: () => harnesses,
     start: () => {
       core.startDiscovery();
+      void live.desk.restore();
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */

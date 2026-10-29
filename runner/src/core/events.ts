@@ -2,13 +2,17 @@
 
 import type { Msg, Request, SessionMode, ToolPart } from "../../../shared/transcript";
 
+/** How a request closed: decided, stopped with its turn, or answered in the harness's own UI. */
+export type RequestOutcome = "allowed" | "denied" | "answered" | "cancelled" | "elsewhere";
+
 export interface CoreEvents {
   turnStarted: { sessionId: string };
   turnEnded: { sessionId: string; error?: string };
   message: { sessionId: string; msg: Msg };
   toolCall: { sessionId: string; msgId: string; tool: ToolPart };
   requestOpened: { request: Request };
-  requestClosed: { sessionId: string; requestId: string; outcome: "allowed" | "denied" | "answered" | "cancelled" };
+  /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */
+  requestClosed: { sessionId: string; requestId: string; outcome: RequestOutcome; source?: string; reason?: string };
   modeChanged: { sessionId: string; from: SessionMode; to: SessionMode };
   error: { sessionId?: string; message: string };
   /** the last browser watching these sessions went away */

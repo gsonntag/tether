@@ -4,13 +4,15 @@
 //
 // Each live session's driver reports through a Sink made here: transcript events go into the
 // session's transcript and out with the next seq, status changes become turnStarted/turnEnded,
-// permission requests go to the broker, and subagents become child sessions (SPEC §6a).
+// permission requests go to the request desk (core/requests.ts), and subagents become child
+// sessions (SPEC §6a).
 
 import { randomUUID } from "node:crypto";
 import { sessionId as makeId } from "../../../shared/ids";
-import type { HarnessId, LiveState, ModelList, Msg, Request } from "../../../shared/transcript";
+import type { HarnessId, LiveState, ModelList, Msg, RequestAnswer } from "../../../shared/transcript";
 import type { Driver, Sink, StartOpts, SubagentStart } from "./adapter";
 import type { RequestBroker } from "./broker";
+import { RequestDesk } from "./requests";
 import { Session } from "./session";
 import type { SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
@@ -20,26 +22,19 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
-/** What a denied request was about, for its notice: "run `ls -la`", "edit src/a.ts". */
-function describeRequest(r: Pick<Request, "tool" | "input">): string {
-  const i = (r.input ?? {}) as Record<string, unknown>;
-  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-  const cmd = str(i.command);
-  const path = str(i.file_path) ?? str(i.path) ?? str(i.notebook_path);
-  if (cmd) return `run \`${cmd.length > 120 ? `${cmd.slice(0, 120)}…` : cmd}\``;
-  if (path) return `use ${r.tool ?? "a tool"} on ${path}`;
-  return `use ${r.tool ?? "a tool"}`;
-}
-
 export class LiveControl {
   private readonly idleMs: number;
+  readonly desk: RequestDesk;
+  /** shutting down: drivers close, but their open requests stay saved for the next start */
+  private stopping = false;
 
   constructor(
     private core: SessionCore,
-    private broker: RequestBroker,
+    broker: RequestBroker,
     opts: { idleMs?: number } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
+    this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
   }
 
   // ---------------- ops ----------------
@@ -93,11 +88,14 @@ export class LiveControl {
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its parent's process runs it.
+      this.desk.cancel((r) => r.sessionId === id);
       const parent = this.core.sessions.get(parentId);
       if (!s.childRunning || !parent?.driver?.stopSubagent) return;
       await parent.driver.stopSubagent(s.summary.nativeId);
       return;
     }
+    // Whatever it asked is moot now (the harness stops waiting too).
+    this.desk.cancel((_r, chain) => chain.at(-1) === id);
     // Stopped while Claude is still starting: the message never goes out.
     if (s.sending && !s.driver) {
       // Free at once: a send right after this goes ahead (on the same start).
@@ -120,6 +118,11 @@ export class LiveControl {
     await this.setting(id, { permissionMode: mode }, (d) => d.setPermissionMode(mode));
   }
 
+  /** A person answers a request (SPEC §7); the first answer wins. */
+  async answerRequest(_sessionId: string, requestId: string, a: RequestAnswer) {
+    this.desk.answer(requestId, a);
+  }
+
   async listModels(harness: HarnessId, sessionId?: string): Promise<ModelList> {
     const s = sessionId ? this.core.sessions.get(sessionId) : undefined;
     return this.core.adapter(s?.summary.harness ?? harness).listModels(s?.driver);
@@ -127,6 +130,9 @@ export class LiveControl {
 
   /** Closes every live session (runner shutdown): their harnesses flush their stores. */
   async closeAll() {
+    // What's open now is asked again after the restart: it stays saved.
+    this.stopping = true;
+    this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
   }
 
@@ -191,6 +197,8 @@ export class LiveControl {
 
   private toStored(s: Session, error?: string) {
     s.driver = undefined;
+    // Nobody waits on its requests any more (restored ones stay until answered or stopped).
+    if (!this.stopping) this.desk.cancel((_r, chain, restored) => !restored && chain.at(-1) === s.id);
     clearTimeout(s.idleTimer);
     // Its subagents ran in its process: they're done too.
     for (const c of this.core.sessions.values()) if (c.summary.parentSessionId === s.id && c.childRunning) this.childEnded(c);
@@ -246,7 +254,7 @@ export class LiveControl {
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
         else if (changed.model || changed.modelResolved || changed.permissionMode) core.touch(s);
       },
-      request: (r, signal) => this.request(s, r, signal),
+      request: (r, signal) => this.desk.ask(s, r, signal),
       nativeId: (id) => {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
       },
@@ -274,18 +282,6 @@ export class LiveControl {
     if (s.summary.parentSessionId) return;
     const info = await this.core.adapter(s.summary.harness).sessionInfo(s.summary.nativeId, s.summary.projectPath).catch(() => undefined);
     if (info?.title && info.title !== s.summary.title) this.core.touch(s, { title: info.title });
-  }
-
-  private async request(s: Session, r: Pick<Request, "kind" | "tool" | "input" | "question" | "options">, _signal?: AbortSignal) {
-    const bus = this.core.o.bus;
-    const req: Request = { id: randomUUID(), sessionId: s.id, openedAt: this.core.now(), ...r };
-    bus.emit("requestOpened", { request: req });
-    const d = await this.broker.decide(req);
-    bus.emit("requestClosed", { sessionId: s.id, requestId: req.id, outcome: d.allow ? "allowed" : "denied" });
-    // Nobody could answer (P1 has no approvals UI): say so where the reader looks.
-    if (!d.allow && d.source === "tether")
-      s.apply({ type: "msg", msg: notice(`Claude asked to ${describeRequest(r)}. Denied: Tether can't show approval prompts yet. Pick Accept edits or Bypass permissions in the session header to let it act.`, "warning") });
-    return d;
   }
 
   /** A subagent started: it becomes a session of its own, live while it runs (SPEC §6a). */
@@ -338,6 +334,7 @@ export class LiveControl {
   private childEnded(c: Session) {
     if (!c.childRunning) return;
     c.childRunning = false;
+    if (!this.stopping) this.desk.cancel((r, _chain, restored) => !restored && r.sessionId === c.id);
     c.setState({ mode: "stored", status: "idle" });
     this.core.touch(c, { updatedAt: this.core.now() });
     this.core.o.bus.emit("turnEnded", { sessionId: c.id });

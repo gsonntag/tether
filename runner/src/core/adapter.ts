@@ -13,8 +13,22 @@ export interface StartOpts {
   permissionMode?: string;
 }
 
-/** How a permission request ended (SPEC §7): what the driver tells the harness. */
-export type Decision = { allow: true } | { allow: false; reason: string };
+/**
+ * How a permission request ended (SPEC §7): what the driver tells the harness. An allowed question
+ * carries one answer per question; `mode` switches the permission mode with the approval (one of
+ * the request's `approveAs`). A denial says why, for the model to read; `interrupt` also stops the
+ * turn (a plain "Deny", as declining in the harness's own UI does).
+ */
+export type Decision = { allow: true; answers?: string[]; mode?: string } | { allow: false; reason: string; interrupt?: boolean };
+
+/** What a driver asks: a Request without the fields the core fills in. */
+export type RequestAsk = Omit<Request, "id" | "sessionId" | "openedAt" | "inputTruncated" | "agent">;
+
+/**
+ * The abort reason a driver gives a request's signal when the harness says it was answered
+ * somewhere else (Codex's own TUI, SPEC §6): it closes as resolved elsewhere, not cancelled.
+ */
+export const RESOLVED_ELSEWHERE = "resolved-elsewhere";
 
 /** A subagent the driver saw start: it becomes a child session (SPEC §6a). */
 export interface SubagentStart {
@@ -37,8 +51,12 @@ export interface Sink {
   /** the message as the transcript has it now (to build an upsert from) */
   message(id: string): Msg | undefined;
   state(patch: Partial<Omit<LiveState, "mode" | "requests" | "queue">>): void;
-  /** a permission prompt or question: the broker decides (SPEC §7) */
-  request(r: Pick<Request, "kind" | "tool" | "input" | "question" | "options">, signal?: AbortSignal): Promise<Decision>;
+  /**
+   * A permission prompt or question: the broker decides (SPEC §7). Abort `signal` when the harness
+   * no longer waits (the turn stopped): the request closes as cancelled, or as resolved elsewhere
+   * with the reason RESOLVED_ELSEWHERE. The promise then settles with a denial nobody reads.
+   */
+  request(r: RequestAsk, signal?: AbortSignal): Promise<Decision>;
   /** the native id became known or changed (a new session's id comes with the harness's first answer) */
   nativeId?(id: string): void;
   /** a subagent started under this session: its sink */

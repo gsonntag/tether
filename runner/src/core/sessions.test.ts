@@ -7,10 +7,10 @@ import type { RunnerToServer, SummaryUpdate } from "../../../shared/protocol";
 import { applySummary, emptySummary } from "../../../shared/summary";
 import type { Msg, SessionEvent, SessionSnapshot } from "../../../shared/transcript";
 import { applyToWindow, prependPage, type TranscriptWindow } from "../../../shared/window";
-import { NO_APPROVALS_YET, RequestBroker } from "./broker";
+import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
-import { ask, FakeAdapter, idle, say, stream, subagent, subagentEnds, toolCall, toolDone } from "./fakeAdapter";
+import { FakeAdapter, idle, say, stream, subagent, subagentEnds, toolCall, toolDone } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { NoticeStore } from "./notices";
@@ -216,18 +216,6 @@ describe("live sessions", () => {
     const s = await core.open("claude:s1");
     expect(s.state.error).toContain("signed in");
     expect(s.state.mode).toBe("stored");
-  });
-
-  test("a permission request is denied with a clear notice (no approvals in P1)", async () => {
-    const { adapter, core, live } = setup();
-    adapter.addStored("s1", []);
-    adapter.script = () => [ask("Bash", { command: "rm -rf build" }), idle];
-    await core.subscribe("claude:s1");
-    await live.send("claude:s1", "clean");
-    expect(adapter.drivers[0]!.lastDecision).toEqual({ allow: false, reason: NO_APPROVALS_YET, source: "tether" } as any);
-    const n = (await core.open("claude:s1")).transcript!.messages.at(-1)!;
-    expect(n).toMatchObject({ role: "notice", level: "warning" });
-    expect((n.parts[0] as any).text).toContain("run `rm -rf build`");
   });
 });
 
@@ -438,7 +426,7 @@ describe("review round 1", () => {
   test("Tether's own notices survive the store changing under them", async () => {
     const { adapter, core, live, events } = setup();
     adapter.addStored("s1", [user("m0")]);
-    adapter.script = () => [ask("Bash", { command: "ls" }), idle];
+    adapter.script = () => [(sink) => sink.event({ type: "msg", msg: { id: "n-denied", role: "notice", level: "warning", ts: 1, parts: [{ type: "text", text: "Denied" }] } }), idle];
     const v = new Viewer(await core.subscribe("claude:s1"));
     await live.send("claude:s1", "go");
     // Back to stored; the store then grows (a terminal continues the session).

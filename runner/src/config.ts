@@ -1,10 +1,11 @@
-// The runner's directory and its small state file (SPEC §4): runner.json, mode 600. Later phases
-// add session modes, prefs, queued messages and open requests here. Never transcripts.
+// The runner's directory and its small state file (SPEC §4): runner.json, mode 600: the runner's
+// id, per-session prefs and open requests (later: queued messages). Never transcripts.
 
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
+import type { SavedRequest } from "./core/broker";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
 export const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
@@ -19,6 +20,8 @@ export interface RunnerConfig {
   name?: string;
   /** per-session settings Tether chose (SPEC §4), by session id */
   sessions?: Record<string, SessionPrefs>;
+  /** approvals and questions still waiting for a person (SPEC §7): they survive a restart */
+  requests?: SavedRequest[];
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */

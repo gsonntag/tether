@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
-import type { HarnessId, LiveState, Msg, ProjectInfo, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
+import type { HarnessId, LiveState, Msg, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import { TRANSCRIPT_PAGE } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
@@ -65,6 +65,8 @@ export class SessionCore {
   readonly log: (line: string) => void;
   readonly now: () => number;
   readonly notices: NoticeStore;
+  /** a session's open requests (the request desk sets this, core/requests.ts) */
+  requestsFor: (sessionId: string) => Request[] = () => [];
 
   constructor(readonly o: CoreOptions) {
     this.notices = o.notices ?? new NoticeStore();
@@ -109,7 +111,7 @@ export class SessionCore {
         const found = (await Promise.all(this.o.adapters.map((a) => a.listSessions({ since }).catch(() => [] as SessionSummary[])))).flat();
         for (const f of found) {
           const s = this.sessions.get(f.id);
-          if (s && !s.live && !s.childRunning) s.summary = { ...f, mode: s.state.mode, status: s.state.status };
+          if (s && !s.live && !s.childRunning) s.summary = { ...f, mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
         }
         this.book.refresh(
           found,
@@ -125,10 +127,10 @@ export class SessionCore {
     return this.discovering;
   }
 
-  /** Rows the core keeps current itself: live sessions and running subagents. */
+  /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
   private owned(id: string) {
     const s = this.sessions.get(id);
-    return !!s && (s.live || s.childRunning);
+    return !!s && (s.live || s.childRunning || s.state.requests.length > 0);
   }
 
   async listProjects(): Promise<ProjectInfo[]> {
@@ -144,8 +146,7 @@ export class SessionCore {
   /** Session rows with what the core knows live laid over what the stores say. */
   private overlay(list: SessionSummary[]): SessionSummary[] {
     return list.map((s) => {
-      const live = this.sessions.get(s.id);
-      return live && (live.live || live.childRunning) ? live.summary : s;
+      return this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
     });
   }
 
@@ -191,7 +192,7 @@ export class SessionCore {
     if (!row) throw new Error("That session isn't on this runner any more.");
     const prefs = this.o.prefs.get(id);
     const defaults = await a.defaults(row.projectPath).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs) };
+    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -242,7 +243,10 @@ export class SessionCore {
         // Anchored to the end of that turn: what an orphaned process still writes lands above it.
         if (!s.live && !s.sending && this.o.prefs.get(s.id).running) {
           const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
-          const n = { turnOf: prompt?.id, msg: { id: `n-cut-${s.id}-${prompt?.id ?? "x"}`, role: "notice" as const, level: "warning" as const, ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text" as const, text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] } };
+          const text = s.state.requests.length
+            ? "The runner restarted while Claude was waiting for you. Answer below and Claude picks up from there."
+            : "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue.";
+          const n = { turnOf: prompt?.id, msg: { id: `n-cut-${s.id}-${prompt?.id ?? "x"}`, role: "notice" as const, level: "warning" as const, ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text" as const, text }] } };
           if (!s.overlay.some((o) => o.msg.id === n.msg.id)) {
             s.overlay.push(n);
             this.notices.add(s.id, n);
@@ -302,11 +306,11 @@ export class SessionCore {
   }
 
   scheduleEvict(s: Session) {
-    if (s.live || s.childRunning || this.watched.has(s.id)) return;
+    if (s.live || s.childRunning || s.state.requests.length || this.watched.has(s.id)) return;
     this.cancelEvict(s.id);
     const t = setTimeout(() => {
       this.evictTimers.delete(s.id);
-      if (s.live || s.childRunning || this.watched.has(s.id) || this.sessions.get(s.id) !== s) return;
+      if (s.live || s.childRunning || s.state.requests.length || this.watched.has(s.id) || this.sessions.get(s.id) !== s) return;
       this.sessions.delete(s.id);
       this.seqs.set(s.id, s.seq);
       // A new session that never got a message has nothing in any store: it's gone.
@@ -335,8 +339,10 @@ export class SessionCore {
 
   /** The session's row changed (status, mode, title, activity): the sidebar hears. */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    s.summary = { ...s.summary, ...patch, mode: s.state.mode, status: s.state.status };
-    if (s.live || s.childRunning || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
+    const { requests: _, ...rest } = { ...s.summary, ...patch };
+    const n = s.state.requests.length;
+    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}) };
+    if (s.live || s.childRunning || n || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }
 
