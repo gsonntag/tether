@@ -128,4 +128,6 @@ export interface TerminalLaunch {
   env?: Record<string, string>;
   /** how to ask the TUI to quit (Back to Tether); the core kills it if it hasn't after a while */
   quit?: QuitStep[];
+  /** what submits typed text (the composer in terminal mode); default: Enter */
+  submit?: QuitStep[];
 }

@@ -303,10 +303,15 @@ export class TerminalControl {
     }
   }
 
-  private async runQuit(name: string, steps: QuitStep[]) {
+  private runQuit(name: string, steps: QuitStep[]) {
+    return this.runSteps(name, steps, true);
+  }
+
+  private async runSteps(name: string, steps: QuitStep[], untilGone: boolean) {
     for (const [i, st] of steps.entries()) {
       // Quit already: the rest would go nowhere.
-      if (i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
+      if (untilGone && i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
+      if ("waitMs" in st && !st.waitMs) continue;
       if ("waitMs" in st) await Bun.sleep(st.waitMs);
       else if ("keys" in st) await this.o.tmux.keys(name, ...st.keys);
       else await this.o.tmux.type(name, st.text);
@@ -334,10 +339,9 @@ export class TerminalControl {
     if (!this.tuis.has(s.id)) throw new Error("The terminal has closed.");
     await this.starting.get(s.id)?.ready;
     await this.o.tmux.type(name, text);
-    // A beat between the text and Enter: a TUI that reads a burst as a paste (Claude) would take
-    // the Enter as a newline, and one still starting up may drop it.
-    await Bun.sleep(this.o.enterDelayMs ?? 150);
-    await this.o.tmux.keys(name, "Enter");
+    // The harness says how to submit it (Claude: a beat, End, Enter); by default a beat and Enter.
+    const submit = this.launch(s).submit ?? [{ waitMs: this.o.enterDelayMs ?? 150 }, { keys: ["Enter"] }];
+    await this.runSteps(name, submit, false);
   }
 
   /** Stop in terminal mode: Esc in the TUI (Claude stops its turn). */

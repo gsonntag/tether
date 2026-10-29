@@ -22,6 +22,13 @@ import { hookSettings } from "../../terminal/hooks";
  */
 export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }];
 
+/**
+ * Submitting typed text: Claude's TUI sometimes takes an Enter right after typed text as a newline
+ * (seen in a TUI that had just started, every Enter after that too), and any other key first
+ * clears that. End is harmless: the cursor is at the end already.
+ */
+export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
+
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;
 
@@ -133,6 +140,6 @@ export const claudeAdapter: Adapter = {
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
     if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId));
-    return { argv, quit: CLAUDE_QUIT };
+    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT };
   },
 };
