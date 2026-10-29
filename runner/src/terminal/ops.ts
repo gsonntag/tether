@@ -19,7 +19,7 @@ export function registerTerminalOps(ops: OpRegistry, control: TerminalControl | 
     return control;
   };
   ops.register("openTerminal", (a) =>
-    need().open({ sessionId: optStr(a.sessionId), shellId: optStr(a.shellId), attachId: str(a.attachId, "attachId"), cols: num(a.cols, 80), rows: num(a.rows, 24), stop: a.stop === true }),
+    need().open({ sessionId: optStr(a.sessionId), shellId: optStr(a.shellId), attachId: str(a.attachId, "attachId"), cols: num(a.cols, 80), rows: num(a.rows, 24), stop: a.stop === true, reattach: a.reattach === true }),
   );
   ops.register("closeTerminal", (a) => (control?.detach([str(a.attachId, "attachId")]), null));
   ops.register("terminalInput", (a) => {

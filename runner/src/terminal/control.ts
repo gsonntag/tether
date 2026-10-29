@@ -17,7 +17,7 @@
 // runner lists them and readopts the TUIs. Each attached browser gets its own PTY (attach.ts).
 
 import { parseSessionId } from "../../../shared/ids";
-import { TERMINAL_BUSY, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
+import { TERMINAL_BUSY, TERMINAL_CLOSED, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState } from "../../../shared/transcript";
 import type { QuitStep, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
@@ -96,15 +96,16 @@ export class TerminalControl {
 
   // ---------------- ops ----------------
 
-  async open(a: { sessionId?: string; shellId?: string; attachId: string; cols: number; rows: number; stop?: boolean }): Promise<{ attachId: string; target: string }> {
+  async open(a: { sessionId?: string; shellId?: string; attachId: string; cols: number; rows: number; stop?: boolean; reattach?: boolean }): Promise<{ attachId: string; target: string }> {
     let target: string;
     if (a.shellId) {
       const sh = (await this.o.tmux.list()).find((t) => t.kind === "shell" && t.name === a.shellId);
-      if (!sh) throw new Error("That shell has closed.");
+      if (!sh) throw new Error(TERMINAL_CLOSED);
       target = sh.name;
     } else if (a.sessionId) {
       const s = await this.o.core.open(a.sessionId);
       if (s.summary.parentSessionId) throw new Error("A subagent runs inside its main session. Open the main session's terminal.");
+      if (a.reattach && (!this.tuis.has(s.id) || this.returning.has(s.id))) throw new Error(TERMINAL_CLOSED);
       await this.enter(s, { stop: a.stop, cols: a.cols, rows: a.rows });
       target = tuiName(s.id);
     } else throw new Error("Say which terminal to open.");
@@ -289,7 +290,9 @@ export class TerminalControl {
   }
 
   private async runQuit(name: string, steps: QuitStep[]) {
-    for (const st of steps) {
+    for (const [i, st] of steps.entries()) {
+      // Quit already: the rest would go nowhere.
+      if (i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
       if ("waitMs" in st) await Bun.sleep(st.waitMs);
       else if ("keys" in st) await this.o.tmux.keys(name, ...st.keys);
       else await this.o.tmux.type(name, st.text);

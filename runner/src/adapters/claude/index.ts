@@ -15,10 +15,12 @@ import { sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
 
 /**
- * Quitting Claude's TUI whatever it shows: Esc closes a dialog or stops a turn, Ctrl-C clears what
- * is typed, then /exit (verified on 2.1.312 with the /model picker open and text in the box).
+ * Quitting Claude's TUI whatever it shows: Esc closes a dialog (denying a permission prompt) or stops
+ * a turn; Ctrl-C clears what is typed or arms "Press Ctrl-C again to exit"; the next one exits.
+ * Steps after it has exited are skipped. Unlike `/exit`, nothing lands in the transcript (verified
+ * on 2.1.312 with text in the box and with the /model picker open).
  */
-export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { text: "/exit" }, { keys: ["Enter"] }];
+export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }];
 
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;

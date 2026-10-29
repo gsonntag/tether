@@ -214,12 +214,12 @@ describe("handoff (Claude)", () => {
     adapter.addStored("s1", []);
     await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
     await term.end("claude:s1");
-    expect(tmux.pressed.slice(0, 2)).toEqual([
-      ["t-claude-s1", "Escape"],
-      ["t-claude-s1", "Enter"],
-    ]);
+    // It quit on /exit: the steps after it (Enter) were skipped.
+    expect(tmux.pressed).toEqual([["t-claude-s1", "Escape"]]);
     expect(tmux.typed).toEqual([["t-claude-s1", "/exit"]]);
     expect(tmux.sessions.size).toBe(0);
+    // A device coming back after a reconnect doesn't start it again.
+    await expect(term.open({ sessionId: "claude:s1", attachId: "a9", cols: 80, rows: 24, reattach: true })).rejects.toThrow(/closed/);
     const st = state(core, "claude:s1");
     expect(st.mode).toBe("live");
     expect(st.terminal).toBeUndefined();

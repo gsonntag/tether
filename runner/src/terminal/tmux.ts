@@ -69,6 +69,8 @@ export const SERVER_OPTIONS: string[][] = [
   ["set", "-ga", "terminal-overrides", ",xterm-256color:RGB"],
   ["set", "-g", "set-clipboard", "off"],
   ["set", "-g", "detach-on-destroy", "on"],
+  // A bigger device than the one typing sees the window plain, with blank space around it (not dots).
+  ["set", "-wg", "fill-character", " "],
 ];
 
 const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}"].join("\t");

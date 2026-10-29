@@ -132,9 +132,11 @@ export interface Ops {
    * session's TUI. A session not in the terminal yet is handed to it first (handoff harnesses: the
    * driver closes and the mode becomes terminal). While a turn runs that fails with TERMINAL_BUSY
    * unless `stop` is set: then the turn is stopped first. `shellId`: one of the project's shells.
+   * `reattach`: only attach to a TUI that still runs (a browser coming back after a reconnect must
+   * never start one again).
    */
   openTerminal: {
-    args: { sessionId?: string; shellId?: string; attachId?: string; cols: number; rows: number; stop?: boolean };
+    args: { sessionId?: string; shellId?: string; attachId?: string; cols: number; rows: number; stop?: boolean; reattach?: boolean };
     result: { attachId: string; target: string };
   };
   /**
@@ -166,6 +168,8 @@ export interface ShellInfo {
 
 /** openTerminal's error while a turn runs and `stop` isn't set: the UI asks first (SPEC §8). */
 export const TERMINAL_BUSY = "A turn is running. Stop it to open the terminal.";
+/** openTerminal's error for a terminal that is gone (a shell that exited, a TUI on reattach). */
+export const TERMINAL_CLOSED = "That terminal has closed.";
 
 export type OpName = keyof Ops;
 export type OpArgs<K extends OpName> = Ops[K]["args"];
