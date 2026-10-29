@@ -15,6 +15,8 @@ export interface Remembered {
   /** the settings the daemon last confirmed while Tether was on the thread, and when (ms) */
   applied?: StartOpts & { at: number };
   placeholder?: boolean;
+  /** "default": you picked Default, so the thread shows as Default while it runs the default model */
+  modelAlias?: string;
   at: number;
 }
 

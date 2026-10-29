@@ -40,7 +40,7 @@ const CLI_POLICIES = new Set(["on-request", "never"]);
 
 export const codexAdapter: Adapter = {
   id: "codex",
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "direct" }, persistent: true },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "direct" }, persistent: true, settingsApply: "nextTurn" },
 
   async available() {
     return !!Bun.which(HARNESS_BINS.codex);
@@ -62,6 +62,11 @@ export const codexAdapter: Adapter = {
       // An existing thread: its own settings, else what Tether last saw of them, else unknown. Never
       // Codex's config (not what the thread has), which would also become the TUI's launch flags.
       const own = await threadSettings(nativeId).catch(() => null);
+      // Default picked in Tether, and still running the default model: shown as Default.
+      if (own?.model && remembered(nativeId)?.modelAlias === "default") {
+        const def = (await fetchModels().catch(() => [] as CodexModel[])).find((m) => m.isDefault)?.id;
+        if (def === own.model) return { ...own, model: "default" };
+      }
       if (own) return own;
       const r = remembered(nativeId);
       const { at: _, ...seen } = (r?.applied ?? r?.start ?? {}) as StartOpts & { at?: number };

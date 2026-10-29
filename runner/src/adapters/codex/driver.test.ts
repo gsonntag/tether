@@ -385,3 +385,19 @@ test("a change applied with no turn after it is what a stored header shows (not 
   expect(await codexAdapter.defaults(CWD, "OTHER-UNREAD")).toEqual({ permissionMode: "unknown" });
   expect(await codexAdapter.defaults(CWD, MAIN)).toEqual({ model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
 });
+
+test("Default survives a restart: a stored session and a resumed one still show Default", async () => {
+  useDaemon();
+  daemon.answers["model/list"] = () => ({ data: [{ id: "gpt-6.1-sol", isDefault: true }, { id: "gpt-6-luna" }] });
+  await CodexDriver.open(MAIN, CWD, { model: "default" }, new TestSink(), true);
+  // A new runner: nothing in Tether's prefs any more.
+  useDaemon(false);
+  daemon.answers["model/list"] = () => ({ data: [{ id: "gpt-6.1-sol", isDefault: true }, { id: "gpt-6-luna" }] });
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6.1-sol", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "readOnly" } });
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(sink.states.at(-1)).toMatchObject({ model: "default", modelResolved: "gpt-6.1-sol" });
+  const { codexAdapter } = await import("./index");
+  daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, model: "gpt-6.1-sol" } });
+  expect((await codexAdapter.defaults(CWD, MAIN)).model).toBe("default");
+});

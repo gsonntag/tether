@@ -159,7 +159,11 @@ export class CodexDriver implements Driver {
     const start = remembered(this.nativeId)?.start;
     const want: StartOpts = { ...(start && !(await hasTurnContext(r.thread)) ? start : {}), ...opts };
     const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
-    if (want.model === "default") this.alias = "default";
+    // Default picked here (now, or before a restart): shown as Default while it runs the default model.
+    if (want.model === "default" || (!want.model && remembered(this.nativeId)?.modelAlias === "default")) {
+      this.setAlias("default");
+      await this.defaultId();
+    } else if (want.model) this.setAlias(undefined);
     const model = want.model === "default" ? await this.defaultId() : want.model;
     const mode = knownMode(want.permissionMode);
     const patch: Record<string, unknown> = {};
@@ -195,8 +199,14 @@ export class CodexDriver implements Driver {
     return this.defaultModel;
   }
 
-  /** "default" while the thread runs the default model because you picked Default. */
+  /** "default" while the thread runs the default model because you picked Default (remembered across restarts). */
   private alias?: string;
+
+  private setAlias(a: string | undefined) {
+    if (this.alias === a) return;
+    this.alias = a;
+    remember(this.nativeId, { modelAlias: a });
+  }
 
   /** Waiters for the thread's next thread/settings/updated. */
   private settingsWaiters: ((s: any) => void)[] = [];
@@ -246,7 +256,7 @@ export class CodexDriver implements Driver {
     const waiters = this.settingsWaiters.splice(0);
     for (const w of waiters) w(s);
     // Default stays Default while it runs the default model (a model picked since ends it).
-    if (s.model && this.alias === "default" && s.model !== this.defaultModel) this.alias = undefined;
+    if (s.model && this.alias === "default" && s.model !== this.defaultModel) this.setAlias(undefined);
     const model = s.model && this.alias === "default" ? "default" : s.model;
     this.sink.state({
       ...(s.model ? { model, modelResolved: s.model } : {}),
@@ -351,7 +361,7 @@ export class CodexDriver implements Driver {
       id = (await this.defaultId()) ?? "";
       if (!id) throw new Error("Codex didn't say which model is its default.");
     }
-    this.alias = model === "default" ? "default" : undefined;
+    this.setAlias(model === "default" ? "default" : undefined);
     await this.update({ model: id }, this.current?.model === id);
   }
 
