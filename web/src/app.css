@@ -1027,6 +1027,20 @@
   align-items: center;
   font-size: 14px;
 }
+/* A setting that can't be changed here now (a handoff TUI drives). */
+.t-chip-off {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* Settings changed during a turn that count from the next one. */
+.t-turn-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 4px;
+}
+
 /* A segmented choice (the new session's agent). */
 .t-seg {
   display: flex;

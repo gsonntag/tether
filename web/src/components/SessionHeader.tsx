@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
 import { effortLabel, modelLabel, permissionModeLabel } from "../../../shared/labels";
-import type { LiveState, ModelList, SessionSummary } from "../../../shared/transcript";
+import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
@@ -12,7 +12,23 @@ import { ChoiceMenu } from "./ChoiceMenu";
 import { StatusDot } from "./SessionRow";
 import { SubagentChips } from "./SubagentChips";
 
-export function SessionHeader({ runnerId, session, state, models, children, extra }: { runnerId: string; session: SessionSummary; state: LiveState; models?: ModelList; children: Row[]; extra?: React.ReactNode }) {
+export function SessionHeader({
+  runnerId,
+  session,
+  state,
+  models,
+  children,
+  extra,
+  capabilities,
+}: {
+  runnerId: string;
+  session: SessionSummary;
+  state: LiveState;
+  models?: ModelList;
+  children: Row[];
+  extra?: React.ReactNode;
+  capabilities?: HarnessCapabilities;
+}) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
   const call = async (p: Promise<unknown>) => {
@@ -25,6 +41,15 @@ export function SessionHeader({ runnerId, session, state, models, children, extr
   };
   const ensureModels = () => void (models ? undefined : loadModels(runnerId, session.harness, session.id));
   const current = models?.models.find((m) => m.id === state.model);
+  // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
+  const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
+  // Changed during a turn on a harness where that counts from the next turn: the turn's own values.
+  const turn = state.turnSettings;
+  const nextTurn = (now: string, was: string | undefined) => (was !== undefined ? `${now} from the next turn` : now);
+  const modes = models?.permissionModes ?? [];
+  // Tighter: earlier in the harness's list of modes (strictest first), so this turn runs looser than shown.
+  const rank = (m?: string) => modes.findIndex((x) => x.id === m);
+  const tighter = turn?.permissionMode !== undefined && rank(state.permissionMode) >= 0 && rank(turn.permissionMode) > rank(state.permissionMode);
   const efforts = current?.efforts ? (models?.efforts ?? []).filter((e) => current.efforts!.includes(e.id)) : (models?.efforts ?? []);
 
   return (
@@ -51,18 +76,20 @@ export function SessionHeader({ runnerId, session, state, models, children, extr
             <ChoiceMenu
               name="Model"
               value={state.model}
-              label={modelLabel(state.model, models?.models, state.modelResolved)}
+              label={nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
+              disabled={locked}
               choices={(models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
               onOpen={ensureModels}
               onPick={(model) => void call(rpc(runnerId, "setModel", { sessionId: session.id, model }))}
             />
             {(efforts.length > 0 || state.effort) && (
-              <ChoiceMenu name="Effort" value={state.effort} label={effortLabel(state.effort)} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
+              <ChoiceMenu name="Effort" value={state.effort} label={nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
             <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
-              label={permissionModeLabel(state.permissionMode)}
+              label={nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
+              disabled={locked}
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}
               onPick={(mode) => void call(rpc(runnerId, "setPermissionMode", { sessionId: session.id, mode }))}
@@ -72,6 +99,22 @@ export function SessionHeader({ runnerId, session, state, models, children, extr
         {extra}
         <SubagentChips runnerId={runnerId} children={children} />
       </div>
+      {turn && !isChild && (
+        <div className="t-inline-status t-turn-settings" role="status">
+          <span>
+            This turn still runs with{" "}
+            {[
+              turn.model !== undefined && `Model ${modelLabel(turn.model, models?.models)}`,
+              turn.effort !== undefined && `Effort ${effortLabel(turn.effort)}`,
+              turn.permissionMode !== undefined && `Mode ${permissionModeLabel(turn.permissionMode)}`,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+            .
+          </span>
+          {tighter && <Button label="Stop this turn" size="sm" variant="secondary" onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: session.id }))} />}
+        </div>
+      )}
       {error && <div className="t-inline-status error">{error}</div>}
     </div>
   );
