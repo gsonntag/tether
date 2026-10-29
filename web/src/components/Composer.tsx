@@ -195,9 +195,11 @@ export const Composer = forwardRef<
     (busyTurn
       ? waiting
         ? "Waiting for your answer above"
-        : steerOnly
-          ? `${agent} is working… (Enter to send it a message)`
-          : mode === "steer"
+        : coarse()
+          ? `${agent} is working…`
+          : steerOnly
+            ? `${agent} is working… (Enter to send it a message)`
+            : mode === "steer"
             ? `${agent} is working… (Enter to steer, Tab to queue)`
             : `${agent} is working… (Enter to queue)`
       : (placeholder ?? "Message"));

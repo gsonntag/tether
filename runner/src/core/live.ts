@@ -397,8 +397,9 @@ export class LiveControl {
     } catch (e: any) {
       const error = e?.message ?? String(e);
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
-      // Not live after all: stored, tailing its store if someone watches it, and evictable.
-      s.setState({ error, mode: "stored", status: "idle" });
+      // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
+      // that was starting it ends its turn as failed (send's catch).
+      s.setState({ error, mode: "stored", ...(s.sending ? {} : { status: "idle" as const }) });
       this.core.touch(s);
       this.core.tail(s);
       this.core.scheduleEvict(s);
