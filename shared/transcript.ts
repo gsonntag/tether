@@ -1,6 +1,8 @@
 // The transcript and live state of a session, as every harness is shown (SPEC §5). Adapters
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
+import type { Attachment } from "./attachments";
+
 export type HarnessId = "claude" | "codex";
 
 export const HARNESS_LABELS: Record<HarnessId, string> = {
@@ -104,6 +106,11 @@ export interface Msg {
    */
   origin?: { kind: string; name?: string };
   /**
+   * user: a message to a subagent that Tether passed on through the main agent (SPEC §6a,
+   * subagents.steer "via-parent"): whether the main agent delivered it.
+   */
+  relay?: "sending" | "delivered" | "failed";
+  /**
    * Parts at the end left out to keep the message small (shared/limits.ts): `parts` holds the
    * first ones, and parts[parts.length …] can be fetched one by one with `fullPart`.
    */
@@ -172,9 +179,11 @@ export interface Request {
  */
 export type RequestAnswer = { allow: true; answers?: string[]; mode?: string } | { allow: false; reason?: string };
 
+/** A message waiting to go out after the running turn (SPEC §9). */
 export interface QueuedMessage {
   id: string;
   text: string;
+  attachments?: Attachment[];
   queuedAt: number;
 }
 
@@ -209,10 +218,12 @@ export interface LiveState {
    */
   continuedIn?: string;
   /**
-   * Queued messages wait, untouched, until the person sends them (SPEC §8: they're held while the
-   * terminal drives and stay held after Back to Tether). The queue (P5) sends nothing while set.
+   * Queued messages wait, untouched, while set (SPEC §8, §9): while the TUI drives (released by
+   * Back to Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart
+   * (released when you send, or with Resume). `queueHeldBy` says why.
    */
   queueHeld?: boolean;
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }
@@ -230,6 +241,15 @@ export interface SessionSummary {
   updatedAt: number;
   /** open requests, for the status dot and Home */
   requests?: number;
+  /**
+   * A turn ended and nobody has looked since (Home's inbox, SPEC §10): it finished, or it failed.
+   * Shared by every device: opening the session on any of them clears it.
+   */
+  unread?: "finished" | "failed";
+  /** a failed turn's error, with `unread: "failed"` */
+  failure?: string;
+  /** messages waiting in its queue */
+  queued?: number;
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
   parentSessionId?: string;
   parentToolId?: string;

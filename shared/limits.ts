@@ -271,3 +271,25 @@ export function guardFrame(m: RunnerToServer): { frame: string | null; replaced:
   if (m.t === "event") return { frame: JSON.stringify({ t: "event", sessionId: m.sessionId, seq: m.seq, event: { type: "resync" } } satisfies RunnerToServer), replaced: true };
   return { frame: null, replaced: true };
 }
+
+// ---------- attachments and the queue (SPEC §9) ----------
+
+/** One attached image, as uploaded (the browser downscales photos first, so this is generous). */
+export const ATTACH_IMAGE_MAX = 10 * 1024 * 1024;
+/** One attached file of any other type. */
+export const ATTACH_FILE_MAX = 25 * 1024 * 1024;
+/** Attachments on one message. */
+export const ATTACH_MAX = 10;
+/**
+ * Raw bytes per `uploadAttachment` chunk: about 350 KB of base64 in one rpc frame, far below the
+ * frame and send-buffer limits above, so an upload never crowds out a session's events.
+ */
+export const ATTACH_CHUNK = 256 * 1024;
+/** Photos are scaled down in the browser to this long edge before they upload. */
+export const ATTACH_IMAGE_EDGE = 2048;
+/** A session's attachments on the runner, all together. */
+export const ATTACH_SESSION_MAX = 2 * 1024 * 1024 * 1024;
+/** Waiting messages per session. */
+export const QUEUE_MAX = 50;
+/** One message's text (sent, steered or queued). */
+export const MESSAGE_TEXT_MAX = 200 * 1024;

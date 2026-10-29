@@ -28,6 +28,11 @@ export function parseBrowserMessage(raw: string | ArrayBuffer | Uint8Array): Bro
   const m = json(raw);
   if (!isObj(m)) return null;
   if (m.t === "ping") return { t: "ping" };
+  if (m.t === "presence") {
+    if (!isId(m.deviceId)) return null;
+    const both = isId(m.runnerId) && isId(m.sessionId);
+    return { t: "presence", deviceId: m.deviceId, ...(both ? { runnerId: m.runnerId as string, sessionId: m.sessionId as string } : {}) };
+  }
   if (m.t !== "rpc" || !isId(m.id) || !isId(m.runnerId) || !isId(m.op)) return null;
   // args is always an object: ops read named fields from it.
   if (m.args !== undefined && !isObj(m.args)) return null;

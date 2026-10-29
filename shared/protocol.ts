@@ -23,6 +23,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
+import type { Attachment } from "./attachments";
 import type { PartChunk } from "./limits";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
@@ -113,13 +114,48 @@ export interface Ops {
     args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean };
     result: { sessionId: string };
   };
-  /** starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI, then Enter (SPEC §9) */
-  send: { args: { sessionId: string; text: string }; result: null };
+  /**
+   * Starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI,
+   * then Enter (SPEC §9). `stop`: Stop and send now (the running turn is stopped first). Sending
+   * releases a queue held after Stop.
+   */
+  send: { args: { sessionId: string; text: string; attachments?: Attachment[]; stop?: boolean }; result: null };
   /**
    * A message into the running turn (capabilities.canSteer); on a subagent, into its own turn
-   * (capabilities.subagents.steer "direct"). It can't be taken back once the harness has it.
+   * (subagents.steer "direct"), or passed on by the main agent (subagents.steer "via-parent", SPEC
+   * §6a). It can't be taken back once the harness has it.
    */
-  steer: { args: { sessionId: string; text: string }; result: null };
+  steer: { args: { sessionId: string; text: string; attachments?: Attachment[] }; result: null };
+  /**
+   * Queues a message to go out after the running turn, one per turn (SPEC §9). On an idle session
+   * whose queue isn't held, it goes out now.
+   */
+  queue: { args: { sessionId: string; text: string; attachments?: Attachment[] }; result: { id: string } };
+  /** Changes a waiting message's text (its attachments stay). */
+  editQueued: { args: { sessionId: string; id: string; text: string }; result: null };
+  cancelQueued: { args: { sessionId: string; id: string }; result: null };
+  /** Moves a waiting message to position `to` (0 goes next). */
+  moveQueued: { args: { sessionId: string; id: string; to: number }; result: null };
+  /** Releases a held queue: the next message goes out when the session is idle. */
+  resumeQueue: { args: { sessionId: string }; result: null };
+  /**
+   * One chunk of a file attached to a message (SPEC §9). Chunks are ATTACH_CHUNK bytes (the last
+   * shorter) at offsets that are multiples of it, base64; the answer to the chunk that completes the
+   * file carries the stored attachment. A chunk sent again is harmless.
+   */
+  uploadAttachment: {
+    args: { sessionId: string; uploadId: string; name: string; mimeType: string; size: number; offset: number; data: string };
+    result: { attachment?: Attachment };
+  };
+  /** Marks a session read (it leaves Home's inbox on every device) or unread again. */
+  setRead: { args: { sessionId: string; read: boolean }; result: null };
+  /** This device wants notifications from this runner (SPEC §11 P5): kept until it unsubscribes. */
+  pushSubscribe: { args: { deviceId: string; subscription: PushSubscriptionInfo; label?: string }; result: null };
+  pushUnsubscribe: { args: { endpoint: string }; result: null };
+  /** Whether this runner has the subscription. */
+  pushStatus: { args: { endpoint: string }; result: { subscribed: boolean; ready: boolean } };
+  /** Sends a test notification to one subscription. */
+  pushTest: { args: { endpoint: string }; result: null };
   /** stops the running turn; on a subagent, stops that subagent */
   interrupt: { args: { sessionId: string }; result: null };
   /** saved for the session and applied now when it is live, else when it next starts */
@@ -159,6 +195,36 @@ export interface Ops {
   /** base64 bytes typed into an attached terminal */
   terminalInput: { args: { attachId: string; data: string }; result: null };
   terminalResize: { args: { attachId: string; cols: number; rows: number }; result: null };
+}
+
+/** A browser's push subscription (PushSubscription.toJSON()). */
+export interface PushSubscriptionInfo {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+/**
+ * The app's VAPID key pair (SPEC §11 P5), kept by the server (TETHER_VAPID_PUBLIC_KEY and
+ * TETHER_VAPID_PRIVATE_KEY, base64url as web-push prints them) and handed to each runner on
+ * connect, so every runner signs pushes with the same key and a device subscribes once.
+ */
+export interface PushKeys {
+  publicKey: string;
+  privateKey: string;
+  /** the VAPID `sub` claim: the app's https URL, or a mailto: */
+  subject: string;
+}
+
+/** What a notification carries to the service worker (web/public/sw.js). */
+export interface PushPayload {
+  kind: "request" | "finished" | "failed" | "test";
+  title: string;
+  body: string;
+  runnerId: string;
+  sessionId?: string;
+  /** replaces an earlier notification with the same tag */
+  tag?: string;
+  ts: number;
 }
 
 /** A plain shell in a project folder, kept in tmux until closed. */
@@ -209,10 +275,19 @@ export interface ResultMsg {
   error?: string;
 }
 
-export type BrowserToServer = { t: "rpc"; id: string; runnerId: string; op: OpName; args: unknown } | { t: "ping" };
+export type BrowserToServer =
+  | { t: "rpc"; id: string; runnerId: string; op: OpName; args: unknown }
+  /**
+   * What this device is looking at: a session while it is on screen (the page visible), else
+   * nothing. Runners skip notifying a device about the session it looks at, and mark the session
+   * read (SPEC §10 Home). `deviceId` is the device's own random id (also given to pushSubscribe).
+   */
+  | { t: "presence"; deviceId: string; runnerId?: string; sessionId?: string }
+  | { t: "ping" };
 
 export type ServerToBrowser =
-  | { t: "hello"; user: User; protocol: number }
+  /** `push`: the public key to subscribe with; absent when the server has no push keys */
+  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string } }
   /** every connected runner, sent on connect and whenever the set changes */
   | { t: "runners"; runners: RunnerInfo[] }
   | ResultMsg
@@ -230,8 +305,13 @@ export type ServerToRunner =
   | { t: "detach"; attachIds: string[] }
   /** no browser watches these sessions any more */
   | { t: "unwatched"; sessionIds: string[] }
-  /** the hello was accepted: the runner is connected from here on */
-  | { t: "welcome" }
+  /** the hello was accepted: the runner is connected from here on. `push`: the app's VAPID keys */
+  | { t: "welcome"; push?: PushKeys }
+  /**
+   * Which devices look at which of this runner's sessions right now (presence), all of it, sent on
+   * connect and whenever it changes.
+   */
+  | { t: "viewers"; sessions: Record<string, string[]> }
   /** answers the runner's keepalive ping */
   | { t: "pong" };
 
