@@ -305,6 +305,8 @@ export class TerminalControl {
     // Checked before anything is handed over: tmux would start the TUI elsewhere.
     if (!existsSync(s.summary.projectPath)) throw new Error(`The session's folder ${s.summary.projectPath} doesn't exist any more.`);
     const handoff = s.capabilities.terminal === "handoff";
+    // A Stop below holds the queue as any Stop does; for a handoff that hold is the terminal's.
+    const heldBefore = !!s.state.queueHeld;
     if (handoff && !o.fresh) {
       const busy = s.state.status !== "idle" || !!s.sending;
       if (busy && !o.stop) throw new Error(TERMINAL_BUSY);
@@ -336,7 +338,7 @@ export class TerminalControl {
     if (handoff && this.hooks) this.expectStart(s.id);
     this.adopt(s, name);
     // What waits in the queue waits for Back to Tether (SPEC §8).
-    if (handoff) this.o.live.queue.hold(s, "terminal");
+    if (handoff) this.o.live.queue.hold(s, "terminal", { over: !heldBefore });
   }
 
   /** The session's TUI runs in tmux: its state says so. */

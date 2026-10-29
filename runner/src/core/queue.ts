@@ -104,11 +104,11 @@ export class MessageQueue {
   // ---------------- holding ----------------
 
   /** The queue waits (Stop, a handoff, a failed turn, a restart). */
-  hold(s: Session, by: HeldBy) {
+  hold(s: Session, by: HeldBy, o: { over?: boolean } = {}) {
     if (!s.state.queue.length || (s.state.queueHeld && s.state.queueHeldBy === by)) return;
     // A queue you paused stays paused through a terminal round trip (Back to Tether releases only
-    // what the terminal held).
-    if (by === "terminal" && s.state.queueHeld) return;
+    // what the terminal held); `over`: the hold being replaced is the handoff's own Stop.
+    if (by === "terminal" && s.state.queueHeld && !o.over) return;
     this.save(s, s.state.queue, by);
   }
 
