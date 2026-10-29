@@ -8,6 +8,24 @@ export const HARNESS_LABELS: Record<HarnessId, string> = {
   codex: "Codex",
 };
 
+/**
+ * What a harness does better or differently (SPEC §2.5, §6, §6a). The core and the UI branch only
+ * on these, never on the harness id.
+ */
+export interface HarnessCapabilities {
+  /** a message can go into a running turn */
+  canSteer: boolean;
+  /** "handoff": the TUI takes over the session; "shared": the TUI joins the live thread */
+  terminal: "handoff" | "shared";
+  subagents: {
+    /** subagents show as child sessions with their own transcript */
+    view: boolean;
+    /** a running subagent can be stopped on its own */
+    stop: boolean;
+    steer: "direct" | "via-parent" | false;
+  };
+}
+
 // ---------- transcript ----------
 
 export type ToolStatus = "running" | "done" | "error";
@@ -28,7 +46,12 @@ export interface ToolPart {
   path?: string;
   /** set when the call ran inside a subagent */
   parentToolId?: string;
-  /** `output` was cut short (shared/limits.ts): its full length; `fullPart` fetches it */
+  /** a call that started a subagent (kind "task"): the subagent's session (SPEC §6a) */
+  childSessionId?: string;
+  /**
+   * `output` was cut short (shared/limits.ts): its full length; `fullPart` fetches it. 0 (sent on
+   * patches) means whole.
+   */
   truncated?: number;
   /** `input` was cut short (long strings trimmed, or replaced by a preview); `fullPart` has it whole */
   inputTruncated?: boolean;
@@ -94,13 +117,17 @@ export interface QueuedMessage {
 export interface LiveState {
   mode: SessionMode;
   status: RunStatus;
+  /** the model the session uses: an alias ("opus", "default") or a full id */
   model?: string;
+  /** what `model` runs now, when the harness says (e.g. "claude-opus-5-5") */
+  modelResolved?: string;
   effort?: string;
   permissionMode?: string;
   requests: Request[];
   queue: QueuedMessage[];
   /** set while the session is in terminal mode */
   terminal?: { kind: "handoff" | "shared" };
+  /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }
 
@@ -120,6 +147,45 @@ export interface SessionSummary {
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
   parentSessionId?: string;
   parentToolId?: string;
+  /** a subagent: its kind, as the harness names it (e.g. "general-purpose") */
+  agentType?: string;
+}
+
+/** A folder sessions run in, as discovered from the harness stores (SPEC §4). */
+export interface ProjectInfo {
+  path: string;
+  /** the folder's own name */
+  name: string;
+  harnesses: HarnessId[];
+  /** the newest session's last activity */
+  updatedAt: number;
+  sessions: number;
+}
+
+/** A model as a picker shows it. */
+export interface ModelOption {
+  /** what to pass to setModel: an alias ("opus") or a full id */
+  id: string;
+  /** a human label: "Opus 5.5", "Default (Opus 5.5)" */
+  label: string;
+  description?: string;
+  /** what the alias runs now */
+  resolved?: string;
+  /** effort levels it takes; absent: none */
+  efforts?: string[];
+}
+
+export interface Choice {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** What `listModels` offers for a harness. */
+export interface ModelList {
+  models: ModelOption[];
+  efforts: Choice[];
+  permissionModes: Choice[];
 }
 
 /**
@@ -131,6 +197,8 @@ export interface SessionSummary {
  */
 export interface SessionSnapshot {
   session: SessionSummary;
+  /** what its harness can do (SPEC §6) */
+  capabilities: HarnessCapabilities;
   /** the newest messages, oldest first */
   messages: Msg[];
   /** there are messages before `messages[0]` (fetch them with `history`) */

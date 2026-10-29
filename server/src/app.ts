@@ -36,8 +36,12 @@ export function loopbackHost(req: Request): boolean {
   return name === "localhost" || name === "127.0.0.1" || name === "[::1]";
 }
 
-/** A send buffer this full means the other side can't keep up: Bun closes it (protocol.ts, slow sockets). */
-const BACKPRESSURE_LIMIT = 8 * 1024 * 1024;
+/**
+ * A send buffer this full means the other side can't keep up: Bun closes it (protocol.ts, slow
+ * sockets). Bytes. Three times the largest frame a runner may send (shared/limits.ts
+ * FRAME_BYTES_MAX), so a single big snapshot never closes a socket that is merely slow.
+ */
+export const BACKPRESSURE_LIMIT = 12 * 1024 * 1024;
 
 /**
  * A browser socket must come from a page on this app's own host: without the check, any site the

@@ -24,7 +24,7 @@
 // subscribe again for a fresh snapshot.
 
 import type { PartChunk } from "./limits";
-import type { HarnessId, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
+import type { HarnessId, ModelList, Msg, ProjectInfo, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
 export const CLOSE_REPLACED = 4000;
@@ -34,7 +34,7 @@ export const CLOSE_TOO_SLOW = 4002;
 export const CLOSE_PROTOCOL = 4003;
 
 /** Bumped when a change needs runner, server and web to move together. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface HarnessInfo {
   id: HarnessId;
@@ -81,6 +81,42 @@ export interface Ops {
   history: { args: { sessionId: string; before: string; limit?: number }; result: { messages: Msg[]; hasOlder: boolean } };
   /** stop receiving a session's events (answered by the server) */
   unsubscribe: { args: { sessionId: string }; result: null };
+
+  // ---------- discovery (read-only: never starts a harness process) ----------
+
+  /** folders with sessions, newest activity first */
+  listProjects: { args: Record<string, never>; result: { projects: ProjectInfo[] } };
+  /**
+   * Sessions. Without filters: the runner's summary list (the sidebar's recent sessions, plus every
+   * live one), with the `epoch` and `seq` it is current to (protocol.ts SummaryUpdate). With
+   * `projectPath`: every session in that folder. With `parentSessionId`: that session's subagents.
+   * With `query`: sessions whose title contains it. Newest first.
+   */
+  listSessions: {
+    args: { projectPath?: string; parentSessionId?: string; query?: string; limit?: number };
+    result: { sessions: SessionSummary[]; epoch?: string; seq?: number };
+  };
+  /** the models, effort levels and permission modes a harness offers (for a session: as it runs now) */
+  listModels: { args: { harness: HarnessId; sessionId?: string }; result: ModelList };
+
+  // ---------- driving ----------
+
+  /**
+   * A new session in a folder (a path on the runner; `~` is the home folder). The harness starts
+   * right away so a problem (not signed in, no such folder) shows before you type.
+   */
+  newSession: {
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string };
+    result: { sessionId: string };
+  };
+  /** starts a turn; a stored session goes live first (SPEC §4) */
+  send: { args: { sessionId: string; text: string }; result: null };
+  /** stops the running turn; on a subagent, stops that subagent */
+  interrupt: { args: { sessionId: string }; result: null };
+  /** saved for the session and applied now when it is live, else when it next starts */
+  setModel: { args: { sessionId: string; model: string }; result: null };
+  setEffort: { args: { sessionId: string; effort: string }; result: null };
+  setPermissionMode: { args: { sessionId: string; mode: string }; result: null };
   /** attach this browser to a terminal; the server fills in attachId */
   openTerminal: { args: { sessionId: string; attachId?: string; cols: number; rows: number }; result: { attachId: string } };
   closeTerminal: { args: { attachId: string }; result: null };

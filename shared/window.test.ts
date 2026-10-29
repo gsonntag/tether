@@ -35,3 +35,16 @@ test("deltas, tool patches and resets", () => {
   w = applyToWindow(w, { type: "reset", messages: [msg("c1")], hasOlder: false });
   expect(w).toEqual({ messages: [msg("c1")], hasOlder: false });
 });
+
+test("a delta for a part that was cut short is ignored, never appended after the cut", () => {
+  const cut: Msg = { id: "m1", role: "assistant", ts: 0, parts: [{ type: "text", text: "abc", truncated: 100_000 }] };
+  const w = { messages: [cut], hasOlder: false };
+  expect(applyToWindow(w, { type: "delta", msgId: "m1", part: 0, text: "more" })).toEqual(w);
+});
+
+test("a tool patch clears flags an earlier, bigger value left", () => {
+  const part = { type: "tool" as const, id: "t", name: "Bash", kind: "shell" as const, input: { preview: "…" }, inputTruncated: true, status: "running" as const, output: "x", truncated: 999_999 };
+  const w = { messages: [{ id: "m", role: "assistant" as const, ts: 0, parts: [part] }], hasOlder: false };
+  const out = applyToWindow(w, { type: "tool", msgId: "m", toolId: "t", patch: { output: "short", truncated: 0, input: { command: "ls" }, inputTruncated: false } });
+  expect(out.messages[0]!.parts[0]).toMatchObject({ output: "short", truncated: 0, inputTruncated: false });
+});

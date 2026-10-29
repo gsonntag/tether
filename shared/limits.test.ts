@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { capEvent, capInput, capMessage, capPart, capRequest, fetchFullPart, FRAME_BYTES_MAX, guardFrame, IMAGE_DATA_MAX, INPUT_JSON_MAX, INPUT_STRING_MAX, MESSAGE_BYTES_MAX, newestPage, PAGE_BYTES_MAX, partChunk, PART_CHUNK_MAX, PART_TEXT_MAX } from "./limits";
+import { capEvent, capInput, capMessage, capPart, capRequest, capToolPatch, cutBytes, fetchFullPart, utf8Length, FRAME_BYTES_MAX, guardFrame, IMAGE_DATA_MAX, INPUT_JSON_MAX, INPUT_STRING_MAX, MESSAGE_BYTES_MAX, newestPage, PAGE_BYTES_MAX, partChunk, PART_CHUNK_MAX, PART_TEXT_MAX } from "./limits";
 import type { Msg, Part, ToolPart } from "./transcript";
 
 test("big text, tool output and images are cut short and marked with their full length", () => {
@@ -103,7 +103,7 @@ test("fullPart comes back whole in bounded slices", async () => {
   });
   expect(got).toEqual(part);
   expect(calls).toBeGreaterThan(4);
-  await expect(fetchFullPart(async () => ({ chunk: "", offset: 5, total: 10, done: false }))).rejects.toThrow();
+  await expect(fetchFullPart(async () => ({ chunk: "", offset: 5, total: 10, version: "v", done: false }))).rejects.toThrow();
 });
 
 test("the frame guard turns oversized results into errors and events into resync", () => {
@@ -119,4 +119,37 @@ test("the frame guard turns oversized results into errors and events into resync
   // Multi-byte text counts in bytes: 3 MB of 3-byte characters is 9 MB.
   expect(JSON.parse(guardFrame({ t: "result", id: "s2", ok: true, data: "€".repeat(3 * MB) }).frame!).ok).toBe(false);
   expect(guardFrame({ t: "ping" })).toEqual({ frame: '{"t":"ping"}', replaced: false });
+});
+
+// ---------- P1 carry-over fixes ----------
+
+test("caps measure UTF-8 bytes, not characters", () => {
+  // 30 K three-byte characters: 90 KB, over the 64 KB cap though only 30 K characters long.
+  const euros = "€".repeat(30 * 1024);
+  const p = capPart({ type: "text", text: euros }) as { text: string; truncated?: number };
+  expect(p.truncated).toBe(euros.length);
+  expect(new TextEncoder().encode(p.text).length).toBeLessThanOrEqual(PART_TEXT_MAX);
+  expect(utf8Length("a€😀")).toBe(new TextEncoder().encode("a€😀").length);
+  // A cut never splits a surrogate pair.
+  expect(cutBytes("😀😀", 5)).toBe("😀");
+});
+
+test("a tool patch always says whether its output and input are cut", () => {
+  expect(capToolPatch({ output: "small" })).toEqual({ output: "small", truncated: 0 });
+  expect(capToolPatch({ input: { command: "ls" } })).toEqual({ input: { command: "ls" }, inputTruncated: false });
+  expect(capToolPatch({ status: "done" })).toEqual({ status: "done" });
+  // On the wire too: 0 and false survive JSON, undefined wouldn't.
+  const e = capEvent({ type: "tool", msgId: "m", toolId: "t", patch: { output: "x" } });
+  expect(JSON.parse(JSON.stringify(e)).patch.truncated).toBe(0);
+});
+
+test("fullPart notices a part that changed between slices even at the same length", async () => {
+  const a = tool({ output: "a".repeat(3 * MB) });
+  const b = tool({ output: "b".repeat(3 * MB) });
+  let n = 0;
+  await expect(fetchFullPart(async (offset) => partChunk(n++ === 0 ? a : b, offset))).rejects.toThrow("changed");
+});
+
+test("the frame limit leaves room under the relay's send buffer", () => {
+  expect(FRAME_BYTES_MAX * 3).toBeLessThanOrEqual(12 * MB);
 });
