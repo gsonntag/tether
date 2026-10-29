@@ -8,7 +8,7 @@
 import { existsSync } from "node:fs";
 import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
-import { FROM_TETHER } from "../../../../shared/fromTether";
+import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
 import { dropCache, hasTurnContext, PLACEHOLDER_NAME } from "./discovery";
@@ -422,7 +422,8 @@ export class CodexDriver implements Driver {
     remember(this.nativeId, { placeholder: undefined });
     const t: any = await this.rpc.call("thread/read", { threadId: this.nativeId }).catch(() => undefined);
     const name = t?.thread?.name;
-    const first = String(t?.thread?.preview ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+    // A first message of Tether's (a command's output) names the thread by what it is ("$ npm test").
+    const first = titleText(String(t?.thread?.preview ?? "")).replace(/\s+/g, " ").trim().slice(0, 80);
     if (name === PLACEHOLDER_NAME && first) await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: first }).catch(() => {});
   }
 

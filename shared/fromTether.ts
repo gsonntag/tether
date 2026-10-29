@@ -21,3 +21,17 @@ export function tetherOrigin(text: string): { origin: { kind: "tether" | "shell"
   if (sh) return { origin: { kind: "shell", name: sh.command }, text: sh.text };
   return undefined;
 }
+
+/**
+ * A title made from a first message (the sidebar's): Tether's own markers never show. A command's
+ * output reads as its command ("$ npm test"), Tether's own message as its text.
+ */
+export function titleText(text: string): string {
+  const t = text.trimStart();
+  const sh = parseShellMessage(t);
+  if (sh) return `$ ${sh.command}`;
+  return fromTether(t) ?? text;
+}
+
+/** Text a person typed never passes for one of Tether's own messages (a zero-width space in front). */
+export const defang = (text: string): string => (tetherOrigin(text.trimStart()) ? `\u200b${text}` : text);

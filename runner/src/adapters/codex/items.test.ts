@@ -49,3 +49,10 @@ test("a stored thread: a message per prompt, the steer between, compaction and f
     { id: "e-t2", role: "assistant", ts: 20000, parts: [], error: "Boom: quota" },
   ]);
 });
+
+test("a thread whose first message is a command's output is titled by the command", async () => {
+  const { titleOf } = await import("./discovery");
+  const { shellMessage } = await import("../../../../shared/shellRun");
+  expect(titleOf({ preview: shellMessage("npm test", "ok", { exitCode: 0 }) })).toBe("$ npm test");
+  expect(titleOf({ preview: "[From Tether] go ahead" })).toBe("go ahead");
+});

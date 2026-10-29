@@ -17,6 +17,8 @@ export interface OverlayNotice {
 }
 
 const PER_SESSION = 50;
+/** `!` command cards are kept apart from that limit: this many more per session. */
+const SHELL_CARDS = 30;
 const SESSIONS = 300;
 
 export class NoticeStore {
@@ -40,7 +42,7 @@ export class NoticeStore {
     if (had.some((x) => x.msg.id === n.msg.id)) return;
     // Long texts (a crash's stderr) are cut: this file stays small.
     const parts = n.msg.parts.map((p) => (p.type === "text" && p.text.length > 2000 ? { ...p, text: `${p.text.slice(0, 2000)}…` } : p));
-    this.map[sessionId] = { at: Date.now(), notices: [...had, { ...n, msg: { ...n.msg, parts } }].slice(-PER_SESSION) };
+    this.map[sessionId] = { at: Date.now(), notices: keep([...had, { ...n, msg: { ...n.msg, parts } }]) };
     const ids = Object.keys(this.map);
     if (ids.length > SESSIONS) for (const id of ids.sort((a, b) => this.map[a]!.at - this.map[b]!.at).slice(0, ids.length - SESSIONS)) delete this.map[id];
     clearTimeout(this.timer);
@@ -70,9 +72,10 @@ export class NoticeStore {
     if (any) this.later();
   }
 
+  /** Written within a second, however often things change meanwhile (one write for many updates). */
   private later() {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), 300);
+    if (this.timer) return;
+    this.timer = setTimeout(() => this.flush(), 1000);
     this.timer.unref?.();
   }
 
@@ -89,6 +92,7 @@ export class NoticeStore {
 
   flush() {
     clearTimeout(this.timer);
+    this.timer = undefined;
     if (!this.file) return;
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -98,6 +102,14 @@ export class NoticeStore {
       renameSync(tmp, this.file);
     } catch {}
   }
+}
+
+/** The newest PER_SESSION notices and the newest SHELL_CARDS command cards, in order. */
+function keep(list: OverlayNotice[]): OverlayNotice[] {
+  const cards = list.filter((n) => n.msg.shell);
+  const rest = list.filter((n) => !n.msg.shell);
+  const kept = new Set([...cards.slice(-SHELL_CARDS), ...rest.slice(-PER_SESSION)]);
+  return list.filter((n) => kept.has(n));
 }
 
 /**

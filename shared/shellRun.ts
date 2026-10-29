@@ -38,6 +38,11 @@ export interface ShellRun {
   signal?: string;
   /** you pressed Stop */
   stopped?: boolean;
+  /** the runner stopped (or crashed) while it ran: it was ended, nothing sent */
+  cutOff?: boolean;
+  /** running: its process group, and the leader's start time (/proc stat), so a runner that crashed can end it */
+  pgid?: number;
+  procStart?: string;
   /** bytes of output dropped from the middle (the card and the agent see the start and the end) */
   omitted?: number;
   /** all the output it printed, in bytes */
@@ -81,7 +86,8 @@ export const stripAnsi = (s: string) => s.replace(ANSI, "");
  */
 export class OutputBuffer {
   private head = "";
-  private headFull = false;
+  /** the head has all it keeps: what comes now only reaches the tail */
+  headFull = false;
   private tail = "";
   /** UTF-8 bytes seen in all */
   total = 0;
@@ -114,6 +120,17 @@ export class OutputBuffer {
     }
   }
 
+  /**
+   * `bytes` of output that were never decoded (a runaway command's middle): counted, and the tail
+   * starts over after them.
+   */
+  skip(bytes: number) {
+    if (bytes <= 0) return;
+    this.total += bytes;
+    this.tail = "";
+    this.tailLen = 0;
+  }
+
   /** Bytes between what the head and the tail keep. */
   get omitted(): number {
     const kept = utf8Length(this.head) + Math.min(this.tailLen, this.tailMax);
@@ -138,7 +155,8 @@ export class OutputBuffer {
 export const cutNote = (bytes: number) => `[… ${formatSize(bytes)} of output cut from the middle …]`;
 
 /** How a finished command ended, in words: "exit code 0", "stopped". */
-export function endedHow(r: Pick<ShellRun, "exitCode" | "signal" | "stopped">): string {
+export function endedHow(r: Pick<ShellRun, "exitCode" | "signal" | "stopped" | "cutOff">): string {
+  if (r.cutOff) return "cut off";
   if (r.stopped) return "stopped";
   if (r.signal) return `ended by ${r.signal}`;
   return `exit code ${r.exitCode ?? "?"}`;

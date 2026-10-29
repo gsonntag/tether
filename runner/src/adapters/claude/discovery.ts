@@ -7,13 +7,15 @@ import { existsSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { ProjectInfo, SessionSummary } from "../../../../shared/transcript";
 import { claudePick, lastLineTime } from "../lastActivity";
+import { titleText } from "../../../../shared/fromTether";
 import { cleanUserText } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** The title the sidebar shows: yours (/rename), Claude's, or the first prompt. */
 export function titleOf(s: Pick<SDKSessionInfo, "customTitle" | "summary" | "firstPrompt">): string {
   // A slash command (/clear, /model) says nothing about the session.
-  const first = cleanUserText(s.firstPrompt ?? "").trim();
+  // Tether's own messages are titled by what they are ("$ npm test"), never by their marker.
+  const first = titleText(cleanUserText(s.firstPrompt ?? "")).trim();
   const raw = s.customTitle || s.summary || (first.startsWith("/") ? "" : first) || "Untitled";
   return raw.replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled";
 }

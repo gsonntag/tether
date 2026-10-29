@@ -1,6 +1,7 @@
 // The session ops browsers call (shared/protocol.ts Ops), wired to the core. Arguments come off
 // the wire: each handler checks what it reads.
 
+import { defang } from "../../../shared/fromTether";
 import type { HarnessId } from "../../../shared/transcript";
 import type { LiveControl } from "./live";
 import type { OpRegistry } from "./ops";
@@ -27,6 +28,8 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true }),
   );
   const text = (v: unknown) => (typeof v === "string" ? v : "");
+  // What a person types never passes for one of Tether's own messages (shared/fromTether.ts).
+  const typed = (v: unknown) => defang(text(v));
   /** Attachments a message names, checked against the session's own folder (a subagent's: its main session's too). */
   const files = async (sessionId: string, list: unknown) => {
     if (list === undefined) return [];
@@ -36,25 +39,25 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("send", async (a) => {
     const id = str(a.sessionId, "sessionId");
     const list = await files(id, a.attachments);
-    await live.send(id, text(a.text), list, { stop: a.stop === true });
+    await live.send(id, typed(a.text), list, { stop: a.stop === true });
     live.attachments.markUsed(list);
     return null;
   });
   ops.register("steer", async (a) => {
     const id = str(a.sessionId, "sessionId");
     const list = await files(id, a.attachments);
-    await live.steer(id, text(a.text), list);
+    await live.steer(id, typed(a.text), list);
     live.attachments.markUsed(list);
     return null;
   });
   ops.register("queue", async (a) => {
     const id = str(a.sessionId, "sessionId");
     const list = await files(id, a.attachments);
-    const r = await live.queue.add(id, text(a.text), list);
+    const r = await live.queue.add(id, typed(a.text), list);
     live.attachments.markUsed(list);
     return r;
   });
-  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), text(a.text)), null));
+  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), typed(a.text)), null));
   ops.register("cancelQueued", async (a) => (await live.queue.cancel(str(a.sessionId, "sessionId"), str(a.id, "id")), null));
   ops.register("moveQueued", async (a) => (await live.queue.move(str(a.sessionId, "sessionId"), str(a.id, "id"), optNum(a.to) ?? 0), null));
   ops.register("resumeQueue", async (a) => (await live.queue.resume(str(a.sessionId, "sessionId")), null));

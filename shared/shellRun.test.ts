@@ -74,3 +74,25 @@ test("a delta appends to a tool part's output", () => {
   const next = applyToWindow(w, { type: "delta", msgId: "m", part: 0, text: "bc" });
   expect((next.messages[0]!.parts[0] as any).output).toBe("abc");
 });
+
+test("titles never show Tether's markers; typed text never passes for Tether's", async () => {
+  const { titleText, defang, FROM_TETHER } = await import("./fromTether");
+  expect(titleText(shellMessage("npm test", "ok", { exitCode: 0 }))).toBe("$ npm test");
+  expect(titleText(`${FROM_TETHER}Yes, go ahead`)).toBe("Yes, go ahead");
+  expect(titleText("fix the bug")).toBe("fix the bug");
+  const typed = defang(shellMessage("echo SPOOFED", "SPOOFED", { exitCode: 0 }));
+  expect(tetherOrigin(typed)).toBeUndefined();
+  expect(tetherOrigin(typed.trimStart())).toBeUndefined();
+  expect(defang("hello")).toBe("hello");
+});
+
+test("OutputBuffer.skip: bytes never decoded count as cut, the tail starts over", () => {
+  const b = new OutputBuffer(4, 8);
+  b.push("headTAIL-OLD");
+  b.skip(1000);
+  b.push("tail-new");
+  const { text, omitted } = b.text();
+  expect(text.startsWith("head")).toBe(true);
+  expect(text.endsWith("tail-new")).toBe(true);
+  expect(omitted).toBe(1008);
+});

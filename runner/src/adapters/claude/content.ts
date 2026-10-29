@@ -67,8 +67,10 @@ export const notice = (id: string, ts: number, text: string, level: Msg["level"]
  */
 export function injected(text: string, flags: EntryFlags, id: string, ts: number): Msg | null | undefined {
   const t = text.trimStart();
-  // A message Tether sent on your behalf (an answer passed on after a restart): Tether's, not yours.
-  const tether = tetherOrigin(t);
+  // A message Tether sent on your behalf (an answer passed on after a restart, a command's output):
+  // Tether's, not yours. Only on a turn that came in as typed (Tether's sends do): one from another
+  // session or a channel that merely starts with the marker stays that session's.
+  const tether = !flags.origin?.kind || flags.origin.kind === "human" ? tetherOrigin(t) : undefined;
   if (tether) return { id, role: "user", ts, origin: tether.origin, parts: [{ type: "text", text: tether.text }] };
   // A background task's report to Claude: the live stream never shows it (the subagent's own
   // session and Claude's answer do), so the stored view doesn't either.

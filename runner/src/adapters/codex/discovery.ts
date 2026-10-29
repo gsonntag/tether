@@ -7,6 +7,7 @@ import { basename } from "node:path";
 import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
 import { call } from "./daemon";
 import type { StartOpts } from "../../core/adapter";
+import { titleText } from "../../../../shared/fromTether";
 import { agentName, historyMsgs } from "./items";
 import { modeOf, sandboxOf, UNKNOWN_MODE } from "./modes";
 import { remember, remembered } from "./remember";
@@ -22,7 +23,7 @@ const firstLine = (s: string, n = 120) => s.replace(/\s+/g, " ").trim().slice(0,
 /** A thread's title: its name, else its first message. */
 export function titleOf(t: any): string {
   const name = typeof t?.name === "string" && t.name !== PLACEHOLDER_NAME ? t.name : "";
-  return name || firstLine(t?.preview ?? "") || (t?.parentThreadId ? (agentName(t) ?? "Subagent") : "New session");
+  return name || firstLine(titleText(t?.preview ?? "")) || (t?.parentThreadId ? (agentName(t) ?? "Subagent") : "New session");
 }
 
 /** A thread as a sidebar row. */
