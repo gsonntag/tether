@@ -1,6 +1,27 @@
 // Sending one push (Web Push with VAPID, through the `web-push` library).
 
+import http from "node:http";
+import https from "node:https";
 import webpush from "web-push";
+import { pinnedLookup } from "./endpoint";
+
+/**
+ * POSTs to a push endpoint: the address connected to is the one checked (pinnedLookup), redirects
+ * aren't followed, and only the status comes back (the body is read and dropped).
+ */
+export function postPush(endpoint: string, headers: Record<string, string>, body: Buffer | string, o: { dev: boolean; timeoutMs?: number }): Promise<{ status: number; statusText: string }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(endpoint);
+    const mod = u.protocol === "https:" ? https : http;
+    const req = mod.request(u, { method: "POST", headers: { ...headers, "content-length": String(Buffer.byteLength(body)) }, lookup: pinnedLookup(o.dev) as any, timeout: o.timeoutMs ?? 20_000 }, (res) => {
+      res.resume();
+      resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? "" });
+    });
+    req.on("timeout", () => req.destroy(Object.assign(new Error("no answer in 20 s"), { name: "TimeoutError" })));
+    req.on("error", reject);
+    req.end(body);
+  });
+}
 import type { PushKeys, PushPayload } from "../../../../shared/protocol";
 import type { PushSub } from "./store";
 
@@ -38,6 +59,8 @@ export class PushSender implements Sender {
     private log: (line: string) => void,
     /** checked before every push (a name may resolve somewhere else now): why it's refused */
     private vet: (endpoint: string) => Promise<string | undefined> = async () => undefined,
+    /** a dev runner: plain http to this machine is allowed (tests) */
+    private dev = false,
   ) {}
 
   setKeys(k: PushKeys | undefined) {
@@ -70,15 +93,14 @@ export class PushSender implements Sender {
         ...(payload.tag && payload.kind !== "request" ? { topic: topicOf(payload.tag) } : {}),
       });
       // Never followed: a push service doesn't redirect, and a redirect could lead anywhere.
-      const res = await fetch(d.endpoint, { method: d.method, headers: d.headers as Record<string, string>, body: d.body as any, redirect: "manual", signal: AbortSignal.timeout(20_000) });
+      const res = await postPush(d.endpoint, d.headers as Record<string, string>, d.body as Buffer, { dev: this.dev });
       status = res.status;
-      void res.body?.cancel().catch(() => {});
       if (status >= 200 && status < 300) return false;
       // Only the status: what the endpoint answered isn't passed back to anyone.
       why = `HTTP ${status}${res.statusText ? ` ${res.statusText}` : ""}`;
     } catch (e: any) {
       status = 0;
-      why = e?.name === "TimeoutError" ? "no answer in 20 s" : "couldn't reach it";
+      why = e?.name === "TimeoutError" ? "no answer in 20 s" : e?.code === "EPRIVATE" ? e.message : "couldn't reach it";
     }
     // 404/410: the browser dropped the subscription (unsubscribed, cleared data, uninstalled).
     const gone = status === 404 || status === 410;

@@ -99,7 +99,17 @@ describe("what gets sent, to whom", () => {
     expect(requestBody(r({ tool: "apply_patch", toolKind: "edit", input: { files: ["/a", "/b", "/c"] } }), "Codex")).toBe("Codex wants to edit 3 files.");
     // The harness's own description of the step.
     expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "rm -rf /tmp/x", description: "Remove the build cache" } }), "Claude")).toBe("Claude asks to: Remove the build cache");
-    expect(requestBody(r({ tool: "shell", toolKind: "shell", reason: "Needs network access to install deps", input: { command: "npm i" } }), "Codex")).toBe("Codex asks to: Needs network access to install deps");
+    expect(requestBody(r({ tool: "shell", toolKind: "shell", reason: "Needs network access to install deps", input: { command: "npm i" } }), "Codex", "codex")).toBe("Codex asks to: Needs network access to install deps");
+    // Claude's reason is its rule's wording, not a step.
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", reason: "Path is outside allowed working directories", input: { command: "ls /x" } }), "Claude")).toBe("Claude wants to run a command.");
+    // A description carrying the command, a secret or a path falls back.
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "cat /etc/hostname > /dev/null && echo TOKEN=sk-live-123456", description: "cat /etc/hostname > /dev/null && echo TOKEN=sk-live-123456" } }), "Claude")).toBe("Claude wants to run a command.");
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "echo hi", description: "Print the API key sk-live-123456" } }), "Claude")).toBe("Claude wants to run a command.");
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "deploy --prod", description: "Deploy to production now" } }), "Claude")).toBe("Claude wants to run a command.");
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "ls", description: "Read /home/me/.ssh config" } }), "Claude")).toBe("Claude wants to run a command.");
+    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "ls", description: "x".repeat(61) } }), "Claude")).toBe("Claude wants to run a command.");
+    // An MCP tool's description argument is never used.
+    expect(requestBody(r({ tool: "mcp__slack__post", toolKind: "other", input: { description: "Post the deploy password hunter2" } }), "Claude")).toBe("Claude wants to use mcp__slack__post.");
     expect(requestBody(r({ kind: "question", question: "Which password?" }), "Claude")).toBe("Claude has a question for you.");
     expect(requestBody(r({ tool: "WebFetch", toolKind: "fetch", input: { url: "https://x" } }), "Claude")).toBe("Claude wants to fetch from the web.");
   });
@@ -160,11 +170,36 @@ test("failures say what kind, never the raw error", () => {
   expect(failureKind("weird")).toBe("an error");
 });
 
+describe("push endpoints, pinned", () => {
+  test("the address connected to is the one checked: a name that resolves to loopback gets nowhere", async () => {
+    const { pinnedLookup } = await import("./endpoint");
+    let resolves = 0;
+    // The first answer is public (as the subscribe check saw), the next is loopback (rebinding).
+    const rebinding = async () => (resolves++ === 0 ? [{ address: "142.250.1.1", family: 4 }] : [{ address: "127.0.0.1", family: 4 }]);
+    const look = pinnedLookup(false, rebinding);
+    const first = await new Promise<any>((r) => look("push.example", {}, (e, a) => r(e ?? a)));
+    expect(first).toBe("142.250.1.1");
+    const second = await new Promise<any>((r) => look("push.example", {}, (e, a) => r(e ?? a)));
+    expect(second.code).toBe("EPRIVATE");
+  });
+
+  test("a real request through the pinned lookup reaches only the checked address", async () => {
+    const { postPush } = await import("./sender");
+    let hits = 0;
+    const srv = Bun.serve({ port: 0, fetch: () => (hits++, new Response(null, { status: 201 })) });
+    servers.push(srv);
+    // Not dev: a name resolving to 127.0.0.1 is refused before anything connects.
+    await expect(postPush(`http://localhost:${srv.port}/x`, {}, "x", { dev: false })).rejects.toThrow("network");
+    expect(hits).toBe(0);
+    expect((await postPush(`http://localhost:${srv.port}/x`, {}, "x", { dev: true })).status).toBe(201);
+  });
+});
+
 describe("push endpoints", () => {
   test("only https push services on the internet (a dev runner also takes http to this machine)", async () => {
     const { endpointProblem, privateAddress } = await import("./endpoint");
-    const pub = async () => ["142.250.1.1"];
-    const priv = async () => ["10.0.0.5"];
+    const pub = async () => [{ address: "142.250.1.1", family: 4 }];
+    const priv = async () => [{ address: "10.0.0.5", family: 4 }];
     expect(await endpointProblem("https://fcm.googleapis.com/fcm/send/x", false, pub)).toBeUndefined();
     expect(await endpointProblem("http://fcm.googleapis.com/x", false, pub)).toContain("https");
     expect(await endpointProblem("https://evil.example/x", false, priv)).toContain("network");
@@ -173,8 +208,10 @@ describe("push endpoints", () => {
     expect(await endpointProblem("https://169.254.169.254/x", false, pub)).toContain("network");
     expect(await endpointProblem("http://127.0.0.1:9/push", true, pub)).toBeUndefined();
     expect(await endpointProblem("http://127.0.0.1:9/push", false, pub)).toBeDefined();
-    for (const ip of ["10.1.2.3", "172.20.0.1", "192.168.1.1", "100.64.0.1", "fd00::1", "fe80::1", "::ffff:127.0.0.1"]) expect(privateAddress(ip)).toBe(true);
-    for (const ip of ["8.8.8.8", "2606:4700::1111"]) expect(privateAddress(ip)).toBe(false);
+    const v6 = ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::7f00:1", "::ffff:127.0.0.1", "::127.0.0.1", "::1", "::", "64:ff9b::7f00:1", "64:ff9b::808:808", "2002:7f00:1::1", "2002:c0a8:101::", "fec0::1", "fd00::1", "fc00::1", "fe80::1", "ff02::1", "2001::1", "2001:db8::1", "::ffff:0:7f00:1", "100::1"];
+    for (const ip of ["10.1.2.3", "172.20.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "0.0.0.0", ...v6]) expect([ip, privateAddress(ip)]).toEqual([ip, true]);
+    for (const ip of ["8.8.8.8", "2606:4700::1111", "2002:808:808::1", "2a00:1450:4001::200e"]) expect([ip, privateAddress(ip)]).toEqual([ip, false]);
+    for (const host of ["[::ffff:7f00:1]", "[::ffff:a9fe:a9fe]", "[::7f00:1]", "[64:ff9b::7f00:1]", "[2002:7f00:1::1]", "[fec0::1]", "[::ffff:127.0.0.1]"]) expect(await endpointProblem(`https://${host}/x`, false, pub)).toContain("network");
   });
 
   test("a redirect isn't followed, and what the endpoint said isn't passed back", async () => {

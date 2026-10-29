@@ -25,22 +25,44 @@ const FINISH_DELAY_MS = 1500;
 const agentOf = (sessionId: string) => AGENT_NAMES[parseSessionId(sessionId)?.harness ?? "claude"] ?? "The agent";
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
+/** Looks like a path, URL, key, token, secret or an assignment: never in a notification. */
+const UNSAFE = /[\\/=:@$`|<>{}]|https?|\bsk-|token|secret|passw|api.?key|bearer|credential|[A-Za-z0-9+_-]{20,}|[0-9a-f]{12,}/i;
+
 /**
- * What a request needs, as a notification says it: never the command, the file's contents or the
- * question itself (a phone may show it on its lock screen). The harness's own short description of
- * the step when it gives one (Claude's Bash `description`, Codex's approval reason), else a summary
- * from what kind of request it is.
+ * A harness's own short description of a shell step, when it is safe to show on a lock screen:
+ * at most 60 characters, nothing that looks like a path, URL, key or secret, and nothing from the
+ * command itself (no word of 5+ characters it shares with the command). Undefined otherwise.
  */
-export function requestBody(r: Request, agent: string): string {
+export function safeDescription(desc: unknown, command: unknown): string | undefined {
+  if (typeof desc !== "string") return undefined;
+  const d = desc.trim().replace(/\s+/g, " ");
+  if (!d || d.length > 60 || UNSAFE.test(d)) return undefined;
+  const cmd = typeof command === "string" ? command.toLowerCase() : "";
+  const words = cmd.split(/[^\p{L}\p{N}_.-]+/u).filter((w) => w.length >= 5);
+  const low = d.toLowerCase();
+  if (cmd && (low.includes(cmd.trim()) || words.some((w) => low.includes(w)))) return undefined;
+  return d;
+}
+
+/**
+ * What a request needs, as a notification says it: never the command, a path, the file's contents
+ * or the question itself (a phone may show it on its lock screen). For a shell step, the harness's
+ * own short description when it is safe (Claude's Bash `description`; Codex's approval reason),
+ * else a summary from what kind of request it is. Other tools (MCP among them) only by kind.
+ */
+export function requestBody(r: Request, agent: string, harness: string = "claude"): string {
   if (r.kind === "question") return `${agent} has a question for you.`;
   if (r.plan !== undefined) return `${agent} has a plan for you to approve.`;
   const input = (r.input ?? {}) as Record<string, unknown>;
-  const own = [input.description, r.reason].find((x): x is string => typeof x === "string" && !!x.trim());
-  if (own) return `${agent} asks to: ${short(own.trim().replace(/\s+/g, " "), 100)}`;
+  const shell = r.toolKind === "shell" || (!r.toolKind && (!!r.command || typeof input.command === "string"));
+  if (shell) {
+    const command = r.command ?? input.command;
+    // Claude's `reason` is its own rule's wording ("Path is outside…"), not a step description.
+    const own = safeDescription(input.description, command) ?? (harness === "codex" ? safeDescription(r.reason, command) : undefined);
+    return own ? `${agent} asks to: ${own}` : `${agent} wants to run a command.`;
+  }
   const files = Array.isArray(input.files) ? input.files.length : 0;
-  switch (r.toolKind ?? (r.command || typeof input.command === "string" ? "shell" : undefined)) {
-    case "shell":
-      return `${agent} wants to run a command.`;
+  switch (r.toolKind) {
     case "edit":
     case "write":
       return files > 1 ? `${agent} wants to edit ${files} files.` : `${agent} wants to edit a file.`;
@@ -98,7 +120,7 @@ export class Notifier {
     const look = this.ctx.session(r.sessionId);
     if (!look?.requests.includes(r.id)) return;
     const root = look.summary.parentSessionId;
-    await this.notify({ kind: "request", sessionId: r.sessionId, title: this.title(r.sessionId), body: requestBody(r, agentOf(r.sessionId)), tag: `req-${r.id}` }, root ? [root] : []);
+    await this.notify({ kind: "request", sessionId: r.sessionId, title: this.title(r.sessionId), body: requestBody(r, agentOf(r.sessionId), parseSessionId(r.sessionId)?.harness), tag: `req-${r.id}` }, root ? [root] : []);
   }
 
   async attention(sessionId: string, _message?: string) {
@@ -120,7 +142,7 @@ export const pushModule: Module = {
   name: "push",
   start(ctx) {
     const store = new SubscriptionStore(join(ctx.dataDir, "push.json"));
-    const sender = new PushSender(ctx.appUrl, ctx.log, (e) => endpointProblem(e, DEV));
+    const sender = new PushSender(ctx.appUrl, ctx.log, (e) => endpointProblem(e, DEV), DEV);
     const n = new Notifier(ctx, store, sender);
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`notify failed: ${e?.message ?? e}`)), ms);
     const offs = [
