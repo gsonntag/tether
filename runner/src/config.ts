@@ -35,6 +35,8 @@ export interface SessionPrefs {
   permissionMode?: string;
   /** a turn was running: still set at start means it was cut off (a runner restart, a crash) */
   running?: boolean;
+  /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */
+  cutOff?: boolean;
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */

@@ -80,8 +80,10 @@ export class MessageQueue {
     text = stripControls(text);
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
-    if (s.state.queue.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
-    this.roomFor(s.state.queue, text, o.shell ? jsonBytes(o.shell.command) : 0);
+    // The message going out still counts (it comes back if it doesn't get there).
+    const all = this.withGoing(s);
+    if (all.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
+    this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether.
     this.save(s, [...s.state.queue, m], !s.state.queueHeld && s.state.mode === "terminal" ? "terminal" : undefined);
@@ -96,7 +98,7 @@ export class MessageQueue {
     const m = this.find(s, msgId);
     if (m.shell) throw new Error("A command's output can't be edited. Cancel it instead.");
     if (!text.trim() && !m.attachments?.length) return this.cancel(id, msgId);
-    this.roomFor(s.state.queue.filter((x) => x.id !== msgId), text);
+    this.roomFor(this.withGoing(s).filter((x) => x.id !== msgId), text);
     this.save(s, s.state.queue.map((x) => (x.id === msgId ? { ...x, text } : x)));
   }
 
@@ -223,6 +225,12 @@ export class MessageQueue {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent has no queue. Message the main session instead.");
     return s;
+  }
+
+  /** The queue with the message going out (until the harness has it). */
+  private withGoing(s: Session): QueuedMessage[] {
+    const g = this.going.get(s.id);
+    return g && !this.cancelledGoing.has(g.id) ? [g, ...s.state.queue] : s.state.queue;
   }
 
   /** Refuses text that would take the queue past QUEUE_BYTES_MAX (its state must always travel). */

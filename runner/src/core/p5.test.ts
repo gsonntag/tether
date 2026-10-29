@@ -339,6 +339,26 @@ describe("the queue", () => {
     expect(s.state.queue).toEqual([]);
   });
 
+  test("the message going out counts against the limits", async () => {
+    const { adapter, live, core, driver, end } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "busy");
+    for (let i = 0; i < 50; i++) await live.queue.add("claude:s1", `m${i}`, []);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const d = driver();
+    const orig = d.send.bind(d);
+    d.send = async (t: string) => {
+      await gate;
+      return orig(t);
+    };
+    end();
+    const s = await core.open("claude:s1");
+    await until(() => s.state.queue.length === 49);
+    await expect(live.queue.add("claude:s1", "one more", [])).rejects.toThrow("At most 50");
+    release();
+  });
+
   test("control characters never wait, and a queue measured as it travels always opens", async () => {
     const { adapter, live, core } = setup();
     adapter.addStored("s1", []);
@@ -548,6 +568,35 @@ describe("read state", () => {
     await b.core.discover();
     const row = b.core.book.get("claude:s1")!;
     expect(row).toMatchObject({ unread: "failed", failure: "The runner restarted mid-turn.", queued: 1, queuePaused: true });
+  });
+
+  test("a cut-off turn marked read stays read after another restart, and its queue isn't held again", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    await a.live.send("claude:s1", "one");
+    await a.live.queue.add("claude:s1", "two", []);
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    expect(b.prefs.get("claude:s1").unread).toBe("failed");
+    // ✓ on Home, and the queue cancelled.
+    b.live.read.set("claude:s1", false);
+    const s = await b.core.open("claude:s1");
+    await b.live.queue.cancel("claude:s1", s.state.queue[0]!.id);
+    await b.live.queue.add("claude:s1", "three", []);
+    await b.live.queue.hold(s, "stopped");
+    b.prefs.flush();
+    b.core.stop();
+    const c = setup({ dir, prefsFile: a.prefsFile });
+    c.adapter.addStored("s1", []);
+    await c.live.rejoin();
+    await c.live.queue.restore();
+    expect(c.prefs.get("claude:s1").unread).toBeUndefined();
+    expect((await c.core.open("claude:s1")).state.queueHeldBy).toBe("stopped");
   });
 
   test("looking at a subagent reads its main session", async () => {

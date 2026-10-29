@@ -246,7 +246,8 @@ export class SessionCore {
         // A turn that was running when the runner (or the harness) stopped: say so where it ended.
         // Anchored to the end of that turn: what an orphaned process still writes lands above it.
         // A harness that keeps turns going without the runner (capabilities.persistent) wasn't cut off.
-        if (!s.live && !s.sending && !s.capabilities.persistent && this.o.prefs.get(s.id).running) {
+        const p = this.o.prefs.get(s.id);
+        if (!s.live && !s.sending && !s.capabilities.persistent && (p.running || p.cutOff)) {
           const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
           const agent = AGENT_NAMES[s.summary.harness];
           const text = s.state.requests.length
@@ -257,7 +258,7 @@ export class SessionCore {
             s.overlay.push(n);
             this.notices.add(s.id, n);
           }
-          this.o.prefs.set(s.id, { running: undefined });
+          this.o.prefs.set(s.id, { running: undefined, cutOff: undefined });
         }
         this.prune(s, msgs);
         // A live driver may have created it meanwhile (send right after open).
