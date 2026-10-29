@@ -46,14 +46,15 @@ export function safeDescription(desc: unknown, command: unknown): string | undef
 }
 
 /**
- * A session's title as a notification may show it: the title when it is short and safe (no path,
- * URL, host, dotfile, key, secret or command-like text), else the project folder's name and the agent
- * ("web-coder · Claude"). Codex titles are your first message verbatim; Claude's are written by the
- * model from it; `!` sessions start "[Shell command run from Tether] … $ cmd".
+ * A session's title as a push shows it: the project folder and the agent ("web-coder · Claude").
+ * Never the session's own title: Codex titles are your first message verbatim, Claude's are written
+ * by the model from it, `!` sessions hold the command, and a denylist can't tell "my pin is 4821"
+ * from a harmless title. `renamed`: a name you gave the session yourself in Tether (none yet), shown
+ * only when short and free of anything path-, host-, key- or command-like.
  */
-export function safeTitle(title: string | undefined, projectPath: string, agent: string): string {
-  const t = (title ?? "").trim().replace(/\s+/g, " ");
-  if (t && t.length <= 60 && !UNSAFE.test(t) && !/[;&*#%^]|\bsudo\b|\brm\b|--?\w/.test(t)) return t;
+export function pushTitle(projectPath: string, agent: string, renamed?: string): string {
+  const t = (renamed ?? "").trim().replace(/\s+/g, " ");
+  if (t && t.length <= 60 && !UNSAFE.test(t) && !/[;&*#%^]|\bsudo\b|\brm\b|--?\w|\d{4,}/.test(t)) return t;
   const folder = projectPath.replace(/\/+$/, "").split("/").pop() || "Tether";
   return `${folder} · ${agent}`;
 }
@@ -72,6 +73,8 @@ export function requestBody(r: Request, agent: string, harness: string = "claude
   if (shell) {
     const command = r.command ?? input.command;
     // Claude's `reason` is its own rule's wording ("Path is outside…"), not a step description.
+    // Tether's own wording for a Codex network approval names the host: never shown.
+    if (harness === "codex" && typeof r.reason === "string" && /^Network access to /i.test(r.reason)) return `${agent} wants network access.`;
     const theirs = [input.description, harness === "codex" ? r.reason : undefined].filter((x): x is string => typeof x === "string");
     const own = theirs.map((x) => safeDescription(x, command)).find(Boolean);
     if (own) return `${agent} asks to: ${own}`;
@@ -93,7 +96,8 @@ export function requestBody(r: Request, agent: string, harness: string = "claude
     case "fetch":
       return `${agent} wants to fetch from the web.`;
   }
-  return r.tool ? `${agent} wants to use ${short(r.tool, 40)}.` : `${agent} needs your permission.`;
+  // A tool's name only when it reads as a plain name (an MCP tool's can carry a server or host).
+  return r.tool && r.tool.length <= 40 && /^[\p{L}\p{N}_ -]+$/u.test(r.tool) && !UNSAFE.test(r.tool) ? `${agent} wants to use ${r.tool}.` : `${agent} wants to use a tool.`;
 }
 
 /** A failed turn's error as a short category, never the raw message. */
@@ -130,16 +134,14 @@ export class Notifier {
   }
 
   /**
-   * A session's title as a push says it (safeTitle). A subagent is "a subagent" under its main
-   * session's title: its own title is model-written from its task.
+   * A session's title as a push says it (pushTitle: the folder and the agent). A subagent is
+   * "<folder> · <agent> · a subagent": its own title is model-written from its task.
    */
   title(id: string): string {
     const s = this.ctx.session(id)?.summary;
     if (!s) return "Tether";
-    const agent = agentOf(id);
-    const main = s.parentSessionId ? this.ctx.session(s.parentSessionId)?.summary : undefined;
-    if (s.parentSessionId) return `${main ? safeTitle(main.title, main.projectPath, agent) : safeTitle(undefined, s.projectPath, agent)} · a subagent`;
-    return safeTitle(s.title, s.projectPath, agent);
+    const title = pushTitle(s.projectPath, agentOf(id));
+    return s.parentSessionId ? `${title} · a subagent` : title;
   }
 
   async request(r: Request) {

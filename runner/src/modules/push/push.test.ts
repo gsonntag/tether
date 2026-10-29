@@ -45,7 +45,7 @@ describe("what gets sent, to whom", () => {
     const { n, sender } = setup({ "claude:s1": ["laptop"] });
     await n.request({ id: "r1", sessionId: "claude:s1", kind: "approval", tool: "Bash", input: { command: "rm -rf build" }, openedAt: 1 });
     expect(sender.sent.map(([d]) => d)).toEqual(["phone"]);
-    expect(sender.sent[0]![1]).toMatchObject({ kind: "request", runnerId: "box", sessionId: "claude:s1", title: "Fix the build", body: "Claude wants to run a command.", tag: "req-r1" });
+    expect(sender.sent[0]![1]).toMatchObject({ kind: "request", runnerId: "box", sessionId: "claude:s1", title: "web-coder · Claude", body: "Claude wants to run a command.", tag: "req-r1" });
     // Never the command itself.
     expect(JSON.stringify(sender.sent)).not.toContain("rm -rf");
   });
@@ -54,7 +54,7 @@ describe("what gets sent, to whom", () => {
     const { n, sender } = setup({ "claude:s1": ["phone"] });
     await n.request({ id: "r2", sessionId: "claude:s1/k", kind: "question", question: "Which one?", openedAt: 1 });
     expect(sender.sent.map(([d]) => d)).toEqual(["laptop"]);
-    expect(sender.sent[0]![1]).toMatchObject({ title: "Fix the build · a subagent", body: "Claude has a question for you." });
+    expect(sender.sent[0]![1]).toMatchObject({ title: "web-coder · Claude · a subagent", body: "Claude has a question for you." });
   });
 
   test("a request already closed sends nothing", async () => {
@@ -67,7 +67,7 @@ describe("what gets sent, to whom", () => {
     const { n, sender, sessions } = setup();
     sessions["claude:s1"].requests = [];
     await n.turnEnded("claude:s1");
-    expect(sender.sent[0]![1]).toMatchObject({ kind: "finished", title: "Fix the build", body: "Finished.", tag: "end-claude:s1" });
+    expect(sender.sent[0]![1]).toMatchObject({ kind: "finished", title: "web-coder · Claude", body: "Finished.", tag: "end-claude:s1" });
     await n.turnEnded("claude:s1", "API Error: 429 {\"type\":\"rate_limit_error\",\"message\":\"secret details\"}");
     expect(sender.sent[2]![1]).toMatchObject({ kind: "failed", body: "Failed: rate limited." });
     expect(JSON.stringify(sender.sent)).not.toContain("secret details");
@@ -110,6 +110,8 @@ describe("what gets sent, to whom", () => {
     expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "ls", description: "x".repeat(61) } }), "Claude")).toBe("Claude wants to run a command.");
     // An MCP tool's description argument is never used.
     expect(requestBody(r({ tool: "mcp__slack__post", toolKind: "other", input: { description: "Post the deploy password hunter2" } }), "Claude")).toBe("Claude wants to use mcp__slack__post.");
+    expect(requestBody(r({ tool: "mcp__db.internal.corp__query", toolKind: "other" }), "Claude")).toBe("Claude wants to use a tool.");
+    expect(requestBody(r({ tool: "mcp__x__token_dump", toolKind: "other" }), "Claude")).toBe("Claude wants to use a tool.");
     expect(requestBody(r({ kind: "question", question: "Which password?" }), "Claude")).toBe("Claude has a question for you.");
     expect(requestBody(r({ tool: "WebFetch", toolKind: "fetch", input: { url: "https://x" } }), "Claude")).toBe("Claude wants to fetch from the web.");
   });
@@ -162,25 +164,31 @@ describe("the push itself", () => {
   });
 });
 
-test("titles in pushes: no paths, hosts, dotfiles, keys or commands; else the folder and the agent", async () => {
-  const { safeTitle } = await import(".");
-  const fb = (t: string) => safeTitle(t, "/home/me/web-coder", "Claude");
-  expect(fb("Fix the build")).toBe("Fix the build");
+test("titles in pushes: only the folder and the agent (a name you gave it, only when safe)", async () => {
+  const { pushTitle } = await import(".");
   for (const t of [
+    "reply only OK and remember the door code 4821",
+    "git push origin main",
+    "kubectl delete pod web",
+    "Log in as admin with hunter2",
+    "my pin is 4821",
     "Look at /etc/hostname with key sk-live-ABCDEF123456 and tell me",
     "/etc/hostname file",
     "[Shell command run from Tether] … $ cat /etc/hostname",
-    "Check example.com status",
-    "Read the .env file",
-    "Rotate TOKEN=abc",
-    "x".repeat(61),
+    "Fix the build",
+    "New session",
   ])
-    expect([t, fb(t)]).toEqual([t, "web-coder · Claude"]);
+    // A session's own title (first message, AI title, placeholder) is never used.
+    expect([t, pushTitle("/home/me/web-coder", "Codex")]).toEqual([t, "web-coder · Codex"]);
+  // A name you gave it: shown when safe, else the fallback.
+  expect(pushTitle("/home/me/web-coder", "Claude", "Billing cleanup")).toBe("Billing cleanup");
+  for (const r of ["Check example.com status", "Read the .env file", "Rotate TOKEN=abc", "pin 4821", "x".repeat(61)]) expect([r, pushTitle("/p/web-coder", "Claude", r)]).toEqual([r, "web-coder · Claude"]);
 });
 
 test("Codex network and file reasons fall back to what kind of step", () => {
   const r = (x: Partial<Request>): Request => ({ id: "r", sessionId: "s", kind: "approval", openedAt: 1, toolKind: "shell", tool: "shell", input: { command: "curl x" }, ...x });
   expect(requestBody(r({ reason: "Network access to api.github.com" }), "Codex", "codex")).toBe("Codex wants network access.");
+  for (const host of ["postgres", "db1"]) expect(requestBody(r({ reason: `Network access to ${host}` }), "Codex", "codex")).toBe("Codex wants network access.");
   expect(requestBody(r({ reason: "Read the .env file" }), "Codex", "codex")).toBe("Codex wants to read a file.");
   expect(requestBody(r({ input: { command: "ls", description: "Show github.com status" } }), "Claude")).toBe("Claude wants to run a command.");
 });
