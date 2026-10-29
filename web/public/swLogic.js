@@ -10,7 +10,8 @@ function tetherUrlFor(payload, origin) {
 /** The notification to show for a push payload (title, options). */
 function tetherNotification(payload) {
   var p = payload || {};
-  var title = p.kind === "failed" ? "Failed · " + (p.title || "Tether") : p.kind === "request" ? "Needs you · " + (p.title || "Tether") : p.title || "Tether";
+  // The title names the session; the body says why it needs you (never what the agent said).
+  var title = p.kind === "request" ? "Needs you · " + (p.title || "Tether") : p.title || "Tether";
   return {
     title: title,
     options: {

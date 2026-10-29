@@ -12,7 +12,10 @@ import { AGENT_NAMES, type Request } from "../../../../shared/transcript";
 import { parseSessionId } from "../../../../shared/ids";
 import type { Module, ModuleContext } from "..";
 import { PushSender, type Sender } from "./sender";
+import { endpointProblem } from "./endpoint";
 import { SubscriptionStore } from "./store";
+
+const DEV = process.env.TETHER_DEV === "1";
 
 /** A request that closes this fast (answered elsewhere, a policy step) never notifies. */
 const REQUEST_DELAY_MS = 800;
@@ -22,16 +25,45 @@ const FINISH_DELAY_MS = 1500;
 const agentOf = (sessionId: string) => AGENT_NAMES[parseSessionId(sessionId)?.harness ?? "claude"] ?? "The agent";
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
-/** What a request asks, as a notification's body. */
+/**
+ * What a request needs, as a notification says it: never the command, the file's contents or the
+ * question itself (a phone may show it on its lock screen). The harness's own short description of
+ * the step when it gives one (Claude's Bash `description`, Codex's approval reason), else a summary
+ * from what kind of request it is.
+ */
 export function requestBody(r: Request, agent: string): string {
-  if (r.kind === "question") return `${agent} asks: ${short(r.questions?.[0]?.question ?? r.question ?? "a question", 160)}`;
+  if (r.kind === "question") return `${agent} has a question for you.`;
   if (r.plan !== undefined) return `${agent} has a plan for you to approve.`;
   const input = (r.input ?? {}) as Record<string, unknown>;
-  const cmd = r.command ?? (typeof input.command === "string" ? input.command : undefined);
-  if (cmd) return `${agent} wants to run ${short(cmd, 120)}`;
-  const path = r.path ?? (typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : undefined);
-  if (path) return `${agent} wants to ${r.toolKind === "edit" || r.toolKind === "write" ? "change" : "use"} ${short(path.split("/").pop() ?? path, 80)}`;
-  return `${agent} wants to use ${r.tool ?? "a tool"}.`;
+  const own = [input.description, r.reason].find((x): x is string => typeof x === "string" && !!x.trim());
+  if (own) return `${agent} asks to: ${short(own.trim().replace(/\s+/g, " "), 100)}`;
+  const files = Array.isArray(input.files) ? input.files.length : 0;
+  switch (r.toolKind ?? (r.command || typeof input.command === "string" ? "shell" : undefined)) {
+    case "shell":
+      return `${agent} wants to run a command.`;
+    case "edit":
+    case "write":
+      return files > 1 ? `${agent} wants to edit ${files} files.` : `${agent} wants to edit a file.`;
+    case "read":
+    case "search":
+      return `${agent} wants to read files.`;
+    case "fetch":
+      return `${agent} wants to fetch from the web.`;
+  }
+  return r.tool ? `${agent} wants to use ${short(r.tool, 40)}.` : `${agent} needs your permission.`;
+}
+
+/** A failed turn's error as a short category, never the raw message. */
+export function failureKind(error: string): string {
+  const e = error.toLowerCase();
+  if (/rate.?limit|429|usage limit|quota/.test(e)) return "rate limited";
+  if (/overload|529|capacity/.test(e)) return "the service is overloaded";
+  if (/not logged in|\/login|sign(ed)? in|api key|auth|401|403/.test(e)) return "not signed in";
+  if (/model/.test(e) && /(not exist|not found|issue with|unknown|access|invalid)/.test(e)) return "model unavailable";
+  if (/context|too long|prompt is too long|token/.test(e)) return "the conversation is too long";
+  if (/network|econn|timed? ?out|socket|connection/.test(e)) return "connection problem";
+  if (/stopped|exited|killed|crash/.test(e)) return "the agent stopped unexpectedly";
+  return "an error";
 }
 
 export class Notifier {
@@ -69,8 +101,8 @@ export class Notifier {
     await this.notify({ kind: "request", sessionId: r.sessionId, title: this.title(r.sessionId), body: requestBody(r, agentOf(r.sessionId)), tag: `req-${r.id}` }, root ? [root] : []);
   }
 
-  async attention(sessionId: string, message?: string) {
-    await this.notify({ kind: "request", sessionId, title: this.title(sessionId), body: message ? short(message, 200) : `${agentOf(sessionId)} needs you in the terminal.`, tag: `att-${sessionId}` });
+  async attention(sessionId: string, _message?: string) {
+    await this.notify({ kind: "request", sessionId, title: this.title(sessionId), body: `${agentOf(sessionId)} needs you in the terminal.`, tag: `att-${sessionId}` });
   }
 
   async turnEnded(sessionId: string, error?: string) {
@@ -78,9 +110,9 @@ export class Notifier {
     if (!look || look.summary.parentSessionId) return;
     // The queue sent the next message, or the session waits on a request (that notifies itself).
     if (look.status !== "idle" || look.requests.length) return;
-    const agent = agentOf(sessionId);
-    if (error) await this.notify({ kind: "failed", sessionId, title: this.title(sessionId), body: `${agent}'s turn failed: ${short(error, 160)}`, tag: `end-${sessionId}` });
-    else await this.notify({ kind: "finished", sessionId, title: this.title(sessionId), body: look.lastText ? short(look.lastText, 180) : `${agent} finished.`, tag: `end-${sessionId}` });
+    // Why it needs you, not what the agent said (lock screens show notifications).
+    if (error) await this.notify({ kind: "failed", sessionId, title: this.title(sessionId), body: `Failed: ${failureKind(error)}.`, tag: `end-${sessionId}` });
+    else await this.notify({ kind: "finished", sessionId, title: this.title(sessionId), body: `Finished.`, tag: `end-${sessionId}` });
   }
 }
 
@@ -88,7 +120,7 @@ export const pushModule: Module = {
   name: "push",
   start(ctx) {
     const store = new SubscriptionStore(join(ctx.dataDir, "push.json"));
-    const sender = new PushSender(ctx.appUrl, ctx.log);
+    const sender = new PushSender(ctx.appUrl, ctx.log, (e) => endpointProblem(e, DEV));
     const n = new Notifier(ctx, store, sender);
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`notify failed: ${e?.message ?? e}`)), ms);
     const offs = [
@@ -101,12 +133,11 @@ export const pushModule: Module = {
       if (typeof v !== "string" || !v || v.length > 2000) throw new Error(`${what} is required.`);
       return v;
     };
-    ctx.ops.register("pushSubscribe", (a) => {
+    ctx.ops.register("pushSubscribe", async (a) => {
       const sub = a.subscription as any;
       const endpoint = str(sub?.endpoint, "subscription.endpoint");
-      // A push service is https; a dev runner also takes plain http to this machine (a test push service).
-      const local = process.env.TETHER_DEV === "1" && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(endpoint);
-      if (!/^https:\/\//.test(endpoint) && !local) throw new Error("That isn't a push endpoint.");
+      const problem = await endpointProblem(endpoint, DEV);
+      if (problem) throw new Error(problem);
       store.add({ deviceId: str(a.deviceId, "deviceId"), endpoint, keys: { p256dh: str(sub?.keys?.p256dh, "keys.p256dh"), auth: str(sub?.keys?.auth, "keys.auth") }, label: typeof a.label === "string" ? a.label.slice(0, 120) : undefined });
       return null;
     });

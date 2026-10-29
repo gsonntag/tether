@@ -36,6 +36,8 @@ export class PushSender implements Sender {
   constructor(
     private appUrl: string,
     private log: (line: string) => void,
+    /** checked before every push (a name may resolve somewhere else now): why it's refused */
+    private vet: (endpoint: string) => Promise<string | undefined> = async () => undefined,
   ) {}
 
   setKeys(k: PushKeys | undefined) {
@@ -51,6 +53,12 @@ export class PushSender implements Sender {
     if (!k) return false;
     let status: number;
     let why = "";
+    const refused = await this.vet(sub.endpoint);
+    if (refused) {
+      this.log(`push to ${safeHost(sub.endpoint)} refused: ${refused}`);
+      if (throwErrors) throw new Error(refused);
+      return true;
+    }
     try {
       // web-push builds the request (encryption, VAPID); fetch sends it (any proxy applies, and a
       // local test push service on http works).
@@ -61,13 +69,16 @@ export class PushSender implements Sender {
         // A newer "finished" for a session replaces one not yet delivered; requests all arrive.
         ...(payload.tag && payload.kind !== "request" ? { topic: topicOf(payload.tag) } : {}),
       });
-      const res = await fetch(d.endpoint, { method: d.method, headers: d.headers as Record<string, string>, body: d.body as any, signal: AbortSignal.timeout(20_000) });
+      // Never followed: a push service doesn't redirect, and a redirect could lead anywhere.
+      const res = await fetch(d.endpoint, { method: d.method, headers: d.headers as Record<string, string>, body: d.body as any, redirect: "manual", signal: AbortSignal.timeout(20_000) });
       status = res.status;
+      void res.body?.cancel().catch(() => {});
       if (status >= 200 && status < 300) return false;
-      why = `${status} ${(await res.text().catch(() => "")).slice(0, 300)}`.trim();
+      // Only the status: what the endpoint answered isn't passed back to anyone.
+      why = `HTTP ${status}${res.statusText ? ` ${res.statusText}` : ""}`;
     } catch (e: any) {
       status = 0;
-      why = e?.message ?? String(e);
+      why = e?.name === "TimeoutError" ? "no answer in 20 s" : "couldn't reach it";
     }
     // 404/410: the browser dropped the subscription (unsubscribed, cleared data, uninstalled).
     const gone = status === 404 || status === 410;

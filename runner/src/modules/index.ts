@@ -14,8 +14,6 @@ export interface SessionLook {
   status: RunStatus;
   /** ids of its open requests */
   requests: string[];
-  /** the start of the last thing the agent said, when the transcript is loaded */
-  lastText?: string;
 }
 
 export interface ModuleContext {
