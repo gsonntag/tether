@@ -13,6 +13,7 @@ import type { CoreEvents } from "./events";
 import { ask, FakeAdapter, idle, say, stream, subagent, subagentEnds, toolCall, toolDone } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
+import { saveConfig } from "../config";
 import { SessionCore } from "./sessions";
 
 const cleanups: (() => void)[] = [];
@@ -25,6 +26,7 @@ function setup(opts: { idleMs?: number; evictMs?: number } = {}) {
   const bus = new EventBus<CoreEvents>();
   const frames: RunnerToServer[] = [];
   const prefsFile = join(mkdtempSync(join(tmpdir(), "tether-core-")), "runner.json");
+  saveConfig({ runnerId: "test" }, prefsFile);
   const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m.t === "event" ? { ...m, event: capEvent(m.event) } : m), true), epoch: "e1", prefs: new Prefs(prefsFile), evictMs: opts.evictMs ?? 50, log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { idleMs: opts.idleMs ?? 60_000 });
   cleanups.push(() => core.stop());
@@ -371,4 +373,21 @@ test("SummaryUpdate frames carry the runner's epoch", () => {
   const { core, summaries } = setup();
   core.book.announce();
   expect(summaries().every((u: SummaryUpdate) => u.epoch === "e1")).toBe(true);
+});
+
+test("a turn cut off by a runner restart is reported when the session reopens", async () => {
+  const first = setup();
+  first.adapter.addStored("s1", [user("m0")]);
+  first.adapter.script = () => [say("a1", "working…")];
+  await first.live.send("claude:s1", "go");
+  first.core.o.prefs.flush();
+  // A new runner process on the same runner.json.
+  const file = (first.core.o.prefs as any).file as string;
+  const adapter = new FakeAdapter();
+  adapter.addStored("s1", [user("m0"), user("u1", "go")]);
+  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, epoch: "e2", prefs: new Prefs(file), log: () => {} });
+  cleanups.push(() => core.stop());
+  const snap = await core.subscribe("claude:s1");
+  expect(snap.messages.at(-1)).toMatchObject({ role: "notice", level: "warning" });
+  expect((snap.messages.at(-1)!.parts[0] as any).text).toContain("runner restarted");
 });

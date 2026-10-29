@@ -4,6 +4,7 @@
 import { memo } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Markdown } from "@astryxdesign/core/Markdown";
+import { hardBreaks } from "../breaks";
 import { ExclamationTriangleIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
 import type { Msg, Part } from "../../../shared/transcript";
 import { useFullParts, useSessionCtx } from "./sessionContext";
@@ -31,7 +32,7 @@ function PartView({ part, streaming, cut, root }: { part: Part; streaming: boole
       return (
         <div className="t-text">
           <Markdown density="compact" isStreaming={streaming} contentWidth="100%">
-            {part.text}
+            {hardBreaks(part.text)}
           </Markdown>
           {cut}
         </div>

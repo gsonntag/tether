@@ -227,6 +227,9 @@ export class SessionCore {
     s.loading ??= this.adapter(s.summary.harness)
       .readHistory(s.summary.nativeId, s.summary.projectPath)
       .then((msgs) => {
+        // A turn that was running when the runner (or the harness) stopped: say so where it ended.
+        if (!s.live && this.o.prefs.get(s.id).running)
+          msgs = [...msgs, { id: `n-cut-${s.id}`, role: "notice", level: "warning", ts: msgs.at(-1)?.ts ?? this.now(), parts: [{ type: "text", text: "This turn stopped because the runner restarted or Claude Code exited. Send a message to continue." }] }];
         // A live driver may have created it meanwhile (send right after open).
         s.transcript ??= new Transcript(msgs);
         return s.transcript;

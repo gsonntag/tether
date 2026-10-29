@@ -226,6 +226,8 @@ export class LiveControl {
   private statusChanged(s: Session, before: LiveState["status"]) {
     const bus = this.core.o.bus;
     const now = s.state.status;
+    // Kept in runner.json, so a turn cut off by a restart is reported when the session reopens.
+    if (!s.summary.parentSessionId && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error });

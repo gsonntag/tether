@@ -4,6 +4,7 @@
 
 import { query, type CanUseTool, type PermissionMode, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
 import { readHistory } from "./history";
@@ -62,6 +63,8 @@ export class ClaudeDriver implements Driver {
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
   static async open(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink, resume: boolean): Promise<ClaudeDriver> {
+    // The SDK would blame the binary for a missing working folder.
+    if (!existsSync(projectPath)) throw new Error(`The session's folder ${projectPath} doesn't exist any more.`);
     const d = new ClaudeDriver(nativeId, projectPath, sink);
     await d.start(opts, resume);
     return d;

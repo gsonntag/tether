@@ -17,7 +17,7 @@ interrupts an agent. Runners dial out, so your machines need no inbound port.
 |---|---|
 | `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), sync and parsing helpers. Used by all three |
 | `server/` | Bun relay: Foliation identity, rpc forwarding, session subscriptions, summary broadcast, per-browser terminal routing (`relay.ts`) |
-| `runner/` | Bun runner. `src/core/` connection, event bus, ops; `src/adapters/` harnesses; `src/terminal/` PTY and tmux; `src/modules/` features that subscribe to core events |
+| `runner/` | Bun runner. `src/core/` connection, event bus, ops, the session core (`sessions.ts` registry and stored mode, `live.ts` driving, `transcript.ts`, `summaries.ts`, `broker.ts`, `prefs.ts`); `src/adapters/claude/` Claude Code (discovery, history, Agent SDK driver, stream); `src/terminal/` PTY and tmux; `src/modules/` features that subscribe to core events |
 | `web/` | React + Vite + Astryx UI |
 | `docs/` | `acceptance/P<n>.md` manual checks per phase, `notes/` findings |
 
@@ -69,12 +69,26 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 | `TETHER_TOKEN` | required | the runner's service token |
 | `TETHER_DEV` | | `1`: fall back to `http://localhost:8790` and token `dev` when the two above are unset |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
+| `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
 
 Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;
 by default only pages on the app's own host may open one.
-| `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
+
+## Sessions (P1)
+
+The runner discovers Claude Code sessions in `~/.claude/projects` (read-only; nothing starts until
+you send). The sidebar lists sessions with a message in the last 3 days plus every live one;
+search finds the rest. Sending takes a session live through the Agent SDK; it goes back to stored
+after 5 idle minutes (not while subagents or background tasks run). Per-session model, effort and
+permission mode are kept in `runner.json` (`sessions`). Subagents are child sessions
+(`claude:<session>/<agent>`). P1 has no approval prompts: in modes that ask, requests are declined
+with a notice in the transcript.
 
 ## End-to-end check
+
+P1: `bun scripts/smoke-p1.ts` (scripted browsers through the relay) and `node scripts/e2e-p1.mjs`
+(Playwright, desktop and phone) drive real Claude on Haiku against the dev stack; see their headers.
+`scripts/fake-runner.ts` serves canned sessions for UI work without a model.
 
 `scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
 local stack (vite on :5180; it starts and stops the server and runners itself):

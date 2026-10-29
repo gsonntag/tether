@@ -27,6 +27,8 @@ export interface SessionPrefs {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /** a turn was running: still set at start means it was cut off (a runner restart, a crash) */
+  running?: boolean;
   /** last touched; old entries are dropped */
   at?: number;
 }
