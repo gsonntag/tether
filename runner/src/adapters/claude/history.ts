@@ -10,7 +10,7 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
-import { assistantPart, blockText, commandOutput, joinBash, messageId, notice, toolResults, userMessage, type EntryFlags } from "./content";
+import { assistantPart, blockText, cleanUserText, commandOutput, joinBash, messageId, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** Each entry's time, and the flags Claude Code stores on it, by uuid. */
@@ -64,8 +64,13 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
     } else if (m.type === "system" && msg?.subtype === "compact_boundary") {
       out.push(notice(m.uuid, ts, "Context compacted."));
     } else if (m.type === "system" && msg?.subtype === "local_command" && typeof msg.content === "string") {
-      const text = commandOutput(msg.content);
-      if (text) out.push(notice(m.uuid, ts, text));
+      // Claude's own TUI stores a typed local command (/model) as one of these, not as a user
+      // entry like the SDK does: it reads as typed.
+      if (/<command-name>/.test(msg.content)) out.push({ id: m.uuid, role: "user", ts, parts: [{ type: "text", text: cleanUserText(msg.content) }] });
+      else {
+        const text = commandOutput(msg.content);
+        if (text) out.push(notice(m.uuid, ts, text));
+      }
     }
   }
   // /compact's "Compacted (…)" output only repeats the compaction notice (the live stream never sends it).

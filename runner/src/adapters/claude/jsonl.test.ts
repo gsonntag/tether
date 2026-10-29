@@ -209,6 +209,26 @@ test("a slash command's output written last is still part of the conversation", 
   expect(chainMessages(f.chain()).map((m) => `${m.role}:${(m.parts[0] as any).text}`)).toEqual(["user:/context", "notice:## Context Usage"]);
 });
 
+test("a local command typed in Claude's own TUI (stored as a system entry) reads as typed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tether-cmd-"));
+  const p = join(dir, "c.jsonl");
+  const t = "2026-10-29T00:00:00Z";
+  // As Claude Code 2.1.312's TUI wrote /model.
+  writeFileSync(
+    p,
+    [
+      { uuid: "u1", parentUuid: null, type: "user", timestamp: t, origin: { kind: "human" }, message: { role: "user", content: "hi" } },
+      { uuid: "c1", parentUuid: "u1", type: "system", subtype: "local_command", timestamp: t, content: "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args></command-args>" },
+      { uuid: "o1", parentUuid: "c1", type: "system", subtype: "local_command", timestamp: t, content: "<local-command-stdout>Kept model as `Haiku 5.5`</local-command-stdout>" },
+    ]
+      .map((x) => JSON.stringify(x))
+      .join("\n") + "\n",
+  );
+  const f = new StoreFile(p);
+  await f.update();
+  expect(chainMessages(f.chain()).map((m) => `${m.role}:${(m.parts[0] as any).text}`)).toEqual(["user:hi", "user:/model", "notice:Kept model as `Haiku 5.5`"]);
+});
+
 describe("parallel tool calls", () => {
   // Real Claude (Haiku): one call, then two in parallel. Claude Code writes each parallel call as
   // its own assistant entry in a chain, and each result is parented to its own call, so the first
