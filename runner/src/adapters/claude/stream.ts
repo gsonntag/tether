@@ -257,6 +257,11 @@ export class ClaudeStream {
     t.sink.ended?.();
   }
 
+  /** A running subagent's sink, by its agent id (canUseTool's agentID). */
+  sinkOfAgent(agentId: string): Sink | undefined {
+    return this.agents.get(agentId)?.sink;
+  }
+
   /** The task id of a subagent by its native id (`<session>/<task>`). */
   taskOf(nativeId: string): string | undefined {
     const i = nativeId.lastIndexOf("/");

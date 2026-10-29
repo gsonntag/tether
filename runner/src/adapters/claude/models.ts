@@ -23,6 +23,7 @@ const MODES: Choice[] = [
   { id: "acceptEdits", label: "Accept edits", description: "File edits go ahead; commands still ask" },
   { id: "plan", label: "Plan", description: "Claude plans without changing anything" },
   { id: "bypassPermissions", label: "Bypass permissions", description: "Everything goes ahead without asking" },
+  { id: "dontAsk", label: "Don't ask", description: "Only what your Claude settings allow runs; anything else is declined without asking" },
 ];
 const AUTO: Choice = { id: "auto", label: "Auto", description: "Claude decides what needs asking" };
 

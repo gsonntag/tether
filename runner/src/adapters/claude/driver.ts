@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
+import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 
 /** User messages for the SDK, pushed as they're sent; the iterator waits between them. */
@@ -70,13 +71,11 @@ export class ClaudeDriver implements Driver {
   }
 
   private async start(opts: StartOpts, resume: boolean) {
-    const canUseTool: CanUseTool = async (tool, input, { signal }) => {
-      const question = tool === "AskUserQuestion";
-      const d = await this.sink.request(
-        question ? { kind: "question", tool, input, question: String((input as any)?.questions?.[0]?.question ?? "Claude has a question") } : { kind: "approval", tool, input },
-        signal,
-      );
-      return d.allow ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: d.reason };
+    const canUseTool: CanUseTool = async (tool, input, o) => {
+      // A subagent's request goes to its own session (it shows in the parent's too).
+      const sink = (o.agentID && this.stream.sinkOfAgent(o.agentID)) || this.sink;
+      const ask = claudeAsk(tool, input, o);
+      return claudeResult(ask, input, await sink.request(ask, o.signal));
     };
     this.q = query({
       prompt: this.input,
