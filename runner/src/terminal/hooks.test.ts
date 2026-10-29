@@ -2,7 +2,8 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hookCommand, hookSettings, HookServer, HOOK_EVENTS, parseHook, shq, type HookReport } from "./hooks";
+import { statSync } from "node:fs";
+import { hookCommand, hookSettings, HookServer, hookSocketPath, HOOK_EVENTS, parseHook, shq, SOCKET_PATH_MAX, type HookReport } from "./hooks";
 
 const dir = mkdtempSync(join(tmpdir(), "tether-hooks-"));
 const servers: HookServer[] = [];
@@ -66,4 +67,28 @@ test("a stale socket file from a crashed runner is replaced", async () => {
   const res = await fetch("http://tether/hook?s=claude%3Az", { method: "POST", unix: sock, body: JSON.stringify({ hook_event_name: "UserPromptSubmit" }) } as any);
   expect(res.status).toBe(204);
   expect(got).toEqual([{ sessionId: "claude:z", event: "UserPromptSubmit" }]);
+});
+
+test("the socket is private to the user", () => {
+  const srv = new HookServer(join(dir, "mode.sock"), () => {});
+  servers.push(srv);
+  srv.start();
+  expect(statSync(srv.socketPath).mode & 0o777).toBe(0o600);
+});
+
+test("a path too long for a Unix socket falls back to a short, stable one, and says so", async () => {
+  const long = join(dir, "x".repeat(120), "hooks.sock");
+  const logs: string[] = [];
+  const p = hookSocketPath(long, (l) => logs.push(l));
+  expect(Buffer.byteLength(p)).toBeLessThanOrEqual(SOCKET_PATH_MAX);
+  expect(hookSocketPath(long, () => {})).toBe(p);
+  expect(logs[0]).toMatch(/too long/);
+  const got: HookReport[] = [];
+  const srv = new HookServer(long, (r) => got.push(r), () => {});
+  servers.push(srv);
+  srv.start();
+  expect(srv.socketPath).toBe(p);
+  const res = await fetch("http://tether/hook?s=claude%3Aq", { method: "POST", unix: p, body: JSON.stringify({ hook_event_name: "Stop" }) } as any);
+  expect(res.status).toBe(204);
+  expect(hookSocketPath(join(dir, "short.sock"))).toBe(join(dir, "short.sock"));
 });

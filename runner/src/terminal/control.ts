@@ -18,9 +18,10 @@
 // runner lists them and readopts the TUIs. Each attached browser gets its own PTY (attach.ts).
 
 import { existsSync } from "node:fs";
-import { parseSessionId } from "../../../shared/ids";
+import { randomUUID } from "node:crypto";
+import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
-import type { LiveState } from "../../../shared/transcript";
+import type { LiveState, Msg } from "../../../shared/transcript";
 import type { QuitStep, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
 import type { Session } from "../core/session";
@@ -57,13 +58,28 @@ export interface TerminalOptions {
 /** Notification types that mean Claude waits on the person. */
 const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog"]);
 
+/** What the composer says while the TUI is asking something (the key bar still reaches it). */
+export const ANSWER_THERE = "Claude is asking something in the terminal. Answer it there.";
+/** A just-started TUI that never reported in: most likely Claude's "trust this folder" question. */
+export const NOT_STARTED = "Claude Code hasn't started yet. If it asks whether to trust this folder, answer in the terminal.";
+export const HANDING_OFF = "The session is moving to the terminal. Type there in a moment.";
+
+/** The model family of a model id or alias ("claude-haiku-5-5" -> "haiku"). */
+const family = (m?: string) => m?.match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase();
+
 export class TerminalControl {
   readonly attaches: Attaches;
   private hooks?: HookServer;
-  /** sessions whose TUI runs in tmux */
-  private tuis = new Set<string>();
-  /** Back to Tether under way */
-  private returning = new Set<string>();
+  /** sessions whose TUI runs in tmux, and its tmux session (a TUI moved on by /clear keeps its name) */
+  private tuis = new Map<string, string>();
+  /** Back to Tether under way, until the driver is live again */
+  private returning = new Map<string, Promise<void>>();
+  /** TUIs that never reported SessionStart in time (the trust question, most likely) */
+  private unconfirmed = new Set<string>();
+  /** messages being typed into a TUI, per session: each text goes in with its Enter */
+  private typing = new Map<string, Promise<void>>();
+  /** new shells are numbered one at a time */
+  private shellLock: Promise<unknown> = Promise.resolve();
   private entering = new Map<string, Promise<void>>();
   /**
    * TUIs just started: typing waits until they report SessionStart (or a few seconds pass). Text
@@ -78,7 +94,40 @@ export class TerminalControl {
   constructor(private o: TerminalOptions) {
     this.log = o.log ?? ((l) => console.log(l));
     this.attaches = new Attaches({ send: o.send, buffered: o.buffered }, { spawn: o.spawn, onExit: (target) => void this.attachExited(target) });
-    o.live.terminal = { send: (s, t) => this.type(s, t), interrupt: (s) => this.interrupt(s), startIn: (s) => this.enter(s, { fresh: true }) };
+    o.live.terminal = {
+      send: (s, t) => this.type(s, t),
+      interrupt: (s) => this.interrupt(s),
+      startIn: (s) => this.enter(s, { fresh: true }),
+      settled: (s) => this.settled(s),
+      blocked: (s) => this.blocked(s),
+    };
+    // The relay forgot every attach with the connection: their PTYs have nobody to draw for.
+    o.core.o.bus.on("disconnected", () => this.attaches.closeAll());
+  }
+
+  private nameOf(id: string) {
+    return this.tuis.get(id) ?? tuiName(id);
+  }
+
+  /** A handoff or Back to Tether under way finishes (it may fail: the caller looks at the mode). */
+  settled(s: Session): Promise<void> | undefined {
+    const a = this.entering.get(s.id);
+    const b = this.returning.get(s.id);
+    if (!a && !b) return undefined;
+    return (async () => {
+      await a?.catch(() => {});
+      await b?.catch(() => {});
+      // Back to Tether may have started while the handoff finished.
+      await this.settled(s);
+    })();
+  }
+
+  /** Why the SDK may not drive this session now: its TUI drives, or is about to. */
+  blocked(s: Session): string | undefined {
+    if (s.capabilities.terminal !== "handoff") return undefined;
+    if (this.entering.has(s.id)) return HANDING_OFF;
+    if (this.tuis.has(s.id)) return "The session is in the terminal. Type there, or go back to Tether first.";
+    return undefined;
   }
 
   get tmux() {
@@ -119,7 +168,7 @@ export class TerminalControl {
       if (s.summary.parentSessionId) throw new Error("A subagent runs inside its main session. Open the main session's terminal.");
       if (a.reattach && (!this.tuis.has(s.id) || this.returning.has(s.id))) throw new Error(TERMINAL_CLOSED);
       await this.enter(s, { stop: a.stop, cols: a.cols, rows: a.rows });
-      target = tuiName(s.id);
+      target = this.nameOf(s.id);
     } else throw new Error("Say which terminal to open.");
     this.attaches.open(a.attachId, target, this.o.tmux.argv("attach-session", "-t", `=${target}`), a.cols, a.rows, { ...cleanEnv(), TERM: "xterm-256color" });
     return { attachId: a.attachId, target };
@@ -144,17 +193,25 @@ export class TerminalControl {
     const term = s.state.terminal;
     if (!this.tuis.has(s.id) || !term) {
       // Nothing runs any more (it exited a moment ago): a handoff session just goes live.
-      if (s.state.mode === "terminal") await this.backLive(s);
+      if (s.state.mode === "terminal" && !this.returning.has(s.id)) await this.backLive(s);
       return;
     }
     if (whenIdle && term.kind === "handoff" && s.state.status !== "idle") {
       s.setState({ terminal: { ...term, returnWhenIdle: true } });
+      // Kept on the tmux session, so a runner restart meanwhile still goes back when it's done.
+      await this.o.tmux.tag(this.nameOf(s.id), "return", "1").catch(() => {});
       return;
     }
-    if (this.returning.has(s.id)) return;
-    this.returning.add(s.id);
-    s.setState({ terminal: { ...term, returning: true, returnWhenIdle: undefined } });
-    const name = tuiName(s.id);
+    const going = this.returning.get(s.id);
+    if (going) return going;
+    const p = this.quit(s).finally(() => this.returning.delete(s.id));
+    this.returning.set(s.id, p);
+    return p;
+  }
+
+  private async quit(s: Session) {
+    s.setState({ terminal: { ...s.state.terminal!, returning: true, returnWhenIdle: undefined } });
+    const name = this.nameOf(s.id);
     try {
       await this.runQuit(name, this.launch(s).quit ?? []);
       const until = Date.now() + (this.o.quitTimeoutMs ?? 5000);
@@ -167,7 +224,7 @@ export class TerminalControl {
       this.log(`${s.id}: quitting the TUI failed (${e?.message ?? e}); killing it`);
       await this.o.tmux.kill(name).catch(() => {});
     }
-    await this.gone(s.id);
+    await this.gone(s.id, true);
   }
 
   async listShells(projectPath: string): Promise<ShellInfo[]> {
@@ -178,14 +235,26 @@ export class TerminalControl {
       .sort((a, b) => a.n - b.n);
   }
 
-  async newShell(projectPath: string, cols?: number, rows?: number): Promise<ShellInfo> {
-    const path = this.o.core.folder(projectPath);
-    const have = await this.listShells(path);
-    const n = Math.max(0, ...have.map((s) => s.n)) + 1;
-    const name = shellName(projectKey(path), n);
-    const shell = this.o.shell ?? process.env.SHELL ?? "/bin/bash";
-    await this.o.tmux.create({ name, cwd: path, argv: [shell], cols, rows, tags: { kind: "shell", project: path, n: String(n) } });
-    return { id: name, projectPath: path, n };
+  /** A new shell, numbered after the project's others (one at a time; a name taken meanwhile, e.g. by another runner process, moves on). */
+  newShell(projectPath: string, cols?: number, rows?: number): Promise<ShellInfo> {
+    const p = this.shellLock.then(async () => {
+      const path = this.o.core.folder(projectPath);
+      const shell = this.o.shell ?? process.env.SHELL ?? "/bin/bash";
+      for (let attempt = 0; ; attempt++) {
+        const have = await this.listShells(path);
+        const n = Math.max(0, ...have.map((s) => s.n)) + 1 + attempt;
+        const name = shellName(projectKey(path), n);
+        try {
+          await this.o.tmux.create({ name, cwd: path, argv: [shell], cols, rows, tags: { kind: "shell", project: path, n: String(n) } });
+          return { id: name, projectPath: path, n };
+        } catch (e: any) {
+          if (attempt < 4 && /duplicate session/i.test(e?.message ?? "")) continue;
+          throw e;
+        }
+      }
+    });
+    this.shellLock = p.catch(() => {});
+    return p;
   }
 
   async closeShell(shellId: string) {
@@ -210,9 +279,14 @@ export class TerminalControl {
 
   private async doEnter(s: Session, o: { stop?: boolean; cols?: number; rows?: number; fresh?: boolean }) {
     if (this.returning.has(s.id)) throw new Error("The terminal is closing. Try again in a moment.");
-    const name = tuiName(s.id);
-    // Already there (another device opened it, or it outlived a runner restart).
-    if (await this.o.tmux.has(name)) return this.adopt(s);
+    // Already there (another device opened it, or it outlived a runner restart): found by its tag,
+    // since a TUI that /clear moved on keeps its old name.
+    const all = await this.o.tmux.list();
+    const mine = all.find((t) => t.kind === "tui" && t.sessionId === s.id);
+    if (mine) return this.adopt(s, mine.name);
+    // Its usual name may belong to the TUI another session moved on to.
+    let name = tuiName(s.id);
+    if (all.some((t) => t.name === name)) name = `${name}-${randomUUID().slice(0, 4)}`;
     // Checked before anything is handed over: tmux would start the TUI elsewhere.
     if (!existsSync(s.summary.projectPath)) throw new Error(`The session's folder ${s.summary.projectPath} doesn't exist any more.`);
     const handoff = s.capabilities.terminal === "handoff";
@@ -243,16 +317,17 @@ export class TerminalControl {
       if (handoff && !s.live && s.state.mode === "live") this.o.live.setMode(s, "stored", { status: "idle", error });
       throw new Error(error);
     }
+    this.log(`${s.id}: started its TUI in tmux (${name})`);
     if (handoff && this.hooks) this.expectStart(s.id);
-    this.adopt(s);
+    this.adopt(s, name);
     if (handoff && s.state.queue.length) s.setState({ queueHeld: true });
   }
 
   /** The session's TUI runs in tmux: its state says so. */
-  private adopt(s: Session) {
-    this.tuis.add(s.id);
+  private adopt(s: Session, name: string, returnWhenIdle = false) {
+    this.tuis.set(s.id, name);
     if (s.capabilities.terminal === "handoff") {
-      this.o.live.setMode(s, "terminal", { status: "idle", terminal: { kind: "handoff" }, error: undefined });
+      this.o.live.setMode(s, "terminal", { status: "idle", terminal: { kind: "handoff", ...(returnWhenIdle ? { returnWhenIdle } : {}) }, error: undefined, continuedIn: undefined });
       // The read-only transcript, tailed from the store while someone watches (SPEC §8).
       this.o.core.tail(s);
     } else {
@@ -273,11 +348,12 @@ export class TerminalControl {
     return !!(await this.o.core.adapter(s.summary.harness).sessionInfo(s.summary.nativeId, s.summary.projectPath).catch(() => undefined));
   }
 
-  /** A session's TUI is gone from tmux (quit, exited, killed). */
-  private async gone(id: string) {
-    if (!this.tuis.delete(id)) return;
-    const back = this.returning.delete(id);
-    const name = tuiName(id);
+  /** A session's TUI is gone from tmux (quit, exited, killed); `back`: Back to Tether quit it. */
+  private async gone(id: string, back = false) {
+    const name = this.tuis.get(id);
+    if (!name) return;
+    this.tuis.delete(id);
+    this.unconfirmed.delete(id);
     this.attaches.endTarget(name, "exited");
     const s = this.o.core.sessions.get(id);
     if (!s) return;
@@ -304,12 +380,32 @@ export class TerminalControl {
   /** Back to Tether: the driver resumes on the same session (a new one that never got a message starts). */
   private async backLive(s: Session) {
     await this.o.core.syncFromStore(s);
+    await this.carryModel(s);
     s.setState({ terminal: undefined, status: "idle" });
     try {
       await this.o.live.resumeLive(s);
     } catch {
       // startDriver already made it stored with the error in its state and transcript.
     }
+  }
+
+  /**
+   * A model picked in the TUI (/model) goes on with the session: the last answer's model, when it's
+   * not what Tether had (another family, or another full id).
+   */
+  private async carryModel(s: Session) {
+    const msgs = await this.o.core
+      .adapter(s.summary.harness)
+      .readHistory(s.summary.nativeId, s.summary.projectPath)
+      .catch(() => [] as Msg[]);
+    const used = [...msgs].reverse().find((m) => m.role === "assistant" && m.model?.startsWith("claude"))?.model;
+    if (!used) return;
+    const cur = s.state.modelResolved ?? s.state.model;
+    const differs = family(cur) ? family(cur) !== family(used) : !!cur && cur !== "default" && cur !== used;
+    if (!differs || cur === used) return;
+    this.log(`${s.id}: the TUI used ${used}; the session goes on with it`);
+    s.setState({ model: used, modelResolved: undefined });
+    this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, model: used });
   }
 
   private runQuit(name: string, steps: QuitStep[]) {
@@ -333,20 +429,35 @@ export class TerminalControl {
   private expectStart(id: string) {
     let done!: () => void;
     const ready = new Promise<void>((r) => (done = r));
-    const t = setTimeout(() => finish(), this.o.startWaitMs ?? 8000);
-    const finish = () => {
+    const t = setTimeout(() => finish(false), this.o.startWaitMs ?? 8000);
+    const finish = (started = true) => {
       clearTimeout(t);
-      if (this.starting.get(id)?.ready === ready) this.starting.delete(id);
+      if (this.starting.get(id)?.ready !== ready) return;
+      this.starting.delete(id);
+      if (started) this.unconfirmed.delete(id);
+      else this.unconfirmed.add(id);
       done();
     };
     this.starting.set(id, { ready, done: finish });
   }
 
-  /** The composer in terminal mode: the text, then Enter (SPEC §8, §9). */
-  private async type(s: Session, text: string) {
-    const name = tuiName(s.id);
-    if (!this.tuis.has(s.id)) throw new Error("The terminal has closed.");
+  /** The composer in terminal mode: the text, then Enter (SPEC §8, §9), one message at a time. */
+  private type(s: Session, text: string): Promise<void> {
+    const prev = this.typing.get(s.id) ?? Promise.resolve();
+    const p = prev.catch(() => {}).then(() => this.typeNow(s, text));
+    const tail = p.catch(() => {});
+    this.typing.set(s.id, tail);
+    void tail.then(() => this.typing.get(s.id) === tail && this.typing.delete(s.id));
+    return p;
+  }
+
+  private async typeNow(s: Session, text: string) {
+    const name = this.nameOf(s.id);
+    if (!this.tuis.has(s.id) || this.returning.has(s.id)) throw new Error("The terminal has closed.");
+    // Text typed into a dialog answers it ("1" approves): the person answers it there instead.
+    if (s.state.status === "waiting" || s.state.terminal?.attention) throw new Error(ANSWER_THERE);
     await this.starting.get(s.id)?.ready;
+    if (this.unconfirmed.has(s.id)) throw new Error(NOT_STARTED);
     await this.o.tmux.type(name, text);
     // The harness says how to submit it (Claude: a beat, End, Enter); by default a beat and Enter.
     const submit = this.launch(s).submit ?? [{ waitMs: this.o.enterDelayMs ?? 150 }, { keys: ["Enter"] }];
@@ -355,18 +466,27 @@ export class TerminalControl {
 
   /** Stop in terminal mode: Esc in the TUI (Claude stops its turn). */
   private async interrupt(s: Session) {
-    if (this.tuis.has(s.id)) await this.o.tmux.keys(tuiName(s.id), "Escape");
+    if (this.tuis.has(s.id)) await this.o.tmux.keys(this.nameOf(s.id), "Escape");
   }
 
   // ---------------- hooks: status in terminal mode ----------------
 
   report(r: HookReport) {
-    const s = this.o.core.sessions.get(r.sessionId);
+    // Hooks keep the URL of the launch; the payload says which session the TUI is on now (it moves
+    // with /clear and /resume).
+    const p = parseSessionId(r.sessionId);
+    const now = p && r.nativeId ? makeId(p.harness, r.nativeId) : r.sessionId;
+    const id = this.tuis.has(now) ? now : r.sessionId;
+    const s = this.o.core.sessions.get(id);
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
-    if (r.nativeId && r.nativeId !== s.summary.nativeId && r.event !== "SessionEnd") this.log(`${s.id}: the TUI is now on session ${r.nativeId} (${r.event}${r.source ? ` ${r.source}` : ""})`);
+    if (r.event === "SessionStart" && r.nativeId && r.nativeId !== s.summary.nativeId) {
+      void this.rebind(s, r.nativeId, r.source).catch((e) => this.log(`${s.id}: couldn't follow the TUI to ${r.nativeId}: ${e?.message ?? e}`));
+      return;
+    }
     switch (r.event) {
       case "SessionStart":
+        this.unconfirmed.delete(s.id);
         // Its input is live a moment after it says it started.
         setTimeout(() => this.starting.get(s.id)?.done(), 300);
         break;
@@ -386,9 +506,38 @@ export class TerminalControl {
       case "Stop":
       case "StopFailure":
         this.status(s, "idle", { ...term, attention: undefined, returnWhenIdle: undefined });
+        if (term.returnWhenIdle) void this.o.tmux.tag(this.nameOf(s.id), "return", undefined).catch(() => {});
         if (term.returnWhenIdle) void this.end(s.id).catch((e) => this.log(`${s.id}: back to Tether failed: ${e?.message ?? e}`));
         break;
     }
+  }
+
+  /**
+   * The TUI moved to another session (/clear starts one, /resume opens one): the terminal, Tether's
+   * view and Back to Tether follow it. The old session is left stored with a notice pointing on.
+   */
+  private async rebind(old: Session, nativeId: string, source?: string) {
+    const name = this.nameOf(old.id);
+    const core = this.o.core;
+    const newId = makeId(old.summary.harness, nativeId);
+    if (this.tuis.has(newId)) return;
+    this.log(`${old.id}: the TUI moved to ${newId}${source ? ` (${source})` : ""}`);
+    let n = await core.open(newId).catch(() => undefined);
+    if (!n) {
+      // /clear: nothing of it is stored until something is typed.
+      n = core.create(old.summary.harness, nativeId, old.summary.projectPath, { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode });
+      n.transcript = new Transcript();
+    } else if (n.driver || n.starting) await this.o.live.release(n);
+    this.tuis.delete(old.id);
+    this.unconfirmed.delete(old.id);
+    await this.o.tmux.tag(name, "session", newId).catch(() => {});
+    this.adopt(n, name);
+    await core.load(old).catch(() => {});
+    const why = source === "clear" ? "after /clear" : source === "resume" ? "with /resume" : "";
+    old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });
+    this.o.live.setMode(old, "stored", { status: "idle", terminal: undefined, continuedIn: newId });
+    core.tail(old);
+    core.scheduleEvict(old);
   }
 
   private status(s: Session, status: LiveState["status"], terminal: NonNullable<LiveState["terminal"]>) {
@@ -420,7 +569,7 @@ export class TerminalControl {
           continue;
         }
       }
-      this.adopt(s);
+      this.adopt(s, t.name, t.returnWhenIdle);
       this.log(`readopted the terminal of ${s.id}`);
     }
   }
@@ -442,7 +591,7 @@ export class TerminalControl {
         return;
       }
       const live = new Set((await this.o.tmux.list()).map((t) => t.name));
-      for (const id of [...this.tuis]) if (!live.has(tuiName(id)) && !this.returning.has(id)) await this.gone(id);
+      for (const [id, name] of [...this.tuis]) if (!live.has(name) && !this.returning.has(id)) await this.gone(id);
     } finally {
       this.polling = false;
     }
@@ -451,7 +600,7 @@ export class TerminalControl {
   /** An attach's PTY ended by itself: its tmux session may be gone. */
   private async attachExited(target: string) {
     if (await this.o.tmux.has(target)) return;
-    const id = [...this.tuis].find((x) => tuiName(x) === target);
+    const id = [...this.tuis].find(([, name]) => name === target)?.[0];
     if (id && !this.returning.has(id)) await this.gone(id);
   }
 }

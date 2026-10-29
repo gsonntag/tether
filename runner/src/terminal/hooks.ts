@@ -8,7 +8,27 @@
 // The socket's path doesn't change across runner restarts, so a TUI that outlives the runner still
 // reaches the next one.
 
-import { existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/** A Unix socket's path must fit sun_path: 104 bytes on macOS, 108 on Linux, with the NUL. */
+export const SOCKET_PATH_MAX = 103;
+
+/**
+ * Where the hooks socket goes: the wanted path, or, when that is too long for a Unix socket, a short
+ * one in the user's runtime dir (stable for the same wanted path, so TUIs find it after a restart).
+ */
+export function hookSocketPath(wanted: string, log: (l: string) => void = console.error): string {
+  if (Buffer.byteLength(wanted) <= SOCKET_PATH_MAX) return wanted;
+  const base = process.env.XDG_RUNTIME_DIR || join(tmpdir(), `tether-${process.getuid?.() ?? "u"}`);
+  try {
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+  } catch {}
+  const short = join(base, `tether-${new Bun.CryptoHasher("sha256").update(wanted).digest("hex").slice(0, 12)}.sock`);
+  log(`WARNING: the hooks socket path ${wanted} is too long for a Unix socket (${Buffer.byteLength(wanted)} bytes, at most ${SOCKET_PATH_MAX}); using ${short} instead`);
+  return short;
+}
 
 /** What a hook reported, for one Tether session. */
 export interface HookReport {
@@ -68,10 +88,15 @@ export function parseHook(sessionId: string | null, body: unknown): HookReport |
 export class HookServer {
   private server?: ReturnType<typeof Bun.serve>;
 
+  readonly socketPath: string;
+
   constructor(
-    readonly socketPath: string,
+    wanted: string,
     private onReport: (r: HookReport) => void,
-  ) {}
+    log?: (l: string) => void,
+  ) {
+    this.socketPath = hookSocketPath(wanted, log);
+  }
 
   start() {
     // A socket left behind by a runner that didn't stop cleanly.
@@ -97,6 +122,8 @@ export class HookServer {
         return new Response("", { status: 204 });
       },
     });
+    // Only this user may report (the directory is private too).
+    chmodSync(this.socketPath, 0o600);
   }
 
   stop() {

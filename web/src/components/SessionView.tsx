@@ -4,6 +4,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { openSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -43,6 +44,19 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   });
   /** the question before handing a busy session to the terminal (SPEC §8) */
   const [ask, setAsk] = useState<{ text: string; confirm: string } | null>(null);
+  // The TUI moved on to another session (/clear, /resume): follow it there, panel and all.
+  // Only a move seen while open: one from before (in the first snapshot) is left to the notice.
+  const loaded = !!view?.state;
+  const continuedIn = view?.state?.continuedIn;
+  const seenContinued = useRef<string | undefined | null>(null);
+  useEffect(() => {
+    if (!loaded) return;
+    if (seenContinued.current === null) return void (seenContinued.current = continuedIn);
+    if (!continuedIn || continuedIn === seenContinued.current) return;
+    seenContinued.current = continuedIn;
+    if (panel) openTerminalOf(runnerId, continuedIn);
+    openSession(runnerId, continuedIn);
+  }, [loaded, continuedIn]);
 
   useEffect(() => {
     if (harness && !models && linkOpen) void loadModels(runnerId, harness, sessionId);
@@ -176,7 +190,14 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             draftKey={k}
             running={running}
             waiting={waiting && state.status !== "running"}
-            disabled={offline ?? (state.terminal?.returning ? "Going back to Tether…" : undefined)}
+            disabled={
+              offline ??
+              (state.terminal?.returning
+                ? "Going back to Tether…"
+                : inTerminal && (state.status === "waiting" || state.terminal?.attention)
+                  ? "Claude is asking something in the terminal. Answer it there."
+                  : undefined)
+            }
             placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
             agent={agent}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}

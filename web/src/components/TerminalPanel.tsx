@@ -124,6 +124,19 @@ export function TerminalPanel({
   };
 
   const returning = !!state.terminal?.returning;
+  // The line goes where the tab is: the TUI (when it runs and isn't asking) or the shell.
+  const lineOff =
+    tab === "tui"
+      ? !tuiRuns
+        ? `Open ${harness} first`
+        : state.status === "waiting" || state.terminal?.attention
+          ? "Answer in the terminal (keys above)"
+          : returning
+            ? "Going back to Tether…"
+            : undefined
+      : !shell
+        ? "That shell has closed"
+        : undefined;
   const waitingBack = !!state.terminal?.returnWhenIdle;
 
   return (
@@ -225,7 +238,8 @@ export function TerminalPanel({
             <input
               className="t-input"
               aria-label="Type a line"
-              placeholder={tab === "tui" ? `Message ${harness} in the terminal` : "A command for this shell"}
+              placeholder={lineOff ?? (tab === "tui" ? `Message ${harness} in the terminal` : "A command for this shell")}
+              disabled={!!lineOff}
               value={line}
               enterKeyHint="send"
               autoCapitalize="off"
@@ -238,7 +252,7 @@ export function TerminalPanel({
                 }
               }}
             />
-            <IconButton label="Send line" variant="primary" icon={<Icon icon={ArrowUpIcon} />} onClick={() => void sendLine()} />
+            <IconButton label="Send line" variant="primary" isDisabled={!!lineOff} icon={<Icon icon={ArrowUpIcon} />} onClick={() => void sendLine()} />
           </div>
         </div>
       )}

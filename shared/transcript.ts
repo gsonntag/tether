@@ -93,6 +93,8 @@ export interface Msg {
   model?: string;
   /** notice: severity */
   level?: "info" | "warning" | "error";
+  /** notice: a session it points to ("Open it") */
+  link?: { sessionId: string; label: string };
   /** assistant: the turn ended in this error */
   error?: string;
   streaming?: boolean;
@@ -202,6 +204,10 @@ export interface LiveState {
    * mode and the TUI drives it; "shared": the TUI joined the live thread beside Tether.
    */
   terminal?: TerminalState;
+  /**
+   * The terminal's TUI moved on to this session (/clear, /resume): the view follows it there.
+   */
+  continuedIn?: string;
   /**
    * Queued messages wait, untouched, until the person sends them (SPEC §8: they're held while the
    * terminal drives and stay held after Back to Tether). The queue (P5) sends nothing while set.

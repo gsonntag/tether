@@ -30,6 +30,10 @@ export interface TerminalSeam {
   send(s: Session, text: string): Promise<void>;
   interrupt(s: Session): Promise<void>;
   startIn(s: Session): Promise<void>;
+  /** a handoff to the TUI, or Back to Tether, under way finishes (whichever way) */
+  settled(s: Session): Promise<void> | undefined;
+  /** why the SDK may not drive the session now (its TUI drives, or is taking over) */
+  blocked(s: Session): string | undefined;
 }
 
 export class LiveControl {
@@ -81,6 +85,10 @@ export class LiveControl {
     const s = await this.core.open(id);
     // A subagent the harness lets you message directly: into its running turn (SPEC §6a).
     if (s.summary.parentSessionId) return this.steer(id, text);
+    // Moving to or from the terminal: the message goes wherever the session ends up, never to an
+    // SDK process started beside a TUI, nor to a TUI that is quitting.
+    const moving = this.terminal?.settled(s);
+    if (moving) await moving;
     // The TUI drives: the message is typed there (SPEC §9).
     if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, text);
     // Checked and claimed with no await in between, so two sends can't both start a turn.
@@ -246,6 +254,9 @@ export class LiveControl {
   /** The session's driver, starting or resuming the harness when it isn't live. */
   private ensureDriver(s: Session): Promise<Driver> {
     if (s.driver) return Promise.resolve(s.driver);
+    // Two processes must never drive one session (SPEC §8 handoff).
+    const blocked = this.terminal?.blocked(s);
+    if (blocked) return Promise.reject(new Error(blocked));
     s.starting ??= this.startDriver(s).finally(() => (s.starting = undefined));
     return s.starting;
   }
@@ -276,7 +287,7 @@ export class LiveControl {
       if (error) s.apply({ type: "msg", msg: notice(error, "error") });
       this.toStored(s, error);
     };
-    this.setMode(s, "live", { error: undefined });
+    this.setMode(s, "live", { error: undefined, continuedIn: undefined });
     this.scheduleIdle(s);
     return d;
   }

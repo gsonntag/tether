@@ -45,6 +45,15 @@ test("sessions are created tagged, listed, typed into, and killed", async () => 
   await tmux.type("sh-test-1", "echo hel''lo $((40+2))");
   await tmux.keys("sh-test-1", "Enter");
   await until(async () => (await tmux.capture("sh-test-1")).includes("hello 42"));
+  // A trailing ";" is kept (tmux would read it as a command separator).
+  await tmux.type("sh-test-1", "echo semi;");
+  await tmux.type("sh-test-1", " echo colon;");
+  await tmux.keys("sh-test-1", "Enter");
+  await until(async () => /^semi\ncolon$/m.test(await tmux.capture("sh-test-1")));
+  await tmux.tag("sh-test-1", "return", "1");
+  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.returnWhenIdle).toBe(true);
+  await tmux.tag("sh-test-1", "return", undefined);
+  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.returnWhenIdle).toBeUndefined();
   // Several lines go in as a paste.
   await tmux.type("sh-test-1", "echo one\necho two\n");
   await until(async () => /two\n/.test(await tmux.capture("sh-test-1")));

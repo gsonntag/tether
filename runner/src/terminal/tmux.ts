@@ -22,6 +22,8 @@ export interface TmuxSession {
   projectPath: string;
   /** shells: their number within the project (Shell 1, Shell 2, …) */
   n?: number;
+  /** tui: Back to Tether waits for the turn to end (kept here so it survives a runner restart) */
+  returnWhenIdle?: boolean;
   /** what runs in it now (`bash`, `python3`, `claude`) */
   command?: string;
   createdAt?: number;
@@ -73,7 +75,13 @@ export const SERVER_OPTIONS: string[][] = [
   ["set", "-wg", "fill-character", " "],
 ];
 
-const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}"].join("\t");
+const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}", "#{@tether_return}"].join("\t");
+
+/**
+ * tmux reads an argument ending in ";" as a command separator and drops the ";". Written as "\;" it
+ * stays (the backslash goes), so text and argv keep their trailing semicolons.
+ */
+export const tmuxArg = (a: string) => (a.endsWith(";") ? `${a.slice(0, -1)}\\;` : a);
 
 /** tmux session names can't hold ":" or "."; Tether's are `t-<harness>-<id>` and `sh-<project>-<n>`. */
 export const tuiName = (sessionId: string) => `t-${sessionId.replace(/[^A-Za-z0-9_-]/g, "-")}`;
@@ -150,7 +158,7 @@ export class Tmux {
     const out: TmuxSession[] = [];
     for (const line of r.stdout.split("\n")) {
       if (!line.trim()) continue;
-      const [name, kind, sessionId, projectPath, n, command, created] = line.split("\t");
+      const [name, kind, sessionId, projectPath, n, command, created, ret] = line.split("\t");
       if (kind !== "tui" && kind !== "shell") continue;
       out.push({
         name: name!,
@@ -160,6 +168,7 @@ export class Tmux {
         ...(n ? { n: Number(n) } : {}),
         ...(command ? { command } : {}),
         ...(created ? { createdAt: Number(created) * 1000 } : {}),
+        ...(ret === "1" ? { returnWhenIdle: true } : {}),
       });
     }
     return out;
@@ -176,7 +185,7 @@ export class Tmux {
   async create(o: { name: string; cwd: string; argv: string[]; env?: Record<string, string>; cols?: number; rows?: number; tags: Record<string, string> }) {
     const args = ["new-session", "-d", "-s", o.name, "-c", o.cwd, "-x", String(clamp(o.cols, 80)), "-y", String(clamp(o.rows, 24))];
     for (const [k, v] of Object.entries(o.env ?? {})) args.push("-e", `${k}=${v}`);
-    args.push("--", ...o.argv);
+    args.push("--", ...o.argv.map(tmuxArg));
     // Tagged in the same invocation, so a list never sees it untagged.
     for (const [k, v] of Object.entries(o.tags)) args.push(";", "set-option", "-t", o.name, `@tether_${k}`, v);
     const start = async () => {
@@ -196,6 +205,11 @@ export class Tmux {
     await this.configure();
   }
 
+  /** Sets (or with undefined, clears) one of a session's @tether_* tags. */
+  async tag(name: string, key: string, value: string | undefined) {
+    await this.must(value === undefined ? ["set-option", "-u", "-t", name, `@tether_${key}`] : ["set-option", "-t", name, `@tether_${key}`, tmuxArg(value)]);
+  }
+
   async kill(name: string) {
     await this.run(["kill-session", "-t", `=${name}`]);
   }
@@ -209,7 +223,7 @@ export class Tmux {
   async type(name: string, text: string): Promise<void> {
     if (!text) return;
     if (!text.includes("\n")) {
-      await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", text]);
+      await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", tmuxArg(text)]);
       return;
     }
     const buf = `tether-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;

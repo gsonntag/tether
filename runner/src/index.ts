@@ -1,7 +1,7 @@
 // Tether runner: runs coding agents on this machine and serves them to the Tether app. It dials
 // out to the app (TETHER_URL) with an app service token (TETHER_TOKEN).
 
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import pkg from "../package.json";
 import { claudeAdapter } from "./adapters/claude";
@@ -36,6 +36,8 @@ const runner = createRunner({
 });
 
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+// Private: it holds runner.json and the terminal hooks' socket.
+chmodSync(CONFIG_DIR, 0o700);
 const stopModules = await startModules(MODULES, (m) => {
   const dataDir = join(CONFIG_DIR, "modules", m.name);
   mkdirSync(dataDir, { recursive: true });

@@ -11,6 +11,7 @@ import { ExclamationTriangleIcon, InformationCircleIcon } from "@heroicons/react
 import type { Msg, Part } from "../../../shared/transcript";
 import { useFullParts, useSessionCtx } from "./sessionContext";
 import { ToolCard } from "./ToolCard";
+import { openSession } from "../route";
 
 const isCut = (p: Part) => (p.type === "tool" ? !!p.truncated || !!p.inputTruncated : !!p.truncated);
 
@@ -69,14 +70,24 @@ function PartBody({ part, streaming, cut, root }: { part: Part; streaming: boole
 }
 
 export const Message = memo(function Message({ msg }: { msg: Msg }) {
-  const { projectPath } = useSessionCtx();
+  const { projectPath, runnerId } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
     return (
       <div className={`t-msg notice ${msg.level ?? "info"}`} role={msg.level === "error" ? "alert" : undefined}>
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
-        <span className="t-notice-text">{text}</span>
+        <span className="t-notice-text">
+          {text}
+          {msg.link && (
+            <>
+              {" "}
+              <button type="button" className="t-link" onClick={() => openSession(runnerId, msg.link!.sessionId)}>
+                {msg.link.label}
+              </button>
+            </>
+          )}
+        </span>
       </div>
     );
   }

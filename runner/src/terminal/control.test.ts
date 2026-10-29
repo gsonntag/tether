@@ -19,7 +19,7 @@ import { LiveControl } from "../core/live";
 import { Prefs } from "../core/prefs";
 import { SessionCore } from "../core/sessions";
 import { FakePty } from "./attach.test";
-import { TerminalControl } from "./control";
+import { ANSWER_THERE, NOT_STARTED, TerminalControl } from "./control";
 import { Tmux, type TmuxSession } from "./tmux";
 
 /** tmux in memory: sessions, what was typed, keys pressed. A TUI "quits" on its quit text. */
@@ -39,17 +39,29 @@ class FakeTmux extends Tmux {
     return this.sessions.has(name);
   }
   override async create(o: { name: string; cwd: string; argv: string[]; cols?: number; rows?: number; tags: Record<string, string> }) {
+    await Bun.sleep(1);
     if (this.sessions.has(o.name)) throw new Error(`duplicate session: ${o.name}`);
     this.sessions.set(o.name, { name: o.name, kind: o.tags.kind as any, sessionId: o.tags.session, projectPath: o.tags.project!, n: o.tags.n ? Number(o.tags.n) : undefined, argv: o.argv, cols: o.cols, rows: o.rows });
   }
   override async kill(name: string) {
     this.sessions.delete(name);
   }
+  override async tag(name: string, key: string, value: string | undefined) {
+    const t = this.sessions.get(name);
+    if (!t) throw new Error(`no session ${name}`);
+    if (key === "session") t.sessionId = value;
+    if (key === "return") t.returnWhenIdle = value === "1" ? true : undefined;
+  }
+  /** what went in, in order */
+  log: string[] = [];
   override async keys(name: string, ...keys: string[]) {
-    for (const k of keys) this.pressed.push([name, k]);
+    await Bun.sleep(1);
+    for (const k of keys) this.pressed.push([name, k]), this.log.push(`key ${k}`);
   }
   override async type(name: string, text: string) {
+    await Bun.sleep(1);
     this.typed.push([name, text]);
+    this.log.push(`type ${text}`);
     if (this.quitsOn !== null && text === this.quitsOn) this.sessions.delete(name);
   }
 }
@@ -77,7 +89,7 @@ class TermAdapter extends FakeAdapter {
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
-function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; hookSocket?: string } = {}) {
+function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; hookSocket?: string; startWaitMs?: number } = {}) {
   const adapter = o.adapter ?? new TermAdapter();
   const tmux = o.tmux ?? new FakeTmux();
   const bus = new EventBus<CoreEvents>();
@@ -89,7 +101,7 @@ function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; 
   const core = new SessionCore({ adapters: [adapter], bus, send, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
   const broker = new RequestBroker([], { saved: prefs.requests(), persist: (l) => prefs.setRequests(l) });
   const live = new LiveControl(core, broker, { idleMs: 60_000 });
-  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", enterDelayMs: 0, log: () => {} });
+  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", enterDelayMs: 0, startWaitMs: o.startWaitMs, log: () => {} });
   cleanups.push(() => (term.stop(), core.stop()));
   const modes: string[] = [];
   bus.on("modeChanged", (e) => modes.push(`${e.from}->${e.to}`));
@@ -339,6 +351,157 @@ describe("handoff (Claude)", () => {
   });
 });
 
+describe("review round 1", () => {
+  test("a send while the session is being handed to the TUI never starts an SDK process beside it", async () => {
+    const tmux = new FakeTmux();
+    const { adapter, core, live, term } = setup({ tmux });
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "first");
+    // The driver is slow to close: the handoff is mid-way when the sends arrive.
+    const d = adapter.drivers[0]!;
+    let release!: () => void;
+    d.close = () => ((d.closed = true), new Promise<void>((r) => (release = r)));
+    const opening = term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const sends = [8, 12, 20].map((ms) => Bun.sleep(ms).then(() => live.send("claude:s1", `late ${ms}`)));
+    await Bun.sleep(30);
+    release();
+    await opening;
+    await Promise.all(sends);
+    expect(adapter.drivers.length).toBe(1);
+    expect(state(core, "claude:s1").mode).toBe("terminal");
+    // They went to the TUI in order, each text followed by its own Enter.
+    expect(tmux.typed.map(([, t]) => t)).toEqual(["late 8", "late 12", "late 20"]);
+    expect(tmux.log).toEqual(["type late 8", "key Enter", "type late 12", "key Enter", "type late 20", "key Enter"]);
+  });
+
+  test("a send during Back to Tether goes to the driver once it's live", async () => {
+    const { adapter, live, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const back = term.end("claude:s1");
+    const sent = live.send("claude:s1", "after");
+    await back;
+    await sent;
+    expect(tmux.typed.filter(([, t]) => t === "after")).toEqual([]);
+    expect(adapter.drivers[0]!.sent).toEqual(["after"]);
+  });
+
+  test("while the TUI asks something, the composer is refused (the key bar still reaches it)", async () => {
+    const { adapter, live, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    term.report({ sessionId: "claude:s1", event: "Notification", notificationType: "permission_prompt", message: "Claude needs your permission to use Bash" });
+    await expect(live.send("claude:s1", "1")).rejects.toThrow(ANSWER_THERE);
+    expect(tmux.typed).toEqual([]);
+    term.input("a1", btoa("1"));
+    expect(FakePty.all.at(-1)!.written).toEqual(["1"]);
+  });
+
+  test("a TUI that never reports in (Claude's trust question) isn't typed into", async () => {
+    const tmux = new FakeTmux();
+    const { adapter, live, term } = setup({ tmux, hookSocket: join(mkdtempSync(join(tmpdir(), "tether-hk-")), "hooks.sock"), startWaitMs: 30 });
+    await term.start();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    await expect(live.send("claude:s1", "hello")).rejects.toThrow(NOT_STARTED);
+    expect(tmux.typed).toEqual([]);
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "s1", source: "resume" });
+    await live.send("claude:s1", "hello");
+    expect(tmux.typed).toEqual([["t-claude-s1", "hello"]]);
+  });
+
+  test("attaches end when the runner's link drops (the relay forgot them)", async () => {
+    const { adapter, term, bus } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const pty = FakePty.all.at(-1)!;
+    bus.emit("disconnected", {});
+    expect(pty.closed).toBe(true);
+    expect(term.attaches.size).toBe(0);
+  });
+
+  test("/clear in the TUI: the terminal, the view and Back to Tether follow the new session", async () => {
+    const { adapter, core, live, term, tmux, frames } = setup();
+    adapter.addStored("s1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hi" }] }]);
+    await core.subscribe("claude:s1");
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    // The hook URL still names claude:s1; the payload names the new session.
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "s2", source: "clear" });
+    await until(() => core.sessions.get("claude:s2")?.state.mode === "terminal");
+    expect(tmux.sessions.get("t-claude-s1")!.sessionId).toBe("claude:s2");
+    const old = state(core, "claude:s1");
+    expect(old).toMatchObject({ mode: "stored", continuedIn: "claude:s2" });
+    const n = frames.find((f) => f.t === "event" && f.sessionId === "claude:s1" && f.event.type === "msg" && (f.event.msg as any).link);
+    expect((n as any).event.msg.link).toEqual({ sessionId: "claude:s2", label: "Open it" });
+    // Hooks keep arriving under the old URL: they go to the new session.
+    term.report({ sessionId: "claude:s1", event: "UserPromptSubmit", nativeId: "s2" });
+    expect(state(core, "claude:s2").status).toBe("running");
+    term.report({ sessionId: "claude:s1", event: "Stop", nativeId: "s2" });
+    // Typing reaches the same tmux session; a send to the old one never reaches its old context.
+    await live.send("claude:s2", "on the new one");
+    expect(tmux.typed.at(-1)).toEqual(["t-claude-s1", "on the new one"]);
+    adapter.addStored("s2", [{ id: "x", role: "user", ts: 1, parts: [{ type: "text", text: "on the new one" }] }]);
+    // Opening the old session's terminal starts a TUI of its own, never the moved one.
+    await term.open({ sessionId: "claude:s1", attachId: "a2", cols: 80, rows: 24 });
+    expect(state(core, "claude:s1").mode).toBe("terminal");
+    const own = [...tmux.sessions.values()].find((t) => t.sessionId === "claude:s1")!;
+    expect(own.name).toMatch(/^t-claude-s1-/);
+    expect(own.argv).toEqual(["tui", "--resume", "s1"]);
+    await term.end("claude:s1");
+    await term.end("claude:s2");
+    expect(state(core, "claude:s2").mode).toBe("live");
+    expect(adapter.drivers.map((d) => d.nativeId)).toEqual(["s1", "s2"]);
+  });
+
+  test("Back to Tether waiting for the turn survives a runner restart", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux });
+    first.adapter.addStored("s1", []);
+    await first.term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    first.term.report({ sessionId: "claude:s1", event: "UserPromptSubmit" });
+    await first.term.end("claude:s1", true);
+    first.term.stop();
+    first.core.stop();
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", []);
+    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
+    await second.term.readopt();
+    expect(state(second.core, "claude:s1").terminal?.returnWhenIdle).toBe(true);
+    second.term.report({ sessionId: "claude:s1", event: "Stop" });
+    await until(() => state(second.core, "claude:s1").mode === "live");
+  });
+
+  test("a model picked in the TUI goes on with the session after Back to Tether", async () => {
+    const { adapter, core, term, prefsFile } = setup();
+    adapter.addStored("s1", []);
+    await core.open("claude:s1");
+    core.sessions.get("claude:s1")!.setState({ model: "haiku" });
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    adapter.write("s1", [{ id: "a", role: "assistant", ts: 2, model: "claude-sonnet-5-5", parts: [{ type: "text", text: "hi" }] }]);
+    await term.end("claude:s1");
+    expect(state(core, "claude:s1").model).toBe("claude-sonnet-5-5");
+    expect(adapter.drivers[0]!.opts.model).toBe("claude-sonnet-5-5");
+    void prefsFile;
+  });
+
+  test("the same family keeps Tether's alias", async () => {
+    const { adapter, core, term } = setup();
+    adapter.addStored("s1", [{ id: "a", role: "assistant", ts: 2, model: "claude-haiku-5-5", parts: [{ type: "text", text: "hi" }] }]);
+    await core.open("claude:s1");
+    core.sessions.get("claude:s1")!.setState({ model: "haiku" });
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    await term.end("claude:s1");
+    expect(state(core, "claude:s1").model).toBe("haiku");
+  });
+
+  test("two new shells at once get two numbers", async () => {
+    const { term } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const [a, b] = await Promise.all([term.newShell(dir), term.newShell(dir)]);
+    expect([a.n, b.n].sort()).toEqual([1, 2]);
+  });
+});
+
 describe("a runner restart", () => {
   test("terminals outlive the runner and the next one readopts them, new sessions included", async () => {
     const tmux = new FakeTmux();
@@ -372,6 +535,11 @@ describe("shared (Codex, P4 seam)", () => {
     const adapter = new TermAdapter({ terminal: "shared", canSteer: true });
     const { core, live, term, tmux, modes } = setup({ adapter });
     adapter.addStored("s1", []);
+    // A stored session: opening the shared TUI makes it live first (it joins the live thread).
+    await term.open({ sessionId: "claude:s1", attachId: "a0", cols: 80, rows: 24 });
+    expect(state(core, "claude:s1").mode).toBe("live");
+    expect(adapter.drivers.length).toBe(1);
+    term.detach(["a0"]);
     await live.send("claude:s1", "hello");
     adapter.script = () => [say("a2", "still going")];
     void live.send("claude:s1", "more").catch(() => {});
