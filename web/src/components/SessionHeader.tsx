@@ -49,7 +49,8 @@ export function SessionHeader({
   const modes = models?.permissionModes ?? [];
   // Tighter: earlier in the harness's list of modes (strictest first), so this turn runs looser than shown.
   const rank = (m?: string) => modes.findIndex((x) => x.id === m);
-  const tighter = turn?.permissionMode !== undefined && rank(state.permissionMode) >= 0 && rank(turn.permissionMode) > rank(state.permissionMode);
+  // The harness says (by approval policy and sandbox, for any combination); else by the list's order.
+  const tighter = turn?.looser ?? (turn?.permissionMode !== undefined && rank(state.permissionMode) >= 0 && rank(turn.permissionMode) > rank(state.permissionMode));
   const efforts = current?.efforts ? (models?.efforts ?? []).filter((e) => current.efforts!.includes(e.id)) : (models?.efforts ?? []);
 
   return (
@@ -76,14 +77,15 @@ export function SessionHeader({
             <ChoiceMenu
               name="Model"
               value={state.model}
-              label={nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
+              // While the TUI drives, its /model is what runs and Tether doesn't hear it: not a stale value.
+              label={locked ? "Set in the terminal" : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
               disabled={locked}
               choices={(models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
               onOpen={ensureModels}
               onPick={(model) => void call(rpc(runnerId, "setModel", { sessionId: session.id, model }))}
             />
             {(efforts.length > 0 || state.effort) && (
-              <ChoiceMenu name="Effort" value={state.effort} label={nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
+              <ChoiceMenu name="Effort" value={state.effort} label={locked ? "Set in the terminal" : nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
             <ChoiceMenu
               name="Mode"
