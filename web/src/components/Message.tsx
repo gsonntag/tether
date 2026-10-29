@@ -5,6 +5,9 @@ import { memo } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { hardBreaks } from "../breaks";
+import { checked } from "../parts";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { RemoteImage } from "./RemoteImage";
 import { ExclamationTriangleIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
 import type { Msg, Part } from "../../../shared/transcript";
 import { useFullParts, useSessionCtx } from "./sessionContext";
@@ -25,13 +28,26 @@ function CutNote({ loading, onLoad, error }: { loading: boolean; onLoad: () => v
   );
 }
 
-function PartView({ part, streaming, cut, root }: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string }) {
+const MD_COMPONENTS = { image: RemoteImage };
+
+/** One part, inside its own error boundary: a part that can't render shows a note, not a blank app. */
+function PartView(props: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string }) {
+  const part = checked(props.part);
+  if (!part) return null;
+  return (
+    <ErrorBoundary resetKey={part}>
+      <PartBody {...props} part={part} />
+    </ErrorBoundary>
+  );
+}
+
+function PartBody({ part, streaming, cut, root }: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string }) {
   switch (part.type) {
     case "text":
       if (!part.text && !streaming) return null;
       return (
         <div className="t-text">
-          <Markdown density="compact" isStreaming={streaming} contentWidth="100%">
+          <Markdown density="compact" isStreaming={streaming} contentWidth="100%" components={MD_COMPONENTS}>
             {hardBreaks(part.text)}
           </Markdown>
           {cut}

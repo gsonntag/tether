@@ -80,7 +80,7 @@ The runner discovers Claude Code sessions in `~/.claude/projects` (read-only; no
 you send). The sidebar lists sessions with a message in the last 3 days plus every live one;
 search finds the rest. Sending takes a session live through the Agent SDK; it goes back to stored
 after 5 idle minutes (not while subagents or background tasks run). Per-session model, effort and
-permission mode are kept in `runner.json` (`sessions`). Subagents are child sessions
+permission mode are kept in `runner.json` (`sessions`); Tether's own notices (denials, errors, a turn cut off) in `notices.json`. Subagents are child sessions
 (`claude:<session>/<agent>`). P1 has no approval prompts: in modes that ask, requests are declined
 with a notice in the transcript.
 
