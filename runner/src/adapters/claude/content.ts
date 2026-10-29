@@ -13,6 +13,9 @@ export function blockText(content: unknown): string {
   return "";
 }
 
+/** An API message id when it is one (a non-empty string), else the fallback (the entry's uuid). */
+export const messageId = (id: unknown, fallback: string): string => (typeof id === "string" && id ? id : fallback);
+
 /** One assistant content block as a part. */
 export function assistantPart(b: any): Part {
   // A malformed block (text that isn't a string) degrades to empty, never breaks the session.
@@ -55,7 +58,6 @@ function fromElsewhere(text: string, o: NonNullable<EntryFlags["origin"]>, id: s
   return { id, role: "user", ts, origin: { kind: o.kind!, ...(name ? { name } : {}) }, parts: [{ type: "text", text: body }] };
 }
 
-const tag = (text: string, name: string) => text.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`))?.[1]?.trim();
 
 export const notice = (id: string, ts: number, text: string, level: Msg["level"] = "info"): Msg => ({ id, role: "notice", level, ts, parts: [{ type: "text", text }] });
 
@@ -77,8 +79,9 @@ export function injected(text: string, flags: EntryFlags, id: string, ts: number
   // notice marks the spot, live and stored alike.
   if (flags.isCompactSummary) return null;
   if (t.startsWith("<system-reminder>") || t.startsWith("<local-command-caveat>")) return null;
-  if (t.startsWith("<local-command-stdout>")) {
-    const out = tag(t, "local-command-stdout");
+  if (t.startsWith("<local-command-stdout>") || t.startsWith("<local-command-stderr>")) {
+    // As the live stream shows it: styling stripped, so /compact's "Compacted" is recognised too.
+    const out = commandOutput(t);
     return out ? notice(id, ts, out) : null;
   }
   if (flags.isMeta) return null;

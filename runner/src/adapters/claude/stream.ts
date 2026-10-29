@@ -13,7 +13,7 @@
 
 import type { Msg } from "../../../../shared/transcript";
 import type { Sink } from "../../core/adapter";
-import { assistantPart, blockText, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
+import { assistantPart, blockText, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
 /** What the stream needs from the driver around it. */
 export interface StreamHost {
@@ -83,7 +83,7 @@ export class ClaudeStream {
     const sink = this.main.sink;
     switch (e?.type) {
       case "message_start": {
-        const id: string = e.message?.id;
+        const id = messageId(e.message?.id, "");
         if (!id) return;
         this.current = id;
         this.main.finals.set(id, 0);
@@ -127,7 +127,7 @@ export class ClaudeStream {
       if (text) t.sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
       return;
     }
-    const id: string = msg.id ?? m.uuid;
+    const id = messageId(msg.id, m.uuid);
     if (m.error) this.lastError = blockText(msg.content) || String(m.error);
     const have = t.sink.message(id);
     const parts = [...(have?.parts ?? [])];
@@ -170,6 +170,7 @@ export class ClaudeStream {
         return;
       case "session_state_changed":
         this.stateEvents = true;
+        if (m.state === "idle") this.turnEnded();
         sink.state({ status: m.state === "running" ? "running" : m.state === "requires_action" ? "waiting" : "idle" });
         return;
       case "local_command_output": {
@@ -221,7 +222,10 @@ export class ClaudeStream {
     }
     this.lastError = undefined;
     // Without state events (an older CLI), the result ends the turn.
-    if (!this.stateEvents) sink.state({ status: "idle" });
+    if (!this.stateEvents) {
+      this.turnEnded();
+      sink.state({ status: "idle" });
+    }
   }
 
   // ---------------- subagents ----------------
@@ -267,6 +271,12 @@ export class ClaudeStream {
     if (status === "stopped") t.sink.event({ type: "msg", msg: notice(`n-${taskId}-end`, Date.now(), "Stopped") });
     // Its card in the parent can still say running for a background agent: its result came early.
     t.sink.ended?.();
+  }
+
+  /** Everything is done: what was kept about ended subagents goes (a long session has hundreds). */
+  private turnEnded() {
+    this.endedAgents.clear();
+    for (const [tool, task] of this.agentByTool) if (!this.agents.has(task)) this.agentByTool.delete(tool);
   }
 
   /** A running subagent's sink, by its agent id (canUseTool's agentID). */

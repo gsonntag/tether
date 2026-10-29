@@ -10,7 +10,7 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
-import { assistantPart, blockText, commandOutput, joinBash, notice, toolResults, userMessage, type EntryFlags } from "./content";
+import { assistantPart, blockText, commandOutput, joinBash, messageId, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** Each entry's time, and the flags Claude Code stores on it, by uuid. */
@@ -38,10 +38,10 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
       // Claude Code's own replies, as the live stream shows them (stream.ts): an API error is a
       // message with its error; anything else ("No response requested.") a notice.
       const text = blockText(msg.content);
-      if (msg.apiError) out.push({ id: msg.id ?? m.uuid, role: "assistant", ts, parts: [{ type: "text", text }], error: text });
+      if (msg.apiError) out.push({ id: messageId(msg.id, m.uuid), role: "assistant", ts, parts: [{ type: "text", text }], error: text });
       else if (commandOutput(text)) out.push(notice(m.uuid, ts, commandOutput(text)));
     } else if (m.type === "assistant" && Array.isArray(msg?.content)) {
-      const id = msg.id ?? m.uuid;
+      const id = messageId(msg.id, m.uuid);
       let target = byId.get(id);
       if (!target) {
         target = { id, role: "assistant", parts: [], ts, ...(msg.model && !msg.model.startsWith("<") ? { model: msg.model } : {}) };

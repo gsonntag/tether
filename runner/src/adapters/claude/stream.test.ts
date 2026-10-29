@@ -119,6 +119,9 @@ test("a stopped subagent stays stopped: its last frames land in it, its calls ke
   expect(tools).toEqual(["Bash:done", "ToolSearch:done", "Monitor:error"]);
   expect(child!.sink.t.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text)).toEqual(["Stopped", "Interrupted"]);
   expect(stream.running.size).toBe(0);
+  // The turn over, nothing is kept about it.
+  expect((stream as any).endedAgents.size).toBe(0);
+  expect((stream as any).agentByTool.size).toBe(0);
 });
 
 test("a compaction mid-session keeps the conversation and marks the spot", () => {
