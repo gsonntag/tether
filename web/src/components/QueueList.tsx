@@ -8,6 +8,8 @@ import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline"
 import type { LiveState, QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 
+const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+
 const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   terminal: "Waiting until you're back from the terminal.",
   stopped: "Paused after Stop. Send something, or resume.",
@@ -53,7 +55,8 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                   autoFocus
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    // As in the composer: on a phone Enter is a newline and Save saves.
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !coarse()) {
                       e.preventDefault();
                       void save(m);
                     } else if (e.key === "Escape") setEditing(undefined);

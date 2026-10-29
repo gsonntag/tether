@@ -1590,3 +1590,25 @@
     gap: 6px;
   }
 }
+
+/* Touch: every control at least 44 px to the finger (the header chips and the queue's buttons
+   included); desktop keeps its compact header. */
+@media (pointer: coarse) {
+  .t-chip {
+    min-height: 44px;
+    padding: 6px 12px;
+  }
+  .t-icon-btn,
+  .t-file-x {
+    width: 44px;
+    height: 44px;
+  }
+  .t-more-send {
+    width: 36px;
+    height: 44px;
+  }
+  .t-queue-head .astryx-button,
+  .t-queued-edit .astryx-button {
+    min-height: 44px;
+  }
+}
