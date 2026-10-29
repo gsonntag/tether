@@ -7,7 +7,7 @@ import { HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/2
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, mergeRows, recentSessions, type Row } from "../sessionList";
+import { folderName, mergeRows, recentSessions, waitingOn, type Row } from "../sessionList";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
@@ -198,7 +198,12 @@ export function Sidebar() {
                 navigate({ page: "home" });
                 close();
               }}
-              endContent={<RunnerDot runner={r} now={now} />}
+              endContent={
+                <>
+                  {waitingOn(summaries, r.id).length > 0 && <span className="t-needs">{waitingOn(summaries, r.id).length} need you</span>}
+                  <RunnerDot runner={r} now={now} />
+                </>
+              }
             />
           ))}
         </SideNavSection>

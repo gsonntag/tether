@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -12,6 +12,8 @@ import { ComputerDesktopIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import type { KnownRunner } from "../runners";
+import { openSession } from "../route";
+import { waitingOn } from "../sessionList";
 import { forgetRunner, useStore } from "../store";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
@@ -59,6 +61,8 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
     setCheck(undefined);
   }
   const status = runnerStatus(runner, linkOpen, now);
+  const summaries = useStore((s) => s.summaries);
+  const waiting = useMemo(() => waitingOn(summaries, runner.id), [summaries, runner.id]);
   const harnesses = runner.harnesses.map((h) => `${HARNESS_LABELS[h.id] ?? h.id} ${h.version}`).join(" · ") || "No harnesses found";
   const host = runner.hostname !== runner.name ? `${runner.hostname} · ` : "";
 
@@ -84,6 +88,16 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
           <Text type="supporting" display="block" maxLines={1}>
             {host + harnesses}
           </Text>
+          {waiting.length > 0 && (
+            <span className="t-runner-waiting">
+              <span className="t-needs">Needs you:</span>
+              {waiting.map((w) => (
+                <button key={w.id} type="button" className="t-link" onClick={() => openSession(runner.id, w.id)}>
+                  {w.title || "Untitled"}
+                </button>
+              ))}
+            </span>
+          )}
         </VStack>
       }
       endContent={

@@ -27,6 +27,13 @@ export function childrenOf(summaries: Record<string, SummaryState>, runnerId: st
     .sort(newestFirst);
 }
 
+/** Main sessions on a runner with requests waiting for a person (a subagent's count in its parent's), oldest waiting first. */
+export function waitingOn(summaries: Record<string, SummaryState>, runnerId: string): Row[] {
+  return rows(summaries)
+    .filter((r) => r.runnerId === runnerId && !r.parentSessionId && (r.requests ?? 0) > 0)
+    .sort((a, b) => a.updatedAt - b.updatedAt);
+}
+
 /** Merges two lists by session (the later one wins), newest first. */
 export function mergeRows(a: Row[], b: Row[]): Row[] {
   const by = new Map<string, Row>();

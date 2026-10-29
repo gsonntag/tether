@@ -4,6 +4,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { rpc } from "../connection";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { Composer, type ComposerHandle } from "./Composer";
+import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
@@ -56,7 +57,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }
 
   const state = view.state;
-  // "waiting" (Claude waits on a request; its UI comes in P2) is busy too: Stop, not Send.
+  // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
   const running = state.status === "running" || state.status === "waiting";
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
@@ -65,9 +66,16 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       {isChild ? "Nothing here yet." : "No messages yet. What should Claude do?"}
     </div>
   );
-  const working = running && (
+  const waiting = state.requests.length > 0;
+  const working = (running || (isChild && waiting)) && (
     <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
-      <Spinner size="sm" /> {isChild ? "Working…" : "Claude is working…"}
+      {waiting ? (
+        <>Waiting for you below.</>
+      ) : (
+        <>
+          <Spinner size="sm" /> {isChild ? "Working…" : "Claude is working…"}
+        </>
+      )}
     </div>
   );
 
@@ -76,6 +84,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       <div className="t-session">
         <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} />
         <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={working || empty} />
+        <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
         {isChild ? (
           <div className="t-composer">
             <div className="t-composer-inner t-inline-status">A subagent's transcript. It takes its instructions from the main session.</div>
@@ -85,6 +94,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             ref={composer}
             draftKey={k}
             running={running}
+            waiting={waiting}
             disabled={offline}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (text) => {

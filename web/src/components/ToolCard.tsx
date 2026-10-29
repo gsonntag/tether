@@ -7,7 +7,7 @@ import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/reac
 import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { openSession } from "../route";
-import { useStore } from "../store";
+import { useStore, viewKey } from "../store";
 import { useSessionCtx } from "./sessionContext";
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
@@ -39,6 +39,9 @@ function summary(p: ToolPart, root?: string): string {
     case "task":
       return str(i.description) ?? "";
     default: {
+      // A question or a plan reads better as itself than as JSON.
+      if (Array.isArray(i.questions) && typeof i.questions[0]?.question === "string") return i.questions[0].question;
+      if (typeof i.plan === "string") return firstLine(i.plan.replace(/^#+\s*/, ""));
       const json = JSON.stringify(p.input ?? {});
       return json === "{}" ? "" : json.slice(0, 200);
     }
@@ -83,7 +86,8 @@ function Output({ text, label = "Output" }: { text?: string; label?: string }) {
   );
 }
 
-function Body({ p, root }: { p: ToolPart; root?: string }) {
+/** A tool call's details by kind: the command, the diff, the content written, … */
+export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
   const i = (p.input ?? {}) as Record<string, any>;
   const { runnerId } = useSessionCtx();
   switch (p.kind) {
@@ -173,8 +177,10 @@ const openByDefault = (p: ToolPart) => p.kind === "edit" || p.kind === "todo" ||
 export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: ToolPart; root?: string; extra?: ReactNode }) {
   const [open, setOpen] = useState<boolean>();
   const isOpen = open ?? openByDefault(part);
-  const { runnerId } = useSessionCtx();
+  const { runnerId, sessionId } = useSessionCtx();
   const sum = summary(part, root);
+  // The call waits on your answer (the requests dock, above the composer).
+  const waiting = useStore((s) => part.status === "running" && !!s.views[viewKey(runnerId, sessionId)]?.state?.requests.some((r) => r.toolId === part.id));
   // A background subagent: Claude answers the call at once ("launched") while the subagent runs on,
   // so its own session's status says more than the call's.
   const childStatus = useStore((s) => (part.childSessionId ? s.summaries[runnerId]?.sessions[part.childSessionId]?.status : undefined));
@@ -186,7 +192,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
         <span className="t-tool-sum" title={sum}>
           {sum}
         </span>
-        <StatusIcon status={status} />
+        {waiting ? <span className="t-tool-waiting">Waiting for you</span> : <StatusIcon status={status} />}
       </button>
       {part.kind === "task" && part.childSessionId && !isOpen && (
         <div className="t-tool-body">
@@ -197,7 +203,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
       )}
       {isOpen && (
         <div className="t-tool-body">
-          <Body p={part} root={root} />
+          <ToolDetails p={part} root={root} />
           {extra}
         </div>
       )}

@@ -17,7 +17,7 @@ const lastMode = () => {
   }
 };
 const NO_PROJECTS: never[] = [];
-const FALLBACK_MODES = [
+const FALLBACK_MODES: { id: string; label: string; description?: string }[] = [
   { id: "default", label: "Ask first" },
   { id: "acceptEdits", label: "Accept edits" },
   { id: "plan", label: "Plan" },
@@ -134,7 +134,7 @@ export function NewSessionDialog() {
             ))}
           </select>
         </label>
-        {mode === "default" && <span className="t-inline-status">Approvals arrive in a later version: in this mode Claude can read but every edit or command is declined.</span>}
+        {modes.find((m) => m.id === mode)?.description && <span className="t-inline-status">{modes.find((m) => m.id === mode)!.description}</span>}
         {error && <div className="t-form-error">{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
