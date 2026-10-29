@@ -156,12 +156,38 @@ export function capRequest(r: Request): Request {
 }
 
 /** A waiting message as it travels: long text cut (the runner keeps it whole), marked. */
-export function capQueued(m: QueuedMessage): QueuedMessage {
-  return over(m.text, QUEUED_TEXT_WIRE) ? { ...m, text: cutBytes(m.text, QUEUED_TEXT_WIRE), truncated: utf8Length(m.text) } : m;
+/** Bytes a string takes inside a JSON frame (escapes included: a control character is 6). */
+export function jsonBytes(s: string): number {
+  return utf8Length(JSON.stringify(s)) - 2;
+}
+
+/** The longest prefix of `s` whose JSON form fits in `max` bytes. */
+function cutJson(s: string, max: number): string {
+  let out = cutBytes(s, max);
+  while (out && jsonBytes(out) > max) out = cutBytes(out, Math.max(0, max - (jsonBytes(out) - max) - 1));
+  return out;
+}
+
+/** C0 control characters (but tab and newlines) and DEL: never kept in queued text. */
+export const stripControls = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+
+/** A waiting message as it travels: long text cut (the runner keeps it whole), marked. */
+export function capQueued(m: QueuedMessage, max = QUEUED_TEXT_WIRE): QueuedMessage {
+  return jsonBytes(m.text) > max ? { ...m, text: cutJson(m.text, max), truncated: m.truncated ?? utf8Length(m.text) } : m;
+}
+
+/**
+ * A queue as it travels. Each text is cut to QUEUED_TEXT_WIRE; if the whole is still big (a queue
+ * saved before the caps), cut further, so a session's state always fits a frame and it always opens.
+ */
+export function capQueue(q: QueuedMessage[]): QueuedMessage[] {
+  let out = q.map((m) => capQueued(m));
+  if (out.reduce((n, m) => n + jsonBytes(m.text), 0) > QUEUE_BYTES_MAX) out = out.map((m) => capQueued(m, 1024));
+  return out;
 }
 
 export function capState(s: LiveState): LiveState {
-  return { ...s, requests: s.requests.map(capRequest), queue: s.queue.map(capQueued) };
+  return { ...s, requests: s.requests.map(capRequest), queue: capQueue(s.queue) };
 }
 
 /** A session event as it travels. */
@@ -184,7 +210,7 @@ export function capEvent(e: SessionEvent): SessionEvent {
       if (!e.state.requests && !e.state.queue) return e;
       const st = { ...e.state };
       if (st.requests) st.requests = st.requests.map(capRequest);
-      if (st.queue) st.queue = st.queue.map(capQueued);
+      if (st.queue) st.queue = capQueue(st.queue);
       return { ...e, state: st };
     }
     case "resync":

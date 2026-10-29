@@ -279,6 +279,84 @@ describe("the queue", () => {
     await until(() => !JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue);
   });
 
+  test("Stop while a queued message's harness starts: it goes back, held, never lost", async () => {
+    const { adapter, live, core } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.add("claude:s1", "first", []);
+    const s = await core.open("claude:s1");
+    await live.queue.hold(s, "restart");
+    let release!: () => void;
+    adapter.startGate = new Promise((r) => (release = r));
+    await live.queue.resume("claude:s1");
+    await until(() => !!s.sending);
+    await live.interrupt("claude:s1");
+    release();
+    await until(() => s.state.queue.length === 1);
+    expect(s.state.queue[0]!.text).toBe("first");
+    expect(s.state.queueHeldBy).toBe("stopped");
+    expect(adapter.drivers[0]?.sent ?? []).toEqual([]);
+  });
+
+  test("control characters never wait, and a queue measured as it travels always opens", async () => {
+    const { adapter, live, core } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "busy");
+    const ctl = "\x01".repeat(20_900);
+    // Stripped: nothing left of these.
+    await expect(live.queue.add("claude:s1", ctl, [])).rejects.toThrow("Type a message first");
+    await live.queue.add("claude:s1", `a${ctl}b\tc\n`, []);
+    const s = await core.open("claude:s1");
+    expect(s.state.queue[0]!.text).toBe("ab\tc\n");
+    // A queue saved before these rules (50 x 20,900 controls) still travels small.
+    const { capQueue, FRAME_BYTES_MAX } = await import("../../../shared/limits");
+    const old = Array.from({ length: 50 }, (_, i) => ({ id: `q${i}`, text: ctl, queuedAt: 1 }));
+    expect(JSON.stringify(capQueue(old)).length).toBeLessThan(FRAME_BYTES_MAX / 4);
+    // Escapes count against the cap: 1 MB of quotes is 2 MB in a frame.
+    await expect(live.queue.add("claude:s1", '"'.repeat(150_000), [])).resolves.toBeDefined();
+    await expect(live.queue.add("claude:s1", '"'.repeat(150_000), [])).resolves.toBeDefined();
+    await expect(live.queue.add("claude:s1", '"'.repeat(150_000), [])).resolves.toBeDefined();
+    await expect(live.queue.add("claude:s1", '"'.repeat(150_000), [])).rejects.toThrow("at most");
+  });
+
+  test("another device changing the queue while a message goes out keeps it saved until the harness has it", async () => {
+    const { adapter, live, core, prefs, driver, end } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "one");
+    await live.queue.add("claude:s1", "two", []);
+    const other = await live.queue.add("claude:s1", "three", []);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const d = driver();
+    const orig = d.send.bind(d);
+    d.send = async (t: string) => {
+      await gate;
+      return orig(t);
+    };
+    end();
+    const s = await core.open("claude:s1");
+    await until(() => s.state.queue.length === 1);
+    await live.queue.cancel("claude:s1", other.id);
+    const saved = () => JSON.parse(readFileSync(prefs["file"] as string, "utf8")).sessions["claude:s1"].queue?.map((m: any) => m.text);
+    expect(saved()).toEqual(["two"]);
+    release();
+    await until(() => d.sent.length === 2);
+    await until(() => !saved());
+  });
+
+  test("a restart during a new session's first start keeps its queue, held, until the session is known", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.prefs.set("claude:brand-new", { projectPath: "/p", queue: [{ id: "q1", text: "first words", queuedAt: 1 }] });
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    await b.live.queue.restore();
+    b.prefs.flush();
+    const p = b.prefs.get("claude:brand-new");
+    expect(p.queue?.map((m) => m.text)).toEqual(["first words"]);
+    expect(p.queueHeldBy).toBe("restart");
+  });
+
   test("subagents have none", async () => {
     const { adapter, live } = setup();
     adapter.addStored("kid", [], { parentSessionId: "claude:s1" });
