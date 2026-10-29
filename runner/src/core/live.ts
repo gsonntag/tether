@@ -253,6 +253,8 @@ export class LiveControl {
         if (!changed) return;
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
         else if (changed.model || changed.modelResolved || changed.permissionMode) core.touch(s);
+        // The harness changed its own mode (a plan approved): kept, so the next start uses it.
+        if (changed.permissionMode && !s.summary.parentSessionId) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },
       request: (r, signal) => this.desk.ask(s, r, signal),
       nativeId: (id) => {

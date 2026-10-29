@@ -6,7 +6,7 @@
 //   SCRATCH         a scratch project folder (default ~/.local/share/tether-dev/projects/scratch)
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
-// Steps: new approve deny question subagent restart plan. Each real turn is small (Haiku).
+// Steps: new approve deny question multi subagent restart plan planApprove. Each real turn is small (Haiku).
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -136,6 +136,22 @@ const steps = {
     const again = await answerVia(a, sessionId(), ra.id);
     if (!/^Already answered/.test(again)) fail(`a second answer said: ${again}`);
     ok(`a second answer from desktop says "${again}"`);
+    // The same through the UI: desktop still shows the card (as if the phone's answer hadn't
+    // reached it yet) and taps Approve.
+    await a.evaluate(
+      async ([store, r]) => {
+        const { useStore } = await import(eval(store));
+        const views = { ...useStore.getState().views };
+        const k = Object.keys(views).find((x) => x.endsWith(`\u0000${r.sessionId}`));
+        views[k] = { ...views[k], state: { ...views[k].state, requests: [r] } };
+        useStore.setState({ views });
+      },
+      [MOD("store.ts"), ra],
+    );
+    await button(card(a), "Approve").click();
+    await a.locator(".t-dock").getByText("Already answered.").waitFor({ timeout: 5_000 });
+    await shot(a, "already-answered");
+    ok("tapping Approve on a stale card says Already answered. in the dock");
     await idle(a);
     if (!/hello/i.test(await waitFile("notes.txt"))) fail("notes.txt lacks hello");
     ok("Claude wrote notes.txt");
@@ -265,11 +281,53 @@ const steps = {
     await p.getByRole("button", { name: "Mode: Ask first" }).waitFor({ timeout: 10_000 });
     await p.close();
   },
+
+  async planApprove() {
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await p.getByRole("button", { name: /^Mode:/ }).click();
+    await p.getByRole("menuitemradio", { name: /^Plan/ }).click();
+    await p.getByRole("button", { name: "Mode: Plan" }).waitFor({ timeout: 10_000 });
+    await send(p, "Plan adding `export const subtract = (a: number, b: number) => a - b;` to math.ts, in one line, then present it with ExitPlanMode. Once approved, make exactly that edit and nothing else.");
+    await card(p).locator(".t-req-plan").waitFor({ timeout: 120_000 });
+    await button(card(p), "Approve and accept edits").click();
+    await p.getByRole("button", { name: "Mode: Accept edits" }).waitFor({ timeout: 30_000 });
+    await idle(p, 120_000);
+    if (!/subtract/.test(readFileSync(scratch("math.ts"), "utf8"))) fail("math.ts wasn't edited");
+    ok("Approve and accept edits: the mode became Accept edits on its own and the edit went ahead without another card");
+    await p.getByRole("button", { name: /^Mode:/ }).click();
+    await p.getByRole("menuitemradio", { name: /^Ask first/ }).click();
+    await p.getByRole("button", { name: "Mode: Ask first" }).waitFor({ timeout: 10_000 });
+    await p.close();
+  },
+
+  async multi() {
+    const p = await page(phone, session);
+    await composer(p).waitFor();
+    await p.waitForTimeout(1000);
+    if (!(await card(p).count())) {
+      await composer(p).fill("Use AskUserQuestion once to ask which sizes I want, with options S, M and L, allowing several answers (multiSelect). Then reply with only my answer.");
+      await p.getByRole("button", { name: "Send" }).click();
+    }
+    await card(p).waitFor({ timeout: 90_000 });
+    const option = (label) => card(p).locator(".t-option").filter({ has: p.locator(".t-option-label", { hasText: new RegExp(`^${label}$`) }) });
+    await option("S").tap();
+    await option("L").tap();
+    const pressed = await card(p).locator('.t-option[aria-pressed="true"]').count();
+    if (pressed !== 2) fail(`${pressed} options pressed`);
+    await shot(p, "multi-phone");
+    await button(card(p), "Send answer").tap();
+    await card(p).waitFor({ state: "detached", timeout: 10_000 });
+    await idle(p);
+    await p.waitForFunction(() => /S.*L/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 30_000 });
+    ok("a multi-select question: options toggle and Send answer sends them together");
+    await p.close();
+  },
 };
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "approve", "deny", "question", "subagent", "restart", "plan"]) {
+  for (const name of pick.length ? pick : ["new", "approve", "deny", "question", "multi", "subagent", "restart", "plan", "planApprove"]) {
     if (!session && name !== "new" && process.env.SESSION) session = `${BASE}/#/s/${RUNNER}/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();

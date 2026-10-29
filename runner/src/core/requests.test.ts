@@ -165,6 +165,20 @@ describe("requests in sessions", () => {
     expect(closed.map((c) => c.outcome)).toEqual(["cancelled", "elsewhere"]);
   });
 
+  test("a plan approved leaves plan mode: the harness's new mode is kept for the next start", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    await live.setPermissionMode("claude:s1", "plan");
+    adapter.script = () => [ask("ExitPlanMode", { plan: "x" }), (sink) => sink.state({ permissionMode: "acceptEdits" }), idle];
+    const sending = live.send("claude:s1", "plan it");
+    await tick();
+    const s = await core.open("claude:s1");
+    await live.answerRequest("claude:s1", s.state.requests[0]!.id, { allow: true });
+    await sending;
+    expect(s.state.permissionMode).toBe("acceptEdits");
+    expect(core.o.prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
+  });
+
   test("a driver that exits takes its requests with it", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("s1", []);
