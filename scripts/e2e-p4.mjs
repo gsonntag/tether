@@ -550,6 +550,9 @@ const steps = {
     await composer(p).waitFor({ timeout: 30_000 });
     await send(p, "Reply with just: READY");
     await idle(p);
+    // Truly over (so the restart leaves it stored, not rejoined): the send below must find the turn.
+    await waitState(p, (x) => x.status === "idle", "idle after READY", 60_000);
+    await sleep(2000);
     await p.close();
     execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
     const other = spawn("bun", ["scripts/codex-e2e-helper.ts", "turn", id.slice(6), "Use the shell to run exactly: sleep 30   Then reply with one word: slept."], { cwd: new URL("../runner/", import.meta.url).pathname, stdio: "ignore" });
@@ -559,7 +562,10 @@ const steps = {
       await composer(q).waitFor({ timeout: 60_000 });
       if ((await rpcVia(q, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
       const sent = await rpcVia(q, "send", { sessionId: id, text: "Also run exactly: echo inj > inj.txt   then reply INJ." });
-      if (!/still working on a turn started elsewhere/.test(sent.error ?? "")) fail(`the send wasn't refused: ${JSON.stringify(sent)}`);
+      // Refused as busy: "still working on a turn started elsewhere" when the send found the turn on
+      // joining, plain "still working" when Tether was already on the thread and saw it start.
+      if (!/still working/.test(sent.error ?? "")) fail(`the send wasn't refused: ${JSON.stringify(sent)}`);
+      console.log(`    (refused: ${sent.error})`);
       const st = await waitState(q, (x) => x.status === "running" && x.turnSettings?.permissionMode === "full-access", "running, with the turn's own mode shown", 30_000);
       if (!st.turnSettings.looser) fail("not marked as running looser");
       const head = await q.locator(".t-header").innerText();
