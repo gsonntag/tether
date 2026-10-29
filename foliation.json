@@ -1,0 +1,12 @@
+{
+  "name": "tether",
+  "description": "Run Claude Code and Codex on your own machines and drive them from any browser.",
+  "icon": "🧑‍💻",
+  "frontend": { "dir": "web" },
+  "backend": {
+    "dir": "server",
+    "entry": "src/index.ts",
+    "healthcheck": "/api/health"
+  },
+  "resources": { "memory_mb": 512 }
+}
