@@ -25,6 +25,10 @@ export interface Entry {
   isMeta?: boolean;
   isCompactSummary?: boolean;
   origin?: any;
+  /** a prompt delivered mid-turn (a queued_command attachment), read as a user turn */
+  queued?: boolean;
+  /** the id Claude Code gives that prompt's message (its source_uuid) */
+  messageId?: string;
   timestamp?: string;
   /** its place in the file (line count) */
   order: number;
@@ -49,6 +53,18 @@ function entryOf(line: string): Entry | undefined {
     if (e.isMeta) out.isMeta = true;
     if (e.isCompactSummary) out.isCompactSummary = true;
     if (e.origin) out.origin = e.origin;
+  } else if (e.type === "attachment" && e.attachment?.type === "queued_command" && (typeof e.attachment.prompt === "string" || Array.isArray(e.attachment.prompt))) {
+    // A prompt (yours, a task's report, another agent's message) delivered while a turn ran, where
+    // it reached Claude: a user turn, as Claude Code shows it.
+    const a = e.attachment;
+    out.type = "user";
+    out.queued = true;
+    if (typeof a.source_uuid === "string" && a.source_uuid) out.messageId = a.source_uuid;
+    out.message = { role: "user", content: a.prompt };
+    // Your own message reaching a running subagent is marked meta; Claude Code shows it all the same.
+    if (a.isMeta && a.origin?.kind !== "human") out.isMeta = true;
+    if (a.origin) out.origin = a.origin;
+    else if (a.commandMode === "task-notification") out.origin = { kind: "task-notification" };
   } else if (e.type === "system") {
     out.subtype = e.subtype;
     // A slash command's output (/context, /cost, …), shown as a notice.
@@ -68,7 +84,12 @@ export class StoreFile {
   private children = new Map<string, Entry[]>();
   private lines = 0;
 
-  constructor(readonly path: string) {}
+  /** a subagent's own file (subagents/agent-*.jsonl): every entry is its thread, all marked sidechain */
+  private readonly subagent: boolean;
+
+  constructor(readonly path: string) {
+    this.subagent = /\/subagents\/agent-[^/]+\.jsonl$/.test(path);
+  }
 
   /** Reads what was appended since the last call. True when anything changed. */
   async update(): Promise<boolean> {
@@ -122,7 +143,7 @@ export class StoreFile {
       else this.children.set(e.parentUuid, [e]);
     }
     // Conversation entries (a slash command's output too: it can be the last thing written).
-    if (((e.type === "user" || e.type === "assistant") && !e.isSidechain) || (e.type === "system" && e.subtype === "local_command")) this.messages.push(e);
+    if (((e.type === "user" || e.type === "assistant") && (!e.isSidechain || this.subagent)) || (e.type === "system" && e.subtype === "local_command")) this.messages.push(e);
     return true;
   }
 
@@ -141,6 +162,10 @@ export class StoreFile {
     // Branches written beside the conversation, not instead of it: a prompt queued while a turn
     // ran (or a task notification) hangs off the running turn, and its reply hangs off it.
     for (const b of this.sideBranches(visited)) walk.push(...b);
+    // Parallel tool calls are written as a chain of assistant entries (one call each), and each
+    // result is parented to its own call: all but one result sit beside the chain. Results for
+    // calls in the conversation belong to it wherever they hang.
+    walk.push(...this.offChainResults(new Set(walk.map((e) => e.uuid)), walk));
     // Each entry once, in the order it was written (a child is always written after its parent).
     const seen = new Set<string>();
     const out: Entry[] = [];
@@ -165,8 +190,10 @@ export class StoreFile {
   private nextPromptOnChain(parent: string, onChain: Set<string>): Entry | undefined {
     let cur = (this.children.get(parent) ?? []).find((c) => onChain.has(c.uuid));
     for (let i = 0; cur && i < 20; i++) {
-      if (isPrompt(cur) && !cur.isMeta) return cur;
-      if (cur.type === "assistant" || (cur.type === "user" && !cur.isMeta)) return undefined;
+      if (!cur.queued) {
+        if (isPrompt(cur) && !cur.isMeta) return cur;
+        if (cur.type === "assistant" || (cur.type === "user" && !cur.isMeta)) return undefined;
+      }
       cur = (this.children.get(cur.uuid) ?? []).find((c) => onChain.has(c.uuid));
     }
     return undefined;
@@ -185,6 +212,31 @@ export class StoreFile {
         branch.push(cur);
       }
       out.push(branch);
+    }
+    return out;
+  }
+
+  /**
+   * User entries with only tool results, off the conversation, for calls in it that have no result
+   * in it.
+   */
+  private offChainResults(onChain: Set<string>, conversation: Entry[]): Entry[] {
+    const calls = new Set<string>();
+    for (const e of conversation) {
+      const c = e.type === "assistant" ? e.message?.content : undefined;
+      if (Array.isArray(c)) for (const b of c) if (b?.type === "tool_use" && typeof b.id === "string") calls.add(b.id);
+    }
+    for (const e of conversation) {
+      const c = e.type === "user" ? e.message?.content : undefined;
+      if (Array.isArray(c)) for (const b of c) if (b?.type === "tool_result") calls.delete(b.tool_use_id);
+    }
+    if (!calls.size) return [];
+    const out: Entry[] = [];
+    for (const e of this.messages) {
+      if (e.type !== "user" || onChain.has(e.uuid)) continue;
+      const c = e.message?.content;
+      if (!Array.isArray(c) || !c.length) continue;
+      if (c.every((b: any) => b?.type === "tool_result" && calls.has(b.tool_use_id))) out.push(e);
     }
     return out;
   }

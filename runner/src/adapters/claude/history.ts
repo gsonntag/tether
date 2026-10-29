@@ -1,42 +1,23 @@
 // A stored Claude Code session (or one of its subagents) as a transcript, read without starting
-// Claude. A session's own file is read by jsonl.ts (incrementally, and across compactions, which
-// the SDK's getSessionMessages stops at); a subagent's by the SDK's getSubagentMessages, with
-// entryMeta reading what that API leaves out (each entry's time and flags).
+// Claude. Both files are read by jsonl.ts (incrementally, across compactions, which the SDK's
+// getSessionMessages stops at, and with the results of parallel tool calls, which sit beside the
+// chain and the SDK's walk drops).
 //
 // Message ids match what the live stream uses (stream.ts), so a session that goes from live to
 // stored and back keeps its ids: an assistant message is its API message id (Claude Code writes one
 // entry per content block, all with that id), a user message its entry's uuid.
 
-import { getSubagentMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
 import { assistantPart, blockText, commandOutput, notice, toolResults, userMessage, type EntryFlags } from "./content";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
-/** Each entry's time and the flags getSessionMessages drops, by uuid. */
-export function entryMeta(text: string): { flags: Map<string, EntryFlags>; times: Map<string, number> } {
-  const flags = new Map<string, EntryFlags>();
-  const times = new Map<string, number>();
-  // Claude Code writes `"uuid":"…","timestamp":"…"` next to each other on every entry.
-  for (const m of text.matchAll(/"uuid":"([^"]+)","timestamp":"([^"]+)"/g)) {
-    const t = Date.parse(m[2]!);
-    if (Number.isFinite(t) && !times.has(m[1]!)) times.set(m[1]!, t);
-  }
-  for (const line of text.split("\n")) {
-    if (!line.includes('"type":"user"') || !(line.includes('"isMeta"') || line.includes('"origin"') || line.includes('"isCompactSummary"'))) continue;
-    try {
-      const e = JSON.parse(line);
-      if (e.uuid) flags.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
-    } catch {}
-  }
-  return { flags, times };
-}
+/** Each entry's time, and the flags Claude Code stores on it, by uuid. */
+type EntryMeta = { flags: Map<string, EntryFlags>; times: Map<string, number> };
 
-/**
- * The SDK's entries as a transcript. `subagent`: a subagent's own file, whose entries all carry
- * parent_tool_use_id; in a main session those are a subagent's internals and are skipped.
- */
-export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "message" | "parent_tool_use_id">[], meta: ReturnType<typeof entryMeta>, subagent = false): Msg[] {
+/** Store entries (as the SDK's SessionMessage) as a transcript. */
+export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "message">[], meta: EntryMeta): Msg[] {
   const out: Msg[] = [];
   const byId = new Map<string, Msg>();
   const toolOwner = new Map<string, Msg>();
@@ -51,7 +32,6 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
     }
   }
   function entry(m: (typeof list)[number]) {
-    if (m.parent_tool_use_id && !subagent) return;
     const msg: any = m.message;
     const ts = at(m.uuid);
     if (m.type === "assistant" && Array.isArray(msg?.content) && msg.model === "<synthetic>") {
@@ -112,36 +92,27 @@ export function linkSubagents(msgs: Msg[], session: string, children: { agentId:
       if (p.type === "tool" && byTool.has(p.id)) m.parts[i] = { ...p, childSessionId: `claude:${session}/${byTool.get(p.id)}` };
 }
 
-async function fileText(f: string | undefined): Promise<string> {
-  return f ? Bun.file(f).text().catch(() => "") : "";
-}
-
 /** A stored session's transcript, or a subagent's (`<session>/<agent>`). */
 export async function readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
   const { session, agent } = splitNative(nativeId);
-  if (agent) {
-    const child = storedSubagents(session, projectPath).find((c) => c.agentId === agent);
-    const [list, text] = await Promise.all([getSubagentMessages(session, agent, { dir: projectPath }), fileText(child?.file)]);
-    const msgs = historyMessages(list, entryMeta(text), true);
-    linkSubagents(msgs, session, storedSubagents(session, projectPath));
-    return msgs;
-  }
-  const file = sessionFile(session, projectPath);
+  const children = storedSubagents(session, projectPath);
+  const file = agent ? children.find((c) => c.agentId === agent)?.file : sessionFile(session, projectPath);
   const msgs = file ? chainMessages((await readStore(file)).chain()) : [];
-  linkSubagents(msgs, session, storedSubagents(session, projectPath));
+  linkSubagents(msgs, session, children);
   return msgs;
 }
 
 /** A session file's conversation (jsonl.ts, across compactions) as a transcript. */
 export function chainMessages(chain: Entry[]): Msg[] {
-  const meta: ReturnType<typeof entryMeta> = { flags: new Map(), times: new Map() };
-  const list: Pick<SessionMessage, "type" | "uuid" | "message" | "parent_tool_use_id">[] = [];
+  const meta: EntryMeta = { flags: new Map(), times: new Map() };
+  const list: Pick<SessionMessage, "type" | "uuid" | "message">[] = [];
   for (const e of chain) {
     if (e.type !== "user" && e.type !== "assistant" && e.type !== "system") continue;
+    const uuid = e.messageId ?? e.uuid;
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
-    if (Number.isFinite(t)) meta.times.set(e.uuid, t);
-    if (e.isMeta || e.isCompactSummary || e.origin) meta.flags.set(e.uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
-    list.push({ type: e.type as SessionMessage["type"], uuid: e.uuid, message: e.type === "system" ? { subtype: e.subtype, content: e.message?.content } : e.message, parent_tool_use_id: null });
+    if (Number.isFinite(t)) meta.times.set(uuid, t);
+    if (e.isMeta || e.isCompactSummary || e.origin) meta.flags.set(uuid, { isMeta: e.isMeta, isCompactSummary: e.isCompactSummary, origin: e.origin });
+    list.push({ type: e.type as SessionMessage["type"], uuid, message: e.type === "system" ? { subtype: e.subtype, content: e.message?.content } : e.message });
   }
   return historyMessages(list, meta);
 }

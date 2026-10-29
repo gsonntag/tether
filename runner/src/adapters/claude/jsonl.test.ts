@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript } from "../../core/transcript";
@@ -207,4 +207,48 @@ test("a slash command's output written last is still part of the conversation", 
   const f = new StoreFile(p);
   await f.update();
   expect(chainMessages(f.chain()).map((m) => `${m.role}:${(m.parts[0] as any).text}`)).toEqual(["user:/context", "notice:## Context Usage"]);
+});
+
+describe("parallel tool calls", () => {
+  // Real Claude (Haiku): one call, then two in parallel. Claude Code writes each parallel call as
+  // its own assistant entry in a chain, and each result is parented to its own call, so the first
+  // result ("two") hangs beside the chain.
+  const PARALLEL = join(STORE, "projects", "-home-ubuntu--local-share-tether-dev-projects-scratch", "9a7a11e1-0000-4000-8000-000000000001.jsonl");
+  const bash = (msgs: any[]) => msgs.flatMap((m) => m.parts).filter((p: any) => p.type === "tool").map((p: any) => `${p.status}:${p.output}`);
+
+  test("every call gets its result, wherever the result hangs", async () => {
+    const msgs = await readHistory("9a7a11e1-0000-4000-8000-000000000001", "/home/ubuntu/.local/share/tether-dev/projects/scratch");
+    expect(bash(msgs)).toEqual(["done:one", "done:two", "done:three"]);
+    expect((msgs.at(-1)!.parts[0] as any).text).toBe("done");
+  });
+
+  test("the same in a subagent's own file (every entry a sidechain)", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "tether-sub-")), "subagents");
+    mkdirSync(dir);
+    const path = join(dir, "agent-a1.jsonl");
+    writeFileSync(path, readFileSync(PARALLEL, "utf8").split("\n").filter(Boolean).map((l) => JSON.stringify({ ...JSON.parse(l), isSidechain: true })).join("\n") + "\n");
+    const f = new StoreFile(path);
+    await f.update();
+    expect(bash(chainMessages(f.chain()))).toEqual(["done:one", "done:two", "done:three"]);
+  });
+});
+
+test("a prompt delivered mid-turn (a queued_command attachment) shows where it reached Claude", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tether-queued-"));
+  const path = join(dir, "q.jsonl");
+  const at = (i: number) => new Date(1_800_000_000_000 + i * 1000).toISOString();
+  const rows = [
+    { uuid: "u1", parentUuid: null, type: "user", timestamp: at(0), message: { role: "user", content: "first" } },
+    { uuid: "a1", parentUuid: "u1", type: "assistant", timestamp: at(1), message: { id: "msg_a1", role: "assistant", content: [{ type: "tool_use", id: "t", name: "Bash", input: { command: "ls" } }] } },
+    { uuid: "r1", parentUuid: "a1", type: "user", timestamp: at(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } },
+    { uuid: "q1", parentUuid: "r1", type: "attachment", timestamp: at(3), attachment: { type: "queued_command", prompt: "also this", source_uuid: "src1", origin: { kind: "human" } } },
+    { uuid: "q2", parentUuid: "q1", type: "attachment", timestamp: at(4), attachment: { type: "queued_command", prompt: "<task-notification>x</task-notification>", commandMode: "task-notification" } },
+    { uuid: "a2", parentUuid: "q2", type: "assistant", timestamp: at(5), message: { id: "msg_a2", role: "assistant", content: [{ type: "text", text: "done" }] } },
+  ];
+  writeFileSync(path, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const f = new StoreFile(path);
+  await f.update();
+  const msgs = chainMessages(f.chain());
+  // Its id is the one Claude Code gives the prompt (source_uuid); the task's report stays hidden.
+  expect(msgs.map((m) => `${m.id}:${(m.parts.find((p) => p.type === "text") as any)?.text ?? ""}`)).toEqual(["u1:first", "msg_a1:", "src1:also this", "msg_a2:done"]);
 });

@@ -1,11 +1,14 @@
 // Drives real Claude (Haiku) through the adapter and checks that the live transcript is what the
 // store reads back afterwards, so a session going stored doesn't reset its viewers.
-//   bun scripts/parity-claude.ts [prompt…]   (default: /context, a prompt, /compact, a prompt)
+//   bun scripts/parity-claude.ts [prompt…]
+// (default: /context, a prompt, parallel tool calls, /compact, a prompt)
 import { claudeAdapter } from "../src/adapters/claude";
 import type { Sink } from "../src/core/adapter";
 import { diffTranscripts, Transcript } from "../src/core/transcript";
 
-const prompts = process.argv.slice(2).length ? process.argv.slice(2) : ["/context", "Say ok.", "/compact", "Say done."];
+// Claude Code stores parallel calls as a chain of entries, each result beside it (jsonl.ts).
+const PARALLEL = "In ONE message, make three Bash tool calls in parallel: `echo one`, `echo two`, `echo three`. Then reply 'done'.";
+const prompts = process.argv.slice(2).length ? process.argv.slice(2) : ["/context", "Say ok.", PARALLEL, "/compact", "Say done."];
 const t = new Transcript();
 let status = "idle";
 const sink: Sink = {
