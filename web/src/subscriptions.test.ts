@@ -8,7 +8,7 @@ const noUnsub = async () => null;
 test("every open session is subscribed again on resubscribe; closed ones aren't", async () => {
   const calls: string[] = [];
   let n = 0;
-  const subs = new Subscriptions(async (r, s) => (calls.push(`${r}/${s}`), snap(++n)), noUnsub);
+  const subs = new Subscriptions(async (r, s) => (calls.push(`${r}/${s}`), snap(++n)), noUnsub, { staggerMs: 0 });
   const got: number[] = [];
   subs.watch({ runnerId: "a", sessionId: "claude:1", onSnapshot: (x) => got.push(x.seq) });
   const close = subs.watch({ runnerId: "b", sessionId: "claude:2", onSnapshot: () => {} });
@@ -42,7 +42,7 @@ test("a failing unsubscribe (link already down) is quiet", async () => {
 
 test("overlapping subscribes: only the newest answer is applied, whatever order they finish in", async () => {
   const pending: ((s: SessionSnapshot) => void)[] = [];
-  const subs = new Subscriptions(() => new Promise((ok) => pending.push(ok)), noUnsub);
+  const subs = new Subscriptions(() => new Promise((ok) => pending.push(ok)), noUnsub, { staggerMs: 0 });
   const got: number[] = [];
   subs.watch({ runnerId: "a", sessionId: "claude:1", onSnapshot: (x) => got.push(x.seq) });
   subs.resubscribe();
@@ -54,7 +54,7 @@ test("overlapping subscribes: only the newest answer is applied, whatever order 
 
 test("a snapshot for a session closed in the meantime is dropped", async () => {
   let release!: (s: SessionSnapshot) => void;
-  const subs = new Subscriptions(() => new Promise((ok) => (release = ok)), noUnsub);
+  const subs = new Subscriptions(() => new Promise((ok) => (release = ok)), noUnsub, { staggerMs: 0 });
   let got = 0;
   const close = subs.watch({ runnerId: "a", sessionId: "claude:1", onSnapshot: () => got++ });
   close();
@@ -98,4 +98,30 @@ test("page load: hello resubscribes everything once; the runners list right afte
   r.runners(["a"]);
   r.runners([]);
   expect(calls).toEqual([undefined, ["a"]]);
+});
+
+test("a reconnect resubscribes one session at a time, spaced out, and a closed one is skipped", async () => {
+  const calls: string[] = [];
+  const subs = new Subscriptions(async (_r, s) => (calls.push(s), snap(1)), noUnsub, { staggerMs: 20 });
+  for (const s of ["claude:1", "claude:2"]) subs.watch({ runnerId: "a", sessionId: s, onSnapshot: () => {} });
+  const close3 = subs.watch({ runnerId: "a", sessionId: "claude:3", onSnapshot: () => {} });
+  calls.length = 0;
+  subs.resubscribe();
+  expect(calls).toEqual(["claude:1"]);
+  await Bun.sleep(30);
+  expect(calls).toEqual(["claude:1", "claude:2"]);
+  close3();
+  await Bun.sleep(40);
+  expect(calls).toEqual(["claude:1", "claude:2"]);
+});
+
+test("refresh fetches one session again", async () => {
+  const calls: string[] = [];
+  const subs = new Subscriptions(async (_r, s) => (calls.push(s), snap(1)), noUnsub, { staggerMs: 0 });
+  subs.watch({ runnerId: "a", sessionId: "claude:1", onSnapshot: () => {} });
+  subs.watch({ runnerId: "a", sessionId: "claude:2", onSnapshot: () => {} });
+  calls.length = 0;
+  subs.refresh("a", "claude:2");
+  subs.refresh("a", "claude:9");
+  expect(calls).toEqual(["claude:2"]);
 });

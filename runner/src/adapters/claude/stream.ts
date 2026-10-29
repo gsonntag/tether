@@ -195,7 +195,10 @@ export class ClaudeStream {
     const interrupted = m.subtype === "error_during_execution" || m.terminal_reason === "aborted_streaming" || m.terminal_reason === "aborted_tools";
     if ((m.is_error || (m.subtype && m.subtype !== "success")) && !interrupted) {
       const text = [typeof m.result === "string" ? m.result : "", this.lastError].filter(Boolean)[0] || (Array.isArray(m.errors) && m.errors.join(" ")) || "The turn failed.";
-      sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), text, "error") });
+      // Claude's own error reply is already in the transcript: no second copy of it.
+      if (!this.lastError || text !== this.lastError) sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), text, "error") });
+      if (/not logged in|\/login|invalid api key|authentication/i.test(text))
+        sink.state({ error: "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again." });
     }
     this.lastError = undefined;
     // Without state events (an older CLI), the result ends the turn.

@@ -26,13 +26,26 @@ interface Open {
 
 const key = (runnerId: string, sessionId: string) => `${runnerId}\u0000${sessionId}`;
 
+export interface SubscriptionOptions {
+  /**
+   * Resubscribing many sessions at once (a reconnect) spaces their subscribes this far apart, so
+   * the runner doesn't answer with every snapshot in one burst (each can be megabytes, and the
+   * relay closes a socket whose send buffer overflows). 0: all at once.
+   */
+  staggerMs?: number;
+}
+
 export class Subscriptions {
   private open = new Map<string, Open>();
+  private readonly staggerMs: number;
 
   constructor(
     private subscribe: Subscribe,
     private unsubscribe: Unsubscribe,
-  ) {}
+    opts: SubscriptionOptions = {},
+  ) {
+    this.staggerMs = opts.staggerMs ?? 75;
+  }
 
   /** Starts watching a session; snapshots arrive through onSnapshot (now and after every resubscribe). */
   watch(w: Watch): () => void {
@@ -56,9 +69,21 @@ export class Subscriptions {
     };
   }
 
-  /** Subscribes again to every open session, or only those on the given runners. */
+  /** Subscribes again to every open session, or only those on the given runners, staggered. */
   resubscribe(runnerIds?: string[]) {
-    for (const o of this.open.values()) if (!runnerIds || runnerIds.includes(o.runnerId)) this.fetch(o);
+    const list = [...this.open.values()].filter((o) => !runnerIds || runnerIds.includes(o.runnerId));
+    list.forEach((o, i) => {
+      if (i === 0 || !this.staggerMs) return this.fetch(o);
+      // Claimed now, so an answer to an older subscribe that lands meanwhile is already stale.
+      const gen = ++o.gen;
+      setTimeout(() => this.open.get(key(o.runnerId, o.sessionId)) === o && o.gen === gen && this.fetch(o), i * this.staggerMs);
+    });
+  }
+
+  /** A fresh snapshot of one open session (after a gap in its events, or a resync). */
+  refresh(runnerId: string, sessionId: string) {
+    const o = this.open.get(key(runnerId, sessionId));
+    if (o) this.fetch(o);
   }
 
   /** Open sessions (not watchers). */

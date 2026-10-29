@@ -5,7 +5,10 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { LockClosedIcon } from "@heroicons/react/24/outline";
 import { Home } from "./components/Home";
+import { NewSessionDialog } from "./components/NewSessionDialog";
+import { SessionView } from "./components/SessionView";
 import { Sidebar } from "./components/Sidebar";
+import { useRoute } from "./route";
 import { useStore } from "./store";
 
 export function App() {
@@ -14,6 +17,7 @@ export function App() {
   const auth = useStore((s) => s.auth);
   const stale = useStore((s) => s.stale);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const route = useRoute();
 
   const banner =
     auth !== "ok" ? undefined : stale ? (
@@ -29,7 +33,14 @@ export function App() {
       sideNav={<Sidebar />}
       mobileNav={{ isOpen: sidebarOpen, onOpenChange: (open) => useStore.setState({ sidebarOpen: open }) }}
     >
-      {auth === "ok" ? <Home /> : <Blocked auth={auth} />}
+      {auth !== "ok" ? (
+        <Blocked auth={auth} />
+      ) : route.page === "session" ? (
+        <SessionView key={`${route.runnerId}\u0000${route.sessionId}`} runnerId={route.runnerId} sessionId={route.sessionId} />
+      ) : (
+        <Home />
+      )}
+      <NewSessionDialog />
     </AppShell>
   );
 }
