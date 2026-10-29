@@ -11,7 +11,7 @@ import { RESOLVED_ELSEWHERE } from "./adapter";
 import { ALREADY_ANSWERED, DENIED, RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
-import { ask, askQuestion, FakeAdapter, idle, say, subagent, subagentEnds } from "./fakeAdapter";
+import { ask, askQuestion, FakeAdapter, idle, say, subagent, subagentEnds, toolCall } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { restoredMessage } from "./requests";
@@ -345,6 +345,59 @@ describe("requests across a runner restart", () => {
     expect(JSON.parse(readFileSync(prefsFile, "utf8")).closedRequests.map((c: any) => c.id)).toEqual([id]);
     const after = setup({ prefsFile });
     await expect(after.live.answerRequest("claude:s1", id, { allow: true })).rejects.toThrow(ALREADY_ANSWERED);
+  });
+
+  test("an answer to a restored request while a turn runs goes out when that turn ends; two in a row, one per turn", async () => {
+    const prefsFile = newPrefsFile();
+    const before = setup({ prefsFile });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "a" }), ask("Bash", { command: "b" })];
+    void before.live.send("claude:s1", "go");
+    await tick();
+    const s0 = await before.core.open("claude:s1");
+    // Two restored requests: one asked, then (after the first was taken over by a restart) another.
+    const first = s0.state.requests[0]!.id;
+    await before.live.closeAll();
+    const p = new Prefs(prefsFile);
+    const saved = p.requests();
+    p.setRequests([...saved, { ...saved[0]!, request: { ...saved[0]!.request, id: "second", input: { command: "b" } }, key: (await import("./broker")).requestKey("Bash", { command: "b" }) }]);
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("s1", []);
+    const after = setup({ prefsFile, adapter });
+    await after.live.desk.restore();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    adapter.script = (t) => (t === "busy" ? [async () => gate, idle] : t.includes("`a`") ? [ask("Bash", { command: "a" }), idle] : [ask("Bash", { command: "b" }), idle]);
+    const busy = after.live.send("claude:s1", "busy");
+    await tick();
+    await after.live.answerRequest("claude:s1", first, { allow: true });
+    await after.live.answerRequest("claude:s1", "second", { allow: true });
+    await tick();
+    const d = adapter.drivers[0]!;
+    expect(d.sent).toEqual(["busy"]);
+    release();
+    await busy;
+    await Bun.sleep(50);
+    expect(d.sent).toEqual(["busy", "[From Tether] The user approved your request to run `a`. Go ahead.", "[From Tether] The user approved your request to run `b`. Go ahead."]);
+    // Each re-ask was decided at once with the person's answer.
+    expect(d.decisions).toEqual([{ allow: true }, { allow: true }]);
+  });
+
+  test("a process that dies leaves no tool spinning, live or read back from the store", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [toolCall("m1", "t1")];
+    await core.subscribe("claude:s1");
+    await live.send("claude:s1", "go");
+    adapter.drivers[0]!.onExit?.("Claude Code stopped: killed");
+    const s = await core.open("claude:s1");
+    expect((s.transcript!.get("m1")!.parts[0] as any).status).toBe("error");
+    // Read back from the store (the tool left running there), with the stop notice laid over it.
+    const { settleStopped, withOverlay } = await import("./notices");
+    const stored = [{ id: "m1", role: "assistant" as const, ts: 1, parts: [{ type: "tool" as const, id: "t1", name: "Bash", kind: "shell" as const, input: {}, status: "running" as const }] }];
+    expect((settleStopped(withOverlay(stored, s.overlay))[0]!.parts[0] as any).status).toBe("error");
+    expect((settleStopped(stored)[0]!.parts[0] as any).status).toBe("running");
   });
 
   test("requests of a session that no longer exists are dropped at start", async () => {

@@ -116,3 +116,21 @@ export function withOverlay(store: Msg[], overlay: OverlayNotice[]): Msg[] {
   }
   return out;
 }
+
+/**
+ * Tool calls left running before one of Tether's warnings or errors (the process stopped, a turn
+ * cut off by a restart) never finished: they show as failed, not spinning forever. Live, the core
+ * does the same when its driver goes away (live.ts toStored), so both read alike.
+ */
+export function settleStopped(msgs: Msg[]): Msg[] {
+  let stop = -1;
+  msgs.forEach((m, i) => {
+    if (m.role === "notice" && m.id.startsWith("n-") && (m.level === "error" || m.level === "warning")) stop = i;
+  });
+  if (stop < 0) return msgs;
+  return msgs.map((m, i) =>
+    i < stop && m.parts.some((p) => p.type === "tool" && p.status === "running")
+      ? { ...m, parts: m.parts.map((p) => (p.type === "tool" && p.status === "running" ? { ...p, status: "error" as const } : p)) }
+      : m,
+  );
+}

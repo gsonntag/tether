@@ -79,13 +79,22 @@ export class RequestDesk {
     // Answers kept for the harness asking again hold only for the turn that passes them on: any
     // other turn starting means you moved on.
     bus.on("turnStarted", ({ sessionId }) => {
-      if (!this.resuming.delete(sessionId)) broker.forgetPredecided(sessionId);
+      if (!this.resuming.delete(sessionId)) broker.forgetPredecided(sessionId, this.heldIds(sessionId));
     });
     // A turn that ran and ended without the harness asking again: what was restored is stale.
+    // Answers held for a turn to end go out now, one per turn.
     bus.on("turnEnded", ({ sessionId }) => {
-      broker.forgetPredecided(sessionId);
+      broker.forgetPredecided(sessionId, this.heldIds(sessionId));
       broker.cancel((_r, chain, restored) => restored && chain.at(-1) === sessionId);
+      if (this.held.get(sessionId)?.length) setTimeout(() => void this.drain(sessionId), 0);
     });
+  }
+
+  /** Answers to restored requests waiting for the running turn to end, by root session. */
+  private held = new Map<string, { requestId: string; text: string; mode?: string }[]>();
+
+  private heldIds(root: string): Set<string> {
+    return new Set((this.held.get(root) ?? []).map((h) => h.requestId));
   }
 
   /** Root sessions passing on a restored answer: their next turn start is that message's. */
@@ -172,18 +181,34 @@ export class RequestDesk {
     }
   }
 
-  /** An answer to a restored request: the session resumes with a message saying what was decided. */
+  /**
+   * An answer to a restored request: the session resumes with a message saying what was decided.
+   * While a turn runs it waits for that turn to end (a message can't start a turn then).
+   */
   private async passOn(r: Request, a: RequestAnswer, root: string) {
+    const text = restoredMessage(r, a);
+    if (!text) return void (await this.say(root, notice(`You denied ${this.harness(root)}'s request to ${describeRequest(r)}.`)));
+    // As live: approving a plan leaves plan mode (for the chosen mode, else the plain one).
+    const mode = a.allow ? (a.mode ?? r.approveMode) : undefined;
+    const list = this.held.get(root) ?? [];
+    list.push({ requestId: r.id, text, ...(mode ? { mode } : {}) });
+    this.held.set(root, list);
+    await this.drain(root);
+  }
+
+  /** Sends the next held answer when the session is free to start a turn. */
+  private async drain(root: string) {
     const s = this.core.sessions.get(root);
+    const list = this.held.get(root);
+    if (!list?.length) return void this.held.delete(root);
+    if (s && (s.state.status !== "idle" || s.sending)) return; // after this turn (turnEnded)
+    const next = list.shift()!;
+    if (!list.length) this.held.delete(root);
     try {
-      // As live: approving a plan leaves plan mode (for the chosen mode, else the plain one).
-      const mode = a.allow ? (a.mode ?? r.approveMode) : undefined;
-      if (mode) await this.hooks.setPermissionMode(root, mode);
-      const text = restoredMessage(r, a);
-      if (!text) return void (await this.say(root, notice(`You denied ${this.harness(root)}'s request to ${describeRequest(r)}.`)));
+      if (next.mode) await this.hooks.setPermissionMode(root, next.mode);
       this.resuming.add(root);
       try {
-        await this.hooks.send(root, text);
+        await this.hooks.send(root, next.text);
       } finally {
         this.resuming.delete(root);
       }

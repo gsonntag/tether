@@ -197,6 +197,9 @@ export class LiveControl {
 
   private toStored(s: Session, error?: string) {
     s.driver = undefined;
+    // Calls still running died with the process: failed, not spinning (as the store reads, notices.ts settleStopped).
+    for (const m of s.transcript?.messages ?? [])
+      for (const p of m.parts) if (p.type === "tool" && p.status === "running") s.apply({ type: "tool", msgId: m.id, toolId: p.id, patch: { status: "error" } });
     // Nobody waits on its requests any more (restored ones stay until answered or stopped).
     if (!this.stopping) this.desk.cancel((_r, chain, restored) => !restored && chain.at(-1) === s.id);
     clearTimeout(s.idleTimer);

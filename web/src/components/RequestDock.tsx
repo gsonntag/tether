@@ -208,9 +208,9 @@ function Questions({ r, busy, onAnswer, onDismiss }: { r: Request; busy: boolean
             {q.question}
           </legend>
           <div className="t-req-options">
-            {q.options.map((o) => (
+            {q.options.map((o, j) => (
               <button
-                key={o.label}
+                key={j}
                 type="button"
                 className="t-option"
                 aria-pressed={quick ? undefined : picked[i]!.includes(o.label)}

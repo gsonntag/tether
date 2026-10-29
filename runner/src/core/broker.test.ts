@@ -196,3 +196,24 @@ describe("slow policy steps", () => {
     expect(await p).toMatchObject({ allow: true });
   });
 });
+
+describe("review round 2", () => {
+  test("a restored subagent request is taken over only by the same session asking", async () => {
+    const key = requestKey("Write", { file_path: "/p/a.txt", content: "hi" });
+    const b = new RequestBroker([], { saved: [{ request: req("old", { sessionId: "claude:s1/a1" }), key, chain: ["claude:s1/a1", "claude:s1"] }] });
+    // Another subagent of the same session asks the same: a request of its own.
+    const p = b.decide(req("new", { sessionId: "claude:s1/a2" }), ["claude:s1/a2", "claude:s1"], ctx);
+    await Bun.sleep(0);
+    expect(b.forSession("claude:s1").map((r) => r.id).sort()).toEqual(["new", "old"]);
+    b.answer("new", { allow: true });
+    expect(await p).toMatchObject({ requestId: "new" });
+  });
+
+  test("after freeze (shutting down) answers are refused, so nothing is acted on twice", async () => {
+    const b = new RequestBroker();
+    void b.decide(req("r1"), ["s"], ctx);
+    await Bun.sleep(0);
+    b.freeze();
+    expect(() => b.answer("r1", { allow: true })).toThrow("restarting");
+  });
+});

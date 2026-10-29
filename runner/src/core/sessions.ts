@@ -18,7 +18,7 @@ import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
-import { NoticeStore, pruneOverlay, withOverlay } from "./notices";
+import { NoticeStore, pruneOverlay, settleStopped, withOverlay } from "./notices";
 import { Session } from "./session";
 import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
@@ -255,7 +255,7 @@ export class SessionCore {
         }
         this.prune(s, msgs);
         // A live driver may have created it meanwhile (send right after open).
-        s.transcript ??= new Transcript(withOverlay(msgs, s.overlay));
+        s.transcript ??= new Transcript(settleStopped(withOverlay(msgs, s.overlay)));
         return s.transcript;
       })
       .finally(() => (s.loading = undefined));
@@ -292,7 +292,7 @@ export class SessionCore {
     s.unwatch = this.adapter(s.summary.harness).watchHistory(s.summary.nativeId, s.summary.projectPath, (msgs) => {
       if (s.live || s.childRunning || !s.transcript) return;
       this.prune(s, msgs);
-      for (const e of diffTranscripts(s.transcript.messages, withOverlay(msgs, s.overlay))) s.apply(e);
+      for (const e of diffTranscripts(s.transcript.messages, settleStopped(withOverlay(msgs, s.overlay)))) s.apply(e);
       this.touch(s);
     });
   }

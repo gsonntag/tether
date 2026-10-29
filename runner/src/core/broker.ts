@@ -97,6 +97,8 @@ export interface ClosedRequest {
 interface Predecided {
   key: string;
   root: string;
+  /** the session that asked (a subagent's own, or the root) */
+  asker: string;
   requestId: string;
   decision: Decision;
   at: number;
@@ -162,7 +164,7 @@ export class RequestBroker {
 
     // Answered after a restart, before the harness asked again.
     this.predecided = this.predecided.filter((p) => this.now() - p.at < PREDECIDED_MS);
-    const pre = this.predecided.findIndex((p) => p.root === root && p.key === key);
+    const pre = this.predecided.findIndex((p) => p.root === root && p.asker === request.sessionId && p.key === key);
     if (pre >= 0) {
       const [p] = this.predecided.splice(pre, 1);
       return { ...p!.decision, source: "person", requestId: p!.requestId };
@@ -170,7 +172,8 @@ export class RequestBroker {
     if (signal?.aborted) return this.gone(request.id);
 
     // Still open from before a restart: this ask takes it over, keeping its id.
-    const restored = [...this.open.values()].find((o) => !o.resolve && o.key === key && o.chain.at(-1) === root);
+    // The same session asking (an identical ask from another session in the tree is its own).
+    const restored = [...this.open.values()].find((o) => !o.resolve && !o.checking && o.key === key && o.chain.at(-1) === root && o.request.sessionId === request.sessionId);
     if (restored) return this.wait(restored, signal);
 
     const shown = capRequest(request);
@@ -238,6 +241,9 @@ export class RequestBroker {
    * any device) answered it first. Returns the request as it was shown.
    */
   answer(requestId: string, a: RequestAnswer): Request {
+    // Shutting down: an answer now couldn't be saved, so the request would come back after the
+    // restart and could be acted on twice.
+    if (this.frozen) throw new Error("The runner is restarting. Try again in a moment.");
     const o = this.open.get(requestId);
     if (!o) {
       const was = this.closedIds.get(requestId)?.outcome;
@@ -260,7 +266,7 @@ export class RequestBroker {
     // Restored after a restart: the answer is passed on with a message (core/requests.ts
     // restoredMessage), and kept for when the harness asks the same again. A plain deny sends
     // nothing, so nothing asks again in reply: it isn't kept, or a later ask would be denied unseen.
-    if (!o.resolve && (a.allow || a.reason?.trim())) this.predecided.push({ key: o.key, root: o.chain.at(-1)!, requestId, decision, at: this.now() });
+    if (!o.resolve && (a.allow || a.reason?.trim())) this.predecided.push({ key: o.key, root: o.chain.at(-1)!, asker: r.sessionId, requestId, decision, at: this.now() });
     this.close(requestId, outcome, decision, "person", a);
     return r;
   }
@@ -270,9 +276,9 @@ export class RequestBroker {
     for (const o of [...this.open.values()]) if (!o.checking && match(o.request, o.chain, !o.resolve)) this.close(o.request.id, outcome);
   }
 
-  /** Answers kept for restored requests of this root session are dropped (its turn ended). */
-  forgetPredecided(root: string) {
-    this.predecided = this.predecided.filter((p) => p.root !== root);
+  /** Answers kept for restored requests of this root session are dropped (its turn ended), but those in `keep`. */
+  forgetPredecided(root: string, keep: ReadonlySet<string> = new Set()) {
+    this.predecided = this.predecided.filter((p) => p.root !== root || keep.has(p.requestId));
   }
 
   /** Shutting down: what is open now stays saved, whatever happens to the drivers next. */
