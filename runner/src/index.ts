@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import pkg from "../package.json";
 import { claudeAdapter } from "./adapters/claude";
+import { codexAdapter } from "./adapters/codex";
 import { detectHarnesses } from "./adapters/detect";
 import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { createRunner } from "./core/runner";
@@ -28,8 +29,7 @@ const runner = createRunner({
   name: displayName(config),
   version: pkg.version,
   detectHarnesses: () => detectHarnesses(),
-  // Codex arrives in P4.
-  adapters: [claudeAdapter],
+  adapters: [claudeAdapter, codexAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
   // Hooks of TUIs in terminal mode report here (terminal/hooks.ts); the path outlives restarts.
   terminal: { hookSocket: join(CONFIG_DIR, "hooks.sock") },
