@@ -143,7 +143,7 @@ approvals and questions), `queue[]` (waiting messages), `terminal?` (attach info
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `deleteSession`, `openTerminal`, `closeTerminal`,
-`terminalInput`, `terminalResize`.
+`terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands).
 
 ## 6. Adapters
 
@@ -300,6 +300,28 @@ The terminal panel has tabs: the session's TUI, then the project's shells. **+**
 project, not the session. They persist across closing the panel and runner restarts until you close
 them (× on the tab, or `exit`), so a dev server left running is still there next time.
 
+### Shell beside the chat vs the agent's terminal (P5b)
+
+The ❯_ **Terminal** chip offers two clearly named choices:
+
+| Choice | What opens | The session |
+|---|---|---|
+| **Shell** | the panel on a project shell tab (the project's first shell, or a new one) | stays fully live in Tether: no handoff, no held queue, the composer keeps messaging the agent |
+| **<Agent> terminal** ("Claude terminal", "Codex terminal") | the agent's own TUI, mirrored | Claude: the handoff above (asked first when busy). Codex: joined, shared |
+
+- On desktop the panel sits beside the transcript. On a phone it is full screen, with a **Chat**
+  button that tucks it behind the transcript (still attached, the shell untouched) and a
+  "Back to the shell" pill that brings it back in one tap. While open, the chip closes the panel.
+- In the panel, the agent's tab is labelled "<Agent> terminal". Going to it from a shell tab
+  opens the TUI the same way the chip does: a handoff for Claude (when busy, the "Stop this turn
+  and open the terminal?" question shows in the panel), a join for Codex. Going back to a shell tab
+  never hands back: **Back to Tether** stays the only way back.
+- A line under the tabs always says which surface drives the agent: on a shell tab, "a plain shell
+  in this folder. It doesn't touch Claude: the chat still drives Claude" (or, after a handoff,
+  "Claude is still driven from the Claude terminal tab until Back to Tether"); on the agent's tab,
+  "it drives Claude now … Back to Tether hands the session back" (handoff) or "joined to this
+  session. Tether's chat drives Codex too" (shared). The transcript's handoff banner stays.
+
 The tmux server is separate from the runner, so **terminal sessions survive a runner restart**.
 On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
 
@@ -341,10 +363,44 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
 - A steer can't be taken back once the harness has it.
 - Desktop keys: Enter send or steer, Tab queue (when the box has text), ⌘/Ctrl+Enter stop and send now,
   Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+- **Shell commands** (P5b): text starting with `!` is a shell command (below).
 - **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
   screenshots are a main use. Chunks go over RPC and are stored under
   `~/.config/tether/attachments/<session>/`. They go to the harness natively where supported, and as
   paths otherwise.
+
+### Shell commands (P5b)
+
+`!npm test` in the composer runs **right away** as a one-off `$SHELL -c` in the session's folder,
+on the runner, even while the agent is mid-turn (`runShell`). It gets no stdin and has no time cap;
+it runs in a process group of its own and gets the runner's environment without Tether's secrets.
+At most 5 run at once per session. Only the owner can run one (the same auth as sending).
+
+- **Composer:** once the text starts with `!` the box visibly becomes a shell prompt (monospace,
+  green, a "Shell" hint saying where it runs and when the agent gets the output) and Enter (or
+  **Run**) runs it, whatever the agent is doing. A ❯ toggle in the composer adds or removes the
+  leading `!`, which is the way in on a phone. Attachments wait for the next message.
+- **The card:** a message of yours that only Tether has (kept with Tether's notices): the command,
+  its output streaming in, how it ended (exit code, signal, stopped), a **Stop** button while it
+  runs (SIGTERM to the whole process group, SIGKILL 2 s later), and where its output is:
+  **Running → Waiting in queue → Sent to <Agent>**, or **Not sent** with why (you removed it from the
+  queue, the queue was full, it couldn't start, the runner restarted while it ran).
+- **To the agent:** when it ends, the command and its output go to the agent as a message through
+  the queue (§9): it never steers. Mid-turn it waits for the turn to end; it obeys holds (Stop, a
+  handoff, a failed turn, a restart), the queue's limits (1 MB of text, 50 messages) and runner.json.
+  A stopped command still sends what it printed, marked stopped. In the queue it reads
+  "Output of `$ npm test`" and can't be edited (only cancelled). Where the agent got it, the
+  transcript shows one quiet line, "Output of `$ npm test` sent to Claude", the message inside. Both
+  harnesses behave alike (the message starts with a marker the readers recognize, like Tether's own
+  messages).
+- **Bounds:** output is kept as its first and last bytes with the middle counted and dropped, so a
+  runaway command can't exhaust memory or a frame. The card shows 16 KB + 44 KB (under the 64 KB part
+  limit) and streams as appended deltas of at most 16 KB every 100 ms (once cut in the middle, the
+  whole card output at most once a second); notices.json keeps 4 KB + 12 KB of a finished card; the
+  agent gets 8 KB + 22 KB with a "[… 1.2 MB of output cut from the middle …]" note.
+- **Restarts:** a graceful runner stop ends running commands (SIGTERM) and their cards as Not sent;
+  after a crash the next start does the same to any card still saved as running. Nothing stays
+  "Running". Output already queued survives in runner.json and goes as usual.
 
 ## 10. UI
 
@@ -414,6 +470,15 @@ clears on the other.
 
 **P5: Daily-driver features.** Steer and queue, attachments, web push notifications (requests,
 finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
+
+**P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
+runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
+for a running turn, obeying holds and limits). The ❯_ chip's two choices, **Shell** beside the live
+session and **<Agent> terminal** (the mirrored TUI), with labels that say which surface drives the
+agent, and on a phone a quick Chat/shell toggle (§8).
+*Accept:* `!` on desktop and phone, both harnesses, mid-turn queueing, Stop, holds, huge output,
+restarts; Shell keeps the session live while the composer messages the agent; switching to the agent's
+tab hands over, switching back doesn't; the phone toggle keeps the shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
 the Changes view and file panel, fallback chains, pi, opencode and other harnesses, `/goal` etc.
