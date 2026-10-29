@@ -92,6 +92,22 @@ for (let i = 0; i < 150; i++) {
   long.push(asst([{ type: "text", text: `Answer ${i + 1}. ${"Some longer explanation of the point. ".repeat(1 + (i % 7))}` }, ...(i % 5 === 0 ? [tool("Bash", "shell", { command: `echo ${i}` }, `${i}`)] : [])], now - (300 - i) * 60_000));
 }
 add({ id: "claude:long-1", title: "Long session (300 messages)", projectPath: P, updatedAt: now - 3_600_000 }, long);
+// For scroll checks (scripts/scroll-jank.mjs): 240 messages of very different heights, from a line
+// to several screens: long markdown, code blocks, tool cards with output and diffs.
+const words = "the session keeps its place while older pages arrive and rows are measured as they mount".split(" ");
+const prose = (i: number, n: number) => Array.from({ length: n }, (_, k) => words[(i * 7 + k) % words.length]).join(" ");
+const code = (i: number, lines: number) => "```ts\n" + Array.from({ length: lines }, (_, k) => `export const v${i}_${k} = compute(${k}, "${"y".repeat(k % 30)}");`).join("\n") + "\n```";
+const mixed: Msg[] = [];
+for (let i = 0; i < 120; i++) {
+  const t = now - (240 - i) * 60_000;
+  mixed.push(user(i % 9 === 0 ? `Q${i + 1}. ${prose(i, 120)}` : `Q${i + 1}. ${prose(i, 8 + (i % 13))}`, t));
+  const parts: Part[] = [{ type: "text", text: `A${i + 1}. ${prose(i, 30 + ((i * 37) % 400))}\n\n${i % 3 === 0 ? code(i, 5 + ((i * 11) % 50)) : "- one\n- two\n- three"}\n\n${prose(i + 1, (i * 13) % 200)}` }];
+  if (i % 4 === 1) parts.push(tool("Bash", "shell", { command: `grep -rn item${i} src` }, Array.from({ length: 30 + (i % 40) }, (_, k) => `src/f${k}.ts:${k}: item${i}`).join("\n")));
+  if (i % 6 === 2) parts.push(tool("Edit", "edit", { file_path: `${P}/src/m${i}.ts`, old_string: "a\nb\nc\nd", new_string: "a\nB\nc\nD\ne" }, "The file was updated."));
+  if (i % 5 === 3) parts.push(tool("Read", "read", { file_path: `${P}/src/r${i}.ts` }, "1\tline\n2\tline"));
+  mixed.push(asst(parts, t));
+}
+add({ id: "claude:scroll-1", title: "Scroll fixture (240 mixed messages)", projectPath: P, updatedAt: now - 30_000 }, mixed);
 add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 
@@ -245,7 +261,9 @@ function send(s: Sess, text: string) {
   at(300, () => emit(s, { type: "msg", isNew: true, msg: { ...m, parts: [{ type: "thinking", text: "" }] } }));
   const thought = "Let me think about this request carefully. ";
   [...thought.split(" ")].forEach((w, i) => at(400 + i * 40, () => emit(s, { type: "delta", msgId: m.id, part: 0, text: w + " " })));
-  const reply = `Sure. Here is a **streamed** reply to: _${text.slice(0, 60)}_\n\n1. First point\n2. Second point with \`code\`\n\n`.split(/(?<= )/);
+  // "long …" streams for about 20 s (scroll checks while a reply streams).
+  const body = text.startsWith("long") ? Array.from({ length: 12 }, (_, k) => `${prose(k, 60)}\n\n${k % 3 === 0 ? code(k, 8) + "\n\n" : ""}`).join("") : "";
+  const reply = `Sure. Here is a **streamed** reply to: _${text.slice(0, 60)}_\n\n1. First point\n2. Second point with \`code\`\n\n${body}`.split(/(?<= )/);
   at(800, () => emit(s, { type: "msg", msg: { ...s.messages.find((x) => x.id === m.id)!, parts: [...s.messages.find((x) => x.id === m.id)!.parts, { type: "text", text: "" }] } }));
   reply.forEach((w, i) => at(850 + i * 50, () => emit(s, { type: "delta", msgId: m.id, part: 1, text: w })));
   const t0 = 900 + reply.length * 50;

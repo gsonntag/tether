@@ -12,7 +12,9 @@ export function useFitViewport(ref: RefObject<HTMLElement | null>) {
       const el = ref.current;
       if (!el) return;
       const room = vv.offsetTop + vv.height - el.getBoundingClientRect().top;
-      el.style.maxHeight = room > 0 ? `${Math.floor(room)}px` : "";
+      const h = room > 0 ? `${Math.floor(room)}px` : "";
+      // vv "scroll" fires while the page pans: only a real change touches layout
+      if (el.style.maxHeight !== h) el.style.maxHeight = h;
     };
     fit();
     vv.addEventListener("resize", fit);

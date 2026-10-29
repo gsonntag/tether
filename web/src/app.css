@@ -237,6 +237,8 @@
   overflow-x: hidden;
   position: relative;
   overscroll-behavior: contain;
+  /* the transcript keeps the reader's place itself (scrollKeep.ts), the same in every engine */
+  overflow-anchor: none;
 }
 .t-track {
   max-width: 820px;

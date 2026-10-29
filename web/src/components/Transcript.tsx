@@ -1,52 +1,46 @@
-// The transcript: windowed (only messages near the viewport are in the DOM), following the bottom
-// unless the reader scrolled up, paging older messages in as they near the top, and keeping the
-// reader's place by hand (virtual.ts) when anything above them changes.
+// The transcript: every loaded message rendered plainly (the snapshot's page, plus the older pages
+// the reader scrolled up to), following the bottom unless the reader scrolled up, paging older
+// messages in as they near the top, and keeping the reader's place by hand (scrollKeep.ts) when
+// older messages arrive above them. It writes scrollTop only while no finger is down and no
+// scroll is in flight: on iOS any write ends a fling.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ArrowDownIcon } from "@heroicons/react/24/outline";
-import type { Msg } from "../../../shared/transcript";
 import type { TranscriptWindow } from "../../../shared/window";
-import { anchorAt, offsets, restore, visibleRange, type Anchor } from "../virtual";
+import { firstShown, Gesture, restoreTop, rowAt, type Anchor } from "../scrollKeep";
 import { Message } from "./Message";
 
-/** A guess before a message is measured: roughly by how much text it holds. */
-function estimate(m: Msg): number {
-  if (m.role === "notice") return 32;
-  let h = 24;
-  for (const p of m.parts) h += p.type === "tool" ? 40 : p.type === "text" ? 24 + Math.min(1200, (p.text.length / 90) * 22) : p.type === "image" ? 240 : 30;
-  return h;
-}
-
-const OVERSCAN = 800;
 const NEAR_BOTTOM = 40;
-const NEAR_TOP = 600;
+/** Fetch older messages this far from the top, so a page is usually in before a fling gets there. */
+const NEAR_TOP = 2000;
+/** A first page shorter than the screen plus this fetches older ones at once. */
+const FILL = 600;
+/** A scroll has settled after this long with no finger down and no scroll event. */
+const QUIET = 150;
 
 export function Transcript({ window: w, onOlder, footer }: { window: TranscriptWindow; onOlder: () => Promise<boolean>; footer?: React.ReactNode }) {
   const scroller = useRef<HTMLDivElement>(null);
-  /** the top spacer: where the list starts inside the scroller (below "Earlier messages") */
-  const listTop = useRef<HTMLDivElement>(null);
-  const observed = useRef(new Set<HTMLElement>());
-  const heights = useRef(new Map<string, number>());
+  const list = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   /** the scroll position the last scroll event saw: only a move up means the reader left the bottom */
   const lastTop = useRef(0);
-  const track = useRef<HTMLDivElement>(null);
   const touchY = useRef(0);
+  const gesture = useRef(new Gesture(QUIET)).current;
+  /** the row at the top of the viewport and where it was, as of the last scroll */
   const anchor = useRef<Anchor | undefined>(undefined);
+  /** the first message rendered: older ones that arrive in front wait for the scroll to settle */
+  const shownFrom = useRef<string | undefined>(undefined);
+  const firstId = useRef<string | undefined>(undefined);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [, bump] = useReducer((n: number) => n + 1, 0);
-  const [view, setView] = useState({ top: 0, height: 800 });
   const [atBottom, setAtBottom] = useState(true);
   const [paging, setPaging] = useState(false);
 
   const msgs = w.messages;
   const ids = useMemo(() => msgs.map((m) => m.id), [msgs]);
-  const byId = useMemo(() => new Map(msgs.map((m) => [m.id, m])), [msgs]);
-  const offs = offsets(ids, (id) => heights.current.get(id) ?? estimate(byId.get(id)!));
-  const total = offs[offs.length - 1]!;
-  const base = () => listTop.current?.offsetTop ?? 0;
-  const [start, end] = visibleRange(offs, view.top - base(), view.height, OVERSCAN);
+  const from = firstShown(ids, shownFrom.current, stick.current || gesture.idle(performance.now()));
 
   /**
    * The view went up and isn't at the very bottom: the reader's doing. (Content that shrinks also
@@ -71,51 +65,40 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     lastTop.current = el.scrollTop;
   };
 
-  // After every render: stay at the bottom, or put the anchor back where the reader had it.
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    if (stick.current) pin(el);
-    else if (anchor.current) {
-      const top = restore(ids, offs, anchor.current);
-      if (top !== undefined && Math.abs(el.scrollTop - base() - top) > 1) el.scrollTop = top + base();
-    }
-    anchor.current = anchorAt(ids, offs, el.scrollTop - base());
-    // Stop measuring messages that scrolled out of the window.
-    for (const t of observed.current)
-      if (!t.isConnected) {
-        observer.unobserve(t);
-        observed.current.delete(t);
-      }
-  });
+  /** Remember the row at the top of the viewport (rows are the list's children, in order). */
+  const capture = (el: HTMLDivElement) => {
+    const rows = list.current?.children;
+    if (!rows) return;
+    const i = rowAt(rows.length, (k) => (rows[k] as HTMLElement).offsetTop + (rows[k] as HTMLElement).offsetHeight, el.scrollTop);
+    const row = rows[i] as HTMLElement | undefined;
+    anchor.current = row?.dataset.id ? { id: row.dataset.id, top: row.offsetTop - el.scrollTop } : undefined;
+  };
 
-  // Measure what is rendered; a change re-renders (and the effect above re-anchors).
-  const observer = useMemo(
-    () =>
-      new ResizeObserver((entries) => {
-        let changed = false;
-        for (const e of entries) {
-          const id = (e.target as HTMLElement).dataset.id!;
-          const h = Math.round((e.target as HTMLElement).offsetHeight);
-          if (h && heights.current.get(id) !== h) {
-            heights.current.set(id, h);
-            changed = true;
-          }
-        }
-        if (changed) bump();
-      }),
-    [],
-  );
-  useEffect(() => () => observer.disconnect(), [observer]);
-  const measure = useCallback(
-    (el: HTMLDivElement | null) => {
-      if (el && !observed.current.has(el)) {
-        observed.current.add(el);
-        observer.observe(el);
+  /**
+   * Follow the bottom, or put the reader's row back if something above it moved it (older
+   * messages shown, an image above loading). Never while a finger is down or a fling runs: there
+   * a write would stop the fling, so the move is accepted and becomes the new place.
+   */
+  const keep = (el: HTMLDivElement) => {
+    if (stick.current) pin(el);
+    else if (anchor.current && gesture.idle(performance.now())) {
+      const row = list.current?.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(anchor.current.id)}"]`);
+      const top = row ? restoreTop(anchor.current, row.offsetTop, el.scrollTop) : undefined;
+      if (top !== undefined) {
+        el.scrollTop = top;
+        lastTop.current = el.scrollTop;
       }
-    },
-    [observer],
-  );
+    }
+    capture(el);
+  };
+
+  // After every render (a delta, older messages shown, a reset): stay at the bottom or in place.
+  useLayoutEffect(() => {
+    shownFrom.current = ids[from];
+    firstId.current = ids[0];
+    const el = scroller.current;
+    if (el) keep(el);
+  });
 
   const older = async () => {
     if (paging) return;
@@ -127,8 +110,20 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     }
   };
 
+  /** Show older messages held back during a scroll, once it settles (checked again until then). */
+  const settleLater = () => {
+    if (settleTimer.current) return;
+    settleTimer.current = setTimeout(() => {
+      settleTimer.current = undefined;
+      if (!gesture.idle(performance.now())) settleLater();
+      else if (shownFrom.current !== firstId.current) bump();
+    }, QUIET + 20);
+  };
+  useEffect(() => () => clearTimeout(settleTimer.current), []);
+
   const onScroll = () => {
     const el = scroller.current!;
+    gesture.scrolled(performance.now());
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     // Any move up leaves the bottom, however small. Content growing below (streaming text) also
     // opens a gap until it's pinned again; that isn't the reader, so it never unsticks. Coming
@@ -137,29 +132,32 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     else if (fromBottom < NEAR_BOTTOM) stick.current = true;
     lastTop.current = el.scrollTop;
     setAtBottom(stick.current);
-    anchor.current = anchorAt(ids, offs, el.scrollTop - base());
-    setView({ top: el.scrollTop, height: el.clientHeight });
-    if (el.scrollTop < NEAR_TOP && w.hasOlder) void older();
+    capture(el);
+    // (not while a page waits to be shown: one page at a time, as the reader gets to it)
+    if (from > 0) settleLater();
+    else if (el.scrollTop < NEAR_TOP && w.hasOlder) void older();
   };
 
-  // The viewport's size (rotation, the keyboard on a phone, the composer growing), and the content's:
-  // streaming markdown grows between renders, and the bottom is pinned again at once.
+  // The viewport's size (rotation, the keyboard on a phone, the composer growing), and the
+  // content's: streaming markdown grows between renders, an image decodes, a card opens.
   useEffect(() => {
     const el = scroller.current!;
-    const ro = new ResizeObserver(() => {
-      if (stick.current) pin(el);
-      setView({ top: el.scrollTop, height: el.clientHeight });
-    });
+    const ro = new ResizeObserver(() => keep(el));
     ro.observe(el);
-    if (track.current) ro.observe(track.current);
+    if (list.current) ro.observe(list.current);
     return () => ro.disconnect();
   }, []);
 
   // A short first page that doesn't fill the screen: fetch older until it does.
   useEffect(() => {
     const el = scroller.current;
-    if (el && w.hasOlder && el.scrollHeight <= el.clientHeight + NEAR_TOP) void older();
+    if (el && w.hasOlder && el.scrollHeight <= el.clientHeight + FILL) void older();
   }, [w.hasOlder, msgs.length]);
+
+  // Older messages arrived while the reader was scrolling: show them once it settles.
+  useEffect(() => {
+    if (from > 0) settleLater();
+  }, [from]);
 
   /** The reader asked to go up (wheel, finger, keys): stop following before anything pins again. */
   const unstick = () => {
@@ -176,6 +174,11 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     el.scrollTop = el.scrollHeight;
   };
 
+  const touchEnd = () => {
+    gesture.touch(false, performance.now());
+    settleLater();
+  };
+
   return (
     <div className="t-scroll-wrap">
       <div
@@ -183,19 +186,27 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
         ref={scroller}
         onScroll={onScroll}
         onWheel={(e) => e.deltaY < 0 && unstick()}
-        onTouchStart={(e) => (touchY.current = e.touches[0]?.clientY ?? 0)}
+        onTouchStart={(e) => {
+          gesture.touch(true, performance.now());
+          touchY.current = e.touches[0]?.clientY ?? 0;
+        }}
         onTouchMove={(e) => (e.touches[0]?.clientY ?? 0) > touchY.current + 2 && unstick()}
-        onKeyDown={(e) => ["PageUp", "ArrowUp", "Home"].includes(e.key) && unstick()} role="log" aria-label="Transcript" aria-live="off">
-        <div className="t-track" ref={track}>
-          {w.hasOlder && <div className="t-paging">{paging ? "Loading earlier messages…" : "Earlier messages"}</div>}
-          <div ref={listTop} />
-          <div style={{ height: offs[start] }} />
-          {msgs.slice(start, end).map((m) => (
-            <div key={m.id} data-id={m.id} ref={measure}>
-              <Message msg={m} />
-            </div>
-          ))}
-          <div style={{ height: total - offs[end]! }} />
+        onTouchEnd={touchEnd}
+        onTouchCancel={touchEnd}
+        onKeyDown={(e) => ["PageUp", "ArrowUp", "Home"].includes(e.key) && unstick()}
+        role="log"
+        aria-label="Transcript"
+        aria-live="off"
+      >
+        <div className="t-track">
+          {(w.hasOlder || from > 0) && <div className="t-paging">{paging || from > 0 ? "Loading earlier messages…" : "Earlier messages"}</div>}
+          <div ref={list}>
+            {msgs.slice(from).map((m) => (
+              <div key={m.id} data-id={m.id}>
+                <Message msg={m} />
+              </div>
+            ))}
+          </div>
           {footer}
         </div>
       </div>

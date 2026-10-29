@@ -120,8 +120,11 @@ and re-subscribes for a fresh snapshot on any gap or reconnect. This one rule ha
 phone sleep, network changes and multi-device sync.
 
 **Paging.** Snapshots (and `reset`) carry only the newest messages (`TRANSCRIPT_PAGE = 50`) plus
-`hasOlder`. The `history` op fetches older pages as you scroll up. The browser renders only what's on
-screen, so long sessions open instantly.
+`hasOlder`. The `history` op fetches older pages as you scroll up, so long sessions open instantly.
+The browser renders the pages it has loaded, plainly (no windowing: estimated row heights shift
+content under a finger). It writes the scroll position only while no finger is down and no fling is
+running, because iOS Safari ends a fling on any write: a page that arrives mid-fling shows once the
+scroll settles, with the reader's place kept.
 
 ### Transcript
 
