@@ -5,10 +5,11 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { Markdown } from "@astryxdesign/core/Markdown";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import type { Request, RequestAnswer, RequestQuestion, ToolPart } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
+import { Markdown } from "./Markdown";
 import { shortPath, ToolDetails } from "./ToolCard";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -98,7 +99,14 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
           Subagent · {r.agent || "Untitled"} →
         </button>
       )}
-      {isQuestion ? (
+      {r.checking ? (
+        <>
+          <div className="t-req-title">{isQuestion ? (r.question ?? "Claude has a question.") : requestTitle(r, root)}</div>
+          <div className="t-inline-status">
+            <Spinner size="sm" /> Checking…
+          </div>
+        </>
+      ) : isQuestion ? (
         <Questions r={r} busy={busy} onAnswer={(answers) => void answer({ allow: true, answers })} onDismiss={() => void answer({ allow: false })} />
       ) : (
         <>

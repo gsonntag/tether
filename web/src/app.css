@@ -162,6 +162,8 @@
   height: 100%;
   min-height: 0;
   min-width: 0;
+  /* the dock is sized against what the session has (a keyboard may take half the screen) */
+  container-type: size;
 }
 .t-header {
   flex: none;
@@ -649,7 +651,9 @@
 
 .t-dock {
   flex: none;
-  max-height: 55vh;
+  /* never more than about half the session's height (cqh: .t-session), so the transcript keeps a
+     strip and the composer stays whole */
+  max-height: min(55vh, 45cqh);
   overflow-y: auto;
   overscroll-behavior: contain;
   border-top: 1px solid var(--t-border);
@@ -775,7 +779,7 @@
   .t-dock {
     padding-left: 12px;
     padding-right: 12px;
-    max-height: 50vh;
+    max-height: min(50vh, 40cqh);
   }
 }
 .t-runner-waiting {
