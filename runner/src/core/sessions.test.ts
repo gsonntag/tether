@@ -548,3 +548,12 @@ test("a notice whose anchor the store no longer has goes once the store has move
   expect(v.w.messages.map((m) => m.id)).toEqual(["m0", "r1"]);
   expect(core.notices.get("claude:s1")).toEqual([]);
 });
+
+test("a path in New session: ~ and relative paths are in the home folder", async () => {
+  const { expandPath } = await import("./sessions");
+  const { homedir } = await import("node:os");
+  expect(expandPath("~")).toBe(homedir());
+  expect(expandPath(" ~/a/b ")).toBe(`${homedir()}/a/b`);
+  expect(expandPath("projects/x")).toBe(`${homedir()}/projects/x`);
+  expect(expandPath("/tmp/x/../y")).toBe("/tmp/y");
+});

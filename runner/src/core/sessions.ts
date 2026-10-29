@@ -41,12 +41,15 @@ export interface CoreOptions {
   now?: () => number;
 }
 
-/** "~/x" and "~" as the home folder; the rest resolved to an absolute path. */
+/**
+ * "~/x" and "~" as the home folder; a relative path against the home folder too (not wherever the
+ * runner was started); the rest resolved to an absolute path.
+ */
 export function expandPath(p: string): string {
   const t = p.trim();
   if (t === "~") return homedir();
   if (t.startsWith("~/")) return resolve(homedir(), t.slice(2));
-  return resolve(t);
+  return resolve(homedir(), t);
 }
 
 const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, status: "idle", requests: [], queue: [] });
