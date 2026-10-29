@@ -202,8 +202,8 @@ describe("settings the harness keeps per session (capabilities.persistent)", () 
   test("a setting the harness reports otherwise (not applied yet) stays, to be sent at the next start", async () => {
     const { adapter, live, prefs } = setup({ persistent: true });
     adapter.addStored("s1", []);
-    await live.setPermissionMode("claude:s1", "read-only");
     await live.send("claude:s1", "hi");
+    prefs.set("claude:s1", { permissionMode: "read-only" });
     adapter.drivers[0]!.sink.state({ permissionMode: "auto" });
     expect(prefs.get("claude:s1").permissionMode).toBe("read-only");
     adapter.drivers[0]!.sink.state({ permissionMode: "read-only" });
@@ -216,5 +216,79 @@ describe("settings the harness keeps per session (capabilities.persistent)", () 
     await live.send("claude:s1", "hi");
     adapter.drivers[0]!.sink.state({ permissionMode: "acceptEdits" });
     expect(prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
+  });
+});
+
+describe("a setting changed while live: shown only as the harness takes it, never looser at the next send", () => {
+  async function live_(caps: Partial<HarnessCapabilities>) {
+    const t = setup(caps);
+    t.live.settingMs = 60;
+    t.live.confirmMs = 80;
+    t.adapter.addStored("s1", []);
+    await t.core.subscribe("claude:s1");
+    await t.live.send("claude:s1", "hi");
+    await t.live.setPermissionMode("claude:s1", "auto");
+    return { ...t, d: t.adapter.drivers[0]!, s: await t.core.open("claude:s1") };
+  }
+
+  test("rejected: every device goes back to what runs, the pref too, and the next send runs as shown", async () => {
+    const { live, prefs, d, s, frames } = await live_({ persistent: true });
+    d.setPermissionMode = async () => {
+      throw new Error("Invalid request");
+    };
+    const before = frames.length;
+    await expect(live.setPermissionMode("claude:s1", "read-only")).rejects.toThrow("didn't take that setting (Invalid request). It's unchanged.");
+    expect(s.state.permissionMode).toBe("auto");
+    expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
+    // Told to every watcher (a state event back to Auto went out after the Read only one).
+    const states = frames.slice(before).filter((f: any) => f.t === "event" && f.event.type === "state" && f.event.state.permissionMode).map((f: any) => f.event.state.permissionMode);
+    expect(states).toEqual(["read-only", "auto"]);
+    await live.send("claude:s1", "next");
+    expect(d.sent).toEqual(["hi", "next"]);
+  });
+
+  test("no answer in time: rolled back the same way", async () => {
+    const { live, d, s } = await live_({ persistent: true });
+    d.setPermissionMode = () => new Promise(() => {});
+    await expect(live.setPermissionMode("claude:s1", "read-only")).rejects.toThrow("didn't answer");
+    expect(s.state.permissionMode).toBe("auto");
+  });
+
+  test("taken but not confirmed: rolled back; confirmed late: kept", async () => {
+    const { live, d, s, prefs } = await live_({ persistent: true });
+    // Taken without a word back (the fake harness otherwise reports what it's given).
+    d.onSetting = undefined;
+    await expect(live.setPermissionMode("claude:s1", "read-only")).rejects.toThrow("didn't confirm");
+    expect(s.state.permissionMode).toBe("auto");
+    // Confirmed within the wait: applied.
+    d.setPermissionMode = async (m) => void setTimeout(() => d.sink.state({ permissionMode: m }), 30);
+    await live.setPermissionMode("claude:s1", "read-only");
+    expect(s.state.permissionMode).toBe("read-only");
+    expect(prefs.get("claude:s1").permissionMode).toBeUndefined();
+  });
+
+  test("a pending setting (made while it started) is applied and confirmed before the send; else nothing is sent", async () => {
+    const { live, d, prefs } = await live_({ persistent: true });
+    // Left pending (as when a change made while stored couldn't be confirmed yet).
+    prefs.set("claude:s1", { permissionMode: "read-only" });
+    const applied: string[] = [];
+    d.setPermissionMode = async (m) => void applied.push(m);
+    await expect(live.send("claude:s1", "next")).rejects.toThrow("hasn't confirmed your new mode yet, so nothing was sent");
+    expect(d.sent).toEqual(["hi"]);
+    expect(applied).toEqual(["read-only"]);
+    // Confirmed late (within the wait): the send goes ahead.
+    d.setPermissionMode = async (m) => void setTimeout(() => d.sink.state({ permissionMode: m }), 30);
+    await live.send("claude:s1", "next");
+    expect(d.sent).toEqual(["hi", "next"]);
+  });
+
+  test("a harness that doesn't confirm (Claude): a failed change is rolled back; a taken one stands", async () => {
+    const { live, d, s } = await live_({ persistent: false });
+    expect(s.state.permissionMode).toBe("auto");
+    d.setPermissionMode = async () => {
+      throw new Error("nope");
+    };
+    await expect(live.setPermissionMode("claude:s1", "plan")).rejects.toThrow("It's unchanged.");
+    expect(s.state.permissionMode).toBe("auto");
   });
 });

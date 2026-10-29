@@ -133,6 +133,8 @@ export class LiveControl {
       const d = await this.ensureDriver(s);
       // Stopped before the message went out (interrupt already set idle and freed the session).
       if (s.cancelSend === me) return;
+      await this.confirmSettings(s, d);
+      if (s.cancelSend === me) return;
       this.core.touch(s, { updatedAt: this.core.now() });
       await d.send(withAttachments(text, attachments), attachments);
       s.fresh = false;
@@ -357,11 +359,66 @@ export class LiveControl {
   private async setting(id: string, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent runs with its parent's settings.");
+    const before = this.core.o.prefs.get(id);
+    const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
     this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
     s.setState(patch);
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
-    if (d) await apply(d);
+    if (!d) return;
+    try {
+      await withTimeout(apply(d), this.settingMs, "didn't answer");
+      // A harness that confirms settings itself (capabilities.persistent): shown as applied only
+      // once it reports them (the report clears the pref, see the sink).
+      if (s.capabilities.persistent) {
+        const keys = Object.keys(patch) as (keyof StartOpts)[];
+        const until = this.core.now() + this.confirmMs;
+        while (keys.some((k) => this.core.o.prefs.get(id)[k] !== undefined) && this.core.now() < until) await Bun.sleep(50);
+        if (keys.some((k) => this.core.o.prefs.get(id)[k] !== undefined)) throw new Error("it didn't confirm the change");
+      }
+    } catch (e: any) {
+      // Not applied: what every device shows, and what the next start sends, go back to how they
+      // were, so nothing runs with settings other than those shown.
+      const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
+      this.core.o.prefs.set(id, undo);
+      s.setState(shown);
+      throw new Error(`${HARNESS_LABELS[s.summary.harness]} didn't take that setting (${e?.message ?? e}). It's unchanged.`);
+    }
+  }
+
+  /** How long a live setting change may take before it counts as failed (and is rolled back). */
+  settingMs = 30_000;
+  /** How long a send waits for the harness to confirm a setting it hasn't confirmed yet. */
+  confirmMs = 10_000;
+
+  /**
+   * Before a live send, on a harness that confirms settings itself (capabilities.persistent): a
+   * setting made in Tether that it hasn't confirmed yet (its pref is still pending) is applied again
+   * and waited for. A turn never runs with settings other than those shown: if it can't be
+   * confirmed, the send fails and says so.
+   */
+  private async confirmSettings(s: Session, d: Driver) {
+    if (!s.capabilities.persistent) return;
+    const pending = () => {
+      const p = this.core.o.prefs.get(s.id);
+      return (["model", "effort", "permissionMode"] as const).filter((k) => p[k] !== undefined);
+    };
+    const keys = pending();
+    if (!keys.length) return;
+    const p = this.core.o.prefs.get(s.id);
+    try {
+      for (const k of keys) {
+        const v = p[k]!;
+        await withTimeout(k === "model" ? d.setModel(v) : k === "effort" ? (d.setEffort?.(v) ?? Promise.resolve()) : d.setPermissionMode(v), this.settingMs, "didn't answer");
+      }
+      const until = this.core.now() + this.confirmMs;
+      while (pending().length && this.core.now() < until) await Bun.sleep(50);
+    } catch {}
+    const left = pending();
+    if (!left.length) return;
+    const what = left.map((k) => (k === "permissionMode" ? "mode" : k)).join(" and ");
+    const error = `${HARNESS_LABELS[s.summary.harness]} hasn't confirmed your new ${what} yet, so nothing was sent. Try again in a moment.`;
+    throw new Error(error);
   }
 
   /**
@@ -622,4 +679,10 @@ export class LiveControl {
     this.core.o.bus.emit("turnEnded", { sessionId: c.id });
     this.core.scheduleEvict(c);
   }
+}
+
+/** A promise that fails with `what` when it takes longer than `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<never>((_, rej) => (t = setTimeout(() => rej(new Error(what)), ms)))]).finally(() => clearTimeout(t));
 }

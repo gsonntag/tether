@@ -49,14 +49,20 @@ export class FakeDriver implements Driver {
     this.interrupted++;
     this.sink.state({ status: "idle" });
   }
+  /** a setting reaching the harness; a persistent fake harness confirms it by reporting it (tests replace this) */
+  onSetting?: (key: "model" | "effort" | "permissionMode", value: string) => void | Promise<void>;
+  private async set(key: "model" | "effort" | "permissionMode", value: string) {
+    this.settings[key] = value;
+    await this.onSetting?.(key, value);
+  }
   async setModel(m: string) {
-    this.settings.model = m;
+    await this.set("model", m);
   }
   async setEffort(e: string) {
-    this.settings.effort = e;
+    await this.set("effort", e);
   }
   async setPermissionMode(m: string) {
-    this.settings.permissionMode = m;
+    await this.set("permissionMode", m);
   }
   async stopSubagent(id: string) {
     this.stopped.push(id);
@@ -166,6 +172,9 @@ export class FakeAdapter implements Adapter {
     if (this.startError) throw new Error(this.startError);
     const d = new FakeDriver(nativeId, sink, opts, (t) => this.script(t));
     this.drivers.push(d);
+    // A harness that keeps settings itself applies what it was given at the start and reports it.
+    if (this.capabilities.persistent && Object.keys(opts).length) sink.state({ ...opts });
+    if (this.capabilities.persistent) d.onSetting = (k, v) => sink.state({ [k]: v });
     return d;
   }
   async listModels(): Promise<ModelList> {
