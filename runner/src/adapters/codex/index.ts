@@ -8,7 +8,8 @@ import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
 import { codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
-import { knownMode, modeOf, modelList, type CodexModel } from "./modes";
+import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
+import { remembered } from "./remember";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -58,8 +59,13 @@ export const codexAdapter: Adapter = {
    */
   async defaults(projectPath, nativeId): Promise<StartOpts> {
     if (nativeId) {
-      const own = await threadSettings(nativeId).catch(() => undefined);
+      // An existing thread: its own settings, else what Tether last saw of them, else unknown. Never
+      // Codex's config (not what the thread has), which would also become the TUI's launch flags.
+      const own = await threadSettings(nativeId).catch(() => null);
       if (own) return own;
+      const r = remembered(nativeId);
+      const { at: _, ...seen } = (r?.applied ?? r?.start ?? {}) as StartOpts & { at?: number };
+      if (own === null || r) return { ...seen, permissionMode: seen.permissionMode ?? UNKNOWN_MODE };
     }
     const r: any = await call("config/read", { cwd: projectPath }).catch(() => undefined);
     const c = r?.config ?? {};

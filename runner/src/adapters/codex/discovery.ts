@@ -202,7 +202,7 @@ export function watchThread(nativeId: string, projectPath: string, onChange: (ms
  * A thread's settings as its rollout last recorded them (its newest turn_context): model, effort,
  * approval policy and sandbox. Undefined fields: not recorded (a thread with no turn yet).
  */
-export function rolloutSettings(text: string): { model?: string; effort?: string; approvalPolicy?: string; sandbox?: string } {
+export function rolloutSettings(text: string): { model?: string; effort?: string; approvalPolicy?: string; sandbox?: string; at?: number } {
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!;
@@ -211,7 +211,9 @@ export function rolloutSettings(text: string): { model?: string; effort?: string
       const m = JSON.parse(l);
       if (m?.type !== "turn_context") continue;
       const p = m.payload ?? {};
+      const at = Date.parse(m.timestamp ?? "");
       return {
+        ...(Number.isFinite(at) ? { at } : {}),
         ...(typeof p.model === "string" ? { model: p.model } : {}),
         ...(typeof p.effort === "string" ? { effort: p.effort } : {}),
         ...(typeof p.approval_policy === "string" ? { approvalPolicy: p.approval_policy } : {}),
@@ -230,6 +232,12 @@ export async function threadSettings(nativeId: string): Promise<StartOpts | unde
   const t = await readThread(nativeId);
   if (!t) return undefined;
   const r = await rolloutOf(t);
+  // Changed (and confirmed) while Tether was on it, after its last turn: that's newer than the rollout.
+  const applied = remembered(nativeId)?.applied;
+  if (applied && (!r.at || applied.at > r.at)) {
+    const { at: _, ...rest } = applied;
+    return { ...rest, permissionMode: rest.permissionMode ?? UNKNOWN_MODE };
+  }
   if (r.approvalPolicy) {
     // Its first turn recorded them: what Tether remembered from its start isn't needed any more.
     if (remembered(nativeId)?.start) remember(nativeId, { start: undefined });

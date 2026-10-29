@@ -4,6 +4,7 @@ import { RESOLVED_ELSEWHERE } from "../../core/adapter";
 import { setConnector } from "./daemon";
 import { CodexDriver, createThread } from "./driver";
 import { CodexRpc } from "./rpc";
+import { rememberIn } from "./remember";
 import { frames, TestSink } from "./testSink";
 
 const MAIN = "01a187c7-9ae6-7631-b0cc-596277bb8c13";
@@ -14,7 +15,7 @@ class FakeDaemon {
   sent: any[] = [];
   rpc = new CodexRpc();
   answers: Record<string, (p: any) => unknown> = {
-    "thread/resume": () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "untrusted", sandbox: { type: "workspaceWrite" } }),
+    "thread/resume": () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "untrusted", approvalsReviewer: "user", sandbox: { type: "workspaceWrite" } }),
     "thread/start": () => ({ thread: { id: "NEW", status: { type: "idle" } }, model: "gpt-6-luna", approvalPolicy: "on-request", sandbox: { type: "readOnly" } }),
     "turn/start": () => ({ turn: { id: "t9" } }),
   };
@@ -35,7 +36,16 @@ class FakeDaemon {
       send: (text) => {
         const m = JSON.parse(text);
         this.sent.push(m);
-        if (m.method && m.id !== undefined) queueMicrotask(() => this.rpc.receive(JSON.stringify({ id: m.id, result: this.answers[m.method]?.(m.params) ?? {} })));
+        if (m.method && m.id !== undefined)
+          queueMicrotask(() => {
+            let reply: any;
+            try {
+              reply = { id: m.id, result: this.answers[m.method]?.(m.params) ?? {} };
+            } catch (e: any) {
+              reply = { id: m.id, error: { code: -32600, message: e.message } };
+            }
+            this.rpc.receive(JSON.stringify(reply));
+          });
       },
       close: () => {},
     };
@@ -54,7 +64,9 @@ class FakeDaemon {
 
 let daemon: FakeDaemon;
 afterEach(() => setConnector(undefined));
-function useDaemon() {
+function useDaemon(fresh = true) {
+  // What Tether remembers about threads starts empty for each test (the fake's thread ids repeat).
+  if (fresh) rememberIn(undefined);
   daemon = new FakeDaemon();
   setConnector(async () => daemon.rpc);
 }
@@ -306,7 +318,7 @@ test("the placeholder name survives a runner restart: renamed after the first tu
   const d = await CodexDriver.open(id, CWD, {}, new TestSink(), false);
   await d.beforeTerminal();
   // A new runner: a new driver on the same thread.
-  useDaemon();
+  useDaemon(false);
   daemon.answers["thread/resume"] = () => ({ thread: { id, status: { type: "idle" } }, model: "m", approvalsReviewer: "user" });
   await CodexDriver.open(id, CWD, {}, new TestSink(), true);
   daemon.answers["thread/read"] = () => ({ thread: { id, name: "New session", preview: "First words" } });
@@ -327,4 +339,49 @@ test("a thread with no turn yet: the settings Tether started it with, else unkno
   daemon.answers["thread/resume"] = () => ({ thread: { id, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "high", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "workspaceWrite" } });
   await CodexDriver.open(id, CWD, {}, new TestSink(), true);
   expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ effort: "low", approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" } });
+});
+
+test("live changes: a rejected one fails (the core rolls back); one the thread already has is confirmed at once", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.answers["thread/settings/update"] = () => {
+    throw new Error("Invalid request: bad sandbox");
+  };
+  await expect(d.setPermissionMode("read-only")).rejects.toThrow("bad sandbox");
+  // Already untrusted + workspace-write (from the resume): the daemon says nothing, the driver reports it.
+  daemon.answers["thread/settings/update"] = () => ({});
+  const n = sink.states.length;
+  await d.setPermissionMode("untrusted");
+  expect(sink.states.slice(n).at(-1)).toMatchObject({ permissionMode: "untrusted" });
+  // A real change with no confirmation: nothing reported (the core waits, then rolls back).
+  const m = sink.states.length;
+  await d.setPermissionMode("read-only");
+  await Bun.sleep(20);
+  expect(sink.states.length).toBe(m);
+  // "Default" when Codex can't list its models: fails (rolled back), never left showing Default.
+  daemon.answers["model/list"] = () => {
+    throw new Error("timeout");
+  };
+  await expect(d.setModel("default")).rejects.toThrow("didn't say which model is its default");
+});
+
+test("a change applied with no turn after it is what a stored header shows (not the older rollout's)", async () => {
+  useDaemon();
+  const { threadSettings } = await import("./discovery");
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  await d.setPermissionMode("read-only");
+  await Bun.sleep(5);
+  // The rollout (no path here) has nothing newer; the thread metadata says the model.
+  daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, model: "gpt-6-luna" } });
+  expect(await threadSettings(MAIN)).toEqual({ model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
+  // thread/read failing: what Tether last saw, never Codex's config.
+  const { codexAdapter } = await import("./index");
+  daemon.answers["thread/read"] = () => {
+    throw new Error("timed out");
+  };
+  daemon.answers["config/read"] = () => ({ config: { model: "gpt-6.1-sol", approval_policy: "never", sandbox_mode: "danger-full-access" } });
+  expect(await codexAdapter.defaults(CWD, "OTHER-UNREAD")).toEqual({ permissionMode: "unknown" });
+  expect(await codexAdapter.defaults(CWD, MAIN)).toEqual({ model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
 });

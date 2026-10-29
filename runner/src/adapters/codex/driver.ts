@@ -168,7 +168,7 @@ export class CodexDriver implements Driver {
     if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox)) Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox) });
     // Approvals come to clients (Tether, the TUI), not Codex's automatic reviewer.
     if (cur.reviewer && cur.reviewer !== "user") patch.approvalsReviewer = "user";
-    let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox };
+    let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer };
     if (Object.keys(patch).length) {
       const seen = this.nextSettings(CONFIRM_MS);
       try {
@@ -237,7 +237,12 @@ export class CodexDriver implements Driver {
 
   /** Settings changed on the thread (here, or /model and /approvals in Codex's TUI). */
   private settingsChanged(s: any) {
+    this.current = { ...this.current, ...s };
     const mode = modeOf(s.approvalPolicy, s.sandboxPolicy);
+    // Kept for when the session is stored: a change with no turn after it isn't in the rollout.
+    const c = this.current;
+    const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy);
+    remember(this.nativeId, { applied: { ...(c.model ? { model: c.model } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(cmode ? { permissionMode: cmode } : {}), at: Date.now() } });
     const waiters = this.settingsWaiters.splice(0);
     for (const w of waiters) w(s);
     // Default stays Default while it runs the default model (a model picked since ends it).
@@ -347,17 +352,31 @@ export class CodexDriver implements Driver {
       if (!id) throw new Error("Codex didn't say which model is its default.");
     }
     this.alias = model === "default" ? "default" : undefined;
-    await this.rpc.call("thread/settings/update", { threadId: this.nativeId, model: id });
+    await this.update({ model: id }, this.current?.model === id);
   }
 
   async setEffort(effort: string) {
-    await this.rpc.call("thread/settings/update", { threadId: this.nativeId, effort });
+    await this.update({ effort }, this.current?.effort === effort);
   }
 
   async setPermissionMode(mode: string) {
     const m = knownMode(mode);
     if (!m) throw new Error(`Codex has no permission mode ${mode}.`);
-    await this.rpc.call("thread/settings/update", { threadId: this.nativeId, approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: "user" });
+    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && this.current?.approvalsReviewer === "user";
+    await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: "user" }, same);
+  }
+
+  /** The thread's settings as the daemon last confirmed them (start, resume, thread/settings/updated). */
+  private current?: any;
+
+  /**
+   * A setting change. The daemon confirms a change with thread/settings/updated (which reports it,
+   * and the core then counts it applied); it says nothing when nothing changed, so a value the
+   * thread already has is confirmed from what it last said.
+   */
+  private async update(patch: Record<string, unknown>, already: boolean) {
+    await this.rpc.call("thread/settings/update", { threadId: this.nativeId, ...patch });
+    if (already && this.current) this.settingsChanged(this.current);
   }
 
   async stopSubagent(nativeId: string) {

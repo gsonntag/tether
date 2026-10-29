@@ -12,6 +12,8 @@ import { CONFIG_DIR } from "../../config";
 
 export interface Remembered {
   start?: StartOpts;
+  /** the settings the daemon last confirmed while Tether was on the thread, and when (ms) */
+  applied?: StartOpts & { at: number };
   placeholder?: boolean;
   at: number;
 }
