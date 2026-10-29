@@ -11,7 +11,7 @@
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new stream approve deny steer terminal tuiApprove tetherApprove phone subagent restart quit fresh stored
+//   new stream approve deny steer terminal tuiApprove tetherApprove phone subagent restart quit fresh settings stored
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -457,6 +457,25 @@ const steps = {
     await p.close();
   },
 
+  async settings() {
+    // A thread made elsewhere keeps its own settings: shown as they are, and not changed by Tether.
+    const helper = (...args) => execFileSync("bun", ["scripts/codex-e2e-helper.ts", ...args], { cwd: new URL("../runner/", import.meta.url).pathname, encoding: "utf8" }).trim();
+    const id = `codex:${helper("make", SCRATCH, MODEL).split("\n").pop()}`;
+    const p = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    const head = await p.locator(".t-header").innerText();
+    if (!/GPT-6-Luna/i.test(head) || !/Effort\s*Low/.test(head) || !/Read only/.test(head)) fail(`the header doesn't show the thread's own settings: ${head}`);
+    await send(p, "Reply with just: KEPT");
+    await idle(p);
+    await p.locator(".t-msg.assistant", { hasText: "KEPT" }).first().waitFor({ timeout: 30_000 });
+    const after = JSON.parse(helper("settings", id.slice(6)));
+    if (after.sandbox !== "read-only" || after.approvalPolicy !== "on-request" || after.effort !== "low" || after.model !== MODEL) fail(`the thread's settings changed: ${JSON.stringify(after)}`);
+    const head2 = await p.locator(".t-header").innerText();
+    if (!/Read only/.test(head2) || !/Effort\s*Low/.test(head2)) fail(`header after a turn: ${head2}`);
+    ok(`a thread made elsewhere (GPT-6-Luna, Low, read-only) shows its own settings before anything is sent, and a turn from Tether leaves them as they were (${JSON.stringify(after)})`);
+    await p.close();
+  },
+
   async stored() {
     // Discovery: the session shows in the sidebar and its folder, and opens stored without a process.
     const p = await page(desktop);
@@ -475,8 +494,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "stored"]) {
-    if (!session && name !== "new" && name !== "fresh") {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "stored"]) {
+    if (!session && name !== "new" && name !== "fresh" && name !== "settings") {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }
