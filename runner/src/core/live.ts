@@ -95,7 +95,7 @@ export class LiveControl {
       return;
     }
     // Whatever it asked is moot now (the harness stops waiting too).
-    this.desk.cancel((_r, chain) => chain.at(-1) === id);
+    this.desk.stop(id);
     // Stopped while Claude is still starting: the message never goes out.
     if (s.sending && !s.driver) {
       // Free at once: a send right after this goes ahead (on the same start).

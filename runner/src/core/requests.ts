@@ -196,6 +196,20 @@ export class RequestDesk {
     await this.drain(root);
   }
 
+  /**
+   * Stop on a session: whatever was pending for it goes, held answers included. Nothing is sent
+   * on your behalf after a Stop.
+   */
+  stop(root: string) {
+    this.broker.cancel((_r, chain) => chain.at(-1) === root);
+    const held = this.held.get(root);
+    this.held.delete(root);
+    if (held?.length) {
+      this.broker.forgetPredecided(root);
+      void this.say(root, notice(held.length === 1 ? "Stopped; your answer wasn't sent." : `Stopped; your ${held.length} answers weren't sent.`));
+    }
+  }
+
   /** Sends the next held answer when the session is free to start a turn. */
   private async drain(root: string) {
     const s = this.core.sessions.get(root);

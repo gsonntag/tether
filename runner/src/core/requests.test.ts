@@ -384,6 +384,31 @@ describe("requests across a runner restart", () => {
     expect(d.decisions).toEqual([{ allow: true }, { allow: true }]);
   });
 
+  test("Stop drops answers held for the running turn: nothing is sent on your behalf", async () => {
+    const prefsFile = newPrefsFile();
+    const before = setup({ prefsFile });
+    before.adapter.addStored("s1", []);
+    before.adapter.script = () => [ask("Bash", { command: "a" })];
+    void before.live.send("claude:s1", "go");
+    await tick();
+    const id = (await before.core.open("claude:s1")).state.requests[0]!.id;
+    await before.live.closeAll();
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("s1", []);
+    const after = setup({ prefsFile, adapter });
+    await after.live.desk.restore();
+    adapter.script = () => [async () => new Promise<void>(() => {})];
+    void after.live.send("claude:s1", "busy");
+    await tick();
+    await after.live.answerRequest("claude:s1", id, { allow: true });
+    await after.live.interrupt("claude:s1");
+    await Bun.sleep(50);
+    expect(adapter.drivers[0]!.sent).toEqual(["busy"]);
+    const s = await after.core.open("claude:s1");
+    expect(s.transcript!.messages.some((m) => (m.parts[0] as any)?.text === "Stopped; your answer wasn't sent.")).toBe(true);
+  });
+
   test("a process that dies leaves no tool spinning, live or read back from the store", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("s1", []);
