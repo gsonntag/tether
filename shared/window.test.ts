@@ -46,5 +46,5 @@ test("a tool patch clears flags an earlier, bigger value left", () => {
   const part = { type: "tool" as const, id: "t", name: "Bash", kind: "shell" as const, input: { preview: "…" }, inputTruncated: true, status: "running" as const, output: "x", truncated: 999_999 };
   const w = { messages: [{ id: "m", role: "assistant" as const, ts: 0, parts: [part] }], hasOlder: false };
   const out = applyToWindow(w, { type: "tool", msgId: "m", toolId: "t", patch: { output: "short", truncated: 0, input: { command: "ls" }, inputTruncated: false } });
-  expect(out.messages[0]!.parts[0]).toMatchObject({ output: "short", truncated: 0, inputTruncated: false });
+  expect(out.messages[0]!.parts[0]).toEqual({ type: "tool", id: "t", name: "Bash", kind: "shell", status: "running", output: "short", input: { command: "ls" } });
 });

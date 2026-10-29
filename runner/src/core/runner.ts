@@ -3,10 +3,16 @@
 
 import { hostname } from "node:os";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
+import type { Adapter } from "./adapter";
+import { RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
 import { Connection, type ConnectionOptions } from "./connection";
 import type { CoreEvents } from "./events";
+import { LiveControl } from "./live";
 import { OpRegistry } from "./ops";
+import { Prefs } from "./prefs";
+import { registerSessionOps } from "./sessionOps";
+import { SessionCore } from "./sessions";
 
 export interface RunnerOptions {
   url: string;
@@ -20,6 +26,14 @@ export interface RunnerOptions {
   log?: (line: string) => void;
   /** connection tuning, for tests */
   connection?: Partial<ConnectionOptions>;
+  /** the harnesses this runner can drive (SPEC §6) */
+  adapters?: Adapter[];
+  /** where per-session settings are kept (runner.json); tests pass a temp file */
+  prefsFile?: string;
+  /** the request broker's policy steps (SPEC §7); none in the core */
+  policy?: PolicyStep[];
+  /** session core tuning, for tests */
+  core?: { discoverMs?: number; evictMs?: number; idleMs?: number };
 }
 
 export function createRunner(o: RunnerOptions) {
@@ -54,6 +68,19 @@ export function createRunner(o: RunnerOptions) {
     ...o.connection,
   });
 
+  const core = new SessionCore({
+    adapters: o.adapters ?? [],
+    bus,
+    send: (m) => conn.send(m),
+    epoch,
+    prefs: new Prefs(o.prefsFile),
+    log: o.log,
+    discoverMs: o.core?.discoverMs,
+    evictMs: o.core?.evictMs,
+  });
+  const live = new LiveControl(core, new RequestBroker(o.policy), { idleMs: o.core?.idleMs });
+  registerSessionOps(ops, core, live);
+
   const timer = setInterval(async () => {
     const before = JSON.stringify(await harnesses);
     harnesses = o.detectHarnesses();
@@ -67,10 +94,19 @@ export function createRunner(o: RunnerOptions) {
     ops,
     conn,
     epoch,
+    core,
+    live,
     harnesses: () => harnesses,
-    start: () => conn.start(),
-    stop: () => {
+    start: () => {
+      core.startDiscovery();
+      conn.start();
+    },
+    /** Closes live sessions (their harnesses flush), then the connection. */
+    stop: async () => {
       clearInterval(timer);
+      core.stop();
+      await live.closeAll().catch(() => {});
+      core.o.prefs.flush();
       conn.stop();
     },
   };

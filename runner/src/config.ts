@@ -7,7 +7,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
-const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
+export const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
 
 export interface RunnerConfig {
   /**
@@ -17,6 +17,18 @@ export interface RunnerConfig {
   runnerId: string;
   /** what people see; the hostname unless set */
   name?: string;
+  /** per-session settings Tether chose (SPEC §4), by session id */
+  sessions?: Record<string, SessionPrefs>;
+}
+
+/** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
+export interface SessionPrefs {
+  projectPath?: string;
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  /** last touched; old entries are dropped */
+  at?: number;
 }
 
 /** Loads runner.json, creating it with a fresh id the first time. */

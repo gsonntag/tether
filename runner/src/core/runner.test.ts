@@ -31,7 +31,7 @@ function server(port = 0): Server<unknown> {
 test("the core hears about connects and disconnects on its bus", async () => {
   let s = server();
   const port = s.port!;
-  const r = createRunner({ url: `http://127.0.0.1:${port}`, token: "t", runnerId: "u1", name: "box", version: "0", detectHarnesses: async () => [], log: () => {} });
+  const r = createRunner({ url: `http://127.0.0.1:${port}`, token: "t", runnerId: "u1", name: "box", version: "0", detectHarnesses: async () => [], log: () => {}, prefsFile: "/nonexistent/tether-test/runner.json" });
   stops.push(() => r.stop());
   const seen: string[] = [];
   r.bus.on("connected", () => seen.push("connected"));

@@ -2,7 +2,7 @@
 // any older pages fetched with `history`. Events only touch what is loaded; a message outside the
 // window is fetched with its current content when the reader pages up to it.
 
-import type { Msg, SessionEvent } from "./transcript";
+import type { Msg, SessionEvent, ToolPart } from "./transcript";
 
 export interface TranscriptWindow {
   messages: Msg[];
@@ -30,7 +30,7 @@ export function applyToWindow(w: TranscriptWindow, e: SessionEvent): TranscriptW
     case "tool":
       return patchMsg(w, e.msgId, (m) => ({
         ...m,
-        parts: m.parts.map((p) => (p.type === "tool" && p.id === e.toolId ? { ...p, ...e.patch, type: "tool" as const, id: p.id } : p)),
+        parts: m.parts.map((p) => (p.type === "tool" && p.id === e.toolId ? patchTool(p, e.patch) : p)),
       }));
     case "state":
     case "resync": // the caller subscribes again
@@ -47,6 +47,17 @@ export function prependPage(w: TranscriptWindow, page: TranscriptWindow): Transc
 function patchMsg(w: TranscriptWindow, id: string, fn: (m: Msg) => Msg): TranscriptWindow {
   const i = w.messages.findIndex((m) => m.id === id);
   return i < 0 ? w : { ...w, messages: replaceAt(w.messages, i, fn(w.messages[i]!)) };
+}
+
+/**
+ * A tool patch over a part. Patches always say whether output and input are cut (limits.ts
+ * capToolPatch): "not cut" (0, false) clears the flag, so the part matches a fresh snapshot's.
+ */
+export function patchTool(p: ToolPart, patch: Partial<ToolPart>): ToolPart {
+  const out: ToolPart = { ...p, ...patch, type: "tool", id: p.id };
+  if (!out.truncated) delete out.truncated;
+  if (!out.inputTruncated) delete out.inputTruncated;
+  return out;
 }
 
 const replaceAt = <T>(list: T[], i: number, v: T): T[] => list.map((x, j) => (j === i ? v : x));

@@ -1,0 +1,93 @@
+// What the session core needs from a harness (SPEC §6). Adapters translate their harness's store
+// and stream into the shared transcript shapes; they never talk to the UI or the relay. The core
+// branches only on `capabilities`, never on the harness id.
+
+import type { HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary } from "../../../shared/transcript";
+
+/** Transcript events a driver reports. The core numbers them (seq) and keeps the transcript. */
+export type TranscriptEvent = Extract<SessionEvent, { type: "msg" | "delta" | "tool" | "reset" }>;
+
+export interface StartOpts {
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+}
+
+/** How a permission request ended (SPEC §7): what the driver tells the harness. */
+export type Decision = { allow: true } | { allow: false; reason: string };
+
+/** A subagent the driver saw start: it becomes a child session (SPEC §6a). */
+export interface SubagentStart {
+  /** the child's native id, unique within the harness */
+  nativeId: string;
+  /** the tool call in the parent that started it */
+  parentToolId: string;
+  title: string;
+  agentType?: string;
+  /** its prompt, shown as its first message */
+  prompt?: string;
+}
+
+/**
+ * Where a driver reports. One per session; a subagent gets its own (from `subagent`), so its
+ * turns land in its own transcript.
+ */
+export interface Sink {
+  event(e: TranscriptEvent): void;
+  /** the message as the transcript has it now (to build an upsert from) */
+  message(id: string): Msg | undefined;
+  state(patch: Partial<Omit<LiveState, "mode" | "requests" | "queue">>): void;
+  /** a permission prompt or question: the broker decides (SPEC §7) */
+  request(r: Pick<Request, "kind" | "tool" | "input" | "question" | "options">, signal?: AbortSignal): Promise<Decision>;
+  /** the native id became known or changed (a new session's id comes with the harness's first answer) */
+  nativeId?(id: string): void;
+  /** a subagent started under this session: its sink */
+  subagent(s: SubagentStart): Sink;
+  /** a subagent of this sink's session ended */
+  ended?(): void;
+}
+
+export interface Driver {
+  readonly nativeId: string;
+  /** starts a turn */
+  send(text: string): Promise<void>;
+  steer?(text: string): Promise<void>;
+  interrupt(): Promise<void>;
+  setModel(model: string): Promise<void>;
+  setEffort?(effort: string): Promise<void>;
+  setPermissionMode(mode: string): Promise<void>;
+  /** stops one running subagent (capabilities.subagents.stop) */
+  stopSubagent?(nativeId: string): Promise<void>;
+  /** work still running after the turn (background subagents, shells): the session isn't idle-closed */
+  busy(): boolean;
+  close(): Promise<void>;
+  /** the process ended by itself (crashed, logged out, …): `error` says why when known */
+  onExit?: (error?: string) => void;
+}
+
+export interface Adapter {
+  id: HarnessId;
+  capabilities: HarnessCapabilities;
+  available(): Promise<boolean>;
+  // discovery and history: read-only, no process
+  listProjects(): Promise<ProjectInfo[]>;
+  /** sessions with activity since `since` (all when absent); `projectPath` narrows to one folder */
+  listSessions(opts?: { projectPath?: string; since?: number }): Promise<SessionSummary[]>;
+  /** one session's summary (title, folder, times) when it is stored */
+  sessionInfo(nativeId: string, projectPath?: string): Promise<SessionSummary | undefined>;
+  /** a session's stored subagents, as child summaries */
+  listSubagents(nativeId: string, projectPath: string): Promise<SessionSummary[]>;
+  readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
+  /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
+  watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
+  /** settings a stored session will start with (the harness's own config), for its live state */
+  defaults(projectPath: string): Promise<StartOpts>;
+  // live driving
+  start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
+  resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
+  listModels(driver?: Driver): Promise<ModelList>;
+  /** a new session's native id, chosen by Tether (Claude: a UUID; SPEC §6 terminal) */
+  newId(): string;
+  // terminal mode (P3)
+  terminalCommand(nativeId: string | undefined, projectPath: string, opts: StartOpts): { argv: string[]; env?: Record<string, string> };
+}
