@@ -75,10 +75,14 @@ export class RequestDesk {
 
   /** At start: sessions with requests saved from before the restart are opened, so they show. */
   async restore() {
-    for (const id of this.broker.sessions()) {
-      const s = await this.core.open(id).catch((e) => void this.core.log(`couldn't reopen ${id} for its open requests: ${e?.message ?? e}`));
+    for (const id of this.broker.sessions(true)) {
+      const s = await this.core.open(id).catch((e) => void this.core.log(`dropping the open requests of ${id}: ${e?.message ?? e}`));
       if (s) this.sync([s.id]);
+      // A session that is gone can't be asked again: its requests go too.
+      else this.broker.cancel((_r, chain) => chain.at(-1) === id);
     }
+    // Subagents that asked show them in their own view too, when they can still be opened.
+    for (const id of this.broker.sessions()) if (!this.core.sessions.has(id)) await this.core.open(id).then((s) => this.sync([s.id]), () => {});
   }
 
   /** A driver asks, through a session's sink. */

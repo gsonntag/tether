@@ -49,6 +49,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
   process.on(sig, async () => {
     if (stopping) process.exit(1); // a second Ctrl-C doesn't wait
     stopping = true;
+    console.log(`stopping (${sig})`);
     stopModules();
     // Live sessions' harnesses are closed so they flush; a hung one doesn't hold the exit up.
     await Promise.race([runner.stop(), Bun.sleep(5000)]);

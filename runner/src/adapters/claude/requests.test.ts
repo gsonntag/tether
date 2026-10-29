@@ -11,7 +11,8 @@ test("a tool approval carries what its card shows and why Claude Code asks", () 
   expect(claudeResult(ask, input, { allow: false, reason: "no", interrupt: true })).toEqual({ behavior: "deny", message: "no", interrupt: true });
   expect(claudeResult(ask, input, { allow: false, reason: "no" })).toEqual({ behavior: "deny", message: "no" });
   const w = claudeAsk("Write", { file_path: "/p/notes.txt", content: "hello\n" }, { toolUseID: "t", blockedPath: "/etc" });
-  expect(w).toMatchObject({ toolKind: "write", path: "/p/notes.txt", reason: "It touches /etc, outside the folders Claude may use." });
+  expect(w).toMatchObject({ toolKind: "write", path: "/p/notes.txt" });
+  expect(w.reason).toBeUndefined();
 });
 
 test("AskUserQuestion is a question; the answers go back keyed by question text", () => {

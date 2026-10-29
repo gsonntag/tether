@@ -123,9 +123,9 @@ export class RequestBroker {
       .sort((a, b) => a.openedAt - b.openedAt);
   }
 
-  /** Every session that shows an open request. */
-  sessions(): string[] {
-    return [...new Set([...this.open.values()].flatMap((o) => o.chain))];
+  /** Every session that shows an open request; `roots`: only the main sessions they belong to. */
+  sessions(roots = false): string[] {
+    return [...new Set([...this.open.values()].flatMap((o) => (roots ? [o.chain.at(-1)!] : o.chain)))];
   }
 
   /**

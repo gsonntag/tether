@@ -48,7 +48,8 @@ export function claudeAsk(tool: string, input: Record<string, unknown>, o: AskOp
       plan: str(input.plan) ?? "",
       approveAs: [{ id: "acceptEdits", label: "Approve and accept edits", description: "Leave plan mode; file edits go ahead without asking" }],
     };
-  const reason = str(o.decisionReason) ?? (o.blockedPath ? `It touches ${o.blockedPath}, outside the folders Claude may use.` : undefined);
+  // blockedPath is only the path that made it ask (often inside the project), not a reason.
+  const reason = str(o.decisionReason);
   const { kind: toolKind, ...tags } = classifyTool(tool, input);
   return { ...base, kind: "approval", toolKind, ...tags, ...(str(o.title) ? { title: o.title } : {}), ...(reason ? { reason } : {}) };
 }

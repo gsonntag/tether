@@ -261,6 +261,16 @@ describe("requests across a runner restart", () => {
     expect(after.closed.map((c) => c.outcome)).toEqual(["cancelled"]);
   });
 
+  test("requests of a session that no longer exists are dropped at start", async () => {
+    const prefsFile = newPrefsFile();
+    const p = new Prefs(prefsFile);
+    p.setRequests([{ request: { id: "r1", sessionId: "claude:gone", kind: "approval", tool: "Bash", openedAt: 1 }, key: "k", chain: ["claude:gone"] }]);
+    const after = setup({ prefsFile });
+    await after.live.desk.restore();
+    expect(after.live.desk.broker.sessions()).toEqual([]);
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).requests).toBeUndefined();
+  });
+
   test("the message a resumed session gets", () => {
     const base = { id: "r", sessionId: "s", openedAt: 1 };
     expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false, reason: "use dir" })).toBe("I denied your request to run `ls`: use dir");
