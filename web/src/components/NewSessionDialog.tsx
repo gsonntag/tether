@@ -6,7 +6,7 @@ import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
-import { focusComposerOf } from "./SessionView";
+import { focusComposerOf, openTerminalOf } from "./SessionView";
 
 const MODE_KEY = "tether.newSessionMode";
 const lastMode = () => {
@@ -36,6 +36,8 @@ export function NewSessionDialog() {
   const [path, setPath] = useState("");
   const [model, setModel] = useState("default");
   const [mode, setMode] = useState(lastMode);
+  /** start in Claude Code's own TUI instead of through Tether (SPEC §8) */
+  const [inTerminal, setInTerminal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -58,13 +60,14 @@ export function NewSessionDialog() {
     setBusy(true);
     setError(undefined);
     try {
-      const { sessionId } = await rpc(rid, "newSession", { harness: "claude", projectPath: path.trim(), ...(model !== "default" ? { model } : {}), permissionMode: mode });
+      const { sessionId } = await rpc(rid, "newSession", { harness: "claude", projectPath: path.trim(), ...(model !== "default" ? { model } : {}), permissionMode: mode, ...(inTerminal ? { terminal: true } : {}) });
       try {
         localStorage.setItem(MODE_KEY, mode);
       } catch {}
       close();
       setPath("");
-      focusComposerOf(rid, sessionId);
+      if (inTerminal) openTerminalOf(rid, sessionId);
+      else focusComposerOf(rid, sessionId);
       openSession(rid, sessionId);
     } catch (e) {
       setError((e as Error).message);
@@ -135,6 +138,10 @@ export function NewSessionDialog() {
           </select>
         </label>
         {modes.find((m) => m.id === mode)?.description && <span className="t-inline-status">{modes.find((m) => m.id === mode)!.description}</span>}
+        <label className="t-check">
+          <input type="checkbox" checked={inTerminal} onChange={(e) => setInTerminal(e.target.checked)} />
+          <span>Start in the terminal (Claude Code's own interface)</span>
+        </label>
         {error && <div className="t-form-error">{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />

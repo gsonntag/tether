@@ -800,3 +800,262 @@
   font-weight: normal;
   margin-bottom: 2px;
 }
+
+/* ---------- terminal (SPEC §8) ---------- */
+
+.t-session-split {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.t-session-split > .t-session {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.t-session-split.with-terminal > .t-session {
+  flex: 0 1 420px;
+  min-width: 300px;
+}
+.t-term-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--t-border);
+  background: #16171a;
+  color: #e6e6e6;
+}
+.t-term-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #2a2c31;
+  background: var(--color-background-card, #1d1f23);
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+.t-term-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.t-term-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.t-term-tab {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--t-muted);
+}
+.t-term-tab[aria-selected="true"] {
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+}
+.t-term-tab:hover {
+  background: var(--color-overlay-hover);
+}
+.t-term-tab:focus-visible,
+.t-term-x:focus-visible,
+.t-key:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.t-term-cmd {
+  font-family: var(--t-mono);
+  font-size: 11px;
+  color: var(--t-muted);
+}
+.t-term-x {
+  all: unset;
+  cursor: pointer;
+  padding: 2px 6px;
+  color: var(--t-muted);
+  border-radius: 4px;
+  font-size: 14px;
+}
+.t-term-x:hover {
+  color: var(--color-text-primary);
+  background: var(--color-overlay-hover);
+}
+.t-term-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.t-term-ask {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--t-border);
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+}
+.t-term-error {
+  padding: 6px 12px;
+  background: var(--color-background-card, #1d1f23);
+}
+.t-term-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+.t-term-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  padding: 4px 0 0 6px;
+}
+.t-term-box {
+  position: absolute;
+  inset: 4px 0 0 6px;
+}
+.t-term-status {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ddd;
+}
+.t-term-status.ended {
+  left: 12px;
+  right: 12px;
+  text-align: center;
+}
+.t-term-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-size: 14px;
+  color: #bbb;
+  padding: 16px;
+  text-align: center;
+}
+.t-term-banner {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--t-border);
+  font-size: 13px;
+  background: var(--t-soft);
+}
+.t-term-banner.waiting {
+  background: color-mix(in srgb, var(--color-warning, #d4a017) 18%, var(--t-soft));
+}
+.t-term-banner-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.t-chip-term[aria-pressed="true"] {
+  background: var(--t-soft);
+  border-color: var(--color-border-emphasized);
+}
+.t-term-phone {
+  flex: none;
+  background: var(--color-background-card, #1d1f23);
+  border-top: 1px solid #2a2c31;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.t-keybar {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.t-key {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  min-width: 40px;
+  height: 34px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+  font-family: var(--t-mono);
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-key:active {
+  background: var(--color-overlay-pressed, var(--color-overlay-hover));
+}
+.t-term-line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.t-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+}
+
+@media (max-width: 767px) {
+  .t-term-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    border-left: none;
+  }
+  .t-session-split.with-terminal > .t-session {
+    max-width: none;
+  }
+  /* Tabs get a row of their own, so every shell's × and the + stay in reach. */
+  .t-term-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .t-term-tabs {
+    order: 2;
+    flex-basis: 100%;
+  }
+  .t-term-actions {
+    margin-left: auto;
+  }
+  .t-key {
+    flex: 1 1 0;
+    min-width: 30px;
+    padding: 0 2px;
+  }
+  .t-term-banner {
+    padding: 8px 12px;
+  }
+}

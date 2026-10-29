@@ -17,8 +17,8 @@ const drafts = new Map<string, string>();
 
 export const Composer = forwardRef<
   ComposerHandle,
-  { draftKey: string; running: boolean; waiting?: boolean; disabled?: string; onSend: (text: string) => Promise<void>; onStop: () => Promise<void>; status?: React.ReactNode }
->(function Composer({ draftKey, running, waiting, disabled, onSend, onStop, status }, ref) {
+  { draftKey: string; running: boolean; waiting?: boolean; disabled?: string; placeholder?: string; onSend: (text: string) => Promise<void>; onStop: () => Promise<void>; status?: React.ReactNode }
+>(function Composer({ draftKey, running, waiting, disabled, placeholder, onSend, onStop, status }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -92,7 +92,7 @@ export const Composer = forwardRef<
             className="t-input"
             rows={1}
             value={text}
-            placeholder={disabled ?? (running ? (waiting ? "Waiting for your answer above" : "Claude is working… (Esc to stop)") : "Message")}
+            placeholder={disabled ?? (running ? (waiting ? "Waiting for your answer above" : "Claude is working… (Esc to stop)") : (placeholder ?? "Message"))}
             aria-label="Message"
             onChange={(e) => change(e.target.value)}
             onKeyDown={onKeyDown}

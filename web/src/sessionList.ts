@@ -27,10 +27,13 @@ export function childrenOf(summaries: Record<string, SummaryState>, runnerId: st
     .sort(newestFirst);
 }
 
-/** Main sessions on a runner with requests waiting for a person (a subagent's count in its parent's), oldest waiting first. */
+/**
+ * Main sessions on a runner waiting for a person: open requests (a subagent's count in its
+ * parent's), or a TUI in terminal mode asking (SPEC §8). Oldest waiting first.
+ */
 export function waitingOn(summaries: Record<string, SummaryState>, runnerId: string): Row[] {
   return rows(summaries)
-    .filter((r) => r.runnerId === runnerId && !r.parentSessionId && (r.requests ?? 0) > 0)
+    .filter((r) => r.runnerId === runnerId && !r.parentSessionId && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }
 

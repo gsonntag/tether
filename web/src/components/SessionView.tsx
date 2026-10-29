@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
+import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
+import { TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
 import { SessionHeader } from "./SessionHeader";
@@ -14,6 +18,9 @@ import { useFitViewport } from "./useFitViewport";
 /** A session to focus the composer of once it opens (a new session just created). */
 let focusNext: string | undefined;
 export const focusComposerOf = (runnerId: string, sessionId: string) => (focusNext = viewKey(runnerId, sessionId));
+/** A session to open with its terminal panel showing (a new session started in the terminal). */
+let terminalNext: string | undefined;
+export const openTerminalOf = (runnerId: string, sessionId: string) => (terminalNext = viewKey(runnerId, sessionId));
 
 export function SessionView({ runnerId, sessionId }: { runnerId: string; sessionId: string }) {
   const k = viewKey(runnerId, sessionId);
@@ -29,6 +36,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const composer = useRef<ComposerHandle>(null);
   const root = useRef<HTMLDivElement>(null);
   useFitViewport(root);
+  const [panel, setPanel] = useState<PanelState | null>(() => {
+    if (terminalNext !== k) return null;
+    terminalNext = undefined;
+    return { tab: "tui", wantTui: true, nonce: 1 };
+  });
+  /** the question before handing a busy session to the terminal (SPEC §8) */
+  const [ask, setAsk] = useState<{ text: string; confirm: string } | null>(null);
 
   useEffect(() => {
     if (harness && !models && linkOpen) void loadModels(runnerId, harness, sessionId);
@@ -60,11 +74,29 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }
 
   const state = view.state;
+  const inTerminal = state.mode === "terminal";
+  const harnessLabel = HARNESS_LABELS[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
   const waiting = state.requests.length > 0;
   // Requests open with no turn running (they came back after a runner restart) are busy too:
-  // Stop (Esc) closes them and leaves the session idle.
-  const running = state.status === "running" || state.status === "waiting" || waiting;
+  // Stop (Esc) closes them and leaves the session idle. In the terminal the TUI takes what you type
+  // whenever: never busy for the composer (SPEC §9).
+  const running = !inTerminal && (state.status === "running" || state.status === "waiting" || waiting);
+
+  /** The Terminal button: the TUI tab, asking first when the session is busy (SPEC §8). */
+  const openTerminal = (stop = false) => {
+    setAsk(null);
+    const handsOff = view.capabilities?.terminal !== "shared" && !inTerminal && !state.terminal;
+    const q = handsOff && !stop ? handoffPrompt(state.status !== "idle" || waiting, state.queue.length) : null;
+    if (q) return setAsk(q);
+    setPanel((p) => ({ tab: "tui", wantTui: true, stop, nonce: (p?.nonce ?? 0) + 1 }));
+  };
+  const terminalChip = !summary.parentSessionId && (
+    <button type="button" className="t-chip t-chip-term" aria-pressed={!!panel} onClick={() => (panel ? setPanel(null) : openTerminal())}>
+      <span aria-hidden>❯_</span>
+      <span>Terminal</span>
+    </button>
+  );
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
   const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (
@@ -84,11 +116,38 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     </div>
   );
 
+  const terminalBar = inTerminal && (
+    <div className={`t-term-banner${state.status === "waiting" ? " waiting" : ""}`} role="status">
+      <span className="t-term-banner-text">
+        {state.terminal?.returning
+          ? "Going back to Tether…"
+          : state.status === "waiting"
+            ? `Needs you in the terminal${state.terminal?.attention ? `: ${state.terminal.attention}` : "."}`
+            : state.status === "running"
+              ? "Driving in the terminal · working…"
+              : "Driving in the terminal"}
+      </span>
+      {!panel && <Button label="Open terminal" size="sm" variant="secondary" onClick={() => openTerminal()} />}
+      {!panel && !state.terminal?.returning && (
+        <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => void rpc(runnerId, "endTerminal", { sessionId, whenIdle: state.status !== "idle" }).catch(() => {})} />
+      )}
+    </div>
+  );
+
   return (
     <SessionCtx.Provider value={ctx}>
-      <div className="t-session" ref={root}>
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} />
-        <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={working || empty} />
+      <div className={`t-session-split${panel ? " with-terminal" : ""}`} ref={root}>
+      <div className="t-session">
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={terminalChip} />
+        {ask && (
+          <div className="t-term-ask" role="group" aria-label="Open the terminal">
+            <span>{ask.text}</span>
+            <Button label={ask.confirm} size="sm" variant="primary" onClick={() => openTerminal(true)} />
+            <Button label="Keep working" size="sm" variant="secondary" onClick={() => setAsk(null)} />
+          </div>
+        )}
+        <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={inTerminal ? empty : working || empty} />
+        {terminalBar}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
         {isChild ? (
           <div className="t-composer">
@@ -100,7 +159,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             draftKey={k}
             running={running}
             waiting={waiting && state.status !== "running"}
-            disabled={offline}
+            disabled={offline ?? (state.terminal?.returning ? "Going back to Tether…" : undefined)}
+            placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (text) => {
               await rpc(runnerId, "send", { sessionId, text });
@@ -110,6 +170,18 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             }}
           />
         )}
+      </div>
+      {panel && (
+        <TerminalPanel
+          runnerId={runnerId}
+          session={summary}
+          state={state}
+          panel={panel}
+          setPanel={setPanel}
+          onOpenTui={() => openTerminal()}
+          onClose={() => setPanel(null)}
+        />
+      )}
       </div>
     </SessionCtx.Provider>
   );

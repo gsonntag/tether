@@ -12,7 +12,7 @@ import { ChoiceMenu } from "./ChoiceMenu";
 import { StatusDot } from "./SessionRow";
 import { SubagentChips } from "./SubagentChips";
 
-export function SessionHeader({ runnerId, session, state, models, children }: { runnerId: string; session: SessionSummary; state: LiveState; models?: ModelList; children: Row[] }) {
+export function SessionHeader({ runnerId, session, state, models, children, extra }: { runnerId: string; session: SessionSummary; state: LiveState; models?: ModelList; children: Row[]; extra?: React.ReactNode }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
   const call = async (p: Promise<unknown>) => {
@@ -69,6 +69,7 @@ export function SessionHeader({ runnerId, session, state, models, children }: { 
             />
           </>
         )}
+        {extra}
         <SubagentChips runnerId={runnerId} children={children} />
       </div>
       {error && <div className="t-inline-status error">{error}</div>}

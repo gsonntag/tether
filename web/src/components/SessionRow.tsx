@@ -50,7 +50,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
         {!child && <span className="t-proj">{folderName(row.projectPath)}</span>}
         {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
         <span>· {shortAgo(row.updatedAt, now)}</span>
-        {!!row.requests && <span className="t-needs">· Needs you</span>}
+        {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
         <StatusDot status={row.status} requests={row.requests} />
       </span>
     </button>
