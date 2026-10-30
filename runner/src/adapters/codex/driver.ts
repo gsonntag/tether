@@ -360,6 +360,8 @@ export class CodexDriver implements Driver {
         if (this.stream.child(child)) this.stream.seedChildTurn(child, undefined);
         continue;
       }
+      // Its events: joined explicitly (after a restart they may not come with the parent's).
+      await this.rpc.call("thread/resume", { threadId: child, excludeTurns: true }).catch(() => {});
       this.stream.adoptChild(child, remembered(this.nativeId)?.children?.[child], agentName(t));
       this.stream.seedChildTurn(child, turn);
       const ctx = await turnContextOf(t?.path, turn.id);
@@ -520,6 +522,26 @@ export class CodexDriver implements Driver {
       if (threadId === this.nativeId) throw e;
     });
     await this.rpc.call("thread/backgroundTerminals/clean", { threadId }, 10_000).catch(() => {});
+    if (threadId !== this.nativeId) void this.watchEnd(threadId, turnId);
+  }
+
+  /**
+   * A subagent's end, seen even if its events don't reach this connection (one found again after a
+   * restart): its turn's status, looked at a few times.
+   */
+  private async watchEnd(threadId: string, turnId: string) {
+    for (let i = 0; i < 20 && this.running.has(threadId) && !this.closed; i++) {
+      await Bun.sleep(this.retryMs);
+      const t: any = await this.rpc.call("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "summary" }).catch(() => undefined);
+      const turn = t?.data?.[0];
+      if (turn && (turn.id !== turnId || turn.status !== "inProgress")) {
+        if (!this.running.has(threadId)) return;
+        this.stream.seedChildTurn(threadId, undefined);
+        this.running.delete(threadId);
+        this.forgetChild(threadId);
+        return this.reportTurn();
+      }
+    }
   }
 
   async setModel(model: string) {
