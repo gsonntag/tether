@@ -380,7 +380,18 @@ const steps = {
     await button(sheet, "Copied").waitFor();
     const clip = await p.evaluate(() => navigator.clipboard.readText()).catch(() => "");
     if (clip && !/COPY-END-9/.test(clip)) fail("Copy all didn't put the text on the clipboard");
+    if (!/Copy text · Shell \d+/.test(await sheet.innerText())) fail("the sheet doesn't name its terminal");
     await button(sheet, "Done").click();
+    // The sheet belongs to its terminal: another tab closes it; Esc closes it too.
+    await button(p.locator(".t-term-panel"), "Copy text").click();
+    await sheet.waitFor();
+    await p.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).click();
+    await sheet.waitFor({ state: "detached", timeout: 5000 });
+    await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
+    await button(p.locator(".t-term-panel"), "Copy text").click();
+    await sheet.waitFor();
+    await p.keyboard.press("Escape");
+    await sheet.waitFor({ state: "detached", timeout: 5000 });
     // Shift-drag selects in the terminal; Ctrl+C copies and the shell gets no ^C.
     await p.locator(".t-term-box").click({ force: true });
     await p.keyboard.type("sleep 3; echo NO-CTRL-C", { delay: 5 });
@@ -409,10 +420,19 @@ const steps = {
     if (us === "none") fail("the copy sheet's text can't be selected");
     await noOverflow(ph, "phone copy sheet");
     await shot(ph, "copy-phone");
+    // While the sheet is open the key bar and the line don't type into the terminal behind it.
+    if (!(await ph.locator(".t-term-line input").isDisabled())) fail("the line still types behind the copy sheet");
+    if (!(await ph.getByRole("button", { name: "Control C", exact: true }).isDisabled())) fail("the key bar still types behind the copy sheet");
     await button(ph.locator(".t-term-copy"), "Done").tap();
     await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
-    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
-    ok("copy: Copy text showed the shell's text with its scrollback (1 … 400, COPY-END-9) and Copy all put it on the clipboard; Shift-drag selected in the terminal and Ctrl+C copied it without sending ^C (the sleep finished); on the phone, Copy text opens the same selectable sheet");
+    // Closing the last shell closes the panel (shells come first; the agent's terminal only on purpose).
+    for (let i = 0; i < 10 && (await p.locator(".t-term-x").count()); i++) {
+      await p.locator(".t-term-x").first().click();
+      await sleep(800);
+    }
+    await p.locator(".t-term-panel").waitFor({ state: "detached", timeout: 10_000 });
+    if ((await liveState(p)).mode !== "live") fail("closing the shells handed the session over");
+    ok("copy: the sheet is named for its terminal, closes on another tab and on Esc, and on a phone the key bar and line are off while it's open; closing the last shell closed the panel (nothing handed over); and: Copy text showed the shell's text with its scrollback (1 … 400, COPY-END-9) and Copy all put it on the clipboard; Shift-drag selected in the terminal and Ctrl+C copied it without sending ^C (the sleep finished); on the phone, Copy text opens the same selectable sheet");
     await ph.close();
     await p.close();
   },
@@ -471,8 +491,25 @@ const steps = {
       await shot(ph, "webkit-copy");
       await button(ph.locator(".t-term-copy"), "Done").tap();
       await ph.getByRole("button", { name: "Control C", exact: true }).tap();
-      await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
-      ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps");
+      // Two shells and Claude driving: the entry, with its amber dot, stays wholly in view at 375
+      // and 393 px (the shells scroll, it doesn't).
+      await ph.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).tap();
+      await ph.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).tap();
+      await ph.locator(".t-term-tab.t-term-agent").tap();
+      await waitState(ph, (s) => s.mode === "terminal", "handed off in WebKit", 60_000);
+      for (const w of [375, 393]) {
+        await ph.setViewportSize({ width: w, height: 852 });
+        await sleep(300);
+        const e = await ph.locator(".t-term-tab.t-term-agent").boundingBox();
+        const text = await ph.locator(".t-term-tab.t-term-agent").textContent();
+        if (!e || e.x < 0 || e.x + e.width > w || !/Claude Code/.test(text) || !/●/.test(text) || !/driving/.test(text)) fail(`the driving entry at ${w} px: ${JSON.stringify(e)} ${text}`);
+      }
+      await shot(ph, "webkit-driving");
+      await button(ph.locator(".t-term-panel"), "Back to Tether").tap();
+      await waitState(ph, (s) => s.mode === "live" && !s.terminal, "back in Tether (WebKit)", 60_000);
+      // (Back to Tether from the agent's tab closes the panel.)
+      if (await ph.locator(".t-term-panel").count()) await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
+      ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps; with two shells, Claude Code ● (driving) stayed wholly in view at 375 and 393 px");
     } finally {
       await wk.close();
     }
@@ -642,6 +679,13 @@ const steps = {
     await waitState(p, (s) => s.mode === "terminal", "handed off to the TUI", 60_000);
     await waitScreen(p, idOf(claude), /❯/, "Claude's TUI", 60_000);
     if (!/Claude Code\s*·\s*driving/.test(await tuiTab.innerText())) fail(`the entry: ${await tuiTab.innerText()}`);
+    // K3: Copy from the agent's TUI: its text, scrollback included.
+    await button(p.locator(".t-term-panel"), "Copy text").click();
+    const tuiSheet = p.locator(".t-term-copy");
+    await tuiSheet.waitFor();
+    const tuiText = await tuiSheet.locator(".t-term-copytext").innerText();
+    if (!/Copy text · Claude Code/.test(await tuiSheet.innerText()) || !/Claude Code v\d|P5B-42-OK/.test(tuiText)) fail(`the TUI's copy sheet: ${tuiText.slice(0, 200)}`);
+    await button(tuiSheet, "Done").click();
     // J3: only now the banner; its button and the placeholder name Claude.
     await button(p.locator(".t-term-panel"), "Close terminal panel").click();
     await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code", exact: true }).waitFor();
@@ -679,6 +723,11 @@ const steps = {
     await ask.waitFor({ timeout: 10_000 });
     const q = await ask.innerText();
     if (!/Stop this turn and open the terminal\? 1 queued message will wait/.test(q)) fail(`the question: ${q}`);
+    // Going to a shell dismisses the question (nothing handed over); asked again, Keep working.
+    await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
+    await ask.waitFor({ state: "detached", timeout: 5000 });
+    await p.locator(".t-term-tab.t-term-agent").click();
+    await ask.waitFor({ timeout: 10_000 });
     await button(ask, "Keep working").click();
     if ((await liveState(p)).mode !== "live") fail("Keep working handed over");
     // A held queue: the hint says it waits there.

@@ -370,7 +370,13 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   a right-click selects a word. Everywhere, **Copy text** in the panel's header shows the terminal's
   whole text, scrollback included (tmux's history, wrapped lines joined, the newest 2 MB), in a sheet
   where it selects natively (a long press on a phone) with **Copy all** (`terminalText`, answered
-  only to the browser that owns the attach). Shells and the agent's TUI alike.
+  only to the browser that owns the attach). Shells and the agent's TUI alike. The sheet names its
+  terminal and closes when another tab comes to the front (or on Esc); "older lines left out" shows
+  once tmux's history (20,000 rows) is full. Without clipboard access a copy falls back to the
+  browser's copy command, and a selection stays until it is surely copied.
+- Closing the last shell closes the panel (unless Claude Code is driving: then it comes to the
+  front). On a phone the shells scroll in their row and the agent's entry stays wholly in view at its
+  end; there its state is a dot (amber driving, green joined).
 
 The tmux server is separate from the runner, so **terminal sessions survive a runner restart**.
 On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.

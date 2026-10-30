@@ -104,6 +104,9 @@ Notes:
   Claude Code (open `claude` there once and accept), or the handoff's TUI stops at the trust
   question. A short path (e.g. `/tmp/claude-1001/p3fix/scratch`) keeps the TUI's lines short.
 
+- e2e-p5's `terminal` step uses the session its `claude` step makes: run `claude terminal`, not
+  `terminal` alone.
+
 Open http://127.0.0.1:5186. Use a **Claude** session (Haiku, the scratch folder, Bypass permissions)
 and a **Codex** session (GPT-6-Luna, Effort Low). A "slow prompt" is: `Use the Bash tool to run
 exactly: timeout 20 tail -f /dev/null; echo waited   Then reply with exactly one word: DONE`.
@@ -318,7 +321,9 @@ slow prompt mid-way: Steer/Queue work as without the panel.
 
 G3. **Shell again.** Close the panel (×), ❯_ again.
 → The same Shell 1 comes back (its output still there). With two shells, the first is picked.
-Closing the shell in front brings another one forward.
+Closing the shell in front brings another one forward; closing the last one closes the panel
+(shells come first: the agent's terminal never opens by itself), unless Claude Code is driving, then
+its terminal comes to the front.
 
 G4. **Codex.** On a Codex session, ❯_ → as G1 (the entry "Codex").
 
@@ -343,6 +348,10 @@ H4. **Busy Claude.** Slow prompt, Shell 1 in front, click Claude Code.
 working**; the view shows "Claude isn't open in the terminal." with the explanation. Keep working →
 the question goes, the turn goes on, nothing handed over. Again → Stop and open terminal → handed
 over.
+
+H4c. **The question follows its tab** (`handoff`). With "Stop this turn and open the terminal?" up
+in the panel, click a shell.
+→ The question goes (nothing handed over); clicking Claude Code asks again.
 
 H4b. **After Back to Tether from a shell** (`handoff`). Hand off from Shell 1, go back to Shell 1,
 press Back to Tether. Send a slow prompt and Tab-queue a message, then click Claude Code.
@@ -376,6 +385,11 @@ I4. With Claude Code in front, Chat → the pill says "Back to Claude Code".
 
 I5. Nothing scrolls sideways at 375 px in either view.
 
+I5b. **Driving, on a phone** (`webkit`, WebKit iPhone 14 Pro). Two or more shells, then tap Claude Code.
+→ The row's shells scroll, but the agent's entry stays put at its end and wholly on screen at 375 and
+393 px, reading **Claude Code ●** (an amber dot; "· driving" for screen readers; Codex joined: a green
+dot).
+
 I6. **Phone only.** Rotate the phone with the panel tucked: back in the panel, the terminal fits the
 new width.
 
@@ -408,17 +422,26 @@ holds it. Select a few lines with the mouse and ⌘/Ctrl+C: those lines. **Done*
 K2. **In the terminal, desktop.** Shift-drag over the output (Option-drag on a Mac).
 → It selects (even though tmux takes the mouse). Ctrl+C (or ⌘C, or Ctrl+Shift+C) copies the
 selection and sends nothing: a running `sleep 3; echo NO-CTRL-C` finishes. Without a selection
-Ctrl+C is ^C as always. A right-click selects a word; the browser's menu offers Copy.
+Ctrl+C is ^C as always. A right-click selects a word; the browser's menu offers Copy. On a page
+without clipboard access (plain http) the copy goes through the browser's copy command; if that
+fails too, the selection stays (nothing is lost; use Copy text).
 
-K3. **The agent's TUI.** With Claude Code driving, Copy text.
-→ The TUI's text, scrollback included (the conversation as the TUI drew it).
+K3. **The agent's TUI** (`handoff`). With Claude Code driving, Copy text.
+→ "Copy text · Claude Code": the TUI's text, scrollback included (the conversation as the TUI drew it).
 
 K4. **Phone** (`copy`, and `webkit` in WebKit's iPhone 14 Pro profile). Tap the copy icon.
 → The same sheet, full screen in the panel; a long press selects text natively (iOS shows its
 Copy); **Copy all** copies everything. Nothing scrolls sideways.
 
-K5. **Long history.** A shell with more than 2 MB of history: the sheet says "The newest text (older
-lines left out)" and holds the newest 2 MB.
+K5. **Long history.** tmux keeps 20,000 rows of a pane's history (wrapped rows count). Once a
+shell's history is full (`seq 1 30000`), the sheet says "The newest text (older lines left out)";
+before that it says nothing of the kind. (The 2 MB cap on what travels is a backstop a full history
+rarely reaches.)
+
+K5b. **The sheet follows its terminal** (`copy`). The sheet's head names its source ("Copy text ·
+Shell 1"). With it open, go to another shell or to Claude Code: it closes (Copy all never copies a
+terminal you're not looking at, and nothing is handed over behind it). Esc closes it. On a phone,
+while it's open the key bar and the line are off.
 
 K6. **Only yours.** `terminalText` with another browser's attach id → "That terminal isn't attached
 here." (the relay checks it like input and resize).
