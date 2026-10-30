@@ -1591,24 +1591,22 @@
   }
 }
 
-/* Touch: every control at least 44 px to the finger (the header chips and the queue's buttons
-   included); desktop keeps its compact header. */
+/* Touch: every control at least 44 × 44 px to the finger, Astryx's buttons included (the attribute
+   selectors outrank their single-class styles); desktop keeps its compact sizes. */
 @media (pointer: coarse) {
-  .t-chip {
+  :is(button[type], [role="button"], a[href], summary, select, input[type="text"], input[type="search"], input:not([type]), textarea) {
     min-height: 44px;
+  }
+  :is(button[type], [role="button"], a[href], summary) {
+    min-width: 44px;
+  }
+  .t-chip {
     padding: 6px 12px;
   }
-  .t-icon-btn,
+  .t-more-send {
+    width: 44px;
+  }
   .t-file-x {
     width: 44px;
-    height: 44px;
-  }
-  .t-more-send {
-    width: 36px;
-    height: 44px;
-  }
-  .t-queue-head .astryx-button,
-  .t-queued-edit .astryx-button {
-    min-height: 44px;
   }
 }

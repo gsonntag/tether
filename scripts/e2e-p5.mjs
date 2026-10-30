@@ -359,6 +359,29 @@ const steps = {
     await b.close();
   },
 
+  async lostEdit() {
+    // Editing a queued message as it goes out: the edit isn't lost; it can go as a new message or
+    // into the message box. The queue doesn't wait for the edit.
+    const a = await page(desktop, claude);
+    await composer(a).waitFor();
+    await send(a, SLOW(14, "EDIT"));
+    await inCommand(a, /timeout 14 tail/);
+    await composer(a).fill("Reply with exactly: ORIGINAL");
+    await composer(a).press("Tab");
+    const row = a.locator(".t-queued", { hasText: "ORIGINAL" });
+    await row.waitFor();
+    await row.getByRole("button", { name: "Edit" }).click();
+    await a.getByRole("textbox", { name: "Edit the queued message" }).fill("Reply with exactly: EDITED");
+    await a.getByText("It went out before your edit was saved.").waitFor({ timeout: 90_000 });
+    await a.locator(".t-msg.user .t-bubble", { hasText: "ORIGINAL" }).waitFor({ timeout: 30_000 });
+    await button(a, "Copy to the message box").click();
+    if (!/EDITED/.test(await composer(a).inputValue())) fail("the edit didn't land in the message box");
+    await composer(a).fill("");
+    await idle(a, 120_000);
+    ok("an edit of a queued message that went out first was kept (\"It went out before your edit was saved.\"); Copy to the message box put it there; the queue didn't wait");
+    await a.close();
+  },
+
   async stopSend() {
     // ⌘/Ctrl+Enter stops the turn and sends now; the queue waits for that turn, then goes on.
     const a = await page(desktop, claude);
@@ -544,7 +567,8 @@ const steps = {
     await rpcVia(home, "send", { sessionId: id, text: "Use the Bash tool to run exactly: echo push > push.txt   Then reply with exactly: PUSHED" });
     const req = await waitPush(svc, (p) => p.kind === "request" && p.sessionId === id, "request push", 90_000);
     // Why it needs you, never the command itself.
-    if (!/^Claude (asks to: .+|wants to run a command\.)$/.test(req.payload.body) || /echo push/.test(req.payload.body)) fail(`request body: ${req.payload.body}`);
+    if (req.payload.body !== "Claude wants to run a command.") fail(`request body: ${req.payload.body}`);
+    if (!/^[\w.-]+ · Claude$/.test(req.payload.title)) fail(`request title: ${req.payload.title}`);
     const open = await rpcVia(home, "subscribe", { sessionId: id });
     const r = open.ok.state.requests[0];
     await rpcVia(home, "answerRequest", { sessionId: id, requestId: r.id, allow: true });

@@ -8,7 +8,7 @@
 // prompt, and Enter (or Run) runs it now on the runner, even mid-turn; its output then goes to the
 // agent through the queue. The ❯ toggle adds or removes the ! (the way in on a phone).
 
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
@@ -38,6 +38,15 @@ interface Pending {
 }
 
 const drafts = new Map<string, string>();
+const draftListeners = new Set<(key: string, text: string) => void>();
+
+/** Puts text in a session's message box (appended to what's there), e.g. an edit that missed its message. */
+export function putDraft(key: string, text: string) {
+  const had = drafts.get(key);
+  const next = had?.trim() ? `${had.trimEnd()}\n\n${text}` : text;
+  drafts.set(key, next);
+  draftListeners.forEach((f) => f(key, next));
+}
 const draftFiles = new Map<string, Pending[]>();
 
 export type SendKind = "send" | "steer" | "queue" | "stopSend" | "shell";
@@ -80,6 +89,15 @@ export const Composer = forwardRef<
   const textRef = useRef(text);
   textRef.current = text;
   useImperativeHandle(ref, () => ({ focus: () => box.current?.focus() }));
+  useEffect(() => {
+    const f = (key: string, t: string) => {
+      if (key !== keyRef.current) return;
+      setText(t);
+      box.current?.focus();
+    };
+    draftListeners.add(f);
+    return () => void draftListeners.delete(f);
+  }, []);
 
   const [forKey, setForKey] = useState(draftKey);
   if (forKey !== draftKey) {
