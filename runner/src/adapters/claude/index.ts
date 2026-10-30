@@ -74,7 +74,9 @@ export function claudeScreen(screen: string): ScreenRead {
     while (k < Math.min(lines.length, i + 30) && !isRule(lines[k]!)) k++;
     if (k >= lines.length) continue;
     const under = lines.slice(k + 1).filter((l) => l.trim());
-    if (under.length > 8 || under.some((l) => isRule(l) || /^\s*❯/.test(l) || OPTION.test(l) || DIALOG_FOOTER.test(l))) continue;
+    // A "/" typed in the box opens Claude's list of commands under it, the cursor on one.
+    const commands = /^\s*❯ \/[\w:-]+/.test(under[0] ?? "") && /^\s*\//.test(lines[i]!.replace(/^\s*[❯!]\s?/, ""));
+    if (commands ? under.some((l) => isRule(l) || OPTION.test(l) || DIALOG_FOOTER.test(l)) : under.length > 8 || under.some((l) => isRule(l) || /^\s*❯/.test(l) || OPTION.test(l) || DIALOG_FOOTER.test(l))) continue;
     box = i;
     close = k;
   }
