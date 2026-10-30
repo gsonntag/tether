@@ -69,12 +69,15 @@ const noOverflow = async (p, where) => {
   const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   if (w > 1) fail(`${where}: page scrolls sideways by ${w}px`);
 };
-/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+/**
+ * The agent's own terminal UI (P5b): ❯_ opens the panel on a project shell; the agent's entry in its
+ * list ("Claude Code", "Codex") is what drives the agent from its terminal.
+ */
 const pickTerminal = async (p, tap = false) => {
   const chip = p.locator(".t-chip-term");
-  await (tap ? chip.tap() : chip.click());
-  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
-  await (tap ? item.tap() : item.click());
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
+  const entry = p.locator(".t-term-agent");
+  await (tap ? entry.tap() : entry.click());
 };
 const composer = (p) => p.locator("textarea.t-input[aria-label=Message]");
 const idle = (p, ms = 120_000) => p.locator('button[aria-label="Send"]').waitFor({ timeout: ms });

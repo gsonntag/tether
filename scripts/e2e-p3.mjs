@@ -134,16 +134,20 @@ const sameAsTmux = async (p, key, name, where) => {
     await sleep(250);
   }
 };
-/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+/**
+ * The agent's own terminal UI (P5b): ❯_ opens the panel on a project shell; the agent's entry in its
+ * list ("Claude Code", "Codex") is what drives the agent from its terminal.
+ */
 const pickTerminal = async (p, tap = false) => {
   const chip = p.locator(".t-chip-term");
-  await (tap ? chip.tap() : chip.click());
-  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
-  await (tap ? item.tap() : item.click());
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
+  const entry = p.locator(".t-term-agent");
+  await (tap ? entry.tap() : entry.click());
 };
 const openPanel = async (p) => {
   const chip = p.locator(".t-chip-term");
-  if ((await chip.getAttribute("aria-pressed")) !== "true") await pickTerminal(p);
+  void chip;
+  await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
 };
 /** Types into the terminal with the keyboard, as a person at the desktop would. */
@@ -195,7 +199,8 @@ const steps = {
     await shot(p, "keep-prompt-desktop");
     await button(ask, "Keep working").click();
     await ask.waitFor({ state: "detached" });
-    if (await p.locator(".t-term-panel").count()) fail("the panel opened after Keep working");
+    // The panel stays on its shell (❯_ opened one); nothing was handed over.
+    if (await p.locator(".t-term-tab.t-term-agent.driving").count()) fail("Keep working handed the session over");
     // Ask first: Claude asks for the shell command; approve it so the turn finishes in Tether.
     const req = p.locator(".t-req").first();
     if (await req.waitFor({ timeout: 30_000 }).then(() => true, () => false)) await button(req, "Approve").click();
@@ -253,7 +258,7 @@ const steps = {
     await waitScreen(d, sessionId(), /❯/, "desktop TUI");
     const ph = await page(phone, session);
     await ph.locator(".t-term-banner").waitFor({ timeout: 30_000 });
-    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude terminal" }).tap();
+    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code" }).tap();
     await ph.locator(".t-term-panel").waitFor();
     await waitScreen(ph, sessionId(), /❯/, "phone TUI");
     await ph.locator(".t-keybar").waitFor();
@@ -372,7 +377,7 @@ const steps = {
     await shot(p, "needsyou-desktop");
     await shot(ph, "needsyou-phone");
     // Approve in the terminal itself (the TUI's own dialog), from the phone's key bar.
-    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude terminal" }).tap();
+    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code" }).tap();
     await waitScreen(ph, sessionId(), /Do you want to|needs\.txt/, "the TUI's permission dialog on the phone");
     await ph.getByRole("button", { name: "Enter", exact: true }).tap();
     await waitState(p, (s) => s.status === "idle", "idle after approving in the TUI", 90_000);

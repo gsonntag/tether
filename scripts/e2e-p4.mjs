@@ -132,16 +132,20 @@ const waitCapture = async (re, what, ms = 60_000, name = tuiName()) => {
   }
   fail(`${what}: tmux shows:\n${capture(name).split("\n").filter((l) => l.trim()).slice(-15).join("\n")}`);
 };
-/** The ❯_ chip's "<Agent> terminal" choice (P5b: the chip offers Shell or the agent's terminal). */
+/**
+ * The agent's own terminal UI (P5b): ❯_ opens the panel on a project shell; the agent's entry in its
+ * list ("Claude Code", "Codex") is what drives the agent from its terminal.
+ */
 const pickTerminal = async (p, tap = false) => {
   const chip = p.locator(".t-chip-term");
-  await (tap ? chip.tap() : chip.click());
-  const item = p.getByRole("menuitem", { name: /^(Claude|Codex) terminal/ });
-  await (tap ? item.tap() : item.click());
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
+  const entry = p.locator(".t-term-agent");
+  await (tap ? entry.tap() : entry.click());
 };
 const openPanel = async (p) => {
   const chip = p.locator(".t-chip-term");
-  if ((await chip.getAttribute("aria-pressed")) !== "true") await pickTerminal(p);
+  void chip;
+  await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
 };
 const typeInTerm = async (p, text, enter = true) => {

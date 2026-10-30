@@ -10,9 +10,10 @@ Phase acceptance (SPEC §11):
 - `!` runs at once on desktop and phone, on both harnesses, mid-turn too; its card goes Running →
   Waiting in queue → Sent to <Agent>; Stop kills it and still sends; holds and the queue's limits
   apply; huge output stays bounded; restarts never leave a card Running (A–F).
-- Shell keeps the session live while the composer messages the agent; the agent's tab hands over,
-  switching back to a shell doesn't; the labels say which surface drives; the phone toggles between
-  chat and shell without closing it (G–J).
+- ❯_ opens a shell and keeps the session live while the composer messages the agent; only the
+  panel's Claude Code entry hands over, switching back to a shell doesn't; the labels say which
+  surface drives; the phone toggles between chat and shell without closing it (G–J).
+- Text copies out of shells and the agent's TUI, scrollback included, on desktop and phone (K).
 
 `scripts/e2e-p5b.mjs` runs most of these headless against real Claude (Haiku) and Codex
 (gpt-6-luna, Low); each check names its step. What needs a real phone is marked **Phone only**.
@@ -62,23 +63,26 @@ Phase acceptance (SPEC §11):
 - **Titles and markers.** A session whose first message is a command's output is titled "$ npm
   test", never "[Shell command run from Tether] …" (Claude and Codex alike). Typed text that starts
   with Tether's markers shows as yours (a zero-width space goes in front of it).
-- **❯_ Terminal chip.** A menu with **Shell** ("A shell in this folder, beside the chat. Claude stays
-  driven from here.") and **Claude terminal** ("Claude's own terminal UI. It drives Claude until you
-  go Back to Tether.") / **Codex terminal** ("Codex's own terminal UI, joined to this session. Tether
-  keeps driving it too."). While the panel is open the chip closes it (on a phone with the panel
-  tucked away, it brings it back).
-- **The panel.** Tabs: "<Agent> terminal", then "Shell 1", "Shell 2"…, then +. Under the tabs, a line
-  says who drives the agent:
-  - a shell tab, session in Tether: "Shell 1 · a plain shell in this folder. It doesn't touch Claude:
+- **❯_ Terminal.** Opens the panel on a project shell (the first, or a new one): no menu, no
+  question, nothing handed over, no banner. While the panel is open it closes it (on a phone with
+  the panel tucked away, it brings it back).
+- **The panel.** A list on the left (a row on a phone): "Shell 1", "Shell 2"… (×), **+ New shell**,
+  then, apart, **Claude Code** (or **Codex**). Only clicking Claude Code drives Claude from its
+  terminal: idle, it hands over at once; busy, it asks in the panel ("Stop this turn and open the
+  terminal?" — Stop and open terminal / Keep working); Codex's entry joins its TUI. The entry then
+  reads **Claude Code · driving** / **Codex · joined**. Going back to a shell never hands back.
+  Under the header, a line says who drives the agent:
+  - a shell, session in Tether: "Shell 1 · a plain shell in this folder. It doesn't touch Claude:
     the chat still drives Claude."
-  - a shell tab, handed off: "… Claude is still driven from the Claude terminal tab until Back to
-    Tether."
-  - the agent's tab, handed off (highlighted): "Claude terminal · it drives Claude now. The chat
+  - a shell, handed off: "… Claude is driven from Claude Code (on the left) until Back to Tether."
+  - a shell, Codex joined: "… the chat and Codex (joined, on the left) both drive Codex."
+  - Claude Code, handed off (highlighted): "Claude Code · driving: it drives Claude now. The chat
     follows along; Back to Tether hands the session back."
-  - the agent's tab, shared: "Codex terminal · joined to this session. Tether's chat drives Codex too."
-  Clicking the agent's tab when its TUI isn't open opens it as the chip would: idle Claude hands
-  over at once; busy Claude asks in the panel ("Stop this turn and open the terminal?" — Stop and open
-  terminal / Keep working); Codex joins. Going back to a shell tab never hands back.
+  - Codex, joined: "Codex · joined to this session. Tether's chat drives Codex too."
+- **Copy.** **Copy text** in the panel's header shows the terminal's whole text (scrollback
+  included) in a sheet: select some (a long press on a phone), or **Copy all**. On desktop,
+  Shift-drag (Option-drag on a Mac) selects in the terminal itself; with a selection Ctrl/Cmd+C
+  copies and sends no ^C.
 - **Phone.** The panel is full screen; **Chat** in its header hides it (still mounted and attached)
   and the transcript shows with a "❯_ Back to the shell" pill above the composer; the pill (or the
   chip) brings back the same terminal as it was.
@@ -308,68 +312,67 @@ F3. **Phone only.** iOS Safari: tapping the toggle adds the `!` (the `webkit` st
 iPhone 14 Pro profile: a cancelled pointer-down there used to swallow the click) and keeps the box
 focused; autocorrect and capitalization are off in shell mode.
 
-## G. Shell beside the chat (`shell`)
+## G. ❯_ opens a shell (`shell`)
 
 G1. Desktop, Claude live. Click ❯_ Terminal.
-→ A menu: **Shell** "A shell in this folder, beside the chat. Claude stays driven from here." and
-**Claude terminal** "Claude's own terminal UI. It drives Claude until you go Back to Tether."
+→ No menu: the panel opens beside the transcript on the project's first shell (or a new Shell 1),
+with the list on the left (Shell 1, + New shell, Claude Code). Under the header: "Shell 1 · a plain
+shell in this folder. It doesn't touch Claude: the chat still drives Claude." No banner in the
+transcript, no question, mode stays live.
 
-G2. Pick **Shell**.
-→ The panel opens beside the transcript on the project's first shell (or a new Shell 1); under the
-tabs: "Shell 1 · a plain shell in this folder. It doesn't touch Claude: the chat still drives
-Claude." No banner in the transcript, no question, mode stays live.
-
-G3. Type in the shell `echo hi`; then send Claude a message from the composer.
+G2. Type in the shell `echo hi`; then send Claude a message from the composer.
 → The shell runs it; Claude answers in the transcript as usual; mode live, queue never held. A
 slow prompt mid-way: Steer/Queue work as without the panel.
 
-G4. **Shell again.** Close the panel (×), ❯_ → Shell.
+G3. **Shell again.** Close the panel (×), ❯_ again.
 → The same Shell 1 comes back (its output still there). With two shells, the first is picked.
+Closing the shell in front brings another one forward.
 
-G5. **Codex.** On a Codex session, ❯_ → Shell → as G2 ("the chat still drives Codex").
+G4. **Codex.** On a Codex session, ❯_ → as G1 ("the chat still drives Codex", the entry "Codex").
 
-## H. The agent's terminal from the panel (`handoff`)
+## H. Claude Code from the panel (`handoff`)
 
-H1. **Idle Claude.** With Shell 1 in front, hover the "Claude terminal" tab.
-→ Its tooltip: "Hands this session to Claude's own terminal UI". Click it.
-→ The session hands over at once: mode terminal, the TUI in the tab, the transcript's banner
-"Driving in the terminal", and under the tabs (highlighted): "Claude terminal · it drives Claude
-now. The chat follows along; Back to Tether hands the session back."
+H1. **Idle Claude.** With Shell 1 in front, hover **Claude Code** in the list.
+→ Its tooltip: "Drives Claude from Claude Code's own terminal UI (hands the session over until Back
+to Tether)". Click it.
+→ The session hands over at once: mode terminal, the TUI in front, the entry reads **Claude Code ·
+driving**, only now the transcript's banner "Driving in the terminal" (with **Open Claude Code**
+when the panel is closed), and under the header (highlighted): "Claude Code · driving: it drives
+Claude now. The chat follows along; Back to Tether hands the session back."
 
-H2. **Back to a shell.** Click Shell 1.
-→ Nothing is handed back: mode stays terminal; under the tabs "Shell 1 · … Claude is still driven
-from the Claude terminal tab until Back to Tether." **Back to Tether** stays in the header.
+H2. **Back to a shell.** Click Shell 1 (or close the panel and press ❯_).
+→ Nothing is handed back: mode stays terminal; under the header "Shell 1 · … Claude is driven from
+Claude Code (on the left) until Back to Tether." **Back to Tether** stays in the header.
 
-H3. **Back to Tether** (from a shell tab).
-→ The session goes live; the shell tab stays in front; the panel stays open.
+H3. **Back to Tether** (from a shell).
+→ The session goes live; the shell stays in front; the panel stays open; the entry reads Claude Code.
 
-H4. **Busy Claude.** Slow prompt, Shell 1 in front, click "Claude terminal".
+H4. **Busy Claude.** Slow prompt, Shell 1 in front, click Claude Code.
 → In the panel: "Stop this turn and open the terminal?" with **Stop and open terminal** / **Keep
-working**; the tab shows "Claude isn't open in the terminal." with the explanation. Keep working →
+working**; the view shows "Claude isn't open in the terminal." with the explanation. Keep working →
 the question goes, the turn goes on, nothing handed over. Again → Stop and open terminal → handed
 over.
 
-H4b. **After Back to Tether from a shell tab** (`handoff`). Hand off from Shell 1 (agent's tab), go
-back to Shell 1, press Back to Tether. Send a slow prompt and Tab-queue a message, then click
-"Claude terminal".
+H4b. **After Back to Tether from a shell** (`handoff`). Hand off from Shell 1, go back to Shell 1,
+press Back to Tether. Send a slow prompt and Tab-queue a message, then click Claude Code.
 → The panel asks "Stop this turn and open the terminal? 1 queued message will wait until you're
 back." (it never re-attaches to the old TUI). Keep working → still live.
 
-H5. **From the chip, busy.** Slow prompt, panel closed, ❯_ → Claude terminal.
-→ The question shows above the transcript (the panel doesn't open until you confirm), as in P3.
+H5. **Codex** (`codex`). With Shell 1 in front click **Codex** (tooltip: "Opens Codex's own terminal
+UI, joined to this session").
+→ Codex's TUI joins; the entry reads **Codex · joined**; under the header "Codex · joined to this
+session. Tether's chat drives Codex too."; mode stays live, no banner; the composer still sends to
+Codex. On a shell: "the chat and Codex (joined, on the left) both drive Codex".
 
-H6. **Codex.** With Shell 1 in front click "Codex terminal".
-→ Codex's TUI joins; under the tabs "Codex terminal · joined to this session. Tether's chat drives
-Codex too."; mode stays live, no banner; the composer still sends to Codex.
-
-H7. **TUI exited.** /exit in Claude's TUI with its tab in front.
-→ "Claude isn't open in the terminal." with what opening it does, and **Open Claude terminal**.
+H6. **TUI exited.** /exit in Claude's TUI with it in front.
+→ "Claude isn't open in the terminal." with what opening it does, and **Open Claude Code**.
 
 ## I. Phone toggle (`phonetoggle`)
 
-I1. Phone, ❯_ → Shell.
-→ The panel covers the screen on Shell 1; the key bar and the line input are there; header: tabs,
-**Chat**, ×. Type `echo PHONE-TOGGLE-1` in the line → it runs.
+I1. Phone, ❯_.
+→ The panel covers the screen on Shell 1; the list is a row under the header (Shell 1, +, and
+Claude Code at its end); the key bar and the line input are there; header: Copy, **Chat**, ×. Type
+`echo PHONE-TOGGLE-1` in the line → it runs.
 
 I2. Tap **Chat**.
 → The transcript and composer show; a pill "❯_ Back to the shell" sits above the composer; the chip
@@ -379,7 +382,7 @@ I3. Tap the pill.
 → The same shell comes back at once, its output still on screen (no reconnect flash), still typing.
 The chip (instead of the pill) does the same.
 
-I4. On the agent's tab, Chat → the pill says "Back to the Claude terminal".
+I4. With Claude Code in front, Chat → the pill says "Back to Claude Code".
 
 I5. Nothing scrolls sideways at 375 px in either view.
 
@@ -389,21 +392,44 @@ new width.
 ## J. Two devices and labels
 
 J1. Desktop has Shell 1 open beside the chat; the phone opens the same session.
-→ The phone's composer messages Claude as usual; the phone's ❯_ menu offers both choices.
+→ The phone's composer messages Claude as usual; the phone's ❯_ opens a shell too.
 
-J2. The desktop opens the Claude terminal (handoff); on the phone:
-→ The banner "Driving in the terminal" shows; the composer's placeholder says it types into Claude
-in the terminal; `!echo X` from the phone still runs, its output waits for Back to Tether.
+J2. The desktop clicks Claude Code (handoff); on the phone:
+→ The banner "Driving in the terminal" shows; the composer's placeholder says "Type into Claude in
+the terminal"; `!echo X` from the phone still runs, its output waits for Back to Tether.
 
-J3. Every place names the surface: the chip menu (Shell / Claude terminal), the tabs ("Claude
-terminal", "Shell n"), the line under the tabs, the transcript banner and its **Open Claude
-terminal** button, the composer's placeholder ("Type into Claude in the terminal"), the card ("Sent
-to Claude"). No place says just "Terminal" for the agent's TUI.
-→ The menu says things as they stand (`handoff`). Handed off: **Shell** "A shell in this folder.
-Claude is driven from the Claude terminal until Back to Tether." and **Claude terminal** "Already
-driving Claude." With Codex's TUI joined: **Shell** "… The chat and the Codex terminal both drive
-Codex." and **Codex terminal** "Already open, joined to this session: it and the chat both drive
-Codex."; a shell tab's line says "the chat and the Codex terminal tab both drive Codex".
+J3. Every place names the surface (`handoff`): the list ("Shell n", "Claude Code", "Claude Code ·
+driving"), the line under the header, the transcript banner (only once driving) and its **Open
+Claude Code** button, the composer's placeholder ("Type into Claude in the terminal"), the card
+("Sent to Claude"). No place says just "Terminal" for the agent's TUI, and no "Driving" wording
+shows before Claude Code is clicked.
 
 J4. **Typed look-alikes.** Send a message starting "[From Tether] …" and copy its bubble.
 → It shows and copies exactly as typed (the invisible mark that keeps it yours isn't in the copy).
+
+## K. Copying from terminals (`copy`, `webkit`)
+
+K1. **Copy text, desktop.** In Shell 1 run `seq 1 400; echo COPY-END-9`; press **Copy text** (the
+copy icon in the panel's header).
+→ A sheet over the terminal holds the whole text: 1 … 400 (scrollback, not just the screen) and
+COPY-END-9, wrapped lines joined, scrolled to the end. **Copy all** → "Copied", and the clipboard
+holds it. Select a few lines with the mouse and ⌘/Ctrl+C: those lines. **Done** closes it.
+
+K2. **In the terminal, desktop.** Shift-drag over the output (Option-drag on a Mac).
+→ It selects (even though tmux takes the mouse). Ctrl+C (or ⌘C, or Ctrl+Shift+C) copies the
+selection and sends nothing: a running `sleep 3; echo NO-CTRL-C` finishes. Without a selection
+Ctrl+C is ^C as always. A right-click selects a word; the browser's menu offers Copy.
+
+K3. **The agent's TUI.** With Claude Code driving, Copy text.
+→ The TUI's text, scrollback included (the conversation as the TUI drew it).
+
+K4. **Phone** (`copy`, and `webkit` in WebKit's iPhone 14 Pro profile). Tap the copy icon.
+→ The same sheet, full screen in the panel; a long press selects text natively (iOS shows its
+Copy); **Copy all** copies everything. Nothing scrolls sideways.
+
+K5. **Long history.** A shell with more than 2 MB of history: the sheet says "The newest text (older
+lines left out)" and holds the newest 2 MB.
+
+K6. **Only yours.** `terminalText` with another browser's attach id → "That terminal isn't attached
+here." (the relay checks it like input and resize).
+

@@ -308,30 +308,35 @@ The terminal panel has tabs: the session's TUI, then the project's shells. **+**
 project, not the session. They persist across closing the panel and runner restarts until you close
 them (× on the tab, or `exit`), so a dev server left running is still there next time.
 
-### Shell beside the chat vs the agent's terminal (P5b)
+### The ❯_ button: a shell first, the agent's terminal only on purpose (P5b)
 
-The ❯_ **Terminal** chip offers two clearly named choices:
+The ❯_ **Terminal** button opens the panel on a **project shell** (the project's first shell, or a new
+one). No menu, no question, nothing handed over: the session stays fully live in Tether, the queue
+isn't held, the composer keeps messaging the agent, and no "Driving in the terminal" banner shows.
 
-| Choice | What opens | The session |
-|---|---|---|
-| **Shell** | the panel on a project shell tab (the project's first shell, or a new one) | stays fully live in Tether: no handoff, no held queue, the composer keeps messaging the agent |
-| **<Agent> terminal** ("Claude terminal", "Codex terminal") | the agent's own TUI, mirrored | Claude: the handoff above (asked first when busy). Codex: joined, shared |
-
-- The two choices describe things as they stand: handed off, **Shell** says "Claude is driven from
-  the Claude terminal until Back to Tether" and **Claude terminal** "Already driving Claude"; with
-  Codex's TUI joined, both say the chat and the Codex terminal drive Codex.
+- **The panel's list** (on the left on desktop, a row under the header on a phone): the project's
+  shells ("Shell 1", with what runs in it and ×), **+ New shell**, and, apart from them, an entry
+  named after the agent's own terminal UI: **Claude Code** or **Codex**. Only clicking that entry
+  drives the agent from its terminal: for Claude the handoff above (asked first when a turn runs or
+  messages wait, the question shown in the panel), for Codex its TUI joins the live thread. The
+  entry then reads **Claude Code · driving** (or **Codex · joined**), and only then does the
+  transcript show the "Driving in the terminal" banner (its button: **Open Claude Code**).
+  Going back to a shell never hands back: **Back to Tether** stays the only way back.
+- A line under the header always says which surface drives the agent: on a shell, "a plain shell
+  in this folder. It doesn't touch Claude: the chat still drives Claude" (handed off: "Claude is
+  driven from Claude Code (on the left) until Back to Tether"; Codex joined: "the chat and Codex
+  (joined, on the left) both drive Codex"); on the agent's entry, "Claude Code · driving: it drives
+  Claude now … Back to Tether hands the session back" or "Codex · joined to this session".
 - On desktop the panel sits beside the transcript. On a phone it is full screen, with a **Chat**
-  button that tucks it behind the transcript (still attached, the shell untouched) and a
-  "Back to the shell" pill that brings it back in one tap. While open, the chip closes the panel.
-- In the panel, the agent's tab is labelled "<Agent> terminal". Going to it from a shell tab
-  opens the TUI the same way the chip does: a handoff for Claude (when busy, the "Stop this turn
-  and open the terminal?" question shows in the panel), a join for Codex. Going back to a shell tab
-  never hands back: **Back to Tether** stays the only way back.
-- A line under the tabs always says which surface drives the agent: on a shell tab, "a plain shell
-  in this folder. It doesn't touch Claude: the chat still drives Claude" (or, after a handoff,
-  "Claude is still driven from the Claude terminal tab until Back to Tether"); on the agent's tab,
-  "it drives Claude now … Back to Tether hands the session back" (handoff) or "joined to this
-  session. Tether's chat drives Codex too" (shared). The transcript's handoff banner stays.
+  button that tucks it behind the transcript (still attached, the shell untouched) and a pill
+  ("Back to the shell", "Back to Claude Code") that brings it back in one tap. While open, ❯_
+  closes the panel.
+- **Copying.** On desktop, Shift-drag (Option-drag on a Mac) selects in a terminal even while tmux
+  takes the mouse; with a selection, Ctrl/Cmd+C (or Ctrl+Shift+C) copies it and never sends ^C, and
+  a right-click selects a word. Everywhere, **Copy text** in the panel's header shows the terminal's
+  whole text, scrollback included (tmux's history, wrapped lines joined, the newest 2 MB), in a sheet
+  where it selects natively (a long press on a phone) with **Copy all** (`terminalText`, answered
+  only to the browser that owns the attach). Shells and the agent's TUI alike.
 
 The tmux server is separate from the runner, so **terminal sessions survive a runner restart**.
 On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
@@ -508,12 +513,14 @@ finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
 runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
-for a running turn, obeying holds and limits). The ❯_ chip's two choices, **Shell** beside the live
-session and **<Agent> terminal** (the mirrored TUI), with labels that say which surface drives the
-agent, and on a phone a quick Chat/shell toggle (§8).
+for a running turn, obeying holds and limits). The ❯_ button opens a project shell beside the live
+session; the panel's **Claude Code** / **Codex** entry is the only way to drive the agent from its
+own terminal UI, with labels that say which surface drives it; copying from any terminal, scrollback
+included; on a phone a quick Chat/shell toggle (§8).
 *Accept:* `!` on desktop and phone, both harnesses, mid-turn queueing, Stop, holds, huge output,
-restarts; Shell keeps the session live while the composer messages the agent; switching to the agent's
-tab hands over, switching back doesn't; the phone toggle keeps the shell.
+restarts; ❯_ keeps the session live while the composer messages the agent; only the agent's entry
+hands over, switching back doesn't; copying works on desktop and phone; the phone toggle keeps the
+shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
 the Changes view and file panel, fallback chains, pi, opencode and other harnesses, `/goal` etc.
