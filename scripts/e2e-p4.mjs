@@ -57,6 +57,12 @@ async function send(p, text) {
   await composer(p).fill(text);
   await composer(p).press("Enter");
 }
+// The turn is over: its reply is there, then Send is back (right after Enter Send still shows, and a
+// message sent then would steer into the turn).
+const replied = async (p, word, ms = 180_000) => {
+  await p.locator(".t-msg.assistant", { hasText: word }).last().waitFor({ timeout: ms }).catch(() => {});
+  await idle(p, ms);
+};
 const card = (p) => p.locator(".t-req").first();
 const button = (scope, name) => scope.getByRole("button", { name, exact: true });
 const MOD = (name) => `(performance.getEntriesByType("resource").map((e) => e.name).find((n) => n.includes("/src/${name}")) ?? "/src/${name}")`;
@@ -778,7 +784,7 @@ const steps = {
     await composer(p).waitFor({ timeout: 30_000 });
     try {
       await send(p, `Use your shell tool to run exactly this command: python3 -m http.server ${PORT} --bind 127.0.0.1   It serves forever: do not wait for it to finish and do not stop it. Leave it running in the background, then reply with just: STARTED`);
-      await idle(p, 180_000);
+      await replied(p, "STARTED");
       for (let i = 0; i < 20 && curl() !== "200"; i++) await sleep(500);
       if (curl() !== "200") return console.log("skip bgStop: the model didn't leave the server running"), await p.close();
       await send(p, "Use the shell to run exactly: sleep 30   Then reply with one word: done.");
@@ -855,7 +861,7 @@ const steps = {
     let q = p;
     try {
       await send(p, `Use your shell tool to run exactly this command: python3 -m http.server ${PORT} --bind 127.0.0.1   It serves forever: do not wait for it to finish and do not stop it. Leave it running in the background, then reply with just: STARTED`);
-      await idle(p, 180_000);
+      await replied(p, "STARTED");
       for (let i = 0; i < 20 && curl() !== "200"; i++) await sleep(500);
       if (curl() !== "200") return console.log("skip bgNote: the model didn't leave the server running");
       if (await p.locator(".t-turn-settings").count()) fail("a note while the command runs as shown");
@@ -894,7 +900,7 @@ const steps = {
     await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
     await composer(p).waitFor({ timeout: 30_000 });
     await send(p, "Reply with just: OK");
-    await idle(p);
+    await replied(p, "OK");
     await pickTerminal(p);
     await p.locator(".t-term-panel").waitFor();
     await waitScreen(p, id, /Ask Codex/, "Codex's TUI", 60_000);
@@ -950,7 +956,7 @@ const steps = {
     await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
     await composer(p).waitFor({ timeout: 30_000 });
     await send(p, "Reply with just: R0");
-    await idle(p);
+    await replied(p, "R0");
     helper("set", id.slice(6), JSON.stringify({ approvalsReviewer: "auto_review" }));
     await waitState(p, (x) => x.permissionMode === "auto@codex-reviews", "Approve for me shown", 15_000);
     if (!/Auto \(Codex reviews\)/.test(await p.locator(".t-header").innerText())) fail("the header doesn't say Codex reviews");
