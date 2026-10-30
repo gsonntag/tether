@@ -20,6 +20,8 @@ export class Session {
   driver?: Driver;
   /** starting or resuming the driver */
   starting?: Promise<Driver>;
+  /** things on their way to holding it (core.pin): it stays in memory until they get there */
+  pins = 0;
   /** stops tailing the store (stored mode, while watched) */
   unwatch?: () => void;
   /** loading the transcript */

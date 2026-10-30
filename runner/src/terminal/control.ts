@@ -295,7 +295,11 @@ export class TerminalControl {
     if (this.tuis.has(s.id) && !this.returning.has(s.id)) return Promise.resolve();
     let p = this.entering.get(s.id);
     if (!p) {
-      p = this.doEnter(s, o).finally(() => this.entering.delete(s.id));
+      this.o.core.pin(s);
+      p = this.doEnter(s, o).finally(() => {
+        this.entering.delete(s.id);
+        this.o.core.unpin(s);
+      });
       this.entering.set(s.id, p);
     }
     return p;
@@ -558,20 +562,26 @@ export class TerminalControl {
       // /clear: nothing of it is stored until something is typed.
       n = core.create(old.summary.harness, nativeId, old.summary.projectPath, { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode });
       n.transcript = new Transcript();
-    } else if (n.driver || n.starting) await this.o.live.release(n);
-    // The TUI goes on with the model and mode it runs in, on any session it moves to.
-    const { model, effort, permissionMode, modelResolved } = old.state;
-    n.setState({ model, effort, permissionMode, modelResolved });
-    core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
-    this.tuis.delete(old.id);
-    this.promptSince.delete(old.id);
-    // Its hooks go on naming the session it was launched for: remember where that is now.
-    const launch = [...this.moved].find(([, v]) => v === old.id)?.[0] ?? old.id;
-    this.moved.set(launch, newId);
-    if (launch !== old.id) this.moved.delete(old.id);
-    await this.o.tmux.tag(name, "launch", launch).catch(() => {});
-    await this.o.tmux.tag(name, "session", newId).catch(() => {});
-    this.adopt(n, name);
+    }
+    core.pin(n);
+    try {
+      if (n.driver || n.starting) await this.o.live.release(n);
+      // The TUI goes on with the model and mode it runs in, on any session it moves to.
+      const { model, effort, permissionMode, modelResolved } = old.state;
+      n.setState({ model, effort, permissionMode, modelResolved });
+      core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
+      this.tuis.delete(old.id);
+      this.promptSince.delete(old.id);
+      // Its hooks go on naming the session it was launched for: remember where that is now.
+      const launch = [...this.moved].find(([, v]) => v === old.id)?.[0] ?? old.id;
+      this.moved.set(launch, newId);
+      if (launch !== old.id) this.moved.delete(old.id);
+      await this.o.tmux.tag(name, "launch", launch).catch(() => {});
+      await this.o.tmux.tag(name, "session", newId).catch(() => {});
+      this.adopt(n, name);
+    } finally {
+      core.unpin(n);
+    }
     await core.load(old).catch(() => {});
     const why = source === "clear" ? "after /clear" : source === "resume" ? "with /resume" : "";
     old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });

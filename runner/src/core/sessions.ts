@@ -363,9 +363,23 @@ export class SessionCore {
     this.evictTimers.set(s.id, t);
   }
 
-  /** Kept in memory: live, running (a turn or a `!` command), waiting on a person, in a terminal, or watched. */
+  /**
+   * Stays in memory while something that will hold it gets there (a TUI starting): evicted meanwhile,
+   * that something would carry on with an object nothing else can find.
+   */
+  pin(s: Session) {
+    s.pins++;
+  }
+
+  /** Pinned no more: evicted as usual if nothing holds it now (an eviction due meanwhile was skipped). */
+  unpin(s: Session) {
+    s.pins--;
+    this.scheduleEvict(s);
+  }
+
+  /** Kept in memory: live, running (a turn or a `!` command), waiting on a person, in a terminal, pinned, or watched. */
   private held(s: Session) {
-    return s.live || s.childRunning || s.shellsRunning > 0 || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
+    return s.live || s.pins > 0 || s.childRunning || s.shellsRunning > 0 || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
   }
 
   /**

@@ -362,6 +362,44 @@ describe("review round 1", () => {
     expect(adapter.drivers[0]!.sent).toEqual(["after"]);
   });
 
+  test("a session isn't evicted while its terminal opens (Back to Tether and sends find the same one)", async () => {
+    const { adapter, core, live, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    // Opening arms the eviction (20 ms here): tmux is slower, and the session isn't in terminal mode yet.
+    const create = tmux.create.bind(tmux);
+    tmux.create = async (o) => (await Bun.sleep(60), create(o));
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    expect(core.sessions.get("claude:s1")?.state.mode).toBe("terminal");
+    const back = term.end("claude:s1");
+    const sent = live.send("claude:s1", "after");
+    await back;
+    await sent;
+    expect(tmux.sessions.size).toBe(0);
+    expect(adapter.drivers[0]!.sent).toEqual(["after"]);
+  });
+
+  test("a terminal that couldn't open leaves its session to be evicted as usual", async () => {
+    const { adapter, core, term, tmux } = setup();
+    adapter.addStored("s1", []);
+    tmux.create = async () => (await Bun.sleep(40), Promise.reject(new Error("no tmux")));
+    await expect(term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 })).rejects.toThrow("no tmux");
+    await until(() => !core.sessions.has("claude:s1"));
+  });
+
+  test("a stored session the TUI moves to isn't evicted on the way", async () => {
+    const { adapter, core, term, tmux } = setup();
+    const next = "00000003-0000-4000-8000-000000000000";
+    adapter.addStored("s1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hi" }] }]);
+    adapter.addStored(next, [{ id: "m2", role: "user", ts: 1, parts: [{ type: "text", text: "there" }] }]);
+    await core.subscribe("claude:s1");
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const tag = tmux.tag.bind(tmux);
+    tmux.tag = async (n, k, v) => (await Bun.sleep(60), tag(n, k, v));
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: next, source: "resume" });
+    await until(() => state(core, "claude:s1").mode === "stored");
+    expect(core.sessions.get(`claude:${next}`)?.state.mode).toBe("terminal");
+  });
+
   test("attaches end when the runner's link drops (the relay forgot them)", async () => {
     const { adapter, term, bus } = setup();
     adapter.addStored("s1", []);
