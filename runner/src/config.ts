@@ -39,6 +39,8 @@ export interface SessionPrefs {
   cutOff?: boolean;
   /** when Tether last continued a turn a restart cut off (a restart soon after doesn't continue again) */
   autoContinuedAt?: number;
+  /** the running turn is one Tether continued after a restart: cut off again, it isn't continued twice */
+  continuedTurn?: boolean;
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */

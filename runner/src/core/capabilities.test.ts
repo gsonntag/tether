@@ -165,7 +165,7 @@ describe("persistent harnesses (capabilities.persistent)", () => {
     const { adapter, core, live } = await stoppedMidTurn({ persistent: false });
     await live.rejoin();
     expect(adapter.drivers.length).toBe(1);
-    expect(adapter.drivers[0]!.sent[0]).toContain("The Tether runner restarted while you were working.");
+    expect(adapter.drivers[0]!.sent[0]).toContain("Tether: continue after restart.");
     const s = await core.open("claude:s1");
     expect(s.transcript!.messages.some((m) => m.role === "notice" && /restarted mid-turn; continuing/.test(JSON.stringify(m.parts)))).toBe(true);
   });

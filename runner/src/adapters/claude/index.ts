@@ -3,6 +3,7 @@
 
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
@@ -151,6 +152,14 @@ export const claudeAdapter: Adapter = {
   listProjects: claudeProjects,
   listSessions: claudeSessions,
   sessionInfo: claudeSessionInfo,
+  storeChangedAt(nativeId, projectPath) {
+    const f = sessionFile(splitNative(nativeId).session, projectPath);
+    try {
+      return f ? statSync(f).mtimeMs : undefined;
+    } catch {
+      return undefined;
+    }
+  },
   async listSubagents(nativeId, projectPath) {
     return claudeSubagents(splitNative(nativeId).session, projectPath);
   },

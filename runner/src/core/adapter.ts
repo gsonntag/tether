@@ -114,6 +114,11 @@ export interface Adapter {
   listSessions(opts?: { projectPath?: string; since?: number }): Promise<SessionSummary[]>;
   /** one session's summary (title, folder, times) when it is stored */
   sessionInfo(nativeId: string, projectPath?: string): Promise<SessionSummary | undefined>;
+  /**
+   * When the session's store last changed (ms), for a harness whose process can outlive the runner
+   * (a crash): Tether waits for it to go quiet before continuing a cut-off turn (SPEC §4).
+   */
+  storeChangedAt?(nativeId: string, projectPath: string): number | undefined;
   /** a session's stored subagents, as child summaries */
   listSubagents(nativeId: string, projectPath: string): Promise<SessionSummary[]>;
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;

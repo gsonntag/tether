@@ -625,6 +625,115 @@ describe("read state", () => {
     expect(d.adapter.drivers).toHaveLength(0);
   });
 
+  /** A runner stopped mid-turn (prefs say running), and a new one on the same runner.json. */
+  async function cutOff(o: { stored?: any[]; queue?: string } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    await a.live.send("claude:s1", "one");
+    if (o.queue) await a.live.queue.add("claude:s1", o.queue, []);
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", o.stored ?? []);
+    b.live.quiet = { quietMs: 200, pollMs: 50, maxMs: 2000 };
+    return { a, b };
+  }
+
+  test("a crash left Claude Code writing the session: Tether waits for its store to go quiet, then continues once", async () => {
+    const { b } = await cutOff({ queue: "two" });
+    let changed = Date.now();
+    (b.adapter as any).storeChangedAt = () => changed;
+    const tick = setInterval(() => (changed = Date.now()), 30);
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    const s = await b.core.open("claude:s1");
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queueHeldBy).toBe("restart");
+    expect(s.transcript!.messages.some((m) => /Waiting for Claude Code from before the restart/.test(JSON.stringify(m.parts)))).toBe(true);
+    await Bun.sleep(300);
+    expect(b.adapter.drivers).toHaveLength(0);
+    clearInterval(tick);
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+    expect(s.state.queueHeld).toBeUndefined();
+  });
+
+  test("the store shows the cut-off turn finished: not continued, and the queue goes on", async () => {
+    const answered = [
+      { id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "one" }] },
+      { id: "a1", role: "assistant", ts: 2, parts: [{ type: "text", text: "done" }] },
+    ];
+    const { b } = await cutOff({ stored: answered, queue: "two" });
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1);
+    expect(b.driver().sent).toEqual(["two"]);
+  });
+
+  test("still being written after the longest wait: Failed on Home and a held queue, never a second process", async () => {
+    const { b } = await cutOff({ queue: "two" });
+    (b.adapter as any).storeChangedAt = () => Date.now();
+    b.live.quiet = { quietMs: 200, pollMs: 50, maxMs: 300 };
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    const s = await b.core.open("claude:s1");
+    await until(() => b.prefs.get("claude:s1").unread === "failed", 3000);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queueHeldBy).toBe("restart");
+    expect(JSON.stringify(s.transcript!.messages)).toContain("press Resume to continue");
+  });
+
+  test("a Stop that hadn't taken effect before the restart: the turn isn't continued", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    await a.live.send("claude:s1", "one");
+    // The harness never answers the Stop before the runner dies.
+    a.driver().interrupt = async () => {};
+    await a.live.interrupt("claude:s1");
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    await b.live.rejoin();
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(b.prefs.get("claude:s1").unread).toBeUndefined();
+  });
+
+  test("a turn Tether continued, cut off again even long after, isn't continued a second time", async () => {
+    const { a, b } = await cutOff();
+    await b.live.rejoin();
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+    // Much later, still the same continued turn.
+    b.prefs.set("claude:s1", { autoContinuedAt: Date.now() - 60 * 60_000 });
+    b.prefs.flush();
+    b.core.stop();
+    const c = setup({ dir: undefined as any, prefsFile: a.prefsFile });
+    c.adapter.addStored("s1", []);
+    await c.live.rejoin();
+    expect(c.adapter.drivers).toHaveLength(0);
+    expect(c.prefs.get("claude:s1").unread).toBe("failed");
+  });
+
+  test("two sessions cut off at once are both continued", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    a.adapter.addStored("s2", []);
+    await a.live.send("claude:s1", "one");
+    await a.live.send("claude:s2", "two");
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    b.adapter.addStored("s2", []);
+    await b.live.rejoin();
+    expect(b.adapter.drivers.map((d) => [d.nativeId, d.sent[0]]).sort()).toEqual([
+      ["s1", AUTO_CONTINUE_TEXT],
+      ["s2", AUTO_CONTINUE_TEXT],
+    ]);
+  });
+
   test("looking at a subagent reads its main session", async () => {
     const { adapter, live, core, bus, end } = setup();
     adapter.addStored("s1", []);

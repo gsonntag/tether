@@ -118,7 +118,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   if (msg.role === "user" && msg.origin) {
     // Not something you typed: another session's message, a channel, a report.
     const who =
-      msg.origin.kind === "peer" ? "From another session" : msg.origin.kind === "channel" ? "From a channel" : msg.origin.kind === "tether" ? "From Tether, on your behalf" : "From the system";
+      msg.origin.kind === "peer" ? "From another session" : msg.origin.kind === "channel" ? "From a channel" : msg.origin.kind === "tether" ? (/^Tether: /.test(msg.parts[0]?.type === "text" ? msg.parts[0].text : "") ? "Tether" : "From Tether, on your behalf") : "From the system";
     return (
       <div className="t-msg from">
         <div className="t-from-head">

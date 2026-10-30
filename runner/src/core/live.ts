@@ -45,7 +45,15 @@ export interface TerminalSeam {
 /** A runner restart within this long of an automatic continue doesn't continue again (no loops). */
 export const AUTO_CONTINUE_GUARD_MS = 2 * 60_000;
 /** What Tether tells the agent after a restart cut its turn off (marked as Tether's own). */
-export const AUTO_CONTINUE_TEXT = `${FROM_TETHER}The Tether runner restarted while you were working. Continue where you left off; if you were in the middle of a command, check whether it finished first.`;
+export const AUTO_CONTINUE_TEXT = `${FROM_TETHER}Tether: continue after restart. The runner restarted mid-turn; carry on where you left off, and check whether any command you were running finished.`;
+
+/** A turn whose answer is in the store: its last message (past Tether's notices) is the agent's, ending in text. */
+export function turnFinished(msgs: readonly Msg[]): boolean {
+  const last = [...msgs].reverse().find((m) => !(m.role === "notice"));
+  if (!last || last.role !== "assistant" || last.streaming || last.error) return false;
+  const p = last.parts.at(-1);
+  return p?.type === "text" && !!p.text.trim();
+}
 
 /** A send that Stop cancelled while the harness was starting: nothing went out. */
 export class SendCancelled extends Error {
@@ -63,6 +71,8 @@ export class LiveControl {
   readonly attachments: AttachmentStore;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
+  /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
+  quiet = { quietMs: 15_000, pollMs: 3_000, maxMs: 10 * 60_000 };
   /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
   private relays = new Map<string, { childId: string; nativeId: string; msgId: string; text: string }[]>();
 
@@ -283,6 +293,11 @@ export class LiveControl {
     // Stop keeps the queue, held, until you send (SPEC §9).
     this.queue.hold(s, "stopped");
     if (s.state.status !== "idle" || s.sending) s.stopped = true;
+    // Saved now: a restart before the stop takes effect must not continue a turn you stopped.
+    if (this.core.o.prefs.get(id).running || this.core.o.prefs.get(id).continuedTurn) {
+      this.core.o.prefs.set(id, { running: undefined, continuedTurn: undefined });
+      this.core.o.prefs.flush();
+    }
     // Stopped while Claude is still starting: the message never goes out.
     if (s.sending && !s.driver) {
       // Free at once: a send right after this goes ahead (on the same start).
@@ -337,8 +352,9 @@ export class LiveControl {
     for (const id of this.core.o.prefs.running())
       if (!persistent(id) && parseSessionId(id)) {
         const p = this.core.o.prefs.get(id);
-        if (!waiting.has(id) && !(p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS)) {
-          this.core.o.prefs.set(id, { running: undefined, cutOff: undefined, autoContinuedAt: this.core.now() });
+        const again = p.continuedTurn || (p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS);
+        if (!waiting.has(id) && !again) {
+          this.core.o.prefs.set(id, { running: undefined, cutOff: undefined, autoContinuedAt: this.core.now(), continuedTurn: true });
           this.queue.notCutOff(id);
           continuing.push(id);
           continue;
@@ -357,22 +373,75 @@ export class LiveControl {
    * message (marked, so it reads as Tether's) asking the agent to carry on. The session's settings go
    * with it as with any send. If it can't, the session falls back to Failed and a held queue.
    */
-  private async autoContinue(id: string) {
+  private async autoContinue(id: string, waited = false) {
+    let s: Session | undefined;
     try {
-      const s = await this.core.open(id);
+      s = await this.core.open(id);
+      // Still being written: the rest happens in the background once it's quiet (rejoin, and the
+      // queues it restores, don't wait for this session).
+      if (!waited && !this.storeQuiet(s)) {
+        await this.core.load(s);
+        s.apply({ type: "msg", msg: notice("Waiting for Claude Code from before the restart to finish…") });
+        this.queue.hold(s, "restart");
+        void this.autoContinue(id, true);
+        return;
+      }
+      // Claude Code from before the restart may still be running the turn (the runner crashed and
+      // left it behind): wait until the session's store has been quiet a while, so two processes
+      // never drive one session. A process silent longer than that (a long tool call) can still
+      // overlap: production's systemd unit ends leftover children on a restart anyway.
+      if (waited && !(await this.waitQuiet(s))) {
+        this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
+        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working; press Resume to continue.", "warning") });
+        this.queue.hold(s, "restart");
+        this.core.o.prefs.set(id, { continuedTurn: undefined });
+        return;
+      }
+      if (waited) this.queue.release(s);
+      await this.core.syncFromStore(s);
       await this.core.load(s);
+      // The turn finished after all (the store has its answer after the last prompt): nothing to continue.
+      if (turnFinished(s.transcript?.messages ?? [])) {
+        this.core.o.prefs.set(id, { continuedTurn: undefined });
+        this.core.log(`${id}: the cut-off turn had finished; not continued`);
+        return;
+      }
+      // You sent something first: that goes on instead.
+      if (s.state.status !== "idle" || s.sending) {
+        this.core.o.prefs.set(id, { continuedTurn: undefined });
+        return;
+      }
       s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
       await this.send(id, AUTO_CONTINUE_TEXT, [], { tether: true });
       this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e: any) {
-      this.core.log(`${id}: couldn't continue after the restart: ${e?.message ?? e}`);
-      this.read.set(id, { failure: "The runner restarted mid-turn." });
-      const s = this.core.sessions.get(id);
+      const why = String(e?.message ?? e).replace(/[.\s]+$/, "");
+      this.core.log(`${id}: couldn't continue after the restart: ${why}`);
+      // You sent first (the session got busy meanwhile): nothing went wrong.
+      if (/still working/i.test(why)) return;
+      this.read.set(id, { failure: `Couldn't continue after the restart: ${why}.` });
       if (s) {
-        s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${e?.message ?? e}. Send a message to continue.`, "warning") });
+        // One notice: a failed start already said why in the transcript.
+        if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
         this.queue.hold(s, "restart");
       }
     }
+  }
+
+  /** The session's store hasn't changed for `quiet.quietMs` (or the harness can't say). */
+  private storeQuiet(s: Session): boolean {
+    const at = this.core.adapter(s.summary.harness).storeChangedAt?.(s.summary.nativeId, s.summary.projectPath);
+    return at === undefined || this.core.now() - at >= this.quiet.quietMs;
+  }
+
+  /** Waits, checking every `quiet.pollMs`, until the store is quiet: false after `quiet.maxMs`. */
+  private async waitQuiet(s: Session): Promise<boolean> {
+    const until = this.core.now() + this.quiet.maxMs;
+    while (!this.storeQuiet(s)) {
+      if (this.core.now() >= until) return false;
+      await Bun.sleep(this.quiet.pollMs);
+    }
+    return true;
   }
 
   /** Rejoins one session, trying again a few times (the harness's daemon may be slow or restarting). */
@@ -741,7 +810,11 @@ export class LiveControl {
     // Kept in runner.json, so a turn cut off by a restart is reported when the session reopens.
     // Not cleared while its subagents still run (busy): a restart must find them again (persistent harnesses rejoin).
     if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle") && !(now === "idle" && s.driver?.busy()))
-      this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
+    {
+      this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true, ...(now === "idle" ? { continuedTurn: undefined } : {}) });
+      // At once, not after the usual short delay: a crash right after a turn ends mustn't look mid-turn.
+      this.core.o.prefs.flush();
+    }
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
       // The next turn runs with the settings as shown; not while its subagents still run on the old
