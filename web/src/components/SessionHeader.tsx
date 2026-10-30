@@ -45,7 +45,7 @@ export function SessionHeader({
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
   // Changed during a turn on a harness where that counts from the next turn: the turn's own values.
   const turn = state.turnSettings;
-  const nextTurn = (now: string, was: string | undefined) => (was !== undefined ? `${now} from the next turn` : now);
+  const nextTurn = (now: string, was: string | undefined) => (was !== undefined && turn?.who !== "subagent" ? `${now} from the next turn` : now);
   const modes = models?.permissionModes ?? [];
   // Tighter: earlier in the harness's list of modes (strictest first), so this turn runs looser than shown.
   const rank = (m?: string) => modes.findIndex((x) => x.id === m);
@@ -90,7 +90,8 @@ export function SessionHeader({
             <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
-              label={nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
+              // While Claude's TUI drives, its mode comes from its hooks: the last one it reported.
+              label={locked ? `${permissionModeLabel(state.permissionMode)} (last seen)` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
               disabled={locked}
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}
@@ -104,7 +105,7 @@ export function SessionHeader({
       {turn && !isChild && (
         <div className="t-inline-status t-turn-settings" role="status">
           <span>
-            This turn still runs with{" "}
+            {turn.who === "subagent" ? "A subagent still runs with" : "This turn still runs with"}{" "}
             {[
               turn.model !== undefined && `Model ${modelLabel(turn.model, models?.models)}`,
               turn.effort !== undefined && `Effort ${effortLabel(turn.effort)}`,
