@@ -645,7 +645,7 @@ const steps = {
     // J3: only now the banner; its button and the placeholder name Claude.
     await button(p.locator(".t-term-panel"), "Close terminal panel").click();
     await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code", exact: true }).waitFor();
-    if (!/Type into Claude in the terminal/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't name Claude");
+    if (!/Claude gets this when you go Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't name Claude");
     // ❯_ again: a shell, still handed off; the agent's entry says driving.
     await p.locator(".t-chip-term").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });

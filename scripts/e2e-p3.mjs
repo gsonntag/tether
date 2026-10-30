@@ -10,7 +10,7 @@
 //   HTTP_PORT       a free port for the shell's dev server (default 8899)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new keep midturn model phone queue needsyou back restart clear shell exit fresh
+//   new keep midturn model phone queue back restart needsyou clear shell exit fresh
 // While Claude's TUI drives, Tether doesn't follow its turns (SPEC §8): one state, "Driving in the
 // terminal", and Needs you from its hooks; the composer queues for Back to Tether, which asks first.
 // Each real turn is small (Haiku).
@@ -242,7 +242,7 @@ const steps = {
     await waitHistory(tuiName(), /Claude Code v\d/, "the TUI's banner");
     await waitHistory(tuiName(), /PELICAN/, "the TUI resumed the same conversation");
     await p.locator(".t-term-banner", { hasText: "Driving in the terminal" }).waitFor();
-    if (!(await composer(p).getAttribute("placeholder")).includes("in the terminal")) fail("the composer doesn't say it types into the terminal");
+    if (!(await composer(p).getAttribute("placeholder")).includes("when you go Back to Tether")) fail("the composer doesn't say its messages wait for Back to Tether");
     await shot(p, "midturn-desktop");
     await noOverflow(p, "desktop with the terminal");
     const argv = tmux("display", "-p", "-t", `=${tuiName()}:`, "#{pane_start_command}").stdout;
@@ -322,7 +322,7 @@ const steps = {
     if (/What is the code word\?/.test(tuiText(tuiName()))) fail("the composer's text reached the TUI");
     const st = await liveState(p);
     if (st.status !== "idle") fail(`status ${st.status} while the TUI drives`);
-    await p.locator(".t-term-banner", { hasText: /^Driving in the terminal$/ }).waitFor({ timeout: 5_000 });
+    await p.locator(".t-term-banner-text", { hasText: /^Driving in the terminal$/ }).waitFor({ timeout: 5_000 });
     ok("the composer's message waits in the queue, held for Back to Tether; nothing reached the TUI; the banner says Driving in the terminal");
     await p.close();
   },
