@@ -203,6 +203,11 @@ export interface Ops {
   /** base64 bytes typed into an attached terminal */
   terminalInput: { args: { attachId: string; data: string }; result: null };
   terminalResize: { args: { attachId: string; cols: number; rows: number }; result: null };
+  /**
+   * An attached terminal's text, scrollback included (the panel's Copy), the newest
+   * TERMINAL_TEXT_MAX bytes of it (`cut`: older lines left out). Only the attaching browser may ask.
+   */
+  terminalText: { args: { attachId: string }; result: { text: string; cut: boolean } };
 }
 
 /** A browser's push subscription (PushSubscription.toJSON()). */
@@ -255,7 +260,10 @@ export type OpArgs<K extends OpName> = Ops[K]["args"];
 export type OpResult<K extends OpName> = Ops[K]["result"];
 
 /** Ops the server reads (and partly answers) instead of passing through blind. */
-export const TERMINAL_OPS = ["closeTerminal", "terminalInput", "terminalResize"] as const satisfies readonly OpName[];
+export const TERMINAL_OPS = ["closeTerminal", "terminalInput", "terminalResize", "terminalText"] as const satisfies readonly OpName[];
+
+/** terminalText answers at most this much (UTF-8 bytes): well inside a frame. */
+export const TERMINAL_TEXT_MAX = 2 * 1024 * 1024;
 
 // ---------- summary channel (runner -> every browser) ----------
 

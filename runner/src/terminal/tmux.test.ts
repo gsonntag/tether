@@ -123,3 +123,16 @@ test("tags and pastes target a session by its exact name, never a sibling by pre
   await until(async () => (await tmux.capture("t-claude-y-ab12")).includes("pasted-42"));
   await tmux.kill("t-claude-y-ab12");
 });
+
+test("history: the scrollback and the screen as text (the panel's Copy)", async () => {
+  await tmux.create({ name: "sh-hist-1", cwd: dir, argv: ["sh"], cols: 40, rows: 5, tags: { kind: "shell", project: dir, n: "9" } });
+  await tmux.type("sh-hist-1", "seq 1 200; echo LONG-$(printf 'x%.0s' $(seq 1 60))");
+  await tmux.keys("sh-hist-1", "Enter");
+  await until(async () => (await tmux.history("sh-hist-1")).includes("LONG-"));
+  const h = await tmux.history("sh-hist-1");
+  // Lines long since scrolled off the 5-row screen are there, and a wrapped line is one line.
+  expect(h).toMatch(/^1$/m);
+  expect(h).toMatch(/^200$/m);
+  expect(h).toMatch(/LONG-x{60}/);
+  expect(await tmux.capture("sh-hist-1")).not.toMatch(/^1$/m);
+});

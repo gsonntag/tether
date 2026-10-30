@@ -23,7 +23,7 @@
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
-import { TERMINAL_BUSY, TERMINAL_CLOSED, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
+import { TERMINAL_BUSY, TERMINAL_CLOSED, TERMINAL_TEXT_MAX, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState, Msg } from "../../../shared/transcript";
 import type { QuitStep, ScreenRead, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
@@ -32,6 +32,7 @@ import type { SessionCore } from "../core/sessions";
 import { Transcript } from "../core/transcript";
 import { Attaches, type SpawnPty } from "./attach";
 import { HookServer, type HookReport } from "./hooks";
+import { tailBytes } from "../../../shared/shellRun";
 import { cleanEnv, projectKey, shellName, Tmux, tuiName } from "./tmux";
 
 export interface TerminalOptions {
@@ -240,6 +241,18 @@ export class TerminalControl {
     } else throw new Error("Say which terminal to open.");
     this.attaches.open(a.attachId, target, this.o.tmux.argv("attach-session", "-t", `=${target}`), a.cols, a.rows, { ...cleanEnv(), TERM: "xterm-256color" });
     return { attachId: a.attachId, target };
+  }
+
+  /**
+   * What an attached terminal shows, scrollback included, as text (the panel's Copy): the newest
+   * TERMINAL_TEXT_MAX bytes, so the answer always fits a frame.
+   */
+  async text(attachId: string): Promise<{ text: string; cut: boolean }> {
+    const target = this.attaches.targetOf(attachId);
+    if (!target) throw new Error(TERMINAL_CLOSED);
+    const all = (await this.o.tmux.history(target)).replace(/\s+$/, "") + "\n";
+    const text = tailBytes(all, TERMINAL_TEXT_MAX);
+    return { text, cut: text.length < all.length };
   }
 
   input(attachId: string, data: string) {

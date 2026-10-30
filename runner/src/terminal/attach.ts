@@ -70,6 +70,11 @@ export class Attaches {
     return this.map.has(id);
   }
 
+  /** The tmux session an attach shows. */
+  targetOf(id: string): string | undefined {
+    return this.map.get(id)?.target;
+  }
+
   /** The attaches showing a tmux session. */
   of(target: string): string[] {
     return [...this.map.values()].filter((a) => a.target === target).map((a) => a.id);

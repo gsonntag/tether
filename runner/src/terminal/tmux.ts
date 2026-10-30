@@ -268,6 +268,11 @@ export class Tmux {
     await this.must(["paste-buffer", "-p", "-d", "-b", buf, "-t", `=${name}:`]);
   }
 
+  /** A pane's whole history and screen as text, wrapped lines joined (copying from a terminal). */
+  async history(name: string): Promise<string> {
+    return this.must(["capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", `=${name}:`]);
+  }
+
   /** The text on screen now (for tests and diagnostics). */
   async capture(name: string): Promise<string> {
     return this.must(["capture-pane", "-p", "-t", `=${name}:`]);
