@@ -116,7 +116,15 @@ export function SessionHeader({
               .join(", ")}
             .
           </span>
-          {tighter && <Button label="Stop this turn" size="sm" variant="secondary" onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: session.id }))} />}
+          {tighter && (
+            // A subagent's: stop just it (a newer turn, pinned as shown, goes on).
+            <Button
+              label={turn.who === "subagent" && turn.subagentSessionId ? "Stop the subagent" : "Stop this turn"}
+              size="sm"
+              variant="secondary"
+              onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: turn.who === "subagent" && turn.subagentSessionId ? turn.subagentSessionId : session.id }))}
+            />
+          )}
         </div>
       )}
       {error && <div className="t-inline-status error">{error}</div>}
