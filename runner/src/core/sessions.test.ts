@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { capEvent } from "../../../shared/limits";
 import type { RunnerToServer, SummaryUpdate } from "../../../shared/protocol";
@@ -15,7 +15,9 @@ import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { NoticeStore } from "./notices";
 import { saveConfig } from "../config";
-import { hidePattern, SessionCore } from "./sessions";
+import { OpRegistry } from "./ops";
+import { registerSessionOps } from "./sessionOps";
+import { checkFolder, hidePattern, SessionCore } from "./sessions";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
@@ -623,5 +625,119 @@ describe("hidden folders (TETHER_HIDE_PROJECTS)", () => {
     expect(core.sessions.get("claude:old")?.live).toBe(false);
     await core.discover();
     expect(ids(core.book.list())).toEqual(["claude:kept"]);
+  });
+});
+
+describe("a folder that doesn't exist yet", () => {
+  const scratch = () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-newdir-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  };
+  const opsOf = (t: ReturnType<typeof setup>) => {
+    const ops = new OpRegistry();
+    registerSessionOps(ops, t.core, t.live);
+    return ops;
+  };
+
+  test("checkFolder tells existing, missing and unusable paths apart, and makes nothing", () => {
+    const dir = scratch();
+    writeFileSync(join(dir, "file"), "");
+    symlinkSync(join(dir, "gone"), join(dir, "dangling"));
+    expect(checkFolder(dir)).toEqual({ path: dir, state: "exists" });
+    expect(checkFolder(` ${dir} `)).toEqual({ path: dir, state: "exists" });
+    expect(checkFolder(join(dir, "a/b/c"))).toEqual({ path: join(dir, "a/b/c"), state: "missing" });
+    expect(checkFolder(join(dir, "file"))).toMatchObject({ state: "error", error: `${join(dir, "file")} isn't a folder.` });
+    expect(checkFolder(join(dir, "file/sub"))).toMatchObject({ state: "error", error: `${join(dir, "file")} isn't a folder.` });
+    expect(checkFolder(join(dir, "dangling/sub"))).toMatchObject({ state: "error", error: `${join(dir, "dangling")} isn't a folder.` });
+    expect(readdirSync(dir).sort()).toEqual(["dangling", "file"]);
+  });
+
+  test("~ expands; a loose relative path isn't made", () => {
+    expect(checkFolder("~")).toEqual({ path: homedir(), state: "exists" });
+    expect(checkFolder("~/tether-no-such-folder/x")).toEqual({ path: join(homedir(), "tether-no-such-folder/x"), state: "missing" });
+    expect(checkFolder("tether-no-such-folder").state).toBe("relative");
+    expect(checkFolder("~nobody/x").state).toBe("relative");
+  });
+
+  test("without permission: refused, by the check and by newSession", async () => {
+    if (process.getuid?.() === 0) return;
+    const dir = scratch();
+    const shut = join(dir, "shut");
+    mkdirSync(shut);
+    chmodSync(shut, 0o555);
+    try {
+      const { live } = setup();
+      expect(checkFolder(join(shut, "x"))).toMatchObject({ state: "error", error: `No permission to create ${join(shut, "x")}.` });
+      await expect(live.newSession({ harness: "claude", projectPath: join(shut, "x"), createFolder: true })).rejects.toThrow("No permission");
+    } finally {
+      chmodSync(shut, 0o755);
+    }
+  });
+
+  test("the flag is required: without it nothing is made and nothing starts", async () => {
+    const dir = scratch();
+    const t = setup();
+    const target = join(dir, "a/b");
+    await expect(t.live.newSession({ harness: "claude", projectPath: target })).rejects.toThrow("no folder");
+    expect(existsSync(join(dir, "a"))).toBe(false);
+    expect(t.adapter.drivers).toHaveLength(0);
+    expect(t.core.sessions.size).toBe(0);
+  });
+
+  test("over the wire only a real true counts", async () => {
+    const dir = scratch();
+    const t = setup();
+    const ops = opsOf(t);
+    for (const createFolder of ["true", 1, {}, undefined]) {
+      expect(await ops.handle("newSession", { harness: "claude", projectPath: join(dir, "a"), createFolder })).toMatchObject({ ok: false });
+      expect(existsSync(join(dir, "a"))).toBe(false);
+    }
+    const r = await ops.handle("newSession", { harness: "claude", projectPath: join(dir, "a"), createFolder: true });
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(dir, "a"))).toBe(true);
+    expect(await ops.handle("checkFolder", { projectPath: join(dir, "b") })).toMatchObject({ ok: true, data: { state: "missing" } });
+    expect(await ops.handle("checkFolder", {})).toMatchObject({ ok: false });
+  });
+
+  test("confirmed: the folder is made, parents too, and the session starts in it", async () => {
+    const dir = scratch();
+    const t = setup();
+    const target = join(dir, "a/b/c");
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: target, createFolder: true });
+    expect(statSync(target).isDirectory()).toBe(true);
+    expect(t.core.sessions.get(sessionId)?.summary.projectPath).toBe(target);
+    expect(t.adapter.drivers).toHaveLength(1);
+  });
+
+  test("the flag changes nothing for a folder that exists, and can't get past a bad path", async () => {
+    const dir = scratch();
+    writeFileSync(join(dir, "file"), "");
+    const t = setup();
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: dir, createFolder: true });
+    expect(t.core.sessions.get(sessionId)?.summary.projectPath).toBe(dir);
+    await expect(t.live.newSession({ harness: "claude", projectPath: join(dir, "file"), createFolder: true })).rejects.toThrow("isn't a folder");
+    await expect(t.live.newSession({ harness: "claude", projectPath: join(dir, "file/sub"), createFolder: true })).rejects.toThrow("isn't a folder");
+    await expect(t.live.newSession({ harness: "claude", projectPath: "tether-no-such-folder", createFolder: true })).rejects.toThrow("full path");
+    expect(existsSync(join(homedir(), "tether-no-such-folder"))).toBe(false);
+  });
+
+  test("nothing is made for a session that can't start", async () => {
+    const dir = scratch();
+    const t = setup();
+    await expect(t.live.newSession({ harness: "codex", projectPath: join(dir, "a"), createFolder: true })).rejects.toThrow("can't drive codex");
+    await expect(t.live.newSession({ harness: "claude", projectPath: join(dir, "a"), createFolder: true, terminal: true })).rejects.toThrow("no terminal support");
+    expect(existsSync(join(dir, "a"))).toBe(false);
+  });
+
+  test("a folder TETHER_HIDE_PROJECTS hides can still be made", async () => {
+    const dir = scratch();
+    const t = setup({ hideProjects: `${dir}/*` });
+    expect(t.core.folder(dir)).toBe(dir);
+    const target = join(dir, "hidden/x");
+    expect(checkFolder(target).state).toBe("missing");
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: target, createFolder: true });
+    expect(existsSync(target)).toBe(true);
+    expect(t.core.sessions.get(sessionId)?.summary.projectPath).toBe(target);
   });
 });

@@ -108,12 +108,15 @@ export interface Ops {
    */
   /**
    * With `terminal`, the session starts in the harness's own TUI (Claude: `--session-id`) instead of
-   * through the SDK, in terminal mode (SPEC §8).
+   * through the SDK, in terminal mode (SPEC §8). With `createFolder` (the owner confirmed it), a
+   * folder that doesn't exist is made first, parents too; without it the runner never makes one.
    */
   newSession: {
-    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean };
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; createFolder?: boolean };
     result: { sessionId: string };
   };
+  /** What newSession would find at a path on the runner. Read-only. */
+  checkFolder: { args: { projectPath: string }; result: FolderCheck };
   /**
    * Starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI,
    * then Enter (SPEC §9). `stop`: Stop and send now (the running turn is stopped first). Sending
@@ -208,6 +211,18 @@ export interface Ops {
    * TERMINAL_TEXT_MAX bytes of it (`cut`: older lines left out). Only the attaching browser may ask.
    */
   terminalText: { args: { attachId: string }; result: { text: string; cut: boolean } };
+}
+
+/**
+ * A path as the runner sees it. `missing`: newSession can make it with `createFolder`. `relative`:
+ * not there, and too loose to make (it needs to start with `/` or `~/`). `error`: it can't be used.
+ */
+export interface FolderCheck {
+  /** expanded */
+  path: string;
+  state: "exists" | "missing" | "relative" | "error";
+  /** what's wrong, for `relative` and `error` */
+  error?: string;
 }
 
 /** A browser's push subscription (PushSubscription.toJSON()). */

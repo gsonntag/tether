@@ -87,6 +87,9 @@ tether/
   leaves matching projects and sessions out of project lists, session lists and Home, for every
   harness, after the adapters' discovery. Nothing is deleted. A session that is open or live right now
   stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden.
+  New session can make a folder: the dialog asks the runner (`checkFolder`), warns when it doesn't
+  exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
+  starting with `/` or `~/` is made.
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -179,7 +182,7 @@ approvals and questions), `queue[]` (waiting messages), `terminal?` (attach info
 
 ### Core ops
 
-`listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `send`, `steer`,
+`listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `deleteSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands).

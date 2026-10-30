@@ -6,11 +6,11 @@
 // or while a subagent of it runs. Its transcript is read from the harness's store on first open
 // (never kept on disk by Tether) and tailed while it's stored and watched.
 
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { partChunk, type PartChunk } from "../../../shared/limits";
-import type { RunnerToServer } from "../../../shared/protocol";
+import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { HarnessId, LiveState, Msg, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE } from "../../../shared/transcript";
@@ -53,6 +53,34 @@ export function expandPath(p: string): string {
   if (t === "~") return homedir();
   if (t.startsWith("~/")) return resolve(homedir(), t.slice(2));
   return resolve(homedir(), t);
+}
+
+const noPermission = (abs: string) => `No permission to create ${abs}.`;
+const notAFolder = (p: string) => `${p} isn't a folder.`;
+
+/**
+ * Whether a path is a folder, or could be made into one: the nearest thing that exists on the way up
+ * decides. Only reads. TETHER_HIDE_PROJECTS doesn't come into it: hiding only touches the lists.
+ */
+export function checkFolder(path: string): FolderCheck {
+  const abs = expandPath(path);
+  const t = path.trim();
+  const rooted = t.startsWith("/") || t === "~" || t.startsWith("~/");
+  const error = (error: string): FolderCheck => ({ path: abs, state: "error", error });
+  for (let p = abs; ; p = dirname(p)) {
+    try {
+      if (!statSync(p).isDirectory()) return error(notAFolder(p));
+      if (p === abs) return { path: abs, state: "exists" };
+      if (!rooted) return { path: abs, state: "relative", error: "Use a full path, like ~/code/app." };
+      accessSync(p, constants.W_OK | constants.X_OK);
+      return { path: abs, state: "missing" };
+    } catch (e: any) {
+      if (e?.code === "EACCES" || e?.code === "EPERM" || e?.code === "EROFS") return error(noPermission(abs));
+      if (e?.code !== "ENOENT" && e?.code !== "ENOTDIR") return error(`Can't use ${abs}: ${e?.message ?? e}`);
+      // A link to nothing: stat can't see it, but nothing can be made through it.
+      if (e.code === "ENOENT" && lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) return error(notAFolder(p));
+    }
+  }
 }
 
 /** A comma-separated list of path globs as one pattern (`*`: anything, `/` too); none: undefined. */
@@ -248,11 +276,24 @@ export class SessionCore {
   }
 
   /** Validates a folder for a new session. */
-  folder(path: string): string {
+  folder(path: string, create = false): string {
     if (!path?.trim()) throw new Error("Pick a folder for the session.");
-    const abs = expandPath(path);
-    if (!existsSync(abs)) throw new Error(`There's no folder ${abs} on this runner.`);
-    if (!statSync(abs).isDirectory()) throw new Error(`${abs} isn't a folder.`);
+    if (!create) {
+      const abs = expandPath(path);
+      if (!existsSync(abs)) throw new Error(`There's no folder ${abs} on this runner.`);
+      if (!statSync(abs).isDirectory()) throw new Error(notAFolder(abs));
+      return abs;
+    }
+    const { path: abs, state, error } = checkFolder(path);
+    if (state === "exists") return abs;
+    if (state !== "missing") throw new Error(error);
+    try {
+      mkdirSync(abs, { recursive: true });
+    } catch (e: any) {
+      if (e?.code === "EACCES" || e?.code === "EPERM" || e?.code === "EROFS") throw new Error(noPermission(abs));
+      if (e?.code === "EEXIST" || e?.code === "ENOTDIR") throw new Error(notAFolder(abs));
+      throw new Error(`Can't create ${abs}: ${e?.message ?? e}`);
+    }
     return abs;
   }
 

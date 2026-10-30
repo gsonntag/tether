@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { modelLabel } from "../../../shared/labels";
+import type { FolderCheck } from "../../../shared/protocol";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
 import { openSession } from "../route";
 import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
@@ -43,6 +45,11 @@ export function NewSessionDialog() {
   const harness: HarnessId = harnesses.includes(picked) ? picked : harnesses[0]!;
   const models = useStore((s) => (rid ? s.modelLists[modelListKey(rid, harness)] : undefined));
   const [path, setPath] = useState("");
+  const typed = path.trim();
+  /** what the runner says about `typed`; nothing until it answers, so nothing flashes while typing */
+  const [check, setCheck] = useState<FolderCheck>();
+  const [createFolder, setCreateFolder] = useState(false);
+  const checkId = useRef(0);
   const [model, setModel] = useState("default");
   const [modes_, setModes] = useState<Partial<Record<HarnessId, string>>>({});
   const mode = modes_[harness] ?? lastMode(harness);
@@ -59,6 +66,21 @@ export function NewSessionDialog() {
     if (!models) void loadModels(rid, harness);
   }, [open, rid, harness]);
 
+  const checkPath = async (id: number) => {
+    const c = await rpc(rid!, "checkFolder", { projectPath: typed }).catch(() => undefined);
+    if (id === checkId.current) setCheck(c);
+    return c;
+  };
+  useEffect(() => {
+    const id = ++checkId.current;
+    setCheck(undefined);
+    setCreateFolder(false);
+    setError(undefined);
+    if (!open || !rid || !typed) return;
+    const t = setTimeout(() => void checkPath(id), CHECK_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [open, rid, typed]);
+
   const shown = useMemo(() => {
     const q = path.trim().toLowerCase();
     const list = q ? projects.filter((p) => p.path.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) : projects;
@@ -67,11 +89,13 @@ export function NewSessionDialog() {
 
   const close = () => useStore.setState({ newSessionOpen: false });
   const create = async () => {
-    if (!rid || !path.trim() || busy) return;
+    if (!rid || !typed || busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: path.trim(), ...(modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
+      // Enter before the check came back: wait for it, so a missing folder still asks first.
+      if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
+      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
@@ -141,6 +165,16 @@ export function NewSessionDialog() {
             onKeyDown={(e) => e.key === "Enter" && void create()}
           />
         </div>
+        {check?.state === "missing" && (
+          <div className="t-folder-missing">
+            <span className="t-inline-status">This folder doesn't exist yet.</span>
+            <label className="t-check">
+              <input type="checkbox" checked={createFolder} onChange={(e) => setCreateFolder(e.target.checked)} />
+              <span>Create folder</span>
+            </label>
+          </div>
+        )}
+        {check?.error && !(check.state === "relative" && shown.length > 0) && <div className="t-form-error">{check.error}</div>}
         {shown.length > 0 && (
           <div className="t-projects" role="listbox" aria-label="Projects">
             {shown.map((p) => (
@@ -179,7 +213,7 @@ export function NewSessionDialog() {
         {error && <div className="t-form-error">{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
-          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !path.trim() || busy} onClick={() => void create()} />
+          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder)} onClick={() => void create()} />
         </div>
       </div>
     </Dialog>

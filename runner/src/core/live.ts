@@ -109,10 +109,10 @@ export class LiveControl {
 
   // ---------------- ops ----------------
 
-  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean } & StartOpts): Promise<{ sessionId: string }> {
+  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean } & StartOpts): Promise<{ sessionId: string }> {
     const a = this.core.adapter(args.harness);
-    const folder = this.core.folder(args.projectPath);
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
+    const folder = this.core.folder(args.projectPath, args.createFolder === true);
     const opts: StartOpts = { model: args.model, effort: args.effort, permissionMode: args.permissionMode };
     const s = this.core.create(args.harness, await a.newId(folder, opts), folder, opts);
     this.core.touch(s);
