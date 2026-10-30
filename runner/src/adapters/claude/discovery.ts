@@ -5,10 +5,11 @@
 import { getSessionInfo, listSessions, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, statSync } from "node:fs";
 import { basename } from "node:path";
-import type { ProjectInfo, SessionSummary } from "../../../../shared/transcript";
+import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
 import { claudePick, lastLineTime } from "../lastActivity";
 import { titleText } from "../../../../shared/fromTether";
 import { cleanUserText } from "./content";
+import { readHistory } from "./history";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
 /** The title the sidebar shows: yours (/rename), Claude's, or the first prompt. */
@@ -35,12 +36,26 @@ async function summaryOf(s: SDKSessionInfo, projectPath: string): Promise<Sessio
   };
 }
 
+/**
+ * A store with no conversation in it: nothing but local commands (/exit, /clear typed in a TUI nobody
+ * used), which Claude stores all the same. Such a session never started (SPEC §8).
+ */
+export async function claudeNeverStarted(nativeId: string, projectPath: string): Promise<boolean> {
+  const msgs = await readHistory(nativeId, projectPath).catch(() => undefined);
+  return !!msgs && onlyLocalCommands(msgs);
+}
+
+export const onlyLocalCommands = (msgs: Msg[]) => msgs.every((m) => m.role === "notice" || (m.role === "user" && m.parts.every((p) => p.type === "text" && p.text.trimStart().startsWith("/"))));
+
 /** Every session (in one folder when `projectPath` is given) with activity since `since`. */
 export async function claudeSessions(opts: { projectPath?: string; since?: number } = {}): Promise<SessionSummary[]> {
   const list = opts.projectPath ? await listSessions({ dir: opts.projectPath, includeWorktrees: false }) : await listSessions();
   // The file's mtime is never older than its last message: a cheap first cut.
   const recent = list.filter((s) => s.cwd && (!opts.since || s.lastModified >= opts.since) && (!opts.projectPath || s.cwd === opts.projectPath));
-  const out = await Promise.all(recent.map((s) => summaryOf(s, s.cwd!)));
+  // Only a session with no title of its own and a slash command (or nothing) first can be empty.
+  const maybeEmpty = (s: SDKSessionInfo) => !s.customTitle && !s.summary && (!cleanUserText(s.firstPrompt ?? "").trim() || cleanUserText(s.firstPrompt ?? "").trimStart().startsWith("/"));
+  const started = await Promise.all(recent.map(async (s) => (maybeEmpty(s) && (await claudeNeverStarted(s.sessionId, s.cwd!)) ? undefined : s)));
+  const out = await Promise.all(started.filter((s) => s !== undefined).map((s) => summaryOf(s, s.cwd!)));
   return out.filter((s) => !opts.since || s.updatedAt >= opts.since);
 }
 

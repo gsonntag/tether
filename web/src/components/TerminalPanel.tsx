@@ -103,6 +103,10 @@ export function TerminalPanel({
   }, [runnerId, session.projectPath]);
 
   // Shells come and go on other devices too: looked at again every few seconds while open.
+  // Asked while the TUI drove: moot once it doesn't (another device went back, it exited).
+  useEffect(() => {
+    if (!handoff) setAskBack(false);
+  }, [handoff]);
   useEffect(() => {
     if (!linkOpen) return;
     void loadShells();

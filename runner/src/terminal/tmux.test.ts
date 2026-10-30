@@ -54,9 +54,6 @@ test("sessions are created tagged, listed, typed into, and killed", async () => 
   expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.launchedFor).toBe("claude:x0");
   await tmux.tag("sh-test-1", "launch", undefined);
   expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.launchedFor).toBeUndefined();
-  // Several lines go in as a paste.
-  await tmux.type("sh-test-1", "echo one\necho two\n");
-  await until(async () => /two\n/.test(await tmux.capture("sh-test-1")));
 
   // The server is set up for a browser client.
   const p = Bun.spawn(tmux.argv("show-options", "-g", "window-size"), { stdout: "pipe" });
@@ -146,3 +143,14 @@ test("history: the scrollback and the screen as text (the panel's Copy)", async 
   await until(async () => (await tmux.history("sh-hist-2")).includes("500"));
   await until(() => tmux.historyFull("sh-hist-2"));
 }, 20_000);
+
+test("leaving copy mode: keys reach the program again; outside it, nothing happens", async () => {
+  await tmux.create({ name: "sh-copy-1", cwd: dir, argv: ["sh"], tags: { kind: "shell", project: dir, n: "9" } });
+  const inMode = () => Bun.spawnSync(tmux.argv("display", "-p", "-t", "=sh-copy-1:", "#{pane_in_mode}")).stdout.toString().trim();
+  await tmux.leaveCopyMode("sh-copy-1");
+  Bun.spawnSync(tmux.argv("copy-mode", "-t", "=sh-copy-1:"));
+  expect(inMode()).toBe("1");
+  await tmux.leaveCopyMode("sh-copy-1");
+  expect(inMode()).toBe("0");
+  await tmux.kill("sh-copy-1");
+});

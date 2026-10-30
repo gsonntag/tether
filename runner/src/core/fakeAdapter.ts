@@ -165,12 +165,16 @@ export class FakeAdapter implements Adapter {
     this.defaultsAsked.push({ projectPath, nativeId });
     return nativeId && this.sessionDefaults ? this.sessionDefaults : { model: "default" };
   }
+  /** which ids `resume` was asked for (the rest started new) */
+  resumed: string[] = [];
+  neverStarted?: (nativeId: string, projectPath: string) => Promise<boolean>;
   async start(_p: string, nativeId: string, opts: StartOpts, sink: Sink) {
     await this.startGate;
     return this.make(nativeId, opts, sink);
   }
   async resume(nativeId: string, _p: string, opts: StartOpts, sink: Sink) {
     await this.startGate;
+    this.resumed.push(nativeId);
     return this.make(nativeId, opts, sink);
   }
   private make(nativeId: string, opts: StartOpts, sink: Sink) {

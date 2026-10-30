@@ -136,7 +136,11 @@ export class LiveControl {
     const moving = this.terminal?.settled(s);
     if (moving) await moving;
     // The TUI drives: the message waits in the queue, held until Back to Tether (SPEC §8, §9).
-    if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
+    // (A message of the queue going out as a handoff took over goes back to the front, as it was.)
+    if (s.state.mode === "terminal") {
+      if (o.queued) throw new Error("The terminal is driving.");
+      return void (await this.queue.add(id, text, attachments));
+    }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
       await this.interrupt(id);
       const until = this.core.now() + 15_000;

@@ -1,8 +1,7 @@
 // Claude Code hooks for terminal mode (SPEC §8 "Requests and notifications in terminal mode"). In a
-// handoff the TUI drives, so Tether learns what it does from hooks added for that launch only
-// (`claude --settings <json>`, never the person's own settings): a prompt was submitted (running),
-// Claude needs you (a permission prompt or a question: waiting), a tool finished (running again),
-// the turn ended (idle), the TUI is exiting.
+// handoff the TUI drives and Tether doesn't follow its turns; hooks added for that launch only
+// (`claude --settings <json>`, never the person's own settings) say when Claude needs you (a
+// permission prompt or a question), when the TUI moves to another session, and its mode.
 //
 // Hooks report to the runner over a Unix socket in its config directory (private to the user).
 // The socket's path doesn't change across runner restarts, so a TUI that outlives the runner still
@@ -41,7 +40,7 @@ export interface HookReport {
   sessionId: string;
   /** the tmux session of the TUI that reported (exact even after /clear moved it on) */
   tui?: string;
-  /** Claude's hook event: UserPromptSubmit, Notification, PostToolUse, Stop, SessionStart, SessionEnd */
+  /** Claude's hook event (HOOK_EVENTS) */
   event: string;
   /** the session id Claude reports (it changes with /clear) */
   nativeId?: string;
@@ -54,6 +53,8 @@ export interface HookReport {
   permissionMode?: string;
   /** PreToolUse, PermissionRequest, PostToolUse: the tool */
   toolName?: string;
+  /** set when a subagent's hook reported (it runs in a mode of its own) */
+  agentId?: string;
 }
 
 /**
@@ -107,6 +108,8 @@ export function parseHook(sessionId: string | null, body: unknown, tui?: string 
   if (message) r.message = message;
   const source = str(b.source) ?? str(b.reason);
   if (source) r.source = source;
+  const agent = str(b.agent_id);
+  if (agent) r.agentId = agent;
   const tool = str(b.tool_name);
   if (tool) r.toolName = tool.slice(0, 100);
   const mode = str(b.permission_mode);

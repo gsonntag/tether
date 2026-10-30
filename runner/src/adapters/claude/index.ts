@@ -7,7 +7,7 @@ import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
-import { claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
+import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { readHistory } from "./history";
 import { pinStore } from "./jsonl";
@@ -18,8 +18,8 @@ import { hookSettings } from "../../terminal/hooks";
 /**
  * Quitting Claude's TUI whatever it shows: Esc closes a dialog (denying a permission prompt) or stops
  * a turn; Ctrl-C clears what is typed or arms "Press Ctrl-C again to exit"; the next one exits.
- * Steps after it has exited are skipped. Unlike `/exit`, nothing lands in the transcript (verified
- * on 2.1.312 with text in the box and with the /model picker open).
+ * Steps after it has exited are skipped. For anything but its plain, empty prompt, where `/exit`
+ * is cleaner (CLAUDE_EXIT). Verified on 2.1.312 with text in the box and with the /model picker open.
  */
 export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }];
 
@@ -57,7 +57,7 @@ const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
  * - the box is a "❯" (or "!" in shell mode) line right under a rule, closed by a rule, at the
  *   bottom: under it only the status lines (a few, no rule, no choices, no dialog footer, no "❯").
  *   Its `prompt` says how it is: `normal`, `shell` ("!"), `history` (↑ recalled a prompt), `search`
- *   (Ctrl+R). `input` is what is typed in it (the empty box's hint is not). `busy` if a spinner
+ *   (Ctrl+R), `vim` (NORMAL mode, where typed text is keys). `input` is what is typed in it (the empty box's hint is not). `busy` if a spinner
  *   shows just above it or "esc to interrupt" in the status lines, else `idle`;
  * - no box: `asking` for a numbered choice list under a dialog's rule that isn't one of Claude's
  *   menus, or the trust question; `picker` for Claude's menus; else `unknown`.
@@ -83,17 +83,16 @@ export function claudeScreen(screen: string): ScreenRead {
     const menu = foot.some((l) => MENU_FOOTER.test(l));
     // A question: the cursor on a numbered choice inside a dialog (under its rule), not a menu.
     const cur = lines.findLastIndex((l) => CURSOR_OPTION.test(l));
-    if (cur >= 0 && !menu && lines.slice(Math.max(0, cur - 25), cur).some((l) => isRule(l))) return { state: "asking", body: screen };
+    if (cur >= 0 && !menu && lines.slice(Math.max(0, cur - 25), cur).some((l) => isRule(l))) return { state: "asking" };
     // The trust question ("❯ No, exit / Yes, I trust this folder").
-    if (lines.slice(-14).some((l) => /trust this folder/.test(l)) && foot.some((l) => /Enter to confirm/.test(l))) return { state: "asking", body: screen };
-    if (menu || cur >= 0 || foot.some((l) => DIALOG_FOOTER.test(l))) return { state: "picker", body: screen };
-    return { state: "unknown", body: screen };
+    if (lines.slice(-14).some((l) => /trust this folder/.test(l)) && foot.some((l) => /Enter to confirm/.test(l))) return { state: "asking" };
+    if (menu || cur >= 0 || foot.some((l) => DIALOG_FOOTER.test(l))) return { state: "picker" };
+    return { state: "unknown" };
   }
   const above = lines.slice(0, box - 1);
-  const body = above.join("\n");
   const status = lines.slice(close + 1);
   const top = lines[box - 1]!;
-  const prompt = /^\s*!/.test(lines[box]!) ? "shell" : /─ History \d+\/\d+ ─/.test(top) ? "history" : status.some((l) => /search prompts:/.test(l)) ? "search" : "normal";
+  const prompt = /^\s*!/.test(lines[box]!) ? "shell" : /─ History \d+\/\d+ ─/.test(top) ? "history" : status.some((l) => /search prompts:/.test(l)) ? "search" : status.some((l) => /-- NORMAL --/.test(l)) ? "vim" : "normal";
   // What is typed in the box: its lines up to the closing rule, without the "❯ " and indentation.
   let typed = lines
     .slice(box, close)
@@ -103,7 +102,7 @@ export function claudeScreen(screen: string): ScreenRead {
   if (PLACEHOLDER.test(typed)) typed = "";
   const near = above.slice(-15);
   const busy = near.some((l) => SPINNER.test(l)) || status.some((l) => /esc to interrupt/i.test(l));
-  return { state: busy ? "busy" : "idle", body, input: typed, prompt };
+  return { state: busy ? "busy" : "idle", input: typed, prompt };
 }
 
 
@@ -216,6 +215,7 @@ export const claudeAdapter: Adapter = {
     return claudeModels(driver instanceof ClaudeDriver ? () => driver.models() : undefined);
   },
 
+  neverStarted: claudeNeverStarted,
   newId: () => randomUUID(),
   ownModel: (model) => model.startsWith("claude"),
   terminalSettingsHint: "/model, and Shift+Tab for the mode",

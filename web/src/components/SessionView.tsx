@@ -48,6 +48,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const [ask, setAsk] = useState<{ text: string; confirm: string } | null>(null);
   /** Back to Tether from the banner (panel closed): asked first, as from the panel */
   const [askBack, setAskBack] = useState(false);
+  // Asked while the TUI drove: moot once it doesn't (another device went back, it exited).
+  const drives = view?.state?.mode === "terminal";
+  useEffect(() => {
+    if (!drives) setAskBack(false);
+  }, [drives]);
   // The TUI moved on to another session (/clear, /resume): follow it there, panel and all.
   // Only a move seen while open: one from before (in the first snapshot) is left to the notice.
   const loaded = !!view?.state;
@@ -179,11 +184,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             ? `Needs you in the terminal${state.terminal?.attention ? `: ${state.terminal.attention}` : "."}`
             : "Driving in the terminal"}
       </span>
-      {!panel && <Button label={`Open ${HARNESS_LABELS[summary.harness]}`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
-      {!panel && !state.terminal?.returning && (
+      {!panel && !state.terminal?.returning && <Button label={`Open ${HARNESS_LABELS[summary.harness]}`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
+      {/* A phone with the panel tucked behind the chat: the banner is the way back too. */}
+      {(!panel || panel.hidden) && !state.terminal?.returning && (
         <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => setAskBack(true)} />
       )}
-      {!panel && askBack && !state.terminal?.returning && (
+      {(!panel || panel.hidden) && askBack && !state.terminal?.returning && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
           <span>{backQuestion(HARNESS_LABELS[summary.harness])}</span>
           <Button
@@ -258,7 +264,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               (state.terminal?.returning ? "Going back to Tether…" : undefined)
             }
             // While the TUI drives, a message waits in the queue for Back to Tether (SPEC §8).
-            placeholder={inTerminal ? `${agent} gets this when you go Back to Tether` : undefined}
+            placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? `Joins the paused queue: it goes when you resume it, after Back to Tether` : `${agent} gets this when you go Back to Tether`) : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             shell={{ folder: summary.projectPath, heldBy: state.queueHeld ? state.queueHeldBy : undefined }}

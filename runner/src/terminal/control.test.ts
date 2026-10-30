@@ -52,6 +52,11 @@ class FakeTmux extends Tmux {
     if (key === "session") t.sessionId = value;
     if (key === "launch") t.launchedFor = value;
   }
+  /** sessions copy mode was left in */
+  left: string[] = [];
+  override async leaveCopyMode(name: string) {
+    this.left.push(name);
+  }
   /** what went in, in order */
   log: string[] = [];
   /** what capture-pane shows, per tmux session */
@@ -80,8 +85,7 @@ class FakeTmux extends Tmux {
  */
 const fakeScreen = (screen: string): ScreenRead => ({
   state: !screen || screen.includes("IDLE") ? "idle" : screen.includes("ASK") ? "asking" : screen.includes("PICK") ? "picker" : screen.includes("ODD") ? "unknown" : "busy",
-  body: screen,
-  prompt: screen.includes("SHELL") ? ("shell" as const) : screen.includes("HIST") ? ("history" as const) : ("normal" as const),
+  prompt: screen.includes("SHELL") ? ("shell" as const) : screen.includes("HIST") ? ("history" as const) : screen.includes("VIM") ? ("vim" as const) : ("normal" as const),
   ...(screen.includes("BOX:") ? { input: screen.split("BOX:")[1] } : {}),
 });
 
@@ -570,6 +574,126 @@ describe("review round 7: while the TUI drives, only Needs you is tracked", () =
     expect(state(second.core, "claude:s1")).toMatchObject({ mode: "terminal", status: "idle" });
     expect(state(second.core, "claude:s2")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs you in the terminal." } });
     expect(second.ev.filter((e) => e.startsWith("attention:"))).toEqual([]);
+  });
+});
+
+describe("review round 8: the edges of the simple model", () => {
+  const BNEW = "9b0c7c1e-2f0a-4a55-9d0e-222222222222";
+  const prompt = (id: string, text = "hi") => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+
+  test("/clear or /resume onto a stored session carries the TUI's model and mode, for Back to Tether too", async () => {
+    const { adapter, core, term } = setup();
+    adapter.addStored("s1", [prompt("m1")]);
+    adapter.addStored(BNEW, [prompt("m2")]);
+    await core.open("claude:s1");
+    core.sessions.get("claude:s1")!.setState({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: BNEW, source: "resume" });
+    await until(() => core.sessions.get(`claude:${BNEW}`)?.state.mode === "terminal");
+    expect(state(core, `claude:${BNEW}`)).toMatchObject({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
+    expect(core.o.prefs.get(`claude:${BNEW}`)).toMatchObject({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
+    await term.end(`claude:${BNEW}`);
+    expect(adapter.drivers.at(-1)!.opts).toMatchObject({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
+  });
+
+  test("a queue held for a terminal that is gone after a restart waits for Resume, not for ever", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux });
+    first.adapter.addStored("s1", [prompt("m1")]);
+    await first.term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    await first.live.send("claude:s1", "waits");
+    first.term.stop();
+    first.core.stop();
+    first.core.o.prefs.flush();
+    tmux.sessions.clear(); // the TUI died while the runner was away
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", [prompt("m1")]);
+    const second = setup({ tmux, adapter, prefsFile: first.prefsFile });
+    await second.term.readopt();
+    await second.live.queue.restore();
+    expect(state(second.core, "claude:s1")).toMatchObject({ queueHeld: true, queueHeldBy: "restart" });
+    await second.live.queue.resume("claude:s1");
+    await until(() => adapter.drivers[0]?.sent.includes("waits") === true);
+  });
+
+  test("a queue on a TUI that outlived the restart stays held for it; an untouched new session's queue too", async () => {
+    const tmux = new FakeTmux();
+    const first = setup({ tmux });
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await first.live.newSession({ harness: "claude", projectPath: dir, model: "haiku", terminal: true });
+    await first.live.send(sessionId, "first words");
+    first.term.stop();
+    first.core.stop();
+    first.core.o.prefs.flush();
+    const second = setup({ tmux, adapter: new TermAdapter(), prefsFile: first.prefsFile });
+    await second.term.readopt();
+    await second.live.queue.restore();
+    expect(state(second.core, sessionId)).toMatchObject({ mode: "terminal", queueHeld: true, queueHeldBy: "terminal", queue: [{ text: "first words" }] });
+  });
+
+  test("a prompt typed in a new TUI that never reached the store: Back to Tether starts the session, it doesn't resume nothing", async () => {
+    const { adapter, core, live, term } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    term.report({ sessionId, event: "UserPromptSubmit" });
+    await term.end(sessionId);
+    expect(state(core, sessionId).mode).toBe("live");
+    expect(adapter.drivers.length).toBe(1);
+    expect(adapter.resumed).toEqual([]);
+  });
+
+  test("/exit typed in a TUI nobody used: its store holds only that, so the session never was", async () => {
+    const { adapter, core, live, tmux } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    adapter.addStored("new-1", [prompt("m1", "/exit")], { projectPath: dir });
+    adapter.neverStarted = async () => true;
+    tmux.sessions.clear();
+    await until(() => !core.sessions.has(sessionId));
+  });
+
+  test("a new TUI that exits with a message waiting stays, to start when you send", async () => {
+    const { core, live, tmux } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    await live.send(sessionId, "keep me");
+    tmux.sessions.clear();
+    await until(() => state(core, sessionId).mode === "stored");
+    await Bun.sleep(40);
+    expect(core.sessions.has(sessionId)).toBe(true);
+    expect(state(core, sessionId).queue.map((m) => m.text)).toEqual(["keep me"]);
+  });
+
+  test("a subagent's hook doesn't change the session's mode", async () => {
+    const { adapter, core, term } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    const before = state(core, "claude:s1").permissionMode;
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", permissionMode: "bypassPermissions", agentId: "ag1" });
+    expect(state(core, "claude:s1").permissionMode).toBe(before);
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", permissionMode: "plan" });
+    expect(state(core, "claude:s1").permissionMode).toBe("plan");
+  });
+
+  test("a queued message going out as a handoff takes over goes back to the front, as it was", async () => {
+    const { adapter, core, live, term } = setup();
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    await expect(live.send("claude:s1", "one", [], { queued: true })).rejects.toThrow(/terminal is driving/);
+    expect(state(core, "claude:s1").queue).toEqual([]);
+  });
+
+  test("Back to Tether leaves copy mode first, and vim's NORMAL mode gets the keys, not /exit", async () => {
+    const tmux = new FakeTmux();
+    const adapter = new TermAdapter();
+    adapter.quitAtPrompt = [{ text: "/bye" }];
+    const { term } = setup({ tmux, adapter });
+    adapter.addStored("s1", []);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    tmux.screens.set("t-claude-s1", "IDLE VIM BOX:");
+    await term.end("claude:s1");
+    expect(tmux.left).toEqual(["t-claude-s1"]);
+    expect(tmux.typed.map(([, t]) => t)).toEqual(["/exit"]);
   });
 });
 

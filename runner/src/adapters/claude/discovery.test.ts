@@ -46,3 +46,12 @@ test("titles: yours, then Claude's, then the first prompt", () => {
   expect(titleOf({ firstPrompt: "/clear", summary: "Fresh start" } as any)).toBe("Fresh start");
   expect(titleOf({} as any)).toBe("Untitled");
 });
+
+test("a store with only local commands never started; one with a prompt or an answer did", async () => {
+  const { onlyLocalCommands } = await import("./discovery");
+  const user = (text: string) => ({ id: text, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  expect(onlyLocalCommands([])).toBe(true);
+  expect(onlyLocalCommands([user("/clear"), { id: "n", role: "notice", ts: 2, parts: [{ type: "text", text: "Kept model" }] }])).toBe(true);
+  expect(onlyLocalCommands([user("/model"), user("Say hi.")])).toBe(false);
+  expect(onlyLocalCommands([user("/review"), { id: "a", role: "assistant", ts: 2, parts: [{ type: "text", text: "ok" }] }])).toBe(false);
+});

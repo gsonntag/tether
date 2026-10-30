@@ -31,6 +31,7 @@ import type { QuitStep, ScreenRead, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
 import type { Session } from "../core/session";
 import type { SessionCore } from "../core/sessions";
+import { MessageQueue } from "../core/queue";
 import { Transcript } from "../core/transcript";
 import { Attaches, type SpawnPty } from "./attach";
 import { HookServer, type HookReport } from "./hooks";
@@ -66,7 +67,7 @@ const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog"]);
 
 /** A question on a readopted TUI's screen, before any hook says what it is. */
 export const ASKING_THERE = "Claude needs you in the terminal.";
-export const HANDING_OFF = "The session is moving to the terminal. Type there in a moment.";
+export const HANDING_OFF = "The session is moving to the terminal.";
 
 /** What a PermissionRequest (or Elicitation) hook says Claude waits for. */
 function askingFor(r: HookReport): string {
@@ -230,11 +231,13 @@ export class TerminalControl {
     s.setState({ terminal: { ...s.state.terminal!, returning: true } });
     const name = this.nameOf(s.id);
     try {
+      // Scrolled back in the terminal (tmux's copy mode): keys go to the TUI again.
+      await this.o.tmux.leaveCopyMode(name);
       // A clean exit where the TUI sits at its plain, empty prompt (/exit); else its keys to quit.
       const launch = this.launch(s);
       const seen = launch.quitAtPrompt ? await this.readScreen(s, name, 1) : undefined;
       const atPrompt = seen?.state === "idle" && seen.prompt === "normal" && !seen.input;
-      await this.runQuit(name, (atPrompt ? launch.quitAtPrompt : launch.quit) ?? []);
+      await this.runSteps(name, (atPrompt ? launch.quitAtPrompt : launch.quit) ?? []);
       const until = Date.now() + (this.o.quitTimeoutMs ?? 5000);
       while (Date.now() < until && (await this.o.tmux.has(name))) await Bun.sleep(150);
       if (await this.o.tmux.has(name)) {
@@ -372,6 +375,11 @@ export class TerminalControl {
     return !!(await this.o.core.adapter(s.summary.harness).sessionInfo(s.summary.nativeId, s.summary.projectPath).catch(() => undefined));
   }
 
+  /** Its store holds no conversation, only local commands (a TUI nobody used, then /exit or /clear). */
+  private async neverStarted(s: Session) {
+    return !!(await this.o.core.adapter(s.summary.harness).neverStarted?.(s.summary.nativeId, s.summary.projectPath).catch(() => false));
+  }
+
   /** A session's TUI is gone from tmux (quit, exited, killed); `back`: Back to Tether quit it. */
   private async gone(id: string, back = false) {
     const name = this.tuis.get(id);
@@ -386,13 +394,20 @@ export class TerminalControl {
       this.o.core.touch(s);
       return;
     }
-    if (s.fresh && (await this.stored(s))) s.fresh = false;
+    // Fresh until its store has it (a prompt typed there needn't have reached it): Back to Tether
+    // then starts it under its id, and anything else resumes.
+    if (s.fresh && (await this.stored(s))) {
+      if (back) s.fresh = false;
+      else s.fresh = await this.neverStarted(s);
+    }
     if (back) return this.backLive(s);
     // It exited by itself (/exit): stored (SPEC §8).
     await this.o.core.syncFromStore(s);
     this.o.live.setMode(s, "stored", { status: "idle", terminal: undefined });
     if (s.fresh) {
-      // Nothing was ever typed: nothing of it is in any store.
+      // Messages wait in its queue: it stays, to start when you send.
+      if (s.state.queue.length) return;
+      // Nothing was ever typed: nothing of it is in any store, or only local commands (/exit).
       this.o.core.book.remove([s.id]);
       this.o.core.sessions.delete(s.id);
       return;
@@ -433,14 +448,10 @@ export class TerminalControl {
     this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, model: used });
   }
 
-  private runQuit(name: string, steps: QuitStep[]) {
-    return this.runSteps(name, steps, true);
-  }
-
-  private async runSteps(name: string, steps: QuitStep[], untilGone: boolean) {
+  private async runSteps(name: string, steps: QuitStep[]) {
     for (const [i, st] of steps.entries()) {
       // Quit already: the rest would go nowhere.
-      if (untilGone && i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
+      if (i > 0 && !("waitMs" in st) && !(await this.o.tmux.has(name))) return;
       if ("waitMs" in st && !st.waitMs) continue;
       if ("waitMs" in st) await Bun.sleep(st.waitMs);
       else if ("keys" in st) await this.o.tmux.keys(name, ...st.keys);
@@ -455,7 +466,7 @@ export class TerminalControl {
   private async readScreen(s: Session, name: string, tries = 4): Promise<ScreenRead | undefined> {
     const read = this.launch(s).screen;
     if (!read) return undefined;
-    let r: ScreenRead = { state: "unknown", body: "" };
+    let r: ScreenRead = { state: "unknown" };
     for (let i = 0; i < tries; i++) {
       if (i) await Bun.sleep(this.o.screenRetryMs ?? 400);
       r = read(await this.o.tmux.capture(name).catch(() => ""));
@@ -486,7 +497,8 @@ export class TerminalControl {
     if (!s || !this.tuis.has(s.id) || s.state.mode !== "terminal" || !s.state.terminal) return;
     const term = s.state.terminal;
     // The mode the TUI runs in now (Shift+Tab there changes it): shown, and kept for Back to Tether.
-    if (r.permissionMode && r.permissionMode !== s.state.permissionMode) {
+    // (A subagent's hook carries the subagent's own mode.)
+    if (r.permissionMode && !r.agentId && r.permissionMode !== s.state.permissionMode) {
       s.setState({ permissionMode: r.permissionMode });
       this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: r.permissionMode });
       this.o.core.touch(s);
@@ -499,10 +511,6 @@ export class TerminalControl {
     // Tether doesn't follow the TUI's turns (SPEC §8): only Needs you, set here and never cleared by
     // a hook (a subagent's hooks come while the main agent's question is still open).
     switch (r.event) {
-      case "UserPromptSubmit":
-        // Something was typed: the store has the session from here on.
-        s.fresh = false;
-        break;
       case "PermissionRequest":
       case "Elicitation":
         // The prompt or question shows now (Notification says so seconds later).
@@ -551,6 +559,10 @@ export class TerminalControl {
       n = core.create(old.summary.harness, nativeId, old.summary.projectPath, { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode });
       n.transcript = new Transcript();
     } else if (n.driver || n.starting) await this.o.live.release(n);
+    // The TUI goes on with the model and mode it runs in, on any session it moves to.
+    const { model, effort, permissionMode, modelResolved } = old.state;
+    n.setState({ model, effort, permissionMode, modelResolved });
+    core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
     this.tuis.delete(old.id);
     this.promptSince.delete(old.id);
     // Its hooks go on naming the session it was launched for: remember where that is now.
@@ -564,6 +576,12 @@ export class TerminalControl {
     const why = source === "clear" ? "after /clear" : source === "resume" ? "with /resume" : "";
     old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });
     this.o.live.setMode(old, "stored", { status: "idle", terminal: undefined, continuedIn: newId });
+    // A TUI nobody used, then /clear: the old session never started (views follow continuedIn).
+    if (old.fresh && !old.state.queue.length && (!(await this.stored(old)) || (await this.neverStarted(old)))) {
+      core.book.remove([old.id]);
+      core.sessions.delete(old.id);
+      return;
+    }
     core.tail(old);
     core.scheduleEvict(old);
   }
@@ -583,6 +601,8 @@ export class TerminalControl {
           const prefs = this.o.core.o.prefs.get(t.sessionId);
           s = this.o.core.create(p.harness, p.nativeId, t.projectPath, { model: prefs.model, effort: prefs.effort, permissionMode: prefs.permissionMode });
           s.transcript = new Transcript();
+          // What waited for this terminal is still waiting.
+          s.setState(MessageQueue.saved(prefs));
         } catch {
           continue;
         }

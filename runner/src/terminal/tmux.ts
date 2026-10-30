@@ -250,16 +250,14 @@ export class Tmux {
     if (keys.length) await this.must(["send-keys", "-t", `=${name}:`, ...keys]);
   }
 
-  /** Text typed as is: one line with send-keys -l; several as a bracketed paste. */
+  /** Text typed as is (one line). */
   async type(name: string, text: string): Promise<void> {
-    if (!text) return;
-    if (!text.includes("\n")) {
-      await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", tmuxArg(text)]);
-      return;
-    }
-    const buf = `tether-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    await this.must(["load-buffer", "-b", buf, "-"], text);
-    await this.must(["paste-buffer", "-p", "-d", "-b", buf, "-t", `=${name}:`]);
+    if (text) await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", tmuxArg(text)]);
+  }
+
+  /** Leaves tmux's copy mode, if the pane is in it (scrolled back): keys reach the program again. */
+  async leaveCopyMode(name: string) {
+    await this.run(["send-keys", "-t", `=${name}:`, "-X", "cancel"]);
   }
 
   /** A pane's whole history and screen as text, wrapped lines joined (copying from a terminal). */

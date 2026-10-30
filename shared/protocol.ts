@@ -190,10 +190,10 @@ export interface Ops {
   };
   /**
    * Back to Tether (SPEC §8): the TUI is asked to quit (killed after 5 s), and the session goes
-   * live again on the same conversation. `whenIdle`: wait for the TUI's turn to end first. For a
-   * shared terminal: the TUI quits and Tether goes on driving.
+   * live again on the same conversation. For a shared terminal: the TUI quits and Tether goes on
+   * driving.
    */
-  endTerminal: { args: { sessionId: string; whenIdle?: boolean }; result: null };
+  endTerminal: { args: { sessionId: string }; result: null };
   /** A project's plain shells (SPEC §8 Project shells), oldest first. */
   listShells: { args: { projectPath: string }; result: { shells: ShellInfo[] } };
   /** Opens a new shell in a project folder; attach to it with openTerminal({ shellId }). */

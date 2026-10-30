@@ -28,6 +28,10 @@ test("the settings add one command hook per event, and nothing else", () => {
   expect(h.timeout).toBeGreaterThanOrEqual(10);
 });
 
+test("a subagent's hook says so", () => {
+  expect(parseHook("claude:a", { hook_event_name: "PreToolUse", permission_mode: "bypassPermissions", agent_id: "ag1" })).toMatchObject({ agentId: "ag1" });
+});
+
 test("a PermissionRequest names its tool", () => {
   expect(parseHook("claude:a", { hook_event_name: "PermissionRequest", session_id: "a", tool_name: "AskUserQuestion" })).toMatchObject({ event: "PermissionRequest", toolName: "AskUserQuestion" });
   expect(HOOK_EVENTS).toContain("PermissionRequest");

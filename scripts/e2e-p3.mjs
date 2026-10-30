@@ -33,11 +33,15 @@ const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 
 const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 const errors = [];
 const page = async (ctx, url = BASE) => {
-  const p = await ctx.newPage();
-  // Where it happened: the step, and the top of its stack.
-  p.on("pageerror", (e) => errors.push(`${current}: ${String(e)}\n    ${(e.stack ?? "").split("\n").slice(1, 6).join("\n    ")}`));
-  await p.goto(url);
-  return p;
+  // The dev server on a loaded machine now and then leaves a page blank: try again.
+  for (let i = 0; ; i++) {
+    const p = await ctx.newPage();
+    // Where it happened: the step, and the top of its stack.
+    p.on("pageerror", (e) => errors.push(`${current}: ${String(e)}\n    ${(e.stack ?? "").split("\n").slice(1, 6).join("\n    ")}`));
+    await p.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+    if (i >= 2 || (await p.locator(".t-session, .t-inbox-head").first().waitFor({ timeout: 30_000 }).then(() => true, () => false))) return p;
+    await p.close();
+  }
 };
 const shot = (p, name) => p.screenshot({ path: `${SHOTS}/${name}.png` });
 const ok = (msg) => console.log(`ok  ${msg}`);

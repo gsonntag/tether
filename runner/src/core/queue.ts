@@ -173,6 +173,9 @@ export class MessageQueue {
         return undefined;
       });
       if (!s) continue;
+      // Held for a terminal that is gone (it exited while the runner was away, or the runner stopped
+      // during Back to Tether): nothing would ever release that hold, so it waits for Resume.
+      if (s.state.queueHeldBy === "terminal" && s.state.mode !== "terminal") this.save(s, s.state.queue, "restart");
       if (this.cutOff.has(id) && !s.capabilities.persistent) this.hold(s, "restart");
       this.core.touch(s);
       this.later(id);
@@ -212,7 +215,9 @@ export class MessageQueue {
       // the queue: whatever stopped it would stop the rest too.
       const busy = s.state.status !== "idle" || !!s.sending;
       const stoppedHere = e?.name === "SendCancelled" || e?.message === "Stopped before it went out.";
-      const how: HeldBy | undefined = stoppedHere ? ((this.releases.get(id) ?? 0) !== released ? undefined : "stopped") : busy ? undefined : "failed";
+      // A handoff got there first: it waits for Back to Tether.
+      const mode: string = s.state.mode;
+      const how: HeldBy | undefined = mode === "terminal" ? "terminal" : stoppedHere ? ((this.releases.get(id) ?? 0) !== released ? undefined : "stopped") : busy ? undefined : "failed";
       if (cancelled) {
         this.persist(s);
         this.left(s, next!, "cancelled");

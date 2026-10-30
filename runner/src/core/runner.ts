@@ -153,10 +153,12 @@ export function createRunner(o: RunnerOptions) {
       core.startDiscovery();
       if (o.attachmentsDir) live.attachments.startHousekeeping();
       void live.desk.restore();
-      // Queues come back after the sessions that kept running are joined again.
-      void live.rejoin().finally(() => live.queue.restore());
+      const rejoined = live.rejoin();
       // Before connecting, so the first summary already shows readopted terminals.
       await terminal?.start();
+      // Queues come back after the sessions that kept running are joined again and the TUIs are
+      // readopted (a queue held for a terminal that is gone must not wait for it).
+      void rejoined.finally(() => live.queue.restore());
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */

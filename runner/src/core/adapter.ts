@@ -122,6 +122,8 @@ export interface Adapter {
   /** a session's stored subagents, as child summaries */
   listSubagents(nativeId: string, projectPath: string): Promise<SessionSummary[]>;
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
+  /** A session whose store holds no conversation, only local commands (/exit, /clear typed in an untouched TUI). */
+  neverStarted?(nativeId: string, projectPath: string): Promise<boolean>;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
   /**
@@ -161,18 +163,15 @@ export interface TerminalOpts extends StartOpts {
 
 /**
  * What a TUI's screen shows (tmux capture-pane): `idle` at its prompt with nothing running; `busy`
- * working (its prompt still takes typing); `asking` a question that typed text would answer;
- * `picker` one of the harness's own menus (/model: it blocks typing, but nobody is asked anything);
- * `unknown` anything else (starting, a full-screen view). `body` is the part that changes only when
- * something happens (not a ticking footer), to tell a still screen from a moving one.
+ * working; `asking` a question; `picker` one of the harness's own menus (/model: nobody is asked
+ * anything); `unknown` anything else (starting, a full-screen view).
  */
 export interface ScreenRead {
   state: "idle" | "busy" | "asking" | "picker" | "unknown";
-  body: string;
   /** what is typed at the prompt (idle or busy), when the harness can tell */
   input?: string;
-  /** the prompt's mode (idle or busy): `normal`, or a shell line, a recalled prompt, a history search */
-  prompt?: "normal" | "shell" | "history" | "search";
+  /** the prompt's mode (idle or busy): `normal`, or a shell line, a recalled prompt, a history search, vim's NORMAL mode */
+  prompt?: "normal" | "shell" | "history" | "search" | "vim";
 }
 
 /** One step of quitting a TUI: tmux key names, literal text, or a pause. */
