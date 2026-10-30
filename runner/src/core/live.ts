@@ -244,6 +244,8 @@ export class LiveControl {
       return parent.driver.steerSubagent(s.summary.nativeId, withAttachments(text, attachments), attachments);
     }
     if (!s.capabilities.canSteer) throw new Error(`${AGENT_NAMES[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
+    // A send still on its way (Claude Code starting): this follows that message, into its turn.
+    while (s.sending && s.sentOut !== s.sending) await Bun.sleep(20);
     if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
     await s.driver.steer(withAttachments(text, attachments), attachments);
@@ -451,7 +453,7 @@ export class LiveControl {
       if (this.stopping || !on()) return;
       if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
-        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working; press Resume to continue.", "warning") });
+        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
         this.queue.hold(s, "restart");
         return this.endWait(s);
       }
@@ -481,6 +483,7 @@ export class LiveControl {
     s.setState({ restartWait: undefined });
     this.core.o.prefs.set(s.id, { restartWait: undefined, ...(turnGoesOn ? {} : { running: undefined }) });
     this.core.o.prefs.flush();
+    this.core.touch(s);
   }
 
   private continueFailed(id: string, s: Session | undefined, e: any) {
@@ -503,6 +506,7 @@ export class LiveControl {
       // One notice: a failed start already said why in the transcript.
       if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
       this.queue.hold(s, "restart");
+      this.core.touch(s);
     }
   }
 

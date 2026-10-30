@@ -691,6 +691,32 @@ describe("read state", () => {
     expect(b.driver().sent[1]).toBe("mine");
   });
 
+  test("a queue held by the wait isn't a paused queue on Home; when the wait hands it to you, it is", async () => {
+    const { b, s, quiet } = await inWait({ queue: "two" });
+    expect(s.state).toMatchObject({ queueHeld: true, queueHeldBy: "restart", restartWait: true });
+    const row = b.core.book.get("claude:s1")!;
+    expect(row.queued).toBe(1);
+    expect(row.queuePaused).toBeUndefined();
+    await b.live.queue.add("claude:s1", "three", []);
+    expect(b.core.book.get("claude:s1")!.queuePaused).toBeUndefined();
+    // Can't start: the queue was held all along, so only the wait's end changes the row.
+    b.adapter.startError = "no such binary";
+    quiet();
+    await until(() => s.state.restartWait === undefined, 3000);
+    await until(() => b.prefs.get("claude:s1").unread === "failed", 3000);
+    expect(b.core.book.get("claude:s1")).toMatchObject({ queued: 2, queuePaused: true });
+  });
+
+  test("Stop during the wait: the queue is paused for you from the moment the wait ends", async () => {
+    const { b, s, quiet } = await inWait({ queue: "two" });
+    await b.live.interrupt("claude:s1");
+    expect(s.state).toMatchObject({ queueHeldBy: "stopped", restartWait: true });
+    expect(b.core.book.get("claude:s1")!.queuePaused).toBeUndefined();
+    quiet();
+    await until(() => s.state.restartWait === undefined, 3000);
+    expect(b.core.book.get("claude:s1")).toMatchObject({ queued: 1, queuePaused: true });
+  });
+
   test("Resume during the wait refuses and the queue stays held; a message queued with Tab holds too", async () => {
     const { b, s, quiet } = await inWait({ queue: "two" });
     await expect(b.live.queue.resume("claude:s1")).rejects.toThrow(/may still be working/);
@@ -858,7 +884,11 @@ describe("read state", () => {
     await until(() => b.prefs.get("claude:s1").unread === "failed", 3000);
     expect(b.adapter.drivers).toHaveLength(0);
     expect(s.state.queueHeldBy).toBe("restart");
-    expect(JSON.stringify(s.transcript!.messages)).toContain("press Resume to continue");
+    const text = JSON.stringify(s.transcript!.messages);
+    expect(text).toContain("Send a message to carry on.");
+    expect(text).not.toContain("Resume");
+    // Now it's yours: the row says so (it didn't during the wait).
+    expect(b.core.book.get("claude:s1")).toMatchObject({ queued: 1, queuePaused: true });
   });
 
   test("a Stop that hadn't taken effect before the restart: the turn isn't continued", async () => {

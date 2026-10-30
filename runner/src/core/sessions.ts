@@ -455,12 +455,15 @@ export class SessionCore {
     return partChunk(p, offset);
   }
 
-  /** The session's row changed (status, mode, title, activity): the sidebar hears. */
+  /**
+   * The session's row changed (status, mode, title, activity): the sidebar hears. `queuePaused` is
+   * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
+   */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
     const { requests: _, queued: __, queuePaused: ___, ...rest } = { ...s.summary, ...patch };
     const n = s.state.requests.length;
     const q = s.state.queue.length;
-    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

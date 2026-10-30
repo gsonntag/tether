@@ -85,8 +85,8 @@ tether/
   `TETHER_HIDE_PROJECTS` (the runner's environment) is a comma-separated list of path globs matched
   against the whole folder path, `*` matching anything including `/` (`/tmp/*,*/scratch`). The core
   leaves matching projects and sessions out of project lists, session lists and Home, for every
-  harness, after the adapters' discovery. Nothing is deleted. A session that is open or live right now
-  stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden.
+  harness, after the adapters' discovery. Nothing is deleted. A session that is open, live or has
+  queued messages stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden.
   New session can make a folder: the dialog asks the runner (`checkFolder`), warns when it doesn't
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
@@ -114,7 +114,7 @@ Tether runner restarted mid-turn; continuing."). Waiting messages follow that tu
   restart to finish…", the queue held); it never inspects or signals processes. Then, if the store
   shows the turn finished (the agent's answer after the last prompt), nothing is continued and the
   queue goes on; otherwise it continues once. After 10 minutes of writes it gives up: Failed on Home,
-  the queue held, "press Resume to continue". During the wait nothing starts Claude: a message you
+  the queue held, "Send a message to carry on." During the wait nothing starts Claude: a message you
   send queues, held, and follows the continue; Resume can't release it. The wait is saved (`running`
   and `restartWait` in runner.json), so a restart during it comes back to it, and `continuedTurn` is
   set only once a continue goes out. Opening the terminal during the wait cancels the continue: your

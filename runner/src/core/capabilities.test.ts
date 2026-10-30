@@ -12,7 +12,7 @@ import { saveConfig } from "../config";
 import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
-import { FAKE_CAPS, FakeAdapter, idle, say, subagent, toolCall, type Step } from "./fakeAdapter";
+import { FAKE_CAPS, FakeAdapter, FakeDriver, idle, say, subagent, toolCall, type Step } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { SessionCore } from "./sessions";
@@ -55,6 +55,64 @@ describe("steering (capabilities.canSteer)", () => {
     h.release();
     await sending;
     await expect(live.steer("claude:s1", "late")).rejects.toThrow("Nothing is running to steer");
+  });
+
+  /** A stored session sent to, its harness still starting until `up()`. */
+  function coldStart() {
+    const c = setup({ canSteer: true });
+    c.adapter.addStored("s1", []);
+    let up!: () => void;
+    c.adapter.startGate = new Promise<void>((r) => (up = r));
+    const h = held();
+    c.adapter.script = () => [h.step, idle];
+    const sending = c.live.send("claude:s1", "start");
+    return { ...c, up, sending, finish: h.release };
+  }
+
+  test("steering while the harness starts follows the message that's starting it", async () => {
+    const { adapter, live, up, sending, finish } = coldStart();
+    await Bun.sleep(5);
+    const steer = FakeDriver.prototype.steer;
+    let sentFirst: string[] | undefined;
+    FakeDriver.prototype.steer = async function (this: FakeDriver, text: string) {
+      sentFirst = [...this.sent];
+      await steer.call(this, text);
+    };
+    try {
+      const steering = live.steer("claude:s1", "also this");
+      await Bun.sleep(5);
+      expect(adapter.drivers).toHaveLength(0);
+      up();
+      await steering;
+    } finally {
+      FakeDriver.prototype.steer = steer;
+    }
+    expect(sentFirst).toEqual(["start"]);
+    expect(adapter.drivers[0]!.steered).toEqual(["also this"]);
+    finish();
+    await sending;
+  });
+
+  test("steering while the harness starts, and it can't: says nothing runs, not a second failure", async () => {
+    const { adapter, live, up, sending } = coldStart();
+    adapter.startError = "no such binary";
+    await Bun.sleep(5);
+    const steering = live.steer("claude:s1", "also this");
+    up();
+    const [sent, steered] = await Promise.allSettled([sending, steering]);
+    expect(String((sent as PromiseRejectedResult).reason)).toContain("no such binary");
+    expect(String((steered as PromiseRejectedResult).reason)).toContain("Nothing is running to steer");
+  });
+
+  test("steering while the harness starts, then Stop: nothing to steer into", async () => {
+    const { live, up, sending } = coldStart();
+    await Bun.sleep(5);
+    const steering = live.steer("claude:s1", "also this");
+    await live.interrupt("claude:s1");
+    up();
+    const [sent, steered] = await Promise.allSettled([sending, steering]);
+    expect(String((sent as PromiseRejectedResult).reason)).toContain("Stopped before it went out");
+    expect(String((steered as PromiseRejectedResult).reason)).toContain("Nothing is running to steer");
   });
 
   test("a harness that can't steer refuses, and says why", async () => {
