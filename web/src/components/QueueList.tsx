@@ -15,6 +15,7 @@ import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { viewKey } from "../store";
 import { putDraft } from "./Composer";
+import { lostEdit, UNKNOWN_MS } from "../queueEdit";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
@@ -75,15 +76,6 @@ function useShort(): boolean {
   return short;
 }
 
-/**
- * How an edit whose message left the queue reads, from the runner's own record (LiveState.queueGone):
- * it went out to the harness, or it was cancelled; unknown while it is only briefly out (going out,
- * or stopped before it got there and about to come back).
- */
-export function lostKind(id: string, gone: LiveState["queueGone"]): "sent" | "cancelled" | undefined {
-  return gone?.find((g) => g.id === id)?.how;
-}
-
 export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: string; sessionId: string; state: LiveState; messages?: Msg[] }) {
   const key = viewKey(runnerId, sessionId);
   const [edit, setEditState] = useState<Edit | undefined>(() => edits.get(key));
@@ -103,15 +95,34 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
   };
   // The message being edited left the queue (went out, or removed elsewhere): the edit stays, here.
   // If it comes back (stopped before it got there), the edit is attached to it again.
-  const gone = !!edit && !state.queue.some((m) => m.id === edit.id);
-  const kind = edit && gone ? lostKind(edit.id, state.queueGone) : undefined;
+  // When the edited message was first seen out of the queue (to give up waiting for word after a while).
+  const [outSince, setOutSince] = useState<number>();
+  const out = !!edit && !state.queue.some((m) => m.id === edit.id);
+  if (out && outSince === undefined) setOutSince(Date.now());
+  if (!out && outSince !== undefined) setOutSince(undefined);
+  const lost = edit ? lostEdit({ id: edit.id, queue: state.queue, gone: state.queueGone, outForMs: outSince === undefined ? 0 : Date.now() - outSince }) : { show: false as const };
+  const gone = lost.show;
+  const kind = lost.show ? lost.kind : undefined;
+  const ready = lost.show && lost.ready;
+  // Re-render when the wait for word runs out.
+  useEffect(() => {
+    if (!out || ready) return;
+    const t = setTimeout(() => setOutSince((x) => (x === undefined ? x : x - 1)), UNKNOWN_MS);
+    return () => clearTimeout(t);
+  }, [out, ready]);
   const short = useShort();
   const [open, setOpen] = useState(false);
   const pausedHint = state.queueHeld ? " It'll wait with the paused queue." : state.queue.length ? " It'll go after the messages waiting." : "";
   const lostPanel = edit && gone && (
     <div className="t-queue-lost" role="status">
       <div className="t-inline-status">
-        {kind === "sent" ? "It went out before your edit was saved." : kind === "cancelled" ? "It was cancelled before your edit was saved." : "It left the queue before your edit was saved."}
+        {kind === "sent"
+          ? "It went out before your edit was saved."
+          : kind === "cancelled"
+            ? "It was cancelled before your edit was saved."
+            : ready
+              ? "It left the queue before your edit was saved."
+              : "Checking whether it went out…"}
       </div>
       <div className="t-queued-edit">
         <textarea className="t-input" value={edit.draft} aria-label="Your unsaved edit" onChange={(e) => setEdit({ ...edit, draft: e.target.value })} />
@@ -120,6 +131,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
           label="Send as a new message"
           size="sm"
           variant="primary"
+          isDisabled={!ready}
           onClick={() =>
             void call(async () => {
               // Queued: it goes now if nothing runs and nothing waits; else in turn (never steered).
@@ -132,6 +144,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
           label="Copy to the message box"
           size="sm"
           variant="secondary"
+          isDisabled={!ready}
           onClick={() => {
             putDraft(key, edit.draft);
             setEdit(undefined);
@@ -152,8 +165,11 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
     ) : null;
   const save = (m: QueuedMessage) =>
     call(async () => {
+      const text = edit?.draft ?? m.text;
+      // Saving it empty cancels it: that's what you asked for, not an edit to keep.
+      if (!text.trim()) setEdit(undefined);
       try {
-        await rpc(runnerId, "editQueued", { sessionId, id: m.id, text: edit?.draft ?? m.text });
+        await rpc(runnerId, "editQueued", { sessionId, id: m.id, text });
         setEdit(undefined);
       } catch (e) {
         // It left the queue just now: the panel above keeps the edit.
