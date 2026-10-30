@@ -338,6 +338,53 @@ async function cases(ctx, eng, print) {
   await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
   await p.close();
 
+  // 3d. Fingers that end without the transcript hearing it, following a stream: a second finger
+  // lifted last on the composer, and a page hidden mid-touch that never sends a touchend. Once no
+  // finger is left the view follows again, with no tap. Plain events carrying `touches` (both
+  // engines): the composer's finger isn't reachable through CDP's single scroller.
+  const touch = (p, type, sel, ids) =>
+    p.evaluate(({ type, sel, ids }) => {
+      const target = document.querySelector(sel);
+      const touches = ids.map((identifier) => ({ identifier, target, clientX: 100, clientY: 300 }));
+      target.dispatchEvent(Object.defineProperty(new Event(type, { bubbles: true }), "touches", { value: touches }));
+    }, { type, sel, ids });
+  const ROW = ".t-scroll [data-id]:last-child";
+  const COMPOSER = "textarea.t-input";
+  const setHidden = (p, hidden) =>
+    p.evaluate((h) => {
+      Object.defineProperty(document, "visibilityState", { value: h ? "hidden" : "visible", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, hidden);
+  const lostFinger = async (label, lose) => {
+    const p = await mk();
+    await p.locator("textarea.t-input").fill(`long reply for the ${label} check`);
+    await p.locator('button[aria-label="Send"]').click();
+    await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
+    await p.waitForTimeout(1200);
+    await lose(p);
+    const fromBottom = [];
+    for (let i = 0; i < 8; i++) {
+      await p.waitForTimeout(400);
+      fromBottom.push(await p.evaluate(() => ((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))(document.querySelector(".t-scroll"))));
+    }
+    const streaming = await p.locator('button[aria-label="Stop"]').first().isVisible();
+    out.push({ label: `lost finger: ${label}`, streaming, fromBottom, jumpShown: await p.getByRole("button", { name: "Jump to latest" }).isVisible() });
+    await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
+    await p.close();
+  };
+  await lostFinger("second finger lifts on the composer", async (p) => {
+    await touch(p, "touchstart", ROW, [1]);
+    await touch(p, "touchstart", COMPOSER, [1, 2]);
+    await touch(p, "touchend", ROW, [2]);
+    await touch(p, "touchend", COMPOSER, []);
+  });
+  await lostFinger("page hidden mid-touch", async (p) => {
+    await touch(p, "touchstart", ROW, [1]);
+    await setHidden(p, true);
+    await p.waitForTimeout(300);
+    await setHidden(p, false);
+  });
+
   // 3b. At the bottom, a message long enough to wrap: the composer grows, the view stays following.
   p = await mk();
   await p.locator("textarea.t-input").fill(Array.from({ length: 4 }, (_, i) => `line ${i + 1} of a message that wraps on a phone screen`).join("\n"));
