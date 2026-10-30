@@ -366,7 +366,10 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   Going back to a shell never hands back: **Back to Tether** stays the only way back.
 - No explanatory line: a shell needs no words, and which surface drives the agent shows on its
   entry ("Claude Code · driving", "Codex · joined"), whichever tab is in front, plus the banner.
-- On desktop the panel sits beside the transcript. On a phone it is full screen, with a **Chat**
+- On desktop the panel sits beside the transcript, and the sidebar's and the panel's inner edges
+  drag to change their width (arrow keys too; a double click goes back to the default). The widths
+  are kept per device; the transcript never gets narrower than 300 px, and the terminal refits as
+  it goes. Phones have no handles. On a phone it is full screen, with a **Chat**
   button that tucks it behind the transcript (still attached, the shell untouched) and a pill
   ("Back to the shell", "Back to Claude Code") that brings it back in one tap. While open, ❯_
   closes the panel.

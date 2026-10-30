@@ -16,6 +16,7 @@ import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
+import { PanelHandle } from "./WidthHandle";
 
 /** A session to focus the composer of once it opens (a new session just created). */
 let focusNext: string | undefined;
@@ -276,6 +277,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           />
         )}
       </div>
+      {panel && <PanelHandle />}
       {panel && (
         <TerminalPanel
           runnerId={runnerId}

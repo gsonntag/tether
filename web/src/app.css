@@ -1925,3 +1925,33 @@
     display: inline;
   }
 }
+
+/* Dragged widths (desktop). Below that the sidebar is a drawer and the frame steps aside. */
+.t-side-frame {
+  display: contents;
+}
+@media (min-width: 768px) {
+  .t-side-frame {
+    position: relative;
+    display: flex;
+    flex-shrink: 0;
+    height: 100%;
+    overflow: clip;
+  }
+  .t-side-frame > nav {
+    width: max(200px, min(var(--t-side-w, 260px), calc(100vw - 620px)));
+  }
+}
+.t-term-handle {
+  z-index: 5;
+}
+.t-term-handle + .t-term-panel {
+  border-left: none;
+}
+.t-session-split[data-panel-sized] > .t-session {
+  flex: 1 1 0;
+}
+.t-session-split[data-panel-sized] > .t-term-panel {
+  flex: 0 1 var(--t-panel-w);
+  min-width: 320px;
+}

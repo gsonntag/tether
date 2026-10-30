@@ -17,6 +17,7 @@ import { bySubagentOrder, SubagentsPopover } from "./SubagentChips";
 /** Subagent rows shown under a session before "N more". */
 const CHILD_ROWS = 5;
 import { useNow } from "./useNow";
+import { SidebarHandle } from "./WidthHandle";
 
 const PAGE = 40;
 
@@ -112,6 +113,7 @@ export function Sidebar() {
   };
 
   return (
+    <div className="t-side-frame">
     <SideNav
       header={<SideNavHeading heading="Tether" icon={<NavIcon icon={<Icon icon={LinkIcon} size="sm" />} />} />}
       footer={
@@ -239,5 +241,7 @@ export function Sidebar() {
         </SideNavSection>
       )}
     </SideNav>
+    <SidebarHandle />
+    </div>
   );
 }

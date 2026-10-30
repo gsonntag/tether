@@ -449,6 +449,17 @@ Shell 1"). With it open, go to another shell or to Claude Code: it closes (Copy 
 terminal you're not looking at, and nothing is handed over behind it). Esc closes it. On a phone,
 while it's open the key bar and the line are off.
 
+K7. **Widths, desktop.** Drag the sidebar's right edge and the terminal panel's left edge (the
+resize cursor and the grip show on hover).
+→ Each follows the mouse: sidebar 200–480 px, panel from 320 px, the transcript never under 300 px.
+The terminal refits and the PTY follows (`tmux display -p '#{pane_width}'` equals xterm's columns).
+Arrow keys on a focused handle move it (Shift for more). Reload: the widths are still there, on
+this device only. A double click on a handle goes back to the default. A narrower window never
+scrolls sideways.
+
+K8. **Widths, phone.** At 375 px, or on any touch-first device: no handles, the layout as before,
+whatever widths this browser stored.
+
 K6. **Only yours.** `terminalText` with another browser's attach id → "That terminal isn't attached
 here." (the relay checks it like input and resize).
 
