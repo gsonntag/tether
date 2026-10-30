@@ -1,7 +1,8 @@
 // One transcript message: a user prompt, an assistant reply (markdown, thinking, tool cards), or a
 // quiet notice. Parts cut short to travel get "Show all", which loads them whole (fullPart).
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
+import { imageSize } from "../imageSize";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Markdown } from "./Markdown";
 import { hardBreaks } from "../breaks";
@@ -66,10 +67,18 @@ function PartBody({ part, streaming, cut, root }: { part: Part; streaming: boole
         </details>
       );
     case "image":
-      return part.data ? <img className="t-img" alt="Attached image" src={`data:${part.mimeType};base64,${part.data}`} /> : <span className="t-cut">An image too large to show here. {cut}</span>;
+      return part.data ? <Attached mimeType={part.mimeType} data={part.data} /> : <span className="t-cut">An image too large to show here. {cut}</span>;
     case "tool":
       return <ToolCard part={part} root={root} extra={cut} />;
   }
+}
+
+/** An attached image, its box reserved from its header before it decodes (imageSize.ts). */
+function Attached({ mimeType, data }: { mimeType: string; data: string }) {
+  const size = useMemo(() => imageSize(mimeType, data), [mimeType, data]);
+  // as wide as it is, the column allows, and its height cap allows (--t-img-max), at its ratio
+  const style = size ? { aspectRatio: `${size.w} / ${size.h}`, width: `min(100%, ${size.w}px, calc(var(--t-img-max) * ${size.w / size.h}))`, height: "auto" } : undefined;
+  return <img className="t-img" alt="Attached image" src={`data:${mimeType};base64,${data}`} style={style} />;
 }
 
 export const Message = memo(function Message({ msg }: { msg: Msg }) {

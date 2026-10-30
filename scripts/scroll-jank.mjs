@@ -1,24 +1,29 @@
-// Scroll jank on a phone, measured: flings over the transcript in WebKit (iPhone 14 Pro) and
-// Chromium (Pixel 7), against the fake runner's "Scroll fixture" session.
-//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop]…
-// Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` and vite (README "Local development").
+// Scroll jank and cost on a phone, measured: flings over the transcript in WebKit (iPhone 14 Pro)
+// and Chromium (Pixel 7), against the fake runner's sessions.
+//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|huge-webkit|huge-chromium]…
+// Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` (HUGE=1500 for the huge-* runs) and the
+// web app, preferably a production build (`vite build && vite preview`) for the huge-* numbers.
 //
 // What it counts, per fling:
 //   writes   scrollTop/scrollTo writes on the transcript by the page while the fling runs. iOS
 //            Safari ends a momentum scroll on any such write ("it stops scrolling").
 //   shifts   frames where the content moved under the viewport by more than 1 px without the
-//            reader's input or a write of ours (a measured row above changed size, a page arrived): "jittery".
+//            reader's input or a write of ours ("jittery").
 //   travel   how far the content moved on screen.
 //   killed   (WebKit) the fling was cut short by a write, as iOS would. Linux WebKit has no touch
-//            scrolling, so the fling is wheel steps with a decaying speed (a finger's drag, then
-//            momentum), and the driver stops the momentum at the first write, like iOS does.
+//            scrolling, so the fling is wheel steps with a decaying speed: a finger's drag (touch
+//            events sent to the row under it, down for the drag), then momentum with the finger
+//            lifted; the driver stops the momentum at the first write, like iOS does.
 // Chromium flings are real touch input (CDP touch events, released mid-swipe), CPU slowed 4x.
+// huge-*: page 3000 messages in from the top; memory, DOM size, time per page, frames, Send to Stop.
+
+import { execSync } from "node:child_process";
 
 const { webkit, chromium, devices } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5188";
 const RUNNER = process.env.RUNNER ?? "scrollfake";
 const SESSION = process.env.SESSION ?? "claude:scroll-1";
-const URL_ = `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(SESSION)}`;
+const OLDER = process.env.OLDER ?? "claude:long-1";
 
 const instrument = () => {
   const s = (window.__scroll = { writes: [], phase: "", frames: [], sampling: false });
@@ -68,10 +73,13 @@ const instrument = () => {
   requestAnimationFrame(tick);
 };
 
-async function open(ctx) {
+const urlFor = (session) => `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(session)}`;
+
+async function open(ctx, session = SESSION, hook = (p) => {}) {
   const p = await ctx.newPage();
   p.on("pageerror", (e) => console.log("pageerror", String(e)));
-  await p.goto(URL_);
+  hook(p);
+  await p.goto(urlFor(session));
   await p.locator(".t-scroll [data-id]").first().waitFor({ timeout: 30_000 });
   await p.waitForTimeout(1500);
   return p;
@@ -123,20 +131,27 @@ async function wkFling(p, up, v0 = 120, decay = 0.94) {
   const g = await geom(p);
   await p.mouse.move(g.x, g.y);
   const sign = up ? -1 : 1;
-  // The finger: touch events for the page's own handlers (they don't scroll in Linux WebKit).
-  await p.evaluate(({ y, up }) => {
-    const el = document.querySelector(".t-scroll");
-    // WebKit has no Touch constructor: plain events carrying `touches`.
-    const ev = (type, touches) => Object.defineProperty(new Event(type, { bubbles: true }), "touches", { value: touches });
-    const t = (cy) => [{ identifier: 1, target: el, clientX: 100, clientY: cy }];
-    el.dispatchEvent(ev("touchstart", t(y)));
-    for (let i = 1; i <= 6; i++) el.dispatchEvent(ev("touchmove", t(y + (up ? 1 : -1) * i * 20)));
-    el.dispatchEvent(ev("touchend", []));
-  }, { y: g.y, up });
+  // The finger: touch events for the page's own handlers (they don't scroll in Linux WebKit), down
+  // for the drag, which scrolls by wheel steps meanwhile, and lifted before the momentum. They go
+  // to the row under the finger, as on a phone.
+  const touch = (type, cy) =>
+    p.evaluate(
+      ({ type, x, cy }) => {
+        const el = document.querySelector(".t-scroll");
+        const target = (window.__touchTarget = type === "touchstart" ? document.elementFromPoint(x, cy) ?? el : window.__touchTarget ?? el);
+        // WebKit has no Touch constructor: plain events carrying `touches`.
+        const touches = type === "touchend" ? [] : [{ identifier: 1, target, clientX: x, clientY: cy }];
+        target.dispatchEvent(Object.defineProperty(new Event(type, { bubbles: true }), "touches", { value: touches }));
+      },
+      { type, x: g.x, cy },
+    );
+  await touch("touchstart", g.y);
   for (let i = 0; i < 6; i++) {
+    await touch("touchmove", g.y + (up ? 1 : -1) * (i + 1) * 20);
     await p.mouse.wheel(0, sign * v0);
     await p.waitForTimeout(16);
   }
+  await touch("touchend", g.y);
   const before = await writesSince(p);
   let v = v0;
   let killed = false;
@@ -176,12 +191,15 @@ async function fling(p, eng, up, label) {
   return { label, ...(await end(p)), ...(eng.webkit ? { killed } : {}) };
 }
 
-const loaded = (p) => p.evaluate(() => Object.values(globalThis.__tetherStore.getState().views).map((v) => ({ n: v.window.messages.length, hasOlder: v.window.hasOlder }))[0]);
+/** The top of the history is on screen: no "Earlier messages" row, scrolled to the top. */
+const atTop = (p) => p.evaluate(() => !document.querySelector(".t-track > .t-paging:first-child") && document.querySelector(".t-scroll").scrollTop < 2);
+/** The first message on screen ("Question 12: …" in long-1). */
+const firstSeen = (p) => p.evaluate(() => document.querySelector(".t-scroll [data-id]")?.textContent?.slice(0, 14));
 
 async function cases(ctx, eng, print) {
   const out = { push: print };
-  const mk = async () => {
-    const p = await open(ctx);
+  const mk = async (session) => {
+    const p = await open(ctx, session);
     if (!eng.webkit) {
       eng.cdp = await ctx.newCDPSession(p);
       await eng.cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
@@ -195,10 +213,11 @@ async function cases(ctx, eng, print) {
   for (let i = 0; i < 3; i++) out.push(await fling(p, eng, false, `updown: down ${i + 1}`));
   await p.close();
 
-  // 2. Into older history: fling up until the very first message is on screen.
-  p = await mk();
+  // 2. Into older history: fling up until the very first message is on screen (300 short
+  // messages, so both engines' flings get there).
+  p = await mk(OLDER);
   const agg = { label: "older: flings to the top", flings: 0, writes: 0, shifts: 0, shiftPx: 0, killed: 0, longFrames: 0, travel: 0 };
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 80; i++) {
     const r = await fling(p, eng, true, "older");
     agg.flings++;
     agg.writes += r.writes;
@@ -207,12 +226,10 @@ async function cases(ctx, eng, print) {
     agg.longFrames += r.longFrames;
     agg.travel += r.travel;
     if (r.killed) agg.killed++;
-    const l = await loaded(p);
-    const st = await p.evaluate(() => document.querySelector(".t-scroll").scrollTop);
-    if (!l.hasOlder && st < 2) break;
+    if (await atTop(p)) break;
   }
-  agg.loaded = (await loaded(p)).n;
-  agg.reachedTop = !(await loaded(p)).hasOlder && (await p.evaluate(() => document.querySelector(".t-scroll").scrollTop)) < 2;
+  agg.firstSeen = await firstSeen(p);
+  agg.reachedTop = await atTop(p);
   out.push(agg);
   await p.close();
 
@@ -236,6 +253,14 @@ async function cases(ctx, eng, print) {
   out.push(await fling(p, eng, false, "streaming: down 1"));
   out.push(await fling(p, eng, true, "streaming: up 3"));
   await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
+  await p.close();
+
+  // 3b. At the bottom, a message long enough to wrap: the composer grows, the view stays following.
+  p = await mk();
+  await p.locator("textarea.t-input").fill(Array.from({ length: 4 }, (_, i) => `line ${i + 1} of a message that wraps on a phone screen`).join("\n"));
+  await p.waitForTimeout(600);
+  const fbc = await p.evaluate(() => ((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))(document.querySelector(".t-scroll")));
+  out.push({ label: "composer grows at the bottom", fromBottom: fbc, jumpShown: await p.getByRole("button", { name: "Jump to latest" }).isVisible() });
   await p.close();
 
   // 4. The keyboard open: a short viewport with the composer focused.
@@ -291,10 +316,122 @@ async function desktop(browser) {
   return res;
 }
 
+/** Resident memory of the processes under `root` (the largest: the page's web or renderer process). */
+function rss(root) {
+  try {
+    const rows = execSync("ps -eo pid,ppid,rss,comm").toString().split("\n").slice(1).map((l) => l.trim().split(/\s+/)).filter((a) => a.length >= 4);
+    const kids = new Set([String(root)]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [pid, ppid] of rows) if (kids.has(ppid) && !kids.has(pid)) (kids.add(pid), (grew = true));
+    }
+    return Math.round(Math.max(...rows.filter(([pid]) => kids.has(pid) && pid !== String(root)).map(([, , r]) => +r)) / 1024);
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * The huge session (fake runner with HUGE=1500: 3000 messages): page all of it in from the top,
+ * timing each page, and measure memory, DOM size, frames while scrolling and streaming, and the
+ * time from tapping Send to the Stop button, after 20 pages and after all of them.
+ */
+async function huge(browser, w) {
+  const wk = w === "webkit";
+  const ctx = await browser.newContext({ ...devices[wk ? "iPhone 14 Pro" : "Pixel 7"], ...(wk ? { isMobile: false } : {}) });
+  let histories = 0;
+  const p = await open(ctx, "claude:huge-1", (p) => p.on("websocket", (ws) => ws.on("framesent", (f) => String(f.payload).includes('"history"') && histories++)));
+  const pid = process.pid; // the browser runs under this script (via the Playwright driver)
+  const log = (o) => console.log(JSON.stringify({ engine: `huge ${w}`, ...o }));
+  const dom = () => p.evaluate(() => document.getElementsByTagName("*").length);
+  const cdp = wk ? undefined : await ctx.newCDPSession(p);
+  /** Chromium: the page's JS heap after a collection */
+  const heap = async () => {
+    if (!cdp) return {};
+    await cdp.send("Performance.enable");
+    await cdp.send("HeapProfiler.collectGarbage").catch(() => {});
+    const m = Object.fromEntries((await cdp.send("Performance.getMetrics")).metrics.map((x) => [x.name, x.value]));
+    return { heapMB: Math.round(m.JSHeapUsedSize / 1e6) };
+  };
+  const state = async () => ({ loaded: 50 + histories * 50, mounted: await p.evaluate(() => document.querySelectorAll(".t-scroll [data-id]").length), dom: await dom(), rssMB: rss(pid), ...(await heap()) });
+  const sendToStop = async (text) => {
+    await p.locator("textarea.t-input").fill(text);
+    const t = Date.now();
+    await p.locator('button[aria-label="Send"]').click();
+    await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 120_000 });
+    const ms = Date.now() - t;
+    await p.locator('button[aria-label="Send"]').waitFor({ timeout: 120_000 });
+    return ms;
+  };
+  const frames = (ms) =>
+    p.evaluate(async (ms) => {
+      const fr = [];
+      let last = performance.now();
+      let go = true;
+      const f = (t) => (fr.push(t - last), (last = t), go && requestAnimationFrame(f));
+      requestAnimationFrame(f);
+      await new Promise((r) => setTimeout(r, ms));
+      go = false;
+      fr.sort((a, b) => a - b);
+      return { p50: Math.round(fr[fr.length >> 1]), p95: Math.round(fr[Math.floor(fr.length * 0.95)]), max: Math.round(fr.at(-1)), over50: fr.filter((x) => x > 50).length, n: fr.length };
+    }, ms);
+  log({ at: "open", ...(await state()) });
+  const per = [];
+  for (let i = 0; i < 80; i++) {
+    if (await atTop(p)) break;
+    // To the top, as a reader would end a fling there (a wheel notch up first: only the reader's
+    // input stops following); then the page arrives (or is mounted again) and the reader's row is
+    // put back, moving scrollTop off 0.
+    const g = await geom(p);
+    await p.mouse.move(g.x, g.y);
+    await p.mouse.wheel(0, -100);
+    const ms = await p.evaluate(async () => {
+      const el = document.querySelector(".t-scroll");
+      const t = performance.now();
+      el.scrollTop = 0;
+      for (let k = 0; k < 400 && el.scrollTop < 50; k++) await new Promise((r) => setTimeout(r, 25));
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      return el.scrollTop < 50 ? -1 : Math.round(performance.now() - t);
+    });
+    per.push(ms);
+    if (i === 19) {
+      log({ at: "20 pages up", pageMs: { first: per[0], last10: per.slice(-10) }, ...(await state()) });
+      log({ at: "20 pages up", sendToStopMs: await sendToStop("hi") });
+    }
+  }
+  log({ at: "all paged in", pages: per.length, pageMsLast10: per.slice(-10), pageMsMax: Math.max(...per), ...(await state()) });
+  // Scrolling down through what's mounted, by wheel.
+  const g = await geom(p);
+  await p.mouse.move(g.x, g.y);
+  const fr = frames(4000);
+  for (let i = 0; i < 120; i++) {
+    await p.mouse.wheel(0, 150);
+    await p.waitForTimeout(16);
+  }
+  log({ at: "wheel down from the top", frames: await fr });
+  log({ at: "top, send", sendToStopMs: await sendToStop("hi"), ...(await state()) });
+  // Back to the newest, and a long reply streaming at the bottom.
+  await p.getByRole("button", { name: "Jump to latest" }).click();
+  await p.waitForTimeout(1500);
+  await p.locator("textarea.t-input").fill("long reply at the bottom");
+  await p.locator('button[aria-label="Send"]').click();
+  await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 120_000 });
+  await p.waitForTimeout(1000);
+  log({ at: "streaming at the bottom", frames: await frames(4000), ...(await state()) });
+  await p.locator('button[aria-label="Send"]').waitFor({ timeout: 120_000 });
+  await p.waitForTimeout(1500);
+  log({ at: "settled at the bottom", ...(await state()) });
+  await ctx.close();
+}
+
 const which = process.argv.slice(2).length ? process.argv.slice(2) : ["webkit", "chromium", "desktop"];
 for (const w of which) {
-  const browser = await (w === "webkit" ? webkit : chromium).launch();
+  const browser = await (w.endsWith("webkit") ? webkit : chromium).launch();
   try {
+    if (w.startsWith("huge-")) {
+      await huge(browser, w.slice(5));
+      continue;
+    }
     if (w === "desktop") {
       console.log(JSON.stringify({ engine: "desktop chromium", ...(await desktop(browser)) }));
       continue;

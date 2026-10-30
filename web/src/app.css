@@ -320,8 +320,10 @@
   font-size: 13px;
 }
 .t-img {
+  --t-img-max: 360px;
   max-width: 100%;
-  max-height: 360px;
+  max-height: var(--t-img-max);
+  object-fit: contain;
   border-radius: var(--radius-element, 8px);
 }
 .t-cut {
@@ -1207,9 +1209,9 @@
   outline: 2px solid var(--color-accent);
 }
 .t-msg.user .t-img {
+  --t-img-max: 240px;
   display: block;
   margin: 6px 0 0 auto;
-  max-height: 240px;
 }
 .t-relay {
   font-size: 12px;

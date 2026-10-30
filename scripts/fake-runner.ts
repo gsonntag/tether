@@ -108,6 +108,23 @@ for (let i = 0; i < 120; i++) {
   mixed.push(asst(parts, t));
 }
 add({ id: "claude:scroll-1", title: "Scroll fixture (240 mixed messages)", projectPath: P, updatedAt: now - 30_000 }, mixed);
+// A huge session for memory and paging checks, with HUGE=<pairs> (1500 makes 3000 messages): big
+// tool cards, diffs, and an image every 25 prompts.
+const HUGE = Number(process.env.HUGE ?? 0);
+if (HUGE > 0) {
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#4a8"/><text x="20" y="200" font-size="40">img</text></svg>').toString("base64");
+  const huge: Msg[] = [];
+  for (let i = 0; i < HUGE; i++) {
+    const t = now - (2 * HUGE - i) * 60_000;
+    huge.push(i % 25 === 7 ? { ...user(`Q${i + 1} with an image`, t), parts: [{ type: "text", text: `Q${i + 1} with an image` }, { type: "image", mimeType: "image/svg+xml", data: svg }] } : user(`Q${i + 1}. ${prose(i, 8 + (i % 13))}`, t));
+    const parts: Part[] = [{ type: "text", text: `A${i + 1}. ${prose(i, 30 + ((i * 37) % 400))}\n\n${i % 3 === 0 ? code(i, 5 + ((i * 11) % 50)) : "- one\n- two"}` }];
+    if (i % 2 === 1) parts.push(tool("Bash", "shell", { command: `grep -rn item${i} src` }, Array.from({ length: 60 + (i % 80) }, (_, k) => `src/f${k}.ts:${k}: item${i} ${"z".repeat(k % 50)}`).join("\n")));
+    if (i % 3 === 2) parts.push(tool("Edit", "edit", { file_path: `${P}/src/m${i}.ts`, old_string: Array.from({ length: 40 }, (_, k) => `old line ${k}`).join("\n"), new_string: Array.from({ length: 45 }, (_, k) => `new line ${k} ${k % 3 ? "same" : "changed"}`).join("\n") }, "The file was updated."));
+    if (i % 5 === 3) parts.push(tool("Read", "read", { file_path: `${P}/src/r${i}.ts` }, Array.from({ length: 200 }, (_, k) => `${k}\tline ${k}`).join("\n")));
+    huge.push(asst(parts, t));
+  }
+  add({ id: "claude:huge-1", title: `Huge fixture (${2 * HUGE} messages)`, projectPath: P, updatedAt: now - 20_000 }, huge);
+}
 add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 
