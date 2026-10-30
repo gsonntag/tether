@@ -82,6 +82,11 @@ tether/
 
 - **Runner:** one machine. `id`, hostname, available harnesses, connected flag.
 - **Project:** a folder on the runner. It is discovered from the harness stores plus any folders you add.
+  `TETHER_HIDE_PROJECTS` (the runner's environment) is a comma-separated list of path globs matched
+  against the whole folder path, `*` matching anything including `/` (`/tmp/*,*/scratch`). The core
+  leaves matching projects and sessions out of project lists, session lists and Home, for every
+  harness, after the adapters' discovery. Nothing is deleted. A session that is open or live right now
+  stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden.
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 

@@ -43,7 +43,7 @@ export interface RunnerOptions {
   /** the request broker's policy steps (SPEC §7); none in the core */
   policy?: PolicyStep[];
   /** session core tuning, for tests */
-  core?: { discoverMs?: number; evictMs?: number; idleMs?: number };
+  core?: { discoverMs?: number; evictMs?: number; idleMs?: number; hideProjects?: string };
   /**
    * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
    * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
@@ -95,6 +95,7 @@ export function createRunner(o: RunnerOptions) {
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,
+    hideProjects: o.core?.hideProjects,
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });

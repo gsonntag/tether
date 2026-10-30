@@ -38,6 +38,8 @@ export interface CoreOptions {
   discoverMs?: number;
   /** how long an unwatched stored session's transcript stays in memory */
   evictMs?: number;
+  /** TETHER_HIDE_PROJECTS: folders left out of the lists (hidePattern) */
+  hideProjects?: string;
   log?: (line: string) => void;
   now?: () => number;
 }
@@ -51,6 +53,14 @@ export function expandPath(p: string): string {
   if (t === "~") return homedir();
   if (t.startsWith("~/")) return resolve(homedir(), t.slice(2));
   return resolve(homedir(), t);
+}
+
+/** A comma-separated list of path globs as one pattern (`*`: anything, `/` too); none: undefined. */
+export function hidePattern(globs = ""): RegExp | undefined {
+  const list = globs.split(",").map((g) => g.trim()).filter(Boolean);
+  if (!list.length) return undefined;
+  const source = list.map((g) => g.split(/\*+/).map((lit) => lit.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*"));
+  return new RegExp(`^(?:${source.join("|")})$`, "s");
 }
 
 const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, status: "idle", requests: [], queue: [] });
@@ -69,6 +79,7 @@ export class SessionCore {
   readonly log: (line: string) => void;
   readonly now: () => number;
   readonly notices: NoticeStore;
+  private hide?: RegExp;
   /** a session's open requests (the request desk sets this, core/requests.ts) */
   requestsFor: (sessionId: string) => Request[] = () => [];
 
@@ -76,6 +87,7 @@ export class SessionCore {
     this.notices = o.notices ?? new NoticeStore();
     this.log = o.log ?? ((l) => console.log(l));
     this.now = o.now ?? Date.now;
+    this.hide = hidePattern(o.hideProjects);
     this.book = new SummaryBook(o.epoch, (summary) => void o.send({ t: "summary", summary }), this.now);
     o.bus.on("unwatched", ({ sessionIds }) => sessionIds.forEach((id) => this.unwatch(id)));
     o.bus.on("disconnected", () => [...this.watched].forEach((id) => this.unwatch(id)));
@@ -118,7 +130,7 @@ export class SessionCore {
           if (s && !s.live && !s.childRunning) s.summary = { ...f, mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
         }
         this.book.refresh(
-          found,
+          found.filter((f) => this.shown(f)),
           (id) => this.owned(id),
           (id) => this.watched.has(id),
         );
@@ -137,6 +149,13 @@ export class SessionCore {
     return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
   }
 
+  /** Left out of the lists: a folder TETHER_HIDE_PROJECTS names, unless the session is open or live right now. */
+  private shown(row: SessionSummary) {
+    if (!this.hide?.test(row.projectPath)) return true;
+    const s = this.sessions.get(row.id);
+    return this.watched.has(row.id) || (!!s && this.held(s));
+  }
+
   async listProjects(): Promise<ProjectInfo[]> {
     const by = new Map<string, ProjectInfo>();
     for (const a of this.o.adapters)
@@ -144,7 +163,7 @@ export class SessionCore {
         const had = by.get(p.path);
         by.set(p.path, had ? { ...had, harnesses: [...new Set([...had.harnesses, ...p.harnesses])], updatedAt: Math.max(had.updatedAt, p.updatedAt), sessions: had.sessions + p.sessions } : p);
       }
-    return [...by.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+    return [...by.values()].filter((p) => !this.hide?.test(p.path)).sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   /** Session rows with what the core knows live laid over what the stores say. */
@@ -170,7 +189,7 @@ export class SessionCore {
     for (const s of this.sessions.values())
       if (s.live && !s.summary.parentSessionId && (!args.projectPath || s.summary.projectPath === expandPath(args.projectPath))) byId.set(s.id, s.summary);
     const q = args.query?.trim().toLowerCase();
-    const rows = [...byId.values()].filter((s) => !q || s.title.toLowerCase().includes(q));
+    const rows = [...byId.values()].filter((s) => this.shown(s) && (!q || s.title.toLowerCase().includes(q)));
     return { sessions: rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, q ? Math.min(limit, 100) : limit) };
   }
 

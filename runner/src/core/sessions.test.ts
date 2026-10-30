@@ -15,20 +15,20 @@ import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { NoticeStore } from "./notices";
 import { saveConfig } from "../config";
-import { SessionCore } from "./sessions";
+import { hidePattern, SessionCore } from "./sessions";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
 const user = (id: string, text = id): Msg => ({ id, role: "user", ts: 0, parts: [{ type: "text", text }] });
 
-function setup(opts: { idleMs?: number; evictMs?: number } = {}) {
+function setup(opts: { idleMs?: number; evictMs?: number; hideProjects?: string } = {}) {
   const adapter = new FakeAdapter();
   const bus = new EventBus<CoreEvents>();
   const frames: RunnerToServer[] = [];
   const prefsFile = join(mkdtempSync(join(tmpdir(), "tether-core-")), "runner.json");
   saveConfig({ runnerId: "test" }, prefsFile);
-  const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m.t === "event" ? { ...m, event: capEvent(m.event) } : m), true), epoch: "e1", prefs: new Prefs(prefsFile), evictMs: opts.evictMs ?? 50, log: () => {} });
+  const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m.t === "event" ? { ...m, event: capEvent(m.event) } : m), true), epoch: "e1", prefs: new Prefs(prefsFile), evictMs: opts.evictMs ?? 50, hideProjects: opts.hideProjects, log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { idleMs: opts.idleMs ?? 60_000 });
   cleanups.push(() => core.stop());
   const events = (sessionId: string) => frames.filter((f): f is Extract<RunnerToServer, { t: "event" }> => f.t === "event" && f.sessionId === sessionId);
@@ -558,4 +558,70 @@ test("a path in New session: ~ and relative paths are in the home folder", async
   expect(expandPath(" ~/a/b ")).toBe(`${homedir()}/a/b`);
   expect(expandPath("projects/x")).toBe(`${homedir()}/projects/x`);
   expect(expandPath("/tmp/x/../y")).toBe("/tmp/y");
+});
+
+describe("hidden folders (TETHER_HIDE_PROJECTS)", () => {
+  const ids = (l: { id: string }[]) => l.map((s) => s.id).sort();
+  const hiding = (idleMs?: number) => {
+    const t = setup({ hideProjects: "/tmp/*, */scratch", idleMs });
+    t.adapter.addStored("kept", [user("m0")], { projectPath: "/home/me/app" });
+    t.adapter.addStored("old", [user("m0")], { projectPath: "/tmp/a/b" });
+    t.adapter.addStored("other", [user("m0")], { projectPath: "/home/me/scratch" });
+    t.adapter.listProjects = async () => ["/home/me/app", "/tmp/a/b"].map((path) => ({ path, name: path, harnesses: ["claude" as const], updatedAt: 1, sessions: 1 }));
+    return t;
+  };
+
+  test("globs: * crosses /, the whole path has to match, the rest is literal", () => {
+    const re = hidePattern("/tmp/*,*/scratch,/a.b")!;
+    for (const p of ["/tmp/x", "/tmp/x/y/z", "/home/me/scratch", "/a.b"]) expect(re.test(p)).toBe(true);
+    for (const p of ["/tmp", "/home/me/scratch/x", "/home/tmp/x", "/axb"]) expect(re.test(p)).toBe(false);
+    expect(hidePattern(undefined)).toBeUndefined();
+    expect(hidePattern(" , ")).toBeUndefined();
+  });
+
+  test("left out of the summary list, project lists, folder lists and search; nothing deleted", async () => {
+    const { core, adapter } = hiding();
+    await core.discover();
+    expect(ids(core.book.list())).toEqual(["claude:kept"]);
+    expect((await core.listSessions({})).sessions.map((s) => s.id)).toEqual(["claude:kept"]);
+    expect((await core.listSessions({ query: "Session" })).sessions.map((s) => s.id)).toEqual(["claude:kept"]);
+    expect((await core.listSessions({ projectPath: "/tmp/a/b" })).sessions).toEqual([]);
+    expect((await core.listProjects()).map((p) => p.path)).toEqual(["/home/me/app"]);
+    expect(adapter.stored.size).toBe(3);
+  });
+
+  test("unset: everything is listed", async () => {
+    const { core, adapter } = setup();
+    adapter.addStored("a", [user("m0")], { projectPath: "/tmp/a" });
+    await core.discover();
+    expect(ids(core.book.list())).toEqual(["claude:a"]);
+    expect((await core.listSessions({ query: "Session" })).sessions).toHaveLength(1);
+  });
+
+  test("opened directly by id it works and stays listed until nobody has it open", async () => {
+    const { core } = hiding();
+    await core.discover();
+    const snap = await core.subscribe("claude:old");
+    expect(snap.messages).toHaveLength(1);
+    await core.discover();
+    expect(ids(core.book.list())).toEqual(["claude:kept", "claude:old"]);
+    expect((await core.listSessions({ query: "Session" })).sessions).toHaveLength(2);
+    core.unwatch("claude:old");
+    await core.discover();
+    expect(ids(core.book.list())).toEqual(["claude:kept"]);
+  });
+
+  test("a live session stays listed; when it stops being live it goes", async () => {
+    const { core, live } = hiding(30);
+    await core.discover();
+    await live.send("claude:old", "go");
+    await core.discover();
+    expect(core.sessions.get("claude:old")?.live).toBe(true);
+    expect(ids(core.book.list())).toContain("claude:old");
+    expect((await core.listSessions({ projectPath: "/tmp/a/b" })).sessions.map((s) => s.id)).toEqual(["claude:old"]);
+    await Bun.sleep(60);
+    expect(core.sessions.get("claude:old")?.live).toBe(false);
+    await core.discover();
+    expect(ids(core.book.list())).toEqual(["claude:kept"]);
+  });
 });
