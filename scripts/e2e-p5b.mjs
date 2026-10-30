@@ -440,9 +440,12 @@ const steps = {
     await composer(p).waitFor();
     const lat = async () => {
       const t = Date.now();
-      await rpcVia(p, "listProjects", {});
+      await rpcVia(p, "ping", {});
       return Date.now() - t;
     };
+    // A round trip through the relay to the runner, before and while it runs.
+    let base = 0;
+    for (let i = 0; i < 5; i++) base = Math.max(base, await lat());
     await bang(p, "yes RUNAWAY-LINE");
     await sleep(3000);
     let worst = 0;
@@ -452,9 +455,9 @@ const steps = {
     }
     await button(card(p), "Stop").click();
     await waitCard(p, "sent", "runaway sent", 60_000);
-    if (worst > 400) fail(`rpc took ${worst} ms while yes ran`);
+    if (worst > base + 300) fail(`a ping took ${worst} ms while yes ran (${base} ms before)`);
     await idle(p, 120_000);
-    ok(`runaway \`yes\`: rpcs answered within ${worst} ms while it ran (output paced to 16 MB/s, middle only counted); Stop sent its start and end`);
+    ok(`runaway \`yes\`: pings answered within ${worst} ms while it ran (${base} ms before) (output paced to 16 MB/s, middle only counted); Stop sent its start and end`);
     await p.close();
   },
 
