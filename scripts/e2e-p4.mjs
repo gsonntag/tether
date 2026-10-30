@@ -331,7 +331,7 @@ const steps = {
     const t = await transcriptText(p);
     const last = t.slice(t.lastIndexOf("sleep 4"));
     if (!last.includes("Also end your reply with the word BANANA.")) fail("the steer isn't in the transcript");
-    if (!/BANANA\s*$/m.test(last)) fail(`the reply didn't follow the steer:\n${last}`);
+    if (!/BANANA\W*$/m.test(last)) fail(`the reply didn't follow the steer:\n${last}`);
     const idleSteer = await rpcVia(p, "steer", { sessionId: sessionId(), text: "x" });
     if (!/Nothing is running/.test(idleSteer.error ?? "")) fail(`steer while idle: ${JSON.stringify(idleSteer)}`);
     ok("steered into the running turn: the message shows in place and the reply follows it; steering an idle session is refused");
