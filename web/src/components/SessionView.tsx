@@ -209,7 +209,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           </button>
         )}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
-        {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} />}
+        {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} messages={view.window.messages} />}
         {isChild && view.capabilities?.subagents.steer && state.mode === "live" ? (
           // A running subagent you can message (SPEC §6a): directly into its turn, or passed on by the
           // main agent ("via-parent"); either way it shows here as yours.

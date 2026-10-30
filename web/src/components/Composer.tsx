@@ -13,7 +13,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { ArrowUpIcon, ChevronDownIcon, StopIcon } from "@heroicons/react/24/solid";
-import { CameraIcon, ClockIcon, CommandLineIcon, PaperClipIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ClockIcon, CommandLineIcon, PaperClipIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, type Attachment } from "../../../shared/attachments";
 import { ATTACH_MAX } from "../../../shared/limits";
 import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
@@ -160,6 +160,7 @@ export const Composer = forwardRef<
     });
 
   const shellOn = !!shell && !steerOnly && isShellText(text);
+  const phone = coarse();
   const mode = steerOnly ? "steer" : composerMode({ running, canSteer, inTerminal, shell: shellOn });
   const uploading = files.some((f) => !f.attachment && !f.error);
   const ready = files.filter((f) => f.attachment).map((f) => f.attachment!);
@@ -262,6 +263,9 @@ export const Composer = forwardRef<
   };
 
   const primary = primaryAction(mode);
+  const busyTurn0 = mode === "steer" || mode === "queue";
+  /** while a turn runs and the box has something: Queue, Stop and send now, Stop */
+  const sendMenu = busyTurn0 && hasContent && !steerOnly && !shellOn;
   const busyTurn = mode === "steer" || mode === "queue";
   const label = primary === "shell" ? "Run" : primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
   const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? "Send after this turn (Enter)" : "Send (Enter)";
@@ -325,24 +329,44 @@ export const Composer = forwardRef<
             <>
               <input ref={picker} type="file" multiple hidden aria-label="Attach files" onChange={(e) => (addFiles([...(e.target.files ?? [])]), (e.target.value = ""))} />
               <input ref={camera} type="file" accept="image/*" capture="environment" hidden aria-label="Take a photo" onChange={(e) => (addFiles([...(e.target.files ?? [])]), (e.target.value = ""))} />
-              <IconButton label="Attach files" tooltip="Attach files (or paste, or drop)" variant="ghost" icon={<Icon icon={PaperClipIcon} />} isDisabled={!!disabled || shellOn} onClick={() => picker.current?.click()} />
-              {coarse() && <IconButton label="Take a photo" variant="ghost" icon={<Icon icon={CameraIcon} />} isDisabled={!!disabled || shellOn} onClick={() => camera.current?.click()} />}
             </>
           )}
-          {shell && !steerOnly && (
-            <button
-              type="button"
-              className="t-shell-toggle"
-              aria-label="Shell command"
-              aria-pressed={shellOn}
-              title={shellOn ? "Back to a message (removes the !)" : "Run a shell command (or start with !)"}
-              // Keeps focus in the box with a mouse; a tap (iOS Safari) must not be cancelled, or the
-              // click never comes: the box is focused again in the click instead.
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={toggle}
+          {phone && !shellOn && (uploadTo || (shell && !steerOnly) || sendMenu) ? (
+            // A phone keeps its width for the words: attaching, the shell prompt and the other ways to
+            // send (while a turn runs) are one menu before the box.
+            <DropdownMenu
+              renderTrigger={(p) => (
+                <button type="button" className="t-plus" aria-label={sendMenu ? "More ways to send" : "Attach or run a command"} disabled={!!disabled} {...p}>
+                  <PlusIcon aria-hidden />
+                </button>
+              )}
             >
-              <CommandLineIcon aria-hidden />
-            </button>
+              {sendMenu && primary !== "queue" && <DropdownMenuItem label="Queue for after this turn" onClick={() => void go("queue")} />}
+              {sendMenu && <DropdownMenuItem label="Stop and send now" onClick={() => void go("stopSend")} />}
+              {sendMenu && <DropdownMenuItem label="Stop" onClick={() => void stop()} />}
+              {uploadTo && <DropdownMenuItem label="Attach files" onClick={() => picker.current?.click()} />}
+              {uploadTo && <DropdownMenuItem label="Take a photo" onClick={() => camera.current?.click()} />}
+              {shell && !steerOnly && <DropdownMenuItem label="Run a shell command" description="Starts the message with !" onClick={toggle} />}
+            </DropdownMenu>
+          ) : (
+            <>
+              {uploadTo && !phone && <IconButton label="Attach files" tooltip="Attach files (or paste, or drop)" variant="ghost" icon={<Icon icon={PaperClipIcon} />} isDisabled={!!disabled || shellOn} onClick={() => picker.current?.click()} />}
+              {shell && !steerOnly && (
+                <button
+                  type="button"
+                  className="t-shell-toggle"
+                  aria-label="Shell command"
+                  aria-pressed={shellOn}
+                  title={shellOn ? "Back to a message (removes the !)" : "Run a shell command (or start with !)"}
+                  // Keeps focus in the box with a mouse; a tap (iOS Safari) must not be cancelled, or the
+                  // click never comes: the box is focused again in the click instead.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={toggle}
+                >
+                  <CommandLineIcon aria-hidden />
+                </button>
+              )}
+            </>
           )}
           <textarea ref={box} className="t-input" rows={1} value={text} placeholder={hint} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
           {busyTurn && !hasContent && !shellOn ? (
@@ -350,7 +374,7 @@ export const Composer = forwardRef<
           ) : (
             <IconButton label={label} tooltip={tip} variant="primary" icon={<Icon icon={primary === "shell" ? CommandLineIcon : primary === "queue" ? ClockIcon : ArrowUpIcon} />} isDisabled={shellOn ? busy || !!disabled : !hasContent || busy || !!disabled || uploading} onClick={() => void go(primary)} />
           )}
-          {busyTurn && hasContent && !steerOnly && !shellOn && (
+          {sendMenu && !phone && (
             <DropdownMenu
               renderTrigger={(p) => (
                 <button type="button" className="t-more-send" aria-label="More ways to send" {...p}>

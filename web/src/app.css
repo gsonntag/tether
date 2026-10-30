@@ -1593,17 +1593,117 @@
   }
 }
 
+.t-edit-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+  align-items: center;
+}
+.t-queue-fold {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--t-muted);
+  padding: 4px 0;
+}
+.t-queue-fold:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+
 /* Touch: every control at least 44 × 44 px to the finger, Astryx's buttons included (the attribute
    selectors outrank their single-class styles); desktop keeps its compact sizes. */
 @media (pointer: coarse) {
-  :is(button[type], [role="button"], a[href], summary, select, input[type="text"], input[type="search"], input:not([type]), textarea) {
+  :is(button[type], [role="button"], [role="menuitem"], [role="menuitemradio"], [role="option"], a[href], summary, select, input[type="text"], input[type="search"], input:not([type]), textarea) {
     min-height: 44px;
   }
   :is(button[type], [role="button"], a[href], summary) {
     min-width: 44px;
   }
-  .t-chip {
-    padding: 6px 12px;
+  /* Header: one row: the title, then the chips scrolling sideways (no wrapping), about 56 px. */
+  .t-header {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 2px;
+    padding: 4px 12px;
+  }
+  .t-header-top {
+    flex: 0 1 auto;
+    max-width: 42%;
+    min-width: 0;
+  }
+  .t-header .t-chips {
+    flex: 1 1 0;
+    min-width: 0;
+    margin-top: 0;
+  }
+  .t-header > .t-inline-status {
+    flex: 1 1 100%;
+  }
+  .t-queue {
+    max-height: 26vh;
+  }
+  /* Header chips: each a 44 px tap target with a slimmer pill drawn
+     inside it; the folder line goes (the sidebar and Home show it). */
+  .t-header-sub {
+    display: none;
+  }
+  .t-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-top: 2px;
+  }
+  .t-chips::-webkit-scrollbar {
+    display: none;
+  }
+  .t-chips .t-chip {
+    flex: none;
+    position: relative;
+    border: none;
+    background: none;
+    padding: 0 12px;
+  }
+  .t-chips .t-chip::before {
+    content: "";
+    position: absolute;
+    inset: 7px 0;
+    border: 1px solid var(--t-border);
+    border-radius: var(--radius-full, 999px);
+    pointer-events: none;
+  }
+  .t-plus {
+    all: unset;
+    box-sizing: border-box;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    color: var(--t-muted);
+    cursor: pointer;
+  }
+  .t-plus svg {
+    width: 22px;
+    height: 22px;
+  }
+  .t-shell-toggle {
+    width: 44px;
+    height: 44px;
+  }
+  /* The queue's editor: the text on its own line, the buttons together below it. */
+  .t-queued-edit {
+    flex-wrap: wrap;
+  }
+  .t-queued-edit .t-input {
+    flex: 1 1 100%;
+  }
+  .t-check {
+    min-height: 44px;
   }
   .t-more-send {
     width: 44px;

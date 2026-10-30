@@ -1,12 +1,17 @@
 // Messages waiting to go out after the running turn (SPEC §9), shared by every device: each can be
 // edited, moved up or cancelled. A held queue says why and offers Resume (or waits for Back to
 // Tether while the terminal drives).
+//
+// An edit in progress is kept per session (navigating away keeps it). If its message leaves the
+// queue before the edit is saved, the edit stays: the message went out (its text is now in the
+// transcript), or was removed on another device; and if the message comes back (stopped before it
+// got there) the edit attaches to it again, so nothing is ever sent twice.
 
 import { undefang } from "../../../shared/fromTether";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import type { LiveState, QueuedMessage } from "../../../shared/transcript";
+import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { viewKey } from "../store";
 import { putDraft } from "./Composer";
@@ -20,48 +25,74 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   restart: "Paused: the runner restarted mid-turn.",
 };
 
-export function QueueList({ runnerId, sessionId, state }: { runnerId: string; sessionId: string; state: LiveState }) {
-  const [editing, setEditing] = useState<string>();
-  const [draft, setDraft] = useState("");
+/** An edit in progress: the message it's for, its text before, and the edited text. */
+interface Edit {
+  id: string;
+  original: string;
+  draft: string;
+}
+
+/**
+ * Edits by session, kept across navigation and reload (this browser's storage: an edit is yours on
+ * this device until you save, send or discard it).
+ */
+const EDIT_KEY = (k: string) => `tether.queueEdit.${k}`;
+const edits = {
+  get(k: string): Edit | undefined {
+    try {
+      const v = JSON.parse(localStorage.getItem(EDIT_KEY(k)) ?? "null");
+      return v && typeof v.id === "string" && typeof v.draft === "string" ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  set(k: string, e: Edit) {
+    try {
+      localStorage.setItem(EDIT_KEY(k), JSON.stringify(e));
+    } catch {}
+  },
+  delete(k: string) {
+    try {
+      localStorage.removeItem(EDIT_KEY(k));
+    } catch {}
+  },
+};
+
+/** The phone's visible height is short (the keyboard is up): the queue folds to one line. */
+function useShort(): boolean {
+  const read = () => coarse() && (globalThis.visualViewport?.height ?? globalThis.innerHeight ?? 1000) < 500;
+  const [short, setShort] = useState(read);
+  useEffect(() => {
+    const vv = globalThis.visualViewport;
+    const f = () => setShort(read());
+    vv?.addEventListener("resize", f);
+    globalThis.addEventListener?.("resize", f);
+    return () => {
+      vv?.removeEventListener("resize", f);
+      globalThis.removeEventListener?.("resize", f);
+    };
+  }, []);
+  return short;
+}
+
+/**
+ * How an edit whose message left the queue reads, from the runner's own record (LiveState.queueGone):
+ * it went out to the harness, or it was cancelled; unknown while it is only briefly out (going out,
+ * or stopped before it got there and about to come back).
+ */
+export function lostKind(id: string, gone: LiveState["queueGone"]): "sent" | "cancelled" | undefined {
+  return gone?.find((g) => g.id === id)?.how;
+}
+
+export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: string; sessionId: string; state: LiveState; messages?: Msg[] }) {
+  const key = viewKey(runnerId, sessionId);
+  const [edit, setEditState] = useState<Edit | undefined>(() => edits.get(key));
   const [error, setError] = useState<string>();
-  /** an edit whose message went out before it was saved: kept, to send or put in the box */
-  const [lost, setLost] = useState<string>();
-  // The message being edited went out meanwhile (another device, or the turn ended): the draft stays.
-  if (editing && !state.queue.some((m) => m.id === editing)) {
-    setEditing(undefined);
-    setLost(draft);
-  }
-  const lostPanel = lost !== undefined && (
-    <div className="t-queue-lost" role="status">
-      <div className="t-inline-status">It went out before your edit was saved.</div>
-      <div className="t-queued-edit">
-        <textarea className="t-input" value={lost} aria-label="Your unsaved edit" onChange={(e) => setLost(e.target.value)} />
-        <Button
-          label="Send as a new message"
-          size="sm"
-          variant="primary"
-          onClick={() =>
-            void call(async () => {
-              // Queued: it goes now if nothing runs, else after this turn (never steered).
-              await rpc(runnerId, "queue", { sessionId, text: lost });
-              setLost(undefined);
-            })
-          }
-        />
-        <Button
-          label="Copy to the message box"
-          size="sm"
-          variant="secondary"
-          onClick={() => {
-            putDraft(viewKey(runnerId, sessionId), lost);
-            setLost(undefined);
-          }}
-        />
-        <Button label="Discard" size="sm" variant="ghost" onClick={() => setLost(undefined)} />
-      </div>
-    </div>
-  );
-  if (!state.queue.length) return lostPanel ? <div className="t-queue" aria-label="Queued messages">{lostPanel}</div> : null;
+  const setEdit = (e: Edit | undefined) => {
+    if (e) edits.set(key, e);
+    else edits.delete(key);
+    setEditState(e);
+  };
   const call = async (f: () => Promise<unknown>) => {
     setError(undefined);
     try {
@@ -70,15 +101,64 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
       setError((e as Error).message);
     }
   };
+  // The message being edited left the queue (went out, or removed elsewhere): the edit stays, here.
+  // If it comes back (stopped before it got there), the edit is attached to it again.
+  const gone = !!edit && !state.queue.some((m) => m.id === edit.id);
+  const kind = edit && gone ? lostKind(edit.id, state.queueGone) : undefined;
+  const short = useShort();
+  const [open, setOpen] = useState(false);
+  const pausedHint = state.queueHeld ? " It'll wait with the paused queue." : state.queue.length ? " It'll go after the messages waiting." : "";
+  const lostPanel = edit && gone && (
+    <div className="t-queue-lost" role="status">
+      <div className="t-inline-status">
+        {kind === "sent" ? "It went out before your edit was saved." : kind === "cancelled" ? "It was cancelled before your edit was saved." : "It left the queue before your edit was saved."}
+      </div>
+      <div className="t-queued-edit">
+        <textarea className="t-input" value={edit.draft} aria-label="Your unsaved edit" onChange={(e) => setEdit({ ...edit, draft: e.target.value })} />
+        <span className="t-edit-actions">
+        <Button
+          label="Send as a new message"
+          size="sm"
+          variant="primary"
+          onClick={() =>
+            void call(async () => {
+              // Queued: it goes now if nothing runs and nothing waits; else in turn (never steered).
+              await rpc(runnerId, "queue", { sessionId, text: edit.draft });
+              setEdit(undefined);
+            })
+          }
+        />
+        <Button
+          label="Copy to the message box"
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            putDraft(key, edit.draft);
+            setEdit(undefined);
+          }}
+        />
+        <Button label="Discard" size="sm" variant="ghost" onClick={() => setEdit(undefined)} />
+        </span>
+      </div>
+      {pausedHint && <div className="t-inline-status">{pausedHint.trim()}</div>}
+    </div>
+  );
+  if (!state.queue.length)
+    return lostPanel ? (
+      <div className="t-queue" aria-label="Queued messages">
+        {error && <div className="t-inline-status error">{error}</div>}
+        {lostPanel}
+      </div>
+    ) : null;
   const save = (m: QueuedMessage) =>
     call(async () => {
       try {
-        await rpc(runnerId, "editQueued", { sessionId, id: m.id, text: draft });
+        await rpc(runnerId, "editQueued", { sessionId, id: m.id, text: edit?.draft ?? m.text });
+        setEdit(undefined);
       } catch (e) {
+        // It left the queue just now: the panel above keeps the edit.
         if (!/isn't waiting any more/.test((e as Error).message)) throw e;
-        setLost(draft);
       }
-      setEditing(undefined);
     });
   const held = state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
   return (
@@ -89,27 +169,34 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
       </div>
       {error && <div className="t-inline-status error">{error}</div>}
       {lostPanel}
+      {short && !open && !edit ? (
+        <button type="button" className="t-queue-fold" aria-expanded={false} onClick={() => setOpen(true)}>
+          Show the {state.queue.length === 1 ? "message" : `${state.queue.length} messages`} ⌄
+        </button>
+      ) : (
       <ol className="t-queue-list">
         {state.queue.map((m, i) => (
           <li key={m.id} className="t-queued">
-            {editing === m.id ? (
+            {edit?.id === m.id ? (
               <div className="t-queued-edit">
                 <textarea
                   className="t-input"
-                  value={draft}
+                  value={edit.draft}
                   aria-label="Edit the queued message"
                   autoFocus
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => setEdit({ ...edit, draft: e.target.value })}
                   onKeyDown={(e) => {
                     // As in the composer: on a phone Enter is a newline and Save saves.
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !coarse()) {
                       e.preventDefault();
                       void save(m);
-                    } else if (e.key === "Escape") setEditing(undefined);
+                    } else if (e.key === "Escape") setEdit(undefined);
                   }}
                 />
-                <Button label="Save" size="sm" variant="primary" onClick={() => void save(m)} />
-                <Button label="Cancel" size="sm" variant="ghost" onClick={() => setEditing(undefined)} />
+                <span className="t-edit-actions">
+                  <Button label="Save" size="sm" variant="primary" onClick={() => void save(m)} />
+                  <Button label="Cancel" size="sm" variant="ghost" onClick={() => setEdit(undefined)} />
+                </span>
               </div>
             ) : (
               <>
@@ -135,10 +222,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                     className="t-icon-btn"
                     aria-label="Edit"
                     title="Edit"
-                    onClick={() => {
-                      setDraft(m.text);
-                      setEditing(m.id);
-                    }}
+                    onClick={() => setEdit({ id: m.id, original: m.text, draft: m.text })}
                   >
                     <PencilIcon aria-hidden />
                   </button>}
@@ -151,6 +235,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
           </li>
         ))}
       </ol>
+      )}
     </div>
   );
 }
