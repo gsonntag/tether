@@ -8,9 +8,10 @@
 //   SCRATCH         a scratch project folder (default ~/.local/share/tdp5/projects/scratch)
 //   CODEX_MODEL     the Codex model (default gpt-6-luna), effort Low
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
+//   CRASH_RUNNER    a command that kill -9s the dev runner and starts it again (for `restartCrash`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   home claude steer queue lostEdit stopSend terminal restart codex restartCodex attach push inbox relay
+//   home claude steer queue lostEdit stopSend terminal restart restartCrash codex restartCodex attach push inbox relay
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -487,7 +488,7 @@ const steps = {
     execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
     const b = await page(phone, claude);
     await b.getByText("The Tether runner restarted mid-turn; continuing.").waitFor({ timeout: 90_000 });
-    await b.locator(".t-msg.from", { hasText: "The Tether runner restarted while you were working" }).waitFor({ timeout: 60_000 });
+    await b.locator(".t-msg.from", { hasText: "Tether: continue after restart" }).waitFor({ timeout: 90_000 });
     await shot(b, "restart-continues-phone");
     const held = await liveState(b);
     if (held?.queueHeldBy === "restart") fail("the queue was held after an automatic continue");
@@ -495,6 +496,68 @@ const steps = {
     await waitState(b, (s) => s.queue.length === 0 && s.status === "idle", "the queued message after the continue", 180_000);
     if ((await row(b, idOf(claude)))?.unread === "failed") fail("Home says Failed for a continued turn");
     ok("runner restarted mid-turn: Claude's turn went on by itself (Tether's notice and its continue message), and the queued message followed it, never held");
+    await a.close();
+    await b.close();
+  },
+
+  async restartCrash() {
+    // kill -9 the runner mid-turn (no systemd here, so Claude Code from before is left running): the
+    // new runner waits for the session's store to be quiet before anything continues, so two Claude
+    // processes never write the session at once.
+    const CRASH = process.env.CRASH_RUNNER;
+    if (!CRASH) return console.log("skip restartCrash (set CRASH_RUNNER)");
+    const a = await page(desktop, claude);
+    await composer(a).waitFor();
+    // Several short commands one after another: the left-behind process keeps writing for a while.
+    await send(a, "Use the Bash tool five times, one call after another (not combined): run exactly `timeout 4 tail -f /dev/null; echo step` each time. Then reply with exactly one word: STEPS");
+    await running(a);
+    await inCommand(a, /timeout 4 tail/);
+    const id = idOf(claude);
+    const { realpathSync, statSync, readdirSync } = await import("node:fs");
+    const enc = realpathSync(SCRATCH).replace(/[^a-zA-Z0-9]/g, "-");
+    const base = `${process.env.HOME}/.claude/projects`;
+    const dir = readdirSync(base).find((d) => d === enc) ?? enc;
+    const file = `${base}/${dir}/${id.split(":")[1]}.jsonl`;
+    const mtimes = [];
+    let stop = false;
+    const watch = (async () => {
+      while (!stop) {
+        try {
+          const m = statSync(file).mtimeMs;
+          if (mtimes.at(-1) !== m) mtimes.push(m);
+        } catch {}
+        await sleep(200);
+      }
+    })();
+    execFileSync("sh", ["-c", CRASH], { stdio: "inherit" });
+    const b = await page(desktop, claude);
+    // Either Tether waits for the left-behind process, then (its turn finished) doesn't continue, or
+    // (it stopped mid-turn) continues once the store is quiet.
+    const continued = b.locator(".t-msg.from", { hasText: "Tether: continue after restart" });
+    const end = Date.now() + 240_000;
+    let at;
+    while (Date.now() < end) {
+      if (await continued.count()) {
+        at = Date.now();
+        break;
+      }
+      const st = await liveState(b);
+      if (st && st.status === "idle" && /STEPS/.test(await transcriptText(b)) && !(await b.getByText("Waiting for Claude Code from before the restart").count())) break;
+      if (st && st.status === "idle" && /STEPS/.test(await transcriptText(b))) break;
+      await sleep(500);
+    }
+    stop = true;
+    await watch;
+    if (at) {
+      // The continue went out only after the store had been quiet for a while (none of its writes in
+      // the 12 s before it, its own aside).
+      const before = mtimes.filter((m) => m < at - 1500);
+      const last = before.at(-1) ?? 0;
+      if (at - last < 12_000) fail(`the continue went out ${Math.round((at - last) / 1000)} s after the store last changed: two processes may have overlapped`);
+    }
+    await shot(b, "restart-crash");
+    await idle(b, 240_000);
+    ok(`runner killed (-9) mid-turn: ${at ? "Tether waited for the session's store to go quiet, then continued once" : "Tether waited for Claude Code from before the restart, which finished the turn; nothing was continued"} — never two processes at once`);
     await a.close();
     await b.close();
   },
@@ -541,7 +604,7 @@ const steps = {
     const b = await page(desktop, codex);
     await b.locator(".t-msg.user .t-bubble", { hasText: "CODEX-AFTER" }).waitFor({ timeout: 240_000 });
     await waitState(b, (s) => s.queue.length === 0 && s.status === "idle", "Codex's queue after the rejoin", 240_000);
-    if (/The Tether runner restarted while you were working/.test(await transcriptText(b))) fail("Tether sent a continue to Codex, whose turn went on");
+    if (/Tether: continue after restart/.test(await transcriptText(b))) fail("Tether sent a continue to Codex, whose turn went on");
     ok("Codex: the turn kept running in the daemon through the restart; the runner rejoined it (no continue message) and the queued message followed");
     await a.close();
     await b.close();
