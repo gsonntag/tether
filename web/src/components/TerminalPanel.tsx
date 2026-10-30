@@ -134,8 +134,12 @@ export function TerminalPanel({
       rpc(runnerId, "closeShell", { shellId: id }).then(() => {
         const rest = shells.filter((x) => x.id !== id);
         setShells(rest);
-        // Another shell comes to the front (none left: the agent's entry, which opens nothing by itself).
-        if (panel.tab === id) setPanel({ ...panel, tab: rest[0]?.id ?? "tui" });
+        if (panel.tab !== id) return;
+        // Another shell comes to the front; the last one closed closes the panel (shells come first:
+        // the agent's terminal opens only when asked for).
+        if (rest[0]) setPanel({ ...panel, tab: rest[0].id });
+        else if (!tuiRuns) onClose();
+        else setPanel({ ...panel, tab: "tui" });
       }),
     );
   // "Shell": the project's first shell, or a new one (once; a failure says why and stays).
@@ -147,6 +151,16 @@ export function TerminalPanel({
     autoTried.current = true;
     void newShell();
   }, [tab, shellsLoaded, shells]);
+
+  // The Copy sheet belongs to the terminal it was made from: another tab closes it.
+  useEffect(() => setCopy(null), [tab]);
+  // Esc closes it.
+  useEffect(() => {
+    if (!copy) return;
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setCopy(null);
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [!!copy]);
 
   /** The agent's tab: its TUI when it runs (or is being opened), else open it (asking first when busy). */
   const toTui = () => {
@@ -264,6 +278,8 @@ export function TerminalPanel({
       {error && <div className="t-inline-status error t-term-error">{error}</div>}
       <div className="t-term-main">
         <div className="t-term-tabs" role="tablist" aria-label="Terminals" aria-orientation={narrow() ? "horizontal" : "vertical"}>
+          {/* The shells scroll; the agent's entry stays put at the end, never clipped. */}
+          <div className="t-term-shells" role="presentation">
           {shells.map((s) => (
             <span key={s.id} className="t-term-tab-wrap">
               <button type="button" role="tab" aria-selected={tab === s.id} className="t-term-tab" title={s.command} onClick={() => setPanel({ ...panel, tab: s.id })}>
@@ -279,6 +295,7 @@ export function TerminalPanel({
             <Icon icon={PlusIcon} size="sm" />
             <span className="t-term-new-label">New shell</span>
           </button>
+          </div>
           <button
             type="button"
             role="tab"
@@ -288,7 +305,14 @@ export function TerminalPanel({
             onClick={toTui}
           >
             {harness}
-            {agentState && <span className="t-term-state"> · {agentState}</span>}
+            {agentState && (
+              <span className={`t-term-state ${agentState}`}>
+                <span className="t-term-state-text"> · {agentState}</span>
+                <span className="t-term-state-dot" aria-hidden>
+                  ●
+                </span>
+              </span>
+            )}
             {state.terminal?.attention && <span className="t-dot waiting" aria-label="Needs you" />}
           </button>
         </div>
@@ -332,7 +356,8 @@ export function TerminalPanel({
           {copy && (
             <div className="t-term-copy" role="dialog" aria-label={`Copy from ${copy.title}`}>
               <div className="t-term-copy-head">
-                <span>{copy.cut ? "The newest text (older lines left out). Select some, or" : "Select some, or"}</span>
+                <span className="t-term-copy-title">Copy text · {copy.title}</span>
+                <span className="t-term-copy-note">{copy.cut ? "The newest text (older lines left out). Select some, or" : "Select some, or"}</span>
                 <Button label={copy.copied ? "Copied" : "Copy all"} size="sm" variant="primary" onClick={() => void copyAll()} />
                 <Button label="Done" size="sm" variant="secondary" onClick={() => setCopy(null)} />
               </div>
@@ -365,6 +390,7 @@ export function TerminalPanel({
                 // Keeps the keyboard up (the terminal keeps focus) with a mouse; a tap is never
                 // cancelled (iOS Safari would drop the click).
                 onMouseDown={(e) => e.preventDefault()}
+                disabled={!!copy}
                 onClick={() => view.current?.input(k.data)}
               >
                 {k.label}
@@ -376,7 +402,7 @@ export function TerminalPanel({
               className="t-input"
               aria-label="Type a line"
               placeholder={lineOff ?? (tab === "tui" ? `Message ${agent} in the terminal` : "A command for this shell")}
-              disabled={!!lineOff}
+              disabled={!!lineOff || !!copy}
               value={line}
               enterKeyHint="send"
               autoCapitalize="off"
@@ -389,7 +415,7 @@ export function TerminalPanel({
                 }
               }}
             />
-            <IconButton label="Send line" variant="primary" isDisabled={!!lineOff} icon={<Icon icon={ArrowUpIcon} />} onClick={() => void sendLine()} />
+            <IconButton label="Send line" variant="primary" isDisabled={!!lineOff || !!copy} icon={<Icon icon={ArrowUpIcon} />} onClick={() => void sendLine()} />
           </div>
         </div>
       )}

@@ -1869,3 +1869,59 @@
     display: none;
   }
 }
+
+/* The list: the shells scroll, the agent's entry stays put at the end (never clipped). */
+.t-term-shells {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+.t-term-main > .t-term-tabs > .t-term-agent {
+  flex: none;
+}
+.t-term-state-dot {
+  display: none;
+  color: var(--color-warning, #d4a017);
+  margin-left: 4px;
+}
+.t-term-state.joined .t-term-state-dot {
+  color: var(--color-text-green, #8bd17c);
+}
+.t-term-copy-title {
+  font-weight: 600;
+}
+.t-term-copy-note {
+  color: var(--t-muted);
+}
+@media (max-width: 767px) {
+  .t-term-shells {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .t-term-shells::-webkit-scrollbar {
+    display: none;
+  }
+  .t-term-main > .t-term-tabs {
+    overflow: hidden;
+  }
+  /* On a phone the state is a dot: short, always in view (its words stay for screen readers). */
+  .t-term-state-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .t-term-state-dot {
+    display: inline;
+  }
+}

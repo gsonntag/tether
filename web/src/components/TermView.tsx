@@ -109,9 +109,12 @@ export const TermView = forwardRef<
     t.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown" || e.key.toLowerCase() !== "c" || !(e.ctrlKey || e.metaKey) || !t.hasSelection()) return true;
       const text = t.getSelection();
-      void navigator.clipboard?.writeText(text).catch(() => {});
-      t.clearSelection();
       e.preventDefault();
+      // The selection goes only once it is surely copied (a failed copy leaves it to try again).
+      const done = () => t.clearSelection();
+      if (window.isSecureContext && navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done, () => copyByCommand(text) && done());
+      else if (copyByCommand(text)) done();
+      t.focus();
       return false;
     });
     const input = t.onData((d) => c.input(d));
@@ -155,3 +158,19 @@ export const TermView = forwardRef<
     </div>
   );
 });
+
+/** Copies through a hidden text box and the browser's own copy command (plain http, no Clipboard API). */
+function copyByCommand(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {}
+  ta.remove();
+  return ok;
+}
