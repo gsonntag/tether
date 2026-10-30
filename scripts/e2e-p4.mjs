@@ -12,7 +12,7 @@
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
 //   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
-//   storedInject restartMid subOutlive claudeShiftTab stored
+//   storedInject restartMid subOutlive subNewTurn subRestart reviewerAuto claudeShiftTab stored
 // claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
@@ -178,6 +178,37 @@ async function newCodexSession(p, { terminal = false } = {}) {
   if (r.error) fail(`setEffort: ${r.error}`);
   await waitState(p, (s) => s.effort === "low", "effort low");
   return url;
+}
+
+const helper = (...args) => execFileSync("bun", ["scripts/codex-e2e-helper.ts", ...args], { cwd: new URL("../runner/", import.meta.url).pathname, encoding: "utf8" }).trim();
+
+/** A Codex session whose subagent outlives the turn that spawned it, on Full access, then shown Read only (undefined: the model waited). */
+async function outliveSubagent(p, file) {
+  rmSync(scratch(file), { force: true });
+  const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+  if (r.error) fail(r.error);
+  const id = r.ok.sessionId;
+  await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+  await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+  await composer(p).waitFor({ timeout: 30_000 });
+  await send(p, `Spawn exactly one subagent with your agent tool, with the task: run exactly \`sleep 50; echo sub > ${file}\` in the shell, then report done. Do NOT wait for the subagent: as soon as it is spawned, reply with just the word SPAWNED and end your turn.`);
+  await waitState(p, (x) => x.status === "running", "the parent's turn", 60_000).catch(() => {});
+  await waitState(p, (x) => x.status === "idle", "the parent's turn over", 180_000);
+  const kids = (await rpcVia(p, "listSessions", { parentSessionId: id })).ok?.sessions ?? [];
+  if (!kids.some((k) => k.status === "running")) return undefined;
+  if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+  const st = await waitState(p, (x) => x.turnSettings?.who === "subagent" && x.turnSettings?.permissionMode === "full-access", "the subagent's note", 15_000);
+  if (!st.turnSettings.looser) fail("not looser");
+  if (!/A subagent still runs with Mode Full access/.test(await p.locator(".t-header").innerText())) fail("the note doesn't name the subagent");
+  return id;
+}
+
+/** Stop this turn stops the subagent: the note goes and its file never comes. */
+async function stopsSubagent(p, file) {
+  await button(p.locator(".t-turn-settings"), "Stop this turn").click();
+  await waitState(p, (x) => !x.turnSettings, "the note gone once the subagent stopped", 30_000);
+  await sleep(55_000);
+  if (existsSync(scratch(file))) fail(`the subagent went on and wrote ${file}`);
 }
 
 const steps = {
@@ -647,27 +678,70 @@ const steps = {
 
   async subOutlive() {
     // A subagent that outlives its parent's turn keeps the turn's settings (review 5, I2): the note
-    // and Stop stay while it runs, and Stop stops it too.
-    rmSync(scratch("sub.txt"), { force: true });
+    // ("A subagent still runs with …") and Stop stay while it runs, and Stop stops it too.
     const p = await page(desktop);
-    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    const id = await outliveSubagent(p, "sub.txt");
+    if (!id) return console.log("skip subOutlive: the model waited for its subagent (nothing outlived the turn)"), await p.close();
+    await stopsSubagent(p, "sub.txt");
+    ok("a subagent outliving its parent's turn keeps its note and Stop; Stop stopped it before it wrote");
+    await p.close();
+  },
+
+  async subNewTurn() {
+    // A new turn (a queue drain, a ! command's output, a message) while a subagent outlives the
+    // last one (review 6, I1): the subagent's own entry stays, whatever the new turn runs with.
+    const p = await page(desktop);
+    const id = await outliveSubagent(p, "sub2.txt");
+    if (!id) return console.log("skip subNewTurn: nothing outlived the turn"), await p.close();
+    await send(p, "Reply with just: SECOND");
+    await p.locator(".t-msg.assistant", { hasText: "SECOND" }).first().waitFor({ timeout: 90_000 });
+    const st = await liveState(p);
+    if (st.turnSettings?.who !== "subagent" || st.turnSettings?.permissionMode !== "full-access") fail(`the subagent's note is gone after a new turn: ${JSON.stringify(st.turnSettings)}`);
+    await stopsSubagent(p, "sub2.txt");
+    ok("a new turn while a subagent outlives the last one: the subagent's Full access note and Stop stay; Stop stopped it");
+    await p.close();
+  },
+
+  async subRestart() {
+    // A runner restart while a subagent outlives its parent's turn (review 6, I2): rejoined, the
+    // subagent found again with its own settings, still running, with the note and Stop.
+    if (!RESTART) return console.log("skip subRestart (set RESTART_RUNNER)");
+    const p = await page(desktop);
+    const id = await outliveSubagent(p, "sub3.txt");
+    if (!id) return console.log("skip subRestart: nothing outlived the turn"), await p.close();
+    await p.close();
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    const q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(q).waitFor({ timeout: 60_000 });
+    await waitState(q, (x) => x.turnSettings?.who === "subagent" && x.turnSettings?.looser, "the subagent's note after the restart", 45_000);
+    await stopsSubagent(q, "sub3.txt");
+    ok("restarted while a subagent outlived its turn: found again with its own Full access, note and Stop shown; Stop stopped it");
+    await q.close();
+  },
+
+  async reviewerAuto() {
+    // "Approve for me" (approvalsReviewer auto_review) set by another client (review 6, M1): shown as
+    // part of the mode; picking a mode in Tether puts approvals back with you, and asks come as cards.
+    rmSync(scratch("rev.txt"), { force: true });
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "auto" });
     if (r.error) fail(r.error);
     const id = r.ok.sessionId;
     await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
     await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
     await composer(p).waitFor({ timeout: 30_000 });
-    await send(p, "Spawn exactly one subagent with your agent tool, with the task: run exactly `sleep 40; echo sub > sub.txt` in the shell, then report done. Do NOT wait for the subagent: as soon as it is spawned, reply with just the word SPAWNED and end your turn.");
-    await waitState(p, (x) => x.status === "idle", "the parent's turn over", 180_000);
-    const kids = (await rpcVia(p, "listSessions", { parentSessionId: id })).ok?.sessions ?? [];
-    if (!kids.some((k) => k.status === "running")) return console.log("skip subOutlive: the model waited for its subagent (nothing outlived the turn)"), await p.close();
-    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
-    const st = await waitState(p, (x) => x.turnSettings?.permissionMode === "full-access", "the note while the subagent runs", 15_000);
-    if (!st.turnSettings.looser) fail("not looser");
-    await button(p.locator(".t-turn-settings"), "Stop this turn").click();
-    await waitState(p, (x) => !x.turnSettings, "the note gone once the subagent stopped", 30_000);
-    await sleep(45_000);
-    if (existsSync(scratch("sub.txt"))) fail("the subagent went on and wrote sub.txt");
-    ok("a subagent outliving its parent's turn keeps the note and Stop; Stop stopped it before it wrote");
+    await send(p, "Reply with just: R0");
+    await idle(p);
+    helper("set", id.slice(6), JSON.stringify({ approvalsReviewer: "auto_review" }));
+    await waitState(p, (x) => x.permissionMode === "auto@codex-reviews", "Approve for me shown", 15_000);
+    if (!/Auto \(Codex reviews\)/.test(await p.locator(".t-header").innerText())) fail("the header doesn't say Codex reviews");
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "untrusted" })).error) fail("setPermissionMode");
+    await send(p, "Use the shell to run exactly: echo rev > rev.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    await button(card(p), "Deny").click();
+    await idle(p, 60_000);
+    if (existsSync(scratch("rev.txt"))) fail("rev.txt was written");
+    ok('"Approve for me" set elsewhere shows as "Auto (Codex reviews)"; Ask first picked in Tether brought approvals back: the command asked, and was denied');
     await p.close();
   },
 
@@ -693,8 +767,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "claudeShiftTab", "stored"]) {
-    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "claudeShiftTab"].includes(name)) {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "reviewerAuto", "claudeShiftTab", "stored"]) {
+    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "reviewerAuto", "claudeShiftTab"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }
