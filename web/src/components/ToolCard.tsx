@@ -1,6 +1,6 @@
 // A tool call, drawn by what it does (`kind`), whatever the harness calls it.
 
-import { memo, useState, type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
@@ -8,7 +8,7 @@ import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { openSession } from "../route";
 import { useStore, viewKey } from "../store";
-import { useSessionCtx } from "./sessionContext";
+import { useRowState, useSessionCtx } from "./sessionContext";
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 const firstLine = (s: string) => s.split("\n")[0]!;
@@ -175,7 +175,7 @@ export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
 const openByDefault = (p: ToolPart) => p.kind === "edit" || p.kind === "todo" || p.status === "error";
 
 export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: ToolPart; root?: string; extra?: ReactNode }) {
-  const [open, setOpen] = useState<boolean>();
+  const [open, setOpen] = useRowState<boolean | undefined>(`tool:${part.id}`, undefined);
   const isOpen = open ?? openByDefault(part);
   const { runnerId, sessionId } = useSessionCtx();
   const sum = summary(part, root);

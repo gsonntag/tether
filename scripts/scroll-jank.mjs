@@ -54,6 +54,9 @@ const instrument = () => {
       const st = el.scrollTop;
       let shift = 0;
       let move = 0;
+      // the transcript's own box moving (the header or composer changing height) moves its rows on
+      // screen too; that isn't the transcript shifting content, so it's counted apart
+      const box = prev ? r.top - prev.boxTop : 0;
       // a frame with a write of ours: the move is the write's (counted as a write, not a shift)
       const wrote = prev && s.writes.length !== prev.w;
       if (prev) {
@@ -61,12 +64,12 @@ const instrument = () => {
         if (row) {
           const top = row.getBoundingClientRect().top;
           move = top - prev.top;
-          shift = wrote ? 0 : move + (st - prev.st);
+          shift = wrote ? 0 : move - box + (st - prev.st);
         }
       }
-      s.frames.push({ t, dt: prev ? t - prev.t : 0, shift, move, st, phase: s.phase });
+      s.frames.push({ t, dt: prev ? t - prev.t : 0, shift, move, box, st, phase: s.phase });
       const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("[data-id]");
-      prev = mid ? { id: mid.dataset.id, top: mid.getBoundingClientRect().top, st, t, w: s.writes.length } : undefined;
+      prev = mid ? { id: mid.dataset.id, top: mid.getBoundingClientRect().top, boxTop: r.top, st, t, w: s.writes.length } : undefined;
     } else prev = undefined;
     requestAnimationFrame(tick);
   };
@@ -121,6 +124,7 @@ async function end(p) {
       shiftPx: Math.round(shifts.reduce((a, f) => a + Math.abs(f.shift), 0)),
       travel: Math.round(frames.reduce((a, f) => a + f.move, 0)),
       longFrames: frames.filter((f) => f.dt > 50).length,
+      boxMoves: frames.filter((f) => Math.abs(f.box) > 1).length,
       fromBottom: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
     };
   });
@@ -252,6 +256,39 @@ async function cases(ctx, eng, print) {
   out.push(await fling(p, eng, true, "streaming: up 2"));
   out.push(await fling(p, eng, false, "streaming: down 1"));
   out.push(await fling(p, eng, true, "streaming: up 3"));
+  await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
+  await p.close();
+
+  // 3c. A finger resting on a streaming reply while following, 7 s without moving (a phone sends
+  // no events then): nothing may move under it; lifted, the view catches up with the bottom.
+  p = await mk();
+  await p.locator("textarea.t-input").fill("long reply for the rest check");
+  await p.locator('button[aria-label="Send"]').click();
+  await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
+  await p.waitForTimeout(1500);
+  {
+    const g = await geom(p);
+    const x = Math.round(g.x);
+    const y = Math.round(g.y);
+    await begin(p, "rest");
+    if (eng.webkit)
+      await p.evaluate(({ x, y }) => {
+        const target = (window.__restTarget = document.elementFromPoint(x, y));
+        target.dispatchEvent(Object.defineProperty(new Event("touchstart", { bubbles: true }), "touches", { value: [{ identifier: 1, target, clientX: x, clientY: y }] }));
+      }, { x, y });
+    else await eng.cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    const tops = [];
+    for (let i = 0; i < 28; i++) {
+      await p.waitForTimeout(250);
+      tops.push(await p.evaluate(() => document.querySelector(".t-scroll").scrollTop));
+    }
+    const r = await end(p);
+    if (eng.webkit) await p.evaluate(() => window.__restTarget.dispatchEvent(Object.defineProperty(new Event("touchend", { bubbles: true }), "touches", { value: [] })));
+    else await eng.cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await p.waitForTimeout(800);
+    const after = await p.evaluate(() => ((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))(document.querySelector(".t-scroll")));
+    out.push({ label: "rest: a finger still 7 s on a stream it follows", writes: r.writes, shifts: r.shifts, scrollTopMoved: Math.round(Math.max(...tops) - Math.min(...tops)), fromBottomAfterLift: after });
+  }
   await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
   await p.close();
 

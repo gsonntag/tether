@@ -23,6 +23,24 @@ function head(b64: string, n: number): Uint8Array {
 
 const ok = (w: number, h: number): Size | undefined => (w > 0 && h > 0 && w < 1e5 && h < 1e5 ? { w, h } : undefined);
 
+/** An APP1 segment's EXIF orientation (tag 0x112 in IFD0) is 5–8: the image is shown turned a quarter. */
+function exifTurned(b: Uint8Array, at: number, len: number): boolean {
+  if (len < 14 || at + 14 > b.length || String.fromCharCode(...b.slice(at, at + 4)) !== "Exif") return false;
+  const t = at + 6; // the TIFF header
+  const le = b[t] === 0x49; // "II" little-endian, "MM" big-endian
+  const u16 = (i: number) => (le ? b[i]! | (b[i + 1]! << 8) : (b[i]! << 8) | b[i + 1]!);
+  const u32 = (i: number) => (le ? (b[i]! | (b[i + 1]! << 8) | (b[i + 2]! << 16)) + b[i + 3]! * 2 ** 24 : b[i]! * 2 ** 24 + ((b[i + 1]! << 16) | (b[i + 2]! << 8) | b[i + 3]!));
+  const ifd = t + u32(t + 4);
+  if (ifd + 2 > b.length) return false;
+  const n = u16(ifd);
+  for (let k = 0; k < n; k++) {
+    const e = ifd + 2 + k * 12;
+    if (e + 10 > b.length) return false;
+    if (u16(e) === 0x0112) return u16(e + 8) >= 5 && u16(e + 8) <= 8;
+  }
+  return false;
+}
+
 export function imageSize(mimeType: string, b64: string): Size | undefined {
   const b = head(b64, mimeType === "image/jpeg" ? 65536 : 4096);
   const be16 = (i: number) => (b[i]! << 8) | b[i + 1]!;
@@ -31,8 +49,10 @@ export function imageSize(mimeType: string, b64: string): Size | undefined {
   if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return ok(be32(16), be32(20));
   if (b.length >= 10 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return ok(le16(6), le16(8));
   if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
-    // JPEG: walk the segments to a start-of-frame
+    // JPEG: walk the segments to a start-of-frame; an EXIF orientation of 5–8 (a quarter turn,
+    // which browsers apply) swaps width and height
     let i = 2;
+    let turned = false;
     while (i + 9 < b.length) {
       if (b[i] !== 0xff) return undefined;
       const m = b[i + 1]!;
@@ -40,7 +60,11 @@ export function imageSize(mimeType: string, b64: string): Size | undefined {
         i++;
         continue;
       }
-      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return ok(be16(i + 7), be16(i + 5));
+      if (m === 0xe1) turned = exifTurned(b, i + 4, be16(i + 2) - 2);
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        const [w, h] = [be16(i + 7), be16(i + 5)];
+        return turned ? ok(h, w) : ok(w, h);
+      }
       i += 2 + be16(i + 2);
     }
     return undefined;

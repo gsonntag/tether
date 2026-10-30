@@ -20,8 +20,6 @@ const NEAR_END = 2000;
 const FILL = 600;
 /** A scroll has settled after this long with no finger down and no scroll event. */
 const QUIET = 150;
-/** A finger with no touch event for this long is taken as lifted (its touchend went missing). */
-const LOST_TOUCH = 4000;
 
 export function Transcript({ window: w, onOlder, footer }: { window: TranscriptWindow; onOlder: () => Promise<boolean>; footer?: React.ReactNode }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -42,7 +40,6 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   /** the box's and content's heights at the last scroll event: a move up that came with a change is layout's */
   const lastSize = useRef({ ch: 0, sh: 0 });
   const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const lostTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const untouch = useRef<(() => void) | undefined>(undefined);
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const [atBottom, setAtBottom] = useState(true);
@@ -92,7 +89,8 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   const keep = (el: HTMLDivElement) => {
     if (stick.current) {
       if (!gesture.down) pin(el);
-    } else if (anchor.current && gesture.idle(performance.now())) {
+    } else if (anchor.current && gesture.idle(performance.now()) && Math.abs(el.scrollTop - lastTop.current) < 1) {
+      // (and no scroll the page hasn't seen yet: a scroll event still on its way is the reader's)
       const row = list.current?.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(anchor.current.id)}"]`);
       const top = row ? restoreTop(anchor.current, row.offsetTop, el.scrollTop) : undefined;
       if (top !== undefined) write(el, top);
@@ -132,7 +130,6 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   useEffect(
     () => () => {
       clearTimeout(settleTimer.current);
-      clearTimeout(lostTimer.current);
       untouch.current?.();
     },
     [],
@@ -190,7 +187,6 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
 
   /** The finger (or the scrollbar's pointer) is off: catch up with the bottom if following. */
   const lift = () => {
-    clearTimeout(lostTimer.current);
     untouch.current?.();
     untouch.current = undefined;
     if (!gesture.down) return;
@@ -199,15 +195,12 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     if (el && stick.current) pin(el);
     settleLater();
   };
-  const armLost = () => {
-    clearTimeout(lostTimer.current);
-    lostTimer.current = setTimeout(lift, LOST_TOUCH);
-  };
   const onTouchStart = (e: React.TouchEvent) => {
     gesture.touch(true, performance.now());
     touchY.current = e.touches[0]?.clientY ?? 0;
     // iOS sends touchend to the node touched first; a streaming render may have taken it out of
-    // the transcript by then, so listen on that node itself.
+    // the transcript by then, so listen on that node itself. (No timeout: a finger resting still
+    // sends nothing at all, however long it rests, and must keep everything still under it.)
     untouch.current?.();
     const t = e.target;
     const end = (ev: Event) => (ev as TouchEvent).touches.length === 0 && lift();
@@ -217,7 +210,6 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
       t.removeEventListener("touchend", end);
       t.removeEventListener("touchcancel", end);
     };
-    armLost();
   };
 
   return (
@@ -228,10 +220,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
         onScroll={onScroll}
         onWheel={(e) => e.deltaY < 0 && unstick()}
         onTouchStart={onTouchStart}
-        onTouchMove={(e) => {
-          armLost();
-          if ((e.touches[0]?.clientY ?? 0) > touchY.current + 2) unstick();
-        }}
+        onTouchMove={(e) => (e.touches[0]?.clientY ?? 0) > touchY.current + 2 && unstick()}
         onTouchEnd={(e) => e.touches.length === 0 && lift()}
         onTouchCancel={(e) => e.touches.length === 0 && lift()}
         onPointerDown={(e) => {

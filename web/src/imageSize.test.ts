@@ -19,6 +19,21 @@ test("JPEG: the start-of-frame after other segments", () => {
   expect(imageSize("image/jpeg", b64([0xff, 0xd8, ...app0, ...sof0, 0, 0]))).toEqual({ w: 160, h: 120 });
 });
 
+test("JPEG: an EXIF quarter turn (orientation 5–8) swaps width and height", () => {
+  const sof0 = [0xff, 0xc0, 0, 11, 8, 0, 120, 0, 160, 3, 1, 0x22, 0];
+  // APP1: "Exif\0\0", a TIFF header (II, 42, IFD0 at 8), one entry: 0x0112 SHORT 1 = orientation
+  const app1 = (o: number, big = false) => {
+    const tiff = big ? [0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, o, 0, 0, 0, 0, 0, 0] : [0x49, 0x49, 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, o, 0, 0, 0, 0, 0, 0, 0];
+    const body = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    return [0xff, 0xe1, 0, body.length + 2, ...body];
+  };
+  const jpeg = (seg: number[]) => b64([0xff, 0xd8, ...seg, ...sof0, 0, 0]);
+  expect(imageSize("image/jpeg", jpeg(app1(6)))).toEqual({ w: 120, h: 160 });
+  expect(imageSize("image/jpeg", jpeg(app1(8, true)))).toEqual({ w: 120, h: 160 });
+  expect(imageSize("image/jpeg", jpeg(app1(1)))).toEqual({ w: 160, h: 120 });
+  expect(imageSize("image/jpeg", jpeg(app1(3, true)))).toEqual({ w: 160, h: 120 });
+});
+
 test("SVG: width and height, else the viewBox", () => {
   const svg = (s: string) => Buffer.from(s).toString("base64");
   expect(imageSize("image/svg+xml", svg('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect/></svg>'))).toEqual({ w: 600, h: 400 });

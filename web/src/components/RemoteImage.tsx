@@ -2,10 +2,11 @@
 // who's reading and when. A link loads it on request. (Inline data: images never get here: the
 // markdown sanitizer drops data: URLs, which also keeps out data:text/html and SVG.)
 
-import { useState } from "react";
+import { useRowState } from "./sessionContext";
 
 export function RemoteImage({ src, alt }: { src: string; alt: string }) {
-  const [show, setShow] = useState(false);
+  // allowed once stays allowed when the row is unmounted and mounted again
+  const [show, setShow] = useRowState(`image:${src}`, false);
   if (show) return <img src={src} alt={alt} className="t-img" />;
   let host = src;
   try {

@@ -87,9 +87,16 @@ export function nextWindow(w: Win, x: WinInput): Win {
     if (above) {
       hi = lo + CAP;
       tail = hi >= n;
-    } else if (x.settled) {
+    } else {
       // never past the reader's row (it is where the viewport is, so this is a guard)
-      lo = x.anchor >= lo ? Math.min(hi - CAP, Math.max(lo, x.anchor - 10)) : hi - CAP;
+      if (x.settled) lo = x.anchor >= lo ? Math.min(hi - CAP, Math.max(lo, x.anchor - 10)) : hi - CAP;
+      // Still over: the reader is near the slice's top (new messages kept arriving below them),
+      // or it isn't settled. Drop from the bottom instead, which is safe at any time, keeping a
+      // page below the reader; not while they're heading for the end (rows were just mounted there).
+      if (hi - lo > CAP && !x.nearEnd) {
+        hi = Math.min(hi, Math.max(lo + CAP, x.anchor >= 0 ? x.anchor + PAGE : 0));
+        tail = hi >= n;
+      }
     }
   }
   return { lo, hi, tail };

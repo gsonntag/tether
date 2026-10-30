@@ -44,8 +44,8 @@ test("going down mounts rows below at once, and drops rows above only once settl
   const mid = nextWindow(w, x({ n: 1000, nearEnd: true, settled: false, anchor: 380 }));
   expect(mid).toEqual({ lo: 100, hi: 450, tail: false });
   expect(nextWindow(mid, x({ n: 1000, anchor: 380 }))).toEqual({ lo: 150, hi: 450, tail: false });
-  // the reader's row is never dropped
-  expect(nextWindow(mid, x({ n: 1000, anchor: 120 }))).toEqual({ lo: 110, hi: 450, tail: false });
+  // the reader's row is never dropped: near the slice's top, the rest comes off the bottom
+  expect(nextWindow(mid, x({ n: 1000, anchor: 120 }))).toEqual({ lo: 110, hi: 410, tail: false });
   // reaching the newest: the slice is the tail again
   expect(nextWindow({ lo: 700, hi: 980, tail: false }, x({ n: 1000, nearEnd: true, settled: false }))).toEqual({ lo: 700, hi: 1000, tail: true });
 });
@@ -92,4 +92,24 @@ test("only the reader stops following: a transcript that gets shorter doesn't", 
   expect(following({ ...up, tail: false })).toBe(false);
   // moving up never starts following, even near the bottom
   expect(following({ ...up, lastTop: 4995, resized: true })).toBe(false);
+});
+
+test("the cap holds while new messages keep arriving below a reader near the slice's top", () => {
+  // all of the first 300 mounted, the reader at row 2, 600 new messages arrive one by one
+  let w = { lo: 0, hi: 300, tail: true };
+  for (let n = 301; n <= 900; n++) w = nextWindow(w, x({ n, nearTop: true, anchor: 2 }));
+  expect(w).toEqual({ lo: 0, hi: CAP, tail: false });
+  // just below the slice's top, not near the top in pixels; and while a fling runs (not settled)
+  w = { lo: 500, hi: 800, tail: true };
+  for (let n = 801; n <= 1400; n++) w = nextWindow(w, x({ n, anchor: 505 }));
+  expect(w.hi - w.lo).toBe(CAP);
+  w = { lo: 500, hi: 800, tail: true };
+  for (let n = 801; n <= 1400; n++) w = nextWindow(w, x({ n, settled: false, anchor: 505 }));
+  expect(w).toEqual({ lo: 500, hi: 800, tail: false });
+  // the reviewer's form (hi passed as n each time) stays capped too
+  w = { lo: 0, hi: 300, tail: true };
+  for (let n = 301; n <= 900; n++) w = nextWindow({ ...w, hi: n }, x({ n, nearTop: true, anchor: 2 }));
+  expect(w.hi - w.lo).toBe(CAP);
+  // heading down past the cap (rows just mounted below): the top is trimmed once settled instead
+  expect(nextWindow({ lo: 100, hi: 400, tail: false }, x({ n: 1000, nearEnd: true, settled: false, anchor: 380 }))).toEqual({ lo: 100, hi: 450, tail: false });
 });
