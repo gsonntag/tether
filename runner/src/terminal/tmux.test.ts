@@ -128,7 +128,8 @@ test("history: the scrollback and the screen as text (the panel's Copy)", async 
   await tmux.create({ name: "sh-hist-1", cwd: dir, argv: ["sh"], cols: 40, rows: 5, tags: { kind: "shell", project: dir, n: "9" } });
   await tmux.type("sh-hist-1", "seq 1 200; echo LONG-$(printf 'x%.0s' $(seq 1 60))");
   await tmux.keys("sh-hist-1", "Enter");
-  await until(async () => (await tmux.history("sh-hist-1")).includes("LONG-"));
+  // The typed command itself says "LONG-": wait for the output (the 60 x's), not the echo of the command.
+  await until(async () => /LONG-x{60}/.test(await tmux.history("sh-hist-1")));
   const h = await tmux.history("sh-hist-1");
   // Lines long since scrolled off the 5-row screen are there, and a wrapped line is one line.
   expect(h).toMatch(/^1$/m);
