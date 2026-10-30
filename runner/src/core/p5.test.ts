@@ -671,6 +671,21 @@ describe("read state", () => {
     expect(b.driver().sent).toEqual(["two"]);
   });
 
+  test("the left-behind process finishes the turn while Tether waits: nothing continued, and the queue goes on", async () => {
+    const answered = [
+      { id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "one" }] },
+      { id: "a1", role: "assistant", ts: 2, parts: [{ type: "text", text: "done" }] },
+    ];
+    const { b } = await cutOff({ stored: answered, queue: "two" });
+    const changed = Date.now();
+    (b.adapter as any).storeChangedAt = () => changed;
+    await b.live.rejoin();
+    await b.live.queue.restore();
+    expect((await b.core.open("claude:s1")).state.queueHeldBy).toBe("restart");
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+    expect(b.driver().sent).toEqual(["two"]);
+  });
+
   test("still being written after the longest wait: Failed on Home and a held queue, never a second process", async () => {
     const { b } = await cutOff({ queue: "two" });
     (b.adapter as any).storeChangedAt = () => Date.now();

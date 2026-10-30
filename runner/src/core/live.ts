@@ -404,6 +404,8 @@ export class LiveControl {
       if (turnFinished(s.transcript?.messages ?? [])) {
         this.core.o.prefs.set(id, { continuedTurn: undefined });
         this.core.log(`${id}: the cut-off turn had finished; not continued`);
+        // What waited for the store to go quiet goes on now.
+        this.queue.later(id);
         return;
       }
       // You sent something first: that goes on instead.
