@@ -561,7 +561,10 @@ export class CodexDriver implements Driver {
     await this.rpc.call("turn/interrupt", { threadId, turnId }).catch((e) => {
       if (threadId === this.nativeId) throw e;
     });
-    await this.endTurnCommands(threadId, items);
+    // A subagent is a thread of its own: whatever it left running is its (and found again after a
+    // restart, when its turn's items may not be known). On the main thread, only this turn's.
+    if (threadId !== this.nativeId) await this.rpc.call("thread/backgroundTerminals/clean", { threadId }, 10_000).catch(() => {});
+    else await this.endTurnCommands(threadId, items);
     if (threadId !== this.nativeId) void this.watchEnd(threadId, turnId);
   }
 
