@@ -278,6 +278,9 @@ export class CodexDriver implements Driver {
     const main = id === this.nativeId;
     if (!main && !this.stream.child(id)) return;
     if (method === "turn/completed") {
+      // What it left running keeps these settings, and a running command isn't in the rollout yet.
+      const eff = this.running.get(id)?.eff;
+      if (eff?.mode) for (const item of this.stream.turnItems(id)) this.commandEff.set(`${id}:${item}`, eff);
       this.running.delete(id);
       if (!main) this.forgetChild(id);
       this.reportTurn();
@@ -372,7 +375,7 @@ export class CodexDriver implements Driver {
       // Not answered: as it was (never taken for "nothing runs").
       if (!list) seen.push(...this.running.commands.filter((c) => c.threadId === threadId));
       else if (threadId !== this.nativeId && !list.data?.length && !this.running.has(threadId)) this.quiet.add(threadId);
-      for (const t of list?.data ?? []) if (t?.processId) seen.push({ threadId, processId: t.processId, eff: await this.effOfCommand(threadId, t.itemId) });
+      for (const t of list?.data ?? []) if (t?.processId) seen.push({ threadId, processId: t.processId, eff: await this.effOfCommand(threadId, t.itemId, String(t.processId)) });
     }
     if (this.closed) return;
     const changed = JSON.stringify(seen) !== JSON.stringify(this.running.commands);
@@ -385,20 +388,20 @@ export class CodexDriver implements Driver {
   }
 
   /** The settings a command runs with: its turn's, from the rollout (not found yet: unknown, fail closed). */
-  private async effOfCommand(threadId: string, itemId: unknown): Promise<Eff> {
-    if (typeof itemId !== "string") return UNKNOWN;
-    const key = `${threadId}:${itemId}`;
+  private async effOfCommand(threadId: string, itemId: unknown, processId: string): Promise<Eff> {
+    const item = typeof itemId === "string" ? itemId : undefined;
+    const key = `${threadId}:${item ?? processId}`;
     const known = this.commandEff.get(key);
     if (known) return known;
-    const path = threadId === this.nativeId ? this.threadPath : (await this.rpc.call("thread/read", { threadId, includeTurns: false }).catch(() => undefined))?.thread?.path;
-    const ctx = await itemContextOf(path, itemId);
+    const path = (threadId === this.nativeId ? this.threadPath : undefined) ?? (await this.rpc.call("thread/read", { threadId, includeTurns: false }).catch(() => undefined))?.thread?.path;
+    const ctx = await itemContextOf(path, item, processId);
     if (ctx) {
       const eff = effOfRollout(ctx);
       this.commandEff.set(key, eff);
       return eff;
     }
     // Its turn is still running: that turn's, as far as known.
-    return (this.stream.turnItems(threadId).has(itemId) && this.running.get(threadId)?.eff) || UNKNOWN;
+    return (item && this.stream.turnItems(threadId).has(item) && this.running.get(threadId)?.eff) || UNKNOWN;
   }
 
   /** The header's Stop for commands: exactly those it speaks of. */

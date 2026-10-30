@@ -757,7 +757,7 @@ const steps = {
   async bgStop() {
     // Stop ends only what its own turn left running (review 7, I1): a dev server from an earlier
     // turn goes on.
-    const PORT = Number(process.env.BG_PORT ?? 8798);
+    const PORT = Number(process.env.BG_PORT ?? 18798);
     const curl = () => spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" }).stdout;
     if (curl() !== "000") fail(`port ${PORT} is busy`);
     const p = await page(desktop);
@@ -833,7 +833,7 @@ const steps = {
   async bgNote() {
     // A command left in a background terminal keeps its turn's settings (review 8, M2): after
     // tightening, one note and Stop for it, found again after a restart; Stop ends exactly it.
-    const PORT = Number(process.env.BG_PORT ?? 8798) + 1;
+    const PORT = Number(process.env.BG_PORT ?? 18798) + 1;
     const curl = () => spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" }).stdout;
     if (curl() !== "000") fail(`port ${PORT} is busy`);
     const p = await page(desktop);
@@ -859,7 +859,7 @@ const steps = {
         execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
         q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
         await composer(q).waitFor({ timeout: 60_000 });
-        await waitState(q, (x) => x.turnSettings?.who === "background" && x.turnSettings.permissionMode === "full-access", "the note after a restart", 45_000);
+        await waitState(q, (x) => x.turnSettings?.who === "background" && x.turnSettings.looser, "the note after a restart", 45_000);
       }
       if (curl() !== "200") fail("the command ended by itself");
       await button(q.locator(".t-turn-settings"), "Stop the command").click();

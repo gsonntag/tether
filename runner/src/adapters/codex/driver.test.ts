@@ -624,10 +624,10 @@ test("commands in background terminals: each keeps its turn's settings; a note a
   const dir = mkdtempSync(join(tmpdir(), "codex-terms-"));
   const path = join(dir, "r.jsonl");
   const ctx = (a: string, sb: string) => JSON.stringify({ type: "turn_context", timestamp: "2026-10-30T00:00:00Z", payload: { turn_id: "t", approval_policy: a, sandbox_policy: { type: sb }, approvals_reviewer: "user" } });
-  writeFileSync(path, [ctx("never", "danger-full-access"), `{"type":"response_item","payload":{"call_id":"item-loose"}}`, ctx("on-request", "read-only"), `{"type":"response_item","payload":{"call_id":"item-tight"}}`, ""].join("\n"));
+  writeFileSync(path, [ctx("never", "danger-full-access"), `{"type":"response_item","payload":{"type":"custom_tool_call_output","output":[{"text":"session_id: 41234"}]}}`, ctx("on-request", "read-only"), `{"type":"response_item","payload":{"call_id":"item-tight"}}`, ""].join("\n"));
   daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, path, status: { type: "idle" } }, model: "m", approvalPolicy: "on-request", sandbox: { type: "readOnly" } });
   let list = [
-    { itemId: "item-loose", processId: "p1", command: "sleep 100" },
+    { itemId: "item-loose", processId: "41234", command: "sleep 100" },
     { itemId: "item-tight", processId: "p2", command: "npm run dev" },
     { itemId: "item-lost", processId: "p3", command: "?" },
   ];
@@ -644,7 +644,7 @@ test("commands in background terminals: each keeps its turn's settings; a note a
   expect(sink.states.at(-1)).toMatchObject({ turnSettings: { who: "background", count: 2, looser: true, permissionMode: "unknown", mixed: true } });
   expect(d.busy()).toBe(true);
   await d.stopBackground();
-  expect(daemon.calls("thread/backgroundTerminals/terminate").map((c) => c.processId).sort()).toEqual(["p1", "p3"]);
+  expect(daemon.calls("thread/backgroundTerminals/terminate").map((c) => c.processId).sort()).toEqual(["41234", "p3"]);
   expect(list.map((t) => t.processId)).toEqual(["p2"]);
   expect(sink.states.at(-1)).toMatchObject({ turnSettings: undefined });
   expect(d.busy()).toBe(false);
@@ -663,5 +663,23 @@ test("a turn's Stop leaves earlier commands to the note, which comes with the tu
   await Bun.sleep(5);
   expect(daemon.calls("thread/backgroundTerminals/terminate")).toEqual([]);
   expect(sink.states.at(-1)).toMatchObject({ turnSettings: { who: "background", count: 1 } });
+  await d.close();
+});
+
+test("a command's settings are its turn's, kept at the turn's end (a running command isn't in the rollout yet)", async () => {
+  useDaemon();
+  daemon.answers["turn/start"] = () => ({ turn: { id: "t1" } });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  d.commandPollMs = 60_000;
+  d.retryMs = 1;
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  d.running.set(MAIN, "turn", { approvalPolicy: "never", sandbox: "danger-full-access", mode: "full-access" });
+  daemon.say({ method: "item/started", params: { threadId: MAIN, turnId: "t1", item: { type: "commandExecution", id: "exec-1", command: "serve", status: "inProgress" } } });
+  daemon.answers["thread/backgroundTerminals/list"] = () => ({ data: [{ itemId: "exec-1", processId: "7" }] });
+  daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t1", status: "completed" } } });
+  await d.pollCommands();
+  expect(d.running.commands[0]!.eff.mode).toBe("full-access");
+  expect(sink.lastWith("turnSettings")).toMatchObject({ turnSettings: { who: "background", count: 1, permissionMode: "full-access" } });
   await d.close();
 });

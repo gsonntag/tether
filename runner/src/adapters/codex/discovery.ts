@@ -310,15 +310,28 @@ export function turnContext(text: string, turnId: string): RolloutSettings | und
 }
 
 /**
- * The settings of the turn that started an item (a command in a background terminal, which keeps
- * them after its turn ends): the turn_context before the item's first line. Undefined: not there (yet).
+ * The settings of the turn that started a command in a background terminal, which keeps them after
+ * its turn ends: the turn_context before the command's line. Undefined: not there (yet).
  */
-export async function itemContextOf(path: unknown, itemId: string): Promise<RolloutSettings | undefined> {
-  if (typeof path !== "string" || !itemId) return undefined;
+export async function itemContextOf(path: unknown, itemId: string | undefined, processId?: string): Promise<RolloutSettings | undefined> {
+  if (typeof path !== "string" || (!itemId && !processId)) return undefined;
   const f = Bun.file(path);
   if (f.size > ROLLOUT_MAX) return undefined;
   const text = await f.text().catch(() => "");
-  const at = text.indexOf(`"${itemId}"`);
+  // A running command's item isn't in the rollout yet (it's written when the command ends): its
+  // process id is, in the tool output that said it started (the newest with that id).
+  const byItem = itemId ? text.indexOf(`"${itemId}"`) : -1;
+  let at = byItem;
+  if (at < 0 && processId) {
+    const pid = new RegExp(`(?<![0-9])${processId.replace(/[^0-9A-Za-z-]/g, "")}(?![0-9])`);
+    const lines = text.split("\n");
+    let pos = text.length;
+    for (let i = lines.length - 1; i >= 0 && at < 0; i--) {
+      const l = lines[i]!;
+      pos -= l.length + 1;
+      if (l.includes("_output") && pid.test(l)) at = Math.max(0, pos);
+    }
+  }
   if (at < 0) return undefined;
   const ctx = rolloutSettings(text.slice(0, at));
   return ctx.found ? ctx : undefined;
