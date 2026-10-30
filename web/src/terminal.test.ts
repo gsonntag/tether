@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ServerToBrowser } from "../../shared/protocol";
 import { encodeChunk } from "../../shared/wire";
-import { handoffPrompt, TermConn, type TermDeps } from "./terminal";
+import { handoffPrompt, shellOpened, TermConn, type TermDeps } from "./terminal";
 
 /** A relay and runner in miniature: records rpcs, answers openTerminal with fresh attach ids. */
 function fake() {
@@ -189,4 +189,15 @@ test("the prompt before handing off", () => {
   expect(handoffPrompt(true, 0)).toEqual({ text: "Stop this turn and open the terminal?", confirm: "Stop and open terminal" });
   expect(handoffPrompt(true, 2)?.text).toBe("Stop this turn and open the terminal? 2 queued messages will wait until you're back.");
   expect(handoffPrompt(false, 1)).toEqual({ text: "Open the terminal? 1 queued message will wait until you're back.", confirm: "Open terminal" });
+});
+
+test("a shell that finishes opening never takes you off the agent's entry", () => {
+  const waiting = { tab: "shell", wantTui: false };
+  const moved = { tab: "tui", wantTui: true };
+  expect(shellOpened(waiting, "sh-1", true)).toEqual({ tab: "sh-1", wantTui: false });
+  expect(shellOpened(moved, "sh-1", true)).toBe(moved);
+  // + New shell, asked for: it comes to the front from anywhere.
+  expect(shellOpened(moved, "sh-1", false)?.tab).toBe("sh-1");
+  // The panel was closed meanwhile.
+  expect(shellOpened(null, "sh-1", true)).toBeNull();
 });

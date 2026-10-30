@@ -237,6 +237,18 @@ export const KEYS: { label: string; aria: string; data: string }[] = [
   { label: "⏎", aria: "Enter", data: "\r" },
 ];
 
+/** The tab to open on for "Shell": the project's first shell, or a new one when it has none. */
+export const SHELL_TAB = "shell";
+
+/**
+ * The panel once a new shell exists: it comes to the front, unless it is the one ❯_ opened by itself
+ * (`auto`) and you have moved on while it started (to the agent's entry, on a slow runner).
+ */
+export function shellOpened<T extends { tab: string }>(panel: T | null, shellId: string, auto: boolean): T | null {
+  if (!panel || (auto && panel.tab !== SHELL_TAB)) return panel;
+  return { ...panel, tab: shellId };
+}
+
 /**
  * The question before opening the terminal (SPEC §8 handoff), or none when it opens right away.
  * `paused`: the queue is already held (after Stop, a failed turn, a restart): it stays so, nothing

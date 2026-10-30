@@ -9,7 +9,7 @@
 // Which surface drives the agent shows on its entry ("Claude Code · driving", "Codex · joined") and,
 // for a handoff, in the transcript's banner; a shell needs no words.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -18,14 +18,13 @@ import type { ShellInfo } from "../../../shared/protocol";
 import { AGENT_NAMES, HARNESS_LABELS, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { useStore } from "../store";
-import { KEYS, type TermStatus } from "../terminal";
+import { KEYS, SHELL_TAB, shellOpened, type TermStatus } from "../terminal";
 import { TermView, type TermViewHandle } from "./TermView";
 import { useFitViewport } from "./useFitViewport";
 
 export type PanelTab = "tui" | typeof SHELL_TAB | string;
 
-/** The tab to open on for "Shell": the project's first shell, or a new one when it has none. */
-export const SHELL_TAB = "shell";
+export { SHELL_TAB };
 
 export interface PanelState {
   tab: PanelTab;
@@ -63,7 +62,7 @@ export function TerminalPanel({
   session: SessionSummary;
   state: LiveState;
   panel: PanelState;
-  setPanel: (p: PanelState | null) => void;
+  setPanel: Dispatch<SetStateAction<PanelState | null>>;
   /** opens the TUI tab the way the Terminal button does (asking first while a turn runs) */
   onOpenTui: () => void;
   onClose: () => void;
@@ -122,11 +121,12 @@ export function TerminalPanel({
     }
   };
 
-  const newShell = () =>
+  /** `auto`: the shell ❯_ is waiting for, which only comes forward if you're still waiting for it. */
+  const newShell = (auto = false) =>
     call(
       rpc(runnerId, "newShell", { projectPath: session.projectPath }).then((sh) => {
         setShells((list) => [...list.filter((x) => x.id !== sh.id), sh]);
-        setPanel({ ...panel, tab: sh.id });
+        setPanel((p) => shellOpened(p, sh.id, auto));
       }),
     );
   const closeShell = (id: string) =>
@@ -149,7 +149,7 @@ export function TerminalPanel({
     if (shells[0]) return setPanel({ ...panel, tab: shells[0].id });
     if (autoTried.current) return;
     autoTried.current = true;
-    void newShell();
+    void newShell(true);
   }, [tab, shellsLoaded, shells]);
 
   // The Copy sheet belongs to the terminal it was made from: another tab closes it.
