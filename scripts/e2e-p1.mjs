@@ -162,7 +162,7 @@ const steps = {
   async restart() {
     if (!RESTART) return console.log("skip restart (set RESTART_RUNNER)");
     const p = await page(desktop, session);
-    await send(p, "Count from 1 to 60, one number per line, no other text.");
+    await send(p, "Count from 1 to 600, one number per line, no other text.");
     await p.waitForFunction(() => /\b5\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     // Detached, not waited on: the restarted runner outlives this script.
     spawn("bash", ["-c", RESTART], { detached: true, stdio: "ignore" }).unref();
