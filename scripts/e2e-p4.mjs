@@ -909,19 +909,31 @@ const steps = {
       await sleep(600);
       await p.keyboard.press("Enter");
       await waitScreen(p, id, /Update Model Permissions/, "the permissions menu", 15_000);
-      for (let i = 0; i < 6; i++) {
+      let on = false;
+      for (let i = 0; i < 6 && !on; i++) {
         const s = await screen(p, id);
-        if (s.lines.some((l) => l.includes(`›`) && l.includes(label))) break;
-        await p.keyboard.press("ArrowDown");
-        await sleep(250);
+        on = s.lines.some((l) => l.includes(`›`) && l.includes(label));
+        if (!on) {
+          await p.keyboard.press("ArrowDown");
+          await sleep(250);
+        }
       }
+      const s = await screen(p, id);
+      if (!on) fail(`the cursor never reached ${label}:\n${s.lines.filter((l) => l.trim()).join("\n")}`);
       await p.keyboard.press("Enter");
-      await sleep(500);
+      await sleep(1500);
+      console.log(`after ${label}:\n${(await screen(p, id)).lines.filter((l) => l.trim()).slice(-6).join("\n")}`);
+    };
+    const shows = async (mode, what) => {
+      await waitState(p, (x) => x.permissionMode === mode, what, 15_000).catch(async (e) => {
+        console.log("permissionMode:", await p.locator(".t-header").innerText());
+        throw e;
+      });
     };
     await pickIn("Read Only");
-    await waitState(p, (x) => x.permissionMode === "read-only", "Read only shown (not Custom)", 15_000);
+    await shows("read-only", "Read only shown (not Custom)");
     await pickIn("Ask for approval");
-    await waitState(p, (x) => x.permissionMode === "auto", "Auto shown (not Custom)", 15_000);
+    await shows("auto", "Auto shown (not Custom)");
     ok("/permissions in the TUI: Read Only and Ask for approval show as Read only and Auto, not Custom");
     tmux("kill-session", "-t", `=${tuiName(id)}`);
     await p.close();
