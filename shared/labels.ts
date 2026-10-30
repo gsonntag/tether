@@ -46,5 +46,11 @@ const MODES: Record<string, string> = {
   untrusted: "Ask first",
   "full-access": "Full access",
   unknown: "Unknown",
+  custom: "Custom",
 };
-export const permissionModeLabel = (m: string | undefined) => (m ? (MODES[m] ?? cap(m)) : "Ask first");
+export const permissionModeLabel = (m: string | undefined): string => {
+  if (!m) return "Ask first";
+  // Codex's "Approve for me": its own reviewer answers approvals.
+  if (m.endsWith("@codex-reviews")) return `${permissionModeLabel(m.slice(0, -"@codex-reviews".length))} (Codex reviews)`;
+  return MODES[m] ?? cap(m);
+};

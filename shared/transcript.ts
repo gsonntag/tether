@@ -252,8 +252,10 @@ export interface LiveState {
     model?: string;
     effort?: string;
     permissionMode?: string;
-    /** the running turn has more access than the session now shows (Tether offers to stop it) */
+    /** it has more access than the session now shows, or isn't known (Tether offers to stop it) */
     looser?: boolean;
+    /** what runs with these: the turn, or a subagent (which keeps its settings after the turn ends) */
+    who?: "turn" | "subagent";
   };
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;

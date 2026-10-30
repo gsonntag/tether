@@ -73,7 +73,10 @@ export interface Driver {
    * lists them (shared/attachments.ts withAttachments), and images the harness reads natively go to
    * it as images too.
    */
-  send(text: string, attachments?: Attachment[]): Promise<void>;
+  /** `shown`: the session's settings as Tether shows them (a driver that pins them on the turn: pinsSettings) */
+  send(text: string, attachments?: Attachment[], shown?: StartOpts): Promise<void>;
+  /** the harness takes the shown settings with each turn (turn/start), so a turn Tether starts runs exactly them */
+  readonly pinsSettings?: boolean;
   /** a message into the running turn (capabilities.canSteer) */
   steer?(text: string, attachments?: Attachment[]): Promise<void>;
   interrupt(): Promise<void>;

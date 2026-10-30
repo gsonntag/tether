@@ -401,7 +401,7 @@ describe("P4 review 5: never running looser than shown", () => {
   });
 
   test("the turn's note stays while its subagents still run on its settings, and goes when the last ends", async () => {
-    const { adapter, core, live } = setup({ persistent: true, settingsApply: "nextTurn" });
+    const { adapter, core, live, prefs } = setup({ settingsApply: "nextTurn" });
     adapter.addStored("s1", []);
     adapter.script = () => [toolCall("m", "toolu_A", "Agent"), subagent("child-1", "toolu_A"), (sink) => sink.state({ turnSettings: { permissionMode: "full-access" } }), idle];
     await live.send("claude:s1", "go");
@@ -413,9 +413,12 @@ describe("P4 review 5: never running looser than shown", () => {
     d.sink.state({ status: "running" });
     d.sink.state({ status: "idle" });
     expect(s.state.turnSettings).toEqual({ permissionMode: "full-access" });
+    // Still marked running (a restart must find the subagent again).
+    expect(prefs.get("claude:s1").running).toBe(true);
     d.isBusy = false;
     d.children.get("child-1")!.ended!();
     expect(s.state.turnSettings).toBeUndefined();
+    expect(prefs.get("claude:s1").running).toBeUndefined();
   });
 
   test("a change made while a send is still starting the turn isn't noted against a turn that doesn't run yet", async () => {

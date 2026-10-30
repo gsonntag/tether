@@ -146,12 +146,19 @@ export class LiveControl {
         s.sending = undefined;
         throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working on a turn started elsewhere. Stop it first, or wait for it to finish.`);
       }
-      await this.confirmSettings(s, d);
+      // A driver that pins the shown settings on the turn needs no confirmation first.
+      if (!d.pinsSettings) await this.confirmSettings(s, d);
       if (s.cancelSend === me) throw new SendCancelled();
+      // Again right before it goes: a turn may have started elsewhere meanwhile.
+      if (d.turnRunning?.()) {
+        s.sending = undefined;
+        throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working on a turn started elsewhere. Stop it first, or wait for it to finish.`);
+      }
       this.core.touch(s, { updatedAt: this.core.now() });
       // Handed to the harness from here: its turn starts (a change now is against that turn).
       s.sentOut = me;
-      await d.send(withAttachments(text, attachments), attachments);
+      const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
+      await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
     } catch (e) {
       if (s.sending === me && !(e instanceof SendCancelled)) {
@@ -334,7 +341,7 @@ export class LiveControl {
         await this.ensureDriver(s);
         this.core.log(`rejoined ${id}`);
         // It finished while the runner was away.
-        if (s.state.status === "idle") this.core.o.prefs.set(id, { running: undefined });
+        if (s.state.status === "idle" && !s.driver?.busy()) this.core.o.prefs.set(id, { running: undefined });
         break;
       } catch (e: any) {
         const msg = String(e?.message ?? e);
@@ -689,11 +696,14 @@ export class LiveControl {
     const bus = this.core.o.bus;
     const now = s.state.status;
     // Kept in runner.json, so a turn cut off by a restart is reported when the session reopens.
-    if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle")) this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
+    // Not cleared while its subagents still run (busy): a restart must find them again (persistent harnesses rejoin).
+    if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle") && !(now === "idle" && s.driver?.busy()))
+      this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true });
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
     if (now === "idle") {
-      // The next turn runs with the settings as shown; not while its subagents still run on the old ones.
-      if (s.state.turnSettings && !s.driver?.busy()) s.setState({ turnSettings: undefined });
+      // The next turn runs with the settings as shown; not while its subagents still run on the old
+      // ones. A harness that reports what still runs (persistent) keeps this itself.
+      if (s.state.turnSettings && !s.driver?.busy() && !s.capabilities.persistent) s.setState({ turnSettings: undefined });
       const stopped = s.stopped;
       s.stopped = false;
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });
@@ -768,7 +778,11 @@ export class LiveControl {
     this.core.scheduleEvict(c);
     // The last subagent of a finished turn: nothing runs on the turn's settings any more.
     const parent = c.summary.parentSessionId ? this.core.sessions.get(c.summary.parentSessionId) : undefined;
-    if (parent?.state.turnSettings && parent.state.status === "idle" && !parent.driver?.busy()) parent.setState({ turnSettings: undefined });
+    if (parent && parent.state.status === "idle" && !parent.driver?.busy()) {
+      // A harness that reports what still runs (persistent) says so itself.
+      if (parent.state.turnSettings && !parent.capabilities.persistent) parent.setState({ turnSettings: undefined });
+      this.core.o.prefs.set(parent.id, { running: undefined });
+    }
   }
 }
 
