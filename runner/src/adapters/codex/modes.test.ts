@@ -9,7 +9,13 @@ test("permission presets: human labels, and a thread's settings read back as one
   // A combination no preset has: kept as it is, and read back exactly.
   expect(modeOf("never", { type: "readOnly" })).toBe("never+read-only");
   expect(codexMode("never+read-only")).toEqual({ approvalPolicy: "never", sandbox: "read-only" });
-  expect(modeOf("granular", "read-only")).toBeUndefined();
+  // What Tether can't express (a granular policy object, an unknown policy): custom, never a preset.
+  expect(modeOf({ granular: {} }, "read-only")).toBe("custom");
+  expect(modeOf("granular", "read-only")).toBe("custom");
+  expect(modeOf(undefined, "read-only")).toBeUndefined();
+  // Codex's own reviewer ("Approve for me") is part of the mode.
+  expect(modeOf("on-request", "workspace-write", "auto_review")).toBe("auto@codex-reviews");
+  expect(modeOf("on-request", "workspace-write", "user")).toBe("auto");
   expect(codexMode("nonsense")).toEqual(codexMode("auto"));
   expect(sandboxPolicy("read-only")).toEqual({ type: "readOnly", networkAccess: false });
 });
@@ -37,8 +43,9 @@ test("a stored thread's settings from its rollout: the newest turn_context", asy
   const { rolloutSettings } = await import("./discovery");
   const ctx = (model: string, effort: string, policy: string, sandbox: string) => JSON.stringify({ type: "turn_context", payload: { model, effort, approval_policy: policy, sandbox_policy: { type: sandbox } } });
   const text = [ctx("gpt-6-sol", "high", "on-request", "workspace-write"), '{"type":"event_msg","payload":{}}', ctx("gpt-6-luna", "low", "on-request", "read-only"), '{"type":"response_item"}', "{partial"].join("\n");
-  expect(rolloutSettings(text)).toEqual({ model: "gpt-6-luna", effort: "low", approvalPolicy: "on-request", sandbox: "read-only" });
+  expect(rolloutSettings(text)).toEqual({ found: true, model: "gpt-6-luna", effort: "low", approvalPolicy: "on-request", sandbox: "read-only", mode: "read-only" });
   expect(rolloutSettings("")).toEqual({});
+  expect(rolloutSettings(JSON.stringify({ type: "turn_context", payload: { approval_policy: "on-request", sandbox_policy: { type: "workspace-write" }, approvals_reviewer: "auto_review" } })).mode).toBe("auto@codex-reviews");
 });
 
 test("looser, by dimension (approval policy and sandbox), for any combination", async () => {

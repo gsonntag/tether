@@ -17,6 +17,8 @@ export interface Remembered {
   placeholder?: boolean;
   /** "default": you picked Default, so the thread shows as Default while it runs the default model */
   modelAlias?: string;
+  /** subagent threads that may still run, by the call that spawned them: found again after a restart */
+  children?: Record<string, string>;
   at: number;
 }
 

@@ -203,7 +203,20 @@ export function watchThread(nativeId: string, projectPath: string, onChange: (ms
  * A thread's settings as its rollout last recorded them (its newest turn_context): model, effort,
  * approval policy and sandbox. Undefined fields: not recorded (a thread with no turn yet).
  */
-export function rolloutSettings(text: string): { model?: string; effort?: string; approvalPolicy?: string; sandbox?: string; at?: number } {
+export interface RolloutSettings {
+  /** a turn_context was found */
+  found?: boolean;
+  model?: string;
+  effort?: string;
+  approvalPolicy?: string;
+  sandbox?: string;
+  reviewer?: string;
+  /** the mode id these make (modes.ts modeOf: a preset, a combination, "…@codex-reviews", "custom") */
+  mode?: string;
+  at?: number;
+}
+
+export function rolloutSettings(text: string): RolloutSettings {
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!;
@@ -213,12 +226,16 @@ export function rolloutSettings(text: string): { model?: string; effort?: string
       if (m?.type !== "turn_context") continue;
       const p = m.payload ?? {};
       const at = Date.parse(m.timestamp ?? "");
+      const mode = modeOf(p.approval_policy, p.sandbox_policy, p.approvals_reviewer);
       return {
+        found: true,
         ...(Number.isFinite(at) ? { at } : {}),
         ...(typeof p.model === "string" ? { model: p.model } : {}),
         ...(typeof p.effort === "string" ? { effort: p.effort } : {}),
         ...(typeof p.approval_policy === "string" ? { approvalPolicy: p.approval_policy } : {}),
         ...(sandboxOf(p.sandbox_policy) ? { sandbox: sandboxOf(p.sandbox_policy) } : {}),
+        ...(typeof p.approvals_reviewer === "string" ? { reviewer: p.approvals_reviewer } : {}),
+        ...(mode ? { mode } : {}),
       };
     } catch {}
   }
@@ -239,13 +256,12 @@ export async function threadSettings(nativeId: string): Promise<StartOpts | unde
     const { at: _, ...rest } = applied;
     return { ...rest, permissionMode: rest.permissionMode ?? UNKNOWN_MODE };
   }
-  if (r.approvalPolicy) {
+  if (r.found) {
     // Its first turn recorded them: what Tether remembered from its start isn't needed any more.
     if (remembered(nativeId)?.start) remember(nativeId, { start: undefined });
     const model = r.model ?? t.model ?? undefined;
     const effort = r.effort ?? t.reasoningEffort ?? undefined;
-    const mode = modeOf(r.approvalPolicy, r.sandbox);
-    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: mode ?? UNKNOWN_MODE };
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: r.mode ?? UNKNOWN_MODE };
   }
   // No turn yet: what Tether started it with, if Tether did; else not known (never Codex's config,
   // which may not be what the thread has).
@@ -262,8 +278,25 @@ export async function rolloutText(path: unknown): Promise<string> {
   return f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => "");
 }
 
+/**
+ * The settings one turn started with, from the thread's rollout: its end first, then the whole file
+ * (a long turn may have pushed its turn_context far back). Undefined: not there (yet).
+ */
+export async function turnContextOf(path: unknown, turnId: string): Promise<RolloutSettings | undefined> {
+  if (typeof path !== "string" || !turnId) return undefined;
+  const f = Bun.file(path);
+  const size = f.size;
+  const tail = turnContext(await f.slice(Math.max(0, size - SETTINGS_TAIL)).text().catch(() => ""), turnId);
+  if (tail || size <= SETTINGS_TAIL) return tail;
+  if (size > ROLLOUT_MAX) return undefined;
+  return turnContext(await f.text().catch(() => ""), turnId);
+}
+
+/** Rollouts larger than this aren't read whole (the turn then shows as Unknown: fail closed). */
+const ROLLOUT_MAX = 256 * 1024 * 1024;
+
 /** The settings one turn started with: its turn_context (undefined: not in this text). */
-export function turnContext(text: string, turnId: string): ReturnType<typeof rolloutSettings> | undefined {
+export function turnContext(text: string, turnId: string): RolloutSettings | undefined {
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!;
@@ -277,7 +310,7 @@ export function turnContext(text: string, turnId: string): ReturnType<typeof rol
 }
 
 /** A thread's settings as its rollout's end records them. */
-async function rolloutOf(t: any): Promise<ReturnType<typeof rolloutSettings>> {
+async function rolloutOf(t: any): Promise<RolloutSettings> {
   if (typeof t?.path !== "string") return {};
   const f = Bun.file(t.path);
   return rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
@@ -285,7 +318,7 @@ async function rolloutOf(t: any): Promise<ReturnType<typeof rolloutSettings>> {
 
 /** Whether a thread's first turn has recorded its settings. */
 export async function hasTurnContext(t: any): Promise<boolean> {
-  return !!(await rolloutOf(t)).approvalPolicy;
+  return !!(await rolloutOf(t)).found;
 }
 
 /** Forget the cached thread list (a thread was created). */

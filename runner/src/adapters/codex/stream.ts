@@ -159,6 +159,19 @@ export class CodexStream {
 
   /** Thread settings changed (by Tether, or in Codex's own TUI): the driver reads them. */
   onSettings?: (settings: any) => void;
+  /** A subagent was spawned (its thread and the call that spawned it): the driver remembers it. */
+  onSpawn?: (threadId: string, toolId: string) => void;
+
+  /**
+   * A subagent found running when joining the thread (a runner restart): opened as if its spawn had
+   * just been seen, under the call that spawned it when that's remembered.
+   */
+  adoptChild(threadId: string, toolId: string | undefined, name?: string) {
+    if (this.children.has(threadId)) return;
+    this.spawns.set(threadId, { toolId: toolId ?? threadId, parent: this.main.id });
+    if (name) this.info.set(threadId, { ...this.info.get(threadId), name });
+    this.openChild(threadId);
+  }
 
   // ---------------- turns ----------------
 
@@ -265,6 +278,7 @@ export class CodexStream {
       if (this.spawns.has(child)) return;
       const name = pathLeaf(item.agentPath);
       this.spawns.set(child, { toolId: item.id, parent: v.id });
+      this.onSpawn?.(child, item.id);
       if (name) this.info.set(child, { ...this.info.get(child), name });
       return this.openChild(child);
     }
@@ -272,6 +286,7 @@ export class CodexStream {
     for (const child of item.receiverThreadIds ?? []) {
       if (this.spawns.has(child)) continue;
       this.spawns.set(child, { toolId: item.id, parent: v.id, ...(item.prompt ? { prompt: item.prompt } : {}) });
+      this.onSpawn?.(child, item.id);
       this.openChild(child);
     }
   }

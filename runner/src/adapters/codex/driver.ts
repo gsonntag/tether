@@ -11,7 +11,9 @@ import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
-import { dropCache, hasTurnContext, PLACEHOLDER_NAME, rolloutText, turnContext } from "./discovery";
+import { agentName } from "./items";
+import { dropCache, hasTurnContext, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
+import { effOfRollout, effOfSettings, Running, UNKNOWN, type Eff } from "./running";
 import { knownMode, looser, modeOf, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
 import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
@@ -91,6 +93,7 @@ export class CodexDriver implements Driver {
     this.placeholder = !!remembered(nativeId)?.placeholder;
     this.stream = new CodexStream(sink, projectPath, nativeId);
     this.stream.onSettings = (s) => this.settingsChanged(s);
+    this.stream.onSpawn = (child, toolId) => this.rememberChild(child, toolId);
     rpc.onNotify((m, p) => this.notify(m, p));
     rpc.onRequest = (m, p, id) => this.request(m, p, id);
     rpc.onClose((reason) => {
@@ -109,6 +112,7 @@ export class CodexDriver implements Driver {
       pending.delete(nativeId);
       clearTimeout(p.timer);
       const d = new CodexDriver(nativeId, projectPath, p.rpc, sink, false);
+      d.threadPath = p.started.thread?.path;
       try {
         await d.started(p.started, opts);
       } catch (e) {
@@ -128,6 +132,7 @@ export class CodexDriver implements Driver {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw e;
       });
+      d.threadPath = r.thread?.path;
       await d.started(r, opts);
       // Mid-turn (Codex's TUI, or a turn that went on while the runner was away): carry on from it.
       if (r.thread?.status?.type === "active") {
@@ -135,18 +140,16 @@ export class CodexDriver implements Driver {
         const turn = t?.data?.[0];
         if (turn && turn.status === "inProgress") {
           // What that turn runs with: its turn_context (written when it started), whatever the
-          // thread's settings are now (they may have been changed since, here or elsewhere).
-          const ctx = turnContext(await rolloutText(r.thread?.path), turn.id);
-          d.turnStart = ctx ? { model: ctx.model, effort: ctx.effort, approvalPolicy: ctx.approvalPolicy, sandboxPolicy: ctx.sandbox } : { ...d.current };
+          // thread's settings are now (they may have been changed since, here or elsewhere). Not
+          // found: unknown (fail closed).
+          const ctx = await turnContextOf(r.thread?.path, turn.id);
+          d.running.set(nativeId, "turn", ctx ? effOfRollout(ctx) : UNKNOWN);
           d.stream.seedTurn(turn);
         }
-        // Its subagents (spawned in that turn): their running turns, so stop and steer reach them.
-        for (const child of d.stream.childIds()) {
-          const ct: any = await rpc.call("thread/turns/list", { threadId: child, limit: 1, sortDirection: "desc", itemsView: "full" }).catch(() => undefined);
-          d.stream.seedChildTurn(child, ct?.data?.[0]);
-        }
-        d.reportTurn();
       }
+      // Subagents still running, whether or not the turn that spawned them still does.
+      await d.rejoinChildren();
+      d.reportTurn();
     } catch (e) {
       d.closed = true;
       rpc.close();
@@ -176,9 +179,9 @@ export class CodexDriver implements Driver {
     const patch: Record<string, unknown> = {};
     if (model && model !== cur.model) patch.model = model;
     if (want.effort && want.effort !== cur.effort) patch.effort = want.effort;
-    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox)) Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox) });
-    // Approvals come to clients (Tether, the TUI), not Codex's automatic reviewer.
-    if (cur.reviewer && cur.reviewer !== "user") patch.approvalsReviewer = "user";
+    // A mode set in Tether includes who answers approvals (you, or Codex's reviewer: "Approve for me").
+    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox || (mode.reviewer ?? "user") !== (cur.reviewer ?? "user")))
+      Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox), approvalsReviewer: mode.reviewer ?? "user" });
     let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer };
     if (Object.keys(patch).length) {
       const seen = this.nextSettings(CONFIRM_MS);
@@ -250,52 +253,127 @@ export class CodexDriver implements Driver {
       return this.onExit?.();
     }
     this.stream.handle(method, p);
-    // The settings the running turn has: fixed when it starts (capabilities.settingsApply "nextTurn").
-    if (method === "turn/started" && p.threadId === this.nativeId) {
-      this.turnStart = { ...this.current };
-      this.reportTurn();
-    } else if (method === "turn/completed" && this.turnStart && !this.stream.main.turnId && !this.stream.runningChildren().length) {
-      // The turn is over, and so are its subagents (which kept its settings too).
-      this.turnStart = undefined;
+    this.track(method, p);
+  }
+
+  /** What runs on this thread now, each with the settings it really runs with (running.ts). */
+  readonly running = new Running();
+  /** the thread's rollout file (where its turns' turn_contexts are) */
+  threadPath?: string;
+  /** the settings Tether pinned on the turn it is starting (turn/start carries them) */
+  private pinned?: Eff;
+
+  /** Keeps `running` in step with turns starting and ending, on the thread and its subagents. */
+  private track(method: string, p: any) {
+    const id: string | undefined = p?.threadId;
+    if (!id || (method !== "turn/started" && method !== "turn/completed")) return;
+    const main = id === this.nativeId;
+    if (!main && !this.stream.child(id)) return;
+    if (method === "turn/completed") {
+      this.running.delete(id);
+      if (!main) this.forgetChild(id);
+      return this.reportTurn();
+    }
+    const turnId: string | undefined = p.turn?.id;
+    if (main && this.pinned) {
+      // A turn Tether started: it runs exactly what was pinned on it.
+      this.running.set(id, "turn", this.pinned);
+      this.pinned = undefined;
+      return this.reportTurn();
+    }
+    // Started elsewhere (Codex's TUI), or a subagent's: what the daemon last said meanwhile, then
+    // its turn_context once the rollout has it (not found: unknown).
+    const provisional = main ? this.currentEff() : (this.running.get(this.nativeId)?.eff ?? this.currentEff());
+    this.running.set(id, main ? "turn" : "subagent", provisional);
+    this.reportTurn();
+    if (turnId) void this.readTurnEff(id, turnId, main ? this.threadPath : undefined);
+  }
+
+  /** A turn's real settings from its turn_context, a few tries while the rollout catches up. */
+  private async readTurnEff(id: string, turnId: string, path?: string) {
+    let where = path;
+    for (let i = 0; i < 6 && this.running.has(id) && !this.closed; i++) {
+      where ??= (await this.rpc.call("thread/read", { threadId: id, includeTurns: false }).catch(() => undefined))?.thread?.path;
+      const ctx = await turnContextOf(where, turnId);
+      if (ctx) {
+        const e = this.running.get(id);
+        if (e) this.running.set(id, e.kind, effOfRollout(ctx));
+        return this.reportTurn();
+      }
+      await Bun.sleep(this.retryMs);
+    }
+    const e = this.running.get(id);
+    if (e) {
+      this.running.set(id, e.kind, UNKNOWN);
       this.reportTurn();
     }
   }
 
-  /** The settings the running turn started with (undefined: no turn, nor a subagent of one, runs). */
-  turnStart?: any;
+  /** Pause between reads of a turn's turn_context. */
+  retryMs = 700;
+
+  private currentEff(): Eff {
+    return effOfSettings(this.current ?? {});
+  }
 
   /**
-   * The running turn's own settings, where they differ from the thread's now (a change made during
-   * it counts from the next turn): reported as `turnSettings`, with `looser` when the turn runs with
-   * more access than the thread now has (Tether offers to stop it).
+   * What the header shows beside the settings: anything running with other settings than shown
+   * (`turnSettings`, with `looser` and Stop when it has more access, or isn't known).
    */
   reportTurn() {
-    const t = this.turnStart;
-    const c = this.current ?? {};
-    if (!t) return this.sink.state({ turnSettings: undefined });
-    const out: { model?: string; effort?: string; permissionMode?: string; looser?: boolean } = {};
-    if (t.model && c.model && t.model !== c.model) out.model = t.model;
-    if (t.effort && c.effort && t.effort !== c.effort) out.effort = t.effort;
-    const tm = modeOf(t.approvalPolicy, t.sandboxPolicy);
-    const cm = modeOf(c.approvalPolicy, c.sandboxPolicy);
-    if (tm && cm && tm !== cm) {
-      out.permissionMode = tm;
-      if (looser({ approvalPolicy: t.approvalPolicy, sandbox: sandboxOf(t.sandboxPolicy) }, { approvalPolicy: c.approvalPolicy, sandbox: sandboxOf(c.sandboxPolicy) })) out.looser = true;
-    }
-    this.sink.state({ turnSettings: Object.keys(out).length ? out : undefined });
+    this.sink.state({ turnSettings: this.running.report(this.currentEff()) });
   }
 
   turnRunning() {
-    return !!this.stream.main.turnId;
+    return !!this.stream.main.turnId || this.running.has(this.nativeId);
+  }
+
+  /** A turn's settings are pinned on turn/start: a turn Tether starts runs exactly what's shown. */
+  readonly pinsSettings = true;
+
+  private rememberChild(id: string, toolId: string) {
+    remember(this.nativeId, { children: { ...remembered(this.nativeId)?.children, [id]: toolId } });
+  }
+
+  private forgetChild(id: string) {
+    const c = { ...remembered(this.nativeId)?.children };
+    if (!(id in c)) return;
+    delete c[id];
+    remember(this.nativeId, { children: Object.keys(c).length ? c : undefined });
+  }
+
+  /**
+   * After joining: subagents still running (remembered from their spawn, or listed as the thread's
+   * children), with their running turns and the settings those really have.
+   */
+  async rejoinChildren() {
+    const ids = new Set(Object.keys(remembered(this.nativeId)?.children ?? {}));
+    const listed: any = await this.rpc.call("thread/list", { parentThreadId: this.nativeId, limit: 50, sourceKinds: ["subAgent", "subAgentThreadSpawn", "subAgentOther"] }).catch(() => undefined);
+    for (const t of listed?.data ?? []) if (t?.id && t.status?.type === "active") ids.add(t.id);
+    for (const child of ids) {
+      const t = (await this.rpc.call("thread/read", { threadId: child, includeTurns: false }).catch(() => undefined))?.thread;
+      const ct: any = await this.rpc.call("thread/turns/list", { threadId: child, limit: 1, sortDirection: "desc", itemsView: "full" }).catch(() => undefined);
+      const turn = ct?.data?.[0];
+      // Running: its latest turn is in progress (and the daemon, when it says, has it active).
+      if (turn?.status !== "inProgress" || (t && t.status?.type !== "active")) {
+        this.forgetChild(child);
+        if (this.stream.child(child)) this.stream.seedChildTurn(child, undefined);
+        continue;
+      }
+      this.stream.adoptChild(child, remembered(this.nativeId)?.children?.[child], agentName(t));
+      this.stream.seedChildTurn(child, turn);
+      const ctx = await turnContextOf(t?.path, turn.id);
+      this.running.set(child, "subagent", ctx ? effOfRollout(ctx) : UNKNOWN);
+    }
   }
 
   /** Settings changed on the thread (here, or /model and /approvals in Codex's TUI). */
   private settingsChanged(s: any) {
     this.current = { ...this.current, ...s };
-    const mode = modeOf(s.approvalPolicy, s.sandboxPolicy);
+    const mode = modeOf(s.approvalPolicy ?? this.current?.approvalPolicy, s.sandboxPolicy ?? this.current?.sandboxPolicy, s.approvalsReviewer ?? this.current?.approvalsReviewer);
     // Kept for when the session is stored: a change with no turn after it isn't in the rollout.
     const c = this.current;
-    const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy);
+    const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy, c.approvalsReviewer);
     remember(this.nativeId, { applied: { ...(c.model ? { model: c.model } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(cmode ? { permissionMode: cmode } : {}), at: Date.now() } });
     const waiters = this.settingsWaiters.splice(0);
     for (const w of waiters) w(s);
@@ -307,7 +385,7 @@ export class CodexDriver implements Driver {
       ...(s.effort ? { effort: s.effort } : {}),
       ...(mode ? { permissionMode: mode } : {}),
     });
-    if (this.turnStart) this.reportTurn();
+    this.reportTurn();
   }
 
   /** The daemon asks (an approval, a question): the broker decides. */
@@ -368,17 +446,47 @@ export class CodexDriver implements Driver {
 
   // ---------------- driving ----------------
 
-  async send(text: string, attachments: Attachment[] = []) {
+  /**
+   * Starts a turn with the settings shown (`shown`, the session's as Tether shows them) pinned on
+   * it: turn/start carries model, effort, approval policy, sandbox and reviewer, so the turn runs
+   * exactly what's shown, whatever the thread had a moment before.
+   */
+  async send(text: string, attachments: Attachment[] = [], shown: StartOpts = {}) {
     if (this.closed) throw new Error("This Codex session isn't connected.");
+    if (this.turnRunning()) throw new Error("Codex is still working on a turn started elsewhere. Stop it first, or wait for it to finish.");
+    const pin = await this.pins(shown);
     this.sink.state({ status: "running", error: undefined });
     try {
       this.starting = true;
-      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments) }).finally(() => setTimeout(() => (this.starting = false), 5000));
+      const pinned = { ...this.currentEff(), ...pin.eff };
+      this.pinned = pinned;
+      await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments), ...pin.params }).finally(() => setTimeout(() => (this.starting = false), 5000));
+      // Its turn/started may come before or after this answer: either way it runs what was pinned.
+      if (this.running.has(this.nativeId)) {
+        this.running.set(this.nativeId, "turn", pinned);
+        this.reportTurn();
+      }
       this.materialized = true;
     } catch (e: any) {
+      this.pinned = undefined;
       this.sink.state({ status: "idle" });
       throw new Error(`Codex didn't start the turn: ${e?.message ?? e}`);
     }
+  }
+
+  /** turn/start's settings for what's shown (a mode Tether can't express isn't pinned: it shows as Unknown). */
+  private async pins(shown: StartOpts): Promise<{ params: Record<string, unknown>; eff: Eff }> {
+    const params: Record<string, unknown> = {};
+    const eff: Eff = {};
+    const model = shown.model === "default" ? await this.defaultId() : shown.model;
+    if (model) params.model = eff.model = model;
+    if (shown.effort) params.effort = eff.effort = shown.effort;
+    const m = knownMode(shown.permissionMode);
+    if (m) {
+      Object.assign(params, { approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: m.reviewer ?? "user" });
+      Object.assign(eff, { approvalPolicy: m.approvalPolicy, sandbox: m.sandbox, reviewer: m.reviewer ?? "user", mode: shown.permissionMode });
+    }
+    return { params, eff };
   }
 
   async steer(text: string, attachments: Attachment[] = []) {
@@ -420,8 +528,9 @@ export class CodexDriver implements Driver {
   async setPermissionMode(mode: string) {
     const m = knownMode(mode);
     if (!m) throw new Error(`Codex has no permission mode ${mode}.`);
-    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && this.current?.approvalsReviewer === "user";
-    await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: "user" }, same);
+    const reviewer = m.reviewer ?? "user";
+    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && (this.current?.approvalsReviewer ?? "user") === reviewer;
+    await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: reviewer }, same);
   }
 
   /** The thread's settings as the daemon last confirmed them (start, resume, thread/settings/updated). */

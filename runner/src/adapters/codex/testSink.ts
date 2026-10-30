@@ -22,6 +22,10 @@ export class TestSink implements Sink {
   state(patch: Partial<LiveState>) {
     this.states.push(patch);
   }
+  /** the last state patch that set `key` */
+  lastWith(key: string) {
+    return this.states.filter((s) => key in s).at(-1);
+  }
   get status() {
     return this.states.filter((s) => s.status).at(-1)?.status;
   }

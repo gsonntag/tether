@@ -15,7 +15,14 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 export interface CodexMode {
   approvalPolicy: ApprovalPolicy;
   sandbox: SandboxMode;
+  /** who answers approvals: absent or "user" (the person, through Tether or the TUI); else Codex's own reviewer */
+  reviewer?: string;
 }
+
+/** A mode whose approvals Codex's own reviewer answers ("Approve for me"): "<mode>@codex-reviews". */
+export const REVIEWS = "@codex-reviews";
+/** A thread's permissions Tether can't express (a granular policy, a permission profile). */
+export const CUSTOM_MODE = "custom";
 
 export const CODEX_MODES: Record<string, CodexMode & Choice> = {
   "read-only": { id: "read-only", label: "Read only", description: "Codex reads files; it asks before editing or running anything else", approvalPolicy: "on-request", sandbox: "read-only" },
@@ -31,9 +38,13 @@ export const modeChoices = (): Choice[] => Object.values(CODEX_MODES).map(({ id,
 /** A mode id's settings, or undefined for one Tether doesn't know (e.g. "unknown"): never a guess. */
 export function knownMode(id: string | undefined): CodexMode | undefined {
   if (!id) return undefined;
-  if (CODEX_MODES[id]) return CODEX_MODES[id];
-  const [a, s] = id.split("+");
-  return a && s && POLICIES.has(a) && SANDBOXES.has(s) ? { approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode } : undefined;
+  const reviews = id.endsWith(REVIEWS);
+  const base = reviews ? id.slice(0, -REVIEWS.length) : id;
+  const withReviewer = (m: CodexMode): CodexMode => (reviews ? { ...m, reviewer: "auto_review" } : m);
+  const preset = CODEX_MODES[base];
+  if (preset) return withReviewer({ approvalPolicy: preset.approvalPolicy, sandbox: preset.sandbox });
+  const [a, s] = base.split("+");
+  return a && s && POLICIES.has(a) && SANDBOXES.has(s) ? withReviewer({ approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode }) : undefined;
 }
 
 const POLICY_RANK: Record<string, number> = { untrusted: 0, "on-request": 1, never: 2 };
@@ -43,11 +54,18 @@ const SANDBOX_RANK: Record<string, number> = { "read-only": 0, "workspace-write"
  * Whether settings `a` give more access than `b` in either dimension: asking less (approval
  * policy) or a wider sandbox. Compared by dimension, so it works for any combination, preset or not.
  */
-export function looser(a: { approvalPolicy?: string; sandbox?: string }, b: { approvalPolicy?: string; sandbox?: string }): boolean {
-  const ap = (x?: string) => (x !== undefined ? POLICY_RANK[x] : undefined);
-  const sb = (x?: string) => (x !== undefined ? SANDBOX_RANK[x] : undefined);
-  const pa = ap(a.approvalPolicy), pb = ap(b.approvalPolicy), sa = sb(a.sandbox), sbb = sb(b.sandbox);
-  return (pa !== undefined && pb !== undefined && pa > pb) || (sa !== undefined && sbb !== undefined && sa > sbb);
+export function looser(a: { approvalPolicy?: string; sandbox?: string; reviewer?: string }, b: { approvalPolicy?: string; sandbox?: string; reviewer?: string }): boolean {
+  const pa = a.approvalPolicy !== undefined ? POLICY_RANK[a.approvalPolicy] : undefined;
+  const pb = b.approvalPolicy !== undefined ? POLICY_RANK[b.approvalPolicy] : undefined;
+  const sa = a.sandbox !== undefined ? SANDBOX_RANK[a.sandbox] : undefined;
+  const sbb = b.sandbox !== undefined ? SANDBOX_RANK[b.sandbox] : undefined;
+  // Not known (a granular policy, a permission profile, nothing read): fail closed.
+  if (pa === undefined || sa === undefined) return true;
+  if (pb === undefined || sbb === undefined) return false;
+  // Codex's own reviewer answering approvals asks you less than you answering them.
+  const ra = a.reviewer && a.reviewer !== "user" ? 1 : 0;
+  const rb = b.reviewer && b.reviewer !== "user" ? 1 : 0;
+  return pa > pb || sa > sbb || ra > rb;
 }
 
 /** A thread whose permissions aren't known (no turn yet, nothing remembered). */
@@ -88,10 +106,13 @@ export function sandboxOf(p: any): SandboxMode | undefined {
  * The mode a thread's settings are: one of the presets, or their own combination as
  * "<policy>+<sandbox>" (shown as it is, and never loosened to a preset). Undefined when unknown.
  */
-export function modeOf(approvalPolicy: unknown, sandbox: unknown): string | undefined {
+export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unknown): string | undefined {
+  if (approvalPolicy === undefined || approvalPolicy === null || sandbox === undefined || sandbox === null) return undefined;
   const sb = sandboxOf(sandbox);
-  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb) return undefined;
-  return Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
+  // Settings Tether can't express (a granular policy, an external sandbox): known to be other, so custom.
+  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb) return CUSTOM_MODE;
+  const base = Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
+  return typeof reviewer === "string" && reviewer !== "user" ? `${base}${REVIEWS}` : base;
 }
 
 /** A model as model/list returns it. */
