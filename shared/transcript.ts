@@ -243,6 +243,8 @@ export interface LiveState {
    */
   queueHeld?: boolean;
   queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  /** messages that left the queue lately and how (the last few): sent to the harness, or cancelled */
+  queueGone?: { id: string; how: "sent" | "cancelled" }[];
   /**
    * Settings changed while a turn runs, on a harness where that takes effect from the next turn
    * (capabilities.settingsApply "nextTurn"): what the running turn still runs with. Cleared when the

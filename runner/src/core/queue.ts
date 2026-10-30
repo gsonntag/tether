@@ -114,7 +114,7 @@ export class MessageQueue {
     }
     const m = s.state.queue.find((x) => x.id === msgId);
     this.save(s, s.state.queue.filter((x) => x.id !== msgId));
-    if (m) this.gone?.(s, m, "cancelled");
+    if (m) this.left(s, m, "cancelled");
   }
 
   async move(id: string, msgId: string, to: number) {
@@ -197,7 +197,7 @@ export class MessageQueue {
       this.going.delete(id);
       this.cancelledGoing.delete(next!.id);
       this.persist(s);
-      this.gone?.(s, next!, "sent");
+      this.left(s, next!, "sent");
     } catch (e: any) {
       this.going.delete(id);
       const cancelled = this.cancelledGoing.delete(next!.id);
@@ -210,7 +210,7 @@ export class MessageQueue {
       const how: HeldBy | undefined = stoppedHere ? ((this.releases.get(id) ?? 0) !== released ? undefined : "stopped") : busy ? undefined : "failed";
       if (cancelled) {
         this.persist(s);
-        this.gone?.(s, next!, "cancelled");
+        this.left(s, next!, "cancelled");
       } else this.save(s, [next!, ...s.state.queue], how);
       if (how === undefined) this.later(id);
     } finally {
@@ -225,6 +225,16 @@ export class MessageQueue {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent has no queue. Message the main session instead.");
     return s;
+  }
+
+  /**
+   * A message left the queue for good: every device hears how (`queueGone`), so an edit that missed
+   * it can say whether it went out or was cancelled; then the `gone` hook (a `!` card).
+   */
+  private left(s: Session, m: QueuedMessage, how: "sent" | "cancelled") {
+    const recent = [...(s.state.queueGone ?? []).filter((g) => g.id !== m.id), { id: m.id, how }].slice(-10);
+    s.setState({ queueGone: recent });
+    this.gone?.(s, m, how);
   }
 
   /** The queue with the message going out (until the harness has it). */

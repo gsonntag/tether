@@ -339,6 +339,22 @@ describe("the queue", () => {
     expect(s.state.queue).toEqual([]);
   });
 
+  test("every device hears how a message left the queue: sent, or cancelled (an edit that missed it says which)", async () => {
+    const { adapter, live, core, end } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "busy");
+    const a = await live.queue.add("claude:s1", "a", []);
+    const b = await live.queue.add("claude:s1", "b", []);
+    await live.queue.cancel("claude:s1", b.id);
+    end();
+    const s = await core.open("claude:s1");
+    await until(() => (s.state.queueGone ?? []).length === 2);
+    expect(s.state.queueGone).toEqual([
+      { id: b.id, how: "cancelled" },
+      { id: a.id, how: "sent" },
+    ]);
+  });
+
   test("the message going out counts against the limits", async () => {
     const { adapter, live, core, driver, end } = setup();
     adapter.addStored("s1", []);
