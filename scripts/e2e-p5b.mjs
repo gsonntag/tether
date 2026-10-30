@@ -11,7 +11,7 @@
 //   CRASH_RUNNER    a command that kills the dev runner with SIGKILL, which then starts again (for `crash`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   claude midturn stop stubborn hold huge runaway phone copy webkit spoof restart crash shell handoff phonetoggle codex
+//   claude midturn stop stubborn hold huge runaway phone copy webkit needs race spoof restart crash shell handoff phonetoggle codex
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -425,6 +425,16 @@ const steps = {
     if (!(await ph.getByRole("button", { name: "Control C", exact: true }).isDisabled())) fail("the key bar still types behind the copy sheet");
     await button(ph.locator(".t-term-copy"), "Done").tap();
     await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
+    // `exit` in the shell in front is like ×: it leaves the list, the next one comes forward.
+    if ((await p.locator(".t-term-x").count()) < 2) await p.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).click();
+    await p.waitForFunction(() => document.querySelectorAll(".t-term-x").length >= 2, null, { timeout: 15_000 });
+    const before = await p.locator(".t-term-x").count();
+    const front = await p.locator(".t-term-tab[aria-selected=true]").innerText();
+    await p.locator(".t-term-box").click({ force: true });
+    await p.keyboard.type("exit", { delay: 5 });
+    await p.keyboard.press("Enter");
+    await p.waitForFunction((n) => document.querySelectorAll(".t-term-x").length === n - 1, before, { timeout: 15_000 });
+    if ((await p.locator(".t-term-tab[aria-selected=true]").innerText()) === front) fail("exit left the closed shell in front");
     // Closing the last shell closes the panel (shells come first; the agent's terminal only on purpose).
     for (let i = 0; i < 10 && (await p.locator(".t-term-x").count()); i++) {
       await p.locator(".t-term-x").first().click();
@@ -473,6 +483,55 @@ const steps = {
       await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
       const key = await shellKey(ph);
       await waitScreen(ph, key, /\$ *$|# *$|> *$/m, "a shell prompt in WebKit");
+      // Every key in reach, no sideways scrolling, at both widths.
+      for (const w of [375, 393]) {
+        await ph.setViewportSize({ width: w, height: 739 });
+        await sleep(300);
+        const out = await ph.evaluate((w) => [...document.querySelectorAll(".t-key")].filter((k) => { const r = k.getBoundingClientRect(); return r.left < 0 || r.right > w || r.width < 44 || r.height < 44; }).map((k) => k.textContent), w);
+        if (out.length) fail(`keys out of reach at ${w} px: ${out}`);
+      }
+      // A swipe scrolls the terminal (tmux has the mouse); a tap still focuses it.
+      await ph.locator(".t-term-line input").fill("seq 1 500");
+      await button(ph.locator(".t-term-line"), "Send line").tap();
+      await waitScreen(ph, key, /^500$/m, "the output in WebKit");
+      // WebKit won't let a page build a Touch, so these are plain Events carrying a touches list. They
+      // reach TermView's listeners and tmux, but not the browser's own gesture handling: nothing here
+      // shows that a real finger gets this far on an iPhone (P5b.md, I5d: that's by hand).
+      const swipe = (from, to) =>
+        ph.locator(".t-term-box").evaluate(async (el, [from, to]) => {
+          const r = el.getBoundingClientRect();
+          const target = el.querySelector(".xterm-screen") ?? el;
+          const fire = (type, y) => {
+            const point = { identifier: 1, target, clientX: r.left + 100, clientY: r.top + y, pageX: r.left + 100, pageY: r.top + y };
+            const down = type === "touchend" ? [] : [point];
+            const e = new Event(type, { bubbles: true, cancelable: true });
+            for (const list of ["touches", "targetTouches"]) Object.defineProperty(e, list, { value: down });
+            Object.defineProperty(e, "changedTouches", { value: [point] });
+            target.dispatchEvent(e);
+            return e.defaultPrevented;
+          };
+          fire("touchstart", from);
+          let held = true;
+          for (let i = 1; i <= 10; i++) {
+            await new Promise((go) => setTimeout(go, 16));
+            held = fire("touchmove", from + ((to - from) * i) / 10) && held;
+          }
+          fire("touchend", to);
+          return held;
+        }, [from, to]);
+      if (!(await swipe(100, 400))) fail("a swipe's touchmove wasn't cancelled (the listener must not be passive)");
+      const scrolled = async () => !/^500$/m.test((await screen(ph, key)).lines.join("\n"));
+      for (let i = 0; i < 30 && !(await scrolled()); i++) await sleep(100);
+      if (!(await scrolled())) fail("a swipe didn't scroll the terminal");
+      await sleep(1200);
+      for (let i = 0; i < 12 && (await scrolled()); i++) {
+        await swipe(400, 100);
+        await sleep(400);
+      }
+      if (await scrolled()) fail("a swipe back didn't return to the end");
+      await ph.locator(".t-term-box").tap();
+      await sleep(300);
+      if (!(await ph.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))) fail("a tap didn't focus the terminal");
       await ph.locator(".t-term-line input").fill("echo WEBKIT-COPY-$((5*5))");
       await button(ph.locator(".t-term-line"), "Send line").tap();
       await waitScreen(ph, key, /WEBKIT-COPY-25/, "the line ran in WebKit");
@@ -506,13 +565,64 @@ const steps = {
       }
       await shot(ph, "webkit-driving");
       await button(ph.locator(".t-term-panel"), "Back to Tether").tap();
+      await button(ph.locator(".t-term-ask", { hasText: "Close Claude Code in the terminal?" }), "Close and go back").tap();
       await waitState(ph, (s) => s.mode === "live" && !s.terminal, "back in Tether (WebKit)", 60_000);
       // Back to Tether from the agent's tab closes the panel.
       await ph.locator(".t-term-panel").waitFor({ state: "detached", timeout: 15_000 });
-      ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps; with two shells, Claude Code ● (driving) stayed wholly in view at 375 and 393 px");
+      ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys all in reach and answering taps, a synthetic swipe (plain Events, not a real finger) scrolled the terminal and came back, a tap focused it; with two shells, Claude Code ● (driving) stayed wholly in view at 375 and 393 px");
     } finally {
       await wk.close();
     }
+  },
+
+  async needs() {
+    // A phone in a shell, Claude asks: a dot on Chat (the dock is behind the panel), and the phone
+    // no longer counts as looking at the session, so a notification can reach it.
+    const d = await page(desktop, claude);
+    await composer(d).waitFor();
+    const id = idOf(claude);
+    await rpcVia(d, "setPermissionMode", { sessionId: id, mode: "default" });
+    const ph = await page(phone, claude);
+    await composer(ph).waitFor();
+    await ph.locator(".t-chip-term").tap();
+    await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
+    if (await ph.locator(".t-term-chat .t-dot").count()) fail("a dot with nothing waiting");
+    await send(d, "Use the Write tool to create the file needs-p5b.txt containing: hi. Then reply DONE.");
+    await waitState(ph, (s) => s.requests.length > 0, "a request", 120_000);
+    await ph.locator(".t-term-chat .t-dot[aria-label='Needs you']").waitFor({ timeout: 10_000 });
+    await shot(ph, "needs-phone");
+    await rpcVia(d, "interrupt", { sessionId: id });
+    await waitState(ph, (s) => s.status === "idle" && !s.requests.length, "stopped", 60_000);
+    await ph.locator(".t-term-chat .t-dot").waitFor({ state: "detached", timeout: 10_000 });
+    await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
+    await rpcVia(d, "setPermissionMode", { sessionId: id, mode: "bypassPermissions" });
+    await rpcVia(d, "resumeQueue", { sessionId: id }).catch(() => {});
+    ok("a request from a shell on a phone: an amber dot on Chat, gone when it closed");
+    await ph.close();
+    await d.close();
+  },
+
+  async race() {
+    // ❯_ then the agent's entry at once, busy, no shell yet: the shell opening never takes the question away.
+    const p = await page(desktop, claude);
+    await composer(p).waitFor();
+    const { shells } = (await rpcVia(p, "listShells", { projectPath: SCRATCH })).ok;
+    for (const s of shells) await rpcVia(p, "closeShell", { shellId: s.id });
+    await send(p, SLOW);
+    await running(p);
+    await waitState(p, (s) => s.status === "running", "running");
+    await p.evaluate(() => document.querySelector(".t-chip-term").click());
+    await p.locator(".t-term-agent").click({ timeout: 5000 });
+    await p.locator(".t-term-panel .t-term-ask").waitFor({ timeout: 10_000 });
+    await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().waitFor({ timeout: 15_000 });
+    await sleep(1000);
+    if (!(await p.locator(".t-term-panel .t-term-ask").count())) fail("the shell opening took the question away");
+    if ((await p.locator(".t-term-title").innerText()) !== "Claude Code") fail("the shell opening took the tab away");
+    await button(p.locator(".t-term-ask"), "Keep working").click();
+    await rpcVia(p, "interrupt", { sessionId: idOf(claude) });
+    await idle(p, 120_000);
+    ok("❯_ then Claude Code at once while a shell was opening: the question stayed, the tab stayed on Claude Code");
+    await p.close();
   },
 
   async restart() {

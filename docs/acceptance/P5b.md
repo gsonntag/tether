@@ -1,8 +1,8 @@
 # P5b acceptance: shell from the main UI
 
-Manual checks for P5b: `!` commands in the composer (SPEC §9 Shell commands), and the ❯_ chip's two
-choices, **Shell** beside the live session and the **agent's terminal** (SPEC §8 Shell beside the
-chat vs the agent's terminal). Each check gives exact steps and the expected result. "Desktop" means
+Manual checks for P5b: `!` commands in the composer (SPEC §9 Shell commands), and the ❯_ button, which opens a
+shell beside the live session, with the panel's **Claude Code** / **Codex** entry as the only way to
+drive the agent from its terminal (SPEC §8). Each check gives exact steps and the expected result. "Desktop" means
 a browser window at least 1024 px wide; "phone" a real phone, or a browser at 375 × 812 with touch
 emulation. "Two devices" means two browsers (or a browser and a phone) on the same app at once.
 
@@ -179,7 +179,7 @@ B3. **Hold after Stop.** Slow prompt; `!echo HELD-OUTPUT`; press Esc (Stop).
 → The queue says "Paused after Stop. Send something, or resume."; the card says "Waiting in queue ·
 goes to Claude (paused after Stop)" and stays so. Press **Resume** → Sent to Claude.
 
-B4. **Hold through a handoff.** Slow prompt; `!echo HANDOFF-HELD`; ❯_ → Claude terminal → Stop and
+B4. **Hold through a handoff.** Slow prompt; `!echo HANDOFF-HELD`; ❯_ → Claude Code → Stop and
 open terminal.
 → The card says "(until you're back from the terminal)". Back to Tether → it goes, Sent to Claude.
 
@@ -191,7 +191,7 @@ Tether sends it.
 B5b. **The hint with a held queue** (`handoff`). Stop a turn with a message queued, then type `!`.
 → "the output waits in the queue, paused after Stop (Resume or send something to let it go)". After
 a failed turn: "paused after a failed turn"; after a restart: "paused after a restart".
-Then hand off to the Claude terminal with the queue still paused: the hint still says "paused after
+Then hand off to Claude Code with the queue still paused: the hint still says "paused after
 Stop" (the pause outlives the round trip; it isn't "when you go Back to Tether"), and a busy handoff
 asks "Stop this turn and open the terminal? The 2 queued messages stay paused." (an idle one opens at
 once: nothing new waits on the terminal).
@@ -325,6 +325,9 @@ Closing the shell in front brings another one forward; closing the last one clos
 (shells come first: the agent's terminal never opens by itself), unless Claude Code is driving, then
 its terminal comes to the front.
 
+G3b. **`exit` in a shell** (`copy`). `exit` (or ^D) in the shell in front.
+→ As ×: it leaves the list at once, the next shell comes forward, or the panel closes.
+
 G4. **Codex.** On a Codex session, ❯_ → as G1 (the entry "Codex").
 
 ## H. Claude Code from the panel (`handoff`)
@@ -341,13 +344,18 @@ H2. **Back to a shell.** Click Shell 1 (or close the panel and press ❯_).
 **Back to Tether** stays in the header.
 
 H3. **Back to Tether** (from a shell).
-→ The session goes live; the shell stays in front; the panel stays open; the entry reads Claude Code.
+→ It asks "Close Claude Code in the terminal?" with **Close and go back**. Then the session goes live;
+the shell stays in front; the panel stays open; the entry reads Claude Code.
 
 H4. **Busy Claude.** Slow prompt, Shell 1 in front, click Claude Code.
 → In the panel: "Stop this turn and open the terminal?" with **Stop and open terminal** / **Keep
 working**; the view shows "Claude isn't open in the terminal." with the explanation. Keep working →
 the question goes, the turn goes on, nothing handed over. Again → Stop and open terminal → handed
 over.
+
+H4d. **❯_ then the entry at once** (`race`). A slow prompt, no shells yet: press ❯_ and click Claude Code
+straight away.
+→ The question stays and Claude Code stays in front when the shell finishes opening.
 
 H4c. **The question follows its tab** (`handoff`). With "Stop this turn and open the terminal?" up
 in the panel, click a shell.
@@ -385,6 +393,23 @@ I4. With Claude Code in front, Chat → the pill says "Back to Claude Code".
 
 I5. Nothing scrolls sideways at 375 px in either view.
 
+I5a. **Needs you from a shell** (`needs`). Phone in a shell; Claude asks for an approval.
+→ An amber dot on **Chat**, gone when the request closes. With the panel in front the phone doesn't
+count as looking at the session, so a notification arrives (**Phone only**: needs push). With the
+panel tucked away it counts again.
+
+I5c. **Keys** (`webkit`). At 375 and 393 px the key bar is two rows of five; every key is on screen, at
+least 44 × 44, no sideways scrolling.
+
+I5d. **Swipe** (`webkit`). `seq 1 500`, then swipe down on the terminal.
+→ It scrolls to older lines, with a short glide; swiping up returns to the end. A tap still focuses
+the terminal, and the Copy sheet still selects with a long press.
+The `webkit` step sends plain Events with a touches list, which reach the listeners and tmux but not
+the browser's gesture handling: a real finger on a real iPhone is checked by hand.
+
+I5e. **The TUI exits while tucked.** Claude Code in front, Chat, then /exit from another device.
+→ The panel stays tucked; it doesn't jump over the chat.
+
 I5b. **Driving, on a phone** (`webkit`, WebKit iPhone 14 Pro). Two or more shells, then tap Claude Code.
 → The row's shells scroll, but the agent's entry stays put at its end and wholly on screen at 375 and
 393 px, reading **Claude Code ●** (an amber dot; "· driving" for screen readers; Codex joined: a green
@@ -399,12 +424,12 @@ J1. Desktop has Shell 1 open beside the chat; the phone opens the same session.
 → The phone's composer messages Claude as usual; the phone's ❯_ opens a shell too.
 
 J2. The desktop clicks Claude Code (handoff); on the phone:
-→ The banner "Driving in the terminal" shows; the composer's placeholder says "Type into Claude in
-the terminal"; `!echo X` from the phone still runs, its output waits for Back to Tether.
+→ The banner "Driving in the terminal" shows; the composer's placeholder says "Claude gets this when
+you go Back to Tether"; `!echo X` from the phone still runs, its output waits for Back to Tether.
 
 J3. Every place names the surface (`handoff`): the list ("Shell n", "Claude Code", "Claude Code ·
 driving"), the transcript banner (only once driving) and its **Open
-Claude Code** button, the composer's placeholder ("Type into Claude in the terminal"), the card
+Claude Code** button, the composer's placeholder ("Claude gets this when you go Back to Tether"), the card
 ("Sent to Claude"). No place says just "Terminal" for the agent's TUI, and no "Driving" wording
 shows before Claude Code is clicked.
 
@@ -444,9 +469,14 @@ shell's history is full (`seq 1 30000`), the sheet says "The newest text (older 
 before that it says nothing of the kind. (The 2 MB cap on what travels is a backstop a full history
 rarely reaches.)
 
+K5c. **Copy all failing.** Where the browser refuses the copy, the button says "Couldn't copy:
+selected" with the text left selected, never "Copied". After Done or Esc on desktop the keyboard is
+back in the terminal.
+
 K5b. **The sheet follows its terminal** (`copy`). The sheet's head names its source ("Copy text ·
 Shell 1"). With it open, go to another shell or to Claude Code: it closes (Copy all never copies a
-terminal you're not looking at, and nothing is handed over behind it). Esc closes it. On a phone,
+terminal you're not looking at, and nothing is handed over behind it). A tab change while the text
+is loading opens no sheet. Esc closes it. On a phone,
 while it's open the key bar and the line are off.
 
 K7. **Widths, desktop.** Drag the sidebar's right edge and the terminal panel's left edge (the

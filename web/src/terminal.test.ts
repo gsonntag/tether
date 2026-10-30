@@ -179,6 +179,40 @@ test("the first attach's error reaches the caller (the busy prompt's race)", asy
   await expect(c.open(80, 24)).rejects.toThrow(/turn is running/);
 });
 
+test("a swipe is wheel notches: a tap isn't, the finger down goes to older lines, and it glides only if still moving", async () => {
+  const { Swipe, wheelSeq } = await import("./terminal");
+  expect(wheelSeq(true, 2)).toBe("\x1b[<64;1;1M\x1b[<64;1;1M");
+  expect(wheelSeq(false)).toBe("\x1b[<65;1;1M");
+  const s = new Swipe(10);
+  s.start(100, 0);
+  expect(s.move(104, 10)).toBe(0); // a tap's wobble
+  expect(s.active).toBe(false);
+  expect(s.release(20)).toBe(0);
+  s.start(100, 0);
+  expect(s.move(125, 10)).toBe(2);
+  expect(s.move(130, 20)).toBe(1); // the half line carried over
+  expect(s.move(110, 30)).toBe(-2);
+  expect(s.release(40)).toBeLessThan(0);
+  expect(s.release(500)).toBe(0);
+});
+
+test("keys typed during a reattach go out when it's back", async () => {
+  const f = fake();
+  const c = new TermConn("r", { shellId: "s" }, { data: () => {}, reset: () => {}, status: () => {} }, f.deps);
+  await c.open(80, 24);
+  const id = c.attachId!;
+  c.onEnd("gone");
+  c.input("ab");
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(c.attachId).toBeDefined();
+  expect(c.attachId).not.toBe(id);
+  const sent = f.calls.filter((x) => x.op === "terminalInput");
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.args.attachId).toBe(c.attachId);
+  c.close();
+});
+
 test("the prompt before handing off, with the queue paused", () => {
   expect(handoffPrompt(true, 2, true)?.text).toBe("Stop this turn and open the terminal? The 2 queued messages stay paused.");
   expect(handoffPrompt(false, 1, true)).toBeNull();

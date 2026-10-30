@@ -303,9 +303,11 @@ driver ─► broker.decide(request) ─► [policy steps] ─► person (any de
 
 ### What the button does
 
-The **Terminal** button on a session opens the harness's real TUI, mirrored in the browser
-(xterm.js), resumed on the same session. While it's open, the structured view stays visible as a
-**read-only live transcript** (tailed from the store) with a banner: "Driving in the terminal".
+The ❯_ **Terminal** button opens a project shell beside the chat (below). The panel's entry named
+after the agent, **Claude Code** or **Codex**, opens the harness's real TUI, mirrored in the browser
+(xterm.js), resumed on the same session. While a handoff TUI drives, the structured view stays
+visible as a **read-only live transcript** (tailed from the store) with a banner: "Driving in the
+terminal".
 
 ### Shared (Codex)
 
@@ -353,10 +355,11 @@ If the TUI exits by itself (you typed `/exit`), the mode becomes `stored`.
 
 ### Project shells
 
-The terminal panel has tabs: the session's TUI, then the project's shells. **+** opens a plain
+The terminal panel lists the project's shells, then the agent's entry. **+ New shell** opens a plain
 `$SHELL` in the project folder (`tmux -L tether` window `shell:<projectKey>:<n>`). Shells belong to the
 project, not the session. They persist across closing the panel and runner restarts until you close
-them (× on the tab, or `exit`), so a dev server left running is still there next time.
+them (× in the list, or `exit`, which does the same: the next shell comes forward, or the panel
+closes), so a dev server left running is still there next time.
 
 ### The ❯_ button: a shell first, the agent's terminal only on purpose (P5b)
 
@@ -374,6 +377,10 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   Going back to a shell never hands back: **Back to Tether** stays the only way back.
 - No explanatory line: a shell needs no words, and which surface drives the agent shows on its
   entry ("Claude Code · driving", "Codex · joined"), whichever tab is in front, plus the banner.
+- On a phone the panel covers the requests dock: **Chat** shows an amber dot while a request or the
+  agent waits on you, and the phone doesn't count as looking at the session, so notifications reach
+  it. A swipe scrolls a terminal (a drag goes to tmux as wheel input, with a short glide); a tap
+  focuses it. Keys typed during a reattach are held a few seconds and sent.
 - On desktop the panel sits beside the transcript, and the sidebar's and the panel's inner edges
   drag to change their width (arrow keys too; a double click goes back to the default). The widths
   are kept per device; the transcript never gets narrower than 300 px, and the terminal refits as
@@ -409,7 +416,8 @@ On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
   by `attachId` and never broadcasts or stores them.
 - **Sizing:** the tether tmux server is set to `window-size latest`, so the device you're typing on
   sets the size. Switching devices reflows. Phone and desktop are treated equally.
-- **Phone:** a key bar above the keyboard (Esc, Tab, ↑, ↓, Ctrl-C, Ctrl-D, Enter) and a line under
+- **Phone:** a key bar above the keyboard, two rows so every key is in reach (Esc, Tab, ⇧Tab, ↑, ↓,
+  ←, →, Ctrl-C, Ctrl-D, Enter) and a line under
   it that types its text into the terminal in front, then Enter, as a keyboard would. Tether's
   composer never types into a handoff TUI (its messages wait for Back to Tether).
 

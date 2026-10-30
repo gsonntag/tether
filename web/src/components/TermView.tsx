@@ -7,7 +7,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { on, rpc } from "../connection";
 import { useStore } from "../store";
-import { TermConn, type TermDeps, type TermStatus, type TermTarget } from "../terminal";
+import { Swipe, TermConn, wheelSeq, type TermDeps, type TermStatus, type TermTarget } from "../terminal";
 import { copyable, plainDragSelects } from "../termSelect";
 
 const deps: TermDeps = {
@@ -137,6 +137,46 @@ export const TermView = forwardRef<
       el.addEventListener("mousedown", press, true);
       window.addEventListener("mouseup", released);
     }
+    // A swipe scrolls: tmux has the mouse, so xterm's own touch scrolling stands aside, and a drag
+    // goes to tmux as wheel notches (a tap stays a tap: it focuses the terminal).
+    const scroll = (lines: number) => {
+      if (!lines) return;
+      if (t.modes.mouseTrackingMode === "none") t.scrollLines(-lines);
+      else c.input(wheelSeq(lines > 0, Math.min(Math.abs(lines), 30)));
+    };
+    const swipe = new Swipe(Math.max(8, el.clientHeight / Math.max(1, t.rows)));
+    let glide = 0;
+    const touchStart = (e: TouchEvent) => {
+      cancelAnimationFrame(glide);
+      if (e.touches.length === 1) swipe.start(e.touches[0]!.clientY, e.timeStamp);
+    };
+    const touchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const lines = swipe.move(e.touches[0]!.clientY, e.timeStamp);
+      if (swipe.active) e.preventDefault();
+      scroll(lines);
+    };
+    const touchEnd = (e: TouchEvent) => {
+      let speed = swipe.release(e.timeStamp);
+      if (!speed) return;
+      // The glide: slows to a stop within about a second.
+      let carry = 0;
+      let last = performance.now();
+      const step = (now: number) => {
+        const dt = now - last;
+        last = now;
+        carry += speed * dt;
+        speed *= Math.pow(0.996, dt);
+        const lines = Math.trunc(carry);
+        carry -= lines;
+        scroll(lines);
+        if (Math.abs(speed) > 0.005) glide = requestAnimationFrame(step);
+      };
+      glide = requestAnimationFrame(step);
+    };
+    el.addEventListener("touchstart", touchStart, { passive: true, capture: true });
+    el.addEventListener("touchmove", touchMove, { passive: false, capture: true });
+    el.addEventListener("touchend", touchEnd, { passive: true, capture: true });
     const input = t.onData((d) => c.input(d));
     const binary = t.onBinary((d) => c.input(d));
     c.open(t.cols, t.rows, stop).then(
@@ -159,6 +199,10 @@ export const TermView = forwardRef<
       undoDrag?.();
       el.removeEventListener("mousedown", press, true);
       window.removeEventListener("mouseup", released);
+      cancelAnimationFrame(glide);
+      el.removeEventListener("touchstart", touchStart, true);
+      el.removeEventListener("touchmove", touchMove, true);
+      el.removeEventListener("touchend", touchEnd, true);
       ro.disconnect();
       input.dispose();
       binary.dispose();

@@ -79,7 +79,7 @@ export function TerminalPanel({
   const [askBack, setAskBack] = useState(false);
   const [line, setLine] = useState("");
   /** Copy: the terminal's text, scrollback included, shown where it can be selected */
-  const [copy, setCopy] = useState<{ title: string; text: string; cut: boolean; copied?: boolean } | null>(null);
+  const [copy, setCopy] = useState<{ title: string; text: string; cut: boolean; /** Copy all: it worked, or it didn't (the text is left selected) */ copied?: boolean } | null>(null);
   const view = useRef<TermViewHandle>(null);
   const root = useRef<HTMLDivElement>(null);
   // On a phone the panel covers the screen: its key bar and line stay above the keyboard.
@@ -115,6 +115,15 @@ export function TerminalPanel({
   }, [loadShells, linkOpen]);
 
   const tab = panel.tab;
+  const shellsNow = useRef(shells);
+  shellsNow.current = shells;
+  const tuiRunsNow = useRef(tuiRuns);
+  tuiRunsNow.current = tuiRuns;
+  /** Copy closes: the keys go back to the terminal (on a phone that would raise the keyboard). */
+  const closeCopy = () => {
+    setCopy(null);
+    if (!narrow()) view.current?.focus();
+  };
   const shell = tab === "tui" ? undefined : shells.find((s) => s.id === tab);
   const call = async (p: Promise<unknown>) => {
     setError(undefined);
@@ -133,19 +142,17 @@ export function TerminalPanel({
         setPanel((p) => shellOpened(p, sh.id, auto));
       }),
     );
-  const closeShell = (id: string) =>
-    call(
-      rpc(runnerId, "closeShell", { shellId: id }).then(() => {
-        const rest = shells.filter((x) => x.id !== id);
-        setShells(rest);
-        if (panel.tab !== id) return;
-        // Another shell comes to the front; the last one closed closes the panel (shells come first:
-        // the agent's terminal opens only when asked for).
-        if (rest[0]) setPanel({ ...panel, tab: rest[0].id });
-        else if (!tuiRuns) onClose();
-        else setPanel({ ...panel, tab: "tui" });
-      }),
-    );
+  /** A shell is gone (×, or `exit` in it). Another comes to the front; the last one closes the panel (shells come first: the agent's terminal opens only when asked for). */
+  const shellGone = (id: string) => {
+    const rest = shellsNow.current.filter((x) => x.id !== id);
+    shellsNow.current = rest;
+    setShells(rest);
+    if (tabNow.current !== id) return;
+    if (rest[0]) setPanel((p) => p && { ...p, tab: rest[0]!.id });
+    else if (!tuiRunsNow.current) onClose();
+    else setPanel((p) => p && { ...p, tab: "tui" });
+  };
+  const closeShell = (id: string) => call(rpc(runnerId, "closeShell", { shellId: id }).then(() => shellGone(id)));
   // "Shell": the project's first shell, or a new one (once; a failure says why and stays).
   const autoTried = useRef(false);
   useEffect(() => {
@@ -157,11 +164,14 @@ export function TerminalPanel({
   }, [tab, shellsLoaded, shells]);
 
   // The Copy sheet belongs to the terminal it was made from: another tab closes it.
-  useEffect(() => setCopy(null), [tab]);
+  useEffect(() => {
+    setCopy(null);
+    setError(undefined);
+  }, [tab]);
   // Esc closes it.
   useEffect(() => {
     if (!copy) return;
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setCopy(null);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && closeCopy();
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
   }, [!!copy]);
@@ -182,7 +192,7 @@ export function TerminalPanel({
     );
   };
   const onTuiStatus = (s: TermStatus) => {
-    if (s === "ended") setPanel({ ...panel, wantTui: false, stop: false });
+    if (s === "ended") setPanel((p) => p && { ...p, wantTui: false, stop: false });
   };
   const sendLine = async () => {
     const text = line.trim() ? line : "";
@@ -209,6 +219,8 @@ export function TerminalPanel({
         ? "That shell has closed"
         : undefined;
   const agentState = handoff ? "driving" : state.terminal?.kind === "shared" ? "joined" : undefined;
+  // The dock is behind the panel on a phone: Chat shows that something waits there.
+  const needsYou = state.requests.length > 0 || state.status === "waiting" || !!state.terminal?.attention;
   const title = tab === "tui" ? harness : shell ? `Shell ${shell.n}` : "Shell";
 
   /** Copy: the text of the terminal in front (scrollback too), in a sheet where it can be selected. */
@@ -217,12 +229,15 @@ export function TerminalPanel({
       (async () => {
         const attachId = view.current?.attachId();
         if (!attachId) throw new Error("Nothing to copy: the terminal isn't attached yet.");
+        const from = tab;
         const r = await rpc(runnerId, "terminalText", { attachId });
-        setCopy({ title, text: r.text, cut: r.cut });
+        // Another tab came forward meanwhile: this text is no longer what's in front.
+        if (tabNow.current === from) setCopy({ title, text: r.text, cut: r.cut });
       })(),
     );
   const copyAll = async () => {
     if (!copy) return;
+    let copied = true;
     try {
       await navigator.clipboard.writeText(copy.text);
     } catch {
@@ -233,9 +248,13 @@ export function TerminalPanel({
       const sel = getSelection();
       sel?.removeAllRanges();
       sel?.addRange(range);
-      document.execCommand?.("copy");
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
     }
-    setCopy({ ...copy, copied: true });
+    setCopy({ ...copy, copied });
   };
 
   return (
@@ -266,7 +285,10 @@ export function TerminalPanel({
           />
           {narrow() && (
             // A phone: the chat, with the terminal kept as it is behind it.
-            <Button label="Chat" size="sm" variant="secondary" icon={<Icon icon={ChatBubbleLeftRightIcon} size="sm" />} onClick={() => setPanel({ ...panel, hidden: true })} />
+            <span className="t-term-chat">
+              <Button label="Chat" size="sm" variant="secondary" icon={<Icon icon={ChatBubbleLeftRightIcon} size="sm" />} onClick={() => setPanel({ ...panel, hidden: true })} />
+              {needsYou && <span className="t-dot waiting" role="img" aria-label="Needs you" />}
+            </span>
           )}
           <IconButton label="Close terminal panel" tooltip="Close (the terminal keeps running)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
@@ -351,7 +373,7 @@ export function TerminalPanel({
               <span>Opening a shell…</span>
             </div>
           ) : shell ? (
-            <TermView key={shell.id} ref={view} runnerId={runnerId} target={{ shellId: shell.id }} />
+            <TermView key={shell.id} ref={view} runnerId={runnerId} target={{ shellId: shell.id }} onStatus={(s) => s === "ended" && shellGone(shell.id)} />
           ) : (
             <div className="t-term-empty">
               <span>That shell has closed.</span>
@@ -362,8 +384,8 @@ export function TerminalPanel({
               <div className="t-term-copy-head">
                 <span className="t-term-copy-title">Copy text · {copy.title}</span>
                 <span className="t-term-copy-note">{copy.cut ? "The newest text (older lines left out). Select some, or" : "Select some, or"}</span>
-                <Button label={copy.copied ? "Copied" : "Copy all"} size="sm" variant="primary" onClick={() => void copyAll()} />
-                <Button label="Done" size="sm" variant="secondary" onClick={() => setCopy(null)} />
+                <Button label={copy.copied === undefined ? "Copy all" : copy.copied ? "Copied" : "Couldn't copy: selected"} size="sm" variant="primary" onClick={() => void copyAll()} />
+                <Button label="Done" size="sm" variant="secondary" onClick={closeCopy} />
               </div>
               <pre
                 className="t-term-copytext"

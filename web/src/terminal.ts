@@ -60,6 +60,10 @@ function wire(d: TermDeps): Wiring {
   return w;
 }
 
+/** Keys typed while a terminal reattaches: kept this long, and at most this much. */
+const HELD_KEYS_MS = 5000;
+const HELD_KEYS_MAX = 4096;
+
 /** What "exited" etc. mean to a person. */
 const ENDED = new Set(["exited"]);
 
@@ -77,6 +81,8 @@ export class TermConn {
   private attachedOnce = false;
   /** the first attach waits for the runner (it was offline when the view opened) */
   private first?: { stop: boolean };
+  /** keys typed while the attach is away (a reattach): sent when it's back, if that's soon */
+  private held: { at: number; text: string }[] = [];
   private w: Wiring;
 
   constructor(
@@ -127,6 +133,10 @@ export class TermConn {
         this.attachId = r.attachId;
         this.w.routes.set(r.attachId, this);
         this.set("open");
+        const now = Date.now();
+        const keys = this.held.filter((k) => now - k.at < HELD_KEYS_MS).map((k) => k.text).join("");
+        this.held = [];
+        if (keys) this.input(keys);
         const e = this.w.early.get(r.attachId);
         this.w.early.delete(r.attachId);
         for (const c of e?.chunks ?? []) this.cb.data(c);
@@ -190,7 +200,12 @@ export class TermConn {
 
   /** Keys as typed (xterm's onData: a string of characters and escape sequences). */
   input(text: string) {
-    if (!this.attachId || !text) return;
+    if (!text || this.closed || this.status === "ended") return;
+    if (!this.attachId) {
+      // Reattaching: kept a moment, not dropped.
+      if (this.held.reduce((n, k) => n + k.text.length, 0) + text.length <= HELD_KEYS_MAX) this.held.push({ at: Date.now(), text });
+      return;
+    }
     void this.d.rpc(this.runnerId, "terminalInput", { attachId: this.attachId, data: encodeChunk(new TextEncoder().encode(text)) }).catch(() => {});
   }
 
@@ -236,6 +251,55 @@ export const KEYS: { label: string; aria: string; data: string }[] = [
   { label: "^D", aria: "Control D", data: "\x04" },
   { label: "⏎", aria: "Enter", data: "\r" },
 ];
+
+/** A wheel notch as a terminal mouse report (SGR), at cell 1;1. `up`: towards older lines. */
+export const wheelSeq = (up: boolean, n = 1) => `\x1b[<${up ? 64 : 65};1;1M`.repeat(n);
+
+/** A finger's travel before it counts as a swipe, not a tap. */
+const SWIPE_SLOP = 10;
+
+/**
+ * A swipe on a terminal, as wheel notches. tmux has the mouse, so the terminal's own touch scrolling
+ * stands aside: a drag becomes wheel input for tmux. Lines: positive towards older (the finger
+ * going down). `release` gives the speed for the glide, in lines a millisecond.
+ */
+export class Swipe {
+  private lastY = 0;
+  private lastAt = 0;
+  private carry = 0;
+  private speed = 0;
+  active = false;
+
+  constructor(private lineHeight: number) {}
+
+  start(y: number, at: number) {
+    this.lastY = y;
+    this.lastAt = at;
+    this.carry = 0;
+    this.speed = 0;
+    this.active = false;
+  }
+
+  /** The finger moved: whole lines to scroll now. */
+  move(y: number, at: number): number {
+    const dy = y - this.lastY;
+    if (!this.active && Math.abs(dy) < SWIPE_SLOP) return 0;
+    this.active = true;
+    const dt = Math.max(1, at - this.lastAt);
+    this.speed = dy / this.lineHeight / dt;
+    this.lastY = y;
+    this.lastAt = at;
+    this.carry += dy / this.lineHeight;
+    const lines = Math.trunc(this.carry);
+    this.carry -= lines;
+    return lines;
+  }
+
+  /** The finger left: lines a millisecond to glide at (0: it stopped first). */
+  release(at: number): number {
+    return this.active && at - this.lastAt < 80 ? this.speed : 0;
+  }
+}
 
 /** The tab to open on for "Shell": the project's first shell, or a new one when it has none. */
 export const SHELL_TAB = "shell";

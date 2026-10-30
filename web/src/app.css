@@ -1961,3 +1961,27 @@
   flex: 0 1 var(--t-panel-w);
   min-width: 320px;
 }
+/* A phone: every key in reach without scrolling, two rows of five. */
+@media (max-width: 767px), (pointer: coarse) {
+  .t-keybar {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .t-key {
+    min-width: 0;
+    width: 100%;
+    height: 44px;
+  }
+}
+/* Chat: a dot when a request waits behind the panel. */
+.t-term-chat {
+  position: relative;
+  display: inline-flex;
+}
+.t-term-chat > .t-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  pointer-events: none;
+}

@@ -4,6 +4,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { setSessionCovered } from "../presence";
 import { openSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
@@ -70,6 +71,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // The TUI went away (Back to Tether, or it exited), whichever tab was in front: opening it again
   // is a new handoff, asked first when busy, never a reattach to what was (SPEC §8).
+  // A phone's panel covers the session: it doesn't count as looking at it (presence.ts).
+  const covering = !!panel && !panel.hidden && typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
+  useEffect(() => {
+    setSessionCovered(covering);
+    return () => setSessionCovered(false);
+  }, [covering]);
   // The handoff question belongs to the agent's tab: going to a shell dismisses it.
   const panelTab = panel?.tab;
   useEffect(() => {
@@ -151,7 +158,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       aria-label="Terminal"
       aria-pressed={panelShown}
       title={panel ? undefined : `A shell in this folder, beside the chat. ${agent} stays driven from here.`}
-      onClick={() => (panel ? setPanel(panelShown ? null : { ...panel, hidden: false }) : openShell())}
+      onClick={() => {
+        setAsk(null);
+        if (panel) setPanel(panelShown ? null : { ...panel, hidden: false });
+        else openShell();
+      }}
     >
       <span aria-hidden>❯_</span>
       <span>Terminal</span>
