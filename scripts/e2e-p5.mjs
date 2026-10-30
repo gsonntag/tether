@@ -10,7 +10,7 @@
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   home claude steer queue stopSend terminal restart codex attach push inbox relay
+//   home claude steer queue lostEdit stopSend terminal restart codex restartCodex attach push inbox relay
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -473,6 +473,8 @@ const steps = {
   },
 
   async restart() {
+    // A runner restart mid-turn: the turn goes on by itself (Tether's own continue message), and the
+    // queued message follows it, never held.
     if (!RESTART) return console.log("skip restart (set RESTART_RUNNER)");
     const a = await page(desktop, claude);
     await composer(a).waitFor();
@@ -483,15 +485,16 @@ const steps = {
     await composer(a).press("Tab");
     await a.locator(".t-queued", { hasText: "SURVIVED" }).waitFor();
     execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
-    await sleep(3000);
     const b = await page(phone, claude);
-    await waitState(b, (s) => s.queue.length === 1 && s.queueHeldBy === "restart", "the queue back after the restart, held", 60_000);
-    await b.locator(".t-queue", { hasText: "runner restarted" }).waitFor();
-    await shot(b, "queue-after-restart-phone");
-    await button(b.locator(".t-queue"), "Resume").tap();
-    await b.locator(".t-msg.user .t-bubble", { hasText: "SURVIVED" }).waitFor({ timeout: 60_000 });
-    await waitState(b, (s) => s.queue.length === 0 && s.status === "idle", "sent after Resume", 120_000);
-    ok("runner restarted mid-turn with a queued message: it came back (held, \"the runner restarted mid-turn\"); Resume on the phone sent it");
+    await b.getByText("The Tether runner restarted mid-turn; continuing.").waitFor({ timeout: 90_000 });
+    await b.locator(".t-msg.from", { hasText: "The Tether runner restarted while you were working" }).waitFor({ timeout: 60_000 });
+    await shot(b, "restart-continues-phone");
+    const held = await liveState(b);
+    if (held?.queueHeldBy === "restart") fail("the queue was held after an automatic continue");
+    await b.locator(".t-msg.user .t-bubble", { hasText: "SURVIVED" }).waitFor({ timeout: 180_000 });
+    await waitState(b, (s) => s.queue.length === 0 && s.status === "idle", "the queued message after the continue", 180_000);
+    if ((await row(b, idOf(claude)))?.unread === "failed") fail("Home says Failed for a continued turn");
+    ok("runner restarted mid-turn: Claude's turn went on by itself (Tether's notice and its continue message), and the queued message followed it, never held");
     await a.close();
     await b.close();
   },
@@ -520,6 +523,27 @@ const steps = {
     if (!/CODEX-QUEUED[\s\S]*CODEX-QUEUED/.test(t)) fail("the queued message didn't go out (or wasn't answered)");
     ok("Codex: steered into the running turn from desktop, queued from the phone; the queued message went out after the turn");
     await p.close();
+    await b.close();
+  },
+
+  async restartCodex() {
+    // Codex keeps the turn going in its daemon: the runner just rejoins; Tether sends nothing of its own.
+    if (!RESTART || !codex) return console.log("skip restartCodex (set RESTART_RUNNER; needs the codex step)");
+    const a = await page(desktop, codex);
+    await composer(a).waitFor();
+    await send(a, "Use the shell to run exactly: sleep 20   Then reply with exactly one word: KEPT");
+    await running(a);
+    await inCommand(a, /sleep 20/);
+    await composer(a).fill("Reply with exactly: CODEX-AFTER");
+    await composer(a).press("Tab");
+    await a.locator(".t-queued", { hasText: "CODEX-AFTER" }).waitFor();
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    const b = await page(desktop, codex);
+    await b.locator(".t-msg.user .t-bubble", { hasText: "CODEX-AFTER" }).waitFor({ timeout: 240_000 });
+    await waitState(b, (s) => s.queue.length === 0 && s.status === "idle", "Codex's queue after the rejoin", 240_000);
+    if (/The Tether runner restarted while you were working/.test(await transcriptText(b))) fail("Tether sent a continue to Codex, whose turn went on");
+    ok("Codex: the turn kept running in the daemon through the restart; the runner rejoined it (no continue message) and the queued message followed");
+    await a.close();
     await b.close();
   },
 

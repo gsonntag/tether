@@ -95,6 +95,16 @@ Transitions: `stored → live` (send something), `live → stored` (idle 5 minut
 `live ⇄ terminal` (Terminal button, §8), `stored → terminal` (Terminal button on a stored session),
 `terminal → stored` (the TUI exits).
 
+**A runner restart mid-turn continues the turn.** When the runner stops while a turn runs (an
+upgrade, a crash) and its harness didn't keep the turn going itself, the runner resumes the session
+when it starts again and sends Tether's own marked message ("The Tether runner restarted while you
+were working. Continue where you left off; …"), with the session's settings, as any send. The
+transcript shows it as Tether's, after a notice ("The Tether runner restarted mid-turn;
+continuing."). Waiting messages follow that turn as usual. Not for a session waiting on the person (a
+saved request is asked again instead), one the person stopped, or one whose TUI drives; and at most
+once in a row: a restart within 2 minutes of an automatic continue leaves the session for the person
+(Failed on Home, the queue held). A harness that keeps turns going (Codex's daemon) is just rejoined.
+
 - **Subagent:** a session too, with `parentSessionId` and `parentToolId` (the tool call that started
   it). It has the same transcript, paging and live events as any session, so the same view shows it.
   Details in §6a.
