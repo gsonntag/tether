@@ -232,6 +232,8 @@ test("a subagent: stopped and steered on its own thread", async () => {
   await d.stopSubagent("C");
   expect(daemon.calls("turn/steer")[0]).toMatchObject({ threadId: "C", expectedTurnId: "ct" });
   expect(daemon.calls("turn/interrupt")[0]).toEqual({ threadId: "C", turnId: "ct" });
+  // And the commands it left running (Codex's background terminals): interrupting alone doesn't end them.
+  expect(daemon.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "C" }]);
   daemon.say({ method: "turn/completed", params: { threadId: "C", turn: { id: "ct", status: "interrupted" } } });
   expect(d.busy()).toBe(false);
   expect(sink.children.get("C")!.endedCount).toBe(1);

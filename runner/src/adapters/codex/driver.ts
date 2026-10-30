@@ -502,13 +502,24 @@ export class CodexDriver implements Driver {
     await this.rpc.call("turn/steer", { threadId, input: input(text, attachments), expectedTurnId: turnId });
   }
 
-  /** Stops the turn, and the subagents running on its settings (they outlive it otherwise). */
+  /**
+   * Stops the turn, and the subagents running on its settings (they outlive it otherwise), and the
+   * commands they left running: interrupting a turn doesn't end a command already running in one
+   * of Codex's background terminals, which would go on with the old settings.
+   */
   async interrupt() {
     const turnId = this.stream.main.turnId;
     const children = this.stream.runningChildren().filter((c) => c.turnId);
-    await Promise.all(children.map((c) => this.rpc.call("turn/interrupt", { threadId: c.id, turnId: c.turnId }).catch(() => {})));
-    if (turnId) await this.rpc.call("turn/interrupt", { threadId: this.nativeId, turnId });
+    await Promise.all(children.map((c) => this.stopThread(c.id, c.turnId!)));
+    if (turnId) await this.stopThread(this.nativeId, turnId);
     else this.sink.state({ status: "idle" });
+  }
+
+  private async stopThread(threadId: string, turnId: string) {
+    await this.rpc.call("turn/interrupt", { threadId, turnId }).catch((e) => {
+      if (threadId === this.nativeId) throw e;
+    });
+    await this.rpc.call("thread/backgroundTerminals/clean", { threadId }, 10_000).catch(() => {});
   }
 
   async setModel(model: string) {
@@ -548,7 +559,7 @@ export class CodexDriver implements Driver {
 
   async stopSubagent(nativeId: string) {
     const turnId = this.stream.child(nativeId)?.turnId;
-    if (turnId) await this.rpc.call("turn/interrupt", { threadId: nativeId, turnId });
+    if (turnId) await this.stopThread(nativeId, turnId);
   }
 
   async steerSubagent(nativeId: string, text: string, attachments: Attachment[] = []) {
