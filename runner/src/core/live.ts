@@ -778,7 +778,9 @@ export class LiveControl {
     this.core.scheduleEvict(c);
     // The last subagent of a finished turn: nothing runs on the turn's settings any more.
     const parent = c.summary.parentSessionId ? this.core.sessions.get(c.summary.parentSessionId) : undefined;
-    if (parent && parent.state.status === "idle" && !parent.driver?.busy()) {
+    // Only for a subagent that ended by itself: one ended because the runner stops (or the process
+    // went away) may well go on in a harness that keeps it (persistent), and must be found again.
+    if (parent && parent.driver && !this.stopping && parent.state.status === "idle" && !parent.driver.busy()) {
       // A harness that reports what still runs (persistent) says so itself.
       if (parent.state.turnSettings && !parent.capabilities.persistent) parent.setState({ turnSettings: undefined });
       this.core.o.prefs.set(parent.id, { running: undefined });

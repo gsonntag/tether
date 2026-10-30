@@ -463,3 +463,13 @@ describe("P4 review 5: never running looser than shown", () => {
     expect(seen).toEqual(["full-access"]);
   });
 });
+
+test("a runner stop while a subagent outlives its turn keeps the session marked running (to be rejoined)", async () => {
+  const { adapter, live, prefs } = setup({ persistent: true, settingsApply: "nextTurn" });
+  adapter.addStored("s1", []);
+  adapter.script = () => [toolCall("m", "toolu_A", "Agent"), subagent("child-1", "toolu_A"), (_s, d) => void (d.isBusy = true), idle];
+  await live.send("claude:s1", "go");
+  expect(prefs.get("claude:s1").running).toBe(true);
+  await live.closeAll();
+  expect(prefs.get("claude:s1").running).toBe(true);
+});
