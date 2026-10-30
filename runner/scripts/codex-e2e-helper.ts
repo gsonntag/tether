@@ -4,18 +4,21 @@
 //   bun scripts/codex-e2e-helper.ts hold <thread id> <ms>    keeps the thread loaded from another client (as Codex's TUI would)
 //   bun scripts/codex-e2e-helper.ts set <thread id> <json>     changes its settings from another client
 //   bun scripts/codex-e2e-helper.ts turn <thread id> <prompt>  starts a turn from another client (as Codex's TUI would) and waits for it
-// `make` takes a sandbox as a 4th argument (default read-only).
+// `make` takes a sandbox as a 4th argument (default read-only). The thread always starts read-only and
+// the sandbox is pinned on its turn: thread/start with a writable one would make the daemon trust the
+// folder in ~/.codex/config.toml (P4.md, Folder trust).
 import { connect, resetShared } from "../src/adapters/codex/daemon";
 import { readThread, rolloutSettings } from "../src/adapters/codex/discovery";
+import { sandboxPolicy, type SandboxMode } from "../src/adapters/codex/modes";
 
 const [cmd, a, b] = process.argv.slice(2);
 if (cmd === "make") {
   const rpc = await connect("tether-e2e-helper");
-  const st = await rpc.call("thread/start", { cwd: a, model: b, approvalPolicy: "on-request", sandbox: process.argv[5] ?? "read-only", approvalsReviewer: "user" });
+  const st = await rpc.call("thread/start", { cwd: a, model: b, approvalPolicy: "on-request", sandbox: "read-only", approvalsReviewer: "user" });
   const id = st.thread.id;
   let done = false;
   rpc.onNotify((m, p) => m === "turn/completed" && p.threadId === id && (done = true));
-  await rpc.call("turn/start", { threadId: id, effort: "low", input: [{ type: "text", text: "Reply with just: MADE-ELSEWHERE", text_elements: [] }] });
+  await rpc.call("turn/start", { threadId: id, effort: "low", sandboxPolicy: sandboxPolicy((process.argv[5] ?? "read-only") as SandboxMode), input: [{ type: "text", text: "Reply with just: MADE-ELSEWHERE", text_elements: [] }] });
   for (let i = 0; i < 240 && !done; i++) await Bun.sleep(250);
   rpc.close();
   console.log(id);

@@ -12,7 +12,7 @@
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
 //   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
-//   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop claudeShiftTab stored
+//   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab stored
 // subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again).
 // claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
@@ -975,6 +975,11 @@ const steps = {
   },
 };
 
+// Nothing here may make the daemon trust SCRATCH in Codex's config (P4.md, Folder trust; only read).
+const codexConfig = `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/config.toml`;
+const trustsScratch = () => existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`);
+const trustedBefore = trustsScratch();
+
 const pick = process.argv.slice(2);
 try {
   for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "stored"]) {
@@ -986,6 +991,7 @@ try {
     await steps[name]();
   }
   if (errors.length) fail(`page errors:\n${errors.join("\n")}`);
+  if (!trustedBefore && trustsScratch()) fail(`${SCRATCH} is now trusted in ${codexConfig}`);
   console.log(`all passed; screenshots in ${SHOTS}`);
 } catch (e) {
   console.error(`FAIL ${e.message}`);

@@ -67,3 +67,13 @@ test("the built-in permission profiles (the TUI's /permissions) are their preset
   expect(modeOf("on-request", ww, "user", { id: ":read-only" })).toBe("custom");
   expect(modeOf("on-request", { ...ww, networkAccess: true }, "user", { id: ":workspace" })).toBe("custom");
 });
+
+test("a turn_context's profile: the id is in active_permission_profile (permission_profile is what it expands to, with no id)", async () => {
+  const { rolloutSettings } = await import("./discovery");
+  const ctx = (policy: string, sandbox: string, active: unknown) => JSON.stringify({ type: "turn_context", payload: { approval_policy: policy, sandbox_policy: { type: sandbox }, active_permission_profile: active, permission_profile: { type: "managed", network: "restricted" } } });
+  expect(rolloutSettings(ctx("on-request", "read-only", { id: ":read-only" })).mode).toBe("read-only");
+  expect(rolloutSettings(ctx("on-request", "workspace-write", { id: ":workspace" })).mode).toBe("auto");
+  expect(rolloutSettings(ctx("never", "danger-full-access", { id: ":danger-full-access" })).mode).toBe("full-access");
+  expect(rolloutSettings(ctx("on-request", "workspace-write", { id: "team" })).mode).toBe("custom");
+  expect(rolloutSettings(ctx("on-request", "workspace-write", null)).mode).toBe("auto");
+});
