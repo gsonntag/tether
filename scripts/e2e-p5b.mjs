@@ -426,19 +426,24 @@ const steps = {
       ph.on("pageerror", (e) => errors.push(String(e)));
       await ph.goto(claude, { waitUntil: "domcontentloaded" });
       await composer(ph).waitFor({ timeout: 60_000 });
+      // On a phone the shell prompt starts from the composer's + menu; the ❯ toggle then shows.
+      const plus = ph.getByRole("button", { name: "Attach or run a command" });
+      const start = async () => {
+        await plus.tap();
+        await ph.getByRole("menuitem", { name: /Run a shell command/ }).tap();
+        await ph.locator(".t-composer.shell").waitFor({ timeout: 5000 });
+      };
       const toggle = ph.getByRole("button", { name: "Shell command", exact: true });
-      await toggle.tap();
-      await ph.locator(".t-composer.shell").waitFor({ timeout: 5000 });
+      await start();
       if ((await composer(ph).inputValue()) !== "!") fail(`after a tap the box holds ${JSON.stringify(await composer(ph).inputValue())}`);
       if (!(await composer(ph).evaluate((el) => el === document.activeElement))) fail("the box lost focus");
       await composer(ph).pressSequentially("echo WEBKIT-TAP-OK");
       await button(ph.locator(".t-composer"), "Run").tap();
       await waitCard(ph, "sent", "WebKit card", 60_000);
-      // A second tap takes the ! off again.
+      // A tap on the ❯ toggle takes the ! off again.
+      await start();
       await toggle.tap();
-      await ph.locator(".t-composer.shell").waitFor({ timeout: 5000 });
-      await toggle.tap();
-      if (await ph.locator(".t-composer.shell").count()) fail("a second tap didn't take the ! off");
+      await ph.locator(".t-composer.shell").waitFor({ state: "detached", timeout: 5000 });
       await noOverflow(ph, "WebKit phone");
       await shot(ph, "webkit-phone");
       await idle(ph, 120_000);
@@ -467,7 +472,7 @@ const steps = {
       await button(ph.locator(".t-term-copy"), "Done").tap();
       await ph.getByRole("button", { name: "Control C", exact: true }).tap();
       await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
-      ok("WebKit, iPhone 14 Pro: tapping the ❯ toggle adds the ! (box focused), Run runs it, a tap takes it off again; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps");
+      ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps");
     } finally {
       await wk.close();
     }
@@ -693,6 +698,9 @@ const steps = {
   async phonetoggle() {
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
+    // The ❯_ button: pinned at the header's right edge, wholly on screen.
+    const tb = await ph.locator(".t-chip-term").boundingBox();
+    if (!tb || tb.x < 0 || tb.x + tb.width > 375 || tb.width < 44 || tb.height < 44) fail(`the terminal button at ${JSON.stringify(tb)}`);
     await ph.locator(".t-chip-term").tap();
     await ph.locator(".t-term-panel").waitFor();
     await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });

@@ -134,6 +134,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <button
       type="button"
       className="t-chip t-chip-term"
+      aria-label="Terminal"
       aria-pressed={panelShown}
       title={panel ? undefined : `A shell in this folder, beside the chat. ${agent} stays driven from here.`}
       onClick={() => (panel ? setPanel(panelShown ? null : { ...panel, hidden: false }) : openShell())}

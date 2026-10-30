@@ -1846,3 +1846,40 @@
     min-height: 0;
   }
 }
+
+/* The ❯_ Terminal button, pinned: at the right of the title row on desktop, at the right edge of
+   the one-row header on touch (never inside the chips' sideways scroll). */
+.t-header {
+  position: relative;
+}
+.t-header-pin {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+}
+.t-header:has(> .t-header-pin) > .t-header-top {
+  padding-right: 120px;
+}
+@media (pointer: coarse) {
+  .t-header-pin {
+    position: static;
+    flex: none;
+    margin-left: auto;
+  }
+  .t-header:has(> .t-header-pin) > .t-header-top {
+    padding-right: 0;
+  }
+  .t-header-pin .t-chip-term {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 10px;
+  }
+}
+@media (pointer: coarse) and (max-width: 420px) {
+  /* A narrow phone: the button is its glyph alone. */
+  .t-header-pin .t-chip-term > span:last-child {
+    display: none;
+  }
+}

@@ -99,9 +99,10 @@ export function SessionHeader({
             />
           </>
         )}
-        {extra}
         <SubagentChips runnerId={runnerId} children={children} />
       </div>
+      {/* The ❯_ button, pinned outside the chips (which scroll sideways on a phone): always on screen. */}
+      {extra && <div className="t-header-pin">{extra}</div>}
       {turn && !isChild && (
         <div className="t-inline-status t-turn-settings" role="status">
           <span>

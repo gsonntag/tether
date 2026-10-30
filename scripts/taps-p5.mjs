@@ -90,6 +90,15 @@ const boxW = Math.round((await box.boundingBox()).width);
 const headH = Math.round((await p.locator(".t-header").boundingBox()).height);
 checks.push([`composer box ${boxW} px wide at 375 (≥ 220) while a turn runs with text`, boxW >= 220]);
 checks.push([`header ${headH} px tall (≤ 56)`, headH <= 56]);
+// The ❯_ Terminal button is pinned at the header's right edge, wholly on screen, at 375 and 393 px.
+for (const w of [375, 393]) {
+  await p.setViewportSize({ width: w, height: 812 });
+  await p.waitForTimeout(300);
+  const t = await p.locator(".t-chip-term").boundingBox();
+  const inside = !!t && t.x >= 0 && t.x + t.width <= w && t.y >= 0 && t.width >= 44 && t.height >= 44;
+  checks.push([`the terminal button wholly on screen at ${w} px (x ${Math.round(t?.x ?? -1)}–${Math.round((t?.x ?? 0) + (t?.width ?? 0))}, ${Math.round(t?.width ?? 0)} × ${Math.round(t?.height ?? 0)})`, inside]);
+}
+await p.setViewportSize({ width: 375, height: 812 });
 await shot("running");
 await p.getByRole("button", { name: "More ways to send" }).tap();
 await p.getByRole("menuitem").first().waitFor();
