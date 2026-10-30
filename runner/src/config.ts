@@ -37,6 +37,8 @@ export interface SessionPrefs {
   running?: boolean;
   /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */
   cutOff?: boolean;
+  /** when Tether last continued a turn a restart cut off (a restart soon after doesn't continue again) */
+  autoContinuedAt?: number;
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */

@@ -42,6 +42,11 @@ export interface TerminalSeam {
   blocked(s: Session): string | undefined;
 }
 
+/** A runner restart within this long of an automatic continue doesn't continue again (no loops). */
+export const AUTO_CONTINUE_GUARD_MS = 2 * 60_000;
+/** What Tether tells the agent after a restart cut its turn off (marked as Tether's own). */
+export const AUTO_CONTINUE_TEXT = `${FROM_TETHER}The Tether runner restarted while you were working. Continue where you left off; if you were in the middle of a command, check whether it finished first.`;
+
 /** A send that Stop cancelled while the harness was starting: nothing went out. */
 export class SendCancelled extends Error {
   constructor() {
@@ -323,13 +328,51 @@ export class LiveControl {
     // A turn a restart cut off (its harness didn't keep it going): on Home, for you to pick up.
     // Recorded once: `running` becomes `cutOff` (the session's notice still goes in when it's read),
     // so a later restart doesn't bring it back after you marked it read.
+    // A turn a restart cut off goes on by itself (SPEC §4): Tether resumes the session with a short
+    // message of its own. Not for a session waiting on you (its saved request is asked again), nor
+    // twice in a row: a restart within AUTO_CONTINUE_GUARD_MS of an automatic continue falls back to
+    // Failed on Home and a held queue, for you to pick up.
+    const waiting = new Set(this.desk.broker.sessions(true));
+    const continuing: string[] = [];
     for (const id of this.core.o.prefs.running())
       if (!persistent(id) && parseSessionId(id)) {
+        const p = this.core.o.prefs.get(id);
+        if (!waiting.has(id) && !(p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS)) {
+          this.core.o.prefs.set(id, { running: undefined, cutOff: undefined, autoContinuedAt: this.core.now() });
+          this.queue.notCutOff(id);
+          continuing.push(id);
+          continue;
+        }
         this.read.set(id, { failure: "The runner restarted mid-turn." });
         this.core.o.prefs.set(id, { running: undefined, cutOff: true });
       }
+
     const ids = [...new Set([...this.core.o.prefs.running(), ...this.desk.broker.sessions(true)])].filter(persistent);
-    await Promise.all(ids.map((id) => this.rejoinOne(id)));
+    // Awaited (the queue is restored after this): a queued message never jumps ahead of the continue.
+    await Promise.all([...ids.map((id) => this.rejoinOne(id)), ...continuing.map((id) => this.autoContinue(id))]);
+  }
+
+  /**
+   * Continues a turn a runner restart cut off: Tether's notice in the transcript, then Tether's own
+   * message (marked, so it reads as Tether's) asking the agent to carry on. The session's settings go
+   * with it as with any send. If it can't, the session falls back to Failed and a held queue.
+   */
+  private async autoContinue(id: string) {
+    try {
+      const s = await this.core.open(id);
+      await this.core.load(s);
+      s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
+      await this.send(id, AUTO_CONTINUE_TEXT, [], { tether: true });
+      this.core.log(`${id}: continued the turn the restart cut off`);
+    } catch (e: any) {
+      this.core.log(`${id}: couldn't continue after the restart: ${e?.message ?? e}`);
+      this.read.set(id, { failure: "The runner restarted mid-turn." });
+      const s = this.core.sessions.get(id);
+      if (s) {
+        s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${e?.message ?? e}. Send a message to continue.`, "warning") });
+        this.queue.hold(s, "restart");
+      }
+    }
   }
 
   /** Rejoins one session, trying again a few times (the harness's daemon may be slow or restarting). */

@@ -66,6 +66,11 @@ export class MessageQueue {
     });
   }
 
+  /** This session's cut-off turn is being continued (live.ts autoContinue): its queue isn't held. */
+  notCutOff(id: string) {
+    this.cutOff.delete(id);
+  }
+
   /** What a session opened from runner.json starts with. */
   static saved(prefs: { queue?: QueuedMessage[]; queueHeldBy?: HeldBy }): Partial<LiveState> {
     const queue = Array.isArray(prefs.queue) ? prefs.queue : [];

@@ -13,7 +13,7 @@ import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import { FakeAdapter, FakeDriver, say, subagent, toolCall } from "./fakeAdapter";
-import { LiveControl } from "./live";
+import { AUTO_CONTINUE_TEXT, LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { SessionCore } from "./sessions";
 
@@ -569,7 +569,7 @@ describe("read state", () => {
     expect(summaries().some((u) => u.kind === "upsert" && u.sessions.some((x) => x.unread === "failed"))).toBe(true);
   });
 
-  test("a turn a restart cut off, and a paused queue, show on Home", async () => {
+  test("a turn a restart cut off goes on by itself; its queue follows it, not held, and Home shows no failure", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
     const a = setup({ dir });
     a.adapter.addStored("s1", []);
@@ -581,12 +581,17 @@ describe("read state", () => {
     b.adapter.addStored("s1", []);
     await b.live.rejoin();
     await b.live.queue.restore();
-    await b.core.discover();
-    const row = b.core.book.get("claude:s1")!;
-    expect(row).toMatchObject({ unread: "failed", failure: "The runner restarted mid-turn.", queued: 1, queuePaused: true });
+    const s = await b.core.open("claude:s1");
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+    expect(s.state.queueHeld).toBeUndefined();
+    expect(b.core.book.get("claude:s1")?.unread).toBeUndefined();
+    // The continue's turn ends: the queued message goes next.
+    b.end();
+    await until(() => b.driver().sent.length === 2);
+    expect(b.driver().sent[1]).toBe("two");
   });
 
-  test("a cut-off turn marked read stays read after another restart, and its queue isn't held again", async () => {
+  test("a restart soon after an automatic continue doesn't continue again: Failed on Home, the queue held", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
     const a = setup({ dir });
     a.adapter.addStored("s1", []);
@@ -598,21 +603,26 @@ describe("read state", () => {
     b.adapter.addStored("s1", []);
     await b.live.rejoin();
     await b.live.queue.restore();
-    expect(b.prefs.get("claude:s1").unread).toBe("failed");
-    // ✓ on Home, and the queue cancelled.
-    b.live.read.set("claude:s1", false);
-    const s = await b.core.open("claude:s1");
-    await b.live.queue.cancel("claude:s1", s.state.queue[0]!.id);
-    await b.live.queue.add("claude:s1", "three", []);
-    await b.live.queue.hold(s, "stopped");
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
     b.prefs.flush();
     b.core.stop();
+    // Cut off again within two minutes.
     const c = setup({ dir, prefsFile: a.prefsFile });
     c.adapter.addStored("s1", []);
     await c.live.rejoin();
     await c.live.queue.restore();
-    expect(c.prefs.get("claude:s1").unread).toBeUndefined();
-    expect((await c.core.open("claude:s1")).state.queueHeldBy).toBe("stopped");
+    expect(c.adapter.drivers).toHaveLength(0);
+    await c.core.discover();
+    expect(c.core.book.get("claude:s1")).toMatchObject({ unread: "failed", failure: "The runner restarted mid-turn.", queuePaused: true });
+    // ✓ on Home, then another restart: it doesn't come back.
+    c.live.read.set("claude:s1", false);
+    c.prefs.flush();
+    c.core.stop();
+    const d = setup({ dir, prefsFile: a.prefsFile });
+    d.adapter.addStored("s1", []);
+    await d.live.rejoin();
+    expect(d.prefs.get("claude:s1").unread).toBeUndefined();
+    expect(d.adapter.drivers).toHaveLength(0);
   });
 
   test("looking at a subagent reads its main session", async () => {

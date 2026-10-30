@@ -161,13 +161,13 @@ describe("persistent harnesses (capabilities.persistent)", () => {
     expect(prefs.get("claude:s1").running).toBeUndefined();
   });
 
-  test("a harness that isn't persistent: no rejoin, and the cut-off turn is reported", async () => {
+  test("a harness that isn't persistent: the cut-off turn is continued by Tether (not rejoined)", async () => {
     const { adapter, core, live } = await stoppedMidTurn({ persistent: false });
     await live.rejoin();
-    expect(adapter.drivers.length).toBe(0);
+    expect(adapter.drivers.length).toBe(1);
+    expect(adapter.drivers[0]!.sent[0]).toContain("The Tether runner restarted while you were working.");
     const s = await core.open("claude:s1");
-    await core.load(s);
-    expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "warning" });
+    expect(s.transcript!.messages.some((m) => m.role === "notice" && /restarted mid-turn; continuing/.test(JSON.stringify(m.parts)))).toBe(true);
   });
 });
 
