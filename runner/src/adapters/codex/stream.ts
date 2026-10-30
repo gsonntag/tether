@@ -72,6 +72,11 @@ export class CodexStream {
     return this.children.get(threadId);
   }
 
+  /** The items of a thread's current turn (its tool calls among them). */
+  turnItems(threadId: string): Set<string> {
+    return new Set(this.viewOf(threadId)?.parts.keys() ?? []);
+  }
+
   /** Every subagent thread this stream has opened. */
   childIds(): string[] {
     return [...this.children.keys()];
@@ -166,9 +171,9 @@ export class CodexStream {
    * A subagent found running when joining the thread (a runner restart): opened as if its spawn had
    * just been seen, under the call that spawned it when that's remembered.
    */
-  adoptChild(threadId: string, toolId: string | undefined, name?: string) {
+  adoptChild(threadId: string, toolId: string | undefined, name?: string, parent = this.main.id) {
     if (this.children.has(threadId)) return;
-    this.spawns.set(threadId, { toolId: toolId ?? threadId, parent: this.main.id });
+    this.spawns.set(threadId, { toolId: toolId ?? threadId, parent });
     if (name) this.info.set(threadId, { ...this.info.get(threadId), name });
     this.openChild(threadId);
   }

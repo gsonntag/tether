@@ -232,8 +232,8 @@ test("a subagent: stopped and steered on its own thread", async () => {
   await d.stopSubagent("C");
   expect(daemon.calls("turn/steer")[0]).toMatchObject({ threadId: "C", expectedTurnId: "ct" });
   expect(daemon.calls("turn/interrupt")[0]).toEqual({ threadId: "C", turnId: "ct" });
-  // And the commands it left running (Codex's background terminals): interrupting alone doesn't end them.
-  expect(daemon.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "C" }]);
+  // The commands it left running are looked up (none started by its turn here, so none ended).
+  expect(daemon.calls("thread/backgroundTerminals/clean")).toEqual([]);
   daemon.say({ method: "turn/completed", params: { threadId: "C", turn: { id: "ct", status: "interrupted" } } });
   expect(d.busy()).toBe(false);
   expect(sink.children.get("C")!.endedCount).toBe(1);
@@ -448,13 +448,13 @@ test("a change mid-turn (here or in Codex's TUI) shows the turn's own value; sub
   daemon.say({ method: "turn/started", params: { threadId: "C", turn: { id: "ct" } } });
   daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t1", status: "completed" } } });
   // The turn is over; its subagent still runs with its settings: said, with Stop.
-  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent" } });
+  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent", subagentSessionId: "codex:C" } });
   // A new turn (a queue drain, a ! command's output) runs read-only, pinned: the subagent's entry stays.
   await d.send("next", [], { permissionMode: "read-only", model: "gpt-6-luna" });
   daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t2" } } });
-  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent" } });
+  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent", subagentSessionId: "codex:C" } });
   daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t2", status: "completed" } } });
-  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent" } });
+  expect(sink.states.filter((x) => "turnSettings" in x).at(-1)).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent", subagentSessionId: "codex:C" } });
   // Stop: the subagent too.
   await d.interrupt();
   expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "C", turnId: "ct" }]);
@@ -477,7 +477,7 @@ test("rejoined with the turn over but a subagent still running (a runner restart
   const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
   expect(sink.starts.map((s) => s.nativeId)).toEqual(["C"]);
   expect(d.busy()).toBe(true);
-  expect(sink.lastWith("turnSettings")).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent" } });
+  expect(sink.lastWith("turnSettings")).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "subagent", subagentSessionId: "codex:C" } });
   await d.interrupt();
   expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "C", turnId: "ct" }]);
 });
@@ -490,4 +490,74 @@ test("a turn whose settings can't be read (no turn_context): Unknown, counted as
   daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "tx" } } });
   await Bun.sleep(50);
   expect(sink.lastWith("turnSettings")).toEqual({ turnSettings: { permissionMode: "unknown", looser: true, who: "turn" } });
+});
+
+
+test("turn/start racing another client's turn: the daemon puts the message into that turn; said, and its own settings shown, never taken as pinned", async () => {
+  useDaemon();
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const path = join(mkdtempSync(join(tmpdir(), "tether-race-")), "r.jsonl");
+  writeFileSync(path, JSON.stringify({ type: "turn_context", payload: { turn_id: "other", model: "gpt-6-luna", approval_policy: "never", sandbox_policy: { type: "danger-full-access" } } }));
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" }, path }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "readOnly" } });
+  // The other client's turn starts just before Tether's turn/start; the daemon answers with it.
+  daemon.answers["turn/start"] = () => ({ turn: { id: "other" } });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  d.retryMs = 1;
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "other" } } });
+  await Bun.sleep(2);
+  // (the busy check would refuse it now; the race is the message going out just before it's seen)
+  (d as any).stream.main.turnId = undefined;
+  (d as any).running.delete(MAIN);
+  (d as any).turnSeen.set("other", Date.now() - 1000);
+  await d.send("hello", [], { permissionMode: "read-only", model: "gpt-6-luna" });
+  await Bun.sleep(30);
+  expect(sink.t.messages.some((m) => m.role === "notice" && /went into a turn started elsewhere/.test((m.parts[0] as any).text))).toBe(true);
+  expect(sink.lastWith("turnSettings")).toEqual({ turnSettings: { permissionMode: "full-access", looser: true, who: "turn" } });
+});
+
+test("a sandbox with network or extra writable roots, or a permission profile: Custom, counted looser (never plain Auto)", async () => {
+  const { modeOf } = await import("./modes");
+  expect(modeOf("on-request", { type: "workspaceWrite", networkAccess: true, writableRoots: [] })).toBe("custom");
+  expect(modeOf("on-request", { type: "workspaceWrite", networkAccess: false, writableRoots: ["/x"] })).toBe("custom");
+  expect(modeOf("on-request", { type: "workspace-write", network_access: true })).toBe("custom");
+  expect(modeOf("on-request", { type: "workspaceWrite", networkAccess: false, writableRoots: [] })).toBe("auto");
+  expect(modeOf("on-request", { type: "workspaceWrite" }, "user", { id: ":workspace" })).toBe("custom");
+  useDaemon();
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "m", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "workspaceWrite", networkAccess: true, writableRoots: [] } });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "custom" });
+  // A turn running with it: noted with Stop, though Custom is also what's shown.
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  expect(sink.lastWith("turnSettings")).toEqual({ turnSettings: { permissionMode: "custom", looser: true, who: "turn" } });
+  // Picking Auto in Tether really is Auto (no network, no extra roots).
+  await d.setPermissionMode("auto");
+  expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ sandboxPolicy: { type: "workspaceWrite", networkAccess: false, writableRoots: [] } });
+});
+
+test("Stop ends only the commands its own turn left running, never one from an earlier turn", async () => {
+  useDaemon();
+  daemon.answers["thread/backgroundTerminals/list"] = () => ({ data: [{ itemId: "exec-old", processId: "1" }, { itemId: "exec-now", processId: "2" }] });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t2" } } });
+  daemon.say({ method: "item/started", params: { threadId: MAIN, item: { type: "commandExecution", id: "exec-now", command: "sleep 30", status: "inProgress" } } });
+  await d.interrupt();
+  expect(daemon.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: MAIN, processId: "2" }]);
+  expect(daemon.calls("thread/backgroundTerminals/clean")).toEqual([]);
+});
+
+test("a subagent whose turn started before its spawn was reported is in the running set", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  daemon.say({ method: "turn/started", params: { threadId: "EARLY", turn: { id: "et" } } });
+  expect(d.running.has("EARLY")).toBe(false);
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_9", kind: "started", agentThreadId: "EARLY", agentPath: "/root/e" } } });
+  expect(d.running.has("EARLY")).toBe(true);
+  expect(d.busy()).toBe(true);
 });

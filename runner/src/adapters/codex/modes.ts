@@ -106,13 +106,27 @@ export function sandboxOf(p: any): SandboxMode | undefined {
  * The mode a thread's settings are: one of the presets, or their own combination as
  * "<policy>+<sandbox>" (shown as it is, and never loosened to a preset). Undefined when unknown.
  */
-export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unknown): string | undefined {
+export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unknown, profile?: unknown): string | undefined {
   if (approvalPolicy === undefined || approvalPolicy === null || sandbox === undefined || sandbox === null) return undefined;
   const sb = sandboxOf(sandbox);
-  // Settings Tether can't express (a granular policy, an external sandbox): known to be other, so custom.
-  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb) return CUSTOM_MODE;
+  // Settings Tether can't express exactly (a granular policy, an external sandbox, network or extra
+  // writable roots in the sandbox, a permission profile): custom, never passed off as a preset.
+  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb || sandboxExtras(sandbox) || (profile !== undefined && profile !== null)) return CUSTOM_MODE;
   const base = Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
   return typeof reviewer === "string" && reviewer !== "user" ? `${base}${REVIEWS}` : base;
+}
+
+/**
+ * A sandbox that gives more than its kind alone says: network access, or writable roots beyond the
+ * workspace (as thread settings say them, or a rollout's turn_context does).
+ */
+export function sandboxExtras(p: any): boolean {
+  if (!p || typeof p !== "object") return false;
+  const t = p.type;
+  if (t === "dangerFullAccess" || t === "danger-full-access") return false;
+  const network = p.networkAccess ?? p.network_access;
+  const roots = p.writableRoots ?? p.writable_roots;
+  return network === true || network === "enabled" || (Array.isArray(roots) && roots.length > 0);
 }
 
 /** A model as model/list returns it. */

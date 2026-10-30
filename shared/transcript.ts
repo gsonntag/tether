@@ -256,6 +256,8 @@ export interface LiveState {
     looser?: boolean;
     /** what runs with these: the turn, or a subagent (which keeps its settings after the turn ends) */
     who?: "turn" | "subagent";
+    /** a subagent's: its session (Stop stops just it) */
+    subagentSessionId?: string;
   };
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;

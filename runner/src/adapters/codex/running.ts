@@ -10,7 +10,7 @@
 // ending elsewhere never clear another entry: each clears only when its own thing ends.
 
 import type { LiveState } from "../../../../shared/transcript";
-import { looser, modeOf, sandboxOf } from "./modes";
+import { CUSTOM_MODE, looser, modeOf, sandboxOf } from "./modes";
 import type { RolloutSettings } from "./discovery";
 
 /** Effective settings. `mode` undefined: not known (shown as Unknown, counted as looser). */
@@ -31,7 +31,7 @@ export function effOfSettings(s: any): Eff {
     ...(typeof s?.approvalPolicy === "string" ? { approvalPolicy: s.approvalPolicy } : {}),
     ...(sandboxOf(s?.sandboxPolicy) ? { sandbox: sandboxOf(s.sandboxPolicy) } : {}),
     ...(typeof s?.approvalsReviewer === "string" ? { reviewer: s.approvalsReviewer } : {}),
-    ...(modeOf(s?.approvalPolicy, s?.sandboxPolicy, s?.approvalsReviewer) ? { mode: modeOf(s.approvalPolicy, s.sandboxPolicy, s.approvalsReviewer) } : {}),
+    ...(modeOf(s?.approvalPolicy, s?.sandboxPolicy, s?.approvalsReviewer, s?.activePermissionProfile) ? { mode: modeOf(s.approvalPolicy, s.sandboxPolicy, s.approvalsReviewer, s.activePermissionProfile) } : {}),
   };
 }
 
@@ -78,18 +78,21 @@ export class Running {
    * shown (the main turn before subagents), else the first that just differs. Undefined: everything
    * running runs as shown.
    */
-  report(current: Eff): LiveState["turnSettings"] {
-    let differs: LiveState["turnSettings"];
-    const sorted = [...this.entries.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "turn" ? -1 : 1));
-    for (const { kind, eff } of sorted) {
+  report(current: Eff): (LiveState["turnSettings"] & { id?: string }) | undefined {
+    let differs: (LiveState["turnSettings"] & { id?: string }) | undefined;
+    const sorted = [...this.entries].sort(([, a], [, b]) => (a.kind === b.kind ? 0 : a.kind === "turn" ? -1 : 1));
+    for (const [id, { kind, eff }] of sorted) {
       const out: NonNullable<LiveState["turnSettings"]> = {};
       if (eff.model && current.model && eff.model !== current.model) out.model = eff.model;
       if (eff.effort && current.effort && eff.effort !== current.effort) out.effort = eff.effort;
       const mode = eff.mode ?? "unknown";
-      if (mode !== (current.mode ?? "unknown")) out.permissionMode = mode;
-      const isLooser = !eff.mode || (out.permissionMode !== undefined && looser(eff, current));
+      // Unknown or custom: said (with Stop) even when what's shown is unknown or custom too, since
+      // nothing says it's no looser than what you'd choose.
+      const opaque = !eff.mode || eff.mode === CUSTOM_MODE;
+      if (mode !== (current.mode ?? "unknown") || opaque) out.permissionMode = mode;
+      const isLooser = opaque || (out.permissionMode !== undefined && looser(eff, current));
       if (!Object.keys(out).length) continue;
-      const r = { ...out, ...(isLooser ? { looser: true } : {}), who: kind };
+      const r = { ...out, ...(isLooser ? { looser: true } : {}), who: kind, id };
       if (isLooser) return r;
       differs ??= r;
     }
