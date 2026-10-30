@@ -507,8 +507,8 @@ const steps = {
       await shot(ph, "webkit-driving");
       await button(ph.locator(".t-term-panel"), "Back to Tether").tap();
       await waitState(ph, (s) => s.mode === "live" && !s.terminal, "back in Tether (WebKit)", 60_000);
-      // (Back to Tether from the agent's tab closes the panel.)
-      if (await ph.locator(".t-term-panel").count()) await button(ph.locator(".t-term-panel"), "Close terminal panel").tap();
+      // Back to Tether from the agent's tab closes the panel.
+      await ph.locator(".t-term-panel").waitFor({ state: "detached", timeout: 15_000 });
       ok("WebKit, iPhone 14 Pro: the + menu's Run a shell command adds the ! (box focused), Run runs it, a tap on the ❯ toggle takes it off; ❯_ opened a shell, Copy text opened a sheet whose text selects, the key bar's keys answer taps; with two shells, Claude Code ● (driving) stayed wholly in view at 375 and 393 px");
     } finally {
       await wk.close();
