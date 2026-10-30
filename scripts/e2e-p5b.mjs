@@ -153,7 +153,9 @@ const waitCard = async (p, state, what, ms = 60_000) => {
 /** Runs a `!` command from the composer (typed with the !, Enter). */
 async function bang(p, command, { tap = false } = {}) {
   if (tap) {
-    await p.getByRole("button", { name: "Shell command", exact: true }).tap();
+    // On a phone the shell prompt is in the composer's + menu.
+    await p.getByRole("button", { name: "Attach or run a command" }).tap();
+    await p.getByRole("menuitem", { name: /Run a shell command/ }).tap();
     await composer(p).pressSequentially(command);
     await button(p.locator(".t-composer"), "Run").tap();
   } else {
@@ -336,20 +338,22 @@ const steps = {
   async phone() {
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
-    const toggle = ph.getByRole("button", { name: "Shell command", exact: true });
-    await toggle.waitFor();
+    const plus = ph.getByRole("button", { name: "Attach or run a command" });
+    await plus.waitFor();
     await bang(ph, "echo PHONE-SHELL-OK", { tap: true });
     await waitCard(ph, "sent", "phone card", 60_000);
     await noOverflow(ph, "phone with a card");
     await shot(ph, "card-phone");
     await idle(ph, 120_000);
-    // The shell prompt on the phone.
-    await toggle.tap();
+    // The shell prompt on the phone: from the + menu; the ❯ toggle (shown while in it) leaves it.
+    await plus.tap();
+    await ph.getByRole("menuitem", { name: /Run a shell command/ }).tap();
     await ph.locator(".t-composer.shell").waitFor();
     await noOverflow(ph, "phone shell prompt");
     await shot(ph, "shell-mode-phone");
-    await toggle.tap();
-    ok("phone (375 px): the ❯ toggle in the composer starts a command (adds the !), Run runs it, the card fits the width and goes to Claude");
+    await ph.getByRole("button", { name: "Shell command", exact: true }).tap();
+    await ph.locator(".t-composer.shell").waitFor({ state: "detached" });
+    ok("phone (375 px): the + menu's Run a shell command starts a command (adds the !), Run runs it, the card fits the width and goes to Claude; the ❯ toggle leaves the shell prompt");
     await ph.close();
   },
 

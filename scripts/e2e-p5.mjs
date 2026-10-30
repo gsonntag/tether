@@ -378,7 +378,22 @@ const steps = {
     if (!/EDITED/.test(await composer(a).inputValue())) fail("the edit didn't land in the message box");
     await composer(a).fill("");
     await idle(a, 120_000);
-    ok("an edit of a queued message that went out first was kept (\"It went out before your edit was saved.\"); Copy to the message box put it there; the queue didn't wait");
+    // Again, and this time Send as a new message (the queue is empty by then).
+    await send(a, SLOW(13, "EDIT2"));
+    await inCommand(a, /timeout 13 tail/);
+    await composer(a).fill("Reply with exactly: ORIGINAL-2");
+    await composer(a).press("Tab");
+    const row2 = a.locator(".t-queued", { hasText: "ORIGINAL-2" });
+    await row2.waitFor();
+    await row2.getByRole("button", { name: "Edit" }).click();
+    await a.getByRole("textbox", { name: "Edit the queued message" }).fill("Reply with exactly: EDITED-2");
+    await a.getByText("It went out before your edit was saved.").waitFor({ timeout: 90_000 });
+    await idle(a, 120_000);
+    await button(a, "Send as a new message").click();
+    await a.locator(".t-msg.user .t-bubble", { hasText: "EDITED-2" }).waitFor({ timeout: 30_000 });
+    if (await a.getByText("It went out before your edit was saved.").count()) fail("the panel stayed after sending");
+    await idle(a, 120_000);
+    ok("an edit of a queued message that went out first was kept (\"It went out before your edit was saved.\"); Copy to the message box put it there; Send as a new message (from an empty queue) sent it; the queue didn't wait");
     await a.close();
   },
 
