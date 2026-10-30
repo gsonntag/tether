@@ -526,7 +526,11 @@ const steps = {
     // Ready for input: its prompt line is drawn (Enter before that is lost).
     await waitScreen(p, id, /Ask Codex to do anything/, "the TUI on a new thread", 60_000);
     await sleep(1000);
-    await typeInTerm(p, "Reply with just: FRESH-OK");
+    // Seen at the prompt before Enter (keys sent while it is still drawing can be lost).
+    await typeInTerm(p, "Reply with just: FRESH-OK", false);
+    await waitScreen(p, id, /FRESH-OK/, "what was typed at the TUI's prompt", 20_000);
+    await sleep(300);
+    await p.keyboard.press("Enter");
     await p.locator(".t-msg.assistant", { hasText: "FRESH-OK" }).first().waitFor({ timeout: 90_000 });
     await shot(p, "fresh-desktop");
     ok(`New session → Start in the terminal: the TUI joined a thread Tether made (${id}); its first turn shows in Tether`);
@@ -783,6 +787,131 @@ const steps = {
     }
   },
 
+  async nestedStop() {
+    // A nested subagent (review 8, M1): Stop reaches it through the main session's driver, whether
+    // pressed on it or as the main Stop; nothing it was running goes on.
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    const deepest = async () => {
+      const kids = async (x) => (await rpcVia(p, "listSessions", { parentSessionId: x })).ok?.sessions ?? [];
+      for (const m of await kids(id)) for (const n of await kids(m.id)) if (n.status === "running") return n.id;
+    };
+    const waitDeep = async () => {
+      for (let i = 0; i < 120; i++) {
+        const d = await deepest();
+        if (d) return d;
+        await sleep(1000);
+      }
+    };
+    const task = (f) => `Spawn one subagent. Its task: spawn your own subagent (a nested one) whose task is to run in the shell exactly: sleep 40; echo nest > ${f}   Then you (the middle subagent) reply done without waiting for it.`;
+    const f1 = "nest1.txt";
+    const f2 = "nest2.txt";
+    rmSync(scratch(f1), { force: true });
+    rmSync(scratch(f2), { force: true });
+    await send(p, `${task(f1)} You, the main agent, do not wait for your subagent either: as soon as it is spawned reply with just the word SPAWNED and end your turn.`);
+    const deep = await waitDeep();
+    if (!deep) return console.log("skip nestedStop: the model didn't nest a subagent"), await p.close();
+    if ((await rpcVia(p, "interrupt", { sessionId: deep })).error) fail("Stop on a nested subagent");
+    await sleep(45_000);
+    if (existsSync(scratch(f1))) fail("Stop on the nested subagent did nothing: its command went on");
+    await idle(p, 60_000);
+    // The main Stop, with the turn still going.
+    await send(p, `${task(f2)} You, the main agent, wait for your subagent to finish before you reply.`);
+    if (!(await waitDeep())) return console.log("skip nestedStop's main Stop: the model didn't nest a subagent"), await p.close();
+    await rpcVia(p, "interrupt", { sessionId: id });
+    await sleep(45_000);
+    if (existsSync(scratch(f2))) fail("the main Stop didn't reach the nested subagent");
+    ok("Stop on a nested subagent stopped it, through the main session's driver, and the main Stop reaches nested subagents too");
+    await p.close();
+  },
+
+  async bgNote() {
+    // A command left in a background terminal keeps its turn's settings (review 8, M2): after
+    // tightening, one note and Stop for it, found again after a restart; Stop ends exactly it.
+    const PORT = Number(process.env.BG_PORT ?? 8798) + 1;
+    const curl = () => spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" }).stdout;
+    if (curl() !== "000") fail(`port ${PORT} is busy`);
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    let q = p;
+    try {
+      await send(p, `Use your shell tool to run exactly this command: python3 -m http.server ${PORT} --bind 127.0.0.1   It serves forever: do not wait for it to finish and do not stop it. Leave it running in the background, then reply with just: STARTED`);
+      await idle(p, 180_000);
+      for (let i = 0; i < 20 && curl() !== "200"; i++) await sleep(500);
+      if (curl() !== "200") return console.log("skip bgNote: the model didn't leave the server running");
+      if (await p.locator(".t-turn-settings").count()) fail("a note while the command runs as shown");
+      if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+      await waitState(p, (x) => x.turnSettings?.who === "background" && x.turnSettings.permissionMode === "full-access" && x.turnSettings.looser && x.turnSettings.count === 1, "the background command's note", 15_000);
+      if (!/A background command still runs with Mode Full access/.test(await p.locator(".t-header").innerText())) fail("the note doesn't speak of the command");
+      await shot(p, "bg-note");
+      if (RESTART) {
+        await p.close();
+        execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+        q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+        await composer(q).waitFor({ timeout: 60_000 });
+        await waitState(q, (x) => x.turnSettings?.who === "background" && x.turnSettings.permissionMode === "full-access", "the note after a restart", 45_000);
+      }
+      if (curl() !== "200") fail("the command ended by itself");
+      await button(q.locator(".t-turn-settings"), "Stop the command").click();
+      await waitState(q, (x) => !x.turnSettings, "the note gone", 30_000);
+      await sleep(1000);
+      if (curl() === "200") fail("Stop the command left it running");
+      ok("a dev server left from a Full access turn: after tightening, one note and Stop the command (found again after a restart); Stop ended it");
+    } finally {
+      const pids = spawnSync("sh", ["-c", `ss -ltnp | grep ':${PORT} ' | grep -o 'pid=[0-9]*' | cut -d= -f2`], { encoding: "utf8" }).stdout.trim();
+      for (const x of pids.split("\n").filter(Boolean)) spawnSync("kill", [x]);
+      await q.close().catch(() => {});
+    }
+  },
+
+  async tuiPermissions() {
+    // The TUI's /permissions sets a built-in permission profile (review 8, I1): shown as the preset,
+    // not Custom. Only Read Only and Ask for approval are picked (session settings, nothing saved).
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "auto" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Reply with just: OK");
+    await idle(p);
+    await pickTerminal(p);
+    await p.locator(".t-term-panel").waitFor();
+    await waitScreen(p, id, /Ask Codex/, "Codex's TUI", 60_000);
+    const pickIn = async (label) => {
+      await typeInTerm(p, "/permissions", false);
+      await sleep(600);
+      await p.keyboard.press("Enter");
+      await waitScreen(p, id, /Update Model Permissions/, "the permissions menu", 15_000);
+      for (let i = 0; i < 6; i++) {
+        const s = await screen(p, id);
+        if (s.lines.some((l) => l.includes(`›`) && l.includes(label))) break;
+        await p.keyboard.press("ArrowDown");
+        await sleep(250);
+      }
+      await p.keyboard.press("Enter");
+      await sleep(500);
+    };
+    await pickIn("Read Only");
+    await waitState(p, (x) => x.permissionMode === "read-only", "Read only shown (not Custom)", 15_000);
+    await pickIn("Ask for approval");
+    await waitState(p, (x) => x.permissionMode === "auto", "Auto shown (not Custom)", 15_000);
+    ok("/permissions in the TUI: Read Only and Ask for approval show as Read only and Auto, not Custom");
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await p.close();
+  },
+
   async subRestart(restartWith = RESTART) {
     // A runner restart while a subagent outlives its parent's turn (review 6, I2): rejoined, the
     // subagent found again with its own settings, still running, with the note and Stop.
@@ -848,8 +977,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "claudeShiftTab", "stored"]) {
-    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "claudeShiftTab"].includes(name)) {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "stored"]) {
+    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }

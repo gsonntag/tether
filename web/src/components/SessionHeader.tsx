@@ -45,7 +45,7 @@ export function SessionHeader({
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
   // Changed during a turn on a harness where that counts from the next turn: the turn's own values.
   const turn = state.turnSettings;
-  const nextTurn = (now: string, was: string | undefined) => (was !== undefined && turn?.who !== "subagent" ? `${now} from the next turn` : now);
+  const nextTurn = (now: string, was: string | undefined, shown?: string) => (was !== undefined && was !== shown && (turn?.who === undefined || turn.who === "turn") ? `${now} from the next turn` : now);
   const modes = models?.permissionModes ?? [];
   // Tighter: earlier in the harness's list of modes (strictest first), so this turn runs looser than shown.
   const rank = (m?: string) => modes.findIndex((x) => x.id === m);
@@ -78,20 +78,20 @@ export function SessionHeader({
               name="Model"
               value={state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
-              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
               disabled={locked}
               choices={(models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
               onOpen={ensureModels}
               onPick={(model) => void call(rpc(runnerId, "setModel", { sessionId: session.id, model }))}
             />
             {(efforts.length > 0 || state.effort) && (
-              <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
+              <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort, state.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
             <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
               // While Claude's TUI drives, its mode comes from its hooks: the last one it reported.
-              label={locked ? `Set in the terminal (last seen: ${permissionModeLabel(state.permissionMode)})` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
+              label={locked ? `Set in the terminal (last seen: ${permissionModeLabel(state.permissionMode)})` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode, state.permissionMode)}
               disabled={locked}
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}
@@ -106,7 +106,11 @@ export function SessionHeader({
       {turn && !isChild && (
         <div className="t-inline-status t-turn-settings" role="status">
           <span>
-            {turn.who === "subagent" ? "A subagent still runs with" : "This turn still runs with"}{" "}
+            {turn.who === "background"
+              ? `${turn.count === 1 ? "A background command still runs" : `${turn.count} background commands still run`} with${turn.mixed ? " up to" : ""}`
+              : turn.who === "subagent"
+                ? "A subagent still runs with"
+                : "This turn still runs with"}{" "}
             {[
               turn.model !== undefined && `Model ${modelLabel(turn.model, models?.models)}`,
               turn.effort !== undefined && `Effort ${effortLabel(turn.effort)}`,
@@ -117,12 +121,12 @@ export function SessionHeader({
             .
           </span>
           {tighter && (
-            // A subagent's: stop just it (a newer turn, pinned as shown, goes on).
+            // A subagent's: stop just it (a newer turn, pinned as shown, goes on). Commands: just them.
             <Button
-              label={turn.who === "subagent" && turn.subagentSessionId ? "Stop the subagent" : "Stop this turn"}
+              label={turn.who === "background" ? (turn.count === 1 ? "Stop the command" : "Stop the commands") : turn.who === "subagent" && turn.subagentSessionId ? "Stop the subagent" : "Stop this turn"}
               size="sm"
               variant="secondary"
-              onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: turn.who === "subagent" && turn.subagentSessionId ? turn.subagentSessionId : session.id }))}
+              onClick={() => void call(turn.who === "background" ? rpc(runnerId, "stopBackground", { sessionId: session.id }) : rpc(runnerId, "interrupt", { sessionId: turn.who === "subagent" && turn.subagentSessionId ? turn.subagentSessionId : session.id }))}
             />
           )}
         </div>

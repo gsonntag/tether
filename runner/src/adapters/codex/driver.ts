@@ -12,9 +12,9 @@ import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
 import { agentName } from "./items";
-import { dropCache, hasTurnContext, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
-import { effOfRollout, effOfSettings, Running, UNKNOWN, type Eff } from "./running";
-import { knownMode, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
+import { dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
+import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
+import { customProfile, knownMode, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
 import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
@@ -29,14 +29,19 @@ const input = (text: string, attachments: Attachment[] = []) => [
 /** What Codex says when a thread has nothing on disk yet (no turn, no name). */
 const NO_ROLLOUT = /no rollout found/i;
 
-/** The settings a new thread starts with (a missing field: Codex's own config). */
+/**
+ * The settings a new thread starts with (a missing field: Codex's own config). Always read-only at
+ * first: thread/start with a writable sandbox in a git repository makes the daemon write
+ * trust_level = "trusted" for it into ~/.codex/config.toml. The mode you chose is applied right
+ * after, and confirmed, before anything runs (CodexDriver.started); that writes nothing.
+ */
 function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
   if (opts.model && opts.model !== "default") out.model = opts.model;
   const m = knownMode(opts.permissionMode);
   if (m) {
     out.approvalPolicy = m.approvalPolicy;
-    out.sandbox = m.sandbox;
+    out.sandbox = "read-only";
   }
   return out;
 }
@@ -120,6 +125,7 @@ export class CodexDriver implements Driver {
         p.rpc.close();
         throw e;
       }
+      void d.pollCommands();
       return d;
     }
     if (!resume) throw new Error("This new Codex session is gone (the daemon may have restarted). Start a new one.");
@@ -150,6 +156,7 @@ export class CodexDriver implements Driver {
       // Subagents still running, whether or not the turn that spawned them still does.
       await d.rejoinChildren();
       d.reportTurn();
+      await d.pollCommands();
     } catch (e) {
       d.closed = true;
       rpc.close();
@@ -180,7 +187,7 @@ export class CodexDriver implements Driver {
     if (model && model !== cur.model) patch.model = model;
     if (want.effort && want.effort !== cur.effort) patch.effort = want.effort;
     // A mode set in Tether includes who answers approvals (you, or Codex's reviewer: "Approve for me").
-    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox || sandboxExtras(r.sandbox) || r.activePermissionProfile || (mode.reviewer ?? "user") !== (cur.reviewer ?? "user")))
+    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox || sandboxExtras(r.sandbox) || customProfile(r.activePermissionProfile, r.sandbox) || (mode.reviewer ?? "user") !== (cur.reviewer ?? "user")))
       Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox), approvalsReviewer: mode.reviewer ?? "user" });
     let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer, activePermissionProfile: r.activePermissionProfile ?? null };
     if (Object.keys(patch).length) {
@@ -273,8 +280,10 @@ export class CodexDriver implements Driver {
     if (method === "turn/completed") {
       this.running.delete(id);
       if (!main) this.forgetChild(id);
-      return this.reportTurn();
+      this.reportTurn();
+      return void this.pollCommands();
     }
+    this.quiet.delete(id);
     const turnId: string | undefined = p.turn?.id;
     if (main && turnId) this.turnSeen.set(turnId, Date.now());
     // Provisional: what Tether is pinning on a turn it is starting (it may turn out to be another
@@ -329,6 +338,76 @@ export class CodexDriver implements Driver {
     return effOfSettings(this.current ?? {});
   }
 
+  // ---------------- commands left in background terminals ----------------
+
+  /** subagent threads found again after a restart (they may have commands, though they've ended) */
+  private found = new Set<string>();
+  /** threads with no turn and no command left: not listed again until a turn starts */
+  private quiet = new Set<string>();
+  /** the settings of the commands seen, by thread and item */
+  private commandEff = new Map<string, Eff>();
+  private commandTimer?: ReturnType<typeof setTimeout>;
+  private pollRun: Promise<void> = Promise.resolve();
+  /** How often commands are looked at while one runs with more access than shown. */
+  commandPollMs = 5_000;
+
+  /**
+   * What runs in background terminals, on the thread and on each subagent's, with the settings of
+   * the turn that started each. Called when settings change, a turn ends and on joining, and only
+   * while a command has more access than shown does it look again by itself (to clear the note).
+   */
+  pollCommands(): Promise<void> {
+    // One at a time, in order: what a caller awaits includes everything before it.
+    return (this.pollRun = this.pollRun.then(() => this.pollOnce()).catch(() => {}));
+  }
+
+  private async pollOnce() {
+    if (this.closed) return;
+    clearTimeout(this.commandTimer);
+    const threads = [this.nativeId, ...new Set([...this.stream.childIds(), ...this.found])];
+    const seen: BackgroundCommand[] = [];
+    for (const threadId of threads) {
+      if (this.quiet.has(threadId)) continue;
+      const list: any = await this.rpc.call("thread/backgroundTerminals/list", { threadId, limit: 100 }, 10_000).catch(() => undefined);
+      // Not answered: as it was (never taken for "nothing runs").
+      if (!list) seen.push(...this.running.commands.filter((c) => c.threadId === threadId));
+      else if (threadId !== this.nativeId && !list.data?.length && !this.running.has(threadId)) this.quiet.add(threadId);
+      for (const t of list?.data ?? []) if (t?.processId) seen.push({ threadId, processId: t.processId, eff: await this.effOfCommand(threadId, t.itemId) });
+    }
+    if (this.closed) return;
+    const changed = JSON.stringify(seen) !== JSON.stringify(this.running.commands);
+    this.running.commands = seen;
+    if (changed) this.reportTurn();
+    if (this.running.looserCommands(this.currentEff()).length) {
+      this.commandTimer = setTimeout(() => void this.pollCommands(), this.commandPollMs);
+      this.commandTimer.unref?.();
+    }
+  }
+
+  /** The settings a command runs with: its turn's, from the rollout (not found yet: unknown, fail closed). */
+  private async effOfCommand(threadId: string, itemId: unknown): Promise<Eff> {
+    if (typeof itemId !== "string") return UNKNOWN;
+    const key = `${threadId}:${itemId}`;
+    const known = this.commandEff.get(key);
+    if (known) return known;
+    const path = threadId === this.nativeId ? this.threadPath : (await this.rpc.call("thread/read", { threadId, includeTurns: false }).catch(() => undefined))?.thread?.path;
+    const ctx = await itemContextOf(path, itemId);
+    if (ctx) {
+      const eff = effOfRollout(ctx);
+      this.commandEff.set(key, eff);
+      return eff;
+    }
+    // Its turn is still running: that turn's, as far as known.
+    return (this.stream.turnItems(threadId).has(itemId) && this.running.get(threadId)?.eff) || UNKNOWN;
+  }
+
+  /** The header's Stop for commands: exactly those it speaks of. */
+  async stopBackground() {
+    await this.pollCommands();
+    for (const c of this.running.looserCommands(this.currentEff())) await this.rpc.call("thread/backgroundTerminals/terminate", { threadId: c.threadId, processId: c.processId }, 10_000).catch(() => {});
+    await this.pollCommands();
+  }
+
   /**
    * What the header shows beside the settings: anything running with other settings than shown
    * (`turnSettings`, with `looser` and Stop when it has more access, or isn't known).
@@ -368,9 +447,10 @@ export class CodexDriver implements Driver {
     const remembered_ = remembered(this.nativeId)?.children ?? {};
     const queue: [string, string][] = Object.keys(remembered_).map((c) => [c, this.nativeId]);
     const seen = new Set<string>();
+    // Finished ones too: a subagent can end before the one it spawned, or leave a command running.
     const listChildren = async (parent: string) => {
       const listed: any = await this.rpc.call("thread/list", { parentThreadId: parent, limit: 50, sourceKinds: ["subAgent", "subAgentThreadSpawn", "subAgentOther"] }).catch(() => undefined);
-      for (const t of listed?.data ?? []) if (t?.id && t.status?.type === "active" && !queue.some(([c]) => c === t.id)) queue.push([t.id, parent]);
+      for (const t of listed?.data ?? []) if (t?.id && !queue.some(([c]) => c === t.id)) queue.push([t.id, parent]);
     };
     await listChildren(this.nativeId);
     while (queue.length) {
@@ -380,10 +460,21 @@ export class CodexDriver implements Driver {
       const t = (await this.rpc.call("thread/read", { threadId: child, includeTurns: false }).catch(() => undefined))?.thread;
       const ct: any = await this.rpc.call("thread/turns/list", { threadId: child, limit: 1, sortDirection: "desc", itemsView: "full" }).catch(() => undefined);
       const turn = ct?.data?.[0];
+      this.found.add(child);
+      // The daemon wouldn't say: not taken for ended. It stays, as Unknown (fail closed), until it does.
+      if (!ct && (!t || t.status?.type === "active")) {
+        await this.rpc.call("thread/resume", { threadId: child, excludeTurns: true }).catch(() => {});
+        this.stream.adoptChild(child, remembered_[child], agentName(t), this.stream.child(parent) ? parent : this.nativeId);
+        this.running.set(child, "subagent", UNKNOWN);
+        void this.watchEnd(child);
+        await listChildren(child);
+        continue;
+      }
       // Running: its latest turn is in progress (and the daemon, when it says, has it active).
       if (turn?.status !== "inProgress" || (t && t.status?.type !== "active")) {
         this.forgetChild(child);
         if (this.stream.child(child)) this.stream.seedChildTurn(child, undefined);
+        await listChildren(child);
         continue;
       }
       // Its events: joined explicitly (after a restart they may not come with the parent's).
@@ -400,6 +491,7 @@ export class CodexDriver implements Driver {
   private settingsChanged(s: any) {
     this.current = { ...this.current, ...s };
     const mode = modeOf(this.current.approvalPolicy, this.current.sandboxPolicy, this.current.approvalsReviewer, this.current.activePermissionProfile);
+    void this.pollCommands();
     // Kept for when the session is stored: a change with no turn after it isn't in the rollout.
     const c = this.current;
     const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy, c.approvalsReviewer, c.activePermissionProfile);
@@ -550,10 +642,22 @@ export class CodexDriver implements Driver {
    */
   async interrupt() {
     const turnId = this.stream.main.turnId;
-    const children = this.stream.runningChildren().filter((c) => c.turnId);
-    await Promise.all(children.map((c) => this.stopThread(c.id, c.turnId!)));
+    const children = new Set([...this.stream.runningChildren().map((c) => c.id), ...this.running.ids("subagent")]);
+    await Promise.all([...children].map((c) => this.stopChild(c)));
     if (turnId) await this.stopThread(this.nativeId, turnId);
     else this.sink.state({ status: "idle" });
+  }
+
+  /** A subagent's turn (asked of the daemon when not known), and what its thread left running. */
+  private async stopChild(threadId: string) {
+    const turnId = this.stream.child(threadId)?.turnId ?? (await this.latestTurn(threadId));
+    if (turnId) await this.stopThread(threadId, turnId);
+    else await this.rpc.call("thread/backgroundTerminals/clean", { threadId }, 10_000).catch(() => {});
+  }
+
+  private async latestTurn(threadId: string): Promise<string | undefined> {
+    const t: any = await this.rpc.call("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "summary" }).catch(() => undefined);
+    return t?.data?.[0]?.status === "inProgress" ? t.data[0].id : undefined;
   }
 
   private async stopThread(threadId: string, turnId: string) {
@@ -584,11 +688,17 @@ export class CodexDriver implements Driver {
    * A subagent's end, seen even if its events don't reach this connection (one found again after a
    * restart): its turn's status, looked at a few times.
    */
-  private async watchEnd(threadId: string, turnId: string) {
+  private async watchEnd(threadId: string, turnId?: string) {
     for (let i = 0; i < 20 && this.running.has(threadId) && !this.closed; i++) {
       await Bun.sleep(this.retryMs);
       const t: any = await this.rpc.call("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "summary" }).catch(() => undefined);
       const turn = t?.data?.[0];
+      // One whose turn wasn't known: now it is, and it stays until that one ends.
+      if (turn && !turnId && turn.status === "inProgress") {
+        turnId = turn.id;
+        this.stream.seedChildTurn(threadId, turn);
+        continue;
+      }
       if (turn && (turn.id !== turnId || turn.status !== "inProgress")) {
         if (!this.running.has(threadId)) return;
         this.stream.seedChildTurn(threadId, undefined);
@@ -617,7 +727,7 @@ export class CodexDriver implements Driver {
     const m = knownMode(mode);
     if (!m) throw new Error(`Codex has no permission mode ${mode}.`);
     const reviewer = m.reviewer ?? "user";
-    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && !sandboxExtras(this.current?.sandboxPolicy) && !this.current?.activePermissionProfile && (this.current?.approvalsReviewer ?? "user") === reviewer;
+    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && !sandboxExtras(this.current?.sandboxPolicy) && !customProfile(this.current?.activePermissionProfile, this.current?.sandboxPolicy) && (this.current?.approvalsReviewer ?? "user") === reviewer;
     await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: reviewer }, same);
   }
 
@@ -634,9 +744,9 @@ export class CodexDriver implements Driver {
     if (already && this.current) this.settingsChanged(this.current);
   }
 
+  /** Stops a subagent and those it spawned (they'd go on with its settings otherwise). */
   async stopSubagent(nativeId: string) {
-    const turnId = this.stream.child(nativeId)?.turnId;
-    if (turnId) await this.stopThread(nativeId, turnId);
+    await Promise.all([nativeId, ...this.stream.descendants(nativeId)].map((id) => this.stopChild(id)));
   }
 
   async steerSubagent(nativeId: string, text: string, attachments: Attachment[] = []) {
@@ -672,13 +782,15 @@ export class CodexDriver implements Driver {
     if (name === PLACEHOLDER_NAME && first) await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: first }).catch(() => {});
   }
 
+  /** A subagent runs, or a command the header speaks of (the session stays joined to say when it ends). */
   busy() {
-    return this.stream.runningChildren().length > 0;
+    return this.stream.runningChildren().length > 0 || this.running.looserCommands(this.currentEff()).length > 0;
   }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
+    clearTimeout(this.commandTimer);
     this.abortAll();
     await this.rpc.call("thread/unsubscribe", { threadId: this.nativeId }, 5_000).catch(() => {});
     this.rpc.close();

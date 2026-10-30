@@ -70,6 +70,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   });
   ops.register("setRead", async (a) => (live.read.set(str(a.sessionId, "sessionId"), a.read === false), null));
   ops.register("interrupt", async (a) => (await live.interrupt(str(a.sessionId, "sessionId")), null));
+  ops.register("stopBackground", async (a) => (await live.stopBackground(str(a.sessionId, "sessionId")), null));
   ops.register("setModel", async (a) => (await live.setModel(str(a.sessionId, "sessionId"), str(a.model, "model")), null));
   ops.register("setEffort", async (a) => (await live.setEffort(str(a.sessionId, "sessionId"), str(a.effort, "effort")), null));
   ops.register("setPermissionMode", async (a) => (await live.setPermissionMode(str(a.sessionId, "sessionId"), str(a.mode, "mode")), null));

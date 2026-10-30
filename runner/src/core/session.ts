@@ -37,6 +37,8 @@ export class Session {
   confirmed?: StartOpts;
   /** a subagent that is still running in its parent's process */
   childRunning = false;
+  /** a subagent: the main session it runs under (nested ones too), which has the driver */
+  rootId?: string;
   /** a new session that hasn't had a message yet: nothing of it is in any store */
   fresh = false;
   /** the send that is starting the harness or handing it the message (a token per send) */

@@ -55,3 +55,15 @@ test("looser, by dimension (approval policy and sandbox), for any combination", 
   expect(looser({ approvalPolicy: "untrusted", sandbox: "read-only" }, { approvalPolicy: "never", sandbox: "danger-full-access" })).toBe(false);
   expect(looser({ approvalPolicy: "on-request", sandbox: "read-only" }, { approvalPolicy: "on-request", sandbox: "read-only" })).toBe(false);
 });
+
+test("the built-in permission profiles (the TUI's /permissions) are their presets; any other is Custom", () => {
+  const ww = { type: "workspaceWrite", writableRoots: [], networkAccess: false };
+  expect(modeOf("on-request", ww, "user", { id: ":workspace", extends: null })).toBe("auto");
+  expect(modeOf("on-request", ww, "auto_review", { id: ":workspace" })).toBe("auto@codex-reviews");
+  expect(modeOf("on-request", { type: "readOnly" }, "user", { id: ":read-only" })).toBe("read-only");
+  expect(modeOf("never", { type: "dangerFullAccess" }, "user", { id: ":danger-full-access" })).toBe("full-access");
+  expect(modeOf("on-request", ww, "user", { id: "team" })).toBe("custom");
+  expect(modeOf("on-request", ww, "user", { id: "team", extends: ":workspace" })).toBe("custom");
+  expect(modeOf("on-request", ww, "user", { id: ":read-only" })).toBe("custom");
+  expect(modeOf("on-request", { ...ww, networkAccess: true }, "user", { id: ":workspace" })).toBe("custom");
+});

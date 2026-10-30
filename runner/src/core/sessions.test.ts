@@ -293,6 +293,33 @@ describe("subagents", () => {
     expect((await core.open("claude:s1/a")).state).toMatchObject({ status: "idle", mode: "stored" });
   });
 
+  test("a nested subagent is stopped through the main session's driver, even after the one between has ended", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [
+      toolCall("m", "toolu_A", "Agent"),
+      subagent("s1/mid", "toolu_A"),
+      (_s, d) => {
+        const nested = d.children.get("s1/mid")!.subagent({ nativeId: "s1/deep", parentToolId: "toolu_B", title: "Deep" });
+        d.children.set("s1/deep", nested);
+      },
+      subagentEnds("s1/mid"),
+      idle,
+    ];
+    await live.send("claude:s1", "go");
+    const deep = await core.open("claude:s1/deep");
+    expect(deep.summary.parentSessionId).toBe("claude:s1/mid");
+    expect(deep.childRunning).toBe(true);
+    // Its end counts for the main session, whose driver says whether anything else runs.
+    const main = await core.open("claude:s1");
+    core.o.prefs.set(main.id, { running: true });
+    await live.interrupt("claude:s1/deep");
+    expect(adapter.drivers[0]!.stopped).toEqual(["s1/deep"]);
+    adapter.drivers[0]!.children.get("s1/deep")!.ended?.();
+    expect(deep.childRunning).toBe(false);
+    expect(core.o.prefs.get(main.id).running).toBeUndefined();
+  });
+
   test("a subagent that finishes by itself ends", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("s1", []);

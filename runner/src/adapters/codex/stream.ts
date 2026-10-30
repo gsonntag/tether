@@ -103,6 +103,16 @@ export class CodexStream {
     }
   }
 
+  /** The subagents a subagent spawned, and theirs (nested), as far as known. */
+  descendants(threadId: string): string[] {
+    const out: string[] = [];
+    const walk = (id: string) => {
+      for (const [child, sp] of this.spawns) if (sp.parent === id && !out.includes(child) && this.children.has(child)) (out.push(child), walk(child));
+    };
+    walk(threadId);
+    return out;
+  }
+
   /** Subagents with a turn running. */
   runningChildren(): ThreadView[] {
     return [...this.children.values()].filter((c) => c.running);

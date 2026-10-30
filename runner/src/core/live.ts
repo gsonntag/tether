@@ -237,7 +237,8 @@ export class LiveControl {
     if (parentId) {
       const how = s.capabilities.subagents.steer;
       if (!how) throw new Error("Subagents can't take messages here. Message the main session instead.");
-      const parent = this.core.sessions.get(parentId);
+      // Its main session's driver, however deep it is nested.
+      const parent = this.rootOf(s);
       if (!s.childRunning || !parent?.driver) throw new Error("This subagent has finished. Message the main session instead.");
       if (how === "via-parent") return this.relay(parent, s, withAttachments(text, attachments));
       if (!parent.driver.steerSubagent) throw new Error("Subagents can't take messages here. Message the main session instead.");
@@ -315,13 +316,28 @@ export class LiveControl {
     if (s.setState({ status })) this.statusChanged(s, before);
   }
 
+  /** The commands left in background terminals with more access than what's shown (the header's note). */
+  async stopBackground(id: string) {
+    const s = await this.core.open(id);
+    await s.driver?.stopBackground?.();
+  }
+
+  /** The main session a subagent runs under (nested ones too), which has the driver. */
+  private rootOf(s: Session): Session | undefined {
+    const known = s.rootId ? this.core.sessions.get(s.rootId) : undefined;
+    if (known) return known;
+    let at: Session | undefined = s;
+    for (let i = 0; at?.summary.parentSessionId && i < 50; i++) at = this.core.sessions.get(at.summary.parentSessionId);
+    return at;
+  }
+
   async interrupt(id: string) {
     const s = await this.core.open(id);
     const parentId = s.summary.parentSessionId;
     if (parentId) {
-      // A subagent: stop just it (SPEC §6a). Its parent's process runs it.
+      // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
       this.desk.cancel((r) => r.sessionId === id);
-      const parent = this.core.sessions.get(parentId);
+      const parent = this.rootOf(s);
       if (!s.childRunning || !parent?.driver?.stopSubagent) return;
       await parent.driver.stopSubagent(s.summary.nativeId);
       return;
@@ -713,7 +729,7 @@ export class LiveControl {
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
     clearTimeout(s.idleTimer);
     this.desk.cancel((_r, chain) => chain.at(-1) === s.id);
-    for (const c of this.core.sessions.values()) if (c.summary.parentSessionId === s.id && c.childRunning) this.childEnded(c);
+    for (const c of this.core.sessions.values()) if (c !== s && c.summary.parentSessionId && c.childRunning && this.rootOf(c) === s) this.childEnded(c);
     if (!d) return;
     // Its exit isn't news: onExit checks that it's still the session's driver.
     if (s.driver === d) s.driver = undefined;
@@ -790,11 +806,13 @@ export class LiveControl {
     if (!this.stopping) this.desk.cancel((_r, chain, restored) => !restored && chain.at(-1) === s.id);
     clearTimeout(s.idleTimer);
     // Its subagents ran in its process: they're done too.
-    for (const c of this.core.sessions.values()) if (c.summary.parentSessionId === s.id && c.childRunning) this.childEnded(c);
+    for (const c of this.core.sessions.values()) if (c !== s && c.summary.parentSessionId && c.childRunning && this.rootOf(c) === s) this.childEnded(c);
     // Messages to its subagents that the main agent never passed on won't be now.
     for (const r of [...(this.relays.get(s.id) ?? [])]) this.relayDone(s.id, r, "failed");
     const before = s.state.status;
-    this.setMode(s, "stored", { ...(error ? { error } : {}) });
+    // What's reported as running came from the driver: with it gone nothing can be stopped from here,
+    // and joining again says what still runs.
+    this.setMode(s, "stored", { turnSettings: undefined, ...(error ? { error } : {}) });
     // A turn the process took down with it ended (failed when it says why): Home, the queue and
     // notifications hear, as for any turn end. Not at shutdown: the turn is cut off, not over.
     if (before !== "idle" && !this.stopping) {
@@ -874,8 +892,13 @@ export class LiveControl {
           };
           if (Object.keys(done).length) core.o.prefs.set(s.id, done);
         }
+        const wasBackground = s.state.turnSettings?.who === "background";
         const changed = s.setState(patch);
         if (!changed) return;
+        // Commands with more access than shown: a restart joins the session again to say so.
+        const background = s.state.turnSettings?.who === "background";
+        if (background && !wasBackground) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: true });
+        else if (wasBackground && !background && s.state.status === "idle" && !s.driver?.busy()) core.o.prefs.set(s.id, { running: undefined });
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
         else if (changed.model || changed.modelResolved || changed.permissionMode) core.touch(s);
         // The harness changed its own mode (a plan approved): kept, so the next start uses it.
@@ -952,6 +975,8 @@ export class LiveControl {
     const first: Msg[] = start.prompt ? [{ id: `${start.nativeId}:prompt`, role: "user", ts: now, parts: [{ type: "text", text: start.prompt }] }] : [];
     if (!c.transcript || c.transcript.length === 0) c.transcript = new Transcript(first);
     c.childRunning = true;
+    // Kept here: a middle subagent can end, and leave memory, before one it spawned.
+    c.rootId = parent.rootId ?? parent.id;
     c.setState({ mode: "live", status: "running" });
     this.core.touch(c, { updatedAt: now });
     // The parent's tool card links to it.
@@ -979,10 +1004,10 @@ export class LiveControl {
     this.core.o.bus.emit("turnEnded", { sessionId: c.id });
     this.core.scheduleEvict(c);
     // The last subagent of a finished turn: nothing runs on the turn's settings any more.
-    const parent = c.summary.parentSessionId ? this.core.sessions.get(c.summary.parentSessionId) : undefined;
+    const parent = this.rootOf(c);
     // Only for a subagent that ended by itself: one ended because the runner stops (or the process
     // went away) may well go on in a harness that keeps it (persistent), and must be found again.
-    if (parent && parent.driver && !this.stopping && parent.state.status === "idle" && !parent.driver.busy()) {
+    if (parent && parent !== c && parent.driver && !this.stopping && parent.state.status === "idle" && !parent.driver.busy()) {
       // A harness that reports what still runs (persistent) says so itself.
       if (parent.state.turnSettings && !parent.capabilities.persistent) parent.setState({ turnSettings: undefined });
       this.core.o.prefs.set(parent.id, { running: undefined });

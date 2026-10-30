@@ -259,8 +259,11 @@ export interface LiveState {
     permissionMode?: string;
     /** it has more access than the session now shows, or isn't known (Tether offers to stop it) */
     looser?: boolean;
-    /** what runs with these: the turn, or a subagent (which keeps its settings after the turn ends) */
-    who?: "turn" | "subagent";
+    /** what runs with these: the turn, a subagent (which keeps its settings after the turn ends), or commands left in background terminals (which keep them too) */
+    who?: "turn" | "subagent" | "background";
+    /** "background": how many commands, and whether only some of them have these settings (the loosest are shown) */
+    count?: number;
+    mixed?: boolean;
     /** a subagent's: its session (Stop stops just it) */
     subagentSessionId?: string;
   };

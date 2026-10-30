@@ -85,6 +85,8 @@ export interface Driver {
   setPermissionMode(mode: string): Promise<void>;
   /** stops one running subagent (capabilities.subagents.stop) */
   stopSubagent?(nativeId: string): Promise<void>;
+  /** Ends the commands in background terminals running with more access than the session shows. */
+  stopBackground?(): Promise<void>;
   /** a message into a running subagent's turn, as the person (capabilities.subagents.steer "direct") */
   steerSubagent?(nativeId: string, text: string, attachments?: Attachment[]): Promise<void>;
   /**

@@ -226,7 +226,7 @@ export function rolloutSettings(text: string): RolloutSettings {
       if (m?.type !== "turn_context") continue;
       const p = m.payload ?? {};
       const at = Date.parse(m.timestamp ?? "");
-      const mode = modeOf(p.approval_policy, p.sandbox_policy, p.approvals_reviewer);
+      const mode = modeOf(p.approval_policy, p.sandbox_policy, p.approvals_reviewer, p.active_permission_profile);
       return {
         found: true,
         ...(Number.isFinite(at) ? { at } : {}),
@@ -307,6 +307,21 @@ export function turnContext(text: string, turnId: string): RolloutSettings | und
     } catch {}
   }
   return undefined;
+}
+
+/**
+ * The settings of the turn that started an item (a command in a background terminal, which keeps
+ * them after its turn ends): the turn_context before the item's first line. Undefined: not there (yet).
+ */
+export async function itemContextOf(path: unknown, itemId: string): Promise<RolloutSettings | undefined> {
+  if (typeof path !== "string" || !itemId) return undefined;
+  const f = Bun.file(path);
+  if (f.size > ROLLOUT_MAX) return undefined;
+  const text = await f.text().catch(() => "");
+  const at = text.indexOf(`"${itemId}"`);
+  if (at < 0) return undefined;
+  const ctx = rolloutSettings(text.slice(0, at));
+  return ctx.found ? ctx : undefined;
 }
 
 /** A thread's settings as its rollout's end records them. */

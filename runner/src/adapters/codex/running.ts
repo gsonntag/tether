@@ -46,8 +46,25 @@ export const UNKNOWN: Eff = {};
 
 type Kind = "turn" | "subagent";
 
+/** A command in one of Codex's background terminals: it keeps the settings of the turn that started it. */
+export interface BackgroundCommand {
+  threadId: string;
+  processId: string;
+  eff: Eff;
+}
+
 export class Running {
   private entries = new Map<string, { kind: Kind; eff: Eff }>();
+  /** the commands in background terminals, as last listed */
+  commands: BackgroundCommand[] = [];
+
+  /**
+   * The commands with more access than what's shown (or not known). Only those: a command's model
+   * means nothing, and one no looser than what's shown needs no word.
+   */
+  looserCommands(current: Eff): BackgroundCommand[] {
+    return this.commands.filter(({ eff }) => !eff.mode || eff.mode === CUSTOM_MODE || (eff.mode !== current.mode && looser(eff, current)));
+  }
 
   set(id: string, kind: Kind, eff: Eff) {
     this.entries.set(id, { kind, eff });
@@ -96,6 +113,11 @@ export class Running {
       if (isLooser) return r;
       differs ??= r;
     }
-    return differs;
+    const commands = this.looserCommands(current);
+    if (!commands.length) return differs;
+    // The loosest of them is what's said; "mixed" when they don't all have it.
+    const loosest = commands.reduce((a, c) => (!a.eff.mode || looser(a.eff, c.eff) ? a : c));
+    const mixed = commands.some((c) => c.eff.mode !== loosest.eff.mode);
+    return { permissionMode: loosest.eff.mode ?? "unknown", looser: true, who: "background", count: commands.length, ...(mixed ? { mixed } : {}) };
   }
 }

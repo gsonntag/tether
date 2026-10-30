@@ -111,9 +111,23 @@ export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unk
   const sb = sandboxOf(sandbox);
   // Settings Tether can't express exactly (a granular policy, an external sandbox, network or extra
   // writable roots in the sandbox, a permission profile): custom, never passed off as a preset.
-  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb || sandboxExtras(sandbox) || (profile !== undefined && profile !== null)) return CUSTOM_MODE;
+  if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb || sandboxExtras(sandbox) || customProfile(profile, sandbox)) return CUSTOM_MODE;
   const base = Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
   return typeof reviewer === "string" && reviewer !== "user" ? `${base}${REVIEWS}` : base;
+}
+
+/** The permission profiles built into Codex (what the TUI's /permissions sets) and the sandbox each is. */
+const BUILTIN_PROFILES: Record<string, SandboxMode> = { ":read-only": "read-only", ":workspace": "workspace-write", ":danger-full-access": "danger-full-access" };
+
+/**
+ * Whether a thread's active permission profile says more than its sandbox does: anything but the
+ * built-in profile of that very sandbox (a user-defined profile, or one that extends another).
+ */
+export function customProfile(profile: unknown, sandbox: unknown): boolean {
+  if (profile === undefined || profile === null) return false;
+  const p = profile as { id?: unknown; extends?: unknown };
+  const id = typeof profile === "string" ? profile : p.id;
+  return typeof id !== "string" || BUILTIN_PROFILES[id] === undefined || BUILTIN_PROFILES[id] !== sandboxOf(sandbox) || (p.extends !== undefined && p.extends !== null);
 }
 
 /**

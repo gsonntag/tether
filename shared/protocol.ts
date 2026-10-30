@@ -169,6 +169,8 @@ export interface Ops {
   stopShell: { args: { sessionId: string; id: string }; result: null };
   /** stops the running turn; on a subagent, stops that subagent */
   interrupt: { args: { sessionId: string }; result: null };
+  /** Ends the commands in background terminals that run with more access than the session shows. */
+  stopBackground: { args: { sessionId: string }; result: null };
   /** saved for the session and applied now when it is live, else when it next starts */
   setModel: { args: { sessionId: string; model: string }; result: null };
   setEffort: { args: { sessionId: string; effort: string }; result: null };
