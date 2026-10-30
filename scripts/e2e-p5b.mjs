@@ -639,7 +639,7 @@ const steps = {
     await waitScreen(p, idOf(claude), /❯/, "Claude's TUI", 60_000);
     let who = await p.locator(".t-term-who").innerText();
     if (!/Claude Code · driving: it drives Claude now/.test(who)) fail(`under the header: ${who}`);
-    if (!/Claude Code · driving/.test(await tuiTab.innerText())) fail(`the entry: ${await tuiTab.innerText()}`);
+    if (!/Claude Code\s*·\s*driving/.test(await tuiTab.innerText())) fail(`the entry: ${await tuiTab.innerText()}`);
     // J3: only now the banner; its button and the placeholder name Claude.
     await button(p.locator(".t-term-panel"), "Close terminal panel").click();
     await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code", exact: true }).waitFor();
@@ -752,7 +752,7 @@ const steps = {
     if (!/joined to this session/.test((await entry.getAttribute("title")) ?? "")) fail(`the Codex entry: ${await entry.getAttribute("title")}`);
     await entry.click();
     await waitState(p, (s) => s.terminal?.kind === "shared" && s.mode === "live", "Codex's TUI joined", 60_000);
-    if (!/Codex · joined/.test(await entry.innerText())) fail(`the entry: ${await entry.innerText()}`);
+    if (!/Codex\s*·\s*joined/.test(await entry.innerText())) fail(`the entry: ${await entry.innerText()}`);
     if (await p.locator(".t-term-banner").count()) fail("a banner for a joined TUI");
     await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
     if (!/the chat and Codex \(joined, on the left\) both drive Codex/.test(await p.locator(".t-term-who").innerText())) fail(`the shell line: ${await p.locator(".t-term-who").innerText()}`);
