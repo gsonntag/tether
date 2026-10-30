@@ -2,8 +2,9 @@
 //   PLAYWRIGHT=… SCRATCH=<a folder Claude Code trusts> [BASE=… RUNNER=… SHOTS=…] node scripts/taps-p5.mjs
 // Measures every button, link, menu item and input (wherever it is on the page) on Home, the drawer,
 // the New session dialog, a session with a request in the dock, a running session with text typed
-// and the composer's + menu open, the header's menus, a held queue and its editor, and the panel for
-// an edit whose message was cancelled. Then: the composer's box width and the header's height at
+// and a file attached (its chip's ×) and the composer's + menu open, the header's menus, a held queue,
+// its editor and its folded form, the panel for an edit whose message was cancelled, and the terminal
+// banner while Claude's TUI drives. Then: the composer's box width and the header's height at
 // 375 px, and the transcript's room with the keyboard up (a 380 px tall view).
 
 const pw = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
@@ -84,6 +85,12 @@ await rpc("send", { sessionId: q, text: "Use the Bash tool to run exactly: timeo
 await p.goto(`${BASE}/#/s/${RUNNER}/${encodeURIComponent(q)}`);
 await p.locator('button[aria-label="Stop"]').waitFor({ timeout: 60000 });
 const box = p.locator("textarea.t-input[aria-label=Message]");
+// An attachment chip (its ×).
+const { writeFileSync, mkdirSync } = await import("node:fs");
+mkdirSync(SHOTS, { recursive: true });
+writeFileSync(`${SHOTS}/tap-note.txt`, "note\n");
+await p.locator('input[type=file][aria-label="Attach files"]').setInputFiles(`${SHOTS}/tap-note.txt`);
+await p.locator(".t-files .t-file").waitFor();
 await box.fill("typed text while it runs");
 small.push(...(await sweep("session running, text typed")));
 const boxW = Math.round((await box.boundingBox()).width);
@@ -111,6 +118,7 @@ await p.locator(".t-header .t-chip").first().tap();
 await p.waitForTimeout(1000);
 small.push(...(await sweep("header menu")));
 await p.keyboard.press("Escape");
+await p.locator(".t-files .t-file-x").first().tap();
 await box.fill("");
 
 // A held queue, its editor, and an edit whose message was cancelled elsewhere.
@@ -147,10 +155,24 @@ await p.waitForTimeout(500);
 const scroll = await p.locator(".t-scroll").boundingBox();
 checks.push([`transcript ${Math.round(scroll?.height ?? 0)} px with the keyboard up (≥ 100)`, (scroll?.height ?? 0) >= 100]);
 checks.push(["the queue folds to one line", (await p.locator(".t-queue-fold").count()) === 1]);
+small.push(...(await sweep("keyboard up, queue folded")));
 await shot("keyboard-up");
 await p.setViewportSize({ width: 375, height: 812 });
 
 for (const m of (await rpc("subscribe", { sessionId: q })).ok.state.queue) await rpc("cancelQueued", { sessionId: q, id: m.id });
+
+// The terminal banner (Claude's TUI driving the session; its panel closed).
+const term = await rpc("openTerminal", { sessionId: q, cols: 80, rows: 24, stop: true });
+if (term.error) checks.push([`the terminal opened (${term.error})`, false]);
+else {
+  await p.locator(".t-term-banner").waitFor({ timeout: 60000 });
+  await p.waitForTimeout(500);
+  small.push(...(await sweep("terminal banner")));
+  await shot("terminal-banner");
+  await rpc("closeTerminal", { attachId: term.ok.attachId });
+  await rpc("endTerminal", { sessionId: q });
+  await p.locator(".t-term-banner").waitFor({ state: "detached", timeout: 60000 }).catch(() => {});
+}
 await rpc("unsubscribe", { sessionId: q });
 await b.close();
 for (const [what, ok] of checks) console.log(`${ok ? "ok " : "FAIL"} ${what}`);
