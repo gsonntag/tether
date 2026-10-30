@@ -508,13 +508,19 @@ const steps = {
     // processes never write the session at once.
     const CRASH = process.env.CRASH_RUNNER;
     if (!CRASH) return console.log("skip restartCrash (set CRASH_RUNNER)");
-    const a = await page(desktop, claude);
+    // A session of its own: the `restart` step's continue is under 2 minutes old, and a second one
+    // that soon is refused by design.
+    const a = await page(desktop);
+    const url = await newSession(a, "claude");
     await composer(a).waitFor();
     // Several short commands one after another: the left-behind process keeps writing for a while.
     await send(a, "Use the Bash tool five times, one call after another (not combined): run exactly `timeout 4 tail -f /dev/null; echo step` each time. Then reply with exactly one word: STEPS");
     await running(a);
     await inCommand(a, /timeout 4 tail/);
-    const id = idOf(claude);
+    await composer(a).fill("Reply with exactly: AFTER-CRASH");
+    await composer(a).press("Tab");
+    await a.locator(".t-queued", { hasText: "AFTER-CRASH" }).waitFor();
+    const id = idOf(url);
     const { realpathSync, statSync, readdirSync } = await import("node:fs");
     const enc = realpathSync(SCRATCH).replace(/[^a-zA-Z0-9]/g, "-");
     const base = `${process.env.HOME}/.claude/projects`;
@@ -531,23 +537,24 @@ const steps = {
         await sleep(200);
       }
     })();
+    const continuing = (p) => p.getByText("The Tether runner restarted mid-turn; continuing.");
     execFileSync("sh", ["-c", CRASH], { stdio: "inherit" });
-    const b = await page(desktop, claude);
+    const b = await page(desktop, url);
+    // Claude Code wrote the session moments ago: Tether must wait, whatever that process does next.
+    await b.getByText("Waiting for Claude Code from before the restart to finish…").waitFor({ timeout: 60_000 });
+    await shot(b, "restart-crash-waiting");
     // Either Tether waits for the left-behind process, then (its turn finished) doesn't continue, or
     // (it stopped mid-turn) continues once the store is quiet.
-    const continued = b.locator(".t-msg.from", { hasText: "Tether: continue after restart" });
+    // Whichever way it goes, the queued message goes out last: run until then, noting any continue.
     const end = Date.now() + 240_000;
     let at;
-    while (Date.now() < end) {
-      if (await continued.count()) {
-        at = Date.now();
-        break;
-      }
-      const st = await liveState(b);
-      if (st && st.status === "idle" && /STEPS/.test(await transcriptText(b)) && !(await b.getByText("Waiting for Claude Code from before the restart").count())) break;
-      if (st && st.status === "idle" && /STEPS/.test(await transcriptText(b))) break;
+    const afterCrash = b.locator(".t-msg.user .t-bubble", { hasText: "AFTER-CRASH" });
+    while (Date.now() < end && !(await afterCrash.count())) {
+      // The notice goes in just before the new process starts (which writes the store itself).
+      if (!at && (await continuing(b).count()) > 0) at = Date.now();
       await sleep(500);
     }
+    if (!(await afterCrash.count())) fail(`the queued message never went out: ${JSON.stringify(await liveState(b))}`);
     stop = true;
     await watch;
     if (at) {
@@ -559,6 +566,8 @@ const steps = {
     }
     await shot(b, "restart-crash");
     await idle(b, 240_000);
+    const finished = /STEPS/.test(await transcriptText(b));
+    if (!at && !finished) fail("nothing continued the turn, and it never finished");
     ok(`runner killed (-9) mid-turn: ${at ? "Tether waited for the session's store to go quiet, then continued once" : "Tether waited for Claude Code from before the restart, which finished the turn; nothing was continued"} — never two processes at once`);
     await a.close();
     await b.close();
