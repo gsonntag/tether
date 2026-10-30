@@ -1546,20 +1546,6 @@
 
 /* ---------- P5b: Shell beside the chat vs the agent's terminal (SPEC §8) ---------- */
 
-/* Who drives the agent, under the panel's tabs. */
-.t-term-who {
-  flex: none;
-  padding: 6px 12px;
-  font-size: 12px;
-  line-height: 1.4;
-  border-bottom: 1px solid #2a2c31;
-  background: var(--color-background-card, #1d1f23);
-  color: var(--t-muted);
-}
-.t-term-who.drives {
-  color: var(--color-text-primary);
-  background: color-mix(in srgb, var(--color-warning, #d4a017) 14%, var(--color-background-card, #1d1f23));
-}
 .t-term-empty-more {
   max-width: 420px;
   font-size: 13px;

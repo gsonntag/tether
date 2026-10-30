@@ -70,15 +70,8 @@ Phase acceptance (SPEC §11):
   then, apart, **Claude Code** (or **Codex**). Only clicking Claude Code drives Claude from its
   terminal: idle, it hands over at once; busy, it asks in the panel ("Stop this turn and open the
   terminal?" — Stop and open terminal / Keep working); Codex's entry joins its TUI. The entry then
-  reads **Claude Code · driving** / **Codex · joined**. Going back to a shell never hands back.
-  Under the header, a line says who drives the agent:
-  - a shell, session in Tether: "Shell 1 · a plain shell in this folder. It doesn't touch Claude:
-    the chat still drives Claude."
-  - a shell, handed off: "… Claude is driven from Claude Code (on the left) until Back to Tether."
-  - a shell, Codex joined: "… the chat and Codex (joined, on the left) both drive Codex."
-  - Claude Code, handed off (highlighted): "Claude Code · driving: it drives Claude now. The chat
-    follows along; Back to Tether hands the session back."
-  - Codex, joined: "Codex · joined to this session. Tether's chat drives Codex too."
+  reads **Claude Code · driving** / **Codex · joined**, whichever tab is in front. Going back to a
+  shell never hands back. There is no explanatory line under the header.
 - **Copy.** **Copy text** in the panel's header shows the terminal's whole text (scrollback
   included) in a sheet: select some (a long press on a phone), or **Copy all**. On desktop,
   Shift-drag (Option-drag on a Mac) selects in the terminal itself; with a selection Ctrl/Cmd+C
@@ -316,9 +309,8 @@ focused; autocorrect and capitalization are off in shell mode.
 
 G1. Desktop, Claude live. Click ❯_ Terminal.
 → No menu: the panel opens beside the transcript on the project's first shell (or a new Shell 1),
-with the list on the left (Shell 1, + New shell, Claude Code). Under the header: "Shell 1 · a plain
-shell in this folder. It doesn't touch Claude: the chat still drives Claude." No banner in the
-transcript, no question, mode stays live.
+with the list on the left (Shell 1, + New shell, Claude Code). No line of explanation under the
+header, no banner in the transcript, no question; mode stays live.
 
 G2. Type in the shell `echo hi`; then send Claude a message from the composer.
 → The shell runs it; Claude answers in the transcript as usual; mode live, queue never held. A
@@ -328,7 +320,7 @@ G3. **Shell again.** Close the panel (×), ❯_ again.
 → The same Shell 1 comes back (its output still there). With two shells, the first is picked.
 Closing the shell in front brings another one forward.
 
-G4. **Codex.** On a Codex session, ❯_ → as G1 ("the chat still drives Codex", the entry "Codex").
+G4. **Codex.** On a Codex session, ❯_ → as G1 (the entry "Codex").
 
 ## H. Claude Code from the panel (`handoff`)
 
@@ -337,12 +329,11 @@ H1. **Idle Claude.** With Shell 1 in front, hover **Claude Code** in the list.
 to Tether)". Click it.
 → The session hands over at once: mode terminal, the TUI in front, the entry reads **Claude Code ·
 driving**, only now the transcript's banner "Driving in the terminal" (with **Open Claude Code**
-when the panel is closed), and under the header (highlighted): "Claude Code · driving: it drives
-Claude now. The chat follows along; Back to Tether hands the session back."
+when the panel is closed). No line under the header.
 
 H2. **Back to a shell.** Click Shell 1 (or close the panel and press ❯_).
-→ Nothing is handed back: mode stays terminal; under the header "Shell 1 · … Claude is driven from
-Claude Code (on the left) until Back to Tether." **Back to Tether** stays in the header.
+→ Nothing is handed back: mode stays terminal; the entry still reads **Claude Code · driving**;
+**Back to Tether** stays in the header.
 
 H3. **Back to Tether** (from a shell).
 → The session goes live; the shell stays in front; the panel stays open; the entry reads Claude Code.
@@ -360,9 +351,8 @@ back." (it never re-attaches to the old TUI). Keep working → still live.
 
 H5. **Codex** (`codex`). With Shell 1 in front click **Codex** (tooltip: "Opens Codex's own terminal
 UI, joined to this session").
-→ Codex's TUI joins; the entry reads **Codex · joined**; under the header "Codex · joined to this
-session. Tether's chat drives Codex too."; mode stays live, no banner; the composer still sends to
-Codex. On a shell: "the chat and Codex (joined, on the left) both drive Codex".
+→ Codex's TUI joins; the entry reads **Codex · joined** (on a shell too); mode stays live, no
+banner; the composer still sends to Codex.
 
 H6. **TUI exited.** /exit in Claude's TUI with it in front.
 → "Claude isn't open in the terminal." with what opening it does, and **Open Claude Code**.
@@ -399,7 +389,7 @@ J2. The desktop clicks Claude Code (handoff); on the phone:
 the terminal"; `!echo X` from the phone still runs, its output waits for Back to Tether.
 
 J3. Every place names the surface (`handoff`): the list ("Shell n", "Claude Code", "Claude Code ·
-driving"), the line under the header, the transcript banner (only once driving) and its **Open
+driving"), the transcript banner (only once driving) and its **Open
 Claude Code** button, the composer's placeholder ("Type into Claude in the terminal"), the card
 ("Sent to Claude"). No place says just "Terminal" for the agent's TUI, and no "Driving" wording
 shows before Claude Code is clicked.

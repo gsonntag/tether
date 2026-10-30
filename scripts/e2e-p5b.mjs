@@ -607,8 +607,7 @@ const steps = {
     const body = await p.locator(".t-term-main > .t-term-body").boundingBox();
     if (!(list && body && list.x + list.width <= body.x + 2)) fail("the list isn't on the left");
     if (await p.locator(".t-term-banner").count()) fail("a driving banner with only a shell open");
-    const who = await p.locator(".t-term-who").innerText();
-    if (!/doesn't touch Claude: the chat still drives Claude/.test(who)) fail(`under the tabs: ${who}`);
+    if (await p.locator(".t-term-who").count()) fail("an explanatory line under the panel's header");
     const key = await shellKey(p);
     await waitScreen(p, key, /\$ *$|# *$|> *$/m, "a shell prompt");
     await p.locator(".t-term-box").click({ force: true });
@@ -627,7 +626,7 @@ const steps = {
     st = await liveState(p);
     if (st.mode !== "live") fail(`mode ${st.mode} after a send with the shell open`);
     await shot(p, "shell-beside-desktop");
-    ok("❯_ opened a project shell at once (no menu, no handoff, no banner), with Shell n, + New shell and Claude Code in a list on the left; beside the transcript (the line under the tabs says the chat still drives Claude), the shell ran a command, and the composer kept messaging Claude live (no handoff, no held queue)");
+    ok("❯_ opened a project shell at once (no menu, no handoff, no banner), with Shell n, + New shell and Claude Code in a list on the left; beside the transcript (no explanatory line), the shell ran a command, and the composer kept messaging Claude live (no handoff, no held queue)");
     await p.close();
   },
 
@@ -642,8 +641,6 @@ const steps = {
     await tuiTab.click();
     await waitState(p, (s) => s.mode === "terminal", "handed off to the TUI", 60_000);
     await waitScreen(p, idOf(claude), /❯/, "Claude's TUI", 60_000);
-    let who = await p.locator(".t-term-who").innerText();
-    if (!/Claude Code · driving: it drives Claude now/.test(who)) fail(`under the header: ${who}`);
     if (!/Claude Code\s*·\s*driving/.test(await tuiTab.innerText())) fail(`the entry: ${await tuiTab.innerText()}`);
     // J3: only now the banner; its button and the placeholder name Claude.
     await button(p.locator(".t-term-panel"), "Close terminal panel").click();
@@ -660,8 +657,8 @@ const steps = {
     await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
     await sleep(1500);
     if ((await liveState(p)).mode !== "terminal") fail("going to a shell tab handed back");
-    who = await p.locator(".t-term-who").innerText();
-    if (!/Claude is driven from Claude Code \(on the left\) until Back to Tether/.test(who)) fail(`under the header: ${who}`);
+    if (!/Claude Code\s*·\s*driving/.test(await p.locator(".t-term-tab.t-term-agent").innerText())) fail("the entry stopped saying driving on a shell");
+    if (await p.locator(".t-term-who").count()) fail("an explanatory line under the panel's header");
     // While the TUI drives, the shell hint says when the output gets there.
     await composer(p).fill("!");
     const hint = await p.locator(".t-shell-hint").innerText();
@@ -691,7 +688,7 @@ const steps = {
     await composer(p).fill("");
     await p.locator(".t-queued", { hasText: "AFTER-ASK" }).getByRole("button", { name: "Cancel this message", exact: true }).click();
     ok("J3: only after clicking Claude Code: the entry reads Claude Code · driving, the banner (Open Claude Code) and the placeholder name Claude; ❯_ again opens a shell without handing back");
-    ok("from a shell, the Claude Code entry (titled: drives Claude from Claude Code's own terminal UI) handed off (line: Claude Code · driving); back on the shell it stayed handed off (line: driven from Claude Code (on the left) until Back to Tether); Back to Tether returned it; the hint said \"when you go Back to Tether\" meanwhile; after Back to Tether from the shell tab, the busy agent's tab asked again (Stop this turn … 1 queued message will wait) and Keep working kept it live; with the queue held the hint says it waits there");
+    ok("from a shell, the Claude Code entry (titled: drives Claude from Claude Code's own terminal UI) handed off (entry: Claude Code · driving); back on the shell it stayed handed off (entry still: driving); Back to Tether returned it; the hint said \"when you go Back to Tether\" meanwhile; after Back to Tether from the shell tab, the busy agent's tab asked again (Stop this turn … 1 queued message will wait) and Keep working kept it live; with the queue held the hint says it waits there");
     await p.close();
   },
 
@@ -763,9 +760,9 @@ const steps = {
     if (!/Codex\s*·\s*joined/.test(await entry.innerText())) fail(`the entry: ${await entry.innerText()}`);
     if (await p.locator(".t-term-banner").count()) fail("a banner for a joined TUI");
     await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
-    if (!/the chat and Codex \(joined, on the left\) both drive Codex/.test(await p.locator(".t-term-who").innerText())) fail(`the shell line: ${await p.locator(".t-term-who").innerText()}`);
+    if (!/Codex\s*·\s*joined/.test(await entry.innerText()) || (await p.locator(".t-term-who").count())) fail("on a shell: the entry or the line under the header");
     await rpcVia(p, "endTerminal", { sessionId: idOf(codex) });
-    ok("Codex: !echo ran, Sent to Codex, Codex got the output (repeated it); mid-turn it waited in the queue and went after the turn; ❯_ opened a shell and the Codex entry joined Codex's TUI (Codex · joined, no banner, mode live); the shell's line says the chat and Codex both drive it");
+    ok("Codex: !echo ran, Sent to Codex, Codex got the output (repeated it); mid-turn it waited in the queue and went after the turn; ❯_ opened a shell and the Codex entry joined Codex's TUI (Codex · joined, no banner, mode live); on a shell the entry still says joined");
     await p.close();
   },
 };

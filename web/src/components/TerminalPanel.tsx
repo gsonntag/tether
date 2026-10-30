@@ -6,7 +6,8 @@
 // input line stand in for the keys a phone keyboard lacks, and Chat tucks the panel away (still
 // attached). Copy shows a terminal's text, scrollback included, where it can be selected natively.
 //
-// Which surface drives the agent is always spelled out under the header.
+// Which surface drives the agent shows on its entry ("Claude Code · driving", "Codex · joined") and,
+// for a handoff, in the transcript's banner; a shell needs no words.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -184,22 +185,6 @@ export function TerminalPanel({
         ? "That shell has closed"
         : undefined;
   const waitingBack = !!state.terminal?.returnWhenIdle;
-  // Who drives the agent, said under the tabs (SPEC §8): unmistakable whichever tab is in front.
-  const who =
-    tab === "tui"
-      ? handoff
-        ? `${harness} · driving: it drives ${agent} now. The chat follows along; Back to Tether hands the session back.`
-        : state.terminal?.kind === "shared"
-          ? `${harness} · joined to this session. Tether's chat drives ${agent} too.`
-          : undefined
-      : shell
-        ? handoff
-          ? `Shell ${shell.n} · a plain shell in this folder. ${agent} is driven from ${harness} (on the left) until Back to Tether.`
-          : state.terminal?.kind === "shared"
-            ? `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat and ${harness} (joined, on the left) both drive ${agent}.`
-            : `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat still drives ${agent}.`
-        : undefined;
-
   const agentState = handoff ? "driving" : state.terminal?.kind === "shared" ? "joined" : undefined;
   const title = tab === "tui" ? harness : shell ? `Shell ${shell.n}` : "Shell";
 
@@ -263,11 +248,6 @@ export function TerminalPanel({
           <IconButton label="Close terminal panel" tooltip="Close (the terminal keeps running)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
-      {who && (
-        <div className={`t-term-who${tab === "tui" && handoff ? " drives" : ""}`} role="status">
-          {who}
-        </div>
-      )}
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
