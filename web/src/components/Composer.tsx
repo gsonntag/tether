@@ -119,8 +119,14 @@ export const Composer = forwardRef<
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
+    // The row holds its height while the box is collapsed to measure: otherwise the transcript above
+    // grows for that moment, the browser clamps its scrollTop, and a view at the bottom falls behind
+    // by the draft's height on every keystroke with no resize left to bring it back.
+    const row = el.parentElement!;
+    row.style.height = `${row.offsetHeight}px`;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
+    row.style.height = "";
   }, [text]);
 
   const change = (v: string) => {

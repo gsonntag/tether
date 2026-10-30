@@ -1,6 +1,6 @@
 // Scroll jank and cost on a phone, measured: flings over the transcript in WebKit (iPhone 14 Pro)
 // and Chromium (Pixel 7), against the fake runner's sessions.
-//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|short-webkit|short-chromium|huge-webkit|huge-chromium]…
+//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|short-webkit|short-chromium|typing-webkit|typing-chromium|typing-desktop-webkit|typing-desktop-chromium|huge-webkit|huge-chromium]…
 // Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` (SHORT=1000 for the short rows, HUGE=1500 for the huge-* runs) and the
 // web app, preferably a production build (`vite build && vite preview`) for the huge-* numbers.
 //
@@ -203,6 +203,78 @@ async function fling(p, eng, up, label) {
 const atTop = (p) => p.evaluate(() => !document.querySelector(".t-track > .t-paging:first-child") && document.querySelector(".t-scroll").scrollTop < 2);
 /** The first message on screen ("Question 12: …" in long-1). */
 const firstSeen = (p) => p.evaluate(() => document.querySelector(".t-scroll [data-id]")?.textContent?.slice(0, 14));
+
+/**
+ * Typing in the composer while a reply streams and the view follows the bottom, a keystroke at a
+ * time, one line and then a draft of several lines. Sampled at each frame as it's painted: the transcript's box
+ * may only change on a deliberate new line of the draft, and the view stays at the bottom.
+ *   grewPx     how much the transcript grew meanwhile (the stream was running)
+ *   offBottom  painted frames more than 2 px from the bottom, worst  how far
+ *   stDown     frames scrollTop went down (the bounce: a following view only goes down the page)
+ *   boxMoves   changes to the transcript box's height; composerMoves the composer's
+ */
+async function typing(mk, out, viewport) {
+  const p = await mk();
+  if (viewport) await p.setViewportSize(viewport);
+  await p.waitForTimeout(600);
+  const input = p.locator("textarea.t-input");
+  const run = async (label, draft, keys) => {
+    await input.fill(`long reply for the ${label} check`);
+    await p.locator('button[aria-label="Send"]').click();
+    await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
+    await p.waitForTimeout(1500);
+    await input.click();
+    if (draft) await input.fill(draft);
+    await p.waitForTimeout(300);
+    await p.evaluate(() => {
+      const t = (window.__typing = { on: true, frames: [] });
+      const el = document.querySelector(".t-scroll");
+      const c = document.querySelector(".t-composer");
+      // A ResizeObserver made last runs after the app's in the same frame: what gets painted.
+      const probe = document.body.appendChild(document.createElement("div"));
+      probe.style.cssText = "position:fixed;left:-10px;top:0;height:1px;width:1px";
+      new ResizeObserver(() => {
+        t.frames.push({ st: el.scrollTop, sh: el.scrollHeight, gap: el.scrollHeight - el.scrollTop - el.clientHeight, box: el.clientHeight, comp: c.offsetHeight });
+      }).observe(probe);
+      const tick = () => {
+        probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
+        if (t.on) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    await p.keyboard.type(keys, { delay: 70 });
+    const r = await p.evaluate(() => {
+      const t = window.__typing;
+      t.on = false;
+      const f = t.frames;
+      let stDown = 0, stDownPx = 0, boxMoves = 0, composerMoves = 0;
+      for (let i = 1; i < f.length; i++) {
+        if (f[i].st < f[i - 1].st - 1) (stDown++, (stDownPx += f[i - 1].st - f[i].st));
+        if (f[i].box !== f[i - 1].box) boxMoves++;
+        if (f[i].comp !== f[i - 1].comp) composerMoves++;
+      }
+      return { frames: f.length, grewPx: Math.round(f.at(-1).sh - f[0].sh), offBottom: f.filter((x) => x.gap > 2).length, worst: Math.round(Math.max(0, ...f.map((x) => x.gap))), stDown, stDownPx: Math.round(stDownPx), boxMoves, composerMoves };
+    });
+    out.push({ label: `typing: ${label}`, ...r });
+    await input.fill("");
+    await p.waitForFunction(() => !document.querySelector('button[aria-label="Stop"]'), null, { timeout: 60_000 });
+    await p.waitForTimeout(500);
+  };
+  const line = "the quick brown fox ";
+  await run("one line", "", line.repeat(2));
+  await run("a draft of five lines", "first line\nsecond line\nthird line\nfourth line\nfifth line\n", line.repeat(2));
+  await run("a long wrapped draft", "word ".repeat(120), line.repeat(2));
+  if (!viewport) {
+    // The wheel over a stream at desktop size, up and back down (and no bottom to fight).
+    await input.fill("long reply for the wheel check");
+    await p.locator('button[aria-label="Send"]').click();
+    await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
+    await p.waitForTimeout(1500);
+    const eng = { webkit: true };
+    for (const up of [true, true, false, true, false]) out.push(await fling(p, eng, up, `desktop wheel over a stream: ${up ? "up" : "down"}`));
+  }
+  await p.close();
+}
 
 /**
  * Short rows (fake runner SHORT=1000): far up, then strong flings back down past the cap, settling
@@ -571,6 +643,15 @@ for (const w of which) {
     const wk = w.endsWith("webkit");
     const ctx = await browser.newContext({ ...devices[wk ? "iPhone 14 Pro" : "Pixel 7"], ...(wk ? { isMobile: false } : {}) });
     await ctx.addInitScript(instrument);
+    if (w.startsWith("typing-")) {
+      await ctx.close();
+      const desk = w.includes("desktop");
+      const tc = await browser.newContext(desk ? { viewport: { width: 1280, height: 800 } } : { ...devices[wk ? "iPhone 14 Pro" : "Pixel 7"], ...(wk ? { isMobile: false } : {}) });
+      await tc.addInitScript(instrument);
+      await typing(() => open(tc), { push: (r) => console.log(JSON.stringify({ engine: w, ...r })) }, desk ? undefined : { width: wk ? 393 : 412, height: 380 });
+      await tc.close();
+      continue;
+    }
     if (w.startsWith("short-")) {
       await shortDown((session) => open(ctx, session), { push: (r) => console.log(JSON.stringify({ engine: w, ...r })) });
       await ctx.close();

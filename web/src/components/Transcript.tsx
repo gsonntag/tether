@@ -171,6 +171,9 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
       if (Math.abs(top - lastTop.current) >= 1) goingDown.current = top > lastTop.current;
       const f = following({ stick: stick.current, bar: bar.current, top, lastTop: lastTop.current, fromBottom: el.scrollHeight - top - el.clientHeight, tail: shown.current.tail }, NEAR_BOTTOM);
       if (f !== stick.current) follow(f);
+      // Following, and moved up with no input: something shrank and grew within a frame and the
+      // browser clamped scrollTop, with no size change left to say so. Back before it's painted.
+      if (stick.current && !gesture.down && top < lastTop.current - 1) pin(el);
       settleLater();
     }
     lastTop.current = top;
