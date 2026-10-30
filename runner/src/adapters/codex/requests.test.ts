@@ -33,3 +33,8 @@ test("more sandbox access, MCP tool approvals; MCP forms aren't asked", () => {
   expect(codexAsk("mcpServer/elicitation/request", mcp, "/p")).toMatchObject({ kind: "approval", tool: "mcp__gh__search", input: { q: "x" } });
   expect(codexAsk("mcpServer/elicitation/request", { serverName: "x", mode: "url", url: "https://x" }, "/p")).toBeUndefined();
 });
+
+test("a network approval is flagged as one (pushes say only that)", () => {
+  const r = codexAsk("item/commandExecution/requestApproval", { itemId: "e", command: "psql -h db1", networkApprovalContext: { host: "db1" } }, "/p");
+  expect(r).toMatchObject({ network: true, reason: "Network access to db1" });
+});

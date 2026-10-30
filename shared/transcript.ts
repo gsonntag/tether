@@ -172,6 +172,8 @@ export interface Request {
   title?: string;
   /** why the harness asks ("This command uses shell operators that require approval") */
   reason?: string;
+  /** the harness asks for network access (Codex's network approvals) */
+  network?: boolean;
   /** a plan to approve (leaving plan mode), as markdown */
   plan?: string;
   /** ways to approve that also switch the permission mode ("Approve and accept edits") */

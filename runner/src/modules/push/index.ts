@@ -30,22 +30,6 @@ const UNSAFE =
   /[\\/=:@$`|<>{}[\]~]|https?|\bsk-|token|secret|passw|api.?key|bearer|credential|[A-Za-z0-9+_-]{20,}|[0-9a-f]{12,}|[\p{L}\p{N}_-]\.[\p{L}\p{N}_-]|(^|[\s"'(])\.[\p{L}\p{N}_]/iu;
 
 /**
- * A harness's own short description of a shell step, when it is safe to show on a lock screen:
- * at most 60 characters, nothing that looks like a path, URL, key or secret, and nothing from the
- * command itself (no word of 5+ characters it shares with the command). Undefined otherwise.
- */
-export function safeDescription(desc: unknown, command: unknown): string | undefined {
-  if (typeof desc !== "string") return undefined;
-  const d = desc.trim().replace(/\s+/g, " ");
-  if (!d || d.length > 60 || UNSAFE.test(d)) return undefined;
-  const cmd = typeof command === "string" ? command.toLowerCase() : "";
-  const words = cmd.split(/[^\p{L}\p{N}_.-]+/u).filter((w) => w.length >= 5);
-  const low = d.toLowerCase();
-  if (cmd && (low.includes(cmd.trim()) || words.some((w) => low.includes(w)))) return undefined;
-  return d;
-}
-
-/**
  * A session's title as a push shows it: the project folder and the agent ("web-coder · Claude").
  * Never the session's own title: Codex titles are your first message verbatim, Claude's are written
  * by the model from it, `!` sessions hold the command, and a denylist can't tell "my pin is 4821"
@@ -55,38 +39,27 @@ export function safeDescription(desc: unknown, command: unknown): string | undef
 export function pushTitle(projectPath: string, agent: string, renamed?: string): string {
   const t = (renamed ?? "").trim().replace(/\s+/g, " ");
   if (t && t.length <= 60 && !UNSAFE.test(t) && !/[;&*#%^]|\bsudo\b|\brm\b|--?\w|\d{4,}/.test(t)) return t;
-  const folder = projectPath.replace(/\/+$/, "").split("/").pop() || "Tether";
-  return `${folder} · ${agent}`;
+  // The folder's name too only when it doesn't look like a host, key or secret.
+  const folder = projectPath.replace(/\/+$/, "").split("/").pop() || "";
+  const safe = folder && folder.length <= 40 && !UNSAFE.test(folder) && !/\d{4,}/.test(folder);
+  return `${safe ? folder : "a project"} · ${agent}`;
 }
 
 /**
- * What a request needs, as a notification says it: never the command, a path, the file's contents
- * or the question itself (a phone may show it on its lock screen). For a shell step, the harness's
- * own short description when it is safe (Claude's Bash `description`; Codex's approval reason),
- * else a summary from what kind of request it is. Other tools (MCP among them) only by kind.
+ * What a request needs, as a notification says it: only what kind of thing the agent wants. Never
+ * any text the agent or the model wrote (a step's description, Codex's reason), a command, a path,
+ * a host, a tool's name or the question itself: a phone may show it on its lock screen.
  */
-export function requestBody(r: Request, agent: string, harness: string = "claude"): string {
+export function requestBody(r: Request, agent: string, _harness: string = "claude"): string {
   if (r.kind === "question") return `${agent} has a question for you.`;
   if (r.plan !== undefined) return `${agent} has a plan for you to approve.`;
+  if (r.network) return `${agent} wants network access.`;
   const input = (r.input ?? {}) as Record<string, unknown>;
-  const shell = r.toolKind === "shell" || (!r.toolKind && (!!r.command || typeof input.command === "string"));
-  if (shell) {
-    const command = r.command ?? input.command;
-    // Claude's `reason` is its own rule's wording ("Path is outside…"), not a step description.
-    // Tether's own wording for a Codex network approval names the host: never shown.
-    if (harness === "codex" && typeof r.reason === "string" && /^Network access to /i.test(r.reason)) return `${agent} wants network access.`;
-    const theirs = [input.description, harness === "codex" ? r.reason : undefined].filter((x): x is string => typeof x === "string");
-    const own = theirs.map((x) => safeDescription(x, command)).find(Boolean);
-    if (own) return `${agent} asks to: ${own}`;
-    // Not shown as is (a host, a file, …): what kind of step it is, from its words.
-    // (Codex's approval reasons say what kind: "Network access to <host>", "Read the .env file".)
-    const said = harness === "codex" && typeof r.reason === "string" ? r.reason : "";
-    if (/network|internet|download|\bonline\b/i.test(said)) return `${agent} wants network access.`;
-    if (/^\s*(read|look at|open|view|cat)\b/i.test(said)) return `${agent} wants to read a file.`;
-    return `${agent} wants to run a command.`;
-  }
   const files = Array.isArray(input.files) ? input.files.length : 0;
-  switch (r.toolKind) {
+  const kind = r.toolKind ?? (r.command || typeof input.command === "string" ? "shell" : undefined);
+  switch (kind) {
+    case "shell":
+      return `${agent} wants to run a command.`;
     case "edit":
     case "write":
       return files > 1 ? `${agent} wants to edit ${files} files.` : `${agent} wants to edit a file.`;
@@ -96,8 +69,7 @@ export function requestBody(r: Request, agent: string, harness: string = "claude
     case "fetch":
       return `${agent} wants to fetch from the web.`;
   }
-  // A tool's name only when it reads as a plain name (an MCP tool's can carry a server or host).
-  return r.tool && r.tool.length <= 40 && /^[\p{L}\p{N}_ -]+$/u.test(r.tool) && !UNSAFE.test(r.tool) ? `${agent} wants to use ${r.tool}.` : `${agent} wants to use a tool.`;
+  return `${agent} wants to use a tool.`;
 }
 
 /** A failed turn's error as a short category, never the raw message. */

@@ -98,8 +98,11 @@ describe("what gets sent, to whom", () => {
     expect(requestBody(r({ tool: "Edit", toolKind: "edit", input: { file_path: "/a/b/app.ts" } }), "Codex")).toBe("Codex wants to edit a file.");
     expect(requestBody(r({ tool: "apply_patch", toolKind: "edit", input: { files: ["/a", "/b", "/c"] } }), "Codex")).toBe("Codex wants to edit 3 files.");
     // The harness's own description of the step.
-    expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "rm -rf /tmp/x", description: "Remove the build cache" } }), "Claude")).toBe("Claude asks to: Remove the build cache");
-    expect(requestBody(r({ tool: "shell", toolKind: "shell", reason: "Needs network access to install deps", input: { command: "npm i" } }), "Codex", "codex")).toBe("Codex asks to: Needs network access to install deps");
+    // Never the agent's or the model's own words, however harmless they look.
+    for (const d of ["Remove the build cache", "Ping db1 and print door code", "Tell Bob the door code is 4821", "Connect to db1 on port 5432", "Send my SSN 123 45 6789 to HR"]) {
+      expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "x", description: d } }), "Claude")).toBe("Claude wants to run a command.");
+      expect(requestBody(r({ tool: "shell", toolKind: "shell", reason: d, input: { command: "x" } }), "Codex", "codex")).toBe("Codex wants to run a command.");
+    }
     // Claude's reason is its rule's wording, not a step.
     expect(requestBody(r({ tool: "Bash", toolKind: "shell", reason: "Path is outside allowed working directories", input: { command: "ls /x" } }), "Claude")).toBe("Claude wants to run a command.");
     // A description carrying the command, a secret or a path falls back.
@@ -109,7 +112,7 @@ describe("what gets sent, to whom", () => {
     expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "ls", description: "Read /home/me/.ssh config" } }), "Claude")).toBe("Claude wants to run a command.");
     expect(requestBody(r({ tool: "Bash", toolKind: "shell", input: { command: "ls", description: "x".repeat(61) } }), "Claude")).toBe("Claude wants to run a command.");
     // An MCP tool's description argument is never used.
-    expect(requestBody(r({ tool: "mcp__slack__post", toolKind: "other", input: { description: "Post the deploy password hunter2" } }), "Claude")).toBe("Claude wants to use mcp__slack__post.");
+    expect(requestBody(r({ tool: "mcp__slack__post", toolKind: "other", input: { description: "Post the deploy password hunter2" } }), "Claude")).toBe("Claude wants to use a tool.");
     expect(requestBody(r({ tool: "mcp__db.internal.corp__query", toolKind: "other" }), "Claude")).toBe("Claude wants to use a tool.");
     expect(requestBody(r({ tool: "mcp__x__token_dump", toolKind: "other" }), "Claude")).toBe("Claude wants to use a tool.");
     expect(requestBody(r({ kind: "question", question: "Which password?" }), "Claude")).toBe("Claude has a question for you.");
@@ -180,16 +183,18 @@ test("titles in pushes: only the folder and the agent (a name you gave it, only 
   ])
     // A session's own title (first message, AI title, placeholder) is never used.
     expect([t, pushTitle("/home/me/web-coder", "Codex")]).toEqual([t, "web-coder · Codex"]);
+  // The folder too only when it doesn't look like a host, key or secret.
+  for (const f of ["/srv/db1.internal.corp", "/x/sk-live-ABCDEF1234567890xyz", "/x/token-store", "/x/pin-4821"]) expect([f, pushTitle(f, "Claude")]).toEqual([f, "a project · Claude"]);
   // A name you gave it: shown when safe, else the fallback.
   expect(pushTitle("/home/me/web-coder", "Claude", "Billing cleanup")).toBe("Billing cleanup");
   for (const r of ["Check example.com status", "Read the .env file", "Rotate TOKEN=abc", "pin 4821", "x".repeat(61)]) expect([r, pushTitle("/p/web-coder", "Claude", r)]).toEqual([r, "web-coder · Claude"]);
 });
 
-test("Codex network and file reasons fall back to what kind of step", () => {
+test("Codex network approvals and reasons say only what kind of step", () => {
   const r = (x: Partial<Request>): Request => ({ id: "r", sessionId: "s", kind: "approval", openedAt: 1, toolKind: "shell", tool: "shell", input: { command: "curl x" }, ...x });
-  expect(requestBody(r({ reason: "Network access to api.github.com" }), "Codex", "codex")).toBe("Codex wants network access.");
-  for (const host of ["postgres", "db1"]) expect(requestBody(r({ reason: `Network access to ${host}` }), "Codex", "codex")).toBe("Codex wants network access.");
-  expect(requestBody(r({ reason: "Read the .env file" }), "Codex", "codex")).toBe("Codex wants to read a file.");
+  // Network approvals are flagged by the adapter (codexAsk), whatever the reason says.
+  for (const host of ["api.github.com", "postgres", "db1"]) expect(requestBody(r({ network: true, reason: `Network access to ${host}` }), "Codex", "codex")).toBe("Codex wants network access.");
+  expect(requestBody(r({ reason: "Read the .env file" }), "Codex", "codex")).toBe("Codex wants to run a command.");
   expect(requestBody(r({ input: { command: "ls", description: "Show github.com status" } }), "Claude")).toBe("Claude wants to run a command.");
 });
 

@@ -38,7 +38,7 @@ export function codexAsk(method: string, p: any, cwd: string, patch?: any): Requ
       const command = unwrapShell(p.command ?? "");
       const input = { command, ...(p.cwd && p.cwd !== cwd ? { cwd: p.cwd } : {}), ...(p.additionalPermissions ? { permissions: p.additionalPermissions } : {}) };
       const net = p.networkApprovalContext?.host ? `Network access to ${p.networkApprovalContext.host}` : undefined;
-      return { ...base, kind: "approval", tool: "bash", input, ...tags("bash", input), ...(net && !reason ? { reason: net } : {}) };
+      return { ...base, kind: "approval", tool: "bash", input, ...tags("bash", input), ...(net && !reason ? { reason: net } : {}), ...(net ? { network: true } : {}) };
     }
     case "item/fileChange/requestApproval": {
       const input = patch ? patchInput(patch.changes ?? [], cwd) : { path: p.grantRoot ?? cwd, edits: [] };
