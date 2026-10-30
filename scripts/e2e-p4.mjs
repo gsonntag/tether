@@ -140,6 +140,9 @@ const waitCapture = async (re, what, ms = 60_000, name = tuiName()) => {
 const pickTerminal = async (p, tap = false) => {
   const chip = p.locator(".t-chip-term");
   if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
+  // The panel opens on a project shell; once it's there (a click on the agent's entry while the
+  // shell is still opening is taken back when it opens).
+  await p.waitForFunction(() => [...(globalThis.__tetherTerms?.keys() ?? [])].some((k) => k.startsWith("sh-")), null, { timeout: 30_000 }).catch(() => {});
   const entry = p.locator(".t-term-agent");
   await (tap ? entry.tap() : entry.click());
 };
