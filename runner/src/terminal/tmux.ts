@@ -267,6 +267,13 @@ export class Tmux {
     return this.must(["capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", `=${name}:`]);
   }
 
+  /** tmux's history of a pane is full (it keeps history-limit rows): older lines are gone. */
+  async historyFull(name: string): Promise<boolean> {
+    const [size, limit] = (await this.must(["display", "-p", "-t", `=${name}:`, "#{history_size} #{history_limit}"])).trim().split(" ").map(Number);
+    // Past the limit tmux drops a tenth of it at once, so a full history sits between 90% and 100%.
+    return !!limit && (size ?? 0) >= Math.floor(limit * 0.9);
+  }
+
   /** The text on screen now (for tests and diagnostics). */
   async capture(name: string): Promise<string> {
     return this.must(["capture-pane", "-p", "-t", `=${name}:`]);

@@ -189,7 +189,9 @@ export class TerminalControl {
     if (!target) throw new Error(TERMINAL_CLOSED);
     const all = (await this.o.tmux.history(target)).replace(/\s+$/, "") + "\n";
     const text = tailBytes(all, TERMINAL_TEXT_MAX);
-    return { text, cut: text.length < all.length };
+    // Cut here, or tmux itself let older lines go (it keeps history-limit rows).
+    const full = await this.o.tmux.historyFull(target).catch(() => false);
+    return { text, cut: text.length < all.length || full };
   }
 
   input(attachId: string, data: string) {

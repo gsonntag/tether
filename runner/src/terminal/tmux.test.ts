@@ -136,4 +136,13 @@ test("history: the scrollback and the screen as text (the panel's Copy)", async 
   expect(h).toMatch(/^200$/m);
   expect(h).toMatch(/LONG-x{60}/);
   expect(await tmux.capture("sh-hist-1")).not.toMatch(/^1$/m);
-});
+  expect(await tmux.historyFull("sh-hist-1")).toBe(false);
+  // A small history, filled: tmux let older lines go.
+  // (history-limit counts when a window is made: set on the test's own server first.)
+  await (tmux as any).run(["set-option", "-g", "history-limit", "50"]);
+  await tmux.create({ name: "sh-hist-2", cwd: dir, argv: ["sh"], cols: 40, rows: 5, tags: { kind: "shell", project: dir, n: "10" } });
+  await tmux.type("sh-hist-2", "seq 1 500");
+  await tmux.keys("sh-hist-2", "Enter");
+  await until(async () => (await tmux.history("sh-hist-2")).includes("500"));
+  await until(() => tmux.historyFull("sh-hist-2"));
+}, 20_000);
