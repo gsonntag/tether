@@ -14,6 +14,7 @@
 //   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
 //   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab stored
 // subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again).
+// The steps that type in Codex's TUI need SCRATCH already trusted in Codex's config: they stop otherwise.
 // claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
@@ -152,7 +153,15 @@ const openPanel = async (p) => {
   await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
 };
+// Nothing here may make the daemon trust SCRATCH in Codex's config (P4.md, Folder trust; only read).
+const codexConfig = `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/config.toml`;
+const trustsScratch = () => existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`);
+const trustedBefore = trustsScratch();
+
 const typeInTerm = async (p, text, enter = true) => {
+  // In a folder it doesn't trust, Codex's TUI asks once it has resumed, a moment after its prompt is
+  // drawn, and Enter there says yes and writes to the config. So no key goes to it at all.
+  if (!trustsScratch()) fail(`${SCRATCH} isn't trusted in ${codexConfig}: Codex's TUI would ask (never accepted here). Trust it yourself to run the TUI steps.`);
   // Forced: on a loaded machine the terminal box can keep refitting, and it's never covered.
   await p.locator(".t-term-box").click({ force: true });
   await p.keyboard.type(text, { delay: 15 });
@@ -974,11 +983,6 @@ const steps = {
     await p.close();
   },
 };
-
-// Nothing here may make the daemon trust SCRATCH in Codex's config (P4.md, Folder trust; only read).
-const codexConfig = `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/config.toml`;
-const trustsScratch = () => existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`);
-const trustedBefore = trustsScratch();
 
 const pick = process.argv.slice(2);
 try {
