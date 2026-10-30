@@ -36,6 +36,8 @@ const debugTerms: Map<string, Terminal> | undefined = import.meta.env?.DEV ? ((g
 export interface TermViewHandle {
   /** sends keys as typed (the phone's key bar, its input line) */
   input(data: string): void;
+  /** the attach now (for the panel's Copy), if attached */
+  attachId(): string | undefined;
   focus(): void;
 }
 
@@ -61,6 +63,7 @@ export const TermView = forwardRef<
 
   useImperativeHandle(ref, () => ({
     input: (d) => conn.current?.input(d),
+    attachId: () => conn.current?.attachId,
     focus: () => term.current?.focus(),
   }));
 
@@ -73,6 +76,9 @@ export const TermView = forwardRef<
       scrollback: 3000,
       allowProposedApi: true,
       macOptionIsMeta: true,
+      // Selecting with the mouse while tmux takes the mouse: Shift-drag, or Option-drag on a Mac.
+      macOptionClickForcesSelection: true,
+      rightClickSelectsWord: true,
       theme: { background: "#16171a", foreground: "#e6e6e6", cursor: "#e6e6e6", selectionBackground: "#3a3d45" },
     });
     const fit = new FitAddon();
@@ -98,6 +104,16 @@ export const TermView = forwardRef<
       deps,
     );
     conn.current = c;
+    // Copy: with text selected, Ctrl/Cmd+C (and Ctrl+Shift+C) copies it and never reaches the
+    // terminal as ^C. Without a selection Ctrl+C is ^C, as always.
+    t.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || e.key.toLowerCase() !== "c" || !(e.ctrlKey || e.metaKey) || !t.hasSelection()) return true;
+      const text = t.getSelection();
+      void navigator.clipboard?.writeText(text).catch(() => {});
+      t.clearSelection();
+      e.preventDefault();
+      return false;
+    });
     const input = t.onData((d) => c.input(d));
     const binary = t.onBinary((d) => c.input(d));
     c.open(t.cols, t.rows, stop).then(

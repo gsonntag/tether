@@ -238,19 +238,6 @@ export const KEYS: { label: string; aria: string; data: string }[] = [
 ];
 
 /**
- * What the ❯_ chip's two choices say (SPEC §8), as things stand: which surface drives the agent now
- * and what each choice changes.
- */
-export function terminalChoices(agent: string, o: { shared: boolean; handedOff: boolean; joined: boolean }): { shell: string; tui: string } {
-  if (o.handedOff) return { shell: `A shell in this folder. ${agent} is driven from the ${agent} terminal until Back to Tether.`, tui: `Already driving ${agent}.` };
-  if (o.joined) return { shell: `A shell in this folder, beside the chat. The chat and the ${agent} terminal both drive ${agent}.`, tui: `Already open, joined to this session: it and the chat both drive ${agent}.` };
-  return {
-    shell: `A shell in this folder, beside the chat. ${agent} stays driven from here.`,
-    tui: o.shared ? `${agent}'s own terminal UI, joined to this session. Tether keeps driving it too.` : `${agent}'s own terminal UI. It drives ${agent} until you go Back to Tether.`,
-  };
-}
-
-/**
  * The question before opening the terminal (SPEC §8 handoff), or none when it opens right away.
  * `paused`: the queue is already held (after Stop, a failed turn, a restart): it stays so, nothing
  * new waits on the terminal.

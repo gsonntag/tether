@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { AGENT_NAMES } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
-import { handoffPrompt, terminalChoices } from "../terminal";
+import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
 import { SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
@@ -129,28 +128,20 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setPanel((p) => ({ tab: SHELL_TAB, wantTui: !!p?.wantTui, nonce: (p?.nonce ?? 0) + 1 }));
   };
   const panelShown = !!panel && !panel.hidden;
-  const choices = terminalChoices(agent, { shared, handedOff: inTerminal, joined: !inTerminal && state.terminal?.kind === "shared" });
-  const terminalChip =
-    !summary.parentSessionId &&
-    (panel ? (
-      // Open: the chip closes it (or, on a phone where it is tucked behind the chat, shows it again).
-      <button type="button" className="t-chip t-chip-term" aria-pressed={panelShown} onClick={() => setPanel(panelShown ? null : { ...panel, hidden: false })}>
-        <span aria-hidden>❯_</span>
-        <span>Terminal</span>
-      </button>
-    ) : (
-      <DropdownMenu
-        renderTrigger={(p) => (
-          <button type="button" className="t-chip t-chip-term" aria-pressed={false} {...p}>
-            <span aria-hidden>❯_</span>
-            <span>Terminal</span>
-          </button>
-        )}
-      >
-        <DropdownMenuItem label="Shell" description={choices.shell} onClick={openShell} />
-        <DropdownMenuItem label={`${agent} terminal`} description={choices.tui} onClick={() => openTerminal()} />
-      </DropdownMenu>
-    ));
+  // ❯_ opens a project shell beside the chat (SPEC §8); nothing is handed over. Open, it closes the
+  // panel (or, on a phone where the panel is tucked behind the chat, shows it again).
+  const terminalChip = !summary.parentSessionId && (
+    <button
+      type="button"
+      className="t-chip t-chip-term"
+      aria-pressed={panelShown}
+      title={panel ? undefined : `A shell in this folder, beside the chat. ${agent} stays driven from here.`}
+      onClick={() => (panel ? setPanel(panelShown ? null : { ...panel, hidden: false }) : openShell())}
+    >
+      <span aria-hidden>❯_</span>
+      <span>Terminal</span>
+    </button>
+  );
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
   const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (
@@ -181,7 +172,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               ? "Driving in the terminal · working…"
               : "Driving in the terminal"}
       </span>
-      {!panel && <Button label={`Open ${agent} terminal`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
+      {!panel && <Button label={`Open ${HARNESS_LABELS[summary.harness]}`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
       {!panel && !state.terminal?.returning && (
         <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => void rpc(runnerId, "endTerminal", { sessionId, whenIdle: state.status !== "idle" }).catch(() => {})} />
       )}
@@ -205,7 +196,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         {panel?.hidden && (
           // A phone, the shell tucked behind the chat: one tap back to it.
           <button type="button" className="t-term-return" onClick={() => setPanel({ ...panel, hidden: false })}>
-            <span aria-hidden>❯_</span> {panel.tab === "tui" ? `Back to the ${agent} terminal` : "Back to the shell"}
+            <span aria-hidden>❯_</span> {panel.tab === "tui" ? `Back to ${HARNESS_LABELS[summary.harness]}` : "Back to the shell"}
           </button>
         )}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />

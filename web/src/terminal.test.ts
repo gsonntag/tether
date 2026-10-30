@@ -179,14 +179,6 @@ test("the first attach's error reaches the caller (the busy prompt's race)", asy
   await expect(c.open(80, 24)).rejects.toThrow(/turn is running/);
 });
 
-test("the chip's choices say who drives, as things stand", async () => {
-  const { terminalChoices } = await import("./terminal");
-  expect(terminalChoices("Claude", { shared: false, handedOff: false, joined: false }).shell).toMatch(/Claude stays driven from here/);
-  expect(terminalChoices("Claude", { shared: false, handedOff: true, joined: false })).toEqual({ shell: "A shell in this folder. Claude is driven from the Claude terminal until Back to Tether.", tui: "Already driving Claude." });
-  expect(terminalChoices("Codex", { shared: true, handedOff: false, joined: true }).tui).toMatch(/both drive Codex/);
-  expect(terminalChoices("Codex", { shared: true, handedOff: false, joined: false }).tui).toMatch(/joined to this session/);
-});
-
 test("the prompt before handing off, with the queue paused", () => {
   expect(handoffPrompt(true, 2, true)?.text).toBe("Stop this turn and open the terminal? The 2 queued messages stay paused.");
   expect(handoffPrompt(false, 1, true)).toBeNull();

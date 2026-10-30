@@ -1712,3 +1712,137 @@
     width: 44px;
   }
 }
+
+/* ---------- P5b: the panel's list (shells, then the agent) and Copy ---------- */
+
+.t-term-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-term-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+/* Desktop: the list on the left. */
+.t-term-main > .t-term-tabs {
+  flex: none;
+  width: 156px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid #2a2c31;
+  background: var(--color-background-card, #1d1f23);
+}
+.t-term-main > .t-term-tabs .t-term-tab-wrap {
+  display: flex;
+}
+.t-term-main > .t-term-tabs .t-term-tab-wrap > .t-term-tab {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.t-term-main > .t-term-tabs .t-term-new {
+  justify-content: flex-start;
+}
+/* The agent's entry: apart from the shells, and plain about what clicking it does. */
+.t-term-tab.t-term-agent {
+  margin-top: auto;
+  border-top: 1px solid #2a2c31;
+  border-radius: 0 0 6px 6px;
+  padding-top: 8px;
+}
+.t-term-tab.t-term-agent.driving,
+.t-term-tab.t-term-agent.joined {
+  color: var(--color-text-primary);
+}
+.t-term-state {
+  color: var(--color-warning, #d4a017);
+  font-size: 12px;
+}
+.t-term-main > .t-term-body {
+  flex: 1;
+  min-width: 0;
+}
+.t-term-copy {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: #16171a;
+}
+.t-term-copy-head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid #2a2c31;
+  background: var(--color-background-card, #1d1f23);
+  color: var(--color-text-primary);
+}
+.t-term-copytext {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: var(--t-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #e6e6e6;
+  /* Native selection, also with a long press on a phone. */
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+@media (max-width: 767px) {
+  /* A phone: the list is a row under the header. */
+  .t-term-main {
+    flex-direction: column;
+  }
+  .t-term-main > .t-term-tabs {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid #2a2c31;
+    padding: 4px 6px;
+    order: 0;
+    flex-basis: auto;
+  }
+  .t-term-main > .t-term-tabs .t-term-tab-wrap {
+    flex: none;
+  }
+  .t-term-new-label {
+    display: none;
+  }
+  .t-term-tab.t-term-agent {
+    margin-top: 0;
+    margin-left: auto;
+    border-top: none;
+    border-left: 1px solid #2a2c31;
+    border-radius: 0 6px 6px 0;
+    padding-top: 4px;
+  }
+  .t-term-main > .t-term-body {
+    flex: 1;
+    min-height: 0;
+  }
+}
