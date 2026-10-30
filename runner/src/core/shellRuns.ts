@@ -126,9 +126,14 @@ export class ShellRuns {
     live.queue.gone = (s, m, how) => this.queueGone(s, m, how);
     // Cards of commands a runner crash cut off: whatever still runs of them is ended, and they end
     // as not sent, never stuck at Running.
+    // A card that still carries a group (a stop whose SIGKILL the runner didn't live to send): ended now.
     core.notices.rewrite((_id, m) => {
-      if (m.shell?.state !== "running") return undefined;
+      if (m.shell?.state !== "running" && !m.shell?.pgid) return undefined;
       killLeftover(m.shell.pgid, m.shell.procStart);
+      if (m.shell.state !== "running") {
+        const { pgid: _p, procStart: _s, ...rest } = m.shell;
+        return { ...m, shell: rest };
+      }
       return cutOff(m, this.core.now());
     });
   }
@@ -195,8 +200,8 @@ export class ShellRuns {
     const pgid = proc?.pid;
     // Saved with the card: a runner that crashes can end the group when it starts again.
     const card: Msg = { id, role: "user", ts: now, parts: [tool], shell: { state: "running", startedAt: now, ...(pgid ? { pgid, procStart: procStart(pgid) } : {}) } };
+    // Saved with the store's next write (within a second), not synchronously for every command.
     s.apply({ type: "msg", msg: card });
-    this.core.notices.flush();
     if (!proc || error) {
       this.failed(run, error ?? "it didn't start");
       return { id };
@@ -238,15 +243,36 @@ export class ShellRuns {
    */
   async stopAll(killMs = KILL_MS) {
     const all = [...this.runs.values()].filter((r) => !r.done);
+    this.stopping = all;
     for (const r of all) {
       this.kill(r, "SIGTERM");
-      this.end(r, { cutOff: true }, { state: "notSent", why: STOPPED_WHY });
+      // The card keeps its group until the SIGKILL is sent: a runner gone before that (a second
+      // signal, a crash) leaves the next start to end it.
+      this.end(r, { cutOff: true }, { state: "notSent", why: STOPPED_WHY }, { keepGroup: true });
     }
     this.core.notices.flush();
     if (!all.length) return;
     await Bun.sleep(killMs);
-    for (const r of all) this.kill(r, "SIGKILL");
+    this.killNow();
   }
+
+  /** The groups a stop is waiting to SIGKILL, now (a second signal: the runner exits at once). */
+  killNow() {
+    const all = this.stopping;
+    this.stopping = [];
+    for (const r of all) {
+      this.kill(r, "SIGKILL");
+      const card = this.current(r.s, r.id);
+      if (card?.shell?.pgid) {
+        const { pgid: _p, procStart: _s, ...rest } = card.shell;
+        this.put(r.s, { ...card, shell: rest });
+      }
+    }
+    this.core.notices.flush();
+  }
+
+  /** runs stopAll ended and still has to SIGKILL */
+  private stopping: Run[] = [];
 
   private kill(r: Run, sig: NodeJS.Signals) {
     const pid = r.proc?.pid;
@@ -327,7 +353,9 @@ export class ShellRuns {
       r.carry = text.slice(esc);
       text = text.slice(0, esc);
     } else r.carry = "";
-    r.buf.push(stripAnsi(text).replace(/\r\n/g, "\n"));
+    // Colors and other escapes go, then every other control character but tab and newlines (a NUL
+    // would take 6 bytes in a frame).
+    r.buf.push(stripControls(stripAnsi(text).replace(/\r\n/g, "\n")));
   }
 
   /** New output to the card: appended in bounded deltas, or (cut in the middle) whole, at most once a second. */
@@ -384,7 +412,7 @@ export class ShellRuns {
   }
 
   /** The run is over: its card gets its final output and how it ended. */
-  private end(r: Run, how: Partial<ShellRun>, next: Pick<ShellRun, "state" | "why">): Msg | undefined {
+  private end(r: Run, how: Partial<ShellRun>, next: Pick<ShellRun, "state" | "why">, o: { keepGroup?: boolean } = {}): Msg | undefined {
     if (r.done) return undefined;
     this.decode(r, true);
     r.done = true;
@@ -400,7 +428,8 @@ export class ShellRuns {
     this.saved.set(r.id, r.buf.text(SHELL_SAVED_HEAD, SHELL_SAVED_TAIL).text);
     const failed = how.stopped || how.cutOff || !!how.signal || (how.exitCode ?? 0) !== 0;
     const tool = card.parts[0] as ToolPart;
-    const { pgid: _p, procStart: _s, ...was } = card.shell;
+    const { pgid: _p, procStart: _s, ...rest } = card.shell;
+    const was = o.keepGroup ? card.shell : rest;
     const ended: Msg = {
       ...card,
       parts: [{ ...tool, output: shown.text, status: failed ? "error" : "done" }],

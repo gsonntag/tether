@@ -28,6 +28,8 @@ export function tetherOrigin(text: string): { origin: { kind: "tether" | "shell"
  */
 export function titleText(text: string): string {
   const t = text.trimStart();
+  // Typed by a person (defang's mark): their text, as it reads.
+  if (t.startsWith("\u200b")) return t.slice(1);
   const sh = parseShellMessage(t);
   if (sh) return `$ ${sh.command}`;
   return fromTether(t) ?? text;
@@ -35,3 +37,6 @@ export function titleText(text: string): string {
 
 /** Text a person typed never passes for one of Tether's own messages (a zero-width space in front). */
 export const defang = (text: string): string => (tetherOrigin(text.trimStart()) ? `\u200b${text}` : text);
+
+/** The text as shown and copied: without defang's mark (the agent still gets it). */
+export const undefang = (text: string): string => (text.startsWith("\u200b") && tetherOrigin(text.slice(1).trimStart()) ? text.slice(1) : text);

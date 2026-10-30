@@ -2,7 +2,7 @@
 // through the queue, Stop, restarts, huge output.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerToServer } from "../../../shared/protocol";
@@ -28,6 +28,16 @@ const alive = (pid: number) => {
     return true;
   } catch {
     return false;
+  }
+};
+/** Everything the store keeps of `!` cards (their own files beside notices.json). */
+const savedCards = (dir: string) => {
+  try {
+    return readdirSync(join(dir, "shell-cards"))
+      .map((f) => readFileSync(join(dir, "shell-cards", f), "utf8"))
+      .join("\n");
+  } catch {
+    return "";
   }
 };
 const until = async (f: () => boolean, ms = 5000) => {
@@ -287,6 +297,70 @@ describe("! commands", () => {
     expect(t.driver()).toBeUndefined();
   });
 
+  test("a second signal: the runner gone before its SIGKILL, the next start ends what ignored SIGTERM", async () => {
+    const t = setup();
+    await t.core.subscribe("claude:s1");
+    const pidFile = join(t.dir, "stubborn3.pid");
+    const { id } = await t.runs.run("claude:s1", `(trap '' TERM; sleep 30 & echo $! > ${pidFile}; wait); echo after`);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+    const stubborn = Number(readFileSync(pidFile, "utf8").trim());
+    void t.runs.stopAll(60_000);
+    // The card is ended but keeps its group until the SIGKILL.
+    expect(t.shell(id).state).toBe("notSent");
+    expect(savedCards(t.dir)).toContain('"pgid"');
+    t.core.stop();
+    await Bun.sleep(200);
+    expect(alive(stubborn)).toBe(true);
+    // The runner died there. The next start ends the group and forgets it.
+    const t2 = setup({ dir: t.dir });
+    await until(() => !alive(stubborn), 2000);
+    await t2.core.subscribe("claude:s1");
+    expect(t2.shell(id).pgid).toBeUndefined();
+    expect(t2.shell(id).state).toBe("notSent");
+  });
+
+  test("a second signal while stopping: killNow SIGKILLs at once", async () => {
+    const t = setup();
+    const pidFile = join(t.dir, "stubborn4.pid");
+    await t.runs.run("claude:s1", `(trap '' TERM; sleep 30 & echo $! > ${pidFile}; wait); echo after`);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+    const stubborn = Number(readFileSync(pidFile, "utf8").trim());
+    void t.runs.stopAll(60_000);
+    t.runs.killNow();
+    await until(() => !alive(stubborn), 1000);
+  });
+
+  test("a long-running card is never dropped by later ones: a crash still finds its group", async () => {
+    const t = setup();
+    await t.core.subscribe("claude:s1");
+    const pidFile = join(t.dir, "dev.pid");
+    const { id } = await t.runs.run("claude:s1", `sleep 300 & echo $! > ${pidFile}; wait`);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+    const dev = Number(readFileSync(pidFile, "utf8").trim());
+    for (let i = 0; i < 32; i++) {
+      const r = await t.runs.run("claude:s1", "true");
+      await until(() => t.shell(r.id).state !== "running");
+    }
+    t.notices.flush();
+    expect(savedCards(t.dir)).toContain(id);
+    t.core.stop();
+    const t2 = setup({ dir: t.dir });
+    await until(() => !alive(dev), 2000);
+    await t2.core.subscribe("claude:s1");
+    expect(t2.shell(id).state).toBe("notSent");
+  }, 30_000);
+
+  test("NUL and binary output: no control characters in the card or the message, frames stay small", async () => {
+    const t = setup();
+    await t.core.subscribe("claude:s1");
+    const { id } = await t.runs.run("claude:s1", "head -c 3000000 /dev/zero; head -c 3000000 /dev/urandom");
+    await until(() => t.shell(id).state === "sent", 15_000);
+    expect(t.tool(id).output).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/);
+    expect(t.driver()!.sent.at(-1)).not.toContain("\u0000");
+    const big = Math.max(...t.frames.map((f) => JSON.stringify(f).length));
+    expect(big).toBeLessThan(200 * 1024);
+  }, 30_000);
+
   test("a runner crash: the next start ends what still runs (by its saved group) and keeps what it printed", async () => {
     const t = setup();
     await t.core.subscribe("claude:s1");
@@ -296,7 +370,7 @@ describe("! commands", () => {
     expect(pgid).toBeGreaterThan(1);
     expect(t.shell(id).procStart).toBeTruthy();
     // Saved now and then while it runs.
-    await until(() => readFileSync(join(t.dir, "notices.json"), "utf8").includes("before-crash"), 5000);
+    await until(() => savedCards(t.dir).includes("before-crash"), 5000);
     t.core.stop();
     // The runner died without stopping anything: a new one starts on the same files.
     const t2 = setup({ dir: t.dir });

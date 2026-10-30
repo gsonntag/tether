@@ -52,7 +52,11 @@ await runner.start();
 let stopping = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const)
   process.on(sig, async () => {
-    if (stopping) process.exit(1); // a second Ctrl-C doesn't wait
+    if (stopping) {
+      // A second Ctrl-C doesn't wait: what `!` commands a stop was ending get SIGKILL first.
+      runner.shellRuns.killNow();
+      process.exit(1);
+    }
     stopping = true;
     console.log(`stopping (${sig})`);
     stopModules();

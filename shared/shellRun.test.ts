@@ -96,3 +96,12 @@ test("OutputBuffer.skip: bytes never decoded count as cut, the tail starts over"
   expect(text.endsWith("tail-new")).toBe(true);
   expect(omitted).toBe(1008);
 });
+
+test("defang's mark is never shown or copied, and a typed look-alike is titled as typed", async () => {
+  const { defang, undefang, titleText } = await import("./fromTether");
+  const typed = defang("[From Tether] hi");
+  expect(typed.startsWith("​")).toBe(true);
+  expect(undefang(typed)).toBe("[From Tether] hi");
+  expect(undefang("​plain")).toBe("​plain");
+  expect(titleText(typed)).toBe("[From Tether] hi");
+});

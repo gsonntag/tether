@@ -1,9 +1,15 @@
 // Tether's own notices (denials, start errors, "Claude Code stopped", a turn cut off) are in no
 // harness store, so they're kept here, small, in the runner's config dir (notices.json, mode 600),
 // keyed by session: a session that leaves memory, or a runner that restarts, still shows them.
+//
+// `!` command cards (core/shellRuns.ts) are bigger and change more often: each session's cards are
+// kept in a file of their own (shell-cards/<hash>.json beside notices.json), and only the files
+// that changed are written, at most once a second (at once when a card settles). A running card is
+// never dropped: it carries the process group a crashed runner's next start must end.
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Msg } from "../../../shared/transcript";
 
 /**
@@ -17,19 +23,54 @@ export interface OverlayNotice {
 }
 
 const PER_SESSION = 50;
-/** `!` command cards are kept apart from that limit: this many more per session. */
+/** `!` command cards are kept apart from that limit: this many more per session (running ones always). */
 const SHELL_CARDS = 30;
 const SESSIONS = 300;
+
+const isCard = (n: OverlayNotice) => !!n.msg.shell;
+
+/** Writes `data` to `file` (mode 600) through a temporary file, so a crash never leaves half of it. */
+function writeAtomic(file: string, data: string) {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, data, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, file);
+}
 
 export class NoticeStore {
   private map: Record<string, { at: number; notices: OverlayNotice[] }> = {};
   private timer?: ReturnType<typeof setTimeout>;
+  /** notices.json needs writing */
+  private plainDirty = false;
+  /** sessions whose card file needs writing */
+  private cardsDirty = new Set<string>();
+  private readonly cardsDir?: string;
 
   /** `file` undefined: kept in memory only (tests). */
   constructor(private file?: string) {
     if (!file) return;
+    this.cardsDir = join(dirname(file), "shell-cards");
     try {
       this.map = JSON.parse(readFileSync(file, "utf8"));
+      // Cards kept in notices.json by an older runner move to their own files.
+      for (const [id, e] of Object.entries(this.map))
+        if (e.notices.some(isCard)) {
+          this.cardsDirty.add(id);
+          this.plainDirty = true;
+        }
+    } catch {}
+    try {
+      for (const f of readdirSync(this.cardsDir)) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          const { sessionId, at, cards } = JSON.parse(readFileSync(join(this.cardsDir, f), "utf8")) as { sessionId: string; at: number; cards: OverlayNotice[] };
+          const e = (this.map[sessionId] ??= { at, notices: [] });
+          const have = new Set(e.notices.map((n) => n.msg.id));
+          e.notices = [...e.notices, ...cards.filter((c) => !have.has(c.msg.id))].sort((x, y) => x.msg.ts - y.msg.ts);
+          e.at = Math.max(e.at, at);
+        } catch {}
+      }
     } catch {}
   }
 
@@ -43,11 +84,15 @@ export class NoticeStore {
     // Long texts (a crash's stderr) are cut: this file stays small.
     const parts = n.msg.parts.map((p) => (p.type === "text" && p.text.length > 2000 ? { ...p, text: `${p.text.slice(0, 2000)}…` } : p));
     this.map[sessionId] = { at: Date.now(), notices: keep([...had, { ...n, msg: { ...n.msg, parts } }]) };
+    this.dirty(sessionId, isCard(n));
     const ids = Object.keys(this.map);
-    if (ids.length > SESSIONS) for (const id of ids.sort((a, b) => this.map[a]!.at - this.map[b]!.at).slice(0, ids.length - SESSIONS)) delete this.map[id];
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), 300);
-    this.timer.unref?.();
+    if (ids.length > SESSIONS)
+      for (const id of ids.sort((a, b) => this.map[a]!.at - this.map[b]!.at).slice(0, ids.length - SESSIONS)) {
+        delete this.map[id];
+        this.dirty(id, true);
+        this.plainDirty = true;
+      }
+    this.later();
   }
 
   /** A kept message changed (a `!` command's card moved on): saved as given, where it was. */
@@ -56,6 +101,7 @@ export class NoticeStore {
     const i = e?.notices.findIndex((x) => x.msg.id === msg.id) ?? -1;
     if (!e || i < 0) return;
     e.notices[i] = { ...e.notices[i]!, msg };
+    this.dirty(sessionId, !!msg.shell);
     this.later();
   }
 
@@ -67,9 +113,26 @@ export class NoticeStore {
         const m = fn(id, n.msg);
         if (!m) return n;
         any = true;
+        this.dirty(id, !!m.shell);
         return { ...n, msg: m };
       });
     if (any) this.later();
+  }
+
+  /** Replaces a session's notices (after pruning). */
+  set(sessionId: string, notices: OverlayNotice[]) {
+    const had = this.map[sessionId]?.notices ?? [];
+    if (had.length === notices.length) return;
+    if (notices.length) this.map[sessionId] = { at: Date.now(), notices };
+    else delete this.map[sessionId];
+    this.dirty(sessionId, true);
+    this.plainDirty = true;
+    this.later();
+  }
+
+  private dirty(sessionId: string, card: boolean) {
+    if (card) this.cardsDirty.add(sessionId);
+    else this.plainDirty = true;
   }
 
   /** Written within a second, however often things change meanwhile (one write for many updates). */
@@ -79,36 +142,45 @@ export class NoticeStore {
     this.timer.unref?.();
   }
 
-  /** Replaces a session's notices (after pruning). */
-  set(sessionId: string, notices: OverlayNotice[]) {
-    const had = this.map[sessionId]?.notices ?? [];
-    if (had.length === notices.length) return;
-    if (notices.length) this.map[sessionId] = { at: Date.now(), notices };
-    else delete this.map[sessionId];
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), 300);
-    this.timer.unref?.();
-  }
-
+  /** Writes what changed: notices.json, and the card file of each session whose cards changed. */
   flush() {
     clearTimeout(this.timer);
     this.timer = undefined;
     if (!this.file) return;
     try {
-      mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(this.map), { mode: 0o600 });
-      chmodSync(tmp, 0o600);
-      renameSync(tmp, this.file);
+      if (this.plainDirty) {
+        const plain = Object.fromEntries(
+          Object.entries(this.map)
+            .map(([id, e]) => [id, { at: e.at, notices: e.notices.filter((n) => !isCard(n)) }] as const)
+            .filter(([, e]) => e.notices.length),
+        );
+        writeAtomic(this.file, JSON.stringify(plain));
+        this.plainDirty = false;
+      }
+      for (const id of this.cardsDirty) {
+        const f = this.cardFile(id);
+        const cards = this.map[id]?.notices.filter(isCard) ?? [];
+        if (cards.length) writeAtomic(f, JSON.stringify({ sessionId: id, at: this.map[id]!.at, cards }));
+        else rmSync(f, { force: true });
+      }
+      this.cardsDirty.clear();
     } catch {}
+  }
+
+  private cardFile(sessionId: string) {
+    return join(this.cardsDir!, `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`);
   }
 }
 
-/** The newest PER_SESSION notices and the newest SHELL_CARDS command cards, in order. */
+/**
+ * The newest PER_SESSION notices and the newest SHELL_CARDS command cards, in order; a running card
+ * is always kept (it is how a crashed runner's next start finds what still runs).
+ */
 function keep(list: OverlayNotice[]): OverlayNotice[] {
-  const cards = list.filter((n) => n.msg.shell);
-  const rest = list.filter((n) => !n.msg.shell);
-  const kept = new Set([...cards.slice(-SHELL_CARDS), ...rest.slice(-PER_SESSION)]);
+  const running = list.filter((n) => n.msg.shell?.state === "running" || n.msg.shell?.pgid);
+  const cards = list.filter((n) => isCard(n) && !running.includes(n));
+  const rest = list.filter((n) => !isCard(n));
+  const kept = new Set([...running, ...cards.slice(-SHELL_CARDS), ...rest.slice(-PER_SESSION)]);
   return list.filter((n) => kept.has(n));
 }
 
@@ -123,7 +195,8 @@ export function pruneOverlay(store: Msg[], overlay: OverlayNotice[]): OverlayNot
   const latest = store.reduce((t, m) => Math.max(t, m.ts), 0);
   return overlay.filter((n) => {
     const anchor = n.turnOf ?? n.after;
-    return !anchor || ids.has(anchor) || latest <= n.msg.ts;
+    // A running card stays whatever happened: it carries the process group to end after a crash.
+    return !anchor || ids.has(anchor) || latest <= n.msg.ts || n.msg.shell?.state === "running" || !!n.msg.shell?.pgid;
   });
 }
 
