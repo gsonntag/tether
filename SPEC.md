@@ -312,6 +312,9 @@ The ❯_ **Terminal** chip offers two clearly named choices:
 | **Shell** | the panel on a project shell tab (the project's first shell, or a new one) | stays fully live in Tether: no handoff, no held queue, the composer keeps messaging the agent |
 | **<Agent> terminal** ("Claude terminal", "Codex terminal") | the agent's own TUI, mirrored | Claude: the handoff above (asked first when busy). Codex: joined, shared |
 
+- The two choices describe things as they stand: handed off, **Shell** says "Claude is driven from
+  the Claude terminal until Back to Tether" and **Claude terminal** "Already driving Claude"; with
+  Codex's TUI joined, both say the chat and the Codex terminal drive Codex.
 - On desktop the panel sits beside the transcript. On a phone it is full screen, with a **Chat**
   button that tucks it behind the transcript (still attached, the shell untouched) and a
   "Back to the shell" pill that brings it back in one tap. While open, the chip closes the panel.
@@ -387,7 +390,10 @@ Only the owner can run one (the same auth as sending).
 - **The card:** a message of yours that only Tether has (kept with Tether's notices): the command,
   its output streaming in, how it ended (exit code, signal, stopped), a **Stop** button while it
   runs (SIGTERM to the whole process group, then SIGKILL to the group 2 s later whatever happened
-  meanwhile, so a child that ignores SIGTERM goes too), and where its output is:
+  meanwhile, so a child that ignores SIGTERM goes too). What leaves the group escapes Stop: `setsid`,
+  or a daemon that makes its own session. A job left in the background (`!npm run dev &`) runs on
+  after its card ends (the card ends when the shell exits and its output pipes close, or a second
+  later); it is the folder's to stop (a project shell, or `kill`). The card shows where its output is:
   **Running → Waiting in queue → Sent to <Agent>**, or **Not sent** with why (you removed it from the
   queue, the queue was full, it couldn't start, the runner restarted while it ran).
 - **To the agent:** when it ends, the command and its output go to the agent as a message through
@@ -408,7 +414,8 @@ Only the owner can run one (the same auth as sending).
   agent gets 8 KB + 22 KB with a "[… 1.2 MB of output cut from the middle …]" note. Output is read
   as raw bytes, at most 16 MB a second (a runaway `yes` waits on its pipe rather than keeping the
   runner busy), and decoded only when it goes out; escape sequences split between chunks are kept
-  whole, then stripped.
+  whole, then stripped, and so is every other control character but tab and newlines (NULs and
+  binary output never reach the card or the agent, so frames stay under 200 KB).
 - **The hint** says when the output gets there: "when it finishes", "when this turn ends", "when
   you go Back to Tether" (the TUI drives), or "waits in the queue, paused after Stop" (the actual
   hold reason).
@@ -418,8 +425,12 @@ Only the owner can run one (the same auth as sending).
   crash the next start kills a group still alive (only when the leader's start time matches, or the
   leader is gone) and ends the card the same way, with what it had printed. Nothing stays "Running".
   Output already queued survives in runner.json and goes as usual. Command cards are kept (30 per
-  session) apart from the 50 notices, and notices.json is written at most once a second while cards
-  change (at once when one settles).
+  session) apart from the 50 notices, and a running card (or one whose group still has to be killed) is
+  never dropped. Cards are kept per session in files of their own (`shell-cards/<hash>.json` beside
+  notices.json); only the files that changed are written, at most once a second (at once when a card
+  settles), so a command's start is saved within a second, not synchronously. A second SIGTERM while
+  the runner stops SIGKILLs the groups at once; a runner gone before its SIGKILL leaves the group on
+  the card, and the next start ends it.
 
 ## 10. UI
 

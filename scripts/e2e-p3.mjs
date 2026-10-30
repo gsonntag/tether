@@ -253,7 +253,7 @@ const steps = {
     await waitScreen(d, sessionId(), /❯/, "desktop TUI");
     const ph = await page(phone, session);
     await ph.locator(".t-term-banner").waitFor({ timeout: 30_000 });
-    await ph.locator(".t-term-banner").getByRole("button", { name: "Open terminal" }).tap();
+    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude terminal" }).tap();
     await ph.locator(".t-term-panel").waitFor();
     await waitScreen(ph, sessionId(), /❯/, "phone TUI");
     await ph.locator(".t-keybar").waitFor();
@@ -372,7 +372,7 @@ const steps = {
     await shot(p, "needsyou-desktop");
     await shot(ph, "needsyou-phone");
     // Approve in the terminal itself (the TUI's own dialog), from the phone's key bar.
-    await ph.locator(".t-term-banner").getByRole("button", { name: "Open terminal" }).tap();
+    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude terminal" }).tap();
     await waitScreen(ph, sessionId(), /Do you want to|needs\.txt/, "the TUI's permission dialog on the phone");
     await ph.getByRole("button", { name: "Enter", exact: true }).tap();
     await waitState(p, (s) => s.status === "idle", "idle after approving in the TUI", 90_000);

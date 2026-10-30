@@ -11,13 +11,13 @@
 //   CRASH_RUNNER    a command that kills the dev runner with SIGKILL, which then starts again (for `crash`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   claude midturn stop stubborn hold huge runaway phone spoof restart crash shell handoff phonetoggle codex
+//   claude midturn stop stubborn hold huge runaway phone webkit spoof restart crash shell handoff phonetoggle codex
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 
-const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
+const { chromium, webkit, devices } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5186";
 const RUNNER = process.env.RUNNER ?? "tdp5b";
 const SHOTS = process.env.SHOTS ?? "/tmp/tether-e2e-p5b";
@@ -353,6 +353,37 @@ const steps = {
     await ph.close();
   },
 
+  async webkit() {
+    // The user's phone: Safari on an iPhone 14 Pro. A tap on the ❯ toggle must add the ! (WebKit).
+    const wk = await webkit.launch();
+    try {
+      const ctx = await wk.newContext({ ...devices["iPhone 14 Pro"] });
+      const ph = await ctx.newPage();
+      ph.on("pageerror", (e) => errors.push(String(e)));
+      await ph.goto(claude, { waitUntil: "domcontentloaded" });
+      await composer(ph).waitFor({ timeout: 60_000 });
+      const toggle = ph.getByRole("button", { name: "Shell command", exact: true });
+      await toggle.tap();
+      await ph.locator(".t-composer.shell").waitFor({ timeout: 5000 });
+      if ((await composer(ph).inputValue()) !== "!") fail(`after a tap the box holds ${JSON.stringify(await composer(ph).inputValue())}`);
+      if (!(await composer(ph).evaluate((el) => el === document.activeElement))) fail("the box lost focus");
+      await composer(ph).pressSequentially("echo WEBKIT-TAP-OK");
+      await button(ph.locator(".t-composer"), "Run").tap();
+      await waitCard(ph, "sent", "WebKit card", 60_000);
+      // A second tap takes the ! off again.
+      await toggle.tap();
+      await ph.locator(".t-composer.shell").waitFor({ timeout: 5000 });
+      await toggle.tap();
+      if (await ph.locator(".t-composer.shell").count()) fail("a second tap didn't take the ! off");
+      await noOverflow(ph, "WebKit phone");
+      await shot(ph, "webkit-phone");
+      await idle(ph, 120_000);
+      ok("WebKit, iPhone 14 Pro: tapping the ❯ toggle adds the ! (box focused), Run runs it, a tap takes it off again");
+    } finally {
+      await wk.close();
+    }
+  },
+
   async restart() {
     if (!RESTART) return ok("restart skipped (no RESTART_RUNNER)");
     const p = await page(desktop, claude);
@@ -514,6 +545,18 @@ const steps = {
     await waitScreen(p, idOf(claude), /❯/, "Claude's TUI", 60_000);
     let who = await p.locator(".t-term-who").innerText();
     if (!/it drives Claude now/.test(who)) fail(`under the tabs: ${who}`);
+    // J3: the chip's menu says things as they stand; the banner's button names the agent's terminal.
+    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
+    await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude terminal", exact: true }).waitFor();
+    if (!/Type into Claude in the terminal/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't name Claude");
+    await p.locator(".t-chip-term").click();
+    const shellItem = await p.getByRole("menuitem", { name: /^Shell/ }).innerText();
+    const tuiItem = await p.getByRole("menuitem", { name: /^Claude terminal/ }).innerText();
+    if (!/Claude is driven from the Claude terminal until Back to Tether/.test(shellItem) || !/Already driving Claude/.test(tuiItem)) fail(`the menu while handed off: ${shellItem} | ${tuiItem}`);
+    await p.getByRole("menuitem", { name: /^Shell/ }).click();
+    await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
+    await p.locator(".t-term-tab", { hasText: "Claude terminal" }).click();
+    await waitScreen(p, idOf(claude), /❯/, "Claude's TUI again", 60_000);
     await p.locator(".t-term-banner", { hasText: "Driving in the terminal" }).waitFor();
     await shot(p, "agent-tab-desktop");
     await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().click();
@@ -549,6 +592,7 @@ const steps = {
     if (!/waits in the queue, paused after Stop/.test(await p.locator(".t-shell-hint").innerText())) fail("the hint doesn't say the queue is paused");
     await composer(p).fill("");
     await p.locator(".t-queued", { hasText: "AFTER-ASK" }).getByRole("button", { name: "Cancel this message", exact: true }).click();
+    ok("J3: handed off, the banner offers Open Claude terminal, the placeholder names Claude, and the ❯_ menu says Shell: Claude is driven from the Claude terminal until Back to Tether / Already driving Claude");
     ok("from a shell tab, the Claude terminal tab (titled: hands this session to Claude's own terminal UI) handed off (mode terminal, line: it drives Claude now); back on the shell tab it stayed handed off (line: still driven from the Claude terminal tab until Back to Tether); Back to Tether returned it; the hint said \"when you go Back to Tether\" meanwhile; after Back to Tether from the shell tab, the busy agent's tab asked again (Stop this turn … 1 queued message will wait) and Keep working kept it live; with the queue held the hint says it waits there");
     await p.close();
   },
@@ -613,8 +657,19 @@ const steps = {
     await p.locator(".t-chip-term").click();
     const item = p.getByRole("menuitem", { name: /^Codex terminal/ });
     if (!/joined to this session/.test(await item.innerText())) fail(`the menu says: ${await item.innerText()}`);
+    // Joined: the menu and the shell tab's line say both drive Codex.
+    await item.click();
+    await waitState(p, (s) => s.terminal?.kind === "shared", "Codex's TUI joined", 60_000);
+    await p.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).click();
+    await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
+    if (!/the chat and the Codex terminal tab both drive Codex/.test(await p.locator(".t-term-who").innerText())) fail(`the shell line: ${await p.locator(".t-term-who").innerText()}`);
+    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
+    await p.locator(".t-chip-term").click();
+    const joined = await p.getByRole("menuitem", { name: /^Codex terminal/ }).innerText();
+    if (!/it and the chat both drive Codex/.test(joined)) fail(`the menu while joined: ${joined}`);
     await p.keyboard.press("Escape");
-    ok("Codex: !echo ran, Sent to Codex, Codex got the output (repeated it); mid-turn it waited in the queue and went after the turn; the ❯_ menu calls Codex terminal joined, not handed over");
+    await rpcVia(p, "endTerminal", { sessionId: idOf(codex) });
+    ok("Codex: !echo ran, Sent to Codex, Codex got the output (repeated it); mid-turn it waited in the queue and went after the turn; the ❯_ menu calls Codex terminal joined, not handed over; joined, the menu and the shell tab's line say the chat and the Codex terminal both drive Codex");
     await p.close();
   },
 };

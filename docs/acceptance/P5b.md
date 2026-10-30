@@ -191,6 +191,10 @@ Tether sends it.
 B5b. **The hint with a held queue** (`handoff`). Stop a turn with a message queued, then type `!`.
 → "the output waits in the queue, paused after Stop (Resume or send something to let it go)". After
 a failed turn: "paused after a failed turn"; after a restart: "paused after a restart".
+Then hand off to the Claude terminal with the queue still paused: the hint still says "paused after
+Stop" (the pause outlives the round trip; it isn't "when you go Back to Tether"), and a busy handoff
+asks "Stop this turn and open the terminal? The 2 queued messages stay paused." (an idle one opens at
+once: nothing new waits on the terminal).
 
 B6. **Cancel.** Slow prompt; `!echo CANCELLED-OUTPUT`; × on its queue row.
 → The card: **Not sent: You removed it from the queue.**; nothing reaches Claude.
@@ -225,7 +229,12 @@ C3. **Stop twice / on another device.** Stop on the desktop, then rpc `stopShell
 command isn't running any more." Stop from the phone while the desktop watches → both see Stopped.
 
 C4. **Background job.** `!sleep 100 & echo started` → the card ends within about a second ("exit
-code 0") even though the job holds the output pipe.
+code 0") even though the job holds the output pipe. The job runs on after its card ended (Stop is
+gone with the card): stop it from a project shell or with `kill`. `!npm run dev &` the same.
+
+C5. **What leaves the group escapes Stop.** `!setsid sh -c 'sleep 301' & sleep 100`, Stop.
+→ The `sleep 100` and the shell go; the `setsid` one runs on (it made its own session), as SPEC §9
+says. `nohup`, a double fork and `disown` stay in the group and go.
 
 ## D. Huge output (`huge`)
 
@@ -235,6 +244,10 @@ of output cut from the middle …]" and the end (… 2999999, 3000000), at most 
 "21 MB of output; the middle … isn't kept. Claude gets the start and the end." No socket frame over
 200 KB; the session stays responsive on a second device.
 → The quiet line's message is under 32 KB, with the start, the cut note and the end.
+
+D1b. **NULs and binary.** `!head -c 3000000 /dev/zero; head -c 3000000 /dev/urandom`.
+→ No NUL or other control character (but tab and newlines) in the card or the message; no frame over
+200 KB (unit test); the card shows the binary's printable rest, cut in the middle.
 
 D2. `!yes | head -c 50000000` → as D1; the runner's memory stays flat (watch `ps -o rss` of the
 runner: no growth by tens of MB).
@@ -262,15 +275,28 @@ while it ran), never Running, and `sleep 611.5` is gone (its group, saved with t
 on start). A saved group whose leader's pid now belongs to another process is left alone.
 
 E2b. **Many cards.** 60 `!true` in one session, plus some notices.
-→ The newest 30 cards and the newest 50 notices are kept; notices.json is written at most about once
-a second while cards change.
+→ The newest 30 cards and the newest 50 notices are kept. Cards live in `shell-cards/<hash>.json`,
+one file per session, beside notices.json; a card change rewrites only its session's file, at most
+about once a second (at once when it settles); a command's start is saved within a second, not
+synchronously (watch the files' mtimes: notices.json doesn't change for a `!true`).
+
+E2c. **A long-running card survives later ones.** `!sleep 300 & wait` (a dev server stand-in), then
+32 more `!true`; `kill -9` the runner.
+→ The running card is still kept (running cards are never dropped); on the next start the sleep is
+ended and the card says Cut off · Not sent (unit test).
+
+E2d. **Two quick SIGTERMs.** `!(trap '' TERM; sleep 306) ; echo after`; send the runner SIGTERM twice
+in a row.
+→ The second signal SIGKILLs the group before the runner exits: the sleep is gone. (A runner killed
+before that keeps the group on the card; the next start ends it: unit test.)
 
 E3. **Server redeploy.** Restart only the server while a command runs.
 → The command goes on; after the browser reconnects the card catches up and finishes normally.
 
 ## F. Phone (`phone`)
 
-F1. Phone, Claude session. Tap the ❯ toggle.
+F1. Phone, Claude session (`phone`, and `webkit`: Playwright WebKit, iPhone 14 Pro profile, `tap()`).
+Tap the ❯ toggle.
 → The box holds `!` with the shell look and the keyboard stays up; type `echo PHONE-SHELL-OK`; Enter
 adds a newline (no run); tap **Run**.
 → The card shows and goes Sent to Claude; nothing scrolls sideways at 375 px; a long command is cut
@@ -278,8 +304,9 @@ with … in the card's head, the output scrolls inside the card.
 
 F2. The hint fits on two lines at most; the toggle, paperclip, camera, box and Run share one row.
 
-F3. **Phone only.** iOS Safari: the toggle doesn't drop the keyboard; autocorrect and capitalization
-are off in shell mode.
+F3. **Phone only.** iOS Safari: tapping the toggle adds the `!` (the `webkit` step taps it in WebKit's
+iPhone 14 Pro profile: a cancelled pointer-down there used to swallow the click) and keeps the box
+focused; autocorrect and capitalization are off in shell mode.
 
 ## G. Shell beside the chat (`shell`)
 
@@ -369,5 +396,14 @@ J2. The desktop opens the Claude terminal (handoff); on the phone:
 in the terminal; `!echo X` from the phone still runs, its output waits for Back to Tether.
 
 J3. Every place names the surface: the chip menu (Shell / Claude terminal), the tabs ("Claude
-terminal", "Shell n"), the line under the tabs, the transcript banner, the card ("Sent to Claude").
-No place says just "Terminal" for the agent's TUI.
+terminal", "Shell n"), the line under the tabs, the transcript banner and its **Open Claude
+terminal** button, the composer's placeholder ("Type into Claude in the terminal"), the card ("Sent
+to Claude"). No place says just "Terminal" for the agent's TUI.
+→ The menu says things as they stand (`handoff`). Handed off: **Shell** "A shell in this folder.
+Claude is driven from the Claude terminal until Back to Tether." and **Claude terminal** "Already
+driving Claude." With Codex's TUI joined: **Shell** "… The chat and the Codex terminal both drive
+Codex." and **Codex terminal** "Already open, joined to this session: it and the chat both drive
+Codex."; a shell tab's line says "the chat and the Codex terminal tab both drive Codex".
+
+J4. **Typed look-alikes.** Send a message starting "[From Tether] …" and copy its bubble.
+→ It shows and copies exactly as typed (the invisible mark that keeps it yours isn't in the copy).
