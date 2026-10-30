@@ -73,9 +73,9 @@ Phase acceptance (SPEC §11):
   reads **Claude Code · driving** / **Codex · joined**, whichever tab is in front. Going back to a
   shell never hands back. There is no explanatory line under the header.
 - **Copy.** **Copy text** in the panel's header shows the terminal's whole text (scrollback
-  included) in a sheet: select some (a long press on a phone), or **Copy all**. On desktop,
-  Shift-drag (Option-drag on a Mac) selects in the terminal itself; with a selection Ctrl/Cmd+C
-  copies and sends no ^C.
+  included) in a sheet: select some (a long press on a phone), or **Copy all**. On desktop, a
+  drag selects in the terminal itself and letting go copies it (Shift-drag or Option-drag too);
+  with a selection Ctrl/Cmd+C copies and sends no ^C.
 - **Phone.** The panel is full screen; **Chat** in its header hides it (still mounted and attached)
   and the transcript shows with a "❯_ Back to the shell" pill above the composer; the pill (or the
   chip) brings back the same terminal as it was.
@@ -419,8 +419,14 @@ copy icon in the panel's header).
 COPY-END-9, wrapped lines joined, scrolled to the end. **Copy all** → "Copied", and the clipboard
 holds it. Select a few lines with the mouse and ⌘/Ctrl+C: those lines. **Done** closes it.
 
-K2. **In the terminal, desktop.** Shift-drag over the output (Option-drag on a Mac).
-→ It selects (even though tmux takes the mouse). Ctrl+C (or ⌘C, or Ctrl+Shift+C) copies the
+K2. **In the terminal, desktop.** Drag over the output and let go.
+→ It selects (even though tmux takes the mouse), it is on the clipboard at once, and it stays
+selected; nothing shows and nothing is sent to the terminal (tmux stays out of copy mode). The same
+with Shift-drag (Option-drag on a Mac), and in the agent's TUI. A drag over blank space or a plain
+click leaves the clipboard alone; a click clears the selection and still reaches the terminal (in
+`printf '\033[?1000h\033[?1006h'; cat -v` it shows press and release). The wheel still scrolls.
+A plain drag no longer reaches a program inside that wants it (vim with `mouse=a`).
+With a selection, Ctrl+C (or ⌘C, or Ctrl+Shift+C) copies the
 selection and sends nothing: a running `sleep 3; echo NO-CTRL-C` finishes. Without a selection
 Ctrl+C is ^C as always. A right-click selects a word; the browser's menu offers Copy. On a page
 without clipboard access (plain http) the copy goes through the browser's copy command; if that

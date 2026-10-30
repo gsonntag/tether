@@ -370,9 +370,12 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   button that tucks it behind the transcript (still attached, the shell untouched) and a pill
   ("Back to the shell", "Back to Claude Code") that brings it back in one tap. While open, ❯_
   closes the panel.
-- **Copying.** On desktop, Shift-drag (Option-drag on a Mac) selects in a terminal even while tmux
-  takes the mouse; with a selection, Ctrl/Cmd+C (or Ctrl+Shift+C) copies it and never sends ^C, and
-  a right-click selects a word. Everywhere, **Copy text** in the panel's header shows the terminal's
+- **Copying.** On desktop, a drag selects in a terminal even while tmux takes the mouse, and letting
+  go copies the selection at once and leaves it on screen (nothing shows, nothing reaches the
+  terminal; a blank selection copies nothing). A plain press waits to see whether it moves: a click
+  still goes to tmux, press and release, so programs inside get clicks, but no longer a plain drag.
+  Shift-drag (Option-drag on a Mac) selects too. With a selection, Ctrl/Cmd+C (or Ctrl+Shift+C)
+  copies it and never sends ^C, and a right-click selects a word. Everywhere, **Copy text** in the panel's header shows the terminal's
   whole text, scrollback included (tmux's history, wrapped lines joined, the newest 2 MB), in a sheet
   where it selects natively (a long press on a phone) with **Copy all** (`terminalText`, answered
   only to the browser that owns the attach). Shells and the agent's TUI alike. The sheet names its

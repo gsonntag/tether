@@ -254,7 +254,7 @@ export function TerminalPanel({
           )}
           <IconButton
             label="Copy text"
-            tooltip="Copy: this terminal's text, scrollback included (or Shift-drag to select, Option-drag on a Mac)"
+            tooltip="Copy: this terminal's text, scrollback included (or drag to select and copy)"
             size="sm"
             variant="ghost"
             icon={<Icon icon={DocumentDuplicateIcon} />}

@@ -8,6 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { on, rpc } from "../connection";
 import { useStore } from "../store";
 import { TermConn, type TermDeps, type TermStatus, type TermTarget } from "../terminal";
+import { copyable, plainDragSelects } from "../termSelect";
 
 const deps: TermDeps = {
   rpc,
@@ -76,7 +77,7 @@ export const TermView = forwardRef<
       scrollback: 3000,
       allowProposedApi: true,
       macOptionIsMeta: true,
-      // Selecting with the mouse while tmux takes the mouse: Shift-drag, or Option-drag on a Mac.
+      // Shift-drag, or Option-drag on a Mac, selects whatever takes the mouse (a plain drag: termSelect.ts).
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: true,
       theme: { background: "#16171a", foreground: "#e6e6e6", cursor: "#e6e6e6", selectionBackground: "#3a3d45" },
@@ -117,6 +118,25 @@ export const TermView = forwardRef<
       t.focus();
       return false;
     });
+    // A mouse selects: a plain drag too, and a finished selection goes to the clipboard at once and
+    // stays on screen. On the window, so xterm has finished with this mouseup; still in the gesture,
+    // which browsers ask of a clipboard write.
+    const mouse = !matchMedia("(pointer: coarse)").matches;
+    const undoDrag = mouse ? plainDragSelects(el, () => t.modes.mouseTrackingMode !== "none", () => t.focus()) : undefined;
+    let pressed = false;
+    const press = (e: MouseEvent) => {
+      if (e.button === 0) pressed = true;
+    };
+    const released = () => {
+      if (!pressed) return;
+      pressed = false;
+      const text = copyable(t.getSelection());
+      if (text) void copyText(text);
+    };
+    if (mouse) {
+      el.addEventListener("mousedown", press, true);
+      window.addEventListener("mouseup", released);
+    }
     const input = t.onData((d) => c.input(d));
     const binary = t.onBinary((d) => c.input(d));
     c.open(t.cols, t.rows, stop).then(
@@ -136,6 +156,9 @@ export const TermView = forwardRef<
     });
     ro.observe(el);
     return () => {
+      undoDrag?.();
+      el.removeEventListener("mousedown", press, true);
+      window.removeEventListener("mouseup", released);
       ro.disconnect();
       input.dispose();
       binary.dispose();
@@ -159,8 +182,29 @@ export const TermView = forwardRef<
   );
 });
 
-/** Copies through a hidden text box and the browser's own copy command (plain http, no Clipboard API). */
+/** To the clipboard, whichever way this page can (the selection isn't touched). */
+async function copyText(text: string) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) await navigator.clipboard.writeText(text).catch(() => copyByCommand(text));
+  else copyByCommand(text);
+}
+
+/** Copies through the browser's own copy command (plain http, no Clipboard API). */
 function copyByCommand(text: string): boolean {
+  // Answering the copy event keeps focus in the terminal: moving it would send tmux focus reports.
+  let answered = false;
+  const answer = (e: ClipboardEvent) => {
+    e.clipboardData?.setData("text/plain", text);
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    answered = true;
+  };
+  document.addEventListener("copy", answer, true);
+  try {
+    document.execCommand("copy");
+  } catch {}
+  document.removeEventListener("copy", answer, true);
+  if (answered) return true;
+  // Some browsers fire no copy event without a selection: a hidden text box then.
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.setAttribute("readonly", "");
