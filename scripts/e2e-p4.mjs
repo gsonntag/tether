@@ -12,7 +12,8 @@
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
 //   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
-//   storedInject restartMid subOutlive subNewTurn subRestart reviewerAuto claudeShiftTab stored
+//   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop claudeShiftTab stored
+// subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again).
 // claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
 
@@ -209,7 +210,8 @@ async function outliveSubagent(p, file) {
 
 /** Stop this turn stops the subagent: the note goes and its file never comes. */
 async function stopsSubagent(p, file) {
-  await button(p.locator(".t-turn-settings"), "Stop this turn").click();
+  // The note is the subagent's: its button stops just it.
+  await button(p.locator(".t-turn-settings"), "Stop the subagent").click();
   await waitState(p, (x) => !x.turnSettings, "the note gone once the subagent stopped", 30_000);
   await sleep(55_000);
   if (existsSync(scratch(file))) fail(`the subagent went on and wrote ${file}`);
@@ -706,15 +708,87 @@ const steps = {
     await p.close();
   },
 
-  async subRestart() {
+  async subKill9() {
+    // subRestart with kill -9 on the runner (review 7): nothing gets to save on the way out.
+    if (!process.env.KILL9_RUNNER) return console.log("skip subKill9 (set KILL9_RUNNER)");
+    return steps.subRestart(process.env.KILL9_RUNNER);
+  },
+
+  async netRoots() {
+    // A sandbox with network and an extra writable root, set by another client (review 7, M2):
+    // Custom, with the note and Stop while a turn runs with it; Auto from Tether turns them off.
+    const WR = `${SCRATCH}-wr`;
+    mkdirSync(WR, { recursive: true });
+    rmSync(`${WR}/wr.txt`, { force: true });
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "auto" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Reply with just: OK");
+    await idle(p);
+    helper("set", id.slice(6), JSON.stringify({ sandboxPolicy: { type: "workspaceWrite", writableRoots: [WR], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false } }));
+    await waitState(p, (x) => x.permissionMode === "custom", "Custom shown", 15_000);
+    const other = spawn("bun", ["scripts/codex-e2e-helper.ts", "turn", id.slice(6), `Use the shell to run exactly: sleep 8; echo wr > ${WR}/wr.txt   Then reply with one word: done.`], { cwd: new URL("../runner/", import.meta.url).pathname, stdio: "ignore" });
+    try {
+      const st = await waitState(p, (x) => x.turnSettings?.permissionMode === "custom" && x.turnSettings.looser, "the note for a turn running Custom", 45_000);
+      void st;
+      await button(p.locator(".t-turn-settings"), "Stop this turn").waitFor();
+      await idle(p, 120_000);
+    } finally {
+      other.kill();
+    }
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "auto" })).error) fail("setPermissionMode auto");
+    await waitState(p, (x) => x.permissionMode === "auto", "plain Auto again", 15_000);
+    rmSync(WR, { recursive: true, force: true });
+    ok("network and an extra writable root set elsewhere show as Custom, with the note and Stop while a turn runs with them; Auto from Tether turns them off");
+    await p.close();
+  },
+
+  async bgStop() {
+    // Stop ends only what its own turn left running (review 7, I1): a dev server from an earlier
+    // turn goes on.
+    const PORT = Number(process.env.BG_PORT ?? 8798);
+    const curl = () => spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" }).stdout;
+    if (curl() !== "000") fail(`port ${PORT} is busy`);
+    const p = await page(desktop);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access" });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    try {
+      await send(p, `Use your shell tool to run exactly this command: python3 -m http.server ${PORT} --bind 127.0.0.1   It serves forever: do not wait for it to finish and do not stop it. Leave it running in the background, then reply with just: STARTED`);
+      await idle(p, 180_000);
+      for (let i = 0; i < 20 && curl() !== "200"; i++) await sleep(500);
+      if (curl() !== "200") return console.log("skip bgStop: the model didn't leave the server running"), await p.close();
+      await send(p, "Use the shell to run exactly: sleep 30   Then reply with one word: done.");
+      await waitState(p, (x) => x.status === "running", "the second turn", 30_000);
+      await sleep(6000);
+      await rpcVia(p, "interrupt", { sessionId: id });
+      await waitState(p, (x) => x.status === "idle", "idle after Stop", 30_000);
+      await sleep(3000);
+      if (curl() !== "200") fail("Stop ended the dev server an earlier turn started");
+      ok("Stop on a later turn left the dev server the earlier turn started running");
+    } finally {
+      const pids = spawnSync("sh", ["-c", `ss -ltnp | grep ':${PORT} ' | grep -o 'pid=[0-9]*' | cut -d= -f2`], { encoding: "utf8" }).stdout.trim();
+      for (const x of pids.split("\n").filter(Boolean)) spawnSync("kill", [x]);
+      await p.close();
+    }
+  },
+
+  async subRestart(restartWith = RESTART) {
     // A runner restart while a subagent outlives its parent's turn (review 6, I2): rejoined, the
     // subagent found again with its own settings, still running, with the note and Stop.
-    if (!RESTART) return console.log("skip subRestart (set RESTART_RUNNER)");
+    if (!restartWith) return console.log("skip subRestart (set RESTART_RUNNER)");
     const p = await page(desktop);
     const id = await outliveSubagent(p, "sub3.txt");
     if (!id) return console.log("skip subRestart: nothing outlived the turn"), await p.close();
     await p.close();
-    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    execFileSync("sh", ["-c", restartWith], { stdio: "inherit" });
     const q = await page(desktop, `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
     await composer(q).waitFor({ timeout: 60_000 });
     await waitState(q, (x) => x.turnSettings?.who === "subagent" && x.turnSettings?.looser, "the subagent's note after the restart", 45_000);
@@ -771,8 +845,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "reviewerAuto", "claudeShiftTab", "stored"]) {
-    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "reviewerAuto", "claudeShiftTab"].includes(name)) {
+  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "claudeShiftTab", "stored"]) {
+    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "claudeShiftTab"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }
