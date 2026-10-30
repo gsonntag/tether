@@ -34,7 +34,8 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
 const errors = [];
 const page = async (ctx, url = BASE) => {
   const p = await ctx.newPage();
-  p.on("pageerror", (e) => errors.push(String(e)));
+  // Where it happened: the step, and the top of its stack.
+  p.on("pageerror", (e) => errors.push(`${current}: ${String(e)}\n    ${(e.stack ?? "").split("\n").slice(1, 6).join("\n    ")}`));
   await p.goto(url);
   return p;
 };
@@ -63,6 +64,7 @@ const button = (scope, name) => scope.getByRole("button", { name, exact: true })
 const MOD = (name) => `(performance.getEntriesByType("resource").map((e) => e.name).find((n) => n.includes("/src/${name}")) ?? "/src/${name}")`;
 
 let session; // the session URL made in `new`
+let current = "start"; // the step running (for page errors)
 const sessionId = () => decodeURIComponent(session.split("/").pop());
 // The TUI's tmux session keeps the name it started with, also after /clear moves it on.
 let tuiOf;
@@ -533,6 +535,7 @@ try {
     session = process.env.SESSION ?? fail("run `new` first, or set SESSION to a session URL");
   }
   for (const s of order) {
+    current = s;
     if (!steps[s]) fail(`no step ${s}`);
     await steps[s]();
   }

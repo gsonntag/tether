@@ -138,7 +138,9 @@ export const TermView = forwardRef<
       binary.dispose();
       c.close();
       if (debugTerms?.get(key) === t) debugTerms.delete(key);
-      t.dispose();
+      // xterm's viewport syncs in a timer set when it opens: a view gone at once (the TUI just exited)
+      // must let that run first, or it throws on the disposed terminal.
+      setTimeout(() => t.dispose(), 0);
     };
   }, [runnerId, key]);
 
