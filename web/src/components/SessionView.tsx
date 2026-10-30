@@ -11,7 +11,7 @@ import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
 import { backQuestion, SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
-import { SessionCtx } from "./sessionContext";
+import { dropRows, SessionCtx } from "./sessionContext";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
@@ -28,6 +28,7 @@ export const openTerminalOf = (runnerId: string, sessionId: string) => (terminal
 export function SessionView({ runnerId, sessionId }: { runnerId: string; sessionId: string }) {
   const k = viewKey(runnerId, sessionId);
   useEffect(() => openView(runnerId, sessionId), [runnerId, sessionId]);
+  useEffect(() => () => dropRows(runnerId, sessionId), [runnerId, sessionId]);
   const view = useStore((s) => s.views[k]);
   // The broadcast summary is fresher than the snapshot's copy.
   const summary = useStore((s) => s.summaries[runnerId]?.sessions[sessionId]) ?? view?.session;

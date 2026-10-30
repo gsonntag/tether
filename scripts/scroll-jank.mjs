@@ -1,7 +1,7 @@
 // Scroll jank and cost on a phone, measured: flings over the transcript in WebKit (iPhone 14 Pro)
 // and Chromium (Pixel 7), against the fake runner's sessions.
-//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|huge-webkit|huge-chromium]…
-// Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` (HUGE=1500 for the huge-* runs) and the
+//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|short-webkit|short-chromium|huge-webkit|huge-chromium]…
+// Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` (SHORT=1000 for the short rows, HUGE=1500 for the huge-* runs) and the
 // web app, preferably a production build (`vite build && vite preview`) for the huge-* numbers.
 //
 // What it counts, per fling:
@@ -54,6 +54,7 @@ const instrument = () => {
       const st = el.scrollTop;
       let shift = 0;
       let move = 0;
+      const rows = document.querySelector(".t-scroll [data-id]")?.parentElement.childElementCount ?? 0;
       // the transcript's own box moving (the header or composer changing height) moves its rows on
       // screen too; that isn't the transcript shifting content, so it's counted apart
       const box = prev ? r.top - prev.boxTop : 0;
@@ -64,12 +65,14 @@ const instrument = () => {
         if (row) {
           const top = row.getBoundingClientRect().top;
           move = top - prev.top;
-          shift = wrote ? 0 : move - box + (st - prev.st);
+          // Rows dropped above move the content and may clamp scrollTop: what counts then is whether
+          // the row moved on screen (a trim happens once settled, so no input explains a move).
+          shift = wrote ? 0 : rows < prev.rows ? move - box : move - box + (st - prev.st);
         }
       }
-      s.frames.push({ t, dt: prev ? t - prev.t : 0, shift, move, box, st, phase: s.phase });
+      s.frames.push({ t, dt: prev ? t - prev.t : 0, shift, move, box, st, rows, phase: s.phase });
       const mid = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("[data-id]");
-      prev = mid ? { id: mid.dataset.id, top: mid.getBoundingClientRect().top, boxTop: r.top, st, t, w: s.writes.length } : undefined;
+      prev = mid ? { id: mid.dataset.id, top: mid.getBoundingClientRect().top, boxTop: r.top, st, t, rows, w: s.writes.length } : undefined;
     } else prev = undefined;
     requestAnimationFrame(tick);
   };
@@ -125,6 +128,7 @@ async function end(p) {
       travel: Math.round(frames.reduce((a, f) => a + f.move, 0)),
       longFrames: frames.filter((f) => f.dt > 50).length,
       boxMoves: frames.filter((f) => Math.abs(f.box) > 1).length,
+      maxRows: Math.max(0, ...frames.map((f) => f.rows)),
       fromBottom: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
     };
   });
@@ -200,6 +204,46 @@ const atTop = (p) => p.evaluate(() => !document.querySelector(".t-track > .t-pag
 /** The first message on screen ("Question 12: …" in long-1). */
 const firstSeen = (p) => p.evaluate(() => document.querySelector(".t-scroll [data-id]")?.textContent?.slice(0, 14));
 
+/**
+ * Short rows (fake runner SHORT=1000): far up, then strong flings back down past the cap, settling
+ * between them, to the real bottom. No fling may throw the reader forward when rows are trimmed
+ * above them, the slice stays bounded, and at the end the view follows again.
+ */
+async function shortDown(mk, out) {
+  const p = await mk("claude:shortchat-1");
+  {
+    const g = await geom(p);
+    await p.mouse.move(g.x, g.y);
+    const firstQ = async () => Number(/(\d+)/.exec((await firstSeen(p)) ?? "")?.[1] ?? 99999);
+    for (let i = 0; i < 200 && (await firstQ()) > 500; i++) {
+      await p.mouse.wheel(0, -6000);
+      await p.waitForTimeout(500);
+    }
+    await p.waitForTimeout(800);
+    const down = { label: "short rows: flings down past the cap", startQ: await firstQ(), flings: 0, writes: 0, shifts: 0, shiftPx: 0, killed: 0, maxRows: 0, travel: 0 };
+    let bottom = false;
+    for (let i = 0; i < 60 && !bottom; i++) {
+      await begin(p, "shortdown");
+      const killed = await wkFling(p, false, 300, 0.97);
+      await settle(p);
+      await p.waitForTimeout(400); // the trim, once settled
+      const r = await end(p);
+      down.flings++;
+      down.writes += r.writes;
+      down.shifts += r.shifts;
+      down.shiftPx += r.shiftPx;
+      down.maxRows = Math.max(down.maxRows, r.maxRows);
+      down.travel += r.travel;
+      if (killed) down.killed++;
+      bottom = r.fromBottom < 2 && !(await p.evaluate(() => document.querySelector(".t-track > .t-paging:last-child")?.textContent === "Newer messages"));
+    }
+    down.reachedBottom = bottom;
+    down.following = bottom && !(await p.getByRole("button", { name: "Jump to latest" }).isVisible());
+    out.push(down);
+  }
+  await p.close();
+}
+
 async function cases(ctx, eng, print) {
   const out = { push: print };
   const mk = async (session) => {
@@ -236,6 +280,8 @@ async function cases(ctx, eng, print) {
   agg.reachedTop = await atTop(p);
   out.push(agg);
   await p.close();
+
+  await shortDown(mk, out);
 
   // 3. While a reply streams.
   p = await mk();
@@ -475,8 +521,14 @@ for (const w of which) {
     }
     // Playwright refuses wheel input in mobile WebKit: the iPhone profile minus isMobile (same
     // viewport, pixel ratio, user agent and touch).
-    const ctx = await browser.newContext({ ...devices[w === "webkit" ? "iPhone 14 Pro" : "Pixel 7"], ...(w === "webkit" ? { isMobile: false } : {}) });
+    const wk = w.endsWith("webkit");
+    const ctx = await browser.newContext({ ...devices[wk ? "iPhone 14 Pro" : "Pixel 7"], ...(wk ? { isMobile: false } : {}) });
     await ctx.addInitScript(instrument);
+    if (w.startsWith("short-")) {
+      await shortDown((session) => open(ctx, session), { push: (r) => console.log(JSON.stringify({ engine: w, ...r })) });
+      await ctx.close();
+      continue;
+    }
     await cases(ctx, { webkit: w === "webkit" }, (r) => console.log(JSON.stringify({ engine: w, ...r })));
     await ctx.close();
   } finally {

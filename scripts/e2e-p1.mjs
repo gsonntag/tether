@@ -48,6 +48,12 @@ const noOverflow = async (p, where) => {
   const w = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   if (w > 1) fail(`${where}: page scrolls sideways by ${w}px`);
 };
+// Up by the wheel: only the reader's input stops following, a scrollTop write from here wouldn't.
+const wheelUp = async (p, dy = 100) => {
+  const b = await p.locator(".t-scroll").boundingBox();
+  await p.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await p.mouse.wheel(0, -dy);
+};
 const composer = (p) => p.locator("textarea.t-input");
 const idle = (p, ms = 120_000) => p.locator('button[aria-label="Send"]').waitFor({ timeout: ms });
 const running = (p, ms = 60_000) => p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: ms });
@@ -178,6 +184,7 @@ const steps = {
     await collect();
     const first = ids.size;
     for (let i = 0; i < 40; i++) {
+      await wheelUp(p);
       await p.locator(".t-scroll").evaluate((e) => (e.scrollTop = 0));
       await p.waitForTimeout(250);
       await collect();
@@ -219,7 +226,8 @@ const steps = {
     await composer(p).fill("Count from 1 to 120, one number per line, no other text.");
     await p.getByRole("button", { name: "Send" }).click();
     await p.waitForFunction(() => /\b10\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
-    await p.locator(".t-scroll").evaluate((e) => (e.scrollTop -= 400));
+    await wheelUp(p, 400);
+    await p.waitForTimeout(300);
     const at = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
     await p.waitForTimeout(1500);
     const later = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
@@ -240,10 +248,18 @@ const steps = {
     await composer(p).fill("Count from 1 to 300, one number per line, no other text.");
     await p.getByRole("button", { name: "Send" }).click();
     await p.waitForFunction(() => /\b20\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
+    const box = await p.locator(".t-scroll").boundingBox();
+    const cdp = await p.context().newCDPSession(p);
+    const x = Math.round(box.x + box.width / 2);
+    let y = Math.round(box.y + 60);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     for (let i = 0; i < 30; i++) {
-      await p.locator(".t-scroll").evaluate((e, s) => (e.scrollTop -= s), Number(process.env.DRAG_STEP ?? 15));
+      y += Number(process.env.DRAG_STEP ?? 15);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
       await p.waitForTimeout(30);
     }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await p.waitForTimeout(300);
     const at = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
     await p.waitForTimeout(800);
     const later = await p.locator(".t-scroll").evaluate((e) => e.scrollTop);
@@ -261,6 +277,7 @@ const steps = {
     const first = process.env.COMPACTED_FIRST ?? "";
     for (let i = 0; i < 200; i++) {
       if (await p.getByText(first, { exact: false }).count()) break;
+      await wheelUp(p);
       await p.locator(".t-scroll").evaluate((e) => (e.scrollTop = 0));
       await p.waitForTimeout(150);
     }

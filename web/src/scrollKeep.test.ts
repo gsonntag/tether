@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CAP, FOLLOW_KEEP, following, Gesture, nextWindow, PAGE, remap, restoreTop, rowAt, type WinInput } from "./scrollKeep";
+import { CAP, FOLLOW_KEEP, following, Gesture, nextWindow, OVERSHOOT, PAGE, remap, restoreTop, rowAt, scrollInFlight, type WinInput } from "./scrollKeep";
 
 test("a gesture is idle only with no finger down and no scroll for a while", () => {
   const g = new Gesture(150);
@@ -78,20 +78,18 @@ test("the anchor row goes back where the reader had it", () => {
   expect(restoreTop(a, 300.4, 330)).toBeUndefined();
 });
 
-test("only the reader stops following: a transcript that gets shorter doesn't", () => {
-  const at = { stick: true, down: false, resized: false, top: 5000, lastTop: 5000, fromBottom: 0, tail: true };
-  // the composer grew by two lines: the box got shorter and the view moved up 44 px, no finger on it
-  expect(following({ ...at, resized: true, top: 4956, fromBottom: 44 })).toBe(true);
-  // a finger (or the scrollbar) moved it up, even a little, even while something resized
-  expect(following({ ...at, down: true, resized: true, top: 4997, fromBottom: 3 })).toBe(false);
-  // moved up with nothing resized: keys, find in page, a script
-  expect(following({ ...at, top: 4990, fromBottom: 10 })).toBe(false);
+test("only the reader's input stops following: a scroll alone never does", () => {
+  const at = { stick: true, bar: false, top: 5000, lastTop: 5000, fromBottom: 0, tail: true };
+  // the composer grew, or a streaming render shrank and grew: the view moved up, nobody touched it
+  expect(following({ ...at, top: 4956, fromBottom: 44 })).toBe(true);
+  // the scrollbar dragged up, even a little (a finger and the wheel have their own handlers)
+  expect(following({ ...at, bar: true, top: 4997, fromBottom: 3 })).toBe(false);
   // back down to the very bottom follows again; not with newer messages unmounted below
   const up = { ...at, stick: false, lastTop: 4000, top: 4990, fromBottom: 10 };
   expect(following(up)).toBe(true);
   expect(following({ ...up, tail: false })).toBe(false);
   // moving up never starts following, even near the bottom
-  expect(following({ ...up, lastTop: 4995, resized: true })).toBe(false);
+  expect(following({ ...up, lastTop: 4995 })).toBe(false);
 });
 
 test("the cap holds while new messages keep arriving below a reader near the slice's top", () => {
@@ -112,4 +110,22 @@ test("the cap holds while new messages keep arriving below a reader near the sli
   expect(w.hi - w.lo).toBe(CAP);
   // heading down past the cap (rows just mounted below): the top is trimmed once settled instead
   expect(nextWindow({ lo: 100, hi: 400, tail: false }, x({ n: 1000, nearEnd: true, settled: false, anchor: 380 }))).toEqual({ lo: 100, hi: 450, tail: false });
+});
+
+test("a downward fling overshoots the cap by a bounded amount, trimmed once settled", () => {
+  let w = { lo: 100, hi: 400, tail: false };
+  for (let i = 0; i < 20; i++) w = nextWindow(w, x({ n: 2000, nearEnd: true, settled: false, anchor: w.hi - 5 }));
+  expect(w).toEqual({ lo: 100, hi: 100 + CAP + OVERSHOOT, tail: false });
+  expect(nextWindow(w, x({ n: 2000, anchor: 495 }))).toEqual({ lo: 200, hi: 500, tail: false });
+});
+
+test("a scroll on its way is told from a browser clamp", () => {
+  // no scroll since the last event
+  expect(scrollInFlight(5000, 5000, 5000, 9000)).toBe(false);
+  // the reader moved and the event hasn't come yet
+  expect(scrollInFlight(5040, 5000, 5040, 9000)).toBe(true);
+  // rows dropped above: scrollTop was clamped from 34810 to 27151, and that isn't the reader
+  expect(scrollInFlight(34810, 34810, 27151, 27151)).toBe(false);
+  // the same clamp seen without a "before" (a ResizeObserver callback)
+  expect(scrollInFlight(27151, 34810, 27151, 27151)).toBe(false);
 });

@@ -125,6 +125,18 @@ if (HUGE > 0) {
   }
   add({ id: "claude:huge-1", title: `Huge fixture (${2 * HUGE} messages)`, projectPath: P, updatedAt: now - 20_000 }, huge);
 }
+// An ordinary chat of short rows, with SHORT=<pairs> (1000 makes 2000 rows of about 130 px): a
+// fling crosses many rows, so the window's overshoot and trims show (scroll-jank.mjs).
+if (process.env.SHORT) {
+  const short: Msg[] = [];
+  const pairs = Number(process.env.SHORT);
+  for (let i = 0; i < pairs; i++) {
+    const t = now - (2 * pairs - i) * 60_000;
+    short.push(user(`Q${i + 1}. ${prose(i, 6 + (i % 7))}`, t));
+    short.push(asst([{ type: "text", text: `A${i + 1}. ${prose(i, 20 + (i % 30))}` }], t));
+  }
+  add({ id: "claude:shortchat-1", title: `Short rows (${2 * pairs})`, projectPath: P, updatedAt: now - 10_000 }, short);
+}
 add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 

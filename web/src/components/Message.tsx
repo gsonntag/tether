@@ -12,7 +12,7 @@ import { ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
 import { undefang } from "../../../shared/fromTether";
-import { useFullParts, useSessionCtx } from "./sessionContext";
+import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
@@ -33,8 +33,20 @@ function CutNote({ loading, onLoad, error }: { loading: boolean; onLoad: () => v
 }
 
 
+/** Folded thinking; opened stays opened when the row is unmounted and mounted again. */
+function Thinking({ text, streaming, cut, rowKey }: { text: string; streaming: boolean; cut?: React.ReactNode; rowKey: string }) {
+  const [open, setOpen] = useRowState(`think:${rowKey}`, false);
+  return (
+    <details className="t-think" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>{streaming && !text ? "Thinking…" : "Thinking"}</summary>
+      <div className="t-think-body">{text}</div>
+      {cut}
+    </details>
+  );
+}
+
 /** One part, inside its own error boundary: a part that can't render shows a note, not a blank app. */
-function PartView(props: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string }) {
+function PartView(props: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string; rowKey: string }) {
   const part = checked(props.part);
   if (!part) return null;
   return (
@@ -44,7 +56,7 @@ function PartView(props: { part: Part; streaming: boolean; cut?: React.ReactNode
   );
 }
 
-function PartBody({ part, streaming, cut, root }: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string }) {
+function PartBody({ part, streaming, cut, root, rowKey }: { part: Part; streaming: boolean; cut?: React.ReactNode; root?: string; rowKey: string }) {
   switch (part.type) {
     case "text":
       if (!part.text && !streaming) return null;
@@ -59,13 +71,7 @@ function PartBody({ part, streaming, cut, root }: { part: Part; streaming: boole
     case "thinking":
       // Stored thinking is empty (Claude doesn't keep it): nothing to show then.
       if (!part.text && !streaming) return null;
-      return (
-        <details className="t-think">
-          <summary>{streaming && !part.text ? "Thinking…" : "Thinking"}</summary>
-          <div className="t-think-body">{part.text}</div>
-          {cut}
-        </details>
-      );
+      return <Thinking text={part.text} streaming={streaming} cut={cut} rowKey={rowKey} />;
     case "image":
       return part.data ? <Attached mimeType={part.mimeType} data={part.data} /> : <span className="t-cut">An image too large to show here. {cut}</span>;
     case "tool":
@@ -83,7 +89,7 @@ function Attached({ mimeType, data }: { mimeType: string; data: string }) {
 
 export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const { projectPath, runnerId } = useSessionCtx();
-  const { full, loading, error, load } = useFullParts(msg.id);
+  const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
     return (
@@ -127,7 +133,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
         </div>
         <div className="t-parts">
           {parts.map((p, i) => (
-            <PartView key={i} part={p} streaming={false} cut={cutFor(i)} root={projectPath} />
+            <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={false} cut={cutFor(i)} root={projectPath} />
           ))}
         </div>
       </div>
@@ -158,7 +164,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
               </div>
             ) : null
           ) : (
-            <PartView key={i} part={p} streaming={false} cut={cutFor(i)} />
+            <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={false} cut={cutFor(i)} />
           ),
         )}
         {chips.length > 0 && (
@@ -184,7 +190,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
     <div className="t-msg assistant">
       <div className="t-parts">
         {parts.map((p, i) => (
-          <PartView key={i} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
+          <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
         {msg.error && <div className="t-msg-error">{msg.error}</div>}

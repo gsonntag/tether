@@ -147,15 +147,16 @@ phone sleep, network changes and multi-device sync.
 
 **Paging.** Snapshots (and `reset`) carry only the newest messages (`TRANSCRIPT_PAGE = 50`) plus
 `hasOlder`. The `history` op fetches older pages as you scroll up, so long sessions open instantly.
-The browser mounts a bounded slice of what it has loaded, at most 300 messages, rendered plainly
+The browser mounts a bounded slice of what it has loaded, 300 messages (up to 400 until a fling
+down settles), rendered plainly
 (no estimated row heights, which shift content under a finger). It writes the scroll position only
 while no finger is down and no fling is running, because iOS Safari ends a fling on any write. So
 rows are added or dropped *above* the viewport only once the scroll settles, with the reader's place
 kept (a page that arrives mid-fling shows then); rows *below* it come and go at any time, which never
 moves what's on screen. Scrolling up past the cap drops the newest rows ("Newer messages" marks the
 gap; Jump to latest brings them back), and following the bottom keeps only the newest 100 once
-settled. Only the reader stops following (finger, wheel, keys, scrollbar); the view moving because
-the transcript got shorter, as when the composer grows, doesn't.
+settled. Only the reader's input stops following (finger, wheel, keys, scrollbar); a scroll on its own, as when
+the composer grows, doesn't.
 
 ### Transcript
 

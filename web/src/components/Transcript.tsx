@@ -8,7 +8,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ArrowDownIcon } from "@heroicons/react/24/outline";
 import type { TranscriptWindow } from "../../../shared/window";
-import { FOLLOW_KEEP, following, Gesture, nextWindow, remap, restoreTop, rowAt, type Anchor } from "../scrollKeep";
+import { FOLLOW_KEEP, following, Gesture, nextWindow, remap, restoreTop, rowAt, scrollInFlight, type Anchor } from "../scrollKeep";
 import { Message } from "./Message";
 
 const NEAR_BOTTOM = 40;
@@ -37,10 +37,25 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   /** the slice mounted last render, by its first and last ids */
   const shown = useRef<{ first?: string; last?: string; tail: boolean }>({ tail: true });
   const near = useRef({ top: false, end: false });
-  /** the box's and content's heights at the last scroll event: a move up that came with a change is layout's */
-  const lastSize = useRef({ ch: 0, sh: 0 });
+  /** scrollTop before this render's rows go in: dropping rows above can clamp it, and that isn't the reader */
+  const preTop = useRef<number | undefined>(undefined);
+  /** the scrollbar is pressed */
+  const bar = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const untouch = useRef<(() => void) | undefined>(undefined);
+  /** nodes first touched: touchend goes to them even once a render took them out of the document */
+  const touched = useRef(new Set<EventTarget>());
+  /** the reader's last move was down: reaching the real bottom follows, even with no scroll event left */
+  const goingDown = useRef(false);
+  const liftRef = useRef<() => void>(() => {});
+  const keepRef = useRef<(el: HTMLDivElement) => void>(() => {});
+  const onTouchEnd = useRef((e: Event) => (e as TouchEvent).touches.length === 0 && liftRef.current()).current;
+  const forget = () => {
+    for (const t of touched.current) {
+      t.removeEventListener("touchend", onTouchEnd);
+      t.removeEventListener("touchcancel", onTouchEnd);
+    }
+    touched.current.clear();
+  };
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const [atBottom, setAtBottom] = useState(true);
   const [paging, setPaging] = useState(false);
@@ -55,6 +70,8 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     nearEnd: near.current.end,
     anchor: anchor.current ? ids.indexOf(anchor.current.id) : -1,
   });
+
+  if (!stick.current) preTop.current = scroller.current?.scrollTop;
 
   const follow = (on: boolean) => {
     stick.current = on;
@@ -86,15 +103,17 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
    * is down or a fling runs: there a write would stop the fling, so the move is accepted and
    * becomes the new place.
    */
-  const keep = (el: HTMLDivElement) => {
+  const keep = (el: HTMLDivElement, before = el.scrollTop) => {
     if (stick.current) {
       if (!gesture.down) pin(el);
-    } else if (anchor.current && gesture.idle(performance.now()) && Math.abs(el.scrollTop - lastTop.current) < 1) {
-      // (and no scroll the page hasn't seen yet: a scroll event still on its way is the reader's)
+    } else if (anchor.current && gesture.idle(performance.now()) && !scrollInFlight(before, lastTop.current, el.scrollTop, el.scrollHeight - el.clientHeight)) {
       const row = list.current?.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(anchor.current.id)}"]`);
       const top = row ? restoreTop(anchor.current, row.offsetTop, el.scrollTop) : undefined;
       if (top !== undefined) write(el, top);
     }
+    // Down at the real bottom by now (the last rows were mounted, the slice was trimmed), with no
+    // scroll event left to say so: follow.
+    if (!stick.current && goingDown.current && shown.current.tail && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) follow(true);
     capture(el);
   };
 
@@ -103,7 +122,8 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     shown.current = { first: ids[win.lo], last: ids[win.hi - 1], tail: win.tail };
     if (!win.tail && stick.current) follow(false);
     const el = scroller.current;
-    if (el) keep(el);
+    if (el) keep(el, preTop.current);
+    preTop.current = undefined;
   });
 
   const older = async () => {
@@ -130,13 +150,14 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   useEffect(
     () => () => {
       clearTimeout(settleTimer.current);
-      untouch.current?.();
+      forget();
     },
     [],
   );
 
   /** The reader asked to go up (wheel, finger, keys, scrollbar): stop following before anything pins again. */
   const unstick = () => {
+    goingDown.current = false;
     if (stick.current) follow(false);
   };
 
@@ -147,13 +168,12 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     own.current = NaN;
     if (!ours) {
       gesture.scrolled(performance.now());
-      const resized = el.clientHeight !== lastSize.current.ch || el.scrollHeight < lastSize.current.sh - 0.5;
-      const f = following({ stick: stick.current, down: gesture.down, resized, top, lastTop: lastTop.current, fromBottom: el.scrollHeight - top - el.clientHeight, tail: shown.current.tail }, NEAR_BOTTOM);
+      if (Math.abs(top - lastTop.current) >= 1) goingDown.current = top > lastTop.current;
+      const f = following({ stick: stick.current, bar: bar.current, top, lastTop: lastTop.current, fromBottom: el.scrollHeight - top - el.clientHeight, tail: shown.current.tail }, NEAR_BOTTOM);
       if (f !== stick.current) follow(f);
       settleLater();
     }
     lastTop.current = top;
-    lastSize.current = { ch: el.clientHeight, sh: el.scrollHeight };
     capture(el);
     // Newer rows mount below at once (nothing on screen moves); older ones once it settles.
     if (near.current.end && !shown.current.tail) bump();
@@ -164,7 +184,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   // content's: streaming markdown grows between renders, a card opens.
   useEffect(() => {
     const el = scroller.current!;
-    const ro = new ResizeObserver(() => keep(el));
+    const ro = new ResizeObserver(() => keepRef.current(el));
     ro.observe(el);
     if (track.current) ro.observe(track.current);
     return () => ro.disconnect();
@@ -185,31 +205,46 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
     } else pin(scroller.current!);
   };
 
+  // Any finger lifted anywhere: another finger's touchend may land outside the transcript (on the
+  // composer, say), and `touches` counts every finger on the screen. Hiding the page ends a touch
+  // without a word.
+  useEffect(() => {
+    const hidden = () => document.visibilityState === "hidden" && liftRef.current();
+    const gone = () => liftRef.current();
+    document.addEventListener("touchend", onTouchEnd, true);
+    document.addEventListener("touchcancel", onTouchEnd, true);
+    document.addEventListener("visibilitychange", hidden);
+    window.addEventListener("pagehide", gone);
+    return () => {
+      document.removeEventListener("touchend", onTouchEnd, true);
+      document.removeEventListener("touchcancel", onTouchEnd, true);
+      document.removeEventListener("visibilitychange", hidden);
+      window.removeEventListener("pagehide", gone);
+    };
+  }, []);
+
   /** The finger (or the scrollbar's pointer) is off: catch up with the bottom if following. */
   const lift = () => {
-    untouch.current?.();
-    untouch.current = undefined;
+    forget();
+    bar.current = false;
     if (!gesture.down) return;
     gesture.touch(false, performance.now());
     const el = scroller.current;
     if (el && stick.current) pin(el);
     settleLater();
   };
+  liftRef.current = lift;
+  keepRef.current = keep;
   const onTouchStart = (e: React.TouchEvent) => {
     gesture.touch(true, performance.now());
     touchY.current = e.touches[0]?.clientY ?? 0;
-    // iOS sends touchend to the node touched first; a streaming render may have taken it out of
-    // the transcript by then, so listen on that node itself. (No timeout: a finger resting still
-    // sends nothing at all, however long it rests, and must keep everything still under it.)
-    untouch.current?.();
-    const t = e.target;
-    const end = (ev: Event) => (ev as TouchEvent).touches.length === 0 && lift();
-    t.addEventListener("touchend", end);
-    t.addEventListener("touchcancel", end);
-    untouch.current = () => {
-      t.removeEventListener("touchend", end);
-      t.removeEventListener("touchcancel", end);
-    };
+    // A touchend goes to the node first touched, and a streaming render may have taken that node
+    // out of the document, where it no longer reaches the document's listener below. So each
+    // finger's node is heard directly, until the last finger is off. (No timeout: a finger resting
+    // still sends nothing at all, however long it rests, and must keep everything still under it.)
+    e.target.addEventListener("touchend", onTouchEnd);
+    e.target.addEventListener("touchcancel", onTouchEnd);
+    touched.current.add(e.target);
   };
 
   return (
@@ -221,12 +256,11 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
         onWheel={(e) => e.deltaY < 0 && unstick()}
         onTouchStart={onTouchStart}
         onTouchMove={(e) => (e.touches[0]?.clientY ?? 0) > touchY.current + 2 && unstick()}
-        onTouchEnd={(e) => e.touches.length === 0 && lift()}
-        onTouchCancel={(e) => e.touches.length === 0 && lift()}
         onPointerDown={(e) => {
           // the scrollbar (a press on the scroller itself): like a finger, until released
           if (e.pointerType !== "mouse" || e.target !== e.currentTarget) return;
           gesture.touch(true, performance.now());
+          bar.current = true;
           window.addEventListener("pointerup", lift, { once: true });
         }}
         onKeyDown={(e) => ["PageUp", "ArrowUp", "Home"].includes(e.key) && unstick()}

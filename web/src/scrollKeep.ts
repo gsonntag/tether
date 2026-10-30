@@ -35,6 +35,12 @@ export const PAGE = 50;
 export const CAP = 300;
 /** Mounted once settled while following the bottom, so a session left open stays small. */
 export const FOLLOW_KEEP = 100;
+/**
+ * A downward fling may mount this many rows past CAP before it settles and the top is trimmed.
+ * Rows above can't be dropped mid-fling, so the slice stops growing here: a fling that outruns it
+ * rests at the slice's end, and the next render mounts on. Together with CAP, the most ever mounted.
+ */
+export const OVERSHOOT = 100;
 
 /**
  * The mounted slice [lo, hi) of the loaded messages. `tail`: it ends at the newest, and new
@@ -65,7 +71,7 @@ export interface WinInput {
  * The next mounted slice. Rows are added or dropped *above* the viewport only once settled (that
  * moves content, so the reader's row is put back with a scrollTop write); *below* it at any time
  * (nothing on screen moves). Going up past CAP drops rows from the bottom; going down past it
- * drops rows from the top, once settled.
+ * drops rows from the top, once settled, so a fling can overshoot CAP by at most OVERSHOOT.
  */
 export function nextWindow(w: Win, x: WinInput): Win {
   const n = x.n;
@@ -81,7 +87,7 @@ export function nextWindow(w: Win, x: WinInput): Win {
     lo = Math.max(0, lo - PAGE);
     above = true;
   }
-  if (x.nearEnd && !tail) hi = Math.min(n, hi + PAGE);
+  if (x.nearEnd && !tail && hi - lo < CAP + OVERSHOOT) hi = Math.min(n, hi + PAGE);
   tail = hi >= n;
   if (hi - lo > CAP) {
     if (above) {
@@ -119,17 +125,26 @@ export function remap(ids: string[], first: string | undefined, last: string | u
 }
 
 /**
- * Whether to follow the bottom after a scroll that wasn't ours. Only the reader stops following:
- * a finger or the scrollbar moving the view up, or the view moving up while the transcript kept
- * its size (keys, find in page, a script; the wheel and keys also have handlers). The view also
- * moves up when the transcript gets shorter or its box does, as when the composer grows: that
- * isn't the reader, and it must not stop following. Moving down to the very bottom follows again.
- * `resized`: the box's height changed, or the content got shorter, since the last scroll event.
+ * Whether to follow the bottom after a scroll that wasn't ours. A scroll alone never stops
+ * following: the view also moves up when the transcript gets shorter, and engines report that in
+ * different orders (a streaming render that shrinks then grows leaves scrollTop lower and the
+ * content taller, so sizes can't tell it from the reader). Only the reader's input does: the
+ * wheel, keys and a finger have their handlers, and the scrollbar (`bar`, pressed) is seen here,
+ * since a press alone doesn't say which way it drags. Moving down to the very bottom follows again.
  */
-export function following(s: { stick: boolean; down: boolean; resized: boolean; top: number; lastTop: number; fromBottom: number; tail: boolean }, nearBottom = 40): boolean {
-  if (s.top < s.lastTop - 1 && (s.down || !s.resized)) return false;
+export function following(s: { stick: boolean; bar: boolean; top: number; lastTop: number; fromBottom: number; tail: boolean }, nearBottom = 40): boolean {
+  if (s.bar && s.top < s.lastTop - 1) return false;
   if (!s.stick && s.top > s.lastTop + 0.5 && s.tail && s.fromBottom < nearBottom) return true;
   return s.stick;
+}
+
+/**
+ * A reader's scroll is still on its way: scrollTop moved since the last scroll event. `before` is
+ * scrollTop before this change to the rows. Not when the view now sits at the bottom limit: rows
+ * dropped above shorten the content and the browser clamps scrollTop, which is no reader's doing.
+ */
+export function scrollInFlight(before: number, lastTop: number, top: number, maxTop: number): boolean {
+  return Math.abs(before - lastTop) >= 1 && top < maxTop - 1;
 }
 
 /**
