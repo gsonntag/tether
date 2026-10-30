@@ -5,6 +5,8 @@
 // The queue waits (held) while the harness's TUI drives a handed-off session (released by Back to
 // Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart. Sending a
 // message yourself, or Resume, releases it; nothing is ever sent on your behalf while it is held.
+// During the quiet wait after a restart (live.ts autoContinue) it stays held whatever you do: the
+// wait's end releases it.
 
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
@@ -22,6 +24,8 @@ export type HeldBy = NonNullable<LiveState["queueHeldBy"]>;
 export interface QueueHost {
   /** sends a waiting message as the person would */
   send(sessionId: string, text: string, attachments: Attachment[]): Promise<void>;
+  /** the session is in the quiet wait after a restart: nothing may go out yet */
+  waiting(sessionId: string): boolean;
 }
 
 export class MessageQueue {
@@ -90,8 +94,9 @@ export class MessageQueue {
     if (all.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
     this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
-    // Queued while the TUI drives: it waits for Back to Tether.
-    this.save(s, [...s.state.queue, m], !s.state.queueHeld && s.state.mode === "terminal" ? "terminal" : undefined);
+    // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
+    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
+    this.save(s, [...s.state.queue, m], by);
     this.later(s.id);
     return { id: m.id };
   }
@@ -135,6 +140,7 @@ export class MessageQueue {
   async resume(id: string) {
     const s = await this.root(id);
     if (s.state.mode === "terminal") throw new Error("The terminal is driving. Go back to Tether to send what waits.");
+    if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
     this.release(s);
     this.later(s.id);
   }
@@ -192,7 +198,7 @@ export class MessageQueue {
   private async drain(id: string) {
     const s = this.core.sessions.get(id);
     if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld) return;
-    if (s.state.mode === "terminal" || s.state.status !== "idle" || s.sending || s.starting) return;
+    if (s.state.mode === "terminal" || s.state.status !== "idle" || s.sending || s.starting || this.host.waiting(id)) return;
     const [next, ...rest] = s.state.queue;
     this.draining.add(id);
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once

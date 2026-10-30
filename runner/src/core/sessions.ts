@@ -266,7 +266,8 @@ export class SessionCore {
         // Anchored to the end of that turn: what an orphaned process still writes lands above it.
         // A harness that keeps turns going without the runner (capabilities.persistent) wasn't cut off.
         const p = this.o.prefs.get(s.id);
-        if (!s.live && !s.sending && !s.capabilities.persistent && (p.running || p.cutOff)) {
+        // (Not during the quiet wait after a restart: its turn may yet be continued.)
+        if (!s.live && !s.sending && !s.capabilities.persistent && (p.running || p.cutOff) && !p.restartWait) {
           const prompt = [...msgs].reverse().find((m) => m.role === "user" && !m.origin);
           const agent = AGENT_NAMES[s.summary.harness];
           const text = s.state.requests.length

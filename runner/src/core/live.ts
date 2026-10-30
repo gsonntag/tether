@@ -26,6 +26,8 @@ import { Transcript } from "./transcript";
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
 
+/** What the quiet wait after a restart shows (SPEC §4). */
+const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -72,6 +74,12 @@ export class LiveControl {
   private stopping = false;
   /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
   quiet = { quietMs: 15_000, pollMs: 3_000, maxMs: 10 * 60_000 };
+  /**
+   * Sessions in the quiet wait after a restart: nothing may start Claude on them (send queues, the
+   * queue stays held, Resume refuses) until `autoContinue` decides. Kept in runner.json as `running`
+   * and `restartWait`, so a restart meanwhile comes back here.
+   */
+  private restartWaits = new Set<string>();
   /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
   private relays = new Map<string, { childId: string; nativeId: string; msgId: string; text: string }[]>();
 
@@ -82,7 +90,7 @@ export class LiveControl {
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }) });
+    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
     this.read = new ReadState(core);
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
     AttachmentStore.current = this.attachments;
@@ -90,6 +98,13 @@ export class LiveControl {
     bus.on("message", ({ sessionId, msg }) => this.relayCheck(sessionId, msg.parts));
     bus.on("toolCall", ({ sessionId, tool }) => this.relayCheck(sessionId, [tool]));
     bus.on("turnEnded", ({ sessionId }) => this.relayTurnEnded(sessionId));
+    // The terminal opened during the wait: you took over, so nothing is continued, then or later.
+    bus.on("modeChanged", ({ sessionId, to }) => {
+      const s = core.sessions.get(sessionId);
+      if (to !== "terminal" || !s || !this.restartWaits.has(sessionId)) return;
+      this.endWait(s);
+      if (s.state.queueHeldBy === "restart") this.queue.hold(s, "terminal", { over: true });
+    });
   }
 
   // ---------------- ops ----------------
@@ -123,9 +138,10 @@ export class LiveControl {
   /**
    * Starts a turn. `stop`: Stop and send now (SPEC §9). A message you send releases a queue held
    * after Stop or a failed turn: it goes on after this turn (`queued`: the queue's own sends;
-   * `tether`: sent on your behalf, which releases nothing).
+   * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
+   * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean } = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const s = await this.core.open(id);
@@ -135,10 +151,18 @@ export class LiveControl {
     // SDK process started beside a TUI, nor to a TUI that is quitting.
     const moving = this.terminal?.settled(s);
     if (moving) await moving;
+    // The wait ended meanwhile (the terminal opened): there's nothing to continue any more.
+    if (o.continued && !this.restartWaits.has(id)) return;
     // The TUI drives: the message waits in the queue, held until Back to Tether (SPEC §8, §9).
     // (A message of the queue going out as a handoff took over goes back to the front, as it was.)
     if (s.state.mode === "terminal") {
       if (o.queued) throw new Error("The terminal is driving.");
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // Claude Code from before the restart may be running: nothing starts beside it. Held, whatever
+    // the queue held before; it goes on once the wait ends.
+    if (!o.continued && this.restartWaits.has(id)) {
+      if (o.queued) throw new Error(WAITING_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -151,6 +175,11 @@ export class LiveControl {
     if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
     const me = {};
     s.sending = me;
+    if (o.continued) {
+      this.endWait(s, true);
+      if (s.state.queueHeldBy === "restart") this.queue.release(s);
+      s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
+    } else if (this.core.o.prefs.get(id).continuedTurn) this.core.o.prefs.set(id, { continuedTurn: undefined });
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
     this.status(s, "running");
     try {
@@ -175,9 +204,14 @@ export class LiveControl {
       this.core.touch(s, { updatedAt: this.core.now() });
       // Handed to the harness from here: its turn starts (a change now is against that turn).
       s.sentOut = me;
+      if (o.continued) {
+        this.core.o.prefs.set(id, { autoContinuedAt: this.core.now(), continuedTurn: true });
+        this.core.o.prefs.flush();
+      }
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
+      if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
       if (s.sending === me && !(e instanceof SendCancelled)) {
         s.turnError = (e as Error)?.message ?? String(e);
@@ -299,7 +333,7 @@ export class LiveControl {
     if (s.state.status !== "idle" || s.sending) s.stopped = true;
     // Saved now: a restart before the stop takes effect must not continue a turn you stopped.
     if (this.core.o.prefs.get(id).running || this.core.o.prefs.get(id).continuedTurn) {
-      this.core.o.prefs.set(id, { running: undefined, continuedTurn: undefined });
+      this.core.o.prefs.set(id, { running: undefined, continuedTurn: undefined, restartWait: undefined });
       this.core.o.prefs.flush();
     }
     // Stopped while Claude is still starting: the message never goes out.
@@ -358,14 +392,17 @@ export class LiveControl {
         const p = this.core.o.prefs.get(id);
         const again = p.continuedTurn || (p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS);
         if (!waiting.has(id) && !again) {
-          this.core.o.prefs.set(id, { running: undefined, cutOff: undefined, autoContinuedAt: this.core.now(), continuedTurn: true });
+          // `running` stays until the wait resolves: a restart meanwhile comes back here.
+          this.core.o.prefs.set(id, { cutOff: undefined, restartWait: p.restartWait ?? this.core.now() });
+          this.restartWaits.add(id);
           this.queue.notCutOff(id);
           continuing.push(id);
           continue;
         }
         this.read.set(id, { failure: "The runner restarted mid-turn." });
-        this.core.o.prefs.set(id, { running: undefined, cutOff: true });
+        this.core.o.prefs.set(id, { running: undefined, cutOff: true, restartWait: undefined });
       }
+    this.core.o.prefs.flush();
 
     const ids = [...new Set([...this.core.o.prefs.running(), ...this.desk.broker.sessions(true)])].filter(persistent);
     // Awaited (the queue is restored after this): a queued message never jumps ahead of the continue.
@@ -377,60 +414,95 @@ export class LiveControl {
    * message (marked, so it reads as Tether's) asking the agent to carry on. The session's settings go
    * with it as with any send. If it can't, the session falls back to Failed and a held queue.
    */
-  private async autoContinue(id: string, waited = false) {
+  private async autoContinue(id: string) {
     let s: Session | undefined;
     try {
       s = await this.core.open(id);
+      this.core.pin(s);
+      if (this.storeQuiet(s)) return await this.continueOnceQuiet(s);
+      await this.core.load(s);
       // Still being written: the rest happens in the background once it's quiet (rejoin, and the
-      // queues it restores, don't wait for this session).
-      if (!waited && !this.storeQuiet(s)) {
-        await this.core.load(s);
-        s.apply({ type: "msg", msg: notice("Waiting for Claude Code from before the restart to finish…") });
+      // queues it restores, don't wait for this session). The same notice after another restart.
+      if (this.restartWaits.has(id)) {
+        s.apply({ type: "msg", msg: { ...notice(WAITING_TEXT), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
+        s.setState({ restartWait: true });
         this.queue.hold(s, "restart");
-        void this.autoContinue(id, true);
-        return;
       }
-      // Claude Code from before the restart may still be running the turn (the runner crashed and
-      // left it behind): wait until the session's store has been quiet a while, so two processes
-      // never drive one session. A process silent longer than that (a long tool call) can still
-      // overlap: production's systemd unit ends leftover children on a restart anyway.
-      if (waited && !(await this.waitQuiet(s))) {
+      void this.continueOnceQuiet(s);
+    } catch (e) {
+      this.continueFailed(id, s, e);
+      if (s) this.core.unpin(s);
+    }
+  }
+
+  /**
+   * Waits for the session's store, then ends the wait one way or another: Claude Code from before
+   * the restart may still be running the turn (the runner crashed and left it behind), so it waits
+   * until the store has been quiet a while, so two processes never drive one session. A process
+   * silent longer than that (a long tool call) can still overlap: production's systemd unit ends
+   * leftover children on a restart anyway.
+   */
+  private async continueOnceQuiet(s: Session) {
+    const id = s.id;
+    const on = () => this.restartWaits.has(id);
+    try {
+      const quiet = await this.waitQuiet(s);
+      // Stopping: `running` stays saved, and the next start waits on.
+      if (this.stopping || !on()) return;
+      if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
         s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working; press Resume to continue.", "warning") });
         this.queue.hold(s, "restart");
-        this.core.o.prefs.set(id, { continuedTurn: undefined });
-        return;
+        return this.endWait(s);
       }
-      if (waited) this.queue.release(s);
+      await this.terminal?.settled(s);
       await this.core.syncFromStore(s);
       await this.core.load(s);
-      // The turn finished after all (the store has its answer after the last prompt): nothing to continue.
-      if (turnFinished(s.transcript?.messages ?? [])) {
-        this.core.o.prefs.set(id, { continuedTurn: undefined });
-        this.core.log(`${id}: the cut-off turn had finished; not continued`);
-        // What waited for the store to go quiet goes on now.
-        this.queue.later(id);
-        return;
+      if (!on()) return;
+      // The turn finished after all (the store has its answer after the last prompt), or you pressed
+      // Stop meanwhile: nothing to continue, and what waited for the store goes on.
+      if (!this.core.o.prefs.get(id).running || turnFinished(s.transcript?.messages ?? [])) {
+        this.endWait(s);
+        if (s.state.queueHeldBy === "restart") this.queue.release(s);
+        this.core.log(`${id}: the cut-off turn had finished or was stopped; not continued`);
+        return this.queue.later(id);
       }
-      // You sent something first: that goes on instead.
-      if (s.state.status !== "idle" || s.sending) {
-        this.core.o.prefs.set(id, { continuedTurn: undefined });
-        return;
+      await this.send(id, AUTO_CONTINUE_TEXT, [], { tether: true, continued: true });
+    } catch (e) {
+      this.continueFailed(id, s, e);
+    } finally {
+      this.core.unpin(s);
+    }
+  }
+
+  /** The wait is over. `running` stays saved only for a turn that goes on from here. */
+  private endWait(s: Session, turnGoesOn = false) {
+    this.restartWaits.delete(s.id);
+    s.setState({ restartWait: undefined });
+    this.core.o.prefs.set(s.id, { restartWait: undefined, ...(turnGoesOn ? {} : { running: undefined }) });
+    this.core.o.prefs.flush();
+  }
+
+  private continueFailed(id: string, s: Session | undefined, e: any) {
+    const why = String(e?.message ?? e).replace(/[.\s]+$/, "");
+    this.core.log(`${id}: couldn't continue after the restart: ${why}`);
+    // You pressed Stop as it went out, or a turn got there first: nothing went wrong.
+    if (e instanceof SendCancelled || /still working/i.test(why)) {
+      if (s && this.restartWaits.has(id)) {
+        this.endWait(s, true);
+        if (s.state.queueHeldBy === "restart") this.queue.release(s);
       }
-      s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
-      await this.send(id, AUTO_CONTINUE_TEXT, [], { tether: true });
-      this.core.log(`${id}: continued the turn the restart cut off`);
-    } catch (e: any) {
-      const why = String(e?.message ?? e).replace(/[.\s]+$/, "");
-      this.core.log(`${id}: couldn't continue after the restart: ${why}`);
-      // You sent first (the session got busy meanwhile): nothing went wrong.
-      if (/still working/i.test(why)) return;
-      this.read.set(id, { failure: `Couldn't continue after the restart: ${why}.` });
-      if (s) {
-        // One notice: a failed start already said why in the transcript.
-        if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
-        this.queue.hold(s, "restart");
-      }
+      return;
+    }
+    this.restartWaits.delete(id);
+    this.core.o.prefs.set(id, { running: undefined, restartWait: undefined });
+    this.core.o.prefs.flush();
+    s?.setState({ restartWait: undefined });
+    this.read.set(id, { failure: `Couldn't continue after the restart: ${why}.` });
+    if (s) {
+      // One notice: a failed start already said why in the transcript.
+      if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
+      this.queue.hold(s, "restart");
     }
   }
 
@@ -440,11 +512,15 @@ export class LiveControl {
     return at === undefined || this.core.now() - at >= this.quiet.quietMs;
   }
 
-  /** Waits, checking every `quiet.pollMs`, until the store is quiet: false after `quiet.maxMs`. */
+  /**
+   * Waits, checking every `quiet.pollMs`, until the store is quiet: false `quiet.maxMs` after the wait
+   * began (across restarts). Gives up looking if the wait ends or the runner stops.
+   */
   private async waitQuiet(s: Session): Promise<boolean> {
-    const until = this.core.now() + this.quiet.maxMs;
+    const until = (this.core.o.prefs.get(s.id).restartWait ?? this.core.now()) + this.quiet.maxMs;
     while (!this.storeQuiet(s)) {
       if (this.core.now() >= until) return false;
+      if (this.stopping || !this.restartWaits.has(s.id)) return true;
       await Bun.sleep(this.quiet.pollMs);
     }
     return true;

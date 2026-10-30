@@ -57,6 +57,7 @@ test("the shell hint says when the output reaches the agent, whatever holds the 
   expect(shellWhen("Claude", { running: false, inTerminal: true })).toBe("the output goes to Claude when you go Back to Tether");
   expect(shellWhen("Codex", { running: false, inTerminal: false, heldBy: "stopped" })).toMatch(/waits in the queue, paused after Stop/);
   expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restart" })).toMatch(/paused after a restart/);
+  expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restartWait" })).toMatch(/until Claude Code from before the restart finishes/);
 });
 
 test("in the terminal with the queue paused after Stop, the hint says it's paused", async () => {

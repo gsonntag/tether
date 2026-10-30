@@ -33,10 +33,12 @@ export interface SessionPrefs {
   model?: string;
   effort?: string;
   permissionMode?: string;
-  /** a turn was running: still set at start means it was cut off (a runner restart, a crash) */
+  /** a turn was running: still set at start means it was cut off (a runner restart, a crash); through the quiet wait too */
   running?: boolean;
   /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */
   cutOff?: boolean;
+  /** when the quiet wait after a restart began: set until it resolves, across further restarts (live.ts autoContinue) */
+  restartWait?: number;
   /** when Tether last continued a turn a restart cut off (a restart soon after doesn't continue again) */
   autoContinuedAt?: number;
   /** the running turn is one Tether continued after a restart: cut off again, it isn't continued twice */

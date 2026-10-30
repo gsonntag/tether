@@ -659,6 +659,168 @@ describe("read state", () => {
     expect(s.state.queueHeld).toBeUndefined();
   });
 
+  /** In the quiet wait: the store still changing until the test says stop. */
+  async function inWait(o: { queue?: string } = {}) {
+    const c = await cutOff(o);
+    let changed = Date.now();
+    (c.b.adapter as any).storeChangedAt = () => changed;
+    const tick = setInterval(() => (changed = Date.now()), 30);
+    cleanups.push(() => clearInterval(tick));
+    await c.b.live.rejoin();
+    await c.b.live.queue.restore();
+    const s = await c.b.core.open("claude:s1");
+    return { ...c, s, quiet: () => clearInterval(tick) };
+  }
+
+  test("a send during the wait queues, held, even with the queue empty; it follows the continue", async () => {
+    const { b, s, quiet } = await inWait();
+    expect(s.state.restartWait).toBe(true);
+    await b.live.send("claude:s1", "mine", [], { stop: true });
+    await b.live.send("claude:s1", "too");
+    await Bun.sleep(150);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queue.map((m) => m.text)).toEqual(["mine", "too"]);
+    expect(s.state).toMatchObject({ queueHeld: true, queueHeldBy: "restart", status: "idle" });
+    quiet();
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+    expect(s.state.restartWait).toBeUndefined();
+    expect(s.state.queueHeld).toBeUndefined();
+    b.end();
+    await until(() => b.driver().sent.length === 2, 3000);
+    expect(b.driver().sent[1]).toBe("mine");
+  });
+
+  test("Resume during the wait refuses and the queue stays held; a message queued with Tab holds too", async () => {
+    const { b, s, quiet } = await inWait({ queue: "two" });
+    await expect(b.live.queue.resume("claude:s1")).rejects.toThrow(/may still be working/);
+    await b.live.queue.add("claude:s1", "three", []);
+    await Bun.sleep(150);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state).toMatchObject({ queueHeld: true, queueHeldBy: "restart" });
+    quiet();
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+  });
+
+  test("a queue emptied during the wait still holds what's queued next", async () => {
+    const { b, s } = await inWait({ queue: "two" });
+    await b.live.queue.cancel("claude:s1", s.state.queue[0]!.id);
+    await b.live.queue.add("claude:s1", "three", []);
+    await Bun.sleep(150);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queueHeldBy).toBe("restart");
+  });
+
+  test("a second restart during the wait waits again: the turn is kept, no Failed, continued once", async () => {
+    const { a, b, quiet } = await inWait({ queue: "two" });
+    expect(b.prefs.get("claude:s1")).toMatchObject({ running: true, queueHeldBy: "restart" });
+    expect(b.prefs.get("claude:s1").continuedTurn).toBeUndefined();
+    const since = b.prefs.get("claude:s1").restartWait;
+    expect(since).toBeNumber();
+    await b.live.closeAll();
+    b.prefs.flush();
+    b.core.stop();
+    quiet();
+    const c = setup({ prefsFile: a.prefsFile });
+    c.adapter.addStored("s1", []);
+    c.live.quiet = { quietMs: 200, pollMs: 50, maxMs: 2000 };
+    let changed = Date.now();
+    (c.adapter as any).storeChangedAt = () => changed;
+    const tick = setInterval(() => (changed = Date.now()), 30);
+    cleanups.push(() => clearInterval(tick));
+    await c.live.rejoin();
+    await c.live.queue.restore();
+    const s = await c.core.open("claude:s1");
+    expect(s.state.restartWait).toBe(true);
+    expect(c.prefs.get("claude:s1").restartWait).toBe(since!);
+    expect(c.prefs.get("claude:s1").unread).toBeUndefined();
+    expect(c.adapter.drivers).toHaveLength(0);
+    clearInterval(tick);
+    await until(() => c.adapter.drivers.length === 1 && c.driver().sent.length === 1, 3000);
+    expect(c.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+    expect(c.prefs.get("claude:s1")).toMatchObject({ running: true, continuedTurn: true });
+    expect(c.prefs.get("claude:s1").restartWait).toBeUndefined();
+    expect(JSON.stringify(s.transcript!.messages)).not.toContain("This turn stopped");
+    expect(s.state.queue.map((m) => m.text)).toEqual(["two"]);
+    expect(s.state.queueHeld).toBeUndefined();
+  });
+
+  test("the ten minutes of the wait count across restarts", async () => {
+    const { a, b } = await inWait();
+    b.prefs.set("claude:s1", { restartWait: Date.now() - 60 * 60_000 });
+    await b.live.closeAll();
+    b.prefs.flush();
+    b.core.stop();
+    const c = setup({ prefsFile: a.prefsFile });
+    c.adapter.addStored("s1", []);
+    c.live.quiet = { quietMs: 200, pollMs: 50, maxMs: 2000 };
+    (c.adapter as any).storeChangedAt = () => Date.now();
+    await c.live.rejoin();
+    await until(() => c.prefs.get("claude:s1").unread === "failed", 1000);
+    expect(c.adapter.drivers).toHaveLength(0);
+    expect(c.prefs.get("claude:s1").running).toBeUndefined();
+  });
+
+  test("a stale continuedTurn doesn't block the next cut-off turn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    a.prefs.set("claude:s1", { continuedTurn: true });
+    await a.live.send("claude:s1", "one");
+    expect(a.prefs.get("claude:s1").continuedTurn).toBeUndefined();
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", []);
+    await b.live.rejoin();
+    expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+  });
+
+  test("the terminal opened during the wait cancels the continue: no text, no notice, the queue held for the terminal", async () => {
+    const { b, s, quiet } = await inWait({ queue: "two" });
+    b.live.setMode(s, "terminal", { status: "idle", terminal: { kind: "handoff" } });
+    expect(s.state.queueHeldBy).toBe("terminal");
+    expect(s.state.restartWait).toBeUndefined();
+    quiet();
+    await Bun.sleep(350);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queue.map((m) => m.text)).toEqual(["two"]);
+    expect(s.state.queueHeldBy).toBe("terminal");
+    expect(JSON.stringify(s.transcript!.messages)).not.toContain("continuing");
+    expect(b.prefs.get("claude:s1").running).toBeUndefined();
+    expect(b.prefs.get("claude:s1").restartWait).toBeUndefined();
+    expect(b.prefs.get("claude:s1").unread).toBeUndefined();
+    // Back to Tether: what waited goes on.
+    b.live.setMode(s, "live", { terminal: undefined });
+    await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+    expect(b.driver().sent).toEqual(["two"]);
+  });
+
+  test("the terminal opened and closed during the wait still cancels the continue", async () => {
+    const { b, s, quiet } = await inWait();
+    b.live.setMode(s, "terminal", { status: "idle", terminal: { kind: "handoff" } });
+    b.live.setMode(s, "stored", { terminal: undefined });
+    quiet();
+    await Bun.sleep(350);
+    expect(b.adapter.drivers).toHaveLength(0);
+  });
+
+  test("Stop during the wait: nothing continued, and a send still waits for the store", async () => {
+    const { b, s, quiet } = await inWait({ queue: "two" });
+    await b.live.interrupt("claude:s1");
+    expect(s.state.queueHeldBy).toBe("stopped");
+    await b.live.send("claude:s1", "mine");
+    await Bun.sleep(150);
+    expect(b.adapter.drivers).toHaveLength(0);
+    quiet();
+    await until(() => s.state.restartWait === undefined, 3000);
+    await Bun.sleep(150);
+    expect(b.adapter.drivers).toHaveLength(0);
+    expect(s.state.queueHeldBy).toBe("stopped");
+    expect(b.prefs.get("claude:s1").unread).toBeUndefined();
+  });
+
   test("the store shows the cut-off turn finished: not continued, and the queue goes on", async () => {
     const answered = [
       { id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "one" }] },

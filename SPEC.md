@@ -111,12 +111,16 @@ Tether runner restarted mid-turn; continuing."). Waiting messages follow that tu
   restart to finish…", the queue held); it never inspects or signals processes. Then, if the store
   shows the turn finished (the agent's answer after the last prompt), nothing is continued and the
   queue goes on; otherwise it continues once. After 10 minutes of writes it gives up: Failed on Home,
-  the queue held, "press Resume to continue". Residual risk: a left-behind process silent for over
+  the queue held, "press Resume to continue". During the wait nothing starts Claude: a message you
+  send queues, held, and follows the continue; Resume can't release it. The wait is saved (`running`
+  and `restartWait` in runner.json), so a restart during it comes back to it, and `continuedTurn` is
+  set only once a continue goes out. Opening the terminal during the wait cancels the continue: your
+  queue waits for Back to Tether. Residual risk: a left-behind process silent for over
   15 s (a long tool call) could still overlap; production's systemd unit (KillMode=mixed) ends a
   stopped runner's children anyway.
 - **Not** for a session waiting on the person (a saved request is asked again instead), one the
   person stopped (saved at once, so a restart before the stop takes effect doesn't continue it), one
-  whose TUI drives, or one where the person sent something first; at most once per cut-off turn (a
+  whose TUI drives; at most once per cut-off turn (a
   continued turn cut off again is left for the person), and not within 2 minutes of the last
   automatic continue. Those fall back to Failed on Home and a held queue. A harness that keeps turns
   going (Codex's daemon) is just rejoined.

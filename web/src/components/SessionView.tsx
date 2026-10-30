@@ -268,7 +268,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? `Joins the paused queue: it goes when you resume it, after Back to Tether` : `${agent} gets this when you go Back to Tether`) : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
-            shell={{ folder: summary.projectPath, heldBy: state.queueHeld ? state.queueHeldBy : undefined }}
+            shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
             status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};

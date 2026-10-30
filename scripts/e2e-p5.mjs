@@ -12,6 +12,8 @@
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
 //   home claude steer queue lostEdit stopSend terminal restart restartCrash codex restartCodex attach push inbox relay
+// A partial run: a Claude session with no turn yet isn't in any store, so a runner restart loses it.
+// attach, push, inbox and relay need one that survives: restartCodex gives it a turn first.
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -546,6 +548,9 @@ const steps = {
     // Claude Code wrote the session moments ago: Tether must wait, whatever that process does next.
     await b.getByText("Waiting for Claude Code from before the restart to finish…").waitFor({ timeout: 60_000 });
     await shot(b, "restart-crash-waiting");
+    // What's queued says what it waits for, and nothing can release it meanwhile.
+    await b.locator(".t-queue-head", { hasText: "Waiting for Claude Code from before the restart." }).waitFor({ timeout: 10_000 });
+    if (await button(b, "Resume").count()) fail("Resume is offered during the wait");
     // Either Tether waits for the left-behind process, then (its turn finished) doesn't continue, or
     // (it stopped mid-turn) continues once the store is quiet.
     // Whichever way it goes, the queued message goes out last: run until then, noting any continue.
@@ -606,6 +611,17 @@ const steps = {
   async restartCodex() {
     // Codex keeps the turn going in its daemon: the runner just rejoins; Tether sends nothing of its own.
     if (!RESTART || !codex) return console.log("skip restartCodex (set RESTART_RUNNER; needs the codex step)");
+    if (claude) {
+      // Run straight after `claude` (a partial run): the later steps need that session after the restart.
+      const c = await page(desktop, claude);
+      await composer(c).waitFor();
+      if (!(await rendered(c)).length) {
+        await send(c, "Reply with exactly: READY");
+        await c.locator(".t-msg.assistant").first().waitFor({ timeout: 120_000 });
+        await idle(c);
+      }
+      await c.close();
+    }
     const a = await page(desktop, codex);
     await composer(a).waitFor();
     await send(a, "Use the shell to run exactly: sleep 20   Then reply with exactly one word: KEPT");

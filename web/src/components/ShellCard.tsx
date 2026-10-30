@@ -31,7 +31,9 @@ export function ShellCard({ msg }: { msg: Msg }) {
   // Where its queued message stands: held (and why), or behind a running turn.
   const held = useStore((s) => {
     const st = s.views[viewKey(runnerId, sessionId)]?.state;
-    return run.state === "queued" && st?.queueHeld ? (st.queueHeldBy ? HELD[st.queueHeldBy] : "paused") : undefined;
+    if (run.state !== "queued" || !st?.queueHeld) return undefined;
+    if (st.restartWait) return "until Claude Code from before the restart finishes";
+    return st.queueHeldBy ? HELD[st.queueHeldBy] : "paused";
   });
   const busy = useStore((s) => run.state === "queued" && (s.views[viewKey(runnerId, sessionId)]?.state?.status ?? "idle") !== "idle");
   const out = useRef<HTMLPreElement>(null);

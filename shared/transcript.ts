@@ -241,6 +241,11 @@ export interface LiveState {
    */
   queueHeld?: boolean;
   queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  /**
+   * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
+   * Resume can't release them until this clears.
+   */
+  restartWait?: boolean;
   /** messages that left the queue lately and how (the last few): sent to the harness, or cancelled */
   queueGone?: { id: string; how: "sent" | "cancelled" }[];
   /**

@@ -176,12 +176,13 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
         if (!/isn't waiting any more/.test((e as Error).message)) throw e;
       }
     });
-  const held = state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
+  // The quiet wait after a restart (SPEC §4): nothing can release it, so no Resume.
+  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
   return (
     <div className="t-queue" aria-label="Queued messages">
       <div className="t-queue-head">
         <span>{state.queue.length === 1 ? "1 message waits" : `${state.queue.length} messages wait`}{held ? ` · ${held}` : " for this turn to end."}</span>
-        {held && state.queueHeldBy !== "terminal" && <Button label="Resume" size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
+        {held && state.queueHeldBy !== "terminal" && !state.restartWait && <Button label="Resume" size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
       </div>
       {error && <div className="t-inline-status error">{error}</div>}
       {lostPanel}
