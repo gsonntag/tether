@@ -50,10 +50,10 @@ test("sessions are created tagged, listed, typed into, and killed", async () => 
   await tmux.type("sh-test-1", " echo colon;");
   await tmux.keys("sh-test-1", "Enter");
   await until(async () => /^semi\ncolon$/m.test(await tmux.capture("sh-test-1")));
-  await tmux.tag("sh-test-1", "return", "1");
-  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.returnWhenIdle).toBe(true);
-  await tmux.tag("sh-test-1", "return", undefined);
-  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.returnWhenIdle).toBeUndefined();
+  await tmux.tag("sh-test-1", "launch", "claude:x0");
+  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.launchedFor).toBe("claude:x0");
+  await tmux.tag("sh-test-1", "launch", undefined);
+  expect((await tmux.list()).find((t) => t.name === "sh-test-1")?.launchedFor).toBeUndefined();
   // Several lines go in as a paste.
   await tmux.type("sh-test-1", "echo one\necho two\n");
   await until(async () => /two\n/.test(await tmux.capture("sh-test-1")));
@@ -114,11 +114,11 @@ test("an option this tmux refuses is skipped and logged; the rest apply and term
   }
 });
 
-test("tags and pastes target a session by its exact name, never a sibling by prefix", async () => {
+test("tags and typing target a session by its exact name, never a sibling by prefix", async () => {
   await tmux.create({ name: "t-claude-y-ab12", cwd: dir, argv: ["sh"], tags: { kind: "tui", session: "claude:y2", project: dir } });
-  await expect(tmux.tag("t-claude-y", "return", "1")).rejects.toThrow();
-  expect((await tmux.list()).find((t) => t.name === "t-claude-y-ab12")?.returnWhenIdle).toBeUndefined();
-  await tmux.type("t-claude-y-ab12", "echo pasted-$((6*7))", true);
+  await expect(tmux.tag("t-claude-y", "launch", "claude:z")).rejects.toThrow();
+  expect((await tmux.list()).find((t) => t.name === "t-claude-y-ab12")?.launchedFor).toBeUndefined();
+  await tmux.type("t-claude-y-ab12", "echo pasted-$((6*7))");
   await tmux.keys("t-claude-y-ab12", "Enter");
   await until(async () => (await tmux.capture("t-claude-y-ab12")).includes("pasted-42"));
   await tmux.kill("t-claude-y-ab12");

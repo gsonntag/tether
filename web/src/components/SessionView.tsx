@@ -9,7 +9,7 @@ import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
-import { SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
+import { backQuestion, SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
 import { SessionHeader } from "./SessionHeader";
@@ -45,6 +45,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   });
   /** the question before handing a busy session to the terminal (SPEC §8) */
   const [ask, setAsk] = useState<{ text: string; confirm: string } | null>(null);
+  /** Back to Tether from the banner (panel closed): asked first, as from the panel */
+  const [askBack, setAskBack] = useState(false);
   // The TUI moved on to another session (/clear, /resume): follow it there, panel and all.
   // Only a move seen while open: one from before (in the first snapshot) is left to the notice.
   const loaded = !!view?.state;
@@ -169,13 +171,26 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           ? "Going back to Tether…"
           : state.status === "waiting"
             ? `Needs you in the terminal${state.terminal?.attention ? `: ${state.terminal.attention}` : "."}`
-            : state.status === "running"
-              ? "Driving in the terminal · working…"
-              : "Driving in the terminal"}
+            : "Driving in the terminal"}
       </span>
       {!panel && <Button label={`Open ${HARNESS_LABELS[summary.harness]}`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
       {!panel && !state.terminal?.returning && (
-        <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => void rpc(runnerId, "endTerminal", { sessionId, whenIdle: state.status !== "idle" }).catch(() => {})} />
+        <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => setAskBack(true)} />
+      )}
+      {!panel && askBack && !state.terminal?.returning && (
+        <div className="t-term-ask" role="group" aria-label="Back to Tether">
+          <span>{backQuestion(HARNESS_LABELS[summary.harness])}</span>
+          <Button
+            label="Close and go back"
+            size="sm"
+            variant="primary"
+            onClick={() => {
+              setAskBack(false);
+              void rpc(runnerId, "endTerminal", { sessionId }).catch(() => {});
+            }}
+          />
+          <Button label="Stay" size="sm" variant="ghost" onClick={() => setAskBack(false)} />
+        </div>
       )}
     </div>
   );
@@ -234,13 +249,10 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             inTerminal={inTerminal}
             disabled={
               offline ??
-              (state.terminal?.returning
-                ? "Going back to Tether…"
-                : inTerminal && (state.status === "waiting" || state.terminal?.attention)
-                  ? `${agent} is asking something in the terminal. Answer it there.`
-                  : undefined)
+              (state.terminal?.returning ? "Going back to Tether…" : undefined)
             }
-            placeholder={inTerminal ? `Type into ${agent} in the terminal` : undefined}
+            // While the TUI drives, a message waits in the queue for Back to Tether (SPEC §8).
+            placeholder={inTerminal ? `${agent} gets this when you go Back to Tether` : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             shell={{ folder: summary.projectPath, heldBy: state.queueHeld ? state.queueHeldBy : undefined }}

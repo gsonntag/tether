@@ -314,11 +314,27 @@ Two processes can't drive the same session at once, so control moves:
 4. The mode becomes `terminal`, the adapter's `watchHistory` feeds the read-only transcript, and the
    browser attaches (below).
 
-**Back to Tether (terminal → live).** A "Back to Tether" button:
-1. If the TUI is mid-turn, it says so and offers to wait.
-2. It sends the TUI its quit sequence (`/exit` + Enter for Claude; Codex's equivalent), then kills the
-   tmux session after 5 seconds.
-3. It resumes the driver on the same `nativeId`. The mode becomes `live`.
+**While the TUI drives, Tether doesn't follow its turns.** The session shows one state, "Driving in
+the terminal": no Working or idle, no turn pushes, no "back when it's done". Tracking the TUI's
+turns from hooks, its store and its screen proved unreliable (an Esc before any output, Claude's own
+input queue, a subagent's hooks, /compact), so Tether doesn't try. What it keeps:
+- **Needs you**, best-effort and add-only: set by the TUI's hooks (`PermissionRequest` the moment a
+  permission prompt or a question shows, `Elicitation`, `Notification`), with what Claude waits for
+  ("Claude needs your permission to use Write", "Claude is asking you something."), and pushed as
+  ever. It clears only on evidence (the TUI's screen shows its prompt again, no dialog, for a few
+  seconds) or when the TUI is left; a hook never clears it.
+- **Settings as last seen**: the mode the hooks last reported; the model and effort chips are
+  disabled ("Set in the terminal (last seen: …)").
+- **Messages wait**: the composer never types into the TUI; what you send goes to Tether's queue,
+  held "terminal", and is sent after Back to Tether.
+
+**Back to Tether (terminal → live).** A "Back to Tether" button always asks first: "Close Claude Code
+in the terminal? If it's still working, that turn stops and anything in its own input queue is
+lost." Then:
+1. It quits the TUI cleanly: `/exit` when it sits at an empty prompt (Tether hides the command and its
+   goodbye in the transcript), else Esc and Ctrl-C; it kills the tmux session after 5 seconds.
+2. It resumes the driver on the same `nativeId` from the store, so whatever the TUI finished shows,
+   with the mode and model as last seen. The mode becomes `live`; the held queue goes out.
 
 If the TUI exits by itself (you typed `/exit`), the mode becomes `stored`.
 
@@ -368,17 +384,19 @@ On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
   by `attachId` and never broadcasts or stores them.
 - **Sizing:** the tether tmux server is set to `window-size latest`, so the device you're typing on
   sets the size. Switching devices reflows. Phone and desktop are treated equally.
-- **Phone:** a key bar above the keyboard (Esc, Tab, ↑, ↓, Ctrl-C, Ctrl-D, Enter) and Tether's
-  composer, which in terminal mode types the text into the PTY followed by Enter (tmux
-  `send-keys -l`). Long replies on a phone don't need the TUI's own input box.
+- **Phone:** a key bar above the keyboard (Esc, Tab, ↑, ↓, Ctrl-C, Ctrl-D, Enter) and a line under
+  it that types its text into the terminal in front, then Enter, as a keyboard would. Tether's
+  composer never types into a handoff TUI (its messages wait for Back to Tether).
 
 ### Requests and notifications in terminal mode
 
 - **Codex (shared):** Tether stays attached to the thread, so requests, status and notifications work
   as in live mode.
 - **Claude (handoff):** approvals are answered **in the terminal**, by the TUI itself. To keep
-  notifications and Home working, the runner launches the TUI with `--settings` adding
-  `Notification` and `Stop` hooks that report to the runner's loopback endpoint ("needs you", "turn ended").
+  "Needs you", its push and Home working, the runner launches the TUI with `--settings` adding hooks
+  that report to the runner's local socket (`PermissionRequest`, `Elicitation`, `Notification`, and
+  `SessionStart` to follow /clear). A runner restart readopts the TUI as "Driving in the terminal";
+  a question visible on its screen is Needs you, nothing else is inferred.
 
 Later, a Claude `PreToolUse` hook can route terminal approvals through the same broker
 (and the judge). That isn't in the core.
@@ -390,7 +408,7 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
 | idle | send | |
 | running (harness can steer) | steer into the running turn | menu: Queue for after this turn, Stop and send now |
 | running (no steer) | queue | |
-| terminal mode | type into the PTY | |
+| terminal mode (handoff) | queue, held until Back to Tether | |
 
 - The **queue** is held on the runner, in order. Any device can edit, reorder or cancel waiting
   messages. Queued messages go out one per turn. Stop keeps the queue, held, until you send.

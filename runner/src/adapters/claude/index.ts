@@ -23,12 +23,8 @@ import { hookSettings } from "../../terminal/hooks";
  */
 export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }];
 
-/**
- * Submitting typed text: Claude's TUI sometimes takes an Enter right after typed text as a newline
- * (seen in a TUI that had just started, every Enter after that too), and any other key first
- * clears that. End is harmless: the cursor is at the end already.
- */
-export const CLAUDE_SUBMIT: QuitStep[] = [{ waitMs: 150 }, { keys: ["End"] }, { waitMs: 100 }, { keys: ["Enter"] }];
+/** Quitting Claude's TUI at its empty prompt: /exit (Tether hides it and its goodbye in the transcript). */
+export const CLAUDE_EXIT: QuitStep[] = [{ text: "/exit" }, { waitMs: 300 }, { keys: ["Enter"] }];
 
 /**
  * A rule of Claude's prompt box: a line of "─", or one carrying a label ("──── kestrel-test ─" after
@@ -54,9 +50,10 @@ const CURSOR_OPTION = /^\s*❯\s*\d+[.)]\s/;
 const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
 
 /**
- * Reads Claude's TUI (verified on 2.1.312, at 40 to 200 columns) for one job: whether the composer
- * may type into it. The status never comes from here (hooks say it); a wrong "no" is safe, a wrong
- * "yes" is not, so only a clearly recognized prompt box counts:
+ * Reads Claude's TUI (verified on 2.1.312, at 40 to 200 columns), conservatively, for two things:
+ * whether a question is up (Needs you after a runner restart; it clears only once the prompt shows
+ * again, SPEC §8), and whether the TUI sits at its plain, empty prompt (Back to Tether quits with
+ * /exit there). Only a clearly recognized prompt box counts:
  * - the box is a "❯" (or "!" in shell mode) line right under a rule, closed by a rule, at the
  *   bottom: under it only the status lines (a few, no rule, no choices, no dialog footer, no "❯").
  *   Its `prompt` says how it is: `normal`, `shell` ("!"), `history` (↑ recalled a prompt), `search`
@@ -109,8 +106,6 @@ export function claudeScreen(screen: string): ScreenRead {
   return { state: busy ? "busy" : "idle", body, input: typed, prompt };
 }
 
-/** Whether the screen shows Claude idle at its prompt (see claudeScreen). */
-export const claudeScreenIdle = (screen: string) => claudeScreen(screen).state === "idle";
 
 /** How often a watched stored session's file is checked for changes. */
 const WATCH_MS = 1000;
@@ -233,6 +228,6 @@ export const claudeAdapter: Adapter = {
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
     if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui));
-    return { argv, quit: CLAUDE_QUIT, submit: CLAUDE_SUBMIT, screen: claudeScreen, paste: true };
+    return { argv, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
   },
 };

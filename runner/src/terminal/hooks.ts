@@ -57,10 +57,10 @@ export interface HookReport {
 }
 
 /**
- * Claude's hooks Tether listens to: the status in terminal mode comes from these alone (SPEC §8).
- * PermissionRequest fires the moment a permission prompt or a question (AskUserQuestion) shows,
- * seconds before Notification; PreToolUse says a tool goes ahead (a question before it was answered).
- * Verified on 2.1.312.
+ * Claude's hooks Tether listens to (SPEC §8). Tether doesn't follow the TUI's turns: these say
+ * "Needs you" (PermissionRequest, the moment a permission prompt or a question shows, seconds before
+ * Notification; Elicitation), follow /clear (SessionStart), and carry the TUI's mode as last seen
+ * (every hook). Verified on 2.1.312.
  */
 export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Elicitation", "Notification", "PostToolUse", "Stop", "StopFailure", "SessionEnd"] as const;
 

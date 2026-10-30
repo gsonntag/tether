@@ -1,6 +1,7 @@
 // Claude's TUI screens as tmux captured them (2.1.312, Haiku): idle at the prompt, working, asking.
 import { expect, test } from "bun:test";
-import { claudeScreen, claudeScreenIdle } from ".";
+import { claudeScreen } from ".";
+const claudeScreenIdle = (s: string) => claudeScreen(s).state === "idle";
 
 const RULE = "─".repeat(73);
 const BOX = `${RULE}\n❯ \n${RULE}\n  Haiku 5.5 | scratch@master | 48k/1m (4%) | effort: med | $0.00 11s | 5h 12%…\n  ⏸ manual mode on · ← 2 agents\n                                                                           /rc\n`;

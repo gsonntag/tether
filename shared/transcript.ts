@@ -210,8 +210,6 @@ export interface TerminalState {
   kind: "handoff" | "shared";
   /** Back to Tether is under way: the TUI was asked to quit */
   returning?: boolean;
-  /** Back to Tether waits for the TUI's turn to end */
-  returnWhenIdle?: boolean;
   /** the TUI is waiting on the person (a permission prompt, a question): what it said */
   attention?: string;
 }

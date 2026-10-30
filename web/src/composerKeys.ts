@@ -4,7 +4,7 @@
 // | idle                       | send         | queue (= send now) | send       |             |
 // | running, the harness steers| steer        | queue       | stop and send now | stop        |
 // | running, no steer          | queue        | queue       | stop and send now | stop        |
-// | terminal (TUI drives)      | send (typed into the TUI) | queue (held for Back to Tether, SPEC §8) |  |
+// | terminal (TUI drives)      | queue (held for Back to Tether, SPEC §8) | queue |  |
 // | shell (the text starts with !) | run the command now, whatever the agent does | — | run |      |
 // Shift+Enter is a newline everywhere; on phones Enter is a newline and buttons send.
 
@@ -26,14 +26,14 @@ export function composerMode(o: { running: boolean; canSteer: boolean; inTermina
 }
 
 /** What Enter (the main button) does in a mode. */
-export const primaryAction = (mode: ComposerMode): Exclude<ComposerAction, "stop" | "stopSend" | null> => (mode === "shell" ? "shell" : mode === "steer" ? "steer" : mode === "queue" ? "queue" : "send");
+export const primaryAction = (mode: ComposerMode): Exclude<ComposerAction, "stop" | "stopSend" | null> => (mode === "shell" ? "shell" : mode === "steer" ? "steer" : mode === "queue" || mode === "terminal" ? "queue" : "send");
 
 export function keyAction(e: { key: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey?: boolean }, mode: ComposerMode, o: { hasText: boolean; phone: boolean }): ComposerAction {
   const busy = mode === "steer" || mode === "queue";
   // A command runs now (Enter or ⌘/Ctrl+Enter); Tab and Esc do nothing special.
   if (mode === "shell") return e.key === "Enter" && !e.shiftKey && o.hasText && (!o.phone || e.metaKey || e.ctrlKey) ? "shell" : null;
   if (e.key === "Enter" && !e.shiftKey) {
-    if (e.metaKey || e.ctrlKey) return !o.hasText ? null : busy ? "stopSend" : "send";
+    if (e.metaKey || e.ctrlKey) return !o.hasText ? null : busy ? "stopSend" : mode === "terminal" ? "queue" : "send";
     if (o.phone) return null;
     return o.hasText ? primaryAction(mode) : null;
   }

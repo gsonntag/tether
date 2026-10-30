@@ -42,6 +42,12 @@ export interface PanelState {
 const narrow = () => typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
 const touch = () => typeof matchMedia === "function" && (matchMedia("(pointer: coarse)").matches || matchMedia("(max-width: 767px)").matches);
 
+/**
+ * Back to Tether, asked every time (SPEC §8): Tether doesn't follow the TUI's turns, so it can't
+ * tell whether one is still running.
+ */
+export const backQuestion = (harness: string) => `Close ${harness} in the terminal? If it's still working, that turn stops and anything in its own input queue is lost.`;
+
 export function TerminalPanel({
   runnerId,
   session,
@@ -148,12 +154,12 @@ export function TerminalPanel({
     onOpenTui();
   };
 
-  const back = (whenIdle: boolean) => {
+  const back = () => {
     setAskBack(false);
     void call(
-      rpc(runnerId, "endTerminal", { sessionId: session.id, whenIdle }).then(() => {
+      rpc(runnerId, "endTerminal", { sessionId: session.id }).then(() => {
         // Back in Tether: the transcript is where to look (unless a shell is in front).
-        if (!whenIdle && panel.tab === "tui") onClose();
+        if (panel.tab === "tui") onClose();
       }),
     );
   };
@@ -165,9 +171,11 @@ export function TerminalPanel({
     // An empty line is just Enter (confirming a choice in the TUI).
     if (!text) return view.current?.input("\r");
     setLine("");
-    // The TUI gets it like the composer's text (tmux types it, then Enter); a shell as keys.
-    if (tab === "tui") await call(rpc(runnerId, "send", { sessionId: session.id, text }));
-    else view.current?.input(`${text}\r`);
+    // Typed into the terminal in front as keys, the way a keyboard would: the text, then (a beat
+    // later, so a TUI doesn't take it as part of a paste) Enter.
+    view.current?.input(text);
+    await new Promise((r) => setTimeout(r, 150));
+    view.current?.input("\r");
   };
 
   const returning = !!state.terminal?.returning;
@@ -176,15 +184,12 @@ export function TerminalPanel({
     tab === "tui"
       ? !tuiRuns
         ? `Open ${harness} first`
-        : state.status === "waiting" || state.terminal?.attention
-          ? "Answer in the terminal (keys above)"
-          : returning
-            ? "Going back to Tether…"
-            : undefined
+        : returning
+          ? "Going back to Tether…"
+          : undefined
       : !shell
         ? "That shell has closed"
         : undefined;
-  const waitingBack = !!state.terminal?.returnWhenIdle;
   const agentState = handoff ? "driving" : state.terminal?.kind === "shared" ? "joined" : undefined;
   const title = tab === "tui" ? harness : shell ? `Shell ${shell.n}` : "Shell";
 
@@ -222,16 +227,16 @@ export function TerminalPanel({
         <div className="t-term-actions">
           {handoff && (
             <Button
-              label={returning ? "Going back…" : waitingBack ? "Back when done…" : "Back to Tether"}
+              label={returning ? "Going back…" : "Back to Tether"}
               size="sm"
               variant="secondary"
-              isDisabled={returning || waitingBack}
-              onClick={() => (state.status === "idle" ? back(false) : setAskBack(true))}
+              isDisabled={returning}
+              onClick={() => setAskBack(true)}
             />
           )}
           {!handoff && state.terminal?.kind === "shared" && (
             // A shared TUI (SPEC §8): quitting it leaves Tether driving, as it was all along.
-            <Button label={returning ? "Quitting…" : `Quit ${harness}`} size="sm" variant="secondary" isDisabled={returning} onClick={() => back(false)} />
+            <Button label={returning ? "Quitting…" : `Quit ${harness}`} size="sm" variant="secondary" isDisabled={returning} onClick={() => back()} />
           )}
           <IconButton
             label="Copy text"
@@ -251,9 +256,8 @@ export function TerminalPanel({
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
-          <span>{agent} is still working in the terminal.</span>
-          <Button label="Go back when it's done" size="sm" variant="primary" onClick={() => back(true)} />
-          <Button label="Stop and go back now" size="sm" variant="secondary" onClick={() => back(false)} />
+          <span>{backQuestion(harness)}</span>
+          <Button label="Close and go back" size="sm" variant="primary" onClick={() => back()} />
           <Button label="Stay" size="sm" variant="ghost" onClick={() => setAskBack(false)} />
         </div>
       )}

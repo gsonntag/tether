@@ -29,12 +29,11 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
- * What terminal mode lends live control (terminal/control.ts sets it): in terminal mode a message is
- * typed into the TUI and Stop presses Esc there (SPEC §8, §9); a new session can start in the TUI.
+ * What terminal mode lends live control (terminal/control.ts sets it): a new session can start in
+ * the TUI, and a handoff (or Back to Tether) under way can be waited for. While a handoff TUI drives,
+ * a message waits in Tether's queue for Back to Tether; Tether types nothing into the TUI (SPEC §8).
  */
 export interface TerminalSeam {
-  send(s: Session, text: string): Promise<void>;
-  interrupt(s: Session): Promise<void>;
   startIn(s: Session): Promise<void>;
   /** a handoff to the TUI, or Back to Tether, under way finishes (whichever way) */
   settled(s: Session): Promise<void> | undefined;
@@ -136,8 +135,8 @@ export class LiveControl {
     // SDK process started beside a TUI, nor to a TUI that is quitting.
     const moving = this.terminal?.settled(s);
     if (moving) await moving;
-    // The TUI drives: the message is typed there (SPEC §9).
-    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, withAttachments(text, attachments));
+    // The TUI drives: the message waits in the queue, held until Back to Tether (SPEC §8, §9).
+    if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
       await this.interrupt(id);
       const until = this.core.now() + 15_000;
@@ -207,7 +206,7 @@ export class LiveControl {
       return parent.driver.steerSubagent(s.summary.nativeId, withAttachments(text, attachments), attachments);
     }
     if (!s.capabilities.canSteer) throw new Error(`${AGENT_NAMES[s.summary.harness]} can't take a message while it works. Wait for it to finish.`);
-    if (s.state.mode === "terminal" && this.terminal) return this.terminal.send(s, withAttachments(text, attachments));
+    if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
     await s.driver.steer(withAttachments(text, attachments), attachments);
   }
@@ -287,7 +286,8 @@ export class LiveControl {
       await parent.driver.stopSubagent(s.summary.nativeId);
       return;
     }
-    if (s.state.mode === "terminal" && this.terminal) return this.terminal.interrupt(s);
+    // The TUI drives: Tether runs nothing to stop there (Esc in the terminal does).
+    if (s.state.mode === "terminal") return;
     // Whatever it asked is moot now (the harness stops waiting too).
     this.desk.stop(id);
     // Stop keeps the queue, held, until you send (SPEC §9).

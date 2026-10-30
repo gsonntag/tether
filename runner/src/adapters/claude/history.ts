@@ -23,6 +23,17 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
   const toolOwner = new Map<string, Msg>();
   let last = 0;
   const at = (uuid: string) => (last = meta.times.get(uuid) ?? last);
+  // Back to Tether quits Claude's TUI with /exit (SPEC §8): the command and its goodbye ("See
+  // ya!") are how Tether left, not part of the conversation.
+  let exiting = false;
+  const exitShown = (m: (typeof list)[number]): boolean => {
+    const msg: any = m.message;
+    const text = typeof msg?.content === "string" ? msg.content : "";
+    if (/^\s*<command-name>\/exit<\/command-name>/.test(text)) return (exiting = true);
+    const goodbye = exiting && /^\s*<local-command-stdout>/.test(text);
+    if (!/^\s*<local-command-caveat>/.test(text)) exiting = false;
+    return goodbye;
+  };
   for (const m of list) {
     try {
       entry(m);
@@ -32,6 +43,7 @@ export function historyMessages(list: Pick<SessionMessage, "type" | "uuid" | "me
     }
   }
   function entry(m: (typeof list)[number]) {
+    if ((m.type === "user" || m.type === "system") && exitShown(m)) return;
     const msg: any = m.message;
     const ts = at(m.uuid);
     if (m.type === "assistant" && Array.isArray(msg?.content) && msg.model === "<synthetic>") {

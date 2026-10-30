@@ -22,8 +22,6 @@ export interface TmuxSession {
   projectPath: string;
   /** shells: their number within the project (Shell 1, Shell 2, …) */
   n?: number;
-  /** tui: Back to Tether waits for the turn to end (kept here so it survives a runner restart) */
-  returnWhenIdle?: boolean;
   /** tui: the session it was launched for, when /clear or /resume moved it on (its hooks still say that one) */
   launchedFor?: string;
   /** what runs in it now (`bash`, `python3`, `claude`) */
@@ -77,7 +75,7 @@ export const SERVER_OPTIONS: string[][] = [
   ["set", "-wg", "fill-character", " "],
 ];
 
-const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}", "#{@tether_return}", "#{@tether_launch}"].join("\t");
+const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}", "#{@tether_launch}"].join("\t");
 
 /**
  * tmux reads an argument ending in ";" as a command separator and drops the ";". Written as "\;" it
@@ -204,7 +202,7 @@ export class Tmux {
     const out: TmuxSession[] = [];
     for (const line of r.stdout.split("\n")) {
       if (!line.trim()) continue;
-      const [name, kind, sessionId, projectPath, n, command, created, ret, launch] = line.split("\t");
+      const [name, kind, sessionId, projectPath, n, command, created, launch] = line.split("\t");
       if (kind !== "tui" && kind !== "shell") continue;
       out.push({
         name: name!,
@@ -214,7 +212,6 @@ export class Tmux {
         ...(n ? { n: Number(n) } : {}),
         ...(command ? { command } : {}),
         ...(created ? { createdAt: Number(created) * 1000 } : {}),
-        ...(ret === "1" ? { returnWhenIdle: true } : {}),
         ...(launch ? { launchedFor: launch } : {}),
       });
     }
@@ -253,13 +250,10 @@ export class Tmux {
     if (keys.length) await this.must(["send-keys", "-t", `=${name}:`, ...keys]);
   }
 
-  /**
-   * Text typed as is: one line with send-keys -l; several, or any with `paste`, as a bracketed
-   * paste (a TUI's dialog ignores a paste, where typed digits would pick its options).
-   */
-  async type(name: string, text: string, paste = false): Promise<void> {
+  /** Text typed as is: one line with send-keys -l; several as a bracketed paste. */
+  async type(name: string, text: string): Promise<void> {
     if (!text) return;
-    if (!paste && !text.includes("\n")) {
+    if (!text.includes("\n")) {
       await this.must(["send-keys", "-t", `=${name}:`, "-l", "--", tmuxArg(text)]);
       return;
     }

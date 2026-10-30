@@ -268,7 +268,7 @@ export const Composer = forwardRef<
   const sendMenu = busyTurn0 && hasContent && !steerOnly && !shellOn;
   const busyTurn = mode === "steer" || mode === "queue";
   const label = primary === "shell" ? "Run" : primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
-  const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? "Send after this turn (Enter)" : "Send (Enter)";
+  const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? (inTerminal ? "Send when you're back from the terminal (Enter)" : "Send after this turn (Enter)") : "Send (Enter)";
   const hint =
     disabled ??
     (busyTurn

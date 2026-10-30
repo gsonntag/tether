@@ -29,7 +29,7 @@ export function registerTerminalOps(ops: OpRegistry, control: TerminalControl | 
     return null;
   });
   ops.register("terminalResize", (a) => (need().resize(str(a.attachId, "attachId"), num(a.cols, 80), num(a.rows, 24)), null));
-  ops.register("endTerminal", async (a) => (await need().end(str(a.sessionId, "sessionId"), a.whenIdle === true), null));
+  ops.register("endTerminal", async (a) => (await need().end(str(a.sessionId, "sessionId")), null));
   ops.register("listShells", async (a) => ({ shells: control ? await control.listShells(str(a.projectPath, "projectPath")) : [] }));
   ops.register("newShell", (a) => need().newShell(str(a.projectPath, "projectPath"), num(a.cols, 80), num(a.rows, 24)));
   ops.register("closeShell", async (a) => (await need().closeShell(str(a.shellId, "shellId")), null));

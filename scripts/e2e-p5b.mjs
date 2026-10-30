@@ -665,6 +665,8 @@ const steps = {
     if (!/when you go Back to Tether/.test(hint)) fail(`the hint in terminal mode: ${hint}`);
     await composer(p).fill("");
     await button(p.locator(".t-term-panel"), "Back to Tether").click();
+    // It asks first (Tether doesn't follow the TUI's turns).
+    await button(p.locator(".t-term-ask", { hasText: "Close Claude Code in the terminal?" }), "Close and go back").click();
     await waitState(p, (s) => s.mode === "live" && !s.terminal, "back in Tether", 60_000);
     // Back from a shell tab, then busy with a message queued: the agent's tab asks first again.
     await send(p, SLOW);

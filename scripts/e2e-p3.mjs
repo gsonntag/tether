@@ -10,7 +10,9 @@
 //   HTTP_PORT       a free port for the shell's dev server (default 8899)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new keep midturn model phone composer back restart needsyou esc clear shell exit fresh
+//   new keep midturn model phone queue needsyou back restart clear shell exit fresh
+// While Claude's TUI drives, Tether doesn't follow its turns (SPEC §8): one state, "Driving in the
+// terminal", and Needs you from its hooks; the composer queues for Back to Tether, which asks first.
 // Each real turn is small (Haiku).
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -161,6 +163,18 @@ const restart = async () => {
   execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
 };
 const transcriptText = (p) => p.locator(".t-scroll").innerText();
+/** Back to Tether from the panel: it asks first (Tether can't tell whether a turn runs), then closes. */
+const backToTether = async (p) => {
+  await button(p.locator(".t-term-panel"), "Back to Tether").click();
+  const ask = p.locator(".t-term-ask", { hasText: "If it's still working, that turn stops" });
+  await ask.waitFor({ timeout: 10_000 });
+  const text = await ask.innerText();
+  if (!/Close Claude Code in the terminal\?/.test(text) || !/input queue is lost/.test(text)) fail(`the question says: ${text}`);
+  await button(ask, "Close and go back").click();
+  await waitState(p, (s) => s.mode === "live" && !s.terminal, "live again after Back to Tether", 30_000);
+};
+/** What the TUI shows, scrollback included (tmux's own view). */
+const tuiText = (name) => tmux("capture-pane", "-p", "-J", "-S", "-", "-t", `=${name}:`).stdout;
 
 const steps = {
   async new() {
@@ -295,31 +309,37 @@ const steps = {
     await d.close();
   },
 
-  async composer() {
-    // The composer types into the TUI; the read-only transcript follows the store.
+  async queue() {
+    // While the TUI drives, the composer never types into it: a message waits in Tether's queue,
+    // held for Back to Tether. No Working/idle either: one state, "Driving in the terminal".
     const p = await page(desktop, session);
     await composer(p).waitFor();
+    if (!/when you go Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the composer doesn't say it waits for Back to Tether");
     await send(p, "What is the code word? Reply with just the word, in lowercase.");
-    await waitState(p, (s) => s.status === "running" && s.mode === "terminal", "running (UserPromptSubmit hook)", 30_000);
-    await p.locator(".t-term-banner", { hasText: "working" }).waitFor({ timeout: 10_000 });
-    await waitState(p, (s) => s.status === "idle" && s.mode === "terminal", "idle again (Stop hook)", 90_000);
-    await p.getByText("pelican", { exact: true }).first().waitFor({ timeout: 30_000 });
-    ok("the composer typed into the TUI; hooks reported running then idle; the transcript (tailed from the store) shows Claude's answer");
+    await waitState(p, (s) => s.queue.length === 1 && s.queueHeld && s.queueHeldBy === "terminal", "queued, held for the terminal", 15_000);
+    await p.locator(".t-queue", { hasText: "What is the code word?" }).first().waitFor({ timeout: 10_000 });
+    await sleep(2000);
+    if (/What is the code word\?/.test(tuiText(tuiName()))) fail("the composer's text reached the TUI");
+    const st = await liveState(p);
+    if (st.status !== "idle") fail(`status ${st.status} while the TUI drives`);
+    await p.locator(".t-term-banner", { hasText: /^Driving in the terminal$/ }).waitFor({ timeout: 5_000 });
+    ok("the composer's message waits in the queue, held for Back to Tether; nothing reached the TUI; the banner says Driving in the terminal");
     await p.close();
   },
 
+
   async back() {
-    // Acceptance: back to Tether, and the next message continues the same conversation.
+    // Back to Tether asks first, closes the TUI (/exit at its empty prompt), resumes the session from
+    // Claude's store; the queued message goes then, and the conversation continues.
     const p = await page(desktop, session);
     await openPanel(p);
     await waitState(p, (s) => s.mode === "terminal", "terminal mode", 30_000);
     await waitScreen(p, sessionId(), /❯/, "the TUI");
-    const exits = (s) => (s.match(/Bye!/g) ?? []).length;
-    const before = exits(await transcriptText(p));
-    await button(p.locator(".t-term-panel"), "Back to Tether").click();
-    await waitState(p, (s) => s.mode === "live" && !s.terminal, "live again after Back to Tether", 30_000);
+    await backToTether(p);
     if (tmux("has-session", "-t", `=${tuiName()}`).status === 0) fail("the TUI's tmux session is still there");
-    await composer(p).waitFor();
+    // The message queued while the TUI drove goes now.
+    await p.getByText("pelican", { exact: true }).first().waitFor({ timeout: 90_000 });
+    await idle(p);
     if ((await composer(p).getAttribute("placeholder")) !== "Message") fail("the composer still says terminal");
     await send(p, "Which code word did I give you, and what did you answer in lowercase last? Reply in one short line.");
     await turn(p);
@@ -327,11 +347,12 @@ const steps = {
     const last = t.slice(t.lastIndexOf("Which code word"));
     if (!/PELICAN/i.test(last)) fail(`the reply after Back to Tether doesn't know the code word:\n${last}`);
     if (decodeURIComponent(p.url().split("/").pop()) !== sessionId()) fail("the session id changed");
-    if (exits(t) > before) fail("quitting the TUI left /exit in the transcript");
+    if (/^\/exit$/m.test(t) || /See ya!|Bye!|Goodbye!/.test(t)) fail("quitting the TUI left /exit or its goodbye in the transcript");
     await shot(p, "back-desktop");
-    ok(`Back to Tether: the TUI quit, the session is live again on the same id, and the next message continues the conversation ("${last.split("\n").slice(-1)[0].slice(0, 80)}")`);
+    ok(`Back to Tether asked first, closed the TUI cleanly (no /exit in the transcript), sent the queued message, and the conversation continues ("${last.split("\n").slice(-1)[0].slice(0, 80)}")`);
     await p.close();
   },
+
 
   async restart() {
     // Acceptance: the terminal survives a runner restart.
@@ -347,31 +368,31 @@ const steps = {
     await p.locator(".t-term-status").waitFor({ timeout: 15_000 });
     await p.locator(".t-term-status").waitFor({ state: "detached", timeout: 60_000 });
     await waitScreen(p, sessionId(), /survives-restart/, "the TUI after the runner restart", 60_000);
-    await p.locator(`.t-composer textarea[placeholder*="in the terminal"]`).waitFor({ timeout: 30_000 });
+    await p.locator(`.t-composer textarea[placeholder*="Back to Tether"]`).waitFor({ timeout: 30_000 });
     const pid2 = tmux("display", "-p", "-t", `=${tuiName()}:`, "#{pane_pid}").stdout.trim();
     if (pid !== pid2) fail(`the TUI process changed: ${pid} -> ${pid2}`);
     await waitState(p, (s) => s.mode === "terminal" && s.terminal?.kind === "handoff", "still terminal mode after the restart", 30_000);
-    // Typing still works, and hooks reach the new runner.
+    // No status inferred: Driving in the terminal. The TUI still works; the transcript follows it.
+    if ((await liveState(p)).status !== "idle") fail("a status was inferred after the restart");
     await p.locator(".t-term-box").click();
     for (let i = 0; i < "survives-restart".length; i++) await p.keyboard.press("Backspace");
-    await send(p, "Reply with just the word restarted.");
-    await waitState(p, (s) => s.status === "idle", "idle", 90_000);
+    await typeInTerm(p, "Reply with just the word restarted.");
     await p.getByText("restarted", { exact: true }).first().waitFor({ timeout: 60_000 });
-    ok("the runner restarted: the same TUI process is still there, the view reattached and redrew, the session stayed in terminal mode, and hooks reach the new runner");
+    ok("the runner restarted: the same TUI process is still there, the view reattached and redrew, the session stayed Driving in the terminal, and the transcript follows the TUI");
     await p.close();
   },
 
   async needsyou() {
-    // Hooks: Claude asking in the TUI shows as "Needs you" in rows and the banner.
+    // Hooks: Claude asking in the TUI shows as "Needs you" in rows and the banner; it clears once the
+    // TUI shows its prompt again (answered there), never on a hook alone.
     rmSync(`${SCRATCH}/needs.txt`, { force: true });
     const p = await page(desktop, session);
-    await composer(p).waitFor();
-    await send(p, "Create a file needs.txt containing hi, using the Write tool. Do nothing else.");
-    await waitState(p, (s) => s.status === "waiting", "waiting (Notification hook)", 90_000);
-    await p.locator(".t-term-banner.waiting", { hasText: "Needs you in the terminal" }).waitFor();
+    await openPanel(p);
+    await waitScreen(p, sessionId(), /❯/, "the TUI");
+    await typeInTerm(p, "Create a file needs.txt containing hi, using the Write tool. Do nothing else.");
+    await waitState(p, (s) => s.status === "waiting", "waiting (PermissionRequest hook)", 90_000);
+    await p.locator(".t-term-banner.waiting", { hasText: "Needs you in the terminal: Claude needs your permission to use Write" }).waitFor();
     await p.locator(".t-row .t-needs").first().waitFor({ timeout: 10_000 });
-    // Text from the composer would answer the dialog: it's refused until the dialog is answered.
-    await p.locator('textarea[placeholder*="asking something in the terminal"]').waitFor({ timeout: 5_000 });
     const ph = await page(phone, session);
     await ph.locator(".t-term-banner.waiting").waitFor({ timeout: 20_000 });
     await shot(p, "needsyou-desktop");
@@ -380,44 +401,23 @@ const steps = {
     await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code" }).tap();
     await waitScreen(ph, sessionId(), /Do you want to|needs\.txt/, "the TUI's permission dialog on the phone");
     await ph.getByRole("button", { name: "Enter", exact: true }).tap();
-    await waitState(p, (s) => s.status === "idle", "idle after approving in the TUI", 90_000);
+    await waitState(p, (s) => s.status === "idle" && !s.terminal?.attention, "Needs you cleared after answering in the TUI", 60_000);
+    for (let i = 0; i < 40 && !existsSync(`${SCRATCH}/needs.txt`); i++) await sleep(500);
     if (!existsSync(`${SCRATCH}/needs.txt`)) fail("needs.txt wasn't written");
-    ok("Claude's permission prompt in the TUI showed as Needs you (row, banner, phone); approved with the phone's ⏎ key, the turn finished and the row cleared");
+    ok("Claude's permission prompt in the TUI showed as Needs you (row, banner with what for, phone); approved with the phone's ⏎ key, Needs you cleared once the prompt showed again");
     await ph.close();
     await p.close();
   },
 
-  async esc() {
-    // Turns that end without a Stop hook: Esc in the TUI mid-turn, and a permission prompt refused.
-    const p = await page(desktop, session);
-    await openPanel(p);
-    await waitState(p, (s) => s.mode === "terminal" && s.status === "idle", "terminal mode, idle", 60_000);
-    await send(p, "Count from 1 to 400, one number per line, nothing else.");
-    await waitState(p, (s) => s.status === "running", "running", 30_000);
-    await sleep(1500);
-    await p.locator(".t-term-box").click();
-    await p.keyboard.press("Escape");
-    const t0 = Date.now();
-    await waitState(p, (s) => s.status === "idle" && !s.terminal?.attention, "idle after Esc in the TUI", 40_000);
-    const a = Date.now() - t0;
-    rmSync(`${SCRATCH}/refused.txt`, { force: true });
-    await send(p, "Create a file refused.txt containing hi, using the Write tool. Do nothing else.");
-    await waitState(p, (s) => s.status === "waiting", "waiting on the permission prompt", 90_000);
-    await p.locator(".t-term-box").click();
-    await p.keyboard.press("Escape");
-    const t1 = Date.now();
-    await waitState(p, (s) => s.status === "idle" && !s.terminal?.attention, "idle after refusing in the TUI", 40_000);
-    if (existsSync(`${SCRATCH}/refused.txt`)) fail("refused.txt was written");
-    ok(`Esc mid-turn in the TUI went idle in ${(a / 1000).toFixed(1)}s; a refused permission prompt went idle in ${((Date.now() - t1) / 1000).toFixed(1)}s, Needs you cleared (no Stop hook for either)`);
-    await p.close();
-  },
+
+
 
   async clear() {
     // /clear in the TUI: Tether follows the new session; the old one points on to it.
     const old = sessionId();
     const p = await page(desktop, session);
     await openPanel(p);
-    await waitState(p, (s) => s.mode === "terminal" && s.status === "idle", "terminal mode, idle", 60_000);
+    await waitState(p, (s) => s.mode === "terminal" && s.status === "idle", "terminal mode", 60_000);
     await waitScreen(p, old, /❯/, "the TUI");
     await typeInTerm(p, "/clear");
     await p.waitForFunction((o) => decodeURIComponent(location.hash.split("/").pop()) !== o, old, { timeout: 30_000 });
@@ -425,8 +425,8 @@ const steps = {
     tuiOf = `t-${old.replace(/[^A-Za-z0-9_-]/g, "-")}`;
     await waitState(p, (s) => s.mode === "terminal", "the new session in terminal mode", 30_000);
     await p.locator(".t-term-panel").waitFor();
-    await send(p, "Reply with just the word fresh.");
-    await waitState(p, (s) => s.status === "idle", "idle", 90_000);
+    await sleep(2000);
+    await typeInTerm(p, "Reply with just the word fresh.");
     await p.getByText(/^fresh\.?$/i).first().waitFor({ timeout: 60_000 });
     const q = await page(desktop, session);
     await q.locator(".t-msg.notice", { hasText: "continued in another session after /clear" }).last().waitFor({ timeout: 20_000 });
@@ -512,11 +512,11 @@ const steps = {
     await waitScreen(p, id, /Claude Code v\d/, "the new session's TUI");
     const argv = tmux("display", "-p", "-t", `=t-${id.replace(/[^A-Za-z0-9_-]/g, "-")}:`, "#{pane_start_command}").stdout;
     if (!argv.includes(`--session-id ${id.split(":")[1]}`)) fail(`TUI command: ${argv}`);
-    await send(p, "Remember the word OTTER. Reply with just OK.");
-    await waitState(p, (s) => s.status === "idle" && s.mode === "terminal", "idle", 90_000);
+    await waitScreen(p, id, /❯/, "the new session's prompt");
+    await typeInTerm(p, "Remember the word OTTER. Reply with just OK.");
     await p.getByText("OK", { exact: true }).first().waitFor({ timeout: 60_000 });
-    await button(p.locator(".t-term-panel"), "Back to Tether").click();
-    await waitState(p, (s) => s.mode === "live", "live", 30_000);
+    await sleep(1500);
+    await backToTether(p);
     await send(p, "Which word did I ask you to remember? Reply with just the word.");
     await turn(p);
     const t = await transcriptText(p);

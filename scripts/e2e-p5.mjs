@@ -464,6 +464,8 @@ const steps = {
     const held = await liveState(a);
     if (held.queue.length !== 2 || held.queueHeldBy !== "terminal") fail(`the queue in the terminal: ${JSON.stringify(held.queue.map((m) => m.text))} ${held.queueHeldBy}`);
     await button(a, "Back to Tether").first().click();
+    // It asks first (Tether doesn't follow the TUI's turns).
+    await button(a.locator(".t-term-ask", { hasText: "Close Claude Code in the terminal?" }), "Close and go back").click();
     await waitState(a, (s) => s.mode === "live" && s.queue.length <= 1, "back live and the queue going out", 90_000);
     await a.locator(".t-msg.user .t-bubble", { hasText: "AFTER-TERMINAL" }).waitFor({ timeout: 30_000 });
     await waitState(a, (s) => s.queue.length === 0 && s.status === "idle", "both held messages sent", 180_000);

@@ -77,21 +77,21 @@ export function SessionHeader({
             <ChoiceMenu
               name="Model"
               value={state.model}
-              // While the TUI drives, its /model is what runs and Tether doesn't hear it: not a stale value.
-              label={locked ? "Set in the terminal" : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
+              // While the TUI drives, its /model is what runs: Tether shows the last it knew.
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model)}
               disabled={locked}
               choices={(models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
               onOpen={ensureModels}
               onPick={(model) => void call(rpc(runnerId, "setModel", { sessionId: session.id, model }))}
             />
             {(efforts.length > 0 || state.effort) && (
-              <ChoiceMenu name="Effort" value={state.effort} label={locked ? "Set in the terminal" : nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
+              <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
             <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
               // While Claude's TUI drives, its mode comes from its hooks: the last one it reported.
-              label={locked ? `${permissionModeLabel(state.permissionMode)} (last seen)` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
+              label={locked ? `Set in the terminal (last seen: ${permissionModeLabel(state.permissionMode)})` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode)}
               disabled={locked}
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}

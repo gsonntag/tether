@@ -8,7 +8,9 @@ test("Enter sends when idle, steers when the harness can, else queues", () => {
   expect(keyAction(k("Enter"), composerMode({ running: false, canSteer: true, inTerminal: false }), desk)).toBe("send");
   expect(keyAction(k("Enter"), composerMode({ running: true, canSteer: true, inTerminal: false }), desk)).toBe("steer");
   expect(keyAction(k("Enter"), composerMode({ running: true, canSteer: false, inTerminal: false }), desk)).toBe("queue");
-  expect(keyAction(k("Enter"), composerMode({ running: true, canSteer: true, inTerminal: true }), desk)).toBe("send");
+  // While the TUI drives nothing is typed into it: Enter (and ⌘/Ctrl+Enter) queue for Back to Tether.
+  expect(keyAction(k("Enter"), composerMode({ running: true, canSteer: true, inTerminal: true }), desk)).toBe("queue");
+  expect(keyAction(k("Enter", { metaKey: true }), "terminal", desk)).toBe("queue");
   expect(keyAction(k("Enter", { shiftKey: true }), "steer", desk)).toBeNull();
   expect(keyAction(k("Enter"), "idle", { ...desk, hasText: false })).toBeNull();
 });

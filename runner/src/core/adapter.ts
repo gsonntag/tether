@@ -183,14 +183,12 @@ export interface TerminalLaunch {
   env?: Record<string, string>;
   /** how to ask the TUI to quit (Back to Tether); the core kills it if it hasn't after a while */
   quit?: QuitStep[];
-  /** what submits typed text (the composer in terminal mode); default: Enter */
-  submit?: QuitStep[];
+  /** a clean way to quit when the TUI sits at its plain, empty prompt (Claude: /exit) */
+  quitAtPrompt?: QuitStep[];
   /**
-   * Reads the TUI's screen (tmux capture-pane), to decide whether the composer may type into it
-   * (only its plain, empty prompt). It never sets the status; after a runner restart it may only
-   * keep a session from passing for idle, or add Needs you for a question on screen.
+   * Reads the TUI's screen (tmux capture-pane). Tether doesn't follow the TUI's turns; the screen
+   * only says whether a question is up (Needs you after a runner restart; it clears once the prompt
+   * shows again) and whether the TUI sits at an empty prompt (a clean quit).
    */
   screen?: (screen: string) => ScreenRead;
-  /** type the composer's text as a bracketed paste (a dialog that opens meanwhile ignores it) */
-  paste?: boolean;
 }
