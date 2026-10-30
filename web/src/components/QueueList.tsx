@@ -2,6 +2,7 @@
 // edited, moved up or cancelled. A held queue says why and offers Resume (or waits for Back to
 // Tether while the terminal drives).
 
+import { undefang } from "../../../shared/fromTether";
 import { useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
@@ -118,7 +119,7 @@ export function QueueList({ runnerId, sessionId, state }: { runnerId: string; se
                       Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
                     </>
                   ) : (
-                    m.text || <em>No text</em>
+                    undefang(m.text) || <em>No text</em>
                   )}
                   {m.truncated && !m.shell ? "…" : null}
                   {m.attachments?.length ? <span className="t-queued-files"> · {m.attachments.length === 1 ? m.attachments[0]!.name : `${m.attachments.length} files`}</span> : null}

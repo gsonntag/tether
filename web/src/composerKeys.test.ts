@@ -56,3 +56,9 @@ test("the shell hint says when the output reaches the agent, whatever holds the 
   expect(shellWhen("Codex", { running: false, inTerminal: false, heldBy: "stopped" })).toMatch(/waits in the queue, paused after Stop/);
   expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restart" })).toMatch(/paused after a restart/);
 });
+
+test("in the terminal with the queue paused after Stop, the hint says it's paused", async () => {
+  const { shellWhen } = await import("./composerKeys");
+  expect(shellWhen("Claude", { running: false, inTerminal: true, heldBy: "stopped" })).toMatch(/paused after Stop/);
+  expect(shellWhen("Claude", { running: false, inTerminal: true, heldBy: "terminal" })).toMatch(/Back to Tether/);
+});

@@ -3,11 +3,11 @@ import { Button } from "@astryxdesign/core/Button";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
+import { AGENT_NAMES } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
-import { handoffPrompt } from "../terminal";
+import { handoffPrompt, terminalChoices } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
 import { SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
@@ -100,7 +100,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   const state = view.state;
   const inTerminal = state.mode === "terminal";
-  const harnessLabel = HARNESS_LABELS[summary.harness];
   const agent = AGENT_NAMES[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
   const waiting = state.requests.length > 0;
@@ -117,7 +116,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const openTerminal = (stop = false) => {
     setAsk(null);
     const handsOff = !shared && !inTerminal && !state.terminal;
-    const q = handsOff && !stop ? handoffPrompt(state.status !== "idle" || waiting, state.queue.length) : null;
+    const q = handsOff && !stop ? handoffPrompt(state.status !== "idle" || waiting, state.queue.length, !!state.queueHeld && state.queueHeldBy !== "terminal") : null;
     if (q) {
       setPanel((p) => (p ? { ...p, tab: "tui", hidden: false } : p));
       return setAsk(q);
@@ -130,6 +129,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setPanel((p) => ({ tab: SHELL_TAB, wantTui: !!p?.wantTui, nonce: (p?.nonce ?? 0) + 1 }));
   };
   const panelShown = !!panel && !panel.hidden;
+  const choices = terminalChoices(agent, { shared, handedOff: inTerminal, joined: !inTerminal && state.terminal?.kind === "shared" });
   const terminalChip =
     !summary.parentSessionId &&
     (panel ? (
@@ -147,12 +147,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           </button>
         )}
       >
-        <DropdownMenuItem label="Shell" description={`A shell in this folder, beside the chat. ${agent} stays driven from here.`} onClick={openShell} />
-        <DropdownMenuItem
-          label={`${agent} terminal`}
-          description={shared ? `${agent}'s own terminal UI, joined to this session. Tether keeps driving it too.` : `${agent}'s own terminal UI. It drives ${agent} until you go Back to Tether.`}
-          onClick={() => openTerminal()}
-        />
+        <DropdownMenuItem label="Shell" description={choices.shell} onClick={openShell} />
+        <DropdownMenuItem label={`${agent} terminal`} description={choices.tui} onClick={() => openTerminal()} />
       </DropdownMenu>
     ));
   const isChild = !!summary.parentSessionId;
@@ -185,7 +181,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               ? "Driving in the terminal · working…"
               : "Driving in the terminal"}
       </span>
-      {!panel && <Button label="Open terminal" size="sm" variant="secondary" onClick={() => openTerminal()} />}
+      {!panel && <Button label={`Open ${agent} terminal`} size="sm" variant="secondary" onClick={() => openTerminal()} />}
       {!panel && !state.terminal?.returning && (
         <Button label="Back to Tether" size="sm" variant="secondary" onClick={() => void rpc(runnerId, "endTerminal", { sessionId, whenIdle: state.status !== "idle" }).catch(() => {})} />
       )}
@@ -252,7 +248,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
                   ? `${agent} is asking something in the terminal. Answer it there.`
                   : undefined)
             }
-            placeholder={inTerminal ? `Type into ${harnessLabel} in the terminal` : undefined}
+            placeholder={inTerminal ? `Type into ${agent} in the terminal` : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             shell={{ folder: summary.projectPath, heldBy: state.queueHeld ? state.queueHeldBy : undefined }}

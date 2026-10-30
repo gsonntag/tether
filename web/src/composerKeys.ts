@@ -54,7 +54,8 @@ const HELD_HINT: Record<string, string> = {
  * queue, so it follows whatever holds the queue.
  */
 export function shellWhen(agent: string, o: { running: boolean; inTerminal: boolean; heldBy?: string }): string {
+  // A queue paused (after Stop, …) stays paused through a terminal round trip: that comes first.
+  if (o.heldBy && o.heldBy !== "terminal") return `the output waits in the queue, ${HELD_HINT[o.heldBy] ?? "paused"} (Resume or send something to let it go)`;
   if (o.inTerminal || o.heldBy === "terminal") return `the output goes to ${agent} when you go Back to Tether`;
-  if (o.heldBy) return `the output waits in the queue, ${HELD_HINT[o.heldBy] ?? "paused"} (Resume or send something to let it go)`;
   return `the output goes to ${agent} ${o.running ? "when this turn ends" : "when it finishes"}`;
 }

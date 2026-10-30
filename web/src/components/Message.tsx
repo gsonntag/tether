@@ -10,6 +10,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
+import { undefang } from "../../../shared/fromTether";
 import { useFullParts, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
@@ -130,7 +131,9 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
     const hasImages = parts.some((p) => p.type === "image");
     const shownParts = parts.map((p) => {
       if (p.type !== "text") return p;
-      const split = splitAttachments(p.text);
+      // What a person typed that began like one of Tether's own messages carries an invisible mark
+      // (shared/fromTether.ts defang): never shown, never copied.
+      const split = splitAttachments(undefang(p.text));
       files.push(...split.files);
       return { ...p, text: split.text };
     });

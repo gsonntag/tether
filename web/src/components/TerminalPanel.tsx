@@ -169,7 +169,7 @@ export function TerminalPanel({
   const lineOff =
     tab === "tui"
       ? !tuiRuns
-        ? `Open ${harness} first`
+        ? `Open the ${agent} terminal first`
         : state.status === "waiting" || state.terminal?.attention
           ? "Answer in the terminal (keys above)"
           : returning
@@ -190,7 +190,9 @@ export function TerminalPanel({
       : shell
         ? handoff
           ? `Shell ${shell.n} · a plain shell in this folder. ${agent} is still driven from the ${agent} terminal tab until Back to Tether.`
-          : `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat still drives ${agent}.`
+          : state.terminal?.kind === "shared"
+            ? `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat and the ${agent} terminal tab both drive ${agent}.`
+            : `Shell ${shell.n} · a plain shell in this folder. It doesn't touch ${agent}: the chat still drives ${agent}.`
         : undefined;
 
   return (
@@ -252,7 +254,7 @@ export function TerminalPanel({
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
-          <span>{harness} is still working in the terminal.</span>
+          <span>{agent} is still working in the terminal.</span>
           <Button label="Go back when it's done" size="sm" variant="primary" onClick={() => back(true)} />
           <Button label="Stop and go back now" size="sm" variant="secondary" onClick={() => back(false)} />
           <Button label="Stay" size="sm" variant="ghost" onClick={() => setAskBack(false)} />
@@ -318,7 +320,7 @@ export function TerminalPanel({
             <input
               className="t-input"
               aria-label="Type a line"
-              placeholder={lineOff ?? (tab === "tui" ? `Message ${harness} in the terminal` : "A command for this shell")}
+              placeholder={lineOff ?? (tab === "tui" ? `Message ${agent} in the terminal` : "A command for this shell")}
               disabled={!!lineOff}
               value={line}
               enterKeyHint="send"

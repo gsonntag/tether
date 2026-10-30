@@ -336,8 +336,9 @@ export const Composer = forwardRef<
               aria-label="Shell command"
               aria-pressed={shellOn}
               title={shellOn ? "Back to a message (removes the !)" : "Run a shell command (or start with !)"}
-              // Keeps the phone keyboard up.
-              onPointerDown={(e) => e.preventDefault()}
+              // Keeps focus in the box with a mouse; a tap (iOS Safari) must not be cancelled, or the
+              // click never comes: the box is focused again in the click instead.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={toggle}
             >
               <CommandLineIcon aria-hidden />
