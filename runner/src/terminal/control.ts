@@ -183,7 +183,10 @@ export class TerminalControl {
       if (!sh) throw new Error(TERMINAL_CLOSED);
       target = sh.name;
     } else if (a.sessionId) {
-      const s = await this.o.core.open(a.sessionId);
+      const opened = await this.o.core.open(a.sessionId);
+      // A new session whose id can't start again: its views follow on, panel and all (SessionView).
+      const s = await this.o.live.current(opened);
+      if (s !== opened) opened.setState({ continuedIn: s.id });
       if (s.summary.parentSessionId) throw new Error("A subagent runs inside its main session. Open the main session's terminal.");
       if (a.reattach && (!this.tuis.has(s.id) || this.returning.has(s.id))) throw new Error(TERMINAL_CLOSED);
       await this.enter(s, { stop: a.stop, cols: a.cols, rows: a.rows });
@@ -461,8 +464,7 @@ export class TerminalControl {
       // Messages wait in its queue: it stays, to go on when you send.
       if (s.state.queue.length) return;
       // Nothing was ever typed: nothing of it is in any store, or only local commands (/exit).
-      this.o.core.book.remove([s.id]);
-      this.o.core.sessions.delete(s.id);
+      this.o.core.dropFresh(s);
       return;
     }
     this.o.core.tail(s);
@@ -699,8 +701,7 @@ export class TerminalControl {
     this.o.live.setMode(old, "stored", { status: "idle", terminal: undefined, continuedIn: newId });
     // A TUI nobody used, then /clear: the old session never started (views follow continuedIn).
     if ((await this.settleFresh(old)) && !old.state.queue.length) {
-      core.book.remove([old.id]);
-      core.sessions.delete(old.id);
+      core.dropFresh(old);
       return;
     }
     core.tail(old);

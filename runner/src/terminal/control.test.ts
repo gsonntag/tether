@@ -285,6 +285,15 @@ describe("handoff (Claude)", () => {
     expect(state(core, "claude:s1").mode).toBe("terminal");
   });
 
+  test("a new session nobody used, back from memory: its terminal starts under its own id", async () => {
+    const { adapter, core, live, term } = setup();
+    const { sessionId: id } = await live.newSession({ harness: "claude", projectPath: tmpdir(), model: "haiku" });
+    await (live as any).close(core.sessions.get(id));
+    expect(core.sessions.has(id)).toBe(false);
+    await term.open({ sessionId: id, attachId: "a1", cols: 80, rows: 24 });
+    expect(adapter.launches[0]!.opts).toMatchObject({ fresh: true, model: "haiku" });
+  });
+
   test("a new session can start in the terminal under its own id", async () => {
     const { adapter, core, live, tmux, term, rows } = setup();
     const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));

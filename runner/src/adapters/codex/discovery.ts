@@ -2,6 +2,7 @@
 // Codex's TUI, by `codex exec`, by Tether or any other client all show up, with their history.
 // Read-only: listing and reading never loads a thread.
 
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
@@ -134,6 +135,12 @@ async function readThreadNow(nativeId: string): Promise<any | undefined> {
 export async function codexSessionInfo(nativeId: string): Promise<SessionSummary | undefined> {
   const t = await readThread(nativeId);
   return t ? summaryOf(t) : undefined;
+}
+
+/** The daemon knows the thread (it stays loaded) but nothing of it is on disk: it can't be joined. */
+export async function codexNoStore(nativeId: string): Promise<boolean> {
+  const path = (await readThread(nativeId))?.path;
+  return typeof path !== "string" || !existsSync(path);
 }
 
 export async function codexSubagents(nativeId: string): Promise<SessionSummary[]> {

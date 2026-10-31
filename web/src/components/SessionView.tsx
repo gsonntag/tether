@@ -5,7 +5,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
-import { openSession } from "../route";
+import { openSession, replaceSession } from "../route";
 import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -64,13 +64,18 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     if (!drives) setAskBack(false);
   }, [drives]);
   // The TUI moved on to another session (/clear, /resume): follow it there, panel and all.
-  // Only a move seen while open: one from before (in the first snapshot) is left to the notice.
+  // Only a move seen while open: one from before (in the first snapshot) is left to the notice,
+  // unless the session is empty (a new one that went on under a new id): nothing to stay for.
   const loaded = !!view?.state;
   const continuedIn = view?.state?.continuedIn;
   const seenContinued = useRef<string | undefined | null>(null);
   useEffect(() => {
     if (!loaded) return;
-    if (seenContinued.current === null) return void (seenContinued.current = continuedIn);
+    if (seenContinued.current === null) {
+      seenContinued.current = continuedIn;
+      if (!continuedIn || view?.window?.messages.length) return;
+      return replaceSession(runnerId, continuedIn);
+    }
     if (!continuedIn || continuedIn === seenContinued.current) return;
     seenContinued.current = continuedIn;
     if (panel) openTerminalOf(runnerId, continuedIn);

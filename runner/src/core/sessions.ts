@@ -239,15 +239,25 @@ export class SessionCore {
     const parsed = parseSessionId(id);
     if (!parsed) throw new Error("That isn't a session id.");
     const a = this.adapter(parsed.harness);
-    const row = this.book.get(id) ?? (await a.sessionInfo(parsed.nativeId).catch(() => undefined));
-    if (!row) throw new Error("That session isn't on this runner any more.");
+    const known = this.book.get(id) ?? (await a.sessionInfo(parsed.nativeId).catch(() => undefined));
     const prefs = this.o.prefs.get(id);
+    // A new session that never got a message: nothing of it is stored (a harness may still know its
+    // id). Prefs alone don't say so: a stored session whose store was deleted stays gone.
+    const blank = !!prefs.projectPath && (!!prefs.movedTo || (!!prefs.blank && (!known || !!(await a.noStore?.(parsed.nativeId).catch(() => true)))));
+    const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
+    if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), ...MessageQueue.saved(prefs), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
     const s = this.add(new Session({ ...row, mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    if (blank) {
+      // Back as new: the first message starts it (live.ts current). No row until something happens.
+      s.transcript = new Transcript(withOverlay([], s.overlay));
+      s.fresh = s.rebuilt = true;
+      s.movedTo = prefs.movedTo;
+    } else if (prefs.blank) this.o.prefs.set(id, { blank: undefined });
     // Opened by an op that doesn't subscribe (send, a setting, a page): it leaves memory again
     // unless it's watched or live by then (the eviction checks when it fires).
     this.scheduleEvict(s);
@@ -271,8 +281,22 @@ export class SessionCore {
     const s = this.add(new Session(summary, { ...emptyState("live"), ...pick(opts) }, a.capabilities, this.out));
     s.transcript = new Transcript();
     s.fresh = true;
-    this.o.prefs.set(id, { projectPath, ...pick(opts) });
+    this.o.prefs.set(id, { projectPath, blank: true, ...pick(opts) });
     return s;
+  }
+
+  /** A new session that never got a message leaves memory and the lists; opening its id brings it back (make). */
+  dropFresh(s: Session) {
+    this.book.remove([s.id]);
+    this.sessions.delete(s.id);
+    this.seqs.set(s.id, s.seq);
+  }
+
+  /** Whether a new session's store exists: its id is taken, so it can only resume. */
+  async hasStore(s: Session) {
+    const a = this.adapter(s.summary.harness);
+    if (!(await a.sessionInfo(s.summary.nativeId, s.summary.projectPath).catch(() => undefined))) return false;
+    return !(await a.noStore?.(s.summary.nativeId).catch(() => true));
   }
 
   /** Validates a folder for a new session. */
@@ -396,10 +420,10 @@ export class SessionCore {
     const t = setTimeout(() => {
       this.evictTimers.delete(s.id);
       if (this.held(s) || this.sessions.get(s.id) !== s) return;
+      // A new session that never got a message has nothing in any store: no row to keep.
+      if (s.fresh) return this.dropFresh(s);
       this.sessions.delete(s.id);
       this.seqs.set(s.id, s.seq);
-      // A new session that never got a message has nothing in any store: it's gone.
-      if (s.fresh) this.book.remove([s.id]);
     }, this.o.evictMs ?? 60_000);
     t.unref?.();
     this.evictTimers.set(s.id, t);

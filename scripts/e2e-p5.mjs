@@ -11,9 +11,8 @@
 //   CRASH_RUNNER    a command that kill -9s the dev runner and starts it again (for `restartCrash`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   home claude steer queue lostEdit stopSend terminal restart restartCrash codex restartCodex attach push inbox relay
-// A partial run: a Claude session with no turn yet isn't in any store, so a runner restart loses it.
-// attach, push, inbox and relay need one that survives: restartCodex gives it a turn first.
+//   home claude steer queue lostEdit stopSend terminal restart restartCrash codex blank restartCodex attach push inbox relay
+// blank waits for processes to idle out: run the dev runner with short TETHER_IDLE_MS and TETHER_EVICT_MS.
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -606,6 +605,79 @@ const steps = {
     ok("Codex: steered into the running turn from desktop, queued from the phone; the queued message went out after the turn");
     await p.close();
     await b.close();
+  },
+
+  async blank() {
+    // A new session nobody sent to, on both harnesses: its process idled out with the tab open;
+    // evicted with the tab closed; a runner restart. Each comes back, with its settings, and replies.
+    if (!RESTART) return console.log("skip blank (set RESTART_RUNNER)");
+    const WAIT = Number(process.env.BLANK_WAIT_MS ?? 400_000);
+    const same = (a, b, what) => {
+      for (const k of ["model", "effort", "permissionMode"]) if (b[k] !== undefined && a[k] !== b[k]) fail(`${what}: ${k} ${a[k]}, was ${b[k]}`);
+    };
+    const answers = async (p, was, word, what) => {
+      await composer(p).waitFor();
+      if (await row(p, idOf(p.url()))) fail(`${what}: back in the lists by itself`);
+      same(await waitState(p, (s) => s.mode === "stored", `${what}: stored`, 30_000), was, what);
+      await send(p, `Reply with exactly one word: ${word}`);
+      await p.locator(".t-msg.assistant", { hasText: word }).last().waitFor({ timeout: 180_000 });
+      await idle(p);
+      same(await liveState(p), was, `${what}: after the reply`);
+      if (await p.getByText("isn't on this runner").count()) fail(`${what}: the old error`);
+    };
+    for (const harness of ["claude", "codex"]) {
+      const p = await page(desktop);
+      const open = await newSession(p, harness);
+      const openId = idOf(open);
+      const settings = await liveState(p);
+      await waitState(p, (s) => s.mode === "stored", `${harness}: the process closed with the tab open`, WAIT);
+      await answers(p, settings, "TABOPEN", `${harness}: tab left open`);
+      if (harness === "codex" && idOf(p.url()) === openId) fail("codex: the view stayed on a thread that can't be joined");
+      await shot(p, `blank-${harness}-open`);
+      ok(`${harness}: new session, process closed, tab open: the send got a reply (${openId} > ${idOf(p.url())})`);
+
+      const left = await newSession(p, harness);
+      const leftId = idOf(left);
+      const leftSettings = await liveState(p);
+      await p.goto(BASE);
+      const end = Date.now() + WAIT;
+      while (Date.now() < end && (await row(p, leftId))) await sleep(1000);
+      if (await row(p, leftId)) fail(`${harness}: an abandoned session stays in the lists`);
+      await p.goto(left);
+      await answers(p, leftSettings, "EVICTED", `${harness}: evicted`);
+      ok(`${harness}: new session, abandoned, out of the lists, opened by link: the send got a reply`);
+
+      const before = await newSession(p, harness);
+      const beforeSettings = await liveState(p);
+      await p.goto(BASE);
+      execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+      await sleep(5000);
+      await p.goto(before);
+      await answers(p, beforeSettings, "RESTARTED", `${harness}: runner restart`);
+      ok(`${harness}: new session, runner restart, opened by link: the send got a reply`);
+
+      const was = idOf(p.url());
+      if (harness === "codex") {
+        // The terminal on one that has to move: the view and the panel go with it.
+        const term = await newSession(p, harness);
+        await waitState(p, (s) => s.mode === "stored", "codex: the process closed", WAIT);
+        await p.locator(".t-chip-term").click();
+        await p.waitForFunction(() => [...(globalThis.__tetherTerms?.keys() ?? [])].some((k) => k.startsWith("sh-")), null, { timeout: 30_000 }).catch(() => {});
+        await p.locator(".t-term-agent").click();
+        await p.waitForURL((u) => idOf(u.href) !== idOf(term), { timeout: 60_000 });
+        await p.locator(".t-term-panel").waitFor({ timeout: 30_000 });
+        await waitState(p, (s) => s.mode === "live" && s.terminal?.kind === "shared", "codex: live beside its terminal", 60_000);
+        ok("codex: the terminal on a session that had to move opens on its new id");
+        await p.goBack();
+
+        // The link from before it moved goes on to where it went.
+        await p.goto(before);
+        await p.waitForURL((u) => idOf(u.href) === was, { timeout: 30_000 });
+        await waitText(p, /RESTARTED/, "the link from before the move");
+        ok("codex: the old link follows the session to its new id");
+      }
+      await p.close();
+    }
   },
 
   async restartCodex() {

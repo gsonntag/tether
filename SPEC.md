@@ -648,6 +648,11 @@ tested for real before it counts as supported; don't build six adapters before t
    Tether through the daemon, and the TUI resumes them.
 3. **Terminal auth:** owner-only sign-in. No extra step.
 4. **Several runners:** in the protocol now, in the UI when a second runner exists.
+5. **A new session nobody sent to** is in no store. Runner.json remembers it (`blank`), so it leaves the
+   lists when its process closes but its id stays good: opening it or sending brings it back in the same
+   folder with the same settings. Claude starts the same id again. A Codex thread with no rollout can't
+   be joined, so a new thread takes over and views follow (`continuedIn`, `movedTo`). A session that had
+   a message and lost its store stays gone.
 
 Still to verify by experiment (not decisions): Codex approval fan-out and cross-connection steer
 (P4), and how daemon and CLI version mismatches behave.

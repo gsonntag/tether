@@ -166,6 +166,14 @@ export interface Adapter {
    * harness when it picks its own ids (Codex: a thread in its daemon, which `start` then joins).
    */
   newId(projectPath: string, opts: StartOpts): string | Promise<string>;
+  /**
+   * For a harness that can't start a new session's id a second time (Codex: a thread with nothing on
+   * disk can't be joined once its connection closes): a new id for the same folder, and the settings
+   * it starts with.
+   */
+  renew?(projectPath: string, opts: StartOpts): Promise<{ nativeId: string; opts: StartOpts }>;
+  /** The harness knows the id but has stored nothing under it (Codex: a thread without a rollout). */
+  noStore?(nativeId: string): Promise<boolean>;
   // terminal mode (SPEC §8): how to run the harness's own TUI on a session, in tmux
   terminalCommand(nativeId: string, projectPath: string, opts: TerminalOpts): TerminalLaunch;
 }

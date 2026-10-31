@@ -6,7 +6,7 @@ import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
-import { codexBackgroundRuns, codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
+import { codexBackgroundRuns, codexHistory, codexNoStore, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
@@ -92,6 +92,13 @@ export const codexAdapter: Adapter = {
 
   /** Codex picks thread ids: the thread is made now, in the daemon, and its driver takes it. */
   newId: (projectPath, opts) => createThread(projectPath, opts),
+
+  /** A thread with no rollout can't be joined again (thread/resume: "no rollout found"): a new one takes over. */
+  async renew(projectPath, { permissionMode, ...rest }) {
+    const opts = { ...rest, ...(knownMode(permissionMode) ? { permissionMode } : {}) };
+    return { nativeId: await createThread(projectPath, opts), opts };
+  },
+  noStore: codexNoStore,
 
   // Terminal (SPEC §8, shared): Codex's TUI joins the same thread through the daemon (`--remote`;
   // without it the TUI runs its own app-server and finds the thread "open in another app"), beside

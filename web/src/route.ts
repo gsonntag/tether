@@ -35,6 +35,9 @@ export function navigate(r: Route) {
 
 export const openSession = (runnerId: string, sessionId: string) => navigate({ page: "session", runnerId, sessionId });
 
+/** The same, in place of the page in the history: Back doesn't land on a session that only moves on. */
+export const replaceSession = (runnerId: string, sessionId: string) => location.replace(formatRoute({ page: "session", runnerId, sessionId }));
+
 const subscribe = (fn: () => void) => {
   window.addEventListener("hashchange", fn);
   return () => window.removeEventListener("hashchange", fn);

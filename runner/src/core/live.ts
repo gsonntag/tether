@@ -142,6 +142,13 @@ export class LiveControl {
     const s = await this.core.open(id);
     // A subagent the harness lets you message: into its running turn (SPEC §6a).
     if (s.summary.parentSessionId) return this.steer(id, text, attachments);
+    const to = s.rebuilt ? await this.current(s) : s;
+    if (to !== s) {
+      await this.send(to.id, text, attachments, o);
+      // After the send, so a message that didn't go stays in the box it was typed in.
+      s.setState({ continuedIn: to.id });
+      return;
+    }
     // Moving to or from the terminal: the message goes wherever the session ends up, never to an
     // SDK process started beside a TUI, nor to a TUI that is quitting.
     const moving = this.terminal?.settled(s);
@@ -206,6 +213,7 @@ export class LiveControl {
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
+      if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
       if (s.sending === me && !(e instanceof SendCancelled)) {
@@ -219,6 +227,49 @@ export class LiveControl {
       if (s.cancelSend === me) s.cancelSend = undefined;
       // A send keeps a session in memory: it may go now (a start that failed).
       this.core.scheduleEvict(s);
+    }
+  }
+
+  /**
+   * The session to go on with, for an id that was opened again after it left memory: itself, unless
+   * its harness can't start that id a second time. Then a new session takes over, in the same folder
+   * with the same settings; views follow `continuedIn`.
+   */
+  async current(s: Session): Promise<Session> {
+    if (s.movedTo) return this.current(await this.core.open(s.movedTo));
+    if (!s.rebuilt || !s.fresh || s.driver || s.starting) return s;
+    // A store appeared meanwhile: the id is taken, so it resumes.
+    if (await this.core.hasStore(s)) {
+      s.fresh = false;
+      this.core.o.prefs.set(s.id, { blank: undefined });
+      return s;
+    }
+    if (!this.core.adapter(s.summary.harness).renew) return s;
+    s.renewing ??= this.renew(s).finally(() => (s.renewing = undefined));
+    return s.renewing;
+  }
+
+  private async renew(s: Session): Promise<Session> {
+    const a = this.core.adapter(s.summary.harness);
+    this.core.pin(s);
+    try {
+      const folder = this.core.folder(s.summary.projectPath);
+      const { model, effort, permissionMode } = s.state;
+      const { nativeId, opts } = await a.renew!(folder, { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
+      const n = this.core.create(s.summary.harness, nativeId, folder, opts);
+      this.core.touch(n);
+      try {
+        await this.ensureDriver(n);
+      } catch (e) {
+        this.core.dropFresh(n);
+        this.core.o.prefs.set(n.id, { blank: undefined });
+        throw e;
+      }
+      s.movedTo = n.id;
+      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id });
+      return n;
+    } finally {
+      this.core.unpin(s);
     }
   }
 
@@ -394,6 +445,8 @@ export class LiveControl {
    * (capabilities.persistent) are joined again, so their requests and status reach Tether.
    */
   async rejoin() {
+    // Cut off before its first message reached a store: there's no turn to go on with.
+    for (const id of this.core.o.prefs.running()) if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { running: undefined });
     const persistent = (id: string) => {
       const harness = parseSessionId(id)?.harness;
       return !!harness && !!this.core.o.adapters.find((a) => a.id === harness)?.capabilities.persistent;
@@ -793,6 +846,7 @@ export class LiveControl {
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
       const error = e?.message ?? String(e);
+      s.rebuilt = s.fresh;
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
       // that was starting it ends its turn as failed (send's catch).
@@ -846,8 +900,7 @@ export class LiveControl {
     } else if (before !== "idle") s.setState({ status: "idle" });
     if (s.fresh) {
       // Never got a message: nothing of it is in any store.
-      this.core.book.remove([s.id]);
-      this.core.sessions.delete(s.id);
+      this.core.dropFresh(s);
       return;
     }
     this.core.tail(s);

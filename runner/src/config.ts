@@ -30,6 +30,10 @@ export interface RunnerConfig {
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
 export interface SessionPrefs {
   projectPath?: string;
+  /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
+  blank?: boolean;
+  /** a blank session that went on under another id (Adapter.renew) */
+  movedTo?: string;
   model?: string;
   effort?: string;
   permissionMode?: string;

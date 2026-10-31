@@ -6,6 +6,8 @@ import { FROM_TETHER } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, SendCancelled } from "../../core/adapter";
 import { setConnector } from "./daemon";
 import { CodexDriver, createThread } from "./driver";
+import { codexAdapter } from "./index";
+import { UNKNOWN_MODE } from "./modes";
 import { CodexRpc } from "./rpc";
 import { remember, remembered, rememberIn } from "./remember";
 import { frames, TestSink } from "./testSink";
@@ -370,6 +372,18 @@ test("a subagent: stopped on its own thread; a message goes through the main age
   daemon.say({ method: "turn/completed", params: { threadId: "C", turn: { id: "ct", status: "interrupted" } } });
   expect(d.busy()).toBe(false);
   expect(sink.children.get("C")!.endedCount).toBe(1);
+});
+
+test("a thread with nothing on disk: the daemon knows it, but it isn't stored; a new one keeps known settings only", async () => {
+  useDaemon();
+  daemon.answers["thread/read"] = () => ({ thread: { id: "NEW", path: "/nonexistent/rollout.jsonl" } });
+  expect(await codexAdapter.noStore!("NEW")).toBe(true);
+  daemon.answers["thread/read"] = () => ({ thread: { id: "ON", path: import.meta.path } });
+  expect(await codexAdapter.noStore!("ON")).toBe(false);
+  const { opts } = await codexAdapter.renew!(CWD, { model: "gpt-6-luna", effort: "low", permissionMode: UNKNOWN_MODE });
+  expect(opts).toEqual({ model: "gpt-6-luna", effort: "low" });
+  const known = await codexAdapter.renew!(CWD, { permissionMode: "read-only" });
+  expect(known.opts.permissionMode).toBe("read-only");
 });
 
 test("a new session: the thread is made first, its driver takes it; Codex's TUI can join once it's named", async () => {

@@ -24,18 +24,18 @@ afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
 const user = (id: string, text = id): Msg => ({ id, role: "user", ts: 0, parts: [{ type: "text", text }] });
 
-function setup(opts: { idleMs?: number; evictMs?: number; hideProjects?: string } = {}) {
+function setup(opts: { idleMs?: number; evictMs?: number; hideProjects?: string; prefsFile?: string } = {}) {
   const adapter = new FakeAdapter();
   const bus = new EventBus<CoreEvents>();
   const frames: RunnerToServer[] = [];
-  const prefsFile = join(mkdtempSync(join(tmpdir(), "tether-core-")), "runner.json");
-  saveConfig({ runnerId: "test" }, prefsFile);
+  const prefsFile = opts.prefsFile ?? join(mkdtempSync(join(tmpdir(), "tether-core-")), "runner.json");
+  if (!opts.prefsFile) saveConfig({ runnerId: "test" }, prefsFile);
   const core = new SessionCore({ adapters: [adapter], bus, send: (m) => (frames.push(m.t === "event" ? { ...m, event: capEvent(m.event) } : m), true), epoch: "e1", prefs: new Prefs(prefsFile), evictMs: opts.evictMs ?? 50, hideProjects: opts.hideProjects, log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { idleMs: opts.idleMs ?? 60_000 });
   cleanups.push(() => core.stop());
   const events = (sessionId: string) => frames.filter((f): f is Extract<RunnerToServer, { t: "event" }> => f.t === "event" && f.sessionId === sessionId);
   const summaries = () => frames.filter((f): f is Extract<RunnerToServer, { t: "summary" }> => f.t === "summary").map((f) => f.summary);
-  return { adapter, bus, core, live, frames, events, summaries };
+  return { adapter, bus, core, live, frames, events, summaries, prefsFile };
 }
 
 /** A browser's copy of one session: a snapshot, then events applied by the one sync rule. */
@@ -240,6 +240,223 @@ describe("new sessions", () => {
     const { live } = setup();
     await expect(live.newSession({ harness: "claude", projectPath: "/no/such/folder" })).rejects.toThrow("no folder");
     await expect(live.newSession({ harness: "codex", projectPath: tmpdir() })).rejects.toThrow("can't drive codex");
+  });
+});
+
+describe("a new session nobody sent to", () => {
+  const rows = (summaries: () => SummaryUpdate[]) => {
+    let list = emptySummary();
+    for (const u of summaries()) list = applySummary(list, u).state;
+    return list.sessions;
+  };
+  /** The idle time ran out. */
+  const closeIdle = (t: ReturnType<typeof setup>, id: string) => (t.live as any).close(t.core.sessions.get(id));
+  /** A new session whose process has closed and which has left memory. */
+  const abandoned = async (t: ReturnType<typeof setup>) => {
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: tmpdir(), model: "haiku", effort: "low", permissionMode: "plan" });
+    await closeIdle(t, sessionId);
+    expect(t.core.sessions.has(sessionId)).toBe(false);
+    return sessionId;
+  };
+
+  test("evicted, then opened, then sent to: same id, folder and settings, started as new", async () => {
+    const t = setup({ evictMs: 10 });
+    const id = await abandoned(t);
+    const snap = await t.core.subscribe(id);
+    expect(snap.messages).toEqual([]);
+    expect(snap.session).toMatchObject({ id, projectPath: tmpdir(), title: "New session" });
+    expect(snap.state).toMatchObject({ mode: "stored", status: "idle", model: "haiku", effort: "low", permissionMode: "plan" });
+    expect(t.adapter.drivers).toHaveLength(1); // opening starts nothing
+    await t.live.send(id, "hello");
+    expect(t.adapter.drivers).toHaveLength(2);
+    expect(t.adapter.drivers[1]).toMatchObject({ nativeId: "new-1", sent: ["hello"], opts: { model: "haiku", effort: "low", permissionMode: "plan" } });
+    expect(t.adapter.resumed).toEqual([]);
+    expect((await t.core.open(id)).state.mode).toBe("live");
+  });
+
+  test("sent to straight from a tab left open: its numbering goes on", async () => {
+    const t = setup();
+    const { sessionId: id } = await t.live.newSession({ harness: "claude", projectPath: tmpdir() });
+    const v = new Viewer(await t.core.subscribe(id));
+    await closeIdle(t, id);
+    await t.live.send(id, "hello");
+    v.apply(t.events(id));
+    expect(v.w.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("a runner restart, then opened, then sent to", async () => {
+    const a = setup();
+    const { sessionId: id } = await a.live.newSession({ harness: "claude", projectPath: tmpdir(), model: "haiku" });
+    a.core.o.prefs.flush();
+    a.core.stop();
+    const b = setup({ prefsFile: a.prefsFile });
+    expect((await b.core.subscribe(id)).state).toMatchObject({ mode: "stored", model: "haiku" });
+    await b.live.send(id, "hello");
+    expect(b.adapter.drivers[0]).toMatchObject({ nativeId: "new-1", sent: ["hello"], opts: { model: "haiku" } });
+    expect(b.adapter.resumed).toEqual([]);
+  });
+
+  test("it doesn't come back to the lists by itself, and goes again when nobody has it open", async () => {
+    const t = setup({ evictMs: 10 });
+    const id = await abandoned(t);
+    await t.core.discover();
+    expect(rows(t.summaries)[id]).toBeUndefined();
+    await t.core.subscribe(id);
+    await t.live.setEffort(id, "high"); // a row while it's open
+    t.core.unwatch(id);
+    await Bun.sleep(30);
+    expect(t.core.sessions.has(id)).toBe(false);
+    expect(rows(t.summaries)[id]).toBeUndefined();
+    expect((await t.core.subscribe(id)).state.effort).toBe("high");
+  });
+
+  test("a store that appeared means the id is taken: it resumes", async () => {
+    const t = setup();
+    const id = await abandoned(t);
+    t.adapter.addStored("new-1", [user("m0")]);
+    await t.live.send(id, "hello");
+    expect(t.adapter.resumed).toEqual(["new-1"]);
+    const u = setup();
+    const id2 = await abandoned(u);
+    await u.core.subscribe(id2);
+    u.adapter.addStored("new-1", [user("m0")]);
+    await u.live.send(id2, "hello");
+    expect(u.adapter.resumed).toEqual(["new-1"]);
+  });
+
+  test("two tabs and two sends at once: one object, one start", async () => {
+    const t = setup();
+    const id = await abandoned(t);
+    const [a, b] = await Promise.all([t.core.open(id), t.core.open(id)]);
+    expect(a).toBe(b);
+    t.core.sessions.delete(id);
+    const r = await Promise.allSettled([t.live.send(id, "one"), t.live.send(id, "two")]);
+    expect(r.map((x) => x.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(t.adapter.drivers).toHaveLength(2);
+  });
+
+  test("a stored session whose store went stays gone; so does an id nothing is known of", async () => {
+    const t = setup();
+    t.adapter.addStored("s1", []);
+    await t.live.setModel("claude:s1", "haiku"); // prefs with a folder
+    t.adapter.stored.delete("s1");
+    t.core.sessions.delete("claude:s1");
+    t.core.book.remove(["claude:s1"]);
+    await expect(t.core.open("claude:s1")).rejects.toThrow("isn't on this runner");
+    await expect(t.core.open("claude:nope")).rejects.toThrow("isn't on this runner");
+    // Once it has had a message it isn't blank any more.
+    const { sessionId: id } = await t.live.newSession({ harness: "claude", projectPath: tmpdir() });
+    await t.live.send(id, "hello");
+    await closeIdle(t, id);
+    t.core.sessions.delete(id);
+    t.core.book.remove([id]);
+    await expect(t.core.open(id)).rejects.toThrow("isn't on this runner");
+  });
+
+  test("a restart during its first start: nothing to continue, it's just new", async () => {
+    const a = setup();
+    const { sessionId: id } = await a.live.newSession({ harness: "claude", projectPath: tmpdir() });
+    a.core.o.prefs.set(id, { running: true });
+    a.core.o.prefs.flush();
+    a.core.stop();
+    const b = setup({ prefsFile: a.prefsFile });
+    await b.live.rejoin();
+    expect(b.core.o.prefs.get(id).running).toBeUndefined();
+    expect(b.adapter.drivers).toHaveLength(0);
+  });
+
+  describe("on a harness that can't start an id twice", () => {
+    /** Like Codex: the id stays known with nothing stored, and a new id takes over. */
+    const codexLike = (o: Parameters<typeof setup>[0] = {}) => {
+      const t = setup(o);
+      const known = new Map<string, string>();
+      const info = t.adapter.sessionInfo.bind(t.adapter);
+      t.adapter.sessionInfo = async (n) => (await info(n)) ?? (known.has(n) ? { id: `claude:${n}`, harness: "claude", nativeId: n, projectPath: known.get(n)!, title: "New session", mode: "stored", status: "idle", updatedAt: 1 } : undefined);
+      t.adapter.noStore = async (n) => known.has(n) && !t.adapter.stored.has(n);
+      const start = t.adapter.start.bind(t.adapter);
+      const used = new Set<string>();
+      t.adapter.start = async (p, n, opts, sink) => {
+        if (used.has(n)) throw new Error("is gone");
+        used.add(n);
+        return start(p, n, opts, sink);
+      };
+      t.adapter.renew = async (p, opts) => {
+        const nativeId = await t.adapter.newId(p, opts);
+        known.set(nativeId, p);
+        return { nativeId, opts };
+      };
+      const newId = t.adapter.newId.bind(t.adapter);
+      t.adapter.newId = (p, opts) => {
+        const n = newId(p, opts) as string;
+        known.set(n, p!);
+        return n;
+      };
+      return t;
+    };
+
+    test("a send moves it to a new id with the same folder and settings, and no message is lost", async () => {
+      const t = codexLike();
+      const id = await abandoned(t);
+      const v = new Viewer(await t.core.subscribe(id));
+      expect(v.state).toMatchObject({ mode: "stored", model: "haiku" });
+      await t.live.send(id, "hello");
+      expect(t.adapter.newIds.at(-1)).toMatchObject({ projectPath: tmpdir(), opts: { model: "haiku", effort: "low", permissionMode: "plan" } });
+      expect(t.adapter.drivers.at(-1)).toMatchObject({ nativeId: "new-2", sent: ["hello"], opts: { model: "haiku", effort: "low", permissionMode: "plan" } });
+      v.apply(t.events(id));
+      expect(v.state.continuedIn).toBe("claude:new-2");
+      expect(rows(t.summaries)[id]).toBeUndefined();
+      expect(rows(t.summaries)["claude:new-2"]).toMatchObject({ projectPath: tmpdir() });
+      // The old id: what's sent there still goes on there, also after it left memory.
+      t.core.unwatch(id);
+      t.core.sessions.delete(id);
+      expect((await t.core.subscribe(id)).state.continuedIn).toBe("claude:new-2");
+      await t.live.send(id, "more");
+      expect(t.adapter.drivers.at(-1)!.sent).toEqual(["hello", "more"]);
+    });
+
+    test("two sends at once make one new session", async () => {
+      const t = codexLike();
+      const id = await abandoned(t);
+      const r = await Promise.allSettled([t.live.send(id, "one"), t.live.send(id, "two")]);
+      expect(r.map((x) => x.status).sort()).toEqual(["fulfilled", "rejected"]);
+      expect(t.adapter.newIds).toHaveLength(2); // the first session, and one more
+    });
+
+    test("a store that appeared keeps the id", async () => {
+      const t = codexLike();
+      const id = await abandoned(t);
+      await t.core.open(id);
+      t.adapter.addStored("new-1", [user("m0")]);
+      await t.live.send(id, "hello");
+      expect(t.adapter.resumed).toEqual(["new-1"]);
+      expect(t.adapter.newIds).toHaveLength(1);
+    });
+
+    test("a folder that was deleted: the send says so, and it works once the folder is back", async () => {
+      const t = codexLike();
+      const dir = mkdtempSync(join(tmpdir(), "tether-gone-"));
+      const { sessionId: id } = await t.live.newSession({ harness: "claude", projectPath: dir });
+      await closeIdle(t, id);
+      rmSync(dir, { recursive: true });
+      await expect(t.live.send(id, "hello")).rejects.toThrow(`There's no folder ${dir} on this runner.`);
+      expect(t.adapter.newIds).toHaveLength(1);
+      mkdirSync(dir);
+      await t.live.send(id, "hello");
+      expect(t.adapter.drivers.at(-1)!.sent).toEqual(["hello"]);
+    });
+
+    test("a new session that can't start: nothing is left of it, and the old one stays", async () => {
+      const t = codexLike();
+      const id = await abandoned(t);
+      t.adapter.startError = "nope";
+      await expect(t.live.send(id, "hello")).rejects.toThrow("nope");
+      expect(t.core.sessions.has("claude:new-2")).toBe(false);
+      expect(rows(t.summaries)["claude:new-2"]).toBeUndefined();
+      expect(t.core.o.prefs.get(id).blank).toBe(true);
+      t.adapter.startError = undefined;
+      await t.live.send(id, "hello");
+      expect(t.adapter.drivers.at(-1)).toMatchObject({ nativeId: "new-3", sent: ["hello"] });
+    });
   });
 });
 

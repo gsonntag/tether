@@ -41,6 +41,12 @@ export class Session {
   rootId?: string;
   /** a new session that hasn't had a message yet: nothing of it is in any store */
   fresh = false;
+  /** a fresh session opened again after it left memory, or whose start failed: its id may need settling first (live.ts current) */
+  rebuilt = false;
+  /** a rebuilt session that got a new id: what's sent here goes there (Adapter.renew) */
+  movedTo?: string;
+  /** getting that new id */
+  renewing?: Promise<Session>;
   /** the send that is starting the harness or handing it the message (a token per send) */
   sending?: object;
   /** the send Stop cancelled before its message went out */

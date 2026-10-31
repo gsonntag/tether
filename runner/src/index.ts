@@ -32,7 +32,12 @@ const runner = createRunner({
   adapters: [claudeAdapter, codexAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
   attachmentsDir: join(CONFIG_DIR, "attachments"),
-  core: { hideProjects: process.env.TETHER_HIDE_PROJECTS },
+  core: {
+    hideProjects: process.env.TETHER_HIDE_PROJECTS,
+    // Dev stacks shorten these to see what comes after.
+    ...(process.env.TETHER_EVICT_MS ? { evictMs: Number(process.env.TETHER_EVICT_MS) } : {}),
+    ...(process.env.TETHER_IDLE_MS ? { idleMs: Number(process.env.TETHER_IDLE_MS) } : {}),
+  },
   // Hooks of TUIs in terminal mode report here (terminal/hooks.ts); the path outlives restarts.
   terminal: { hookSocket: join(CONFIG_DIR, "hooks.sock") },
 });

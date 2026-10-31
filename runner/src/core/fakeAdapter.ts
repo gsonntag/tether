@@ -199,6 +199,8 @@ export class FakeAdapter implements Adapter {
     const id = `new-${++this.next}`;
     return this.asyncIds ? Bun.sleep(1).then(() => id) : id;
   }
+  renew?: Adapter["renew"];
+  noStore?: Adapter["noStore"];
   terminalCommand(_nativeId: string, _projectPath: string, _opts: TerminalOpts): TerminalLaunch {
     return { argv: ["true"] };
   }
