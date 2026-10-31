@@ -226,6 +226,11 @@
 .t-chip:focus-visible {
   outline: 2px solid var(--color-accent);
 }
+.t-chip.t-chip-info {
+  color: var(--t-muted);
+  cursor: default;
+  background: none;
+}
 .t-chip .t-chip-key {
   color: var(--t-muted);
 }
@@ -1681,6 +1686,9 @@
     border: none;
     background: none;
     padding: 0 12px;
+  }
+  .t-chips .t-chip.t-chip-info {
+    align-self: stretch;
   }
   .t-chips .t-chip::before {
     content: "";

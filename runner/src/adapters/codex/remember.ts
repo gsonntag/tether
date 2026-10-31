@@ -7,6 +7,7 @@
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Billing } from "../../../../shared/transcript";
 import type { StartOpts } from "../../core/adapter";
 import { CONFIG_DIR } from "../../config";
 
@@ -19,6 +20,8 @@ export interface Remembered {
   modelAlias?: string;
   /** subagent threads that may still run, by the call that spawned them: found again after a restart */
   children?: Record<string, string>;
+  /** what its latest start drew from, as the daemon said */
+  billing?: Billing;
   at: number;
 }
 

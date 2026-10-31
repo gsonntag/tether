@@ -220,6 +220,35 @@ export interface TerminalState {
   background?: boolean;
 }
 
+/** How full the session's context is, in tokens, as the harness reports it (SPEC §5). */
+export interface ContextUse {
+  used: number;
+  /** the context window */
+  total: number;
+}
+
+/** A plan limit's window: how much of it is used, and when it starts over (ms). */
+export interface PlanWindow {
+  percent: number;
+  resetsAt?: number;
+}
+
+/** The account's plan limits as the harness last reported them, the same for all its sessions (SPEC §5). */
+export interface PlanUsage {
+  fiveHour?: PlanWindow;
+  week?: PlanWindow;
+}
+
+/**
+ * What a session draws from on its latest start, as its harness reported it (SPEC §5). `plan` is a
+ * subscription, the only kind plan limits belong to.
+ */
+export interface Billing {
+  kind: "plan" | "apiKey" | "provider" | "unknown";
+  label: string;
+}
+export const UNKNOWN_BILLING: Billing = { kind: "unknown", label: "Unknown" };
+
 export interface LiveState {
   mode: SessionMode;
   status: RunStatus;
@@ -229,6 +258,12 @@ export interface LiveState {
   modelResolved?: string;
   effort?: string;
   permissionMode?: string;
+  /** the context in use now, not what the session spent. Absent: not known, nothing is shown */
+  context?: ContextUse;
+  /** what it draws from. Absent: a runner that doesn't say, or a session that hasn't started */
+  billing?: Billing;
+  /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */
+  plan?: PlanUsage;
   requests: Request[];
   queue: QueuedMessage[];
   /**

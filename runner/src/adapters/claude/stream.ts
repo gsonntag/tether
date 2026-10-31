@@ -11,14 +11,17 @@
 //
 // Message ids match history.ts: assistant messages are their API message id, user ones their uuid.
 
-import type { Msg } from "../../../../shared/transcript";
+import type { ContextUse, Msg } from "../../../../shared/transcript";
 import type { Sink } from "../../core/adapter";
+import { contextOf, contextUsed, keepPlan, noteWindows, planOf } from "./context";
 import { assistantPart, blockText, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
 /** What the stream needs from the driver around it. */
 export interface StreamHost {
   /** the session's native id (subagents are `<this>/<agent id>`) */
   nativeId: string;
+  /** the context as Claude Code's own count has it, between messages (after a compaction, a /clear) */
+  contextNow?(): Promise<ContextUse | undefined>;
 }
 
 interface Thread {
@@ -52,12 +55,19 @@ export class ClaudeStream {
   private stateEvents = false;
   /** the last API error seen in this turn (an assistant frame's `error`) */
   private lastError?: string;
+  /** the main thread's last real message: its model and the context it had */
+  private last?: { model: string; used: number };
+  /** the session the last frames are about (/clear moves on to a new one) */
+  private sessionId: string;
+  /** the context changed with no message to say so yet (a compaction, a /clear) */
+  private contextStale = false;
 
   constructor(
     sink: Sink,
     private host: StreamHost,
   ) {
     this.main = { sink, finals: new Map(), tools: new Map() };
+    this.sessionId = host.nativeId;
   }
 
   handle(m: any) {
@@ -76,7 +86,32 @@ export class ClaudeStream {
         return this.system(m);
       case "result":
         return this.result(m);
+      case "conversation_reset":
+        this.contextChanged();
+        return;
+      case "rate_limit_event": {
+        const plan = planOf(m.rate_limit_info);
+        if (plan) {
+          keepPlan(plan);
+          this.main.sink.plan?.(plan);
+        }
+        return;
+      }
     }
+  }
+
+  private contextChanged() {
+    this.last = undefined;
+    this.contextStale = true;
+  }
+
+  /** What a main-thread message says of the context: the input it was sent with. */
+  private contextFrom(msg: any) {
+    const used = contextUsed(msg?.usage);
+    if (!used || !msg.model || String(msg.model).startsWith("<")) return;
+    this.contextStale = false;
+    this.last = { model: msg.model, used };
+    this.main.sink.state({ context: contextOf(used, msg.model, this.sessionId) });
   }
 
   // ---------------- main thread ----------------
@@ -89,6 +124,7 @@ export class ClaudeStream {
         if (!id) return;
         this.current = id;
         this.main.finals.set(id, 0);
+        this.contextFrom(e.message);
         const had = sink.message(id);
         sink.event({ type: "msg", msg: { id, role: "assistant", parts: had?.parts ?? [], ts: had?.ts ?? Date.now(), streaming: true, ...(e.message.model ? { model: e.message.model } : {}) } });
         return;
@@ -129,6 +165,7 @@ export class ClaudeStream {
       if (text) t.sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
       return;
     }
+    if (t === this.main) this.contextFrom(msg);
     const id = messageId(msg.id, m.uuid);
     if (m.error) this.lastError = blockText(msg.content) || String(m.error);
     const have = t.sink.message(id);
@@ -164,7 +201,10 @@ export class ClaudeStream {
     const sink = this.main.sink;
     switch (m.subtype) {
       case "init":
-        if (m.session_id) sink.nativeId?.(m.session_id);
+        if (m.session_id) {
+          this.sessionId = m.session_id;
+          sink.nativeId?.(m.session_id);
+        }
         sink.state({ ...(m.model ? { modelResolved: m.model } : {}), ...(m.permissionMode ? { permissionMode: m.permissionMode } : {}) });
         return;
       case "status":
@@ -185,6 +225,7 @@ export class ClaudeStream {
         // Claude continues from a summary; the conversation so far stays on screen, as in the
         // store (history.ts reads across compactions), with the same notice at the spot.
         sink.event({ type: "msg", msg: notice(m.uuid ?? `n-compact-${Date.now()}`, Date.now(), "Context compacted.") });
+        this.contextChanged();
         return;
       case "task_started":
         // Explicitly started again (a finished subagent resumed): a new run.
@@ -223,11 +264,26 @@ export class ClaudeStream {
         sink.state({ error: "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again." });
     }
     this.lastError = undefined;
+    this.resultContext(m);
     // Without state events (an older CLI), the result ends the turn.
     if (!this.stateEvents) {
       this.turnEnded();
       sink.state({ status: "idle" });
     }
+  }
+
+  /** The result says the window; a compaction or /clear with no message after it asks Claude Code. */
+  private resultContext(m: any) {
+    const sink = this.main.sink;
+    const last = this.last;
+    noteWindows(m.modelUsage, this.sessionId, last?.model);
+    if (this.contextStale) {
+      this.contextStale = false;
+      const asked = this.host.contextNow?.();
+      if (!asked) return sink.state({ context: undefined });
+      const answer = (context?: ContextUse) => this.last === last && sink.state({ context });
+      void asked.then(answer, () => answer());
+    } else if (last) sink.state({ context: contextOf(last.used, last.model, this.sessionId) });
   }
 
   // ---------------- subagents ----------------

@@ -3,7 +3,7 @@
 // branches only on `capabilities`, never on the harness id.
 
 import type { Attachment } from "../../../shared/attachments";
-import type { HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary, ToolPart } from "../../../shared/transcript";
+import type { Billing, ContextUse, PlanUsage, HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary, ToolPart } from "../../../shared/transcript";
 
 /** Transcript events a driver reports. The core numbers them (seq) and keeps the transcript. */
 export type TranscriptEvent = Extract<SessionEvent, { type: "msg" | "delta" | "tool" | "reset" }>;
@@ -65,6 +65,8 @@ export interface Sink {
    * with the reason RESOLVED_ELSEWHERE. The promise then settles with a denial nobody reads.
    */
   request(r: RequestAsk, signal?: AbortSignal): Promise<Decision>;
+  /** the harness reported the account's plan limits: partial, merged into what's known */
+  plan?(p: PlanUsage): void;
   /** the native id became known or changed (a new session's id comes with the harness's first answer) */
   nativeId?(id: string): void;
   /** a subagent started under this session: its sink */
@@ -143,6 +145,12 @@ export interface Adapter {
    * Claude writes one with each turn and when it exits, so Shift+Tab alone reaches it only then.
    */
   storedMode?(nativeId: string, projectPath: string): Promise<{ mode?: string; entries: number }>;
+  /** The session's context as its store has it (SPEC §5). Undefined: not known. Starts nothing. */
+  storedContext?(nativeId: string, projectPath: string): Promise<ContextUse | undefined>;
+  /** What a stored session drew from on its latest start: unknown if that wasn't recorded. */
+  storedBilling?(nativeId: string, projectPath: string): Promise<Billing>;
+  /** The account's plan limits, as far as they're known without a turn (SPEC §5). Starts nothing. */
+  planUsage?(): Promise<PlanUsage | undefined>;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
   /**

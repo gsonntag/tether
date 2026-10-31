@@ -6,12 +6,13 @@ import { query, type CanUseTool, type PermissionMode, type Query, type SDKUserMe
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
 import { tetherOrigin } from "../../../../shared/fromTether";
-import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
+import { UNKNOWN_BILLING, type ContextUse, type Msg, type Part, type ToolPart } from "../../../../shared/transcript";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
 import { canonicalCommand } from "./content";
+import { claudeBilling, keepBilling } from "./context";
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 
@@ -63,7 +64,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId });
+    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow() });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
@@ -116,7 +117,21 @@ export class ClaudeDriver implements Driver {
       } catch {}
       throw new Error(this.why(e?.message ?? String(e)));
     }
+    await this.noteBilling();
     void this.pump();
+  }
+
+  /** What this start draws from: only Claude Code can say, and only now. */
+  private async noteBilling() {
+    const billing = await this.q.accountInfo().then(claudeBilling, () => UNKNOWN_BILLING);
+    keepBilling(this.nativeId, billing);
+    this.sink.state({ billing });
+  }
+
+  private async contextNow(): Promise<ContextUse | undefined> {
+    const u = await this.q.getContextUsage({ detail: "summary" });
+    const total = u.rawMaxTokens || u.maxTokens;
+    return u.totalTokens > 0 && total >= u.totalTokens ? { used: u.totalTokens, total } : undefined;
   }
 
   /** A failure's message, with what Claude Code printed when it says more. */

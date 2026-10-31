@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
-import { effortLabel, modelLabel, permissionModeLabel } from "../../../shared/labels";
+import { contextDetail, contextPercent, effortLabel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
 import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -31,6 +31,7 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
+  const usage = state.billing && usageChip(state.billing, state.plan);
   const call = async (p: Promise<unknown>) => {
     setError(undefined);
     try {
@@ -104,6 +105,17 @@ export function SessionHeader({
           </>
         )}
         <SubagentChips runnerId={runnerId} children={children} />
+        {/* Last in the row: where chips scroll sideways, these go out of view first. */}
+        {!isChild && state.context && (
+          <span className="t-chip t-chip-info" title={contextDetail(state.context)}>
+            {contextPercent(state.context)}
+          </span>
+        )}
+        {!isChild && usage && (
+          <span className="t-chip t-chip-info" title={usage.detail}>
+            {usage.text}
+          </span>
+        )}
       </div>
       {/* The ❯_ button, pinned outside the chips (which scroll sideways on a phone): always on screen. */}
       {extra && <div className="t-header-pin">{extra}</div>}

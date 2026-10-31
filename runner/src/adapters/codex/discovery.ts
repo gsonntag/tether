@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
-import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
+import { UNKNOWN_BILLING, type Billing, type ContextUse, type Msg, type PlanUsage, type ProjectInfo, type SessionSummary } from "../../../../shared/transcript";
 import { call } from "./daemon";
 import type { StartOpts } from "../../core/adapter";
 import { titleText } from "../../../../shared/fromTether";
@@ -292,6 +292,80 @@ export async function threadSettings(nativeId: string): Promise<StartOpts | unde
   const model = start.model ?? t.model ?? undefined;
   const effort = start.effort ?? t.reasoningEffort ?? undefined;
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: start.permissionMode ?? UNKNOWN_MODE };
+}
+
+/**
+ * The context a usage report says: the last request's total, which after a compaction is what's
+ * left (the daemon reports it with no input tokens). The cumulative total is spend, not context.
+ */
+export function reportedContext(used: unknown, total: unknown): ContextUse | undefined {
+  return typeof used === "number" && typeof total === "number" && used > 0 && total >= used ? { used, total } : undefined;
+}
+
+/** Plan limits from a RateLimitSnapshot (a sparse update may lack a window): by the window's length, not its slot. */
+export function reportedPlan(limits: any): PlanUsage | undefined {
+  const plan: PlanUsage = {};
+  for (const w of [limits?.primary, limits?.secondary]) {
+    if (typeof w?.usedPercent !== "number") continue;
+    const window = { percent: w.usedPercent, ...(typeof w.resetsAt === "number" ? { resetsAt: w.resetsAt * 1000 } : {}) };
+    if (w.windowDurationMins === 300) plan.fiveHour = window;
+    if (w.windowDurationMins === 10080) plan.week = window;
+  }
+  return plan.fiveHour || plan.week ? plan : undefined;
+}
+
+/**
+ * What a thread draws from: its model provider, then for OpenAI's own the account signed in to the
+ * daemon. A daemon with a key only in its environment reports no account (and doesn't use the key).
+ */
+export function codexBilling(provider: unknown, account?: any): Billing {
+  if (typeof provider !== "string" || !provider) return UNKNOWN_BILLING;
+  if (provider !== "openai") return { kind: "provider", label: PROVIDER_LABELS[provider] ?? provider };
+  if (account?.type === "chatgpt") return { kind: "plan", label: "ChatGPT plan" };
+  if (account?.type === "apiKey") return { kind: "apiKey", label: "OpenAI API key" };
+  return UNKNOWN_BILLING;
+}
+const PROVIDER_LABELS: Record<string, string> = { azure: "Azure", "amazon-bedrock": "Amazon Bedrock", ollama: "Ollama", lmstudio: "LM Studio" };
+
+/**
+ * A stored thread: the daemon keeps each thread's provider; which OpenAI account a start used, only
+ * Tether's record of it says (the driver's, remembered).
+ */
+export async function codexStoredBilling(nativeId: string): Promise<Billing> {
+  const provider = (await readThread(nativeId))?.modelProvider;
+  if (typeof provider === "string" && provider && provider !== "openai") return codexBilling(provider);
+  return (provider && remembered(nativeId)?.billing) || UNKNOWN_BILLING;
+}
+
+const PLAN_MS = 60_000;
+let planRead: { at: number; p: Promise<PlanUsage | undefined> } | undefined;
+
+/** The account's plan limits, from the daemon (no model turn). Undefined: an account without them. */
+export function codexPlan(): Promise<PlanUsage | undefined> {
+  if (!planRead || Date.now() - planRead.at > PLAN_MS) planRead = { at: Date.now(), p: call("account/rateLimits/read", { excludeResetCreditDetails: true }).then((r: any) => reportedPlan(r?.rateLimits), () => undefined) };
+  return planRead.p;
+}
+
+/** The context in a rollout's newest token_count (some carry only rate limits: `info` is null). */
+export function rolloutContext(text: string): ContextUse | undefined {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i]!.includes('"token_count"')) continue;
+    try {
+      const m = JSON.parse(lines[i]!);
+      const info = m?.type === "event_msg" && m.payload?.type === "token_count" ? m.payload.info : undefined;
+      if (info) return reportedContext(info.last_token_usage?.total_tokens, info.model_context_window);
+    } catch {}
+  }
+  return undefined;
+}
+
+/** A stored thread's context: its rollout's end, then the whole file. */
+export async function codexStoredContext(nativeId: string): Promise<ContextUse | undefined> {
+  const path = (await readThread(nativeId))?.path;
+  if (typeof path !== "string") return undefined;
+  const f = Bun.file(path);
+  return rolloutContext(await rolloutText(path)) ?? (f.size > SETTINGS_TAIL ? rolloutContext(await f.text().catch(() => "")) : undefined);
 }
 
 /** A rollout's end (where its newest turn_context is). */

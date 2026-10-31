@@ -12,7 +12,7 @@ import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
 import { agentName } from "./items";
-import { dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
+import { codexBilling, dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
 import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
 import { customProfile, knownMode, looser, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
@@ -174,7 +174,17 @@ export class CodexDriver implements Driver {
    * chose. Then the thread's settings as they are become the session's (the thread is the truth;
    * Tether only changes what you change).
    */
+  /** What this start draws from: the thread's provider, and the account the daemon has now. */
+  private async noteBilling(r: any) {
+    const provider = r.modelProvider ?? r.thread?.modelProvider;
+    const account = await this.rpc.call("account/read", { refreshToken: false }, 10_000).then((a: any) => a?.account, () => undefined);
+    const billing = codexBilling(provider, account);
+    remember(this.nativeId, { billing });
+    this.sink.state({ billing });
+  }
+
   private async started(r: any, opts: StartOpts) {
+    void this.noteBilling(r).catch(() => {});
     const had = remembered(this.nativeId);
     const start = had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
     const since = start && had?.applied;

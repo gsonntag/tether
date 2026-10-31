@@ -12,8 +12,8 @@ import { dirname, resolve } from "node:path";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
-import type { HarnessId, LiveState, Msg, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
-import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE } from "../../../shared/transcript";
+import type { HarnessId, LiveState, Msg, PlanUsage, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE, UNKNOWN_BILLING } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
@@ -95,6 +95,8 @@ const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, s
 
 export class SessionCore {
   readonly sessions = new Map<string, Session>();
+  /** each harness's latest plan limits report: account-wide, so not any one session's */
+  private plans = new Map<HarnessId, PlanUsage>();
   /** sessions at least one browser has subscribed to (since the last connect) */
   readonly watched = new Set<string>();
   readonly book: SummaryBook;
@@ -266,6 +268,8 @@ export class SessionCore {
 
   /** Registers a session object (new, opened, or a live subagent). */
   add(s: Session): Session {
+    const plan = this.plans.get(s.summary.harness);
+    if (plan && !s.summary.parentSessionId) s.state = { ...s.state, plan };
     if (!s.overlay.length) s.overlay = this.notices.get(s.id);
     s.noticeAdded = (n) => this.notices.add(s.id, n);
     this.sessions.set(s.id, s);
@@ -348,7 +352,8 @@ export class SessionCore {
         this.prune(s, msgs);
         // A live driver may have created it meanwhile (send right after open).
         s.transcript ??= new Transcript(settleStopped(withOverlay(msgs, s.overlay)));
-        return s.transcript;
+        void this.readPlan(s);
+        return this.storedContext(s).then(() => s.transcript!);
       })
       .finally(() => (s.loading = undefined));
     return s.loading;
@@ -393,7 +398,32 @@ export class SessionCore {
         if (out?.type === "msg" && out.isNew) this.o.bus.emit("message", { sessionId: s.id, msg: out.msg });
       }
       this.touch(s);
+      void this.storedContext(s);
     });
+  }
+
+  /** The account's plan limits, the latest report, on all its sessions. */
+  notePlan(harness: HarnessId, report: PlanUsage) {
+    const plan = { ...this.plans.get(harness), ...report };
+    this.plans.set(harness, plan);
+    for (const s of this.sessions.values()) if (s.summary.harness === harness && !s.summary.parentSessionId) s.setState({ plan });
+  }
+
+  private async readPlan(s: Session) {
+    if (s.summary.parentSessionId) return;
+    const plan = await this.adapter(s.summary.harness).planUsage?.().catch(() => undefined);
+    if (plan) this.notePlan(s.summary.harness, plan);
+  }
+
+  /** The context and billing as they're stored, when no driver reports them. Main sessions only. */
+  private async storedContext(s: Session) {
+    if (s.live || s.fresh || s.summary.parentSessionId) return;
+    const a = this.adapter(s.summary.harness);
+    const [context, billing] = await Promise.all([
+      a.storedContext?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined),
+      a.storedBilling?.(s.summary.nativeId, s.summary.projectPath).catch(() => UNKNOWN_BILLING),
+    ]);
+    if (!s.live) s.setState({ context, billing });
   }
 
   /** Drops notices whose anchor the store no longer has (notices.ts pruneOverlay). */
@@ -460,6 +490,7 @@ export class SessionCore {
     if (!msgs || !s.transcript || s.live) return;
     this.prune(s, msgs);
     for (const e of diffTranscripts(s.transcript.messages, withOverlay(msgs, s.overlay))) s.apply(e);
+    await this.storedContext(s);
   }
 
   private cancelEvict(id: string) {

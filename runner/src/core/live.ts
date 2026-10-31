@@ -984,6 +984,7 @@ export class LiveControl {
         if (changed.permissionMode && !s.summary.parentSessionId && !s.capabilities.persistent) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },
       request: (r, signal) => this.desk.ask(s, r, signal),
+      plan: (p) => core.notePlan(s.summary.harness, p),
       nativeId: (id) => {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
       },

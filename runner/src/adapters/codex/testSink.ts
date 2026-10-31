@@ -6,6 +6,7 @@ import type { Decision, RequestAsk, Sink, SubagentStart } from "../../core/adapt
 import { Transcript } from "../../core/transcript";
 
 export class TestSink implements Sink {
+  plan?: Sink["plan"];
   t = new Transcript();
   states: Partial<LiveState>[] = [];
   asks: { ask: RequestAsk; signal?: AbortSignal; resolve: (d: Decision) => void }[] = [];

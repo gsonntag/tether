@@ -6,7 +6,7 @@ import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
-import { codexBackgroundRuns, codexHistory, codexNoStore, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
+import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
@@ -52,6 +52,9 @@ export const codexAdapter: Adapter = {
   listSubagents: (nativeId) => codexSubagents(nativeId),
   backgroundRuns: codexBackgroundRuns,
   readHistory: codexHistory,
+  storedContext: (nativeId) => codexStoredContext(nativeId),
+  planUsage: codexPlan,
+  storedBilling: (nativeId) => codexStoredBilling(nativeId),
   watchHistory: watchThread,
 
   /**

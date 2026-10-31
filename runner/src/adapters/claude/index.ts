@@ -7,10 +7,11 @@ import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
+import { chainContext, forgetBilling, keptBilling, keptPlan } from "./context";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { readHistory } from "./history";
-import { pinStore } from "./jsonl";
+import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
@@ -164,6 +165,13 @@ export const claudeAdapter: Adapter = {
     return claudeSubagents(splitNative(nativeId).session, projectPath);
   },
   readHistory,
+  planUsage: async () => keptPlan(),
+  storedBilling: async (nativeId) => keptBilling(splitNative(nativeId).session),
+  async storedContext(nativeId, projectPath) {
+    const { session, agent } = splitNative(nativeId);
+    const file = agent ? undefined : sessionFile(session, projectPath);
+    return file ? chainContext((await readStore(file)).chain(), session) : undefined;
+  },
 
   watchHistory(nativeId, projectPath, onChange) {
     const { session, agent } = splitNative(nativeId);
@@ -230,6 +238,7 @@ export const claudeAdapter: Adapter = {
   // Terminal mode (SPEC §8): Claude's own TUI, handed the session. `--settings` adds Tether's hooks
   // for this launch only, so "needs you" and the mode as last seen reach the runner (terminal/hooks.ts).
   terminalCommand(nativeId, _projectPath, opts) {
+    forgetBilling(nativeId);
     const argv = [CLAUDE_BIN ?? "claude", ...(opts.fresh ? ["--session-id", nativeId] : ["--resume", nativeId])];
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);
     if (opts.effort) argv.push("--effort", opts.effort);

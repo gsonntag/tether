@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { codexBilling, reportedContext, reportedPlan, rolloutContext } from "./discovery";
 import { historyMsgs } from "./items";
 import { CodexStream } from "./stream";
 import { comparable, fixture, frames, TestSink } from "./testSink";
@@ -129,4 +132,73 @@ test("settings changed on the thread (in Codex's TUI too) reach the driver", () 
   s.handle("thread/settings/updated", { threadId: "T", threadSettings: { model: "gpt-6-luna", effort: "low" } });
   s.handle("thread/settings/updated", { threadId: "other", threadSettings: { model: "x" } });
   expect(seen).toEqual([{ model: "gpt-6-luna", effort: "low" }]);
+});
+
+// Recorded from a real thread (daemon 0.166, gpt-6-luna): two turns, then a compaction.
+const USAGE = readFileSync(join(import.meta.dir, "fixtures", "token-usage.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const ROLLOUT = readFileSync(join(import.meta.dir, "fixtures", "rollout-token-count.jsonl"), "utf8");
+const USAGE_THREAD = USAGE[0].p.threadId;
+
+test("live context: the last request's total against the reported window, dropping after a compaction", () => {
+  const sink = new TestSink();
+  const s = new CodexStream(sink, CWD, USAGE_THREAD);
+  const seen = USAGE.map((u) => {
+    s.handle(u.m, u.p);
+    return sink.states.at(-1)?.context;
+  });
+  expect(seen).toEqual([
+    { used: 15112, total: 258400 },
+    { used: 15181, total: 258400 },
+    { used: 15215, total: 258400 },
+    // The cumulative total stays 45508: spend, not context.
+    { used: 18111, total: 258400 },
+  ]);
+});
+
+test("a subagent thread's usage isn't the main session's", () => {
+  const sink = new TestSink();
+  const s = new CodexStream(sink, CWD, "other-thread");
+  s.handle(USAGE[0].m, USAGE[0].p);
+  expect(sink.states.some((x) => "context" in x)).toBe(false);
+});
+
+test("stored context: the rollout's newest token_count, a rate-limits-only one or a torn line skipped", () => {
+  expect(rolloutContext(ROLLOUT)).toEqual({ used: 18111, total: 258400 });
+  const blank = JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: null } });
+  expect(rolloutContext(`${ROLLOUT}${blank}\n{"type":"event_msg","payload":{"type":"token_cou`)).toEqual({ used: 18111, total: 258400 });
+  expect(rolloutContext(blank)).toBeUndefined();
+});
+
+test("no window reported, or a count over it: no number", () => {
+  expect(reportedContext(100, null)).toBeUndefined();
+  expect(reportedContext(0, 100)).toBeUndefined();
+  expect(reportedContext(101, 100)).toBeUndefined();
+});
+
+test("plan limits from a real snapshot, by window length; a sparse one names what it has", () => {
+  const real = { limitId: "codex", primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: 1793500423 }, secondary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: 1793884170 } };
+  expect(reportedPlan(real)).toEqual({ fiveHour: { percent: 0, resetsAt: 1793500423_000 }, week: { percent: 1, resetsAt: 1793884170_000 } });
+  expect(reportedPlan({ primary: real.secondary, secondary: null })).toEqual({ week: { percent: 1, resetsAt: 1793884170_000 } });
+  expect(reportedPlan({ primary: { usedPercent: 3, windowDurationMins: 60 } })).toBeUndefined();
+  expect(reportedPlan(null)).toBeUndefined();
+});
+
+test("a rate-limits update has no thread: it still reaches the session's sink", () => {
+  const sink = new TestSink();
+  const seen: unknown[] = [];
+  sink.plan = (p) => seen.push(p);
+  new CodexStream(sink, CWD, "t").handle("account/rateLimits/updated", { rateLimits: { primary: { usedPercent: 2, windowDurationMins: 300 } } });
+  expect(seen).toEqual([{ fiveHour: { percent: 2 } }]);
+});
+
+// As private app-servers (0.166) really report it: account/read, and the thread's modelProvider.
+test("billing: the provider first, so Azure never reads as ChatGPT; then the account", () => {
+  expect(codexBilling("openai", { type: "chatgpt", planType: "plus" })).toEqual({ kind: "plan", label: "ChatGPT plan" });
+  expect(codexBilling("openai", { type: "apiKey" })).toEqual({ kind: "apiKey", label: "OpenAI API key" });
+  expect(codexBilling("azure", { type: "chatgpt", planType: "plus" })).toEqual({ kind: "provider", label: "Azure" });
+  expect(codexBilling("azure", null)).toEqual({ kind: "provider", label: "Azure" });
+  expect(codexBilling("my-gateway", null)).toEqual({ kind: "provider", label: "my-gateway" });
+  // A key only in the daemon's environment: account is null, and it isn't used.
+  expect(codexBilling("openai", null).kind).toBe("unknown");
+  expect(codexBilling(undefined, { type: "chatgpt" }).kind).toBe("unknown");
 });

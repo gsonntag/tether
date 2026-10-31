@@ -11,7 +11,7 @@
 //   RESTART_RUNNER  a command that restarts the dev runner (for `restart`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
-//   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
+//   new stream approve deny steer midturn context terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
 //   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab
 //   subMessage startConfirmed bgStored tuiReadOnly tuiSteer tuiAnswerAway folderTrust stored
 // subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again). tuiAnswerAway needs
@@ -429,6 +429,35 @@ const steps = {
     await idle(p);
     await waitCapture(/FROM-TETHER-OK[\s\S]*FROM-TETHER-OK/, "the TUI shows Tether's message and the reply");
     ok(`Terminal opens Codex's TUI beside Tether (${argv.trim().split(" ").slice(1, 5).join(" ")} …), no prompt, no handoff, mode stays live; a turn typed in the TUI shows in Tether and one sent from Tether shows in the TUI`);
+    await p.close();
+  },
+
+  // The context chip against the rollout's own token_count (the same report Codex's TUI reads).
+  async context() {
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await send(p, "Reply with just: CTX-OK");
+    await replied(p, "CTX-OK");
+    const chip = p.locator(".t-header .t-chip-info").first();
+    await chip.waitFor({ timeout: 30_000 });
+    const st = await waitState(p, (s) => !!s.context, "a context in the state");
+    const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
+    if (text !== `${Math.round((st.context.used / st.context.total) * 100)}%` || !/^[\d.]+k? of [\d.]+k context$/.test(title)) fail(`chip: ${text} / ${title}`);
+    const find = spawnSync("find", [`${process.env.HOME}/.codex/sessions`, "-name", `*${sessionId().split(":")[1]}.jsonl`], { encoding: "utf8" }).stdout.trim();
+    const last = readFileSync(find, "utf8").split("\n").filter((l) => l.includes('"token_count"')).map((l) => JSON.parse(l).payload?.info).filter(Boolean).at(-1);
+    if (st.context.used !== last.last_token_usage.total_tokens || st.context.total !== last.model_context_window) fail(`state ${JSON.stringify(st.context)}, rollout ${JSON.stringify(last)}`);
+    // The plan chip, from the daemon's account/rateLimits/read: this account reports both windows.
+    const plan = p.locator(".t-header .t-chip-info").nth(1);
+    await plan.waitFor({ timeout: 10_000 });
+    const planTitle = await plan.getAttribute("title");
+    if (!/^ChatGPT plan · (5h|Week) \d+%$/.test(await plan.innerText()) || !/5-hour \d+%, resets .+ · Weekly \d+%, resets /.test(planTitle)) fail(`plan chip: ${await plan.innerText()} / ${planTitle}`);
+    await shot(p, "context-desktop");
+    const narrow = await page(phone, session);
+    await composer(narrow).waitFor();
+    await noOverflow(narrow, "phone with the context chip");
+    await shot(narrow, "context-phone");
+    await narrow.close();
+    ok(`chip ${text} (${title}) is the rollout's last_token_usage against model_context_window; plan ${await plan.innerText()} (${planTitle})`);
     await p.close();
   },
 
@@ -1220,7 +1249,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["folderTrust", "new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "subMessage", "startConfirmed", "bgStored", "tuiReadOnly", "tuiSteer", "tuiAnswerAway", "stored"]) {
+  for (const name of pick.length ? pick : ["folderTrust", "new", "stream", "approve", "deny", "steer", "midturn", "context", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "subMessage", "startConfirmed", "bgStored", "tuiReadOnly", "tuiSteer", "tuiAnswerAway", "stored"]) {
     if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "folderTrust", "subMessage", "startConfirmed", "bgStored", "tuiReadOnly", "tuiSteer", "tuiAnswerAway"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);

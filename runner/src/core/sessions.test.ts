@@ -985,3 +985,66 @@ describe("a folder that doesn't exist yet", () => {
     expect(t.core.sessions.get(sessionId)?.summary.projectPath).toBe(target);
   });
 });
+
+describe("context", () => {
+  test("a stored session's context comes with its snapshot and follows the store; unknown clears it", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("c", [user("a")]);
+    let context: { used: number; total: number } | undefined = { used: 10, total: 100 };
+    adapter.storedContext = async () => context;
+    const snap = await core.subscribe("claude:c");
+    expect(snap.state.context).toEqual({ used: 10, total: 100 });
+    context = { used: 20, total: 100 };
+    adapter.write("c", [user("a"), user("b")]);
+    await Bun.sleep(0);
+    expect(core.sessions.get("claude:c")!.state.context).toEqual({ used: 20, total: 100 });
+    context = undefined;
+    adapter.write("c", [user("a"), user("b"), user("c")]);
+    await Bun.sleep(0);
+    expect(core.sessions.get("claude:c")!.state.context).toBeUndefined();
+  });
+
+  test("a subagent shows none, and a harness without storedContext neither", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("p/sub", [user("a")], { parentSessionId: "claude:p" });
+    adapter.addStored("c", [user("a")]);
+    expect((await core.subscribe("claude:c")).state.context).toBeUndefined();
+    adapter.storedContext = async () => ({ used: 10, total: 100 });
+    expect((await core.subscribe("claude:p/sub")).state.context).toBeUndefined();
+  });
+
+  test("plan limits are the account's: the latest report on all its sessions, and on ones opened later", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("a", [user("a")]);
+    adapter.addStored("b", [user("b")]);
+    adapter.addStored("p/sub", [user("c")], { parentSessionId: "claude:p" });
+    adapter.addStored("late", [user("d")]);
+    await core.subscribe("claude:a");
+    await core.subscribe("claude:b");
+    await core.subscribe("claude:p/sub");
+    core.notePlan("claude", { week: { percent: 10 } });
+    core.notePlan("claude", { fiveHour: { percent: 3 } });
+    for (const id of ["a", "b"]) expect(core.sessions.get(`claude:${id}`)!.state.plan).toEqual({ week: { percent: 10 }, fiveHour: { percent: 3 } });
+    expect(core.sessions.get("claude:p/sub")!.state.plan).toBeUndefined();
+    expect((await core.subscribe("claude:late")).state.plan).toEqual({ week: { percent: 10 }, fiveHour: { percent: 3 } });
+  });
+
+  test("a harness that knows its plan limits without a turn reports them on opening", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("a", [user("a")]);
+    adapter.planUsage = async () => ({ week: { percent: 7 } });
+    await core.subscribe("claude:a");
+    await Bun.sleep(0);
+    expect(core.sessions.get("claude:a")!.state.plan).toEqual({ week: { percent: 7 } });
+  });
+
+  test("a stored session's billing comes with its snapshot; none recorded reads Unknown, a failed read too", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("a", [user("a")]);
+    adapter.addStored("b", [user("b")]);
+    adapter.storedBilling = async () => ({ kind: "unknown", label: "Unknown" });
+    expect((await core.subscribe("claude:a")).state.billing).toEqual({ kind: "unknown", label: "Unknown" });
+    adapter.storedBilling = async () => Promise.reject(new Error("no"));
+    expect((await core.subscribe("claude:b")).state.billing).toEqual({ kind: "unknown", label: "Unknown" });
+  });
+});

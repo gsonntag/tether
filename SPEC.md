@@ -134,7 +134,8 @@ Tether runner restarted mid-turn; continuing."). Waiting messages follow that tu
 
 Runner state on disk (`~/.config/tether/runner.json`, mode 600) is small: runner id, which
 sessions are in which mode, per-session prefs (model, effort, permission mode), queued
-messages, and open requests. **Not** transcripts.
+messages, and open requests. **Not** transcripts. Adapters keep small files beside it for what their
+harness's store lacks (`codex-threads.json`, `claude-windows.json`).
 
 ## 5. Protocol (shared/)
 
@@ -182,8 +183,27 @@ Session events: `msg` (upsert by id), `delta` (streamed text), `tool` (patch a t
 
 ### Live state
 
-`mode`, `status` (`idle`, `running` or `waiting`), `model`, `effort`, `permissionMode`, `requests[]` (open
-approvals and questions), `queue[]` (waiting messages), `terminal?` (attach info), `error?`.
+`mode`, `status` (`idle`, `running` or `waiting`), `model`, `effort`, `permissionMode`, `context?`,
+`plan?`, `requests[]` (open approvals and questions), `queue[]` (waiting messages), `terminal?` (attach
+info), `error?`.
+
+**`context`** is `{ used, total }` in tokens: the context in use now, not what the session spent, so
+it drops after a compaction or a `/clear`. Unknown means absent, and nothing is shown: Tether never
+guesses a window, and a count over its window is unknown too. Live drivers report it during a turn;
+stored sessions and Claude's terminal mode read it from the store (`Adapter.storedContext`, on opening
+and on each store change). Subagents have none. A runner without the field shows no chip.
+
+**`billing`** is what the session draws from on its latest start, `{ kind, label }`, as the harness
+reported it at runtime, never from config: "Claude plan", "Anthropic API key", "ChatGPT plan", "OpenAI
+API key", "Azure" and so on, or "Unknown". Unknown is an answer: a stored session whose start wasn't
+recorded says it. Absent means an old runner, or a session not started yet. Plan limits show only
+when `kind` is `plan`, so a session on a key or a provider never shows them. It stays off push
+notifications.
+
+**`plan`** is the harness account's plan limits, `{ fiveHour?, week? }`, each `{ percent, resetsAt? }`.
+It's account-wide: the latest report goes to all the harness's open sessions and to those opened
+later (`SessionCore.notePlan`). Only windows the harness named are there; partial reports merge. The
+browser drops a window past its `resetsAt`. Nothing reported means absent, and no chip.
 
 ### Core ops
 
@@ -239,6 +259,30 @@ relay directly.
 - **History:** `~/.claude/projects/<slug>/<id>.jsonl`. The parser and fixtures come from v1.
 - **Terminal:** `terminal: "handoff"`. `claude --resume <id>` in the project folder. A new session
   started in the terminal gets `claude --session-id <uuid>` so Tether picks its id.
+- **Context:** the last main-thread assistant message's input + cache read + cache creation tokens
+  (`<synthetic>` replies and subagents don't count). That matches `/context`. The window is
+  `modelUsage[<the message's model>].contextWindow` in the `result` (a result lists every model used,
+  background calls too; a `[1m]` model is keyed without the suffix). The store has no window, so
+  `claude-windows.json` in the runner's config dir keeps the last reported per session and per model.
+  Failing those, Claude Code's own cached catalog (`cache/model-catalog/*-cc.json`,
+  `runtime.max_input_tokens`), skipped under `CLAUDE_CODE_DISABLE_1M_CONTEXT` (real reports: 200k
+  there, against the catalog's 1M). Failing that, unknown. Tether keeps no table of its own. A
+  compaction or `/clear` has no message to read: live, the result that ends it asks
+  `getContextUsage({ detail: "summary" })`; stored, a compaction with no message since is unknown (its
+  `postTokens` leave out the system prompt and tools: 10.5k said, 33k real).
+- **Billing:** `accountInfo()` when a driver starts (with the environment that reaches the runner):
+  `apiProvider` other than `firstParty` is that provider (`bedrock`, `vertex`, `foundry`…); a real
+  `apiKeySource` is "Anthropic API key", ahead of a login (with `ANTHROPIC_API_KEY` it still says
+  `tokenSource: "claude.ai"`); `subscriptionType` is "Claude plan"; `ANTHROPIC_AUTH_TOKEN` shows as
+  `tokenSource` ("Anthropic auth token"). Anything else is Unknown. `ANTHROPIC_BASE_URL` doesn't show
+  in these reports. Only the start says, so it's kept per session in `claude-windows.json`. A start in
+  Claude's TUI reports nothing and clears it: Unknown until Tether next starts the session.
+- **Plan limits:** `rate_limit_event` frames: `rate_limit_info.unifiedWindows.{five_hour,seven_day}`
+  (`utilization` 0 to 1, `resetsAt` in seconds), or the top-level `rateLimitType`/`utilization` on a
+  frame without them. A frame can have no number at all (status only), or just one window. The latest
+  is kept in `claude-windows.json` for stored sessions and a restart. Claude's TUI reports none to
+  Tether, so its turns don't move it. Not used: the SDK's `usage_EXPERIMENTAL…` call (unstable by its
+  own name) and the status line's `rate_limits` (it would need Tether's own status line in the TUI).
 
 ### Codex
 
@@ -259,6 +303,21 @@ relay directly.
   keeps driving; there is no handoff and no read-only mode. Verified with real turns in P4: approval
   requests reach every connection and clear everywhere (`serverRequest/resolved`), and `turn/steer`
   works from either side.
+- **Context:** `thread/tokenUsage/updated`: `tokenUsage.last.totalTokens` of `modelContextWindow` (may
+  be null: unknown). `total` is cumulative spend. After a compaction `last` has zero input tokens and
+  `totalTokens` is what's left. Joining a thread replays the last report. Stored: the rollout's newest
+  `token_count` with `info` (`last_token_usage.total_tokens`, `model_context_window`). Same tokens as
+  Codex's TUI; its own percent differs, as it leaves a 12k baseline out of both sides (21.7k of 258k:
+  it says 4%, Tether 8%).
+- **Billing:** the thread's `modelProvider` (`thread/start`, `thread/resume`, `thread/read`), then for
+  `openai` `account/read`'s `account.type`: `chatgpt` is "ChatGPT plan", `apiKey` "OpenAI API key". Any
+  other provider is itself ("Azure"), whatever account the daemon has. `account: null` is Unknown: a
+  key only in the daemon's environment shows that way, and isn't used. The account is the daemon's now,
+  so it's read at each driver start and remembered per thread (`codex-threads.json`); a stored `openai`
+  thread Tether never started is Unknown (the provider of any stored thread is known).
+- **Plan limits:** `account/rateLimits/read` when a session opens (at most once a minute, no turn) and
+  `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
+  `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
 
 ## 6a. Subagents: precise turns and steering
 
@@ -548,7 +607,10 @@ Only the owner can run one (the same auth as sending).
   ago, status dot), with projects below. Search. New session (pick a project, harness, model).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
-  permission mode and the **Terminal** button. Always follow the bottom unless you scroll up.
+  permission mode, the context chip ("42%", tooltip "84k of 200k context"), the usage chip (what it
+  draws from, and on a plan its fuller window, "Claude plan · Week 63%"; tooltip the windows and
+  their resets) and the **Terminal** button. Those two
+  chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
 - **Home** (P5): one ranked inbox: requests, then finished-unread, then working.
 - **Responsive:** one layout that works at 375 px. Every action reachable by touch.

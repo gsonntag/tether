@@ -169,6 +169,9 @@ export class FakeAdapter implements Adapter {
   /** which ids `resume` was asked for (the rest started new) */
   resumed: string[] = [];
   neverStarted?: (nativeId: string, projectPath: string) => Promise<boolean>;
+  storedContext?: Adapter["storedContext"];
+  planUsage?: Adapter["planUsage"];
+  storedBilling?: Adapter["storedBilling"];
   async start(_p: string, nativeId: string, opts: StartOpts, sink: Sink) {
     await this.startGate;
     return this.make(nativeId, opts, sink);

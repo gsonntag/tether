@@ -1,7 +1,7 @@
 // Human labels for model ids, effort levels and permission modes (SPEC §2.6: "Opus 5.5", "High").
 // The runner labels what a harness lists; the browser labels whatever a session reports.
 
-import type { ModelOption } from "./transcript";
+import type { Billing, ModelOption, PlanUsage, PlanWindow } from "./transcript";
 
 const FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -54,3 +54,32 @@ export const permissionModeLabel = (m: string | undefined): string => {
   if (m.endsWith("@codex-reviews")) return `${permissionModeLabel(m.slice(0, -"@codex-reviews".length))} (Codex reviews)`;
   return MODES[m] ?? cap(m);
 };
+
+const tokens = (n: number) => (n >= 999_500 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
+/** The header's context chip: "42%", and its tooltip "84k of 200k context". */
+export const contextPercent = (c: { used: number; total: number }) => `${Math.round((c.used / c.total) * 100)}%`;
+export const contextDetail = (c: { used: number; total: number }) => `${tokens(c.used)} of ${tokens(c.total)} context`;
+
+const resetTime = (ms: number, week: boolean) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
+
+/**
+ * The header's plan chip: the fuller window ("Week 63%"), and both in the tooltip. A window past its
+ * reset is no longer known. Nothing known: undefined.
+ */
+export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text: string; detail: string } | undefined {
+  const known = (w?: PlanWindow) => (w && (w.resetsAt === undefined || w.resetsAt > now) ? w : undefined);
+  const rows = [
+    { short: "5h", long: "5-hour", w: known(plan?.fiveHour), week: false },
+    { short: "Week", long: "Weekly", w: known(plan?.week), week: true },
+  ].filter((r) => r.w);
+  if (!rows.length) return undefined;
+  const top = rows.reduce((a, b) => (b.w!.percent >= a.w!.percent ? b : a));
+  const detail = rows.map((r) => `${r.long} ${r.w!.percent}%${r.w!.resetsAt ? `, resets ${resetTime(r.w!.resetsAt, r.week)}` : ""}`).join(" · ");
+  return { text: `${top.short} ${top.w!.percent}%`, detail };
+}
+
+/** The header's usage chip: what the session draws from, with the plan's limits only if it's a plan. */
+export function usageChip(billing: Billing, plan: PlanUsage | undefined, now = Date.now()): { text: string; detail: string } {
+  const limits = billing.kind === "plan" ? planChip(plan, now) : undefined;
+  return limits ? { text: `${billing.label} · ${limits.text}`, detail: limits.detail } : { text: billing.label, detail: billing.kind === "unknown" ? "What this session draws from wasn't reported" : billing.label };
+}

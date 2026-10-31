@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
 import type { Sink, SubagentStart } from "../../core/adapter";
+import { reportedContext, reportedPlan } from "./discovery";
 import { agentName, compactionNotice, itemPart, pathLeaf, shown, turnError, userMsg } from "./items";
 
 /** Shell output kept per tool card while streaming (the stored output is whole). */
@@ -160,6 +161,14 @@ export class CodexStream {
       case "item/commandExecution/outputDelta":
       case "item/fileChange/outputDelta":
         return this.output(v, p.itemId, p.delta);
+      case "thread/tokenUsage/updated":
+        // The main thread's; a subagent's is its own thread. Sent again when a thread is joined.
+        return v === this.main ? this.state(v, { context: reportedContext(p.tokenUsage?.last?.totalTokens, p.tokenUsage?.modelContextWindow) }) : undefined;
+      case "account/rateLimits/updated": {
+        const plan = reportedPlan(p.rateLimits);
+        if (plan) this.main.sink.plan?.(plan);
+        return;
+      }
       case "thread/settings/updated":
         return v === this.main ? this.onSettings?.(p.threadSettings ?? {}) : undefined;
       case "model/rerouted":

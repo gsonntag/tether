@@ -1,7 +1,7 @@
 // P1 end-to-end against a local dev stack and REAL Claude (Haiku), desktop and phone:
 //   PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p1.mjs [step…]
 // Needs: server on :8790, the dev runner `tether-dev`, vite on :5180 (README "Local development").
-// Steps: new stream twodev interrupt reopen subagent restart paging. Screenshots go to $SHOTS.
+// Steps: new stream twodev interrupt reopen subagent restart paging context. Screenshots go to $SHOTS.
 // Each real turn is small; the whole run is a handful of Haiku turns.
 
 import { spawn } from "node:child_process";
@@ -286,6 +286,45 @@ const steps = {
     ok(`paged a compacted session back past both compactions to its first prompt ("${first}")`);
     await p.close();
   },
+  // The context chip against Claude's own count: /context says "Tokens: 29.6k / 1m (3%)". Compacting
+  // keeps the last turn or so: something big, then small turns, so it really drops.
+  async context() {
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    const said = async (text, word) => {
+      await send(p, text);
+      await p.locator(".t-msg, .t-notice", { hasText: word }).last().waitFor({ timeout: 120_000 });
+      await idle(p);
+    };
+    await said(`Read ${new URL("../SPEC.md", import.meta.url).pathname} with the Read tool, all of it. Then reply with just: CTX-READ`, "CTX-READ");
+    const chip = p.locator(".t-header .t-chip-info").first();
+    await chip.waitFor({ timeout: 30_000 });
+    await said("Reply with just: CTX-ONE", "CTX-ONE");
+    await said("Reply with just: CTX-TWO", "CTX-TWO");
+    const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
+    if (!/^\d+%$/.test(text) || !/^[\d.]+[kM]? of [\d.]+[kM] context$/.test(title)) fail(`chip: ${text} / ${title}`);
+    // The usage chip: what it draws from (this machine: a login), with limits when a rate_limit_event has them.
+    const plan = p.locator(".t-header .t-chip-info").nth(1);
+    const planText = (await plan.count()) ? `${await plan.innerText()} (${await plan.getAttribute("title")})` : "none reported";
+    if (!/^Claude plan( · (5h|Week) \d+%)?$/.test(await plan.innerText())) fail(`usage chip: ${planText}`);
+    await shot(p, "context-desktop");
+    const narrow = await page(phone, session);
+    await composer(narrow).waitFor();
+    await noOverflow(narrow, "phone with the context chip");
+    await narrow.locator(".t-header .t-chip-info").last().scrollIntoViewIfNeeded();
+    await shot(narrow, "context-phone");
+    await narrow.close();
+    await send(p, "/compact");
+    await p.getByText("Context compacted.").last().waitFor({ timeout: 120_000 });
+    await p.waitForFunction((was) => parseFloat(document.querySelector(".t-header .t-chip-info")?.title ?? "NaN") < was, parseFloat(title), { timeout: 30_000 });
+    const after = await chip.getAttribute("title");
+    await said("/context", "Tokens:");
+    const m = (await p.locator(".t-msg, .t-notice", { hasText: "Tokens:" }).last().innerText()).match(/Tokens:\W*([\d.]+)k? \/ ([\d.]+[km]) \((\d+)%\)/);
+    if (!m) fail("no count in /context");
+    if (Math.abs(parseFloat(after) - Number(m[1])) > Number(m[1]) * 0.15) fail(`chip ${after}, /context ${m[1]}`);
+    ok(`chip ${text} (${title}); after /compact ${after}, and /context says ${m[1]}k / ${m[2]} (${m[3]}%); plan ${planText}`);
+    await p.close();
+  },
   async layout() {
     const p = await page(phone);
     await noOverflow(p, "phone home");
@@ -298,7 +337,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "drag", "paging", "compacted", "layout"]) {
+  for (const name of pick.length ? pick : ["new", "stream", "context", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "drag", "paging", "compacted", "layout"]) {
     if (!session && !["new", "paging", "compacted", "layout"].includes(name) && process.env.SESSION) session = `${BASE}/#/s/tether-dev/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();
