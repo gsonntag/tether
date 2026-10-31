@@ -302,7 +302,7 @@ const steps = {
     await said("Reply with just: CTX-ONE", "CTX-ONE");
     await said("Reply with just: CTX-TWO", "CTX-TWO");
     const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
-    if (!/^\d+%$/.test(text) || !/^[\d.]+[kM]? of [\d.]+[kM] context$/.test(title)) fail(`chip: ${text} / ${title}`);
+    if (!/^Context \d+%$/.test(text) || !/^[\d.]+[kM]? of [\d.]+[kM] context$/.test(title)) fail(`chip: ${text} / ${title}`);
     // The usage chip: what it draws from (this machine: a login), with limits when a rate_limit_event has them.
     const plan = p.locator(".t-header .t-chip-info").nth(1);
     const planText = (await plan.count()) ? `${await plan.innerText()} (${await plan.getAttribute("title")})` : "none reported";

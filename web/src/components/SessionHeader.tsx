@@ -109,7 +109,7 @@ export function SessionHeader({
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (
           <span className="t-chip t-chip-info" title={contextDetail(state.context)}>
-            {contextPercent(state.context)}
+            Context {contextPercent(state.context)}
           </span>
         )}
         {!isChild && usage && (

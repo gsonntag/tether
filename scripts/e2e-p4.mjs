@@ -442,7 +442,7 @@ const steps = {
     await chip.waitFor({ timeout: 30_000 });
     const st = await waitState(p, (s) => !!s.context, "a context in the state");
     const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
-    if (text !== `${Math.round((st.context.used / st.context.total) * 100)}%` || !/^[\d.]+k? of [\d.]+k context$/.test(title)) fail(`chip: ${text} / ${title}`);
+    if (text !== `Context ${Math.round((st.context.used / st.context.total) * 100)}%` || !/^[\d.]+k? of [\d.]+k context$/.test(title)) fail(`chip: ${text} / ${title}`);
     const find = spawnSync("find", [`${process.env.HOME}/.codex/sessions`, "-name", `*${sessionId().split(":")[1]}.jsonl`], { encoding: "utf8" }).stdout.trim();
     const last = readFileSync(find, "utf8").split("\n").filter((l) => l.includes('"token_count"')).map((l) => JSON.parse(l).payload?.info).filter(Boolean).at(-1);
     if (st.context.used !== last.last_token_usage.total_tokens || st.context.total !== last.model_context_window) fail(`state ${JSON.stringify(st.context)}, rollout ${JSON.stringify(last)}`);

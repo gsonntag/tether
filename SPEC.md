@@ -649,7 +649,7 @@ Only the owner can run one (the same auth as sending).
   ago, status dot), with projects below. Search. New session (pick a project, harness, model).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
-  permission mode, the context chip ("42%", tooltip "84k of 200k context"), the usage chip (what it
+  permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
   draws from, and on a plan its fuller window, "Claude plan · Week 63%"; tooltip the windows and
   their resets) and the **Terminal** button. Those two
   chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
