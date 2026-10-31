@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CAP, FOLLOW_KEEP, following, Gesture, nextWindow, OVERSHOOT, PAGE, remap, restoreTop, rowAt, scrollInFlight, type WinInput } from "./scrollKeep";
+import { CAP, Follow, FOLLOW_KEEP, Gesture, HOLD, LEAVE, nextWindow, OVERSHOOT, PAGE, remap, restoreTop, rowAt, scrollInFlight, type WinInput } from "./scrollKeep";
 
 test("a gesture is idle only with no finger down and no scroll for a while", () => {
   const g = new Gesture(150);
@@ -78,18 +78,112 @@ test("the anchor row goes back where the reader had it", () => {
   expect(restoreTop(a, 300.4, 330)).toBeUndefined();
 });
 
-test("only the reader's input stops following: a scroll alone never does", () => {
-  const at = { stick: true, bar: false, top: 5000, lastTop: 5000, fromBottom: 0, tail: true };
+const moved = (f: Follow, top: number, lastTop: number, now: number, o: { fromBottom?: number; tail?: boolean; selecting?: boolean } = {}) =>
+  f.scrolled({ top, lastTop, fromBottom: 0, tail: true, now, selecting: false, ...o });
+
+test("a scroll with no input never stops following", () => {
+  const f = new Follow();
   // the composer grew, or a streaming render shrank and grew: the view moved up, nobody touched it
-  expect(following({ ...at, top: 4956, fromBottom: 44 })).toBe(true);
-  // the scrollbar dragged up, even a little (a finger and the wheel have their own handlers)
-  expect(following({ ...at, bar: true, top: 4997, fromBottom: 3 })).toBe(false);
-  // back down to the very bottom follows again; not with newer messages unmounted below
-  const up = { ...at, stick: false, lastTop: 4000, top: 4990, fromBottom: 10 };
-  expect(following(up)).toBe(true);
-  expect(following({ ...up, tail: false })).toBe(false);
+  moved(f, 4956, 5000, 0, { fromBottom: 44 });
+  expect(f.on).toBe(true);
+});
+
+test("following stops on real upward movement, not on the wheel's sign", () => {
+  const f = new Follow();
+  // three -1 px wheel events
+  for (const [i, top] of [4999, 4998, 4997].entries()) {
+    f.wheel(0, -1, top + 1, i * 16);
+    moved(f, top, top + 1, i * 16 + 1);
+  }
+  expect(f.on).toBe(true);
+  // the pixels add up: a slow trackpad does leave
+  for (let t = 48, top = 4997; f.on && t < 200; t += 16, top--) {
+    f.wheel(0, -1, top, t);
+    moved(f, top - 1, top, t + 1);
+  }
+  expect(f.on).toBe(false);
+});
+
+test("a wheel that moves nothing, or goes sideways, isn't input", () => {
+  const f = new Follow();
+  f.wheel(0, -100, 0, 0); // a page too short to scroll: no scroll follows
+  expect(f.on).toBe(true);
+  const g = new Follow();
+  g.wheel(40, -1, 5000, 1000);
+  expect(g.live(1000)).toBe(false);
+  g.wheel(0, 5, 5000, 2000); // down
+  expect(g.live(2000)).toBe(false);
+  g.wheel(0, -5, 5000, 3000);
+  expect(g.live(3000)).toBe(true);
+  expect(g.live(3000 + HOLD)).toBe(false);
+});
+
+test("a finger is judged by what moved: up then back down still leaves the bottom", () => {
+  const f = new Follow();
+  f.input(5000, 0, true);
+  moved(f, 5000, 5000, 10);
+  moved(f, 4800, 5000, 20); // well above where it started or not, it moved up
+  expect(f.on).toBe(false);
+  // a held input stays live through a pause, then for HOLD after the release
+  const g = new Follow();
+  g.input(5000, 0, true);
+  expect(g.live(60_000)).toBe(true);
+  g.release(60_000);
+  expect(g.live(60_000 + HOLD)).toBe(false);
+});
+
+test("a rubber band past the end isn't a move up", () => {
+  const f = new Follow();
+  f.input(5000, 0, true);
+  moved(f, 5060, 5000, 10, { fromBottom: -60 });
+  moved(f, 5000, 5060, 20);
+  expect(f.on).toBe(true);
+});
+
+test("moving down to the real bottom follows again", () => {
+  const f = new Follow();
+  f.stop();
+  moved(f, 4990, 4000, 0, { fromBottom: 10, tail: false }); // newer messages unmounted below
+  expect(f.on).toBe(false);
+  moved(f, 4992, 4990, 1, { fromBottom: 8, selecting: true }); // the browser, autoscrolling a selection
+  expect(f.on).toBe(false);
+  moved(f, 4995, 4992, 2, { fromBottom: 5 });
+  expect(f.on).toBe(true);
   // moving up never starts following, even near the bottom
-  expect(following({ ...up, lastTop: 4995 })).toBe(false);
+  const g = new Follow();
+  g.stop();
+  moved(g, 4990, 4995, 0, { fromBottom: 10 });
+  expect(g.on).toBe(false);
+  // reached with no scroll event left
+  const h = new Follow();
+  h.stop();
+  moved(h, 4000, 3000, 0, { fromBottom: 900 });
+  h.arrived(10, true);
+  expect(h.on).toBe(true);
+});
+
+test("Jump to latest isn't undone by the wheel's inertia", () => {
+  const f = new Follow();
+  f.input(5000, 0);
+  moved(f, 4000, 5000, 1);
+  expect(f.on).toBe(false);
+  for (let t = 0, v = 40; t < 300; t += 16, v *= 0.9) f.wheel(0, -v, 9000, t);
+  f.jumped(300);
+  expect(f.on).toBe(true);
+  for (let t = 316; t < 600; t += 16) {
+    f.wheel(0, -2, 9000, t);
+    moved(f, 8990, 9000, t + 1);
+  }
+  expect(f.on).toBe(true);
+  // a new gesture after a pause is heard
+  f.wheel(0, -100, 9000, 1100);
+  moved(f, 9000 - LEAVE - 1, 9000, 1101);
+  expect(f.on).toBe(false);
+  // with no wheel running, the next wheel is heard at once
+  const g = new Follow();
+  g.jumped(1000);
+  g.wheel(0, -100, 9000, 1010);
+  expect(g.live(1010)).toBe(true);
 });
 
 test("the cap holds while new messages keep arriving below a reader near the slice's top", () => {

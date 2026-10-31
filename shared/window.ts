@@ -45,6 +45,20 @@ export function prependPage(w: TranscriptWindow, page: TranscriptWindow): Transc
   return { messages: [...page.messages.filter((m) => !have.has(m.id)), ...w.messages], hasOlder: page.hasOlder };
 }
 
+/**
+ * A newer page over what's loaded, as a reconnect's snapshot brings: the page wins, and the older
+ * messages before where it starts stay. A page with nothing older is the whole transcript.
+ * Undefined when the two don't meet (more than a page came since): there's a gap between them.
+ */
+export function joinPage(w: TranscriptWindow, page: TranscriptWindow): TranscriptWindow | undefined {
+  if (!page.hasOlder || !w.messages.length || !page.messages.length) return page;
+  const at = new Map(w.messages.map((m, i) => [m.id, i]));
+  const meet = page.messages.find((m) => at.has(m.id));
+  if (!meet) return undefined;
+  const ids = new Set(page.messages.map((m) => m.id));
+  return { messages: [...w.messages.slice(0, at.get(meet.id)).filter((m) => !ids.has(m.id)), ...page.messages], hasOlder: w.hasOlder };
+}
+
 function patchMsg(w: TranscriptWindow, id: string, fn: (m: Msg) => Msg): TranscriptWindow {
   const i = w.messages.findIndex((m) => m.id === id);
   return i < 0 ? w : { ...w, messages: replaceAt(w.messages, i, fn(w.messages[i]!)) };

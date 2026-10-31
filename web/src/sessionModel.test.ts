@@ -81,3 +81,77 @@ test("older pages go in front; a failed first subscribe shows an error", () => {
   m.onError(new Error("later"));
   expect(m.view.error).toBeUndefined();
 });
+
+const paged = (seq: number, ids: string[]): SessionSnapshot => ({ ...snap(seq, ids), hasOlder: true });
+const page = (ids: string[], hasOlder = true) => ({ messages: ids.map((i) => msg(i)), hasOlder });
+/** a window of a..e with older pages loaded in front */
+const loaded = () => {
+  const m = new SessionModel();
+  m.onSnapshot(paged(1, ["c", "d", "e"]));
+  m.prepend(page(["a", "b"]));
+  return m;
+};
+
+test("a reconnect's snapshot keeps the older pages loaded, with nothing doubled", () => {
+  const m = loaded();
+  m.subscribing();
+  m.onSnapshot(paged(9, ["d", "e", "f"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "f"]);
+  expect(m.view.window!.hasOlder).toBe(true);
+  // the snapshot's copy of a message wins
+  m.subscribing();
+  m.onSnapshot({ ...paged(10, ["e", "f"]), messages: [msg("e", "new"), msg("f")] });
+  expect((m.view.window!.messages[4]!.parts[0] as { text: string }).text).toBe("new");
+});
+
+test("a snapshot after a rewind drops what the rewind dropped, and a whole transcript is simply it", () => {
+  const m = loaded();
+  m.onSnapshot(paged(9, ["c", "x"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "x"]);
+  m.onSnapshot(snap(10, ["p", "q"]));
+  expect(ids(m)).toEqual(["p", "q"]);
+  expect(m.view.window!.hasOlder).toBe(false);
+});
+
+test("a snapshot past what's loaded: a gap the store closes page by page, the reader's rows staying", () => {
+  const m = loaded();
+  m.onSnapshot(paged(9, ["x", "y"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "x", "y"]);
+  expect(m.gapBefore).toBe("x");
+  m.onEvent(10, append("z"));
+  m.fillGap("x", page(["g", "h"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "g", "h", "x", "y", "z"]);
+  expect(m.gapBefore).toBe("g");
+  m.fillGap("stale", page(["nope"]));
+  m.fillGap("g", page(["d", "e", "f"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "f", "g", "h", "x", "y", "z"]);
+  expect(m.gapBefore).toBeUndefined();
+});
+
+test("a gap that can't be closed gives up what's behind it, never the newest", () => {
+  const failed = loaded();
+  failed.onSnapshot(paged(9, ["x", "y"]));
+  failed.fillGap("x");
+  expect(ids(failed)).toEqual(["x", "y"]);
+  expect(failed.view.window!.hasOlder).toBe(true);
+  // the session's start reached without meeting: a different history
+  const other = loaded();
+  other.onSnapshot(paged(9, ["x", "y"]));
+  other.fillGap("x", page(["w"], false));
+  expect(ids(other)).toEqual(["w", "x", "y"]);
+  expect(other.view.window!.hasOlder).toBe(false);
+  // too far: bounded
+  const far = loaded();
+  far.onSnapshot(paged(9, ["x0"]));
+  for (let i = 0; far.gapBefore; i++) far.fillGap(far.gapBefore, page([`x${i + 1}`]));
+  expect(ids(far).slice(0, 2)).toEqual(["x10", "x9"]);
+});
+
+test("a second snapshot while a gap is open starts from what was loaded", () => {
+  const m = loaded();
+  m.onSnapshot(paged(9, ["x", "y"]));
+  m.fillGap("x", page(["g"]));
+  m.onSnapshot(paged(12, ["y", "z"]));
+  expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "y", "z"]);
+  expect(m.gapBefore).toBe("y");
+});

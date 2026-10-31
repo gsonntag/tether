@@ -162,8 +162,13 @@ rows are added or dropped *above* the viewport only once the scroll settles, wit
 kept (a page that arrives mid-fling shows then); rows *below* it come and go at any time, which never
 moves what's on screen. Scrolling up past the cap drops the newest rows ("Newer messages" marks the
 gap; Jump to latest brings them back), and following the bottom keeps only the newest 100 once
-settled. Only the reader's input stops following (finger, wheel, keys, scrollbar); a scroll on its own, as when
-the composer grows, doesn't.
+settled. Following stops when the reader really moves the view up, more than a few pixels, by finger,
+wheel, keys or scrollbar; a scroll on its own, as when the composer grows, doesn't, nor a wheel that
+moves nothing. Moving down to the real bottom follows again. Keys scroll once the transcript's text
+was clicked. Selecting text with the mouse stops following too, and nothing writes the scroll position
+until the button is up, so the browser's autoscroll carries the selection. A reconnect keeps what's
+loaded: its snapshot joins the older pages (any gap between them is paged in), so a reader keeps their
+place and a follower keeps following.
 
 ### Transcript
 

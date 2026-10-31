@@ -137,7 +137,14 @@ if (process.env.SHORT) {
   }
   add({ id: "claude:shortchat-1", title: `Short rows (${2 * pairs})`, projectPath: P, updatedAt: now - 10_000 }, short);
 }
+{
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#4a8"/></svg>').toString("base64");
+  const imgs: Msg[] = [];
+  for (let i = 0; i < 80; i++) { imgs.push({ ...user(`Q${i} img`), parts: [{ type: "text", text: `Q${i} img` }, { type: "image", mimeType: "image/svg+xml", data: svg }] }); imgs.push(asst([{ type: "text", text: prose(i, 150) }])); }
+  add({ id: "claude:img-1", title: "Images", projectPath: P, updatedAt: now - 15_000 }, imgs);
+}
 add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
+add({ id: "claude:short-2", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 
 // ---------- wire ----------
@@ -292,7 +299,14 @@ function send(s: Sess, text: string) {
   [...thought.split(" ")].forEach((w, i) => at(400 + i * 40, () => emit(s, { type: "delta", msgId: m.id, part: 0, text: w + " " })));
   // "long …" streams for about 20 s (scroll checks while a reply streams).
   const body = text.startsWith("long") ? Array.from({ length: 12 }, (_, k) => `${prose(k, 60)}\n\n${k % 3 === 0 ? code(k, 8) + "\n\n" : ""}`).join("") : "";
-  const reply = `Sure. Here is a **streamed** reply to: _${text.slice(0, 60)}_\n\n1. First point\n2. Second point with \`code\`\n\n${body}`.split(/(?<= )/);
+  const body2 = text.startsWith("code") ? "```ts\n" + Array.from({ length: 500 }, (_, k) => `export const v${k} = compute(${k}, "${"y".repeat(k % 30)}");`).join("\n") + "\n```\n" : text.startsWith("big") ? Array.from({ length: 300 }, (_, k) => prose(k, 40) + "\n\n").join("") : "";
+  const reply = `Sure. Here is a **streamed** reply to: _${text.slice(0, 60)}_\n\n1. First point\n2. Second point with \`code\`\n\n${body}${body2}`.split(/(?<= )/);
+  // "flood …": a burst longer than a snapshot's page, for a reader whose socket dropped meanwhile
+  if (text.startsWith("flood")) at(1500, () => { for (let k = 0; k < 120; k++) emit(s, { type: "msg", isNew: true, msg: asst([{ type: "text", text: `Flood ${k}` }], Date.now()) }); });
+  if (text.startsWith("image")) {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#4a8"/></svg>').toString("base64");
+    for (const ms of [3000, 6000, 9000]) at(ms, () => emit(s, { type: "msg", isNew: true, msg: { id: id("i"), role: "assistant", ts: Date.now(), parts: [{ type: "image", mimeType: "image/svg+xml", data: svg }] } as any }));
+  }
   at(800, () => emit(s, { type: "msg", msg: { ...s.messages.find((x) => x.id === m.id)!, parts: [...s.messages.find((x) => x.id === m.id)!.parts, { type: "text", text: "" }] } }));
   reply.forEach((w, i) => at(850 + i * 50, () => emit(s, { type: "delta", msgId: m.id, part: 1, text: w })));
   const t0 = 900 + reply.length * 50;

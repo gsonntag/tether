@@ -12,6 +12,9 @@ import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type Know
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 
+/** Messages per `history` page closing a gap (the runner's most). */
+const GAP_PAGE = 200;
+
 const key = (runnerId: string, sessionId: string) => `${runnerId}\u0000${sessionId}`;
 
 /** Open sessions' sync models, by runner and session. */
@@ -183,7 +186,10 @@ export function openView(runnerId: string, sessionId: string): () => void {
   const close = subscriptions.watch({
     runnerId,
     sessionId,
-    onSnapshot: (snap) => act(runnerId, sessionId, mine.model.onSnapshot(snap)),
+    onSnapshot: (snap) => {
+      act(runnerId, sessionId, mine.model.onSnapshot(snap));
+      void closeGap(runnerId, sessionId);
+    },
     onError: (e) => {
       mine.model.onError(e);
       publish(runnerId, sessionId);
@@ -199,6 +205,26 @@ export function openView(runnerId: string, sessionId: string): () => void {
       return { views };
     });
   };
+}
+
+const closing = new Set<string>();
+
+/** A reconnect's snapshot didn't reach what was loaded: pages the gap in, so the reader keeps their place. */
+async function closeGap(runnerId: string, sessionId: string) {
+  const k = key(runnerId, sessionId);
+  const entry = models.get(k);
+  if (!entry || closing.has(k)) return;
+  closing.add(k);
+  try {
+    for (let before = entry.model.gapBefore; before; before = entry.model.gapBefore) {
+      const page = await rpc(runnerId, "history", { sessionId, before, limit: GAP_PAGE }).catch(() => undefined);
+      if (models.get(k) !== entry) return;
+      entry.model.fillGap(before, page);
+      publish(runnerId, sessionId);
+    }
+  } finally {
+    closing.delete(k);
+  }
 }
 
 const paging = new Set<string>();

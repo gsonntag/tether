@@ -7,6 +7,78 @@
 // mounted (nextWindow): rows below the viewport come and go at any time, rows above it only once
 // the scroll settles.
 
+/** The reader's upward movement past this (px) leaves the bottom. */
+export const LEAVE = 8;
+/** The reader's input stays live this long (ms) after its last event or scroll. */
+export const HOLD = 150;
+/** After a jump, wheel events this close together (ms) are still the old gesture's inertia. */
+const INERTIA = 400;
+
+/**
+ * Following the bottom, by one rule. It stops when the reader really moved the view up: scrollTop
+ * went up more than LEAVE while their input (wheel, finger, keys, focus, scrollbar) was live. It
+ * starts when they moved down to the real bottom. A scroll with no input never stops it: the view
+ * also moves up when the transcript gets shorter, and engines report that in different orders.
+ * While the input is live nothing pins, so a slow reader's pixels add up and the pin can't swallow
+ * the move before it's heard. A press that selects text stops it outright (`stop`).
+ */
+export class Follow {
+  on = true;
+  /** the reader's last move was down: reaching the real bottom follows, even with no scroll event left */
+  private down = false;
+  private until = -Infinity;
+  /** the highest scrollTop since the input began */
+  private high = 0;
+  private lastWheel = -Infinity;
+  /** a jump during inertia: the wheel's tail isn't the reader asking to go up again */
+  private deaf = false;
+
+  /** Input that may scroll. `held`: live until `release`, whatever the pauses (a finger, the scrollbar). */
+  input(top: number, now: number, held = false) {
+    if (!this.live(now)) this.high = top;
+    this.until = held ? Infinity : Math.max(this.until, now + HOLD);
+  }
+  release(now: number) {
+    if (this.until === Infinity) this.until = now + HOLD;
+  }
+  /** A wheel event: only one going up, more than sideways, is input. */
+  wheel(dx: number, dy: number, top: number, now: number) {
+    const pause = now - this.lastWheel;
+    this.lastWheel = now;
+    if (this.deaf && pause < INERTIA) return;
+    this.deaf = false;
+    if (dy < 0 && -dy > Math.abs(dx)) this.input(top, now);
+  }
+  /** Back to the bottom by Jump to latest. */
+  jumped(now: number) {
+    this.on = true;
+    this.until = -Infinity;
+    this.deaf = now - this.lastWheel < INERTIA;
+  }
+  stop() {
+    this.on = false;
+    this.down = false;
+  }
+  live(now: number): boolean {
+    return now < this.until;
+  }
+  /** A scroll that wasn't ours. `fromBottom` below 0: a rubber band past the end, which is no move. */
+  scrolled(s: { top: number; lastTop: number; fromBottom: number; tail: boolean; now: number; selecting: boolean }, nearBottom = 40) {
+    const top = s.top + Math.min(0, s.fromBottom);
+    if (Math.abs(s.top - s.lastTop) >= 1) this.down = s.top > s.lastTop;
+    if (this.live(s.now)) {
+      if (this.until !== Infinity) this.until = s.now + HOLD;
+      this.high = Math.max(this.high, top);
+      if (this.on && this.high - top > LEAVE) this.stop();
+    }
+    if (!s.selecting && !this.on && s.top > s.lastTop + 0.5) this.arrived(s.fromBottom, s.tail, nearBottom);
+  }
+  /** Down at the real bottom: follow. Also asked with no scroll event: the last rows mounted, the slice trimmed. */
+  arrived(fromBottom: number, tail: boolean, nearBottom = 40) {
+    if (!this.on && this.down && tail && fromBottom < nearBottom) this.on = true;
+  }
+}
+
 /** Scroll activity: idle once no finger is down and no scroll event came for `quiet` ms. */
 export class Gesture {
   private touching = false;
@@ -122,20 +194,6 @@ export function remap(ids: string[], first: string | undefined, last: string | u
   if (tail) return { lo, hi: n, tail };
   const hi = last === undefined ? -1 : ids.indexOf(last);
   return hi < lo ? fresh : { lo, hi: hi + 1, tail: hi + 1 >= n };
-}
-
-/**
- * Whether to follow the bottom after a scroll that wasn't ours. A scroll alone never stops
- * following: the view also moves up when the transcript gets shorter, and engines report that in
- * different orders (a streaming render that shrinks then grows leaves scrollTop lower and the
- * content taller, so sizes can't tell it from the reader). Only the reader's input does: the
- * wheel, keys and a finger have their handlers, and the scrollbar (`bar`, pressed) is seen here,
- * since a press alone doesn't say which way it drags. Moving down to the very bottom follows again.
- */
-export function following(s: { stick: boolean; bar: boolean; top: number; lastTop: number; fromBottom: number; tail: boolean }, nearBottom = 40): boolean {
-  if (s.bar && s.top < s.lastTop - 1) return false;
-  if (!s.stick && s.top > s.lastTop + 0.5 && s.tail && s.fromBottom < nearBottom) return true;
-  return s.stick;
 }
 
 /**

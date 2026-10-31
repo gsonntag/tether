@@ -1,3 +1,36 @@
+diff --git a/dist/CodeBlock/CodeBlock.js b/dist/CodeBlock/CodeBlock.js
+--- a/dist/CodeBlock/CodeBlock.js
++++ b/dist/CodeBlock/CodeBlock.js
+@@ -271,6 +271,7 @@
+  */
+ function useTokenLines(code, language, customTokenizer) {
+   const [asyncTokenResult, setAsyncTokenResult] = useState(null);
++  const lastTokensRef = useRef([]);
+   const syncTokens = useMemo(() => {
+     if (customTokenizer) {
+       return flatTokensToLines(customTokenizer(code, language), code);
+@@ -310,13 +311,15 @@
+       abortController.abort();
+     };
+   }, [code, language, customTokenizer]);
++  // Tether patch: while new tokens are on their way, keep the last ones. Falling back to none
++  // rewrites every line of a long streaming block, twice per delta (and WebKit clamps the
++  // transcript's scrollTop mid-rewrite).
+   if (syncTokens != null) {
+-    return syncTokens;
+-  }
+-  if (asyncTokenResult?.code === code && asyncTokenResult.language === language) {
+-    return asyncTokenResult.tokens;
+-  }
+-  return [];
++    lastTokensRef.current = syncTokens;
++  } else if (asyncTokenResult?.code === code && asyncTokenResult.language === language) {
++    lastTokensRef.current = asyncTokenResult.tokens;
++  }
++  return lastTokensRef.current;
+ }
+ 
+ // ---------------------------------------------------------------------------
 diff --git a/dist/Text/useTruncation.js b/dist/Text/useTruncation.js
 index 75d33acdc1514fea1cc066457aa9589882ca2c59..2f026681af61263de24941b24ca0488b7cd96dd5 100644
 --- a/dist/Text/useTruncation.js

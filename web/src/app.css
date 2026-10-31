@@ -246,6 +246,10 @@
   padding: 0 16px;
   box-sizing: border-box;
 }
+/* "is working…" comes and goes in here: the turn's end moves nothing */
+.t-foot {
+  min-height: 40px;
+}
 .t-paging {
   text-align: center;
   font-size: 12px;

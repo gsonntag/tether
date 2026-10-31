@@ -1,6 +1,6 @@
 // Scroll jank and cost on a phone, measured: flings over the transcript in WebKit (iPhone 14 Pro)
 // and Chromium (Pixel 7), against the fake runner's sessions.
-//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|short-webkit|short-chromium|typing-webkit|typing-chromium|typing-desktop-webkit|typing-desktop-chromium|huge-webkit|huge-chromium]…
+//   BASE=http://127.0.0.1:5188 RUNNER=scrollfake node scripts/scroll-jank.mjs [webkit|chromium|desktop|desktop-webkit|short-webkit|short-chromium|typing-webkit|typing-chromium|typing-desktop-webkit|typing-desktop-chromium|reader-webkit|reader-chromium|finger-chromium|code-webkit|code-chromium|huge-webkit|huge-chromium]…
 // Needs a dev server, `bun scripts/fake-runner.ts <RUNNER>` (SHORT=1000 for the short rows, HUGE=1500 for the huge-* runs) and the
 // web app, preferably a production build (`vite build && vite preview`) for the huge-* numbers.
 //
@@ -15,6 +15,12 @@
 //            events sent to the row under it, down for the drag), then momentum with the finger
 //            lifted; the driver stops the momentum at the first write, like iOS does.
 // Chromium flings are real touch input (CDP touch events, released mid-swipe), CPU slowed 4x.
+// Anything said to be "at paint" is read after the app's own work in the frame (paint() below), so
+// it's what the frame shows, not what a task between frames happens to see.
+// reader-*: at desktop size, the reader's own moves: a mouse selection past the top edge, wheels
+// that hardly move, sideways swipes, a session too short to scroll, Jump during inertia, keys, a
+// focused card, a dropped socket, and the end of a turn.
+// finger-chromium: a finger that reverses (real touch). code-*: a long code block streaming.
 // huge-*: page 3000 messages in from the top; memory, DOM size, time per page, frames, Send to Stop.
 
 import { execSync } from "node:child_process";
@@ -77,7 +83,57 @@ const instrument = () => {
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+  // At paint: a ResizeObserver made last runs after the app's in the same frame.
+  const painted = (s.painted = { on: false, frames: [] });
+  let probe;
+  const reading = () => {
+    const el = document.querySelector(".t-scroll");
+    const c = document.querySelector(".t-composer");
+    const rows = el.querySelectorAll("[data-id]");
+    const ref = rows[Math.max(0, rows.length - 2)];
+    return { st: el.scrollTop, sh: el.scrollHeight, gap: el.scrollHeight - el.scrollTop - el.clientHeight, box: el.clientHeight, comp: c?.offsetHeight ?? 0, refId: ref?.dataset.id, refY: ref?.getBoundingClientRect().top ?? 0, jump: !!document.querySelector(".t-jump") };
+  };
+  const paintTick = () => {
+    if (painted.on) {
+      if (!probe) {
+        probe = document.body.appendChild(document.createElement("div"));
+        probe.style.cssText = "position:fixed;left:-10px;top:0;height:1px;width:1px";
+        new ResizeObserver(() => painted.on && painted.frames.push(reading())).observe(probe);
+      }
+      probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
+    }
+    requestAnimationFrame(paintTick);
+  };
+  requestAnimationFrame(paintTick);
 };
+
+/** Frames as painted, from `paintOn` to `paintOff`. */
+const paintOn = (p) => p.evaluate(() => ((window.__scroll.painted.frames = []), (window.__scroll.painted.on = true)));
+const paintOff = (p) =>
+  p.evaluate(() => {
+    const t = window.__scroll.painted;
+    t.on = false;
+    return t.frames;
+  });
+/**
+ *   offBottom  painted frames more than 2 px from the bottom, worst  how far
+ *   stDown     frames scrollTop went down (the bounce: a following view only goes down the page)
+ *   stUp       frames it went up, and by how much
+ *   boxMoves   changes to the transcript box's height; composerMoves the composer's
+ *   shifted    frames the row above the last moved on screen, and the worst such move
+ */
+function painted(f) {
+  let stDown = 0, stDownPx = 0, stUp = 0, stUpPx = 0, boxMoves = 0, composerMoves = 0, shifted = 0, worstShift = 0;
+  for (let i = 1; i < f.length; i++) {
+    const d = f[i].st - f[i - 1].st;
+    if (d < -1) (stDown++, (stDownPx -= d));
+    if (d > 1) (stUp++, (stUpPx += d));
+    if (f[i].box !== f[i - 1].box) boxMoves++;
+    if (f[i].comp !== f[i - 1].comp) composerMoves++;
+    if (f[i].refId === f[i - 1].refId && Math.abs(f[i].refY - f[i - 1].refY) > 1) (shifted++, (worstShift = Math.max(worstShift, Math.abs(f[i].refY - f[i - 1].refY))));
+  }
+  return { frames: f.length, grewPx: f.length ? Math.round(f.at(-1).sh - f[0].sh) : 0, offBottom: f.filter((x) => x.gap > 2).length, worst: Math.round(Math.max(0, ...f.map((x) => x.gap))), stDown, stDownPx: Math.round(stDownPx), stUp, stUpPx: Math.round(stUpPx), boxMoves, composerMoves, shifted, worstShift: Math.round(worstShift) };
+}
 
 const urlFor = (session) => `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(session)}`;
 
@@ -205,20 +261,18 @@ const atTop = (p) => p.evaluate(() => !document.querySelector(".t-track > .t-pag
 const firstSeen = (p) => p.evaluate(() => document.querySelector(".t-scroll [data-id]")?.textContent?.slice(0, 14));
 
 /**
- * Typing in the composer while a reply streams and the view follows the bottom, a keystroke at a
- * time, one line and then a draft of several lines. Sampled at each frame as it's painted: the transcript's box
- * may only change on a deliberate new line of the draft, and the view stays at the bottom.
- *   grewPx     how much the transcript grew meanwhile (the stream was running)
- *   offBottom  painted frames more than 2 px from the bottom, worst  how far
- *   stDown     frames scrollTop went down (the bounce: a following view only goes down the page)
- *   boxMoves   changes to the transcript box's height; composerMoves the composer's
+ * The composer while a reply streams and the view follows the bottom. Every step is sampled at
+ * paint (painted()), and draft lines are crossed while sampling: typed lines, a long line wrapping,
+ * a paste, a line at a time deleted, all of it selected and deleted. The transcript's box may only
+ * change on a new line of the draft, and the view stays at the bottom.
  */
 async function typing(mk, out, viewport) {
   const p = await mk();
   if (viewport) await p.setViewportSize(viewport);
   await p.waitForTimeout(600);
   const input = p.locator("textarea.t-input");
-  const run = async (label, draft, keys) => {
+  const newline = viewport ? "Enter" : "Shift+Enter";
+  const run = async (label, draft, act) => {
     await input.fill(`long reply for the ${label} check`);
     await p.locator('button[aria-label="Send"]').click();
     await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
@@ -226,44 +280,55 @@ async function typing(mk, out, viewport) {
     await input.click();
     if (draft) await input.fill(draft);
     await p.waitForTimeout(300);
-    await p.evaluate(() => {
-      const t = (window.__typing = { on: true, frames: [] });
-      const el = document.querySelector(".t-scroll");
-      const c = document.querySelector(".t-composer");
-      // A ResizeObserver made last runs after the app's in the same frame: what gets painted.
-      const probe = document.body.appendChild(document.createElement("div"));
-      probe.style.cssText = "position:fixed;left:-10px;top:0;height:1px;width:1px";
-      new ResizeObserver(() => {
-        t.frames.push({ st: el.scrollTop, sh: el.scrollHeight, gap: el.scrollHeight - el.scrollTop - el.clientHeight, box: el.clientHeight, comp: c.offsetHeight });
-      }).observe(probe);
-      const tick = () => {
-        probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
-        if (t.on) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
-    await p.keyboard.type(keys, { delay: 70 });
-    const r = await p.evaluate(() => {
-      const t = window.__typing;
-      t.on = false;
-      const f = t.frames;
-      let stDown = 0, stDownPx = 0, boxMoves = 0, composerMoves = 0;
-      for (let i = 1; i < f.length; i++) {
-        if (f[i].st < f[i - 1].st - 1) (stDown++, (stDownPx += f[i - 1].st - f[i].st));
-        if (f[i].box !== f[i - 1].box) boxMoves++;
-        if (f[i].comp !== f[i - 1].comp) composerMoves++;
-      }
-      return { frames: f.length, grewPx: Math.round(f.at(-1).sh - f[0].sh), offBottom: f.filter((x) => x.gap > 2).length, worst: Math.round(Math.max(0, ...f.map((x) => x.gap))), stDown, stDownPx: Math.round(stDownPx), boxMoves, composerMoves };
-    });
+    await paintOn(p);
+    await act();
+    const r = painted(await paintOff(p));
     out.push({ label: `typing: ${label}`, ...r });
     await input.fill("");
     await p.waitForFunction(() => !document.querySelector('button[aria-label="Stop"]'), null, { timeout: 60_000 });
     await p.waitForTimeout(500);
   };
   const line = "the quick brown fox ";
-  await run("one line", "", line.repeat(2));
-  await run("a draft of five lines", "first line\nsecond line\nthird line\nfourth line\nfifth line\n", line.repeat(2));
-  await run("a long wrapped draft", "word ".repeat(120), line.repeat(2));
+  const keys = () => p.keyboard.type(line.repeat(2), { delay: 70 });
+  await run("one line", "", keys);
+  await run("a draft of five lines", "first line\nsecond line\nthird line\nfourth line\nfifth line\n", keys);
+  await run("a long wrapped draft", "word ".repeat(120), keys);
+  await run("crossing lines", "", async () => {
+    for (let i = 0; i < 6; i++) {
+      await p.keyboard.type(`line ${i}`, { delay: 50 });
+      await p.keyboard.press(newline);
+      await p.waitForTimeout(60);
+    }
+  });
+  await run("wrapping over a line's end", "word ".repeat(viewport ? 16 : 60), async () => {
+    await p.keyboard.press("Control+End");
+    for (let i = 0; i < 32; i++) {
+      await p.keyboard.press(i % 8 < 4 ? "x" : "Backspace");
+      await p.waitForTimeout(40);
+    }
+  });
+  await run("pasting", "", async () => {
+    for (let i = 0; i < 3; i++) {
+      await p.evaluate(() => document.execCommand("insertText", false, Array.from({ length: 12 }, (_, i) => `pasted line ${i}`).join("\n") + "\n"));
+      await p.waitForTimeout(250);
+    }
+  });
+  await run("deleting lines", Array.from({ length: 8 }, (_, i) => `row ${i}`).join("\n"), async () => {
+    await p.keyboard.press("Control+End");
+    for (let i = 0; i < 26; i++) {
+      await p.keyboard.press("Backspace");
+      await p.waitForTimeout(45);
+    }
+  });
+  await run("selecting all and deleting", "", async () => {
+    for (let i = 0; i < 3; i++) {
+      await input.fill(line.repeat(30));
+      await p.waitForTimeout(200);
+      await p.keyboard.press("Control+A");
+      await p.keyboard.press("Delete");
+      await p.waitForTimeout(200);
+    }
+  });
   if (!viewport) {
     // The wheel over a stream at desktop size, up and back down (and no bottom to fight).
     await input.fill("long reply for the wheel check");
@@ -477,7 +542,7 @@ async function cases(ctx, eng, print) {
   await p.close();
 }
 
-/** Desktop: following the bottom while a reply streams, wheel up stays put, Jump to latest. */
+/** Desktop: following the bottom while a reply streams, wheel up stays put, Jump to latest. At paint. */
 async function desktop(browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await ctx.addInitScript(instrument);
@@ -488,34 +553,325 @@ async function desktop(browser) {
   await p.locator("textarea.t-input").fill("long reply for the desktop check");
   await p.locator("textarea.t-input").press("Enter");
   await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 10_000 });
-  let worst = 0;
-  for (let i = 0; i < 20; i++) {
-    await p.waitForTimeout(150);
-    worst = Math.max(worst, await fb());
-  }
-  res.followWhileStreaming = `worst gap ${Math.round(worst)}px`;
+  await paintOn(p);
+  await p.waitForTimeout(3000);
+  res.followWhileStreaming = painted(await paintOff(p));
   const g = await geom(p);
   await p.mouse.move(g.x, g.y);
   await p.mouse.wheel(0, -400);
   await p.waitForTimeout(300);
-  const st0 = await p.evaluate(() => document.querySelector(".t-scroll").scrollTop);
+  await paintOn(p);
   await p.waitForTimeout(2000);
-  const st1 = await p.evaluate(() => document.querySelector(".t-scroll").scrollTop);
-  res.wheelUpStays = Math.abs(st1 - st0) < 2 && (await fb()) > 100;
+  const still = await paintOff(p);
+  res.wheelUpStays = still.every((f) => Math.abs(f.st - still[0].st) < 2) && still.at(-1).gap > 100;
   res.jumpShown = await p.getByRole("button", { name: "Jump to latest" }).isVisible();
   await p.getByRole("button", { name: "Jump to latest" }).click();
-  worst = 0;
   await p.waitForTimeout(200);
-  for (let i = 0; i < 10; i++) {
-    await p.waitForTimeout(150);
-    worst = Math.max(worst, await fb());
-  }
-  res.followAfterJump = `worst gap ${Math.round(worst)}px`;
+  await paintOn(p);
+  await p.waitForTimeout(1500);
+  res.followAfterJump = painted(await paintOff(p));
   await p.locator('button[aria-label="Send"]').waitFor({ timeout: 60_000 });
   await p.waitForTimeout(500);
   res.endAtBottom = (await fb()) < 2;
   await ctx.close();
   return res;
+}
+
+const fromBottom = (p) => p.evaluate(() => ((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))(document.querySelector(".t-scroll")));
+const scrollTop = (p) => p.evaluate(() => document.querySelector(".t-scroll").scrollTop);
+const jumpShown = (p) => p.getByRole("button", { name: "Jump to latest" }).isVisible();
+const working = (p) => p.locator('.t-scroll .t-inline-status:has-text("is working")').first().isVisible();
+async function sendText(p, text) {
+  await p.locator("textarea.t-input").fill(text);
+  await p.locator('button[aria-label="Send"]').click();
+  await p.locator('button[aria-label="Stop"]').first().waitFor({ timeout: 15_000 });
+}
+async function stopTurn(p) {
+  await p.locator('button[aria-label="Stop"]').first().click({ timeout: 3000 }).catch(() => {});
+  await p.locator('.t-scroll .t-inline-status:has-text("is working")').first().waitFor({ state: "detached", timeout: 120_000 }).catch(() => {});
+}
+/** Frames scrollTop went back down the page, the view thrown back. */
+const yanks = (f) => {
+  let n = 0, px = 0;
+  for (let i = 1; i < f.length; i++) if (f[i].st - f[i - 1].st > 1) (n++, (px += f[i].st - f[i - 1].st));
+  return { yanks: n, yankPx: Math.round(px) };
+};
+
+/** The reader's own moves at desktop size. Each should leave the view where the reader put it. */
+async function reader(browser, w) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(instrument);
+  await ctx.addInitScript(() => {
+    const W = window.WebSocket;
+    window.WebSocket = class extends W {
+      constructor(...a) {
+        super(...a);
+        window.__ws = this;
+      }
+    };
+  });
+  const log = (o) => console.log(JSON.stringify({ engine: w, ...o }));
+  // each engine's own: a run lengthens it, and sessions outlive a run
+  const short = w.endsWith("webkit") ? "claude:short-2" : "claude:short-1";
+  const live = async (text, session) => {
+    const p = await open(ctx, session);
+    await sendText(p, text);
+    await p.waitForTimeout(1500);
+    const g = await geom(p);
+    await p.mouse.move(g.x, g.y);
+    return p;
+  };
+
+  // Mouse selection past the top edge: the browser autoscrolls, and nothing may fight it.
+  for (const mode of ["idle", "streaming"]) {
+    const p = mode === "idle" ? await open(ctx) : await live("long reply for the selection check");
+    const g = await geom(p);
+    const before = await scrollTop(p);
+    await paintOn(p);
+    await p.mouse.move(g.x, g.y);
+    await p.mouse.down();
+    await begin(p, "select");
+    await p.mouse.move(g.x, g.top + 30, { steps: 5 });
+    await p.mouse.move(g.x, g.top - 40, { steps: 5 });
+    for (let i = 0; i < 60; i++) {
+      await p.mouse.move(g.x, g.top - 40 - (i % 2));
+      await p.waitForTimeout(25);
+    }
+    const f = await paintOff(p);
+    const writes = await writesSince(p);
+    await p.mouse.up();
+    await p.waitForTimeout(300);
+    await end(p);
+    log({ label: `selection past the top: ${mode}`, reachedPx: Math.round(before - Math.min(...f.map((x) => x.st))), ...yanks(f), writes, selected: await p.evaluate(() => String(getSelection()).length), jump: await jumpShown(p) });
+    if (mode !== "idle") await stopTurn(p);
+    await p.close();
+  }
+  // A click during a stream stops nothing.
+  {
+    const p = await live("long reply for the click check");
+    const g = await geom(p);
+    await p.mouse.click(g.x, g.y);
+    await p.waitForTimeout(600);
+    log({ label: "a click on a stream", jump: await jumpShown(p), fromBottom: await fromBottom(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  // The wheel's sign is not movement.
+  {
+    const p = await live("long reply for the tiny wheel check");
+    await paintOn(p);
+    for (let i = 0; i < 3; i++) {
+      await p.mouse.wheel(0, -1);
+      await p.waitForTimeout(16);
+    }
+    await p.waitForTimeout(1200);
+    log({ label: "three -1 px wheels on a stream", jump: await jumpShown(p), fromBottom: await fromBottom(p), offBottomAtEnd: painted((await paintOff(p)).slice(-20)).offBottom });
+    await stopTurn(p);
+    await p.close();
+  }
+  {
+    const p = await live("long reply for the slow trackpad check");
+    for (let i = 0; i < 40; i++) {
+      await p.mouse.wheel(0, -2);
+      await p.waitForTimeout(16);
+    }
+    await p.waitForTimeout(300);
+    log({ label: "a slow trackpad up on a stream (should leave)", jump: await jumpShown(p), fromBottom: await fromBottom(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  {
+    const p = await live("long reply for the sideways check");
+    for (let i = 0; i < 12; i++) {
+      await p.mouse.wheel(25, i % 3 === 0 ? -1 : 0);
+      await p.waitForTimeout(16);
+    }
+    await p.waitForTimeout(1200);
+    log({ label: "a sideways swipe with deltaY -1", jump: await jumpShown(p), fromBottom: await fromBottom(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  {
+    const p = await open(ctx, short);
+    const g = await geom(p);
+    await p.mouse.move(g.x, g.y);
+    await p.mouse.wheel(0, -100);
+    await p.waitForTimeout(300);
+    const jumpAfterWheel = await jumpShown(p);
+    await sendText(p, "long reply after a wheel on a short session");
+    await p.waitForTimeout(9000);
+    log({ label: "a session too short to scroll", jumpAfterWheel, jump: await jumpShown(p), fromBottom: await fromBottom(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  // Jump to latest while the wheel's inertia is still arriving.
+  {
+    const p = await live("long reply for the inertia check");
+    const g = await geom(p);
+    await p.mouse.wheel(0, -600);
+    await p.waitForTimeout(300);
+    const flick = (async () => {
+      for (let v = 12; v > 0.4; v *= 0.97) {
+        await p.mouse.wheel(0, -v);
+        await p.waitForTimeout(16);
+      }
+    })();
+    await p.waitForTimeout(120);
+    await p.getByRole("button", { name: "Jump to latest" }).click({ force: true, noWaitAfter: true }).catch(() => {});
+    await p.mouse.move(g.x, g.y);
+    await flick;
+    await p.waitForTimeout(900);
+    log({ label: "Jump during inertia", jump: await jumpShown(p), fromBottom: await fromBottom(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  // Keys, after clicking the transcript's text, each on its own.
+  for (const key of ["PageUp", "ArrowUp", "Home", "Shift+Space"])
+    for (const mode of ["idle", "streaming"]) {
+      const p = mode === "idle" ? await open(ctx) : await live(`long reply for the ${key} check`);
+      const g = await geom(p);
+      await p.mouse.click(g.x, g.y);
+      await p.waitForTimeout(250);
+      const before = await scrollTop(p);
+      await paintOn(p);
+      await p.keyboard.press(key);
+      await p.waitForTimeout(100);
+      await p.keyboard.press(key);
+      await p.waitForTimeout(500);
+      const f = await paintOff(p);
+      log({ label: `key ${key}: ${mode}`, movedUp: Math.round(before - Math.min(...f.map((x) => x.st))), ...(key === "Home" ? {} : yanks(f)), jump: await jumpShown(p) }); // Home reaches the top: a page comes in above, its rows kept in place
+      if (mode !== "idle") await stopTurn(p);
+      await p.close();
+    }
+  // A focused card above the viewport: Tab scrolls to it, and it stays there.
+  {
+    const p = await open(ctx);
+    const r = await p.evaluate(() => {
+      const el = document.querySelector(".t-scroll");
+      const c = [...el.querySelectorAll("summary, button, a[href]")].filter((b) => b.getBoundingClientRect().bottom < el.getBoundingClientRect().top - 40).at(-1);
+      if (!c) return null;
+      const n = [...el.querySelectorAll("summary, button, a[href]")];
+      n[n.indexOf(c) + 1]?.focus({ preventScroll: true });
+      return c.textContent.slice(0, 30);
+    });
+    await paintOn(p);
+    await p.keyboard.press("Shift+Tab");
+    await p.waitForTimeout(600);
+    const f = await paintOff(p);
+    log({ label: "Shift+Tab to a card above the viewport", card: r, ...yanks(f), inView: await p.evaluate(() => { const b = document.activeElement.getBoundingClientRect(); const e = document.querySelector(".t-scroll").getBoundingClientRect(); return b.bottom > e.top && b.top < e.bottom; }) });
+    await p.close();
+  }
+  // A dropped socket: a reader far up keeps their place and every page; a follower keeps following.
+  const place = (p) =>
+    p.evaluate(() => {
+      const e = document.querySelector(".t-scroll");
+      const r = e.getBoundingClientRect();
+      const t = document.elementFromPoint(r.left + r.width / 2, r.top + 60)?.closest("[data-id]");
+      const ids = [...e.querySelectorAll("[data-id]")].map((x) => x.dataset.id);
+      return { id: t?.dataset.id, y: Math.round(t?.getBoundingClientRect().top ?? 0), rows: ids.length, doubled: ids.length - new Set(ids).size };
+    });
+  const up = async (p, n) => {
+    const g = await geom(p);
+    await p.mouse.move(g.x, g.y);
+    for (let i = 0; i < n; i++) {
+      await p.mouse.wheel(0, -1000);
+      await p.waitForTimeout(450);
+    }
+    await p.waitForTimeout(1000);
+  };
+  for (const flood of [false, true]) {
+    const p = await open(ctx, "claude:long-1");
+    await up(p, 12);
+    const before = await place(p);
+    if (flood) {
+      await sendText(p, "flood past the page");
+      await p.evaluate(() => window.__ws.close());
+    } else await p.evaluate(() => window.__ws.close());
+    await p.waitForTimeout(6000);
+    const after = await place(p);
+    log({ label: `reconnect, far up${flood ? ", 120 messages came meanwhile" : ""}`, before, after, kept: before.id === after.id && Math.abs(before.y - after.y) <= 1, jump: await jumpShown(p) });
+    const end = await p.evaluate(() => [...document.querySelectorAll(".t-scroll [data-id]")].length);
+    await p.getByRole("button", { name: "Jump to latest" }).click({ timeout: 3000 }).catch(() => {});
+    await p.waitForTimeout(1000);
+    const last = await p.evaluate(() => { const r = [...document.querySelectorAll(".t-scroll [data-id]")]; const ids = r.map((x) => x.dataset.id); return { rows: ids.length, doubled: ids.length - new Set(ids).size, tail: r.at(-1)?.textContent.slice(0, 30) }; });
+    log({ label: `  then Jump to latest`, mounted: end, last });
+    if (await p.locator('button[aria-label="Stop"]').first().isVisible()) await stopTurn(p);
+    await p.close();
+  }
+  {
+    const p = await live("long reply for the reconnect check");
+    await p.evaluate(() => window.__ws.close());
+    await p.waitForTimeout(6000);
+    const f = await fromBottom(p);
+    log({ label: "reconnect, following a stream", fromBottom: f, jump: await jumpShown(p), streaming: await working(p) });
+    await stopTurn(p);
+    await p.close();
+  }
+  // The turn's end, the "is working" line going: following, and reading just above the end.
+  for (const mode of ["following", "reading"]) {
+    const p = await open(ctx, short);
+    await sendText(p, "hello there");
+    if (mode === "reading") {
+      await p.waitForTimeout(1000);
+      const g = await geom(p);
+      await p.mouse.move(g.x, g.y);
+      await p.mouse.wheel(0, -20);
+    }
+    await paintOn(p);
+    await p.locator('button[aria-label="Send"]').waitFor({ timeout: 30_000 });
+    await p.waitForTimeout(600);
+    const f = await paintOff(p);
+    log({ label: `the turn's end: ${mode}`, ...painted(f.slice(-30)) });
+    await p.close();
+  }
+  await ctx.close();
+}
+
+/** A phone finger that reverses, on a stream it follows (real touch). */
+async function finger(browser) {
+  const ctx = await browser.newContext({ ...devices["Pixel 7"] });
+  await ctx.addInitScript(instrument);
+  const run = async (label, path) => {
+    const p = await open(ctx);
+    await sendText(p, "long reply for the finger check");
+    await p.waitForTimeout(1500);
+    const cdp = await ctx.newCDPSession(p);
+    const g = await geom(p);
+    const x = Math.round(g.x);
+    let y = Math.round(g.y);
+    await paintOn(p);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (const d of path) {
+      y += d;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+      await p.waitForTimeout(16);
+    }
+    const held = (await p.evaluate(() => window.__scroll.painted.frames.length));
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await p.waitForTimeout(1200);
+    const f = await paintOff(p);
+    console.log(JSON.stringify({ engine: "finger chromium", label, jump: await jumpShown(p), fromBottom: await fromBottom(p), afterLift: yanks(f.slice(held)) }));
+    await stopTurn(p);
+    await p.close();
+  };
+  await run("up then back, still above the start", [...Array(6).fill(-30), ...Array(5).fill(30)]);
+  await run("up a lot, a real swipe back", [...Array(10).fill(-30), ...Array(9).fill(30)]);
+  await run("down the screen, a plain scroll up", Array(10).fill(30));
+  await ctx.close();
+}
+
+/** A long code block streaming at desktop size, following: scrollTop only ever goes up the page. At paint. */
+async function codeStream(browser, w) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(instrument);
+  const p = await open(ctx);
+  await sendText(p, "code reply for the clamp check");
+  await p.waitForTimeout(800);
+  await paintOn(p);
+  await p.waitForTimeout(25_000);
+  console.log(JSON.stringify({ engine: w, label: "a code block streaming", ...painted(await paintOff(p)) }));
+  await stopTurn(p);
+  await ctx.close();
 }
 
 /** Resident memory of the processes under `root` (the largest: the page's web or renderer process). */
@@ -626,7 +982,7 @@ async function huge(browser, w) {
   await ctx.close();
 }
 
-const which = process.argv.slice(2).length ? process.argv.slice(2) : ["webkit", "chromium", "desktop"];
+const which = process.argv.slice(2).length ? process.argv.slice(2) : ["webkit", "chromium", "desktop", "desktop-webkit", "reader-webkit", "reader-chromium", "finger-chromium", "code-webkit", "code-chromium"];
 for (const w of which) {
   const browser = await (w.endsWith("webkit") ? webkit : chromium).launch();
   try {
@@ -634,8 +990,20 @@ for (const w of which) {
       await huge(browser, w.slice(5));
       continue;
     }
-    if (w === "desktop") {
-      console.log(JSON.stringify({ engine: "desktop chromium", ...(await desktop(browser)) }));
+    if (w === "desktop" || w === "desktop-webkit") {
+      console.log(JSON.stringify({ engine: w === "desktop" ? "desktop chromium" : w, ...(await desktop(browser)) }));
+      continue;
+    }
+    if (w.startsWith("reader-")) {
+      await reader(browser, w);
+      continue;
+    }
+    if (w === "finger-chromium") {
+      await finger(browser);
+      continue;
+    }
+    if (w.startsWith("code-")) {
+      await codeStream(browser, w);
       continue;
     }
     // Playwright refuses wheel input in mobile WebKit: the iPhone profile minus isMobile (same
