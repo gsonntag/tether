@@ -338,8 +338,11 @@ input queue, a subagent's hooks, /compact), so Tether doesn't try. What it keeps
   ("Claude needs your permission to use Write", "Claude is asking you something."), and pushed as
   ever. It clears only on evidence (the TUI's screen shows its prompt again, no dialog, for a few
   seconds) or when the TUI is left; a hook never clears it.
-- **Settings as last seen**: the mode the hooks last reported; the model and effort chips are
-  disabled ("Set in the terminal (last seen: …)").
+- **Settings as last seen**: the mode the TUI's status line last showed or its hooks last reported
+  (Shift+Tab alone fires no hook); the model and effort chips are disabled ("Set in the terminal
+  (last seen: …)"). When the TUI goes, Back to Tether or by itself, the session is never left looser
+  than it last showed: the status line and the store's entry from that TUI, the tighter if they
+  differ, and at most `default` if neither says.
 - **Messages wait**: the composer never types into the TUI; what you send goes to Tether's queue,
   held "terminal", and is sent after Back to Tether.
 
@@ -356,7 +359,7 @@ If the TUI exits by itself (you typed `/exit`), the mode becomes `stored`.
 ### Project shells
 
 The terminal panel lists the project's shells, then the agent's entry. **+ New shell** opens a plain
-`$SHELL` in the project folder (`tmux -L tether` window `shell:<projectKey>:<n>`). Shells belong to the
+`$SHELL` in the project folder (`tmux -L tether` session `sh-<projectKey>-<n>`). Shells belong to the
 project, not the session. They persist across closing the panel and runner restarts until you close
 them (× in the list, or `exit`, which does the same: the next shell comes forward, or the panel
 closes), so a dev server left running is still there next time.
@@ -381,10 +384,12 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   agent waits on you, and the phone doesn't count as looking at the session, so notifications reach
   it. A swipe scrolls a terminal (a drag goes to tmux as wheel input, with a short glide); a tap
   focuses it. Keys typed during a reattach are held a few seconds and sent.
-- On desktop the panel sits beside the transcript, and the sidebar's and the panel's inner edges
+- With room the panel sits beside the transcript, and the sidebar's and the panel's inner edges
   drag to change their width (arrow keys too; a double click goes back to the default). The widths
-  are kept per device; the transcript never gets narrower than 300 px, and the terminal refits as
-  it goes. Phones have no handles. On a phone it is full screen, with a **Chat**
+  are kept per device; the transcript never gets narrower than 300 px, the panel 60 columns, and
+  the terminal refits as it goes. Without room for that (the space now, so rotating and resizing
+  count), or in a window under 500 px high, it behaves as on a phone. Touch screens have no handles.
+  On a phone it is full screen, with a **Chat**
   button that tucks it behind the transcript (still attached, the shell untouched) and a pill
   ("Back to the shell", "Back to Claude Code") that brings it back in one tap. While open, ❯_
   closes the panel.
@@ -565,8 +570,8 @@ questions from any device, idempotent answers, surviving a runner restart.
 it on desktop; a second answer says "Already answered".
 
 **P3: Terminal mode.** tmux control, PTY bridge, handoff both ways, read-only tail, phone key bar,
-composer into the PTY, hooks for turn-end and "needs you", the stop-and-open prompt with held queued
-messages, project shells.
+composer messages held for Back to Tether, hooks for "needs you", the stop-and-open prompt with held
+queued messages, project shells.
 *Accept:* open the terminal mid-session, use a Claude-only feature (e.g. `/model` picker), go back to
 Tether, and the next message continues the same conversation; the terminal survives a runner restart;
 phone and desktop attach together without a garbled layout; a project shell running a dev server is

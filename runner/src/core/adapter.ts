@@ -126,6 +126,11 @@ export interface Adapter {
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
   /** A session whose store holds no conversation, only local commands (/exit, /clear typed in an untouched TUI). */
   neverStarted?(nativeId: string, projectPath: string): Promise<boolean>;
+  /**
+   * The session's store on its permission mode: how many mode entries it has, and the last one's mode.
+   * Claude writes one with each turn and when it exits, so Shift+Tab alone reaches it only then.
+   */
+  storedMode?(nativeId: string, projectPath: string): Promise<{ mode?: string; entries: number }>;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
   /**
@@ -157,7 +162,7 @@ export interface TerminalOpts extends StartOpts {
   /** a new session: the TUI creates it under `nativeId` (Claude: --session-id) instead of resuming */
   fresh?: boolean;
   /**
-   * Where the TUI reports turn ends and "needs you" (handoff harnesses, SPEC §8): the adapter
+   * Where the TUI reports "needs you" and its mode (handoff harnesses, SPEC §8): the adapter
    * wires its harness's own hooks to POST there (terminal/hooks.ts).
    */
   report?: { socketPath: string; sessionId: string; tui?: string };
@@ -174,6 +179,10 @@ export interface ScreenRead {
   input?: string;
   /** the prompt's mode (idle or busy): `normal`, or a shell line, a recalled prompt, a history search, vim's NORMAL mode */
   prompt?: "normal" | "shell" | "history" | "search" | "vim";
+  /** the permission mode its status line shows (idle or busy), when the harness can tell */
+  mode?: string;
+  /** its status line shows background shells: quitting stops them */
+  background?: boolean;
 }
 
 /** One step of quitting a TUI: tmux key names, literal text, or a pause. */

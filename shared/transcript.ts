@@ -212,6 +212,8 @@ export interface TerminalState {
   returning?: boolean;
   /** the TUI is waiting on the person (a permission prompt, a question): what it said */
   attention?: string;
+  /** the TUI's status line shows background shells: quitting it stops them */
+  background?: boolean;
 }
 
 export interface LiveState {

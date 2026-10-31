@@ -481,7 +481,7 @@ while it's open the key bar and the line are off.
 
 K7. **Widths, desktop.** Drag the sidebar's right edge and the terminal panel's left edge (the
 resize cursor and the grip show on hover).
-→ Each follows the mouse: sidebar 200–480 px, panel from 320 px, the transcript never under 300 px.
+→ Each follows the mouse: sidebar 200–480 px, panel from 60 columns, the transcript never under 300 px.
 The terminal refits and the PTY follows (`tmux display -p '#{pane_width}'` equals xterm's columns).
 Arrow keys on a focused handle move it (Shift for more). Reload: the widths are still there, on
 this device only. A double click on a handle goes back to the default. A narrower window never

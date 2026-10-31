@@ -4,6 +4,7 @@
 
 import { getSessionInfo, listSessions, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Msg, ProjectInfo, SessionSummary } from "../../../../shared/transcript";
 import { claudePick, lastLineTime } from "../lastActivity";
@@ -12,12 +13,18 @@ import { cleanUserText } from "./content";
 import { readHistory } from "./history";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 
+/**
+ * Claude's own summary, if it has one: the SDK falls back to the last or first prompt, and a local
+ * command (/exit) or the first prompt repeated says nothing of its own.
+ */
+const ownSummary = (s: Pick<SDKSessionInfo, "summary" | "firstPrompt">) => (s.summary && s.summary !== s.firstPrompt && !cleanUserText(s.summary).trimStart().startsWith("/") ? s.summary : undefined);
+
 /** The title the sidebar shows: yours (/rename), Claude's, or the first prompt. */
 export function titleOf(s: Pick<SDKSessionInfo, "customTitle" | "summary" | "firstPrompt">): string {
   // A slash command (/clear, /model) says nothing about the session.
   // Tether's own messages are titled by what they are ("$ npm test"), never by their marker.
   const first = titleText(cleanUserText(s.firstPrompt ?? "")).trim();
-  const raw = s.customTitle || s.summary || (first.startsWith("/") ? "" : first) || "Untitled";
+  const raw = s.customTitle || ownSummary(s) || (first.startsWith("/") ? "" : first) || "Untitled";
   return raw.replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled";
 }
 
@@ -47,13 +54,35 @@ export async function claudeNeverStarted(nativeId: string, projectPath: string):
 
 export const onlyLocalCommands = (msgs: Msg[]) => msgs.every((m) => m.role === "notice" || (m.role === "user" && m.parts.every((p) => p.type === "text" && p.text.trimStart().startsWith("/"))));
 
+/** Claude's `permission-mode` entries in a session's store: how many, and the last one's mode. */
+export async function claudeStoredMode(nativeId: string, projectPath: string): Promise<{ mode?: string; entries: number }> {
+  const file = sessionFile(splitNative(nativeId).session, projectPath);
+  const text = file ? await readFile(file, "utf8").catch(() => "") : "";
+  return storedModeIn(text);
+}
+
+export function storedModeIn(text: string) {
+  let mode: string | undefined;
+  let entries = 0;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"permission-mode"')) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e.type !== "permission-mode" || typeof e.permissionMode !== "string") continue;
+      mode = e.permissionMode;
+      entries++;
+    } catch {}
+  }
+  return { mode, entries };
+}
+
 /** Every session (in one folder when `projectPath` is given) with activity since `since`. */
 export async function claudeSessions(opts: { projectPath?: string; since?: number } = {}): Promise<SessionSummary[]> {
   const list = opts.projectPath ? await listSessions({ dir: opts.projectPath, includeWorktrees: false }) : await listSessions();
   // The file's mtime is never older than its last message: a cheap first cut.
   const recent = list.filter((s) => s.cwd && (!opts.since || s.lastModified >= opts.since) && (!opts.projectPath || s.cwd === opts.projectPath));
   // Only a session with no title of its own and a slash command (or nothing) first can be empty.
-  const maybeEmpty = (s: SDKSessionInfo) => !s.customTitle && !s.summary && (!cleanUserText(s.firstPrompt ?? "").trim() || cleanUserText(s.firstPrompt ?? "").trimStart().startsWith("/"));
+  const maybeEmpty = (s: SDKSessionInfo) => !s.customTitle && !ownSummary(s) && (!cleanUserText(s.firstPrompt ?? "").trim() || cleanUserText(s.firstPrompt ?? "").trimStart().startsWith("/"));
   const started = await Promise.all(recent.map(async (s) => (maybeEmpty(s) && (await claudeNeverStarted(s.sessionId, s.cwd!)) ? undefined : s)));
   const out = await Promise.all(started.filter((s) => s !== undefined).map((s) => summaryOf(s, s.cwd!)));
   return out.filter((s) => !opts.since || s.updatedAt >= opts.since);

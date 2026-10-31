@@ -4,7 +4,8 @@
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ResizeHandle } from "@astryxdesign/core/Resizable";
-import { clampWidth, panelMax, PANEL_MIN, readWidth, sidebarMax, SIDEBAR_MIN, writeWidth } from "../widths";
+import { clampWidth, panelFloor, panelMax, readWidth, sidebarMax, SIDEBAR_MIN, writeWidth } from "../widths";
+import { cellWidth } from "./useTermCover";
 
 const phoneQuery = "(pointer: coarse), (max-width: 767px)";
 const useDesktop = () =>
@@ -122,7 +123,7 @@ export function PanelHandle() {
     <WidthHandle
       storageKey="tether.width.panel"
       label="Resize terminal"
-      min={PANEL_MIN}
+      min={panelFloor(cellWidth())}
       max={(el) => panelMax(el.parentElement?.clientWidth ?? 0)}
       sized={(el) => el.nextElementSibling as HTMLElement | null}
       apply={(el, w) => {

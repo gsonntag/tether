@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
@@ -17,6 +17,7 @@ import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
+import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
 
 /** A session to focus the composer of once it opens (a new session just created). */
@@ -41,6 +42,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const composer = useRef<ComposerHandle>(null);
   const root = useRef<HTMLDivElement>(null);
   useFitViewport(root);
+  const [row, setRow] = useState<HTMLDivElement | null>(null);
+  const rootRef = useCallback((el: HTMLDivElement | null) => {
+    root.current = el;
+    setRow(el);
+  }, []);
+  /** No room beside the transcript: the panel goes over the chat, as on a phone. */
+  const cover = useTermCover(row);
   const [panel, setPanel] = useState<PanelState | null>(() => {
     if (terminalNext !== k) return null;
     terminalNext = undefined;
@@ -71,12 +79,16 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // The TUI went away (Back to Tether, or it exited), whichever tab was in front: opening it again
   // is a new handoff, asked first when busy, never a reattach to what was (SPEC §8).
-  // A phone's panel covers the session: it doesn't count as looking at it (presence.ts).
-  const covering = !!panel && !panel.hidden && typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
+  // A panel over the chat covers the session: it doesn't count as looking at it (presence.ts).
+  const covering = !!panel && !panel.hidden && cover;
   useEffect(() => {
     setSessionCovered(covering);
     return () => setSessionCovered(false);
   }, [covering]);
+  // Room again (rotated, resized): a panel tucked behind the chat has nowhere to hide, it's beside it.
+  useEffect(() => {
+    if (!cover) setPanel((p) => (p?.hidden ? { ...p, hidden: false } : p));
+  }, [cover]);
   // The handoff question belongs to the agent's tab: going to a shell dismisses it.
   const panelTab = panel?.tab;
   useEffect(() => {
@@ -203,7 +215,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       )}
       {(!panel || panel.hidden) && askBack && !state.terminal?.returning && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
-          <span>{backQuestion(HARNESS_LABELS[summary.harness])}</span>
+          <span>{backQuestion(HARNESS_LABELS[summary.harness], state.terminal?.background)}</span>
           <Button
             label="Close and go back"
             size="sm"
@@ -221,7 +233,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   return (
     <SessionCtx.Provider value={ctx}>
-      <div className={`t-session-split${panel ? " with-terminal" : ""}`} ref={root}>
+      <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
         <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={terminalChip} capabilities={view.capabilities} />
         {ask && !panelShown && (
@@ -295,7 +307,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           />
         )}
       </div>
-      {panel && <PanelHandle />}
+      {panel && !cover && <PanelHandle />}
       {panel && (
         <TerminalPanel
           runnerId={runnerId}
@@ -303,6 +315,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           state={state}
           panel={panel}
           setPanel={setPanel}
+          cover={cover}
           shared={shared}
           onOpenTui={() => openTerminal()}
           onClose={() => {

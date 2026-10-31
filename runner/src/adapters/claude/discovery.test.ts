@@ -45,6 +45,10 @@ test("titles: yours, then Claude's, then the first prompt", () => {
   expect(titleOf({ firstPrompt: "<command-name>/clear</command-name>" } as any)).toBe("Untitled");
   expect(titleOf({ firstPrompt: "/clear", summary: "Fresh start" } as any)).toBe("Fresh start");
   expect(titleOf({} as any)).toBe("Untitled");
+  // The SDK's summary falls back to the prompts: that isn't a title of Claude's.
+  expect(titleOf({ firstPrompt: "/exit", summary: "/exit" } as any)).toBe("Untitled");
+  expect(titleOf({ firstPrompt: "Say hi", summary: "Say hi" } as any)).toBe("Say hi");
+  expect(titleOf({ firstPrompt: "/clear", summary: "/exit" } as any)).toBe("Untitled");
 });
 
 test("a store with only local commands never started; one with a prompt or an answer did", async () => {
@@ -54,4 +58,11 @@ test("a store with only local commands never started; one with a prompt or an an
   expect(onlyLocalCommands([user("/clear"), { id: "n", role: "notice", ts: 2, parts: [{ type: "text", text: "Kept model" }] }])).toBe(true);
   expect(onlyLocalCommands([user("/model"), user("Say hi.")])).toBe(false);
   expect(onlyLocalCommands([user("/review"), { id: "a", role: "assistant", ts: 2, parts: [{ type: "text", text: "ok" }] }])).toBe(false);
+});
+
+test("the store's permission-mode entries: how many, and the last", async () => {
+  const { storedModeIn } = await import("./discovery");
+  const line = (m: string) => JSON.stringify({ type: "permission-mode", permissionMode: m, sessionId: "x" });
+  expect(storedModeIn("")).toEqual({ mode: undefined, entries: 0 });
+  expect(storedModeIn([line("default"), '{"type":"user","text":"\\"permission-mode\\""}', "{half", line("acceptEdits")].join("\n"))).toEqual({ mode: "acceptEdits", entries: 2 });
 });

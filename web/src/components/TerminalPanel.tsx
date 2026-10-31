@@ -2,9 +2,9 @@
 // which keeps driving the agent. A list on the left (a row on a phone) holds the project's shells,
 // + New shell, and an entry named after the agent ("Claude Code", "Codex"): only clicking that entry
 // drives the agent from its own terminal UI (Claude: a handoff, asked first when busy; Codex: its
-// TUI joins). Beside the transcript on desktop; full screen on a phone, where a key bar and an
-// input line stand in for the keys a phone keyboard lacks, and Chat tucks the panel away (still
-// attached). Copy shows a terminal's text, scrollback included, where it can be selected natively.
+// TUI joins). Beside the transcript when there's room (useTermCover); else full screen over it, as
+// on a phone, where Chat tucks the panel away (still attached). On touch a key bar and an input line
+// stand in for the keys a phone keyboard lacks. Copy shows a terminal's text, scrollback included, where it can be selected natively.
 //
 // Which surface drives the agent shows on its entry ("Claude Code · driving", "Codex · joined") and,
 // for a handoff, in the transcript's banner; a shell needs no words.
@@ -45,7 +45,7 @@ const touch = () => typeof matchMedia === "function" && (matchMedia("(pointer: c
  * Back to Tether, asked every time (SPEC §8): Tether doesn't follow the TUI's turns, so it can't
  * tell whether one is still running.
  */
-export const backQuestion = (harness: string) => `Close ${harness} in the terminal? If it's still working, that turn stops and anything in its own input queue is lost.`;
+export const backQuestion = (harness: string, background?: boolean) => `Close ${harness} in the terminal? If it's still working, that turn stops and anything in its own input queue is lost.${background ? " Background shells stop too." : ""}`;
 
 export function TerminalPanel({
   runnerId,
@@ -53,6 +53,7 @@ export function TerminalPanel({
   state,
   panel,
   setPanel,
+  cover,
   onOpenTui,
   onClose,
   ask,
@@ -63,6 +64,8 @@ export function TerminalPanel({
   state: LiveState;
   panel: PanelState;
   setPanel: Dispatch<SetStateAction<PanelState | null>>;
+  /** full width over the chat, with Chat to tuck it away: no room beside the transcript */
+  cover: boolean;
   /** opens the TUI tab the way the Terminal button does (asking first while a turn runs) */
   onOpenTui: () => void;
   onClose: () => void;
@@ -187,7 +190,7 @@ export function TerminalPanel({
     void call(
       rpc(runnerId, "endTerminal", { sessionId: session.id }).then(() => {
         // Back in Tether: the transcript is where to look (unless a shell is in front).
-        if (panel.tab === "tui") onClose();
+        if (tabNow.current === "tui") onClose();
       }),
     );
   };
@@ -283,8 +286,8 @@ export function TerminalPanel({
             icon={<Icon icon={DocumentDuplicateIcon} />}
             onClick={() => void openCopy()}
           />
-          {narrow() && (
-            // A phone: the chat, with the terminal kept as it is behind it.
+          {cover && (
+            // Over the chat: the chat, with the terminal kept as it is behind it.
             <span className="t-term-chat">
               <Button label="Chat" size="sm" variant="secondary" icon={<Icon icon={ChatBubbleLeftRightIcon} size="sm" />} onClick={() => setPanel({ ...panel, hidden: true })} />
               {needsYou && <span className="t-dot waiting" role="img" aria-label="Needs you" />}
@@ -296,14 +299,14 @@ export function TerminalPanel({
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
-          <span>{backQuestion(harness)}</span>
+          <span>{backQuestion(harness, state.terminal?.background)}</span>
           <Button label="Close and go back" size="sm" variant="primary" onClick={() => back()} />
           <Button label="Stay" size="sm" variant="ghost" onClick={() => setAskBack(false)} />
         </div>
       )}
       {error && <div className="t-inline-status error t-term-error">{error}</div>}
       <div className="t-term-main">
-        <div className="t-term-tabs" role="tablist" aria-label="Terminals" aria-orientation={narrow() ? "horizontal" : "vertical"}>
+        <div className="t-term-tabs" role="tablist" aria-label="Terminals" aria-orientation={cover ? "horizontal" : "vertical"}>
           {/* The shells scroll; the agent's entry stays put at the end, never clipped. */}
           <div className="t-term-shells" role="presentation">
           {shells.map((s) => (
@@ -354,7 +357,7 @@ export function TerminalPanel({
                 onStatus={onTuiStatus}
                 onError={(m) => {
                   setError(m);
-                  setPanel({ ...panel, wantTui: false, stop: false });
+                  setPanel((p) => p && { ...p, wantTui: false, stop: false });
                 }}
               />
             ) : (

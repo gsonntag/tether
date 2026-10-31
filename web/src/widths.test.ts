@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { clampWidth, panelMax, readWidth, sidebarMax, SIDEBAR_MAX, TRANSCRIPT_MIN, writeWidth } from "./widths";
+import { clampWidth, panelCovers, panelFloor, panelMax, readWidth, sidebarMax, SIDEBAR_MAX, TRANSCRIPT_MIN, writeWidth } from "./widths";
 
 const memory = () => {
   const m = new Map<string, string>();
@@ -51,4 +51,18 @@ test("storage that refuses (private mode, quota) neither throws nor returns a wi
   expect(readWidth(s, "k")).toBeUndefined();
   expect(() => writeWidth(s, "k", 300)).not.toThrow();
   expect(() => writeWidth(s, "k", undefined)).not.toThrow();
+});
+
+test("the panel goes over the chat when it wouldn't get 60 columns, or on a short window", () => {
+  const cell = 7.8;
+  expect(panelFloor(cell)).toBe(640);
+  const at = (width: number, height: number, side = 260) => panelCovers({ row: width - side, width, height, cell });
+  // Desktop, side by side.
+  expect(at(1280, 800)).toBe(false);
+  expect(at(1920, 1080)).toBe(false);
+  // Phones, either way up, and tablets with the sidebar there.
+  for (const [w, h] of [[375, 812], [667, 375], [844, 390], [932, 430], [768, 1024], [1024, 768], [1024, 700]]) expect(at(w!, h!)).toBe(true);
+  // A wide sidebar takes the room; a narrow one gives it back.
+  expect(at(1180, 800, 200)).toBe(false);
+  expect(at(1180, 800, 300)).toBe(true);
 });

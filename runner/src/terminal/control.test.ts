@@ -84,6 +84,8 @@ class FakeTmux extends Tmux {
  * else working. "BOX:<text>" is what is typed at its prompt; SHELL and HIST its prompt's mode.
  */
 const fakeScreen = (screen: string): ScreenRead => ({
+  ...(screen.includes("MODE:") ? { mode: screen.split("MODE:")[1]!.split(" ")[0] } : {}),
+  ...(screen.includes("BG") ? { background: true } : {}),
   state: !screen || screen.includes("IDLE") ? "idle" : screen.includes("ASK") ? "asking" : screen.includes("PICK") ? "picker" : screen.includes("ODD") ? "unknown" : "busy",
   prompt: screen.includes("SHELL") ? ("shell" as const) : screen.includes("HIST") ? ("history" as const) : screen.includes("VIM") ? ("vim" as const) : ("normal" as const),
   ...(screen.includes("BOX:") ? { input: screen.split("BOX:")[1] } : {}),
@@ -105,6 +107,7 @@ class TermAdapter extends FakeAdapter {
   }
   /** how the fake TUI quits at its empty prompt (unset: the keys only) */
   quitAtPrompt?: QuitStep[];
+  storedMode?: (nativeId: string, projectPath: string) => Promise<{ mode?: string; entries: number }>;
   override terminalCommand(nativeId: string, _p: string, opts: TerminalOpts) {
     this.launches.push({ nativeId, opts });
     return { argv: ["tui", opts.fresh ? "--session-id" : "--resume", nativeId], quit: QUIT, quitAtPrompt: this.quitAtPrompt, screen: fakeScreen };
@@ -628,6 +631,7 @@ describe("review round 8: the edges of the simple model", () => {
     await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
     term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: BNEW, source: "resume" });
     await until(() => core.sessions.get(`claude:${BNEW}`)?.state.mode === "terminal");
+    term.report({ sessionId: "claude:s1", event: "PreToolUse", permissionMode: "acceptEdits" });
     expect(state(core, `claude:${BNEW}`)).toMatchObject({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
     expect(core.o.prefs.get(`claude:${BNEW}`)).toMatchObject({ model: "haiku", effort: "low", permissionMode: "acceptEdits" });
     await term.end(`claude:${BNEW}`);
@@ -824,4 +828,98 @@ test("the TUI's permission mode (Shift+Tab there) comes with every hook: shown, 
   expect(core.o.prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
   await expect(live.setPermissionMode("claude:s1", "default")).rejects.toThrow("terminal is driving");
   expect(state(core, "claude:s1").permissionMode).toBe("acceptEdits");
+});
+
+describe("review round 9", () => {
+  const S = "claude:s1";
+  /** a stored session with its TUI up, in `mode`, and a fake store of mode entries */
+  const inTui = async (mode: string, entries: { mode?: string; entries: number } = { entries: 3, mode }) => {
+    const x = setup();
+    const store = { ...entries };
+    x.adapter.storedMode = async () => store;
+    x.adapter.addStored("s1", []);
+    await x.core.subscribe(S);
+    await x.live.setPermissionMode(S, mode);
+    await x.term.open({ sessionId: S, attachId: "a1", cols: 80, rows: 24 });
+    return { ...x, store };
+  };
+
+  test("Shift+Tab with no hook after it: the mode on the status line goes with Back, and shows before it", async () => {
+    const { adapter, core, term, tmux } = await inTui("acceptEdits");
+    tmux.screens.set("t-claude-s1", "IDLE MODE:default");
+    await until(() => state(core, S).permissionMode === "default");
+    expect(core.o.prefs.get(S).permissionMode).toBe("default");
+    await term.end(S);
+    expect(adapter.drivers.at(-1)!.opts.permissionMode).toBe("default");
+  });
+
+  test("Shift+Tab just before Back: read off the screen as it quits", async () => {
+    const { adapter, term, tmux } = await inTui("acceptEdits");
+    tmux.screens.set("t-claude-s1", "IDLE MODE:default");
+    await term.end(S);
+    expect(adapter.drivers.at(-1)!.opts.permissionMode).toBe("default");
+  });
+
+  test("the entry Claude wrote as it exited counts, one from before this TUI doesn't", async () => {
+    const a = await inTui("default", { entries: 3, mode: "acceptEdits" });
+    a.term.report({ sessionId: S, event: "PreToolUse", permissionMode: "default" });
+    await a.term.end(S);
+    expect(a.adapter.drivers.at(-1)!.opts.permissionMode).toBe("default");
+    const b = await inTui("acceptEdits");
+    Object.assign(b.store, { entries: 4, mode: "plan" });
+    await b.term.end(S);
+    expect(b.adapter.drivers.at(-1)!.opts.permissionMode).toBe("plan");
+  });
+
+  test("screen and store differ: the tighter", async () => {
+    const { adapter, term, tmux, store } = await inTui("acceptEdits");
+    tmux.screens.set("t-claude-s1", "ODD MODE:default");
+    term.report({ sessionId: S, event: "PreToolUse", permissionMode: "default" });
+    Object.assign(store, { entries: 4, mode: "acceptEdits" });
+    await term.end(S);
+    expect(adapter.drivers.at(-1)!.opts.permissionMode).toBe("default");
+  });
+
+  test("a killed TUI, neither screen nor store knows: at most default; plan stays", async () => {
+    for (const [from, to] of [["bypassPermissions", "default"], ["acceptEdits", "default"], ["plan", "plan"]] as const) {
+      const { core, tmux } = await inTui(from);
+      tmux.sessions.clear();
+      await until(() => state(core, S).mode === "stored");
+      expect(state(core, S).permissionMode).toBe(to);
+      expect(core.o.prefs.get(S).permissionMode).toBe(to);
+    }
+  });
+
+  test("background shells on the status line reach the state, for the question", async () => {
+    const { core, tmux } = await inTui("default");
+    tmux.screens.set("t-claude-s1", "IDLE BG");
+    await until(() => state(core, S).terminal?.background === true);
+    tmux.screens.set("t-claude-s1", "IDLE");
+    await until(() => !state(core, S).terminal?.background);
+  });
+
+  test("/clear in a session started in the terminal: once its store has it, a message resumes it", async () => {
+    const { adapter, core, live, term } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    adapter.addStored("new-1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hello" }] }], { projectPath: dir });
+    const next = "00000009-0000-4000-8000-000000000000";
+    term.report({ sessionId, event: "SessionStart", nativeId: next, source: "clear" });
+    await until(() => state(core, sessionId).mode === "stored");
+    await until(() => !core.sessions.get(sessionId)!.fresh);
+    await live.send(sessionId, "still there?");
+    expect(adapter.resumed).toContain("new-1");
+  });
+
+  test("a resume that fails on Back to Tether leaves the queue paused, with Resume", async () => {
+    const { adapter, core, live, term } = await inTui("default");
+    await live.send(S, "later");
+    adapter.startError = "boom";
+    await term.end(S);
+    expect(state(core, S)).toMatchObject({ mode: "stored", error: "boom", queueHeld: true, queueHeldBy: "stopped" });
+    adapter.startError = undefined;
+    await live.queue.resume(S);
+    await until(() => state(core, S).queue.length === 0);
+    expect(adapter.drivers.length).toBe(1);
+  });
 });

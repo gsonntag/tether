@@ -823,7 +823,8 @@
 }
 .t-term-panel {
   flex: 1 1 0;
-  min-width: 0;
+  /* 60 columns, the least a side panel gets (useTermCover). */
+  min-width: var(--t-panel-min, 0);
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--t-border);
@@ -913,6 +914,17 @@
   border-bottom: 1px solid var(--t-border);
   background: var(--t-soft);
   color: var(--color-text-primary);
+}
+.t-term-ask > span {
+  min-width: 0;
+}
+/* Under the banner's text: as wide as the banner, the question wrapping, the buttons below it. */
+.t-term-banner > .t-term-ask {
+  flex: 1 1 100%;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
 }
 .t-term-error {
   padding: 6px 12px;
@@ -1081,28 +1093,32 @@
   outline-offset: -2px;
 }
 
+/* No room for a usable panel beside the transcript (useTermCover, on any screen): over the chat. */
+.t-term-cover > .t-term-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  min-width: 0;
+  border-left: none;
+}
+.t-session-split.t-term-cover > .t-session {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+}
+/* Tabs get a row of their own, so every shell's × and the + stay in reach. */
+.t-term-cover .t-term-head {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.t-term-cover .t-term-tabs {
+  order: 2;
+  flex-basis: 100%;
+}
+.t-term-cover .t-term-actions {
+  margin-left: auto;
+}
 @media (max-width: 767px) {
-  .t-term-panel {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    border-left: none;
-  }
-  .t-session-split.with-terminal > .t-session {
-    max-width: none;
-  }
-  /* Tabs get a row of their own, so every shell's × and the + stay in reach. */
-  .t-term-head {
-    flex-wrap: wrap;
-    row-gap: 4px;
-  }
-  .t-term-tabs {
-    order: 2;
-    flex-basis: 100%;
-  }
-  .t-term-actions {
-    margin-left: auto;
-  }
   .t-key {
     flex: 1 1 0;
     min-width: 30px;
@@ -1575,14 +1591,12 @@
 .t-term-return:focus-visible {
   outline: 2px solid var(--color-accent);
 }
-@media (max-width: 767px) {
-  .t-term-panel.hidden {
-    display: none;
-  }
-  .t-term-return {
-    display: inline-flex;
-    gap: 6px;
-  }
+.t-term-cover > .t-term-panel.hidden {
+  display: none;
+}
+.t-term-cover .t-term-return {
+  display: inline-flex;
+  gap: 6px;
 }
 
 .t-edit-actions {
@@ -1802,41 +1816,39 @@
   -webkit-user-select: text;
   -webkit-touch-callout: default;
 }
-@media (max-width: 767px) {
-  /* A phone: the list is a row under the header. */
-  .t-term-main {
-    flex-direction: column;
-  }
-  .t-term-main > .t-term-tabs {
-    width: auto;
-    flex-direction: row;
-    align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: none;
-    border-bottom: 1px solid #2a2c31;
-    padding: 4px 6px;
-    order: 0;
-    flex-basis: auto;
-  }
-  .t-term-main > .t-term-tabs .t-term-tab-wrap {
-    flex: none;
-  }
-  .t-term-new-label {
-    display: none;
-  }
-  .t-term-tab.t-term-agent {
-    margin-top: 0;
-    margin-left: auto;
-    border-top: none;
-    border-left: 1px solid #2a2c31;
-    border-radius: 0 6px 6px 0;
-    padding-top: 4px;
-  }
-  .t-term-main > .t-term-body {
-    flex: 1;
-    min-height: 0;
-  }
+/* Over the chat: the list is a row under the header. */
+.t-term-cover .t-term-main {
+  flex-direction: column;
+}
+.t-term-cover .t-term-main > .t-term-tabs {
+  width: auto;
+  flex-direction: row;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-right: none;
+  border-bottom: 1px solid #2a2c31;
+  padding: 4px 6px;
+  order: 0;
+  flex-basis: auto;
+}
+.t-term-cover .t-term-main > .t-term-tabs .t-term-tab-wrap {
+  flex: none;
+}
+.t-term-cover .t-term-new-label {
+  display: none;
+}
+.t-term-cover .t-term-tab.t-term-agent {
+  margin-top: 0;
+  margin-left: auto;
+  border-top: none;
+  border-left: 1px solid #2a2c31;
+  border-radius: 0 6px 6px 0;
+  padding-top: 4px;
+}
+.t-term-cover .t-term-main > .t-term-body {
+  flex: 1;
+  min-height: 0;
 }
 
 /* The ❯_ Terminal button, pinned: at the right of the title row on desktop, at the right edge of
@@ -1904,32 +1916,30 @@
 .t-term-copy-note {
   color: var(--t-muted);
 }
-@media (max-width: 767px) {
-  .t-term-shells {
-    flex-direction: row;
-    align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-  }
-  .t-term-shells::-webkit-scrollbar {
-    display: none;
-  }
-  .t-term-main > .t-term-tabs {
-    overflow: hidden;
-  }
-  /* On a phone the state is a dot: short, always in view (its words stay for screen readers). */
-  .t-term-state-text {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .t-term-state-dot {
-    display: inline;
-  }
+.t-term-cover .t-term-shells {
+  flex-direction: row;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.t-term-cover .t-term-shells::-webkit-scrollbar {
+  display: none;
+}
+.t-term-cover .t-term-main > .t-term-tabs {
+  overflow: hidden;
+}
+/* Over the chat the state is a dot: short, always in view (its words stay for screen readers). */
+.t-term-cover .t-term-state-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.t-term-cover .t-term-state-dot {
+  display: inline;
 }
 
 /* Dragged widths (desktop). Below that the sidebar is a drawer and the frame steps aside. */
@@ -1959,7 +1969,6 @@
 }
 .t-session-split[data-panel-sized] > .t-term-panel {
   flex: 0 1 var(--t-panel-w);
-  min-width: 320px;
 }
 /* A phone: every key in reach without scrolling, two rows of five. */
 @media (max-width: 767px), (pointer: coarse) {
@@ -1972,6 +1981,22 @@
     min-width: 0;
     width: 100%;
     height: 44px;
+  }
+}
+/* A landscape phone: the keys and the line in one row, the height is the terminal's. */
+@media (max-height: 499px) {
+  .t-term-cover .t-term-phone {
+    flex-direction: row;
+    align-items: center;
+  }
+  .t-term-cover .t-keybar {
+    flex: 3 1 0;
+    min-width: 0;
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+  }
+  .t-term-cover .t-term-line {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 /* Chat: a dot when a request waits behind the panel. */

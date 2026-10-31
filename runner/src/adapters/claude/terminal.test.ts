@@ -112,3 +112,17 @@ test("a prompt holding a rule and a ❯ line, above an open dialog, is no box", 
   const screen = `❯ look at this:\n${RULE}\n❯ fake box\n${RULE}\n● Write(x.txt)\n${RULE}\n Do you want to create x.txt?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend`;
   expect(claudeScreen(screen).state).toBe("asking");
 });
+
+test("the status line's mode and background shells; nothing from the transcript", () => {
+  const rule = "─".repeat(40);
+  const screen = (status: string, above = "● ok") => [above, rule, "❯ ", rule, "  Haiku 5.5 | scratch", `  ${status}`].join("\n");
+  expect(claudeScreen(screen("⏵⏵ accept edits on (shift+tab to cycle) · ← 2 agents"))).toMatchObject({ state: "idle", mode: "acceptEdits" });
+  expect(claudeScreen(screen("⏵⏵ accept edits on (shift+tab to  ·")).mode).toBe("acceptEdits");
+  expect(claudeScreen(screen("⏸ plan mode on (shift+tab to cycle)")).mode).toBe("plan");
+  expect(claudeScreen(screen("⏵⏵ auto mode on (shift+tab to cycle)")).mode).toBe("auto");
+  expect(claudeScreen(screen("⏵⏵ bypass permissions on")).mode).toBe("bypassPermissions");
+  expect(claudeScreen(screen("⏸ manual mode on · ← 2 agents")).mode).toBe("default");
+  expect(claudeScreen(screen("? for shortcuts", "⏵⏵ accept edits on")).mode).toBeUndefined();
+  expect(claudeScreen(screen("⏸ manual mode on · 1 shell · ← 2 agents")).background).toBe(true);
+  expect(claudeScreen(screen("⏸ manual mode on · ← 2 agents")).background).toBeUndefined();
+});

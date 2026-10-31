@@ -222,6 +222,8 @@ export class LiveControl {
       if (s.sending === me) s.sending = undefined;
       if (s.sentOut === me) s.sentOut = undefined;
       if (s.cancelSend === me) s.cancelSend = undefined;
+      // A send keeps a session in memory: it may go now (a start that failed).
+      this.core.scheduleEvict(s);
     }
   }
 
@@ -749,7 +751,10 @@ export class LiveControl {
     // Two processes must never drive one session (SPEC §8 handoff).
     const blocked = this.terminal?.blocked(s);
     if (blocked) return Promise.reject(new Error(blocked));
-    s.starting ??= this.startDriver(s).finally(() => (s.starting = undefined));
+    s.starting ??= this.startDriver(s).finally(() => {
+      s.starting = undefined;
+      this.core.scheduleEvict(s);
+    });
     return s.starting;
   }
 
@@ -771,8 +776,8 @@ export class LiveControl {
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
       // that was starting it ends its turn as failed (send's catch).
-      s.setState({ error, mode: "stored", ...(s.sending ? {} : { status: "idle" as const }) });
-      this.core.touch(s);
+      // (A Back to Tether that failed: modeChanged pauses what waited for the terminal, with Resume.)
+      this.setMode(s, "stored", { error, ...(s.sending ? {} : { status: "idle" as const }) });
       this.core.tail(s);
       this.core.scheduleEvict(s);
       throw e;

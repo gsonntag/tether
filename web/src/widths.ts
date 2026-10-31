@@ -5,7 +5,22 @@
 export const TRANSCRIPT_MIN = 300;
 export const SIDEBAR_MIN = 200;
 export const SIDEBAR_MAX = 480;
+/** What the sidebar leaves for the panel when it is dragged wide. */
 export const PANEL_MIN = 320;
+
+/** A panel beside the transcript has at least this many columns; with less room it covers the chat. */
+export const PANEL_COLS = 60;
+/** What isn't columns in a side panel: its list of terminals (app.css), border, xterm's scrollbar. */
+const PANEL_LIST = 172;
+/** Below this height a window is a phone on its side: there is no height to share. */
+export const SHORT_HEIGHT = 500;
+const PHONE_WIDTH = 767;
+
+/** The width that gives a side panel PANEL_COLS columns of `cell` px each. */
+export const panelFloor = (cell: number) => Math.ceil(PANEL_LIST + PANEL_COLS * cell);
+
+/** Whether the terminal panel goes over the chat: `row` is the width the transcript and panel share. */
+export const panelCovers = (a: { row: number; width: number; height: number; cell: number }) => a.width <= PHONE_WIDTH || a.height < SHORT_HEIGHT || panelMax(a.row) < panelFloor(a.cell);
 
 /** Within the bounds; when they cross (a tiny window) the minimum wins. */
 export const clampWidth = (w: number, min: number, max: number) => Math.round(Math.max(min, Math.min(max, w)));

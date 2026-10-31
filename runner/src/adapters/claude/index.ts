@@ -7,7 +7,7 @@ import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
-import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeSubagents } from "./discovery";
+import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { readHistory } from "./history";
 import { pinStore } from "./jsonl";
@@ -62,6 +62,10 @@ const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
  * - no box: `asking` for a numbered choice list under a dialog's rule that isn't one of Claude's
  *   menus, or the trust question; `picker` for Claude's menus; else `unknown`.
  */
+/** The permission mode in the TUI's status line, only that glyph-led label ("⏵⏵ accept edits on"). */
+const STATUS_MODE = /[⏵⏸]\s*(accept edits|plan mode|auto mode|bypass permissions|manual mode) on/i;
+const SHOWN_MODES: Record<string, string> = { "accept edits": "acceptEdits", "plan mode": "plan", "auto mode": "auto", "bypass permissions": "bypassPermissions", "manual mode": "default" };
+
 export function claudeScreen(screen: string): ScreenRead {
   const lines = screen.replace(/\s+$/, "").split("\n");
   let box = -1;
@@ -102,7 +106,9 @@ export function claudeScreen(screen: string): ScreenRead {
   if (PLACEHOLDER.test(typed)) typed = "";
   const near = above.slice(-15);
   const busy = near.some((l) => SPINNER.test(l)) || status.some((l) => /esc to interrupt/i.test(l));
-  return { state: busy ? "busy" : "idle", input: typed, prompt };
+  const line = status.join("\n");
+  const label = line.match(STATUS_MODE)?.[1]?.toLowerCase();
+  return { state: busy ? "busy" : "idle", input: typed, prompt, ...(label ? { mode: SHOWN_MODES[label] } : {}), ...(/\b\d+ shells?\b/.test(line) ? { background: true } : {}) };
 }
 
 
@@ -216,12 +222,13 @@ export const claudeAdapter: Adapter = {
   },
 
   neverStarted: claudeNeverStarted,
+  storedMode: claudeStoredMode,
   newId: () => randomUUID(),
   ownModel: (model) => model.startsWith("claude"),
   terminalSettingsHint: "/model, and Shift+Tab for the mode",
 
   // Terminal mode (SPEC §8): Claude's own TUI, handed the session. `--settings` adds Tether's hooks
-  // for this launch only, so turn ends and "needs you" reach the runner (terminal/hooks.ts).
+  // for this launch only, so "needs you" and the mode as last seen reach the runner (terminal/hooks.ts).
   terminalCommand(nativeId, _projectPath, opts) {
     const argv = [CLAUDE_BIN ?? "claude", ...(opts.fresh ? ["--session-id", nativeId] : ["--resume", nativeId])];
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);

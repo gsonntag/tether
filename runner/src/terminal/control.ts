@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto";
 import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, TERMINAL_TEXT_MAX, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState, Msg } from "../../../shared/transcript";
-import type { QuitStep, ScreenRead, TerminalOpts } from "../core/adapter";
+import type { QuitStep, ScreenRead, TerminalLaunch, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
 import type { Session } from "../core/session";
 import type { SessionCore } from "../core/sessions";
@@ -82,6 +82,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The model family of a model id or alias ("claude-haiku-5-5" -> "haiku"). */
 const family = (m?: string) => m?.match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase();
 
+/** Permission modes, tightest first; `default` is what's left when the mode can't be established. */
+const TIGHTEST_FIRST = ["plan", "default", "dontAsk", "acceptEdits", "auto", "bypassPermissions"];
+const looseness = (m: string) => (TIGHTEST_FIRST.indexOf(m) < 0 ? TIGHTEST_FIRST.length : TIGHTEST_FIRST.indexOf(m));
+const tighter = (a: string, b: string) => (looseness(a) <= looseness(b) ? a : b);
+
 export class TerminalControl {
   readonly attaches: Attaches;
   private hooks?: HookServer;
@@ -96,6 +101,12 @@ export class TerminalControl {
   private entering = new Map<string, Promise<void>>();
   /** sessions with Needs you whose TUI shows its prompt (no dialog), since when */
   private promptSince = new Map<string, number>();
+  /** sessions whose TUI has shown its permission mode since it started (status line or a hook) */
+  private modeShown = new Set<string>();
+  /** how each harness reads its TUI's screen */
+  private readers = new Map<string, TerminalLaunch["screen"]>();
+  /** the mode entries a session's store had when its TUI started: only later ones are this TUI's */
+  private modeEntries = new Map<string, number>();
   private poll?: ReturnType<typeof setInterval>;
   private polling = false;
   private readonly log: (line: string) => void;
@@ -235,9 +246,10 @@ export class TerminalControl {
       await this.o.tmux.leaveCopyMode(name);
       // A clean exit where the TUI sits at its plain, empty prompt (/exit); else its keys to quit.
       const launch = this.launch(s);
-      const seen = launch.quitAtPrompt ? await this.readScreen(s, name, 1) : undefined;
+      const seen = await this.readScreen(s, name, 1);
+      if (seen?.mode) this.seenMode(s, seen.mode);
       const atPrompt = seen?.state === "idle" && seen.prompt === "normal" && !seen.input;
-      await this.runSteps(name, (atPrompt ? launch.quitAtPrompt : launch.quit) ?? []);
+      await this.runSteps(name, (atPrompt && launch.quitAtPrompt ? launch.quitAtPrompt : launch.quit) ?? []);
       const until = Date.now() + (this.o.quitTimeoutMs ?? 5000);
       while (Date.now() < until && (await this.o.tmux.has(name))) await Bun.sleep(150);
       if (await this.o.tmux.has(name)) {
@@ -338,6 +350,7 @@ export class TerminalControl {
     }
     // A new session that has nothing in the store yet starts under its id; anything else resumes.
     if (s.fresh && (await this.stored(s))) s.fresh = false;
+    if (handoff) await this.markEntries(s);
     const launch = this.launch(s, { fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined });
     try {
       await this.o.tmux.create({ name, cwd: s.summary.projectPath, argv: launch.argv, env: launch.env, cols: o.cols, rows: o.rows, tags: { kind: "tui", session: s.id, project: s.summary.projectPath } });
@@ -375,6 +388,13 @@ export class TerminalControl {
     return this.o.core.adapter(s.summary.harness).terminalCommand(s.summary.nativeId, s.summary.projectPath, { model: st.model, effort: st.effort, permissionMode: st.permissionMode, ...extra });
   }
 
+  /** From here on the store's mode entries are this TUI's. */
+  private async markEntries(s: Session) {
+    const seen = await this.o.core.adapter(s.summary.harness).storedMode?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined);
+    this.modeShown.delete(s.id);
+    if (seen) this.modeEntries.set(s.id, seen.entries);
+  }
+
   private async stored(s: Session) {
     return !!(await this.o.core.adapter(s.summary.harness).sessionInfo(s.summary.nativeId, s.summary.projectPath).catch(() => undefined));
   }
@@ -398,6 +418,7 @@ export class TerminalControl {
       this.o.core.touch(s);
       return;
     }
+    await this.carryMode(s);
     // Fresh until its store has it (a prompt typed there needn't have reached it): Back to Tether
     // then starts it under its id, and anything else resumes.
     if (s.fresh && (await this.stored(s))) {
@@ -428,8 +449,41 @@ export class TerminalControl {
     try {
       await this.o.live.resumeLive(s);
     } catch {
-      // startDriver already made it stored with the error in its state and transcript.
+      // startDriver already made it stored with the error in its state and transcript, and what
+      // waited for the terminal is paused, with Resume.
+      if (s.state.mode === "terminal") this.o.live.setMode(s, "stored", { status: "idle" });
     }
+  }
+
+  /** What the TUI shows now (status line or a hook): the mode as last seen, and kept. */
+  private seenMode(s: Session, mode: string) {
+    this.modeShown.add(s.id);
+    this.setMode(s, mode);
+  }
+
+  private setMode(s: Session, mode: string) {
+    if (mode === s.state.permissionMode) return;
+    s.setState({ permissionMode: mode });
+    this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: mode });
+    this.o.core.touch(s);
+  }
+
+  /**
+   * The mode a TUI that's gone leaves the session in: never looser than it last showed. Shift+Tab
+   * fires no hook and reaches the store only when Claude exits, so a killed TUI may never write it.
+   * The screen and the store agreeing is the usual case; if they differ, the tighter (a hung TUI's
+   * entry is older than its screen). With neither, it can't be established: at most `default`.
+   */
+  private async carryMode(s: Session) {
+    const shown = this.modeShown.delete(s.id) ? s.state.permissionMode : undefined;
+    const before = this.modeEntries.get(s.id);
+    this.modeEntries.delete(s.id);
+    const stored = await this.o.core.adapter(s.summary.harness).storedMode?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined);
+    const entry = stored?.mode && before !== undefined && stored.entries > before ? stored.mode : undefined;
+    const mode = shown && entry ? tighter(shown, entry) : (shown ?? entry);
+    if (mode) return this.setMode(s, mode);
+    this.log(`${s.id}: couldn't tell the mode the TUI ended in`);
+    this.setMode(s, tighter(s.state.permissionMode ?? "default", "default"));
   }
 
   /**
@@ -468,7 +522,9 @@ export class TerminalControl {
    * at the prompt nor asking is looked at again for a moment (a redraw, a dialog closing).
    */
   private async readScreen(s: Session, name: string, tries = 4): Promise<ScreenRead | undefined> {
-    const read = this.launch(s).screen;
+    const h = s.summary.harness;
+    if (!this.readers.has(h)) this.readers.set(h, this.launch(s).screen);
+    const read = this.readers.get(h);
     if (!read) return undefined;
     let r: ScreenRead = { state: "unknown" };
     for (let i = 0; i < tries; i++) {
@@ -502,11 +558,7 @@ export class TerminalControl {
     const term = s.state.terminal;
     // The mode the TUI runs in now (Shift+Tab there changes it): shown, and kept for Back to Tether.
     // (A subagent's hook carries the subagent's own mode.)
-    if (r.permissionMode && !r.agentId && r.permissionMode !== s.state.permissionMode) {
-      s.setState({ permissionMode: r.permissionMode });
-      this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: r.permissionMode });
-      this.o.core.touch(s);
-    }
+    if (r.permissionMode && !r.agentId) this.seenMode(s, r.permissionMode);
     // Only a real session id moves the terminal (it becomes a Tether session id and a file name).
     if (r.event === "SessionStart" && r.nativeId && r.nativeId !== s.summary.nativeId && UUID.test(r.nativeId)) {
       void this.rebind(s, r.nativeId, r.source).catch((e) => this.log(`${s.id}: couldn't follow the TUI to ${r.nativeId}: ${e?.message ?? e}`));
@@ -569,6 +621,9 @@ export class TerminalControl {
       // The TUI goes on with the model and mode it runs in, on any session it moves to.
       const { model, effort, permissionMode, modelResolved } = old.state;
       n.setState({ model, effort, permissionMode, modelResolved });
+      await this.markEntries(n);
+      if (this.modeShown.delete(old.id)) this.modeShown.add(n.id);
+      this.modeEntries.delete(old.id);
       core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
       this.tuis.delete(old.id);
       this.promptSince.delete(old.id);
@@ -587,7 +642,9 @@ export class TerminalControl {
     old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });
     this.o.live.setMode(old, "stored", { status: "idle", terminal: undefined, continuedIn: newId });
     // A TUI nobody used, then /clear: the old session never started (views follow continuedIn).
-    if (old.fresh && !old.state.queue.length && (!(await this.stored(old)) || (await this.neverStarted(old)))) {
+    // Fresh until its store has it: once it does, a message to it resumes (--session-id would refuse).
+    if (old.fresh && (await this.stored(old))) old.fresh = await this.neverStarted(old);
+    if (old.fresh && !old.state.queue.length) {
       core.book.remove([old.id]);
       core.sessions.delete(old.id);
       return;
@@ -619,6 +676,7 @@ export class TerminalControl {
       }
       if (t.launchedFor && t.launchedFor !== s.id) this.moved.set(t.launchedFor, s.id);
       this.adopt(s, t.name);
+      if (s.capabilities.terminal === "handoff") await this.markEntries(s);
       this.log(`readopted the terminal of ${s.id}`);
       // No status is inferred; a question on its screen is Needs you (no push: it was announced).
       if (s.capabilities.terminal === "handoff" && (await this.readScreen(s, t.name))?.state === "asking") {
@@ -646,20 +704,26 @@ export class TerminalControl {
       }
       const live = new Set((await this.o.tmux.list()).map((t) => t.name));
       for (const [id, name] of [...this.tuis]) if (!live.has(name) && !this.returning.has(id)) await this.gone(id);
-      for (const [id, name] of [...this.tuis]) if (live.has(name)) await this.checkAnswered(id, name);
+      for (const [id, name] of [...this.tuis]) if (live.has(name)) await this.checkScreen(id, name);
     } finally {
       this.polling = false;
     }
   }
 
   /**
-   * Needs you clears only on evidence: the TUI's screen shows its prompt box (no dialog, which would
-   * replace it) on every check for a while. Hooks never clear it.
+   * What the TUI's screen says each round: the mode and background shells on its status line (Shift+Tab
+   * fires no hook), and Needs you clearing, only on evidence: the screen shows its prompt box (no
+   * dialog, which would replace it) on every check for a while. Hooks never clear it.
    */
-  private async checkAnswered(id: string, name: string) {
+  private async checkScreen(id: string, name: string) {
     const s = this.o.core.sessions.get(id);
-    if (!s || s.state.mode !== "terminal" || !s.state.terminal?.attention || this.returning.has(id)) return void this.promptSince.delete(id);
+    if (!s || s.state.mode !== "terminal" || !s.state.terminal || this.returning.has(id)) return void this.promptSince.delete(id);
     const seen = await this.readScreen(s, name, 1);
+    // Asked or moved on meanwhile: what was read isn't this session's any more.
+    if (this.tuis.get(id) !== name || this.returning.has(id) || !s.state.terminal) return;
+    if (seen?.mode) this.seenMode(s, seen.mode);
+    if (seen && seen.state !== "unknown" && seen.state !== "picker" && seen.state !== "asking" && !!seen.background !== !!s.state.terminal.background) s.setState({ terminal: { ...s.state.terminal, background: seen.background } });
+    if (!s.state.terminal.attention) return void this.promptSince.delete(id);
     if (!seen || (seen.state !== "idle" && seen.state !== "busy")) return void this.promptSince.delete(id);
     const since = this.promptSince.get(id) ?? this.o.core.now();
     this.promptSince.set(id, since);
