@@ -3,12 +3,18 @@
 // branches only on `capabilities`, never on the harness id.
 
 import type { Attachment } from "../../../shared/attachments";
+import type { CredentialSnapshot } from "../credentials";
+import type { SessionCost } from "../../../shared/costs";
 import type { Billing, ContextUse, PlanUsage, HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary, ToolPart } from "../../../shared/transcript";
 
 /** Transcript events a driver reports. The core numbers them (seq) and keeps the transcript. */
 export type TranscriptEvent = Extract<SessionEvent, { type: "msg" | "delta" | "tool" | "reset" }>;
 
 export interface StartOpts {
+  /** Rejoin a persistent process to observe its original turn after a runner restart. No send. */
+  observe?: boolean;
+  /** Ephemeral runner-only credential snapshot. Never persist or report this object. */
+  credential?: CredentialSnapshot;
   model?: string;
   effort?: string;
   permissionMode?: string;
@@ -55,6 +61,8 @@ export interface SubagentStart {
  * turns land in its own transcript.
  */
 export interface Sink {
+  /** A cumulative API cost epoch; replays of the same id replace its previous report. No keys. */
+  cost?(report: SessionCost & { id: string }): void;
   event(e: TranscriptEvent): void;
   /** the message as the transcript has it now (to build an upsert from) */
   message(id: string): Msg | undefined;
@@ -82,6 +90,8 @@ export interface Sink {
 }
 
 export interface Driver {
+  /** Actual credential revision of the process, including a rejoined process on an older key. */
+  readonly credentialRevision?: string;
   readonly nativeId: string;
   /**
    * Starts a turn. `attachments` are files under the runner's attachments folder; the text already
@@ -197,6 +207,8 @@ export interface Adapter {
   noStore?(nativeId: string): Promise<boolean>;
   // terminal mode (SPEC §8): how to run the harness's own TUI on a session, in tmux
   terminalCommand(nativeId: string, projectPath: string, opts: TerminalOpts): TerminalLaunch;
+  /** Async, read-only source preflight, only when a TUI is actually about to start. */
+  prepareTerminal?(nativeId: string, projectPath: string, opts: TerminalOpts): Promise<Billing>;
 }
 
 export interface TerminalOpts extends StartOpts {
@@ -230,6 +242,8 @@ export interface ScreenRead {
 export type QuitStep = { keys: string[] } | { text: string } | { waitMs: number };
 
 export interface TerminalLaunch {
+  /** The source the harness confirmed during this launch's preflight. Contains no credential. */
+  billing?: Billing;
   argv: string[];
   env?: Record<string, string>;
   /** how to ask the TUI to quit (Back to Tether); the core kills it if it hasn't after a while */

@@ -33,6 +33,10 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## P3 (terminal, Claude)
 
+- Historical/external sessions through `ANTHROPIC_BASE_URL` cannot be reconstructed reliably from
+  Claude's account/store reports. Old recorded labels may predate proxy detection. Managed new
+  subscription processes scrub proxy/provider overrides before confirming their source; historical
+  proxy labels still require a fresh confirmed start.
 - A truly hung TUI is unit-tested only; `kill -STOP` didn't hang one.
 - `mdisc` wasn't rerun after launches moved to prefs only (`live.chosen`). Codex launches on that path had no full e2e.
 - A TUI killed within 1 s of tightening, with no poll in between, relies on the stored entry.
@@ -43,6 +47,9 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## P4 (Codex)
 
+- A key supplied only in the shared daemon's own environment can report `account: null`. It stays
+  Unknown and Tether refuses subscription sends; Tether does not inspect or mutate that daemon's
+  environment. Tether-managed key sessions use a separate confirmed provider/process.
 - Delivery to a subagent can read as delivered when the main agent messaged it on its own.
 - Messages to a nested subagent weren't trialled. After a restart, an adopted child is addressed by leaf name only (`stream.ts targetOf`), so a nested one may show "Not delivered".
 - Stored look on a thread that isn't loaded: an error or empty reply reads as nothing running (`codexBackgroundRuns`). That branch wasn't seen on the real daemon, and it fails open.
@@ -82,5 +89,7 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## Backlog
 
+- AWS credentials: Codex through AWS and Claude through Bedrock. Future scope; no slots, routing,
+  environment activation or terminal support are implemented for either.
 - Harness update notice on the dashboard.
 - Revert `TETHER_HIDE_PROJECTS=/tmp/*,*/scratch` and remove the two test trust entries in `~/.codex/config.toml` when the build-out ends.

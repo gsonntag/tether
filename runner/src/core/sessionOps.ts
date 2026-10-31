@@ -16,6 +16,15 @@ const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v 
 const harness = (v: unknown): HarnessId => (v === "codex" ? "codex" : v === "claude" || v === undefined ? "claude" : (str(undefined, "A known harness") as never));
 
 export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: LiveControl) {
+  ops.register("renameSession", async (a) => {
+    const s = await core.open(str(a.sessionId, "sessionId"));
+    const title = str(a.title, "A title").trim();
+    if (!title || title.length > 200 || /[\x00-\x1f\x7f]/.test(title)) throw new Error("Use a title of 1–200 characters.");
+    core.o.prefs.set(s.id, { title });
+    core.o.prefs.flush();
+    core.touch(s, { title });
+    return null;
+  });
   ops.register("listProjects", async () => ({ projects: await core.listProjects() }));
   ops.register("listSessions", (a) =>
     core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), query: optStr(a.query), limit: optNum(a.limit) }),

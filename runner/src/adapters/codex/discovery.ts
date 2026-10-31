@@ -7,11 +7,13 @@ import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { UNKNOWN_BILLING, type Billing, type ContextUse, type Msg, type PlanUsage, type ProjectInfo, type SessionSummary } from "../../../../shared/transcript";
 import { call } from "./daemon";
+import { existingPrivateConnection, privateThreads, sourceProvider, sourceCredentialRevision, threadCall } from "./sources";
 import type { StartOpts } from "../../core/adapter";
 import { titleText } from "../../../../shared/fromTether";
 import { agentName, historyMsgs } from "./items";
+import { readPrivateRollout } from "./offline";
 import { modeOf, sandboxOf, UNKNOWN_MODE } from "./modes";
-import { remember, remembered } from "./remember";
+import { remember, remembered, rememberedThreads } from "./remember";
 
 /** Thread sources listed as sessions (Codex's default leaves out app-server clients such as Tether). */
 const SOURCES = ["cli", "vscode", "exec", "appServer"];
@@ -42,6 +44,7 @@ export function summaryOf(t: any): SessionSummary {
     updatedAt: (t.updatedAt ?? t.recencyAt ?? t.createdAt ?? 0) * 1000,
     ...(parent ? { parentSessionId: `codex:${parent}` } : {}),
     ...(role ? { agentType: role } : {}),
+    ...(remembered(t.id)?.billing ? { billing: remembered(t.id)?.source && t.modelProvider !== sourceProvider(remembered(t.id)!.source!.source) ? UNKNOWN_BILLING : remembered(t.id)!.billing } : {}),
   };
 }
 
@@ -51,14 +54,21 @@ export async function listThreads(o: { cwd?: string; since?: number; max?: numbe
   let cursor: string | null = null;
   const max = o.max ?? 2000;
   for (let page = 0; page < 40; page++) {
-    const r: any = await call("thread/list", {
+    const params = {
       cursor,
       limit: 100,
       sortKey: "updated_at",
       sourceKinds: o.parent ? SUBAGENT_SOURCES : SOURCES,
       ...(o.cwd ? { cwd: o.cwd } : {}),
       ...(o.parent ? { parentThreadId: o.parent } : {}),
-    });
+    };
+    let r: any;
+    try { r = o.parent ? await threadCall(o.parent, "thread/list", params) : await call("thread/list", params); }
+    catch (e) {
+      if (!o.parent || !remembered(o.parent)?.source) throw e;
+      const children = await Promise.all(Object.entries(rememberedThreads()).filter(([, r]) => r.source?.id === remembered(o.parent!)?.source?.id && r.parentSource).map(async ([id, r]) => (await readPrivateRollout(id, r.source!)).thread));
+      return children.filter((t) => t.parentThreadId === o.parent).slice(0, max);
+    }
     for (const t of r?.data ?? []) {
       if (!o.parent && (t.parentThreadId || t.ephemeral)) continue;
       if (o.since && (t.updatedAt ?? 0) * 1000 < o.since) return out;
@@ -67,6 +77,19 @@ export async function listThreads(o: { cwd?: string; since?: number; max?: numbe
     if (!(cursor = r?.nextCursor) || out.length >= max) break;
   }
   return out.slice(0, max);
+}
+
+
+/** API stores remain separate; discovery combines metadata without migrating any rollout. */
+async function allThreads(o: { cwd?: string; since?: number } = {}): Promise<any[]> {
+  const shared = await listThreads(o);
+  const privateRows = await Promise.all(privateThreads().filter(([, source]) => !o.cwd || source.projectPath === o.cwd).map(async ([id, source]) => {
+    try {
+      const rpc = await existingPrivateConnection(source);
+      try { return (await rpc.call("thread/read", { threadId: id, includeTurns: false }))?.thread; } finally { rpc.close(); }
+    } catch { return (await readPrivateRollout(id, source)).thread; }
+  }));
+  return [...shared, ...privateRows.filter((t) => t && (!o.since || (t.updatedAt ?? 0) * 1000 >= o.since))];
 }
 
 /**
@@ -88,7 +111,7 @@ function sharedList(key: string, maxAge: number, load: () => Promise<any[]>): Pr
 }
 
 export async function codexProjects(): Promise<ProjectInfo[]> {
-  const threads = await sharedList("all", LIST_MS * 6, () => listThreads());
+  const threads = await sharedList("all", LIST_MS * 6, () => allThreads());
   const by = new Map<string, ProjectInfo>();
   for (const t of threads) {
     if (!t.cwd) continue;
@@ -103,7 +126,7 @@ export async function codexProjects(): Promise<ProjectInfo[]> {
 export async function codexSessions(opts: { projectPath?: string; since?: number } = {}): Promise<SessionSummary[]> {
   // Discovery's `since` moves every pass; a minute-old list from a slightly earlier `since` is as good.
   const key = opts.projectPath ? `cwd:${opts.projectPath}` : opts.since ? "recent" : "all";
-  const threads = await sharedList(key, opts.since && !opts.projectPath ? DISCOVERY_MS : LIST_MS, () => listThreads({ cwd: opts.projectPath, since: opts.since }));
+  const threads = await sharedList(key, opts.since && !opts.projectPath ? DISCOVERY_MS : LIST_MS, () => allThreads({ cwd: opts.projectPath, since: opts.since }));
   return threads.map(summaryOf);
 }
 
@@ -125,8 +148,10 @@ export function readThread(nativeId: string): Promise<any | undefined> {
 
 async function readThreadNow(nativeId: string): Promise<any | undefined> {
   try {
-    return (await call("thread/read", { threadId: nativeId, includeTurns: false }))?.thread;
+    return (await threadCall(nativeId, "thread/read", { threadId: nativeId, includeTurns: false }))?.thread;
   } catch (e: any) {
+    const source = remembered(nativeId)?.source;
+    if (source) return (await readPrivateRollout(nativeId, source)).thread;
     if (/not found|no rollout|invalid/i.test(String(e?.message))) return undefined;
     throw e;
   }
@@ -154,7 +179,10 @@ export async function codexSubagents(nativeId: string): Promise<SessionSummary[]
 export async function codexBackgroundRuns(nativeId: string): Promise<boolean> {
   const queue = [nativeId];
   for (let i = 0; i < queue.length && i < 200; i++) {
-    const list: any = await call("thread/backgroundTerminals/list", { threadId: queue[i], limit: 1 }, 10_000).catch(() => undefined);
+    const source = remembered(queue[i]!)?.source;
+    let list: any;
+    try { list = await threadCall(queue[i]!, "thread/backgroundTerminals/list", { threadId: queue[i], limit: 1 }, 10_000); }
+    catch { if (source && sourceCredentialRevision(source)) return true; }
     if (list?.data?.length) return true;
     queue.push(...(await listThreads({ parent: queue[i], max: 50 }).catch(() => [])).map((t) => t.id));
   }
@@ -167,17 +195,19 @@ export async function threadTurns(nativeId: string): Promise<any[]> {
   let cursor: string | null = null;
   try {
     for (let page = 0; page < 200; page++) {
-      const r: any = await call("thread/turns/list", { threadId: nativeId, cursor, limit: 100, sortDirection: "asc", itemsView: "full" });
+      const r: any = await threadCall(nativeId, "thread/turns/list", { threadId: nativeId, cursor, limit: 100, sortDirection: "asc", itemsView: "full" });
       turns.push(...(r?.data ?? []));
       if (!(cursor = r?.nextCursor)) break;
     }
     return turns;
   } catch (e: any) {
+    const source = remembered(nativeId)?.source;
+    if (source) return (await readPrivateRollout(nativeId, source)).turns;
     // Never got a message (another client's): no turns to list.
     if (/not materialized/i.test(String(e?.message))) return [];
     // An older daemon without paging: the whole thread at once.
     if (!/method|unknown|not found/i.test(String(e?.message)) || turns.length) throw e;
-    const r: any = await call("thread/read", { threadId: nativeId, includeTurns: true });
+    const r: any = await threadCall(nativeId, "thread/read", { threadId: nativeId, includeTurns: true });
     return r?.thread?.turns ?? [];
   }
 }
@@ -333,6 +363,8 @@ const PROVIDER_LABELS: Record<string, string> = { azure: "Azure", "amazon-bedroc
  */
 export async function codexStoredBilling(nativeId: string): Promise<Billing> {
   const provider = (await readThread(nativeId))?.modelProvider;
+  const source = remembered(nativeId)?.source;
+  if (source) return provider === sourceProvider(source.source) ? remembered(nativeId)?.billing ?? UNKNOWN_BILLING : UNKNOWN_BILLING;
   if (typeof provider === "string" && provider && provider !== "openai") return codexBilling(provider);
   return (provider && remembered(nativeId)?.billing) || UNKNOWN_BILLING;
 }

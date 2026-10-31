@@ -7,7 +7,8 @@ import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
-import { chainContext, forgetBilling, keptBilling, keptPlan } from "./context";
+import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
+import { claudeAuthSettings, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { CLAUDE_UNSET } from "../../../../shared/transcript";
@@ -238,13 +239,21 @@ export const claudeAdapter: Adapter = {
 
   // Terminal mode (SPEC §8): Claude's own TUI, handed the session. `--settings` adds Tether's hooks
   // for this launch only, so "needs you" and the mode as last seen reach the runner (terminal/hooks.ts).
+  async prepareTerminal(nativeId, _projectPath, opts) {
+    const billing = await prepareClaudeTerminal(CLAUDE_BIN ?? "claude", opts.credential, _projectPath);
+    keepBilling(nativeId, billing);
+    return billing;
+  },
   terminalCommand(nativeId, _projectPath, opts) {
-    forgetBilling(nativeId);
     const argv = [CLAUDE_BIN ?? "claude", ...(opts.fresh ? ["--session-id", nativeId] : ["--resume", nativeId])];
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
-    if (opts.report) argv.push("--settings", hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui));
-    return { argv, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
+    const settings = { ...claudeAuthSettings(), ...(opts.report ? JSON.parse(hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui)) : {}) };
+    argv.push("--settings", JSON.stringify(settings));
+    const credential = opts.credential;
+    if (!credential?.file) throw new Error("The runner's private credentials file is unavailable. The Claude terminal cannot confirm its billing source.");
+    const scripts = claudeTerminalScripts(credential.file);
+    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...argv], quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
   },
 };

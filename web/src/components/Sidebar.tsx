@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { NavIcon } from "@astryxdesign/core/NavIcon";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
-import { HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/24/outline";
+import { HomeIcon, KeyIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
@@ -138,6 +138,7 @@ export function Sidebar() {
         <input className="t-search" type="search" placeholder="Search sessions" aria-label="Search sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
       <SideNavSection title="Menu" isHeaderHidden>
+        <SideNavItem label="Credentials" icon={KeyIcon} isSelected={route.page === "credentials"} onClick={() => { navigate({ page: "credentials" }); close(); }} />
         <SideNavItem
           label="Home"
           icon={HomeIcon}

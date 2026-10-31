@@ -9,6 +9,7 @@
 import { encodeChunk } from "../../../shared/wire";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { spawnPty, type Pty, type PtyOptions } from "./pty";
+import { SecretStream } from "../credentials";
 
 export type SpawnPty = (argv: string[], opts: PtyOptions) => Pty;
 
@@ -20,6 +21,7 @@ export interface AttachSink {
 }
 
 interface Attach {
+  redactor: SecretStream;
   id: string;
   /** the tmux session it shows */
   target: string;
@@ -84,7 +86,7 @@ export class Attaches {
   open(id: string, target: string, argv: string[], cols: number, rows: number, env?: Record<string, string>) {
     if (this.map.has(id)) throw new Error("That terminal is already attached.");
     if (this.map.size >= MAX_ATTACHES) throw new Error("Too many terminals are open on this runner. Close some first.");
-    const a: Attach = { id, target, pty: undefined as unknown as Pty, chunks: [], size: 0, ended: false };
+    const a: Attach = { id, target, redactor: new SecretStream(), pty: undefined as unknown as Pty, chunks: [], size: 0, ended: false };
     a.pty = this.spawn(argv, {
       cols: size(cols, 80),
       rows: size(rows, 24),
@@ -174,7 +176,8 @@ export class Attaches {
       return;
     }
     // Disconnected: the relay has dropped the attach and told nobody; nothing to keep.
-    if (!this.sink.send({ t: "term", attachId: a.id, data: encodeChunk(all) })) this.end(a);
+    const safe = a.redactor.write(all);
+    if (safe.length && !this.sink.send({ t: "term", attachId: a.id, data: encodeChunk(safe) })) this.end(a);
   }
 }
 

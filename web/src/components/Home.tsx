@@ -15,7 +15,7 @@ import type { KnownRunner } from "../runners";
 import { openSession } from "../route";
 import { folderName, inbox, waitingOn, type InboxKind, type InboxRow } from "../sessionList";
 import { disablePush, enablePush, pushState, testPush, type PushState } from "../push";
-import { HarnessGlyph, shortAgo } from "./SessionRow";
+import { BillingMarker, HarnessGlyph, shortAgo } from "./SessionRow";
 import { forgetRunner, useStore } from "../store";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
@@ -81,7 +81,7 @@ function Inbox() {
             <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem" data-session={r.id}>
               <button type="button" className="t-inbox-main" onClick={() => openSession(r.runnerId, r.id)}>
                 <span className="t-inbox-kind">{KIND_LABEL[r.inbox]}</span>
-                <span className="t-row-title">{r.title || "Untitled"}</span>
+                <span className="t-row-title"><BillingMarker billing={r.billing} />{r.title || "Untitled"}</span>
                 <span className="t-row-meta">
                   <HarnessGlyph harness={r.harness} />
                   <span className="t-proj">{folderName(r.projectPath)}</span>

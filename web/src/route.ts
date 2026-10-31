@@ -4,10 +4,11 @@
 
 import { useSyncExternalStore } from "react";
 
-export type Route = { page: "home" } | { page: "session"; runnerId: string; sessionId: string };
+export type Route = { page: "home" } | { page: "credentials" } | { page: "session"; runnerId: string; sessionId: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "credentials") return { page: "credentials" };
   if (parts[0] === "s" && parts[1] && parts[2]) {
     try {
       return { page: "session", runnerId: decodeURIComponent(parts[1]), sessionId: decodeURIComponent(parts.slice(2).join("/")) };
@@ -25,7 +26,7 @@ export function presenceFor(hash: string, visible: boolean): { runnerId?: string
 }
 
 export function formatRoute(r: Route): string {
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/credentials" : "#/";
 }
 
 export function navigate(r: Route) {

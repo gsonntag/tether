@@ -74,7 +74,8 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       fn();
     } catch (e) {
       // One bad frame must never take the relay down: log it and carry on.
-      log(`dropped a ${what} frame: ${(e as Error)?.stack ?? e}`);
+      // A malformed RPC may contain a credential. Never print frame data or exception text.
+      log(`dropped a ${what} frame`);
     }
   };
 

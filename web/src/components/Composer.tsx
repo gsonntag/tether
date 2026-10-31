@@ -15,6 +15,8 @@ import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu"
 import { ArrowUpIcon, ChevronDownIcon, StopIcon } from "@heroicons/react/24/solid";
 import { ClockIcon, CommandLineIcon, PaperClipIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, type Attachment } from "../../../shared/attachments";
+import { isApiBilling } from "../../../shared/labels";
+import type { Billing } from "../../../shared/transcript";
 import { ATTACH_MAX } from "../../../shared/limits";
 import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
@@ -55,6 +57,7 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     draftKey: string;
+    billing?: Billing;
     running: boolean;
     waiting?: boolean;
     disabled?: string;
@@ -77,7 +80,7 @@ export const Composer = forwardRef<
     onStop: () => Promise<void>;
     status?: React.ReactNode;
   }
->(function Composer({ draftKey, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -293,7 +296,8 @@ export const Composer = forwardRef<
 
   return (
     <div
-      className={`t-composer${drag ? " dragging" : ""}${shellOn ? " shell" : ""}`}
+      data-billing={isApiBilling(billing) ? billing!.label : undefined}
+      className={`t-composer${isApiBilling(billing) ? " t-api-composer" : ""}${drag ? " dragging" : ""}${shellOn ? " shell" : ""}`}
       onDragOver={(e) => {
         if (!uploadTo || !e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();

@@ -12,6 +12,7 @@ import { titleText } from "../../../../shared/fromTether";
 import { cleanUserText } from "./content";
 import { readHistory } from "./history";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
+import { keptBilling } from "./context";
 
 /**
  * Claude's own summary, if it has one: the SDK falls back to the last or first prompt, and a local
@@ -40,6 +41,7 @@ async function summaryOf(s: SDKSessionInfo, projectPath: string): Promise<Sessio
     mode: "stored",
     status: "idle",
     updatedAt: at ?? s.lastModified,
+    billing: keptBilling(s.sessionId),
   };
 }
 
@@ -118,6 +120,7 @@ function childSummary(session: string, projectPath: string, c: ReturnType<typeof
     status: "idle",
     updatedAt,
     parentSessionId: `claude:${session}`,
+    billing: keptBilling(session),
     ...(c.meta.toolUseId ? { parentToolId: c.meta.toolUseId } : {}),
     ...(c.meta.agentType ? { agentType: c.meta.agentType } : {}),
   };

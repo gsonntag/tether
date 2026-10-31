@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -67,4 +67,12 @@ test("findModel goes by id, then by what an alias resolves to, never by the defa
   expect(findModel(list, "default")?.id).toBe("default");
   expect(findModel(list, "haiku")).toBeUndefined();
   expect(findModel(list, undefined)).toBeUndefined();
+});
+
+test("metered indicators require confirmed API billing, never a plan or unknown", () => {
+  for (const label of ["Anthropic API key", "OpenAI API key"]) expect(isApiBilling({ kind: "apiKey", label })).toBe(true);
+  expect(isApiBilling({ kind: "provider", label: "Azure" })).toBe(true);
+  expect(isApiBilling({ kind: "unknown", label: "Unknown" })).toBe(false);
+  expect(isApiBilling({ kind: "plan", label: "Claude plan" })).toBe(false);
+  expect(isApiBilling(undefined)).toBe(false);
 });

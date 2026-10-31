@@ -8,6 +8,7 @@ import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { detectHarnesses } from "./adapters/detect";
 import { CONFIG_DIR, displayName, loadConfig } from "./config";
+import { CredentialStore, DATA_DIR } from "./credentials";
 import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
 
@@ -22,7 +23,11 @@ if (!url || !token) {
 }
 
 const config = loadConfig();
+const credentials = new CredentialStore();
+CredentialStore.current = credentials;
 const runner = createRunner({
+  costsFile: join(DATA_DIR, "costs.json"),
+  credentials,
   url,
   token,
   runnerId: config.runnerId,

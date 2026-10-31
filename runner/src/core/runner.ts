@@ -2,6 +2,8 @@
 // index.ts adds modules and process handling; tests build one against a fake server.
 
 import { hostname } from "node:os";
+import { CredentialStore, redact } from "../credentials";
+import { CostLedger } from "../costs";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
 import type { Adapter } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
@@ -21,6 +23,8 @@ import { registerTerminalOps } from "../terminal/ops";
 import { systemdScopeWrap, Tmux, TMUX_SOCKET } from "../terminal/tmux";
 
 export interface RunnerOptions {
+  costsFile?: string;
+  credentials?: CredentialStore;
   url: string;
   token: string;
   runnerId: string;
@@ -52,6 +56,8 @@ export interface RunnerOptions {
 }
 
 export function createRunner(o: RunnerOptions) {
+  const originalLog = o.log ?? ((line: string) => console.log(line));
+  o = { ...o, log: (line) => originalLog(redact(line)) };
   const bus = new EventBus<CoreEvents>();
   const ops = new OpRegistry();
   /** this process's summary epoch (protocol.ts SummaryUpdate): a restart starts browsers' lists over */
@@ -85,7 +91,9 @@ export function createRunner(o: RunnerOptions) {
   });
 
   const prefs = new Prefs(o.prefsFile);
+  const costs = new CostLedger(o.costsFile);
   const core = new SessionCore({
+    costs,
     adapters: o.adapters ?? [],
     bus,
     send: (m) => conn.send(m),
@@ -99,7 +107,12 @@ export function createRunner(o: RunnerOptions) {
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  if (o.credentials) {
+    ops.register("credentials", () => o.credentials!.status());
+    ops.register("setCredential", (a) => o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates));
+    ops.register("unsetCredential", (a) => o.credentials!.unset(a.source));
+  }
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
   registerShellOps(ops, shellRuns);

@@ -7,14 +7,17 @@ import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
 import { tetherOrigin } from "../../../../shared/fromTether";
 import { UNKNOWN_BILLING, type ContextUse, type Msg, type Part, type ToolPart } from "../../../../shared/transcript";
+import { redact, type CredentialSnapshot } from "../../credentials";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { CLAUDE_BIN } from "./bin";
 import { canonicalCommand } from "./content";
-import { claudeBilling, keepBilling } from "./context";
+import { keepBilling } from "./context";
+import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } from "./credentials";
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
+import { ClaudeCostCounter } from "./cost";
 
 /** User messages for the SDK, pushed as they're sent; the iterator waits between them. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -39,15 +42,6 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-/** The runner's environment for Claude, minus Tether's own secrets. */
-function claudeEnv(): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("TETHER_")) env[k] = v;
-  // Turn status from Claude Code itself: idle only once background subagents are done too.
-  env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
-  return env;
-}
-
 /** How long Claude Code may take to start before it counts as failed. */
 const START_TIMEOUT_MS = 60_000;
 
@@ -57,6 +51,12 @@ export class ClaudeDriver implements Driver {
   private stream: ClaudeStream;
   private closed = false;
   private stderr: string[] = [];
+  private credential?: CredentialSnapshot;
+  private failedError?: string;
+  private interrupting = false;
+  private lease?: ReturnType<typeof claudeKeyLease>;
+  private costs?: ClaudeCostCounter;
+  private costSessionId?: string;
   onExit?: (error?: string) => void;
 
   private constructor(
@@ -64,7 +64,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow() });
+    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), failed: () => this.failed(), interrupted: () => this.interrupting });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
@@ -77,6 +77,8 @@ export class ClaudeDriver implements Driver {
   }
 
   private async start(opts: StartOpts, resume: boolean) {
+    this.credential = opts.credential;
+    this.lease = claudeKeyLease(opts.credential);
     const canUseTool: CanUseTool = async (tool, input, o) => {
       // A subagent's request goes to its own session (it shows in the parent's too).
       const sink = (o.agentID && this.stream.sinkOfAgent(o.agentID)) || this.sink;
@@ -98,12 +100,13 @@ export class ClaudeDriver implements Driver {
         // Each subagent has its own Stop, so Stop on the main turn leaves background ones running.
         perTaskStopAffordance: true,
         settingSources: ["user", "project", "local"],
+        settings: claudeAuthSettings(this.lease.helper),
         systemPrompt: { type: "preset", preset: "claude_code" },
         canUseTool,
-        env: claudeEnv(),
+        env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {
-          this.stderr.push(data);
+          this.stderr.push(redact(data));
           if (this.stderr.length > 50) this.stderr.shift();
         },
       },
@@ -117,9 +120,31 @@ export class ClaudeDriver implements Driver {
       try {
         this.q.close();
       } catch {}
+      this.lease?.close();
       throw new Error(this.why(e?.message ?? String(e)));
     }
-    await this.noteBilling();
+    try {
+      await this.noteBilling();
+    } catch (e) {
+      await this.close();
+      this.sink.state({ billing: UNKNOWN_BILLING });
+      throw e;
+    }
+    if (this.credential?.source === "anthropic") {
+      let baseline: number | undefined = resume ? undefined : 0;
+      if (resume) {
+        // Pinned, unstable read-only API. A missing/changed reply leaves the amount unknown.
+        const readUsage = this.q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+        const usage = await Promise.race([
+          Promise.resolve().then(() => typeof readUsage === "function" ? readUsage.call(this.q, { skipBehaviors: true }) : undefined).catch(() => undefined),
+          Bun.sleep(5000).then(() => undefined),
+        ]);
+        const total = usage?.session?.total_cost_usd;
+        if (typeof total === "number" && Number.isFinite(total) && total >= 0) baseline = total;
+      }
+      this.costs = new ClaudeCostCounter(baseline);
+      this.costSessionId = this.nativeId;
+    }
     void this.pump();
     void this.reportEffort();
   }
@@ -134,7 +159,8 @@ export class ClaudeDriver implements Driver {
 
   /** What this start draws from: only Claude Code can say, and only now. */
   private async noteBilling() {
-    const billing = await this.q.accountInfo().then(claudeBilling, () => UNKNOWN_BILLING);
+    const account = await this.q.accountInfo().catch(() => undefined);
+    const billing = confirmClaudeBilling(account, this.credential);
     keepBilling(this.nativeId, billing);
     this.sink.state({ billing });
   }
@@ -147,8 +173,19 @@ export class ClaudeDriver implements Driver {
 
   /** A failure's message, with what Claude Code printed when it says more. */
   private why(message: string): string {
+    if (this.credential?.source === "anthropic") return "Anthropic API key failed. The session stopped. Check Credentials.";
     const err = this.stderr.join("").trim().split("\n").filter(Boolean).slice(-3).join(" ").slice(0, 500);
-    return err && !message.includes(err) ? `${message} (${err})` : message;
+    return redact(err && !message.includes(err) ? `${message} (${err})` : message);
+  }
+
+  private failed(): string | undefined {
+    if (this.credential?.source !== "anthropic") return undefined;
+    if (this.failedError) return this.failedError;
+    const error = "Anthropic API key failed. The session stopped. Check Credentials.";
+    this.failedError = error;
+    this.sink.state({ status: "idle", error });
+    void this.close().finally(() => this.onExit?.(error));
+    return error;
   }
 
   private async pump() {
@@ -156,11 +193,19 @@ export class ClaudeDriver implements Driver {
     try {
       for await (const m of this.q) {
         try {
+          if (this.costs) {
+            if (m.type === "conversation_reset") this.costs.reset();
+            if ((m.type === "result" || (m.type === "system" && m.subtype === "init")) && m.session_id && m.session_id !== this.costSessionId) {
+              this.costs.reset();
+              this.costSessionId = m.session_id;
+            }
+            if (m.type === "result") this.sink.cost?.(this.costs.report(m.total_cost_usd, m.subtype === "error_during_execution"));
+          }
           this.stream.handle(m);
         } catch (e: any) {
           // Tether's bug, not Claude's: stop this process cleanly and say so.
-          console.error(`claude ${this.nativeId}: couldn't handle a ${(m as any)?.type}${(m as any)?.subtype ? `/${(m as any).subtype}` : ""} message:`, e);
-          error = `Tether couldn't follow Claude Code's output (${e?.message ?? e}), so it closed the session. Send again to resume it.`;
+          console.error(`claude ${this.nativeId}: couldn't handle output`);
+          error = "Tether couldn't follow Claude Code's output, so it closed the session. Send again to resume it.";
           this.closed = true;
           this.input.end();
           try {
@@ -174,11 +219,13 @@ export class ClaudeDriver implements Driver {
     }
     if (this.closed && !error) return;
     this.closed = true;
+    this.lease?.close();
     this.onExit?.(error);
   }
 
   async send(text: string, attachments: Attachment[] = []) {
     if (this.closed) throw new Error("Claude Code isn't running.");
+    this.interrupting = false;
     this.sink.state({ status: "running", error: undefined });
     this.push(text, attachments);
   }
@@ -227,6 +274,7 @@ export class ClaudeDriver implements Driver {
   async interrupt() {
     // With the main agent free only background work is left, which an interrupt spares.
     const left = this.stream.onlyBackground() ? [...this.stream.background] : [];
+    this.interrupting = true;
     await this.q.interrupt();
     await Promise.all(left.map((id) => this.q.stopTask(id).catch(() => {})));
   }
@@ -275,5 +323,6 @@ export class ClaudeDriver implements Driver {
     try {
       this.q.close();
     } catch {}
+    this.lease?.close();
   }
 }

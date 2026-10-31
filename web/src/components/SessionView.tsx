@@ -265,6 +265,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
+            billing={state.billing}
             running
             steerOnly
             agent="The subagent"
@@ -285,6 +286,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
+            billing={state.billing}
             running={running}
             mainFree={beside > 0}
             waiting={waiting && state.status !== "running"}

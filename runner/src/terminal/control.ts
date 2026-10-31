@@ -376,7 +376,11 @@ export class TerminalControl {
     if (s.fresh && (await this.stored(s))) s.fresh = false;
     if (handoff) await this.markEntries(s);
     this.lastAnswer.set(s.id, lastAnswer(s.transcript?.messages ?? [], this.o.core.adapter(s.summary.harness).ownModel ?? (() => true))?.id);
-    const launch = this.launch(s, { ...(await this.o.live.startOpts(s)), fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined });
+    const terminalOpts: TerminalOpts = { ...(await this.o.live.startOpts(s)), fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined };
+    const adapter = this.o.core.adapter(s.summary.harness);
+    const confirmedBilling = await adapter.prepareTerminal?.(s.summary.nativeId, s.summary.projectPath, terminalOpts);
+    const launch = adapter.terminalCommand(s.summary.nativeId, s.summary.projectPath, terminalOpts);
+    if (confirmedBilling) launch.billing = confirmedBilling;
     try {
       await this.o.tmux.create({ name, cwd: s.summary.projectPath, argv: launch.argv, env: launch.env, cols: o.cols, rows: o.rows, tags: { kind: "tui", session: s.id, project: s.summary.projectPath } });
     } catch (e: any) {
@@ -387,6 +391,14 @@ export class TerminalControl {
       throw new Error(error);
     }
     this.log(`${s.id}: started its TUI in tmux (${name})`);
+    if (launch.billing) { s.setState({ billing: launch.billing }); this.o.core.touch(s); }
+    if (handoff && (launch.billing?.kind === "apiKey" || launch.billing?.kind === "provider") && this.o.core.o.costs) {
+      // The handoff TUI has no dollar-report stream. Its unobserved spend must not masquerade as
+      // a complete session total when the SDK rejoins later.
+      const cost = this.o.core.o.costs.markUnknown(s.id);
+      s.setState({ cost });
+      this.o.core.touch(s);
+    }
     this.adopt(s, name);
     // What waits in the queue waits for Back to Tether (SPEC §8).
     if (handoff) this.o.live.queue.hold(s, "terminal", { over: !heldBefore });

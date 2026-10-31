@@ -9,6 +9,7 @@
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import type { CostLedger } from "../costs";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
@@ -25,6 +26,7 @@ import { SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
 
 export interface CoreOptions {
+  costs?: CostLedger;
   adapters: Adapter[];
   bus: EventBus<CoreEvents>;
   /** sends to the app (the connection caps events, shared/limits.ts) */
@@ -157,7 +159,7 @@ export class SessionCore {
         const found = (await Promise.all(this.o.adapters.map((a) => a.listSessions({ since }).catch(() => [] as SessionSummary[])))).flat();
         for (const f of found) {
           const s = this.sessions.get(f.id);
-          if (s && !s.live && !s.childRunning) s.summary = { ...f, mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+          if (s && !s.live && !s.childRunning) s.summary = { ...f, ...(this.o.prefs.get(f.id).title ? { title: this.o.prefs.get(f.id).title! } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
         }
         this.book.refresh(
           found.filter((f) => this.shown(f)),
@@ -199,7 +201,9 @@ export class SessionCore {
   /** Session rows with what the core knows live laid over what the stores say. */
   private overlay(list: SessionSummary[]): SessionSummary[] {
     return list.map((s) => {
-      return this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
+      const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
+      const title = this.o.prefs.get(row.id).title;
+      return title ? { ...row, title } : row;
     });
   }
 
@@ -249,11 +253,11 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -268,6 +272,7 @@ export class SessionCore {
 
   /** Registers a session object (new, opened, or a live subagent). */
   add(s: Session): Session {
+    if (this.o.costs) s.state = { ...s.state, cost: this.o.costs.get(s.id) };
     const plan = this.plans.get(s.summary.harness);
     if (plan && !s.summary.parentSessionId) s.state = { ...s.state, plan };
     if (!s.overlay.length) s.overlay = this.notices.get(s.id);
@@ -423,7 +428,7 @@ export class SessionCore {
       a.storedContext?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined),
       a.storedBilling?.(s.summary.nativeId, s.summary.projectPath).catch(() => UNKNOWN_BILLING),
     ]);
-    if (!s.live) s.setState({ context, billing });
+    if (!s.live) { s.setState({ context, billing }); this.touch(s); }
   }
 
   /** Drops notices whose anchor the store no longer has (notices.ts pruneOverlay). */
@@ -519,7 +524,8 @@ export class SessionCore {
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
     const q = s.state.queue.length;
-    s.summary = { ...rest, mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
+    const title = this.o.prefs.get(s.id).title;
+    s.summary = { ...rest, ...(title ? { title } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

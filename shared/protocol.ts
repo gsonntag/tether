@@ -24,6 +24,8 @@
 // subscribe again for a fresh snapshot.
 
 import type { Attachment } from "./attachments";
+import type { CredentialSource, CredentialStatus } from "./credentials";
+import type { TokenRates } from "./costs";
 import type { PartChunk } from "./limits";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
@@ -67,6 +69,10 @@ export interface User {
 
 /** Op name -> its args and result. Later phases add the rest of the core ops (SPEC §5). */
 export interface Ops {
+  credentials: { args: Record<string, never>; result: CredentialStatus };
+  setCredential: { args: { source: CredentialSource; key: string; endpoint?: string; deployment?: string; rates?: TokenRates }; result: CredentialStatus };
+  unsetCredential: { args: { source: CredentialSource }; result: CredentialStatus };
+  renameSession: { args: { sessionId: string; title: string }; result: null };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

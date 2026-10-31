@@ -45,6 +45,26 @@ function setup(opts: { rpcTimeoutMs?: number } = {}) {
 }
 
 describe("connections", () => {
+  test("credential RPCs are forwarded once, never logged, retained as pending args, or broadcast", () => {
+    const logs: string[] = [];
+    const relay = new Relay({ log: (s) => logs.push(s) });
+    const runner = new FakeSocket("runner"), browser = new FakeSocket("owner"), other = new FakeSocket("other");
+    relay.onRunnerMessage(runner, { t: "hello", runner: runnerInfo("box") });
+    relay.addBrowser(browser, { name: "owner", email: "owner@example.com" }, PROTOCOL_VERSION);
+    relay.addBrowser(other, { name: "other", email: "other@example.com" }, PROTOCOL_VERSION);
+    runner.take(); browser.take(); other.take();
+    const key = `fake-relay-${crypto.randomUUID()}`;
+    relay.onBrowserMessage(browser, { t: "rpc", id: "c1", runnerId: "box", op: "setCredential", args: { source: "anthropic", key } });
+    const [request] = runner.take("rpc");
+    expect(request.args.key).toBe(key);
+    expect(other.take()).toEqual([]);
+    expect(browser.take()).toEqual([]);
+    expect(JSON.stringify(logs)).not.toContain(key);
+    expect(JSON.stringify([...(relay as any).pending.values()])).not.toContain(key);
+    relay.onRunnerMessage(runner, { t: "result", id: request.id, ok: true, data: { anthropic: { set: true } } });
+    expect(JSON.stringify(browser.take())).not.toContain(key);
+    expect(other.take()).toEqual([]);
+  });
   test("a browser gets hello and the runner list; runner changes are broadcast", () => {
     const { browser, runner, relay } = setup();
     const b = browser("a");

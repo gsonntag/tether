@@ -1,4 +1,5 @@
-import type { HarnessId, RunStatus } from "../../../shared/transcript";
+import { isApiBilling } from "../../../shared/labels";
+import type { Billing, HarnessId, RunStatus } from "../../../shared/transcript";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
@@ -32,6 +33,12 @@ export function StatusDot({ status, requests }: { status: RunStatus; requests?: 
   return <span className={`t-dot ${s}`} role="img" aria-label={STATUS_LABEL[s]} title={STATUS_LABEL[s]} />;
 }
 
+export function BillingMarker({ billing }: { billing?: Billing }) {
+  if (isApiBilling(billing)) return <span className="t-api-marker" role="img" aria-label={billing!.label} title={billing!.label}>$</span>;
+  if (!billing || billing.kind === "unknown") return <span className="t-billing-unknown" title="Billing unknown" aria-label="Billing unknown">?</span>;
+  return null;
+}
+
 export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string }) {
   const close = () => useStore.setState({ sidebarOpen: false });
   return (
@@ -44,7 +51,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
         close();
       }}
     >
-      <span className="t-row-title">{row.title || "Untitled"}</span>
+      <span className="t-row-title"><BillingMarker billing={row.billing} />{row.title || "Untitled"}</span>
       <span className="t-row-meta">
         {child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
         {!child && <span className="t-proj">{folderName(row.projectPath)}</span>}

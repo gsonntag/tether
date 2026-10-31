@@ -2,6 +2,7 @@
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
 import type { Attachment } from "./attachments";
+import type { SessionCost } from "./costs";
 import type { ShellRun } from "./shellRun";
 
 export type HarnessId = "claude" | "codex";
@@ -270,6 +271,8 @@ export interface LiveState {
   context?: ContextUse;
   /** what it draws from. Absent: a runner that doesn't say, or a session that hasn't started */
   billing?: Billing;
+  /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
+  cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */
   plan?: PlanUsage;
   requests: Request[];
@@ -324,6 +327,9 @@ export interface LiveState {
 
 /** One row in the sidebar and Home. */
 export interface SessionSummary {
+  cost?: SessionCost;
+  /** The latest source confirmed by the harness; never inferred from configured credentials. */
+  billing?: Billing;
   /** `${harness}:${nativeId}` */
   id: string;
   harness: HarnessId;

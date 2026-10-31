@@ -8,6 +8,8 @@
 // sessions (SPEC §6a).
 
 import { randomUUID } from "node:crypto";
+import { CredentialStore, redact, redactValue } from "../credentials";
+import type { CostLedger } from "../costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
@@ -81,7 +83,7 @@ export class LiveControl {
   constructor(
     private core: SessionCore,
     broker: RequestBroker,
-    opts: { idleMs?: number; attachmentsDir?: string } = {},
+    private opts: { idleMs?: number; attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
@@ -109,7 +111,8 @@ export class LiveControl {
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
     const folder = this.core.folder(args.projectPath, args.createFolder === true);
     const opts: StartOpts = { model: args.model, effort: args.effort, permissionMode: args.permissionMode };
-    const s = this.core.create(args.harness, await a.newId(folder, opts), folder, opts);
+    const credential = this.opts.credentials?.snapshot(args.harness);
+    const s = this.core.create(args.harness, await a.newId(folder, { ...opts, ...(credential ? { credential } : {}) }), folder, opts);
     this.core.touch(s);
     if (args.terminal) {
       // Its TUI creates it (SPEC §8): for a handoff harness, no SDK process at all; a shared TUI
@@ -193,6 +196,8 @@ export class LiveControl {
     try {
       await this.core.load(s);
       const d = await this.ensureDriver(s);
+      // A credential change racing process startup is never allowed to send on the old source.
+      this.checkCredential(s);
       // Stopped before the message went out (interrupt already set idle and freed the session):
       // the caller hears it wasn't sent (a queued message goes back, your text stays in the box).
       if (s.cancelSend === me) throw new SendCancelled();
@@ -217,13 +222,15 @@ export class LiveControl {
         this.core.o.prefs.flush();
       }
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
+      this.checkCredential(s);
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
       if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
       if (s.sending === me && !(e instanceof SendCancelled)) {
-        s.turnError = (e as Error)?.message ?? String(e);
+        s.turnError = redact((e as Error)?.message ?? String(e));
+        s.setState({ error: s.turnError });
         this.status(s, "idle");
       }
       throw e;
@@ -261,7 +268,8 @@ export class LiveControl {
     try {
       const folder = this.core.folder(s.summary.projectPath);
       const { model, effort, permissionMode } = s.state;
-      const { nativeId, opts } = await a.renew!(folder, { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
+      const credential = this.opts.credentials?.snapshot(s.summary.harness);
+      const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       this.core.touch(n);
       try {
@@ -624,7 +632,7 @@ export class LiveControl {
       try {
         const s = await this.core.open(id);
         await this.core.load(s);
-        await this.ensureDriver(s);
+        await this.ensureDriver(s, !!this.opts.credentials);
         this.core.log(`rejoined ${id}`);
         // It finished while the runner was away.
         if (s.state.status === "idle" && !s.driver?.busy()) this.core.o.prefs.set(id, { running: undefined });
@@ -704,7 +712,7 @@ export class LiveControl {
       // A harness that confirms settings itself (capabilities.persistent): shown as applied only
       // once it reports them (the report clears the pref, see the sink).
       if (s.capabilities.persistent) {
-        const keys = Object.keys(patch) as (keyof StartOpts)[];
+        const keys = Object.keys(patch) as ("model" | "effort" | "permissionMode")[];
         const until = this.core.now() + this.confirmMs;
         while (keys.some((k) => this.core.o.prefs.get(id)[k] !== undefined) && this.core.now() < until) await Bun.sleep(50);
         if (keys.some((k) => this.core.o.prefs.get(id)[k] !== undefined)) throw new Error("it didn't confirm the change");
@@ -760,7 +768,7 @@ export class LiveControl {
     // A harness that reports the turn's settings itself keeps them right.
     if (!s.state.turnSettings || s.capabilities.persistent) return;
     const turn = { ...s.state.turnSettings };
-    for (const k of Object.keys(shown) as (keyof StartOpts)[]) if (turn[k] === shown[k]) delete turn[k];
+    for (const k of Object.keys(shown) as ("model" | "effort" | "permissionMode")[]) if (turn[k] === shown[k]) delete turn[k];
     s.setState({ turnSettings: Object.keys(turn).length ? turn : undefined });
   }
 
@@ -829,12 +837,20 @@ export class LiveControl {
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */
-  private ensureDriver(s: Session): Promise<Driver> {
-    if (s.driver) return Promise.resolve(s.driver);
+  private ensureDriver(s: Session, observe = false): Promise<Driver> {
+    if (s.driver) {
+      const revision = this.opts.credentials?.snapshot(s.summary.harness).revision;
+      if (revision === undefined || revision === s.credentialRevision) return Promise.resolve(s.driver);
+      // A running turn finishes on its original process and source. No new message can go to it
+      // after a change; idle processes are closed before resuming with the new snapshot.
+      if (s.driver.busy() || s.driver.turnRunning?.() || s.state.terminal) return Promise.reject(new Error("Credentials changed. Wait for this process to finish and close its terminal before sending."));
+      s.starting ??= this.release(s).then(() => this.startDriver(s)).finally(() => { s.starting = undefined; this.core.scheduleEvict(s); });
+      return s.starting;
+    }
     // Two processes must never drive one session (SPEC §8 handoff).
     const blocked = this.terminal?.blocked(s);
     if (blocked) return Promise.reject(new Error(blocked));
-    s.starting ??= this.startDriver(s).finally(() => {
+    s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
     });
@@ -846,7 +862,8 @@ export class LiveControl {
    * keeps itself), never overwritten by what Tether merely showed.
    */
   chosen(s: Session): StartOpts {
-    return chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id));
+    const credential = this.opts.credentials?.snapshot(s.summary.harness);
+    return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
   }
 
   /**
@@ -864,9 +881,14 @@ export class LiveControl {
     return { ...filled, ...opts };
   }
 
-  private async startDriver(s: Session): Promise<Driver> {
+  private checkCredential(s: Session) {
+    if (this.opts.credentials && this.opts.credentials.snapshot(s.summary.harness).revision !== s.credentialRevision) throw new Error("Credentials changed while the process was starting. Send again to use the new source.");
+  }
+
+  private async startDriver(s: Session, observe = false): Promise<Driver> {
     const a = this.core.adapter(s.summary.harness);
     const opts = await this.startOpts(s);
+    if (observe) opts.observe = true;
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
@@ -875,7 +897,7 @@ export class LiveControl {
     try {
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
-      const error = e?.message ?? String(e);
+      const error = redact(e?.message ?? String(e));
       s.rebuilt = s.fresh;
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
@@ -887,6 +909,7 @@ export class LiveControl {
       throw e;
     }
     s.driver = d;
+    s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
     d.onExit = (error) => {
       if (s.driver !== d) return;
       if (error) s.apply({ type: "msg", msg: notice(error, "error") });
@@ -964,7 +987,19 @@ export class LiveControl {
     const core = this.core;
     const bus = core.o.bus;
     return {
+      cost: (report) => {
+        if (!this.opts.costs || s.summary.parentSessionId) return;
+        const billing = s.state.billing;
+        if (billing?.kind !== "apiKey" && billing?.kind !== "provider") return;
+        try {
+          this.opts.costs.begin(s.id, s.fresh);
+          const cost = this.opts.costs.report(s.id, report.id, { usd: report.usd, estimated: report.estimated, complete: report.complete });
+          s.setState({ cost });
+        } catch { s.setState({ cost: { estimated: true, complete: false } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
+        core.touch(s);
+      },
       event: (e) => {
+        e = redactValue(e);
         const out = s.apply(e);
         if (out?.type === "msg") {
           // The turn failed: its turnEnded says why (Home and notifications show it).
@@ -982,6 +1017,11 @@ export class LiveControl {
       mainFree: () => this.queue.later(s.id),
       mainChanged: () => this.countBackground(s),
       state: (patch) => {
+        patch = redactValue(patch);
+        if (this.opts.costs && (patch.billing?.kind === "apiKey" || patch.billing?.kind === "provider") && !s.summary.parentSessionId) {
+          try { patch.cost = this.opts.costs.begin(s.id, s.fresh); }
+          catch { patch.cost = { estimated: true, complete: false }; }
+        }
         const before = s.state.status;
         // A harness that keeps the session's settings itself (capabilities.persistent) reports them.
         // A setting made in Tether is kept (and sent at each start) until the harness reports it
@@ -990,7 +1030,7 @@ export class LiveControl {
           const reported = { ...(patch.model ?? patch.modelResolved ? { model: patch.model ?? patch.modelResolved } : {}), ...(patch.effort ? { effort: patch.effort } : {}), ...(patch.permissionMode ? { permissionMode: patch.permissionMode } : {}) };
           s.confirmed = { ...s.confirmed, ...reported };
           // A change Tether had given up on (rolled back) that the harness applied after all.
-          const late = (Object.keys(reported) as (keyof StartOpts)[]).filter((k) => s.rolledBack?.[k] !== undefined && s.rolledBack[k] === reported[k]);
+          const late = (Object.keys(reported) as ("model" | "effort" | "permissionMode")[]).filter((k) => s.rolledBack?.[k] !== undefined && s.rolledBack[k] === reported[k]);
           if (late.length) {
             s.rolledBack = undefined;
             s.apply({ type: "msg", msg: notice(`${HARNESS_LABELS[s.summary.harness]} applied your earlier change to the ${late.map((k) => (k === "permissionMode" ? "mode" : k)).join(" and ")} after all.`) });
@@ -1011,11 +1051,11 @@ export class LiveControl {
         if (background && !wasBackground) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: true });
         else if (wasBackground && !background && s.state.status === "idle" && !s.driver?.busy()) core.o.prefs.set(s.id, { running: undefined });
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
-        else if (changed.model || changed.modelResolved || changed.permissionMode) core.touch(s);
+        else if (changed.model || changed.modelResolved || changed.permissionMode || changed.billing) core.touch(s);
         // The harness changed its own mode (a plan approved): kept, so the next start uses it.
         if (changed.permissionMode && !s.summary.parentSessionId && !s.capabilities.persistent) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },
-      request: (r, signal) => this.desk.ask(s, r, signal),
+      request: (r, signal) => this.desk.ask(s, redactValue(r), signal),
       plan: (p) => core.notePlan(s.summary.harness, p),
       nativeId: (id) => {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
@@ -1102,7 +1142,7 @@ export class LiveControl {
     c.childRunning = true;
     // Kept here: a middle subagent can end, and leave memory, before one it spawned.
     c.rootId = parent.rootId ?? parent.id;
-    c.setState({ mode: "live", status: "running" });
+    c.setState({ mode: "live", status: "running", billing: parent.state.billing });
     this.core.touch(c, { updatedAt: now });
     this.countBackground(this.rootOf(c) ?? parent);
     // The parent's tool card links to it.

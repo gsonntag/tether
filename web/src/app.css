@@ -2038,3 +2038,62 @@
   right: 2px;
   pointer-events: none;
 }
+
+/* One metered-billing colour throughout the session, in either theme. */
+:root { --t-api: light-dark(#733395, #d9a5f5); }
+.t-chip-options { display: contents; }
+.t-chips > .t-chip.t-paid-badge {
+  color: light-dark(#fff, #21152a);
+  background: var(--t-api);
+  border-color: var(--t-api);
+  font-weight: 700;
+  flex: none;
+  cursor: default;
+  overflow: visible;
+}
+.t-chips > .t-chip.t-paid-badge::before { display: none; }
+.t-api-cost { font-variant-numeric: tabular-nums; border-left: 1px solid currentColor; padding-left: 7px; margin-left: 2px; font-weight: 600; }
+.t-api-composer {
+  border-top: 3px solid var(--t-api);
+  background: color-mix(in srgb, var(--t-api) 9%, transparent);
+}
+.t-api-composer .t-input, .t-api-composer .t-input:focus { border-color: var(--t-api); }
+.t-api-marker {
+  display: inline-block;
+  color: var(--t-api);
+  font-weight: 800;
+  margin-right: 6px;
+}
+.t-billing-unknown { color: var(--t-muted); margin-right: 6px; }
+.t-title-button {
+  all: unset;
+  cursor: text;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+.t-title-button:focus-visible { outline: 2px solid var(--color-accent); border-radius: 3px; }
+.t-title-input { min-width: 0; width: 100%; font: inherit; color: inherit; background: var(--t-soft); border: 1px solid var(--t-border); border-radius: 4px; padding: 3px; }
+.t-credentials { box-sizing: border-box; max-width: 720px; width: 100%; margin: 0 auto; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; }
+.t-credential-harness { display: flex; flex-direction: column; gap: 16px; }
+.t-credential-slot { border: 1px solid var(--t-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.t-credential-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-weight: 600; }
+.t-credential-status { color: var(--t-muted); margin-left: auto; font-size: 13px; font-weight: 400; }
+.t-credential-entry { display: flex; flex-wrap: wrap; gap: 8px; }
+.t-credential-entry > input { flex: 1 1 140px; min-width: 0; }
+.t-credentials .t-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.t-credential-rates summary { font-size: 13px; color: var(--t-muted); cursor: pointer; }
+.t-rate-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
+.t-rate-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
+@media (max-width: 767px), (pointer: coarse) {
+  /* The source stays outside the scrollable choices, including on small phones. */
+  .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }
+  .t-chip-options { display: flex; flex: 1 1 0; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .t-chip-options::-webkit-scrollbar { display: none; }
+  .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
+  .t-header > .t-header-top { flex: 1; max-width: none; }
+  .t-credentials { padding: 16px; }
+}

@@ -10,6 +10,7 @@ import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjec
 import { CodexDriver, createThread } from "./driver";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
+import { sourceHome, sourceSocket } from "./sources";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -109,12 +110,20 @@ export const codexAdapter: Adapter = {
   // model, effort and permissions are the session's (the CLI takes only some approval policies:
   // with "untrusted" the thread keeps its own). No update prompt: it would block the TUI.
   terminalCommand(nativeId, _projectPath, opts) {
-    const remote = process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
+    const source = remembered(nativeId)?.source;
+    if (opts.credential && (source?.source ?? "subscription") !== opts.credential.source) throw new Error("This Codex session belongs to another billing source. Start a new session to use the configured source.");
+    const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false", "-c", `approvals_reviewer=${toml("user")}`];
-    if (opts.model && opts.model !== "default") argv.push("-m", opts.model);
+    const model = opts.credential?.source === "azure" && opts.credential.deployment ? opts.credential.deployment : opts.model;
+    if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
     const m = knownMode(opts.permissionMode);
     if (m && CLI_POLICIES.has(m.approvalPolicy)) argv.push("-a", m.approvalPolicy, "-s", m.sandbox);
-    return { argv, quit: CODEX_QUIT };
+    // tmux may have inherited provider keys long before this runner started.
+    const remove = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TETHER_GATEWAY_KEY"]);
+    for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_)/.test(name)) remove.add(name);
+    if (!source) remove.add("TETHER_CODEX_API_KEY");
+    const command = opts.credential ? ["env", ...[...remove].flatMap((name) => ["-u", name]), ...argv] : argv;
+    return { argv: command, ...(source ? { env: { CODEX_HOME: sourceHome(source), TETHER_CODEX_API_KEY: `tether-private-${source.id}` } } : {}), quit: CODEX_QUIT };
   },
 };

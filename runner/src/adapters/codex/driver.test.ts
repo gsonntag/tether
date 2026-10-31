@@ -826,3 +826,29 @@ test("a command's settings are its turn's, kept at the turn's end (a running com
   expect(sink.lastWith("turnSettings")).toMatchObject({ turnSettings: { who: "background", count: 1, permissionMode: "full-access" } });
   await d.close();
 });
+
+test("subscription source is confirmed before a send and an externally changed account refuses without fallback", async () => {
+  useDaemon();
+  let account: any = { type: "chatgpt" };
+  daemon.answers["account/read"] = () => ({ account });
+  const resumed = daemon.answers["thread/resume"]!;
+  daemon.answers["thread/resume"] = (p) => ({ ...(resumed(p) as object), modelProvider: "openai" });
+  daemon.answers["thread/read"] = () => ({ thread: { id: MAIN, modelProvider: "openai" } });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, { credential: { source: "subscription", revision: "subscription" } }, sink, true);
+  expect(sink.lastWith("billing")?.billing).toEqual({ kind: "plan", label: "ChatGPT plan" });
+  account = { type: "apiKey" };
+  await expect(d.send("this must stay unsent")).rejects.toThrow("did not confirm the ChatGPT subscription");
+  expect(daemon.calls("turn/start")).toEqual([]);
+  expect(daemon.calls("account/login/start")).toEqual([]);
+  await d.close();
+});
+
+test("a daemon-env key with account null stays unknown and cannot be sent as a subscription", async () => {
+  useDaemon();
+  daemon.answers["account/read"] = () => ({ account: null });
+  const resumed = daemon.answers["thread/resume"]!;
+  daemon.answers["thread/resume"] = (p) => ({ ...(resumed(p) as object), modelProvider: "openai" });
+  await expect(CodexDriver.open(MAIN, CWD, { credential: { source: "subscription", revision: "subscription" } }, new TestSink(), true)).rejects.toThrow("did not confirm the ChatGPT subscription");
+  expect(daemon.calls("turn/start")).toEqual([]);
+});

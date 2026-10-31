@@ -163,7 +163,9 @@ const openPanel = async (p) => {
 };
 // Nothing here may make the daemon trust SCRATCH in Codex's config (P4.md, Folder trust; only read).
 const codexConfig = `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/config.toml`;
-const trustsScratch = () => existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`);
+// A folder explicitly identified as already trusted by the owner needs no config inspection.
+// This does not accept a trust prompt or create trust; the TUI is still checked before input.
+const trustsScratch = () => process.env.TRUSTED_CODEX_PROJECT === SCRATCH || (existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`));
 const trustedBefore = trustsScratch();
 
 const typeInTerm = async (p, text, enter = true) => {

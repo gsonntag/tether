@@ -5,6 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
+import { redactValue } from "../credentials";
 import type { ClosedRequest, SavedRequest } from "./broker";
 
 /** runner.json as it is, without creating it (index.ts's loadConfig does that at start). */
@@ -81,6 +82,7 @@ export class Prefs {
   }
 
   set(id: string, patch: SessionPrefs) {
+    patch = redactValue(patch);
     this.map[id] = { ...this.map[id], ...patch, at: Date.now() };
     for (const k of Object.keys(this.map[id]!) as (keyof SessionPrefs)[]) if (this.map[id]![k] === undefined) delete this.map[id]![k];
     this.dirty = true;

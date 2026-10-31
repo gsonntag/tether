@@ -22,6 +22,10 @@ export interface StreamHost {
   nativeId: string;
   /** the context as Claude Code's own count has it, between messages (after a compaction, a /clear) */
   contextNow?(): Promise<ContextUse | undefined>;
+  /** A key-backed failure stops the process, without emitting the provider's raw error text. */
+  failed?(): string | undefined;
+  /** Only an explicit Stop can make a key-backed execution error an intentional interruption. */
+  interrupted?(): boolean;
 }
 
 interface Thread {
@@ -193,7 +197,14 @@ export class ClaudeStream {
     }
     if (t === this.main) this.contextFrom(msg);
     const id = messageId(msg.id, m.uuid);
-    if (m.error) this.lastError = blockText(msg.content) || String(m.error);
+    if (m.error) {
+      const safe = this.host.failed?.();
+      if (safe) {
+        this.lastError = safe;
+        return t.sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), safe, "error") });
+      }
+      this.lastError = blockText(msg.content) || String(m.error);
+    }
     const have = t.sink.message(id);
     const parts = [...(have?.parts ?? [])];
     let n = t.finals.get(id) ?? 0;
@@ -282,7 +293,16 @@ export class ClaudeStream {
     if (msg?.streaming) sink.event({ type: "msg", msg: { ...msg, streaming: false } });
     this.current = undefined;
     const interrupted = m.subtype === "error_during_execution" || m.terminal_reason === "aborted_streaming" || m.terminal_reason === "aborted_tools";
-    if ((m.is_error || (m.subtype && m.subtype !== "success")) && !interrupted) {
+    const failed = m.is_error || (m.subtype && m.subtype !== "success");
+    if (failed) {
+      const safe = !this.host.interrupted?.() && this.host.failed?.();
+      if (safe) {
+        if (this.lastError !== safe) sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), safe, "error") });
+        this.lastError = undefined;
+        return;
+      }
+    }
+    if (failed && !interrupted) {
       const text = [typeof m.result === "string" ? m.result : "", this.lastError].filter(Boolean)[0] || (Array.isArray(m.errors) && m.errors.join(" ")) || "The turn failed.";
       // Claude's own error reply is already in the transcript: no second copy of it.
       if (!this.lastError || text !== this.lastError) sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), text, "error") });

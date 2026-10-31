@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
-import { contextDetail, contextPercent, effortLabel, findModel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
-import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
+import { isApiBilling, contextDetail, contextPercent, effortLabel, findModel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
+import { costChip } from "../../../shared/costs";
+import { HARNESS_LABELS, UNKNOWN_BILLING, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
@@ -32,7 +33,25 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
-  const usage = state.billing && usageChip(state.billing, state.plan);
+  const billing = state.billing ?? UNKNOWN_BILLING;
+  const paid = isApiBilling(billing);
+  const usage = usageChip(billing, state.plan);
+  const cost = costChip(state.cost);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleBusy, setTitleBusy] = useState(false);
+  const titleInput = useRef<HTMLInputElement>(null);
+  const editing = useRef(false);
+  useEffect(() => { if (editingTitle) { titleInput.current?.focus(); titleInput.current?.select(); } }, [editingTitle]);
+  const finishTitle = (save: boolean) => {
+    if (!editing.current) return;
+    editing.current = false;
+    const title = titleInput.current?.value.trim();
+    setEditingTitle(false);
+    if (save && title && title !== session.title) {
+      setTitleBusy(true);
+      void call(rpc(runnerId, "renameSession", { sessionId: session.id, title })).finally(() => setTitleBusy(false));
+    }
+  };
   const call = async (p: Promise<unknown>) => {
     setError(undefined);
     try {
@@ -62,9 +81,9 @@ export function SessionHeader({
   return (
     <div className="t-header">
       <div className="t-header-top">
-        <span className="t-header-title" title={session.title}>
-          {session.title || "Untitled"}
-        </span>
+        {editingTitle ? <input ref={titleInput} className="t-title-input" aria-label="Session title" defaultValue={session.title} maxLength={200} onBlur={() => finishTitle(true)} onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); finishTitle(e.key === "Enter"); }
+        }} /> : <button type="button" className="t-header-title t-title-button" title={session.title} aria-label={`Rename session: ${session.title || "Untitled"}`} disabled={titleBusy} onClick={() => { editing.current = true; setEditingTitle(true); }}>{session.title || "Untitled"}</button>}
         <StatusDot status={shownStatus(state)} requests={state.requests.length} />
         {isChild && state.status === "running" && (
           <Button label="Stop" size="sm" variant="secondary" icon={<Icon icon={StopIcon} size="sm" />} onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: session.id }))} />
@@ -73,7 +92,10 @@ export function SessionHeader({
       <div className="t-header-sub" title={session.projectPath}>
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
-      <div className="t-chips">
+      <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
+        {paid && <span className="t-chip t-paid-badge" title={billing.label}><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></span>}
+        {!paid && <span className="t-chip t-chip-info t-usage-chip" title={usage.detail}>{usage.text}</span>}
+        <div className="t-chip-options">
         {isChild ? (
           <button type="button" className="t-chip" onClick={() => openSession(runnerId, session.parentSessionId!)}>
             ← Main session
@@ -112,11 +134,7 @@ export function SessionHeader({
             Context {contextPercent(state.context)}
           </span>
         )}
-        {!isChild && usage && (
-          <span className="t-chip t-chip-info" title={usage.detail}>
-            {usage.text}
-          </span>
-        )}
+        </div>
       </div>
       {/* The ❯_ button, pinned outside the chips (which scroll sideways on a phone): always on screen. */}
       {extra && <div className="t-header-pin">{extra}</div>}

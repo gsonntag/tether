@@ -7,6 +7,7 @@ import type { Driver, StartOpts, TranscriptEvent } from "./adapter";
 import type { OverlayNotice } from "./notices";
 import { capState } from "../../../shared/limits";
 import { Transcript } from "./transcript";
+import { redactValue } from "../credentials";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 
@@ -18,6 +19,8 @@ export class Session {
   transcript: Transcript | null = null;
   seq: number;
   driver?: Driver;
+  /** Revision captured at process start; contains no secret. */
+  credentialRevision?: string;
   /** starting or resuming the driver */
   starting?: Promise<Driver>;
   /** things on their way to holding it (core.pin): it stays in memory until they get there */
@@ -90,6 +93,7 @@ export class Session {
 
   /** Applies a transcript event (when the transcript is loaded) and sends it on. */
   apply(e: TranscriptEvent): SessionEvent | null {
+    e = redactValue(e);
     if (!this.transcript) {
       // Not loaded (nobody has opened it): the store has it when someone does.
       return null;
@@ -109,6 +113,7 @@ export class Session {
 
   /** Patches live state; only real changes go out. */
   setState(patch: Partial<LiveState>): Partial<LiveState> | null {
+    patch = redactValue(patch);
     const changed: Partial<LiveState> = {};
     for (const [k, v] of Object.entries(patch) as [keyof LiveState, unknown][]) {
       if (JSON.stringify(this.state[k]) === JSON.stringify(v)) continue;

@@ -7,6 +7,7 @@
 // id may now name a different rpc.
 
 import { capEvent, guardFrame } from "../../../shared/limits";
+import { redactValue } from "../credentials";
 import { CLOSE_PROTOCOL, CLOSE_REPLACED, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
@@ -97,6 +98,7 @@ export class Connection {
   }
 
   private write(ws: WebSocket, m: RunnerToServer) {
+    m = redactValue(m);
     const { frame, replaced } = guardFrame(m);
     if (replaced) this.log(`a ${m.t} frame was too large to send; ${frame === null ? "dropped it" : `sent ${m.t === "event" ? "resync" : "an error"} instead`}`);
     if (frame !== null) ws.send(frame);

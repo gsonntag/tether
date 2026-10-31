@@ -16,6 +16,7 @@ import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
+import { localizeUsageLimitRetry } from "../usageLimitTime";
 
 const isCut = (p: Part) => (p.type === "tool" ? !!p.truncated || !!p.inputTruncated : !!p.truncated);
 
@@ -91,7 +92,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const { projectPath, runnerId } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
-    const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+    const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text) : p.text) : "")).join("\n");
     return (
       <div className={`t-msg notice ${msg.level ?? "info"}`} role={msg.level === "error" ? "alert" : undefined}>
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
@@ -110,7 +111,12 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
     );
   }
   const omitted = msg.partsOmitted ?? 0;
-  const parts = msg.parts.map((p, i) => full[i] ?? p);
+  const parts = msg.parts.map((p, i) => {
+    const part = full[i] ?? p;
+    return msg.role === "assistant" && part.type === "text"
+      ? { ...part, text: localizeUsageLimitRetry(part.text) }
+      : part;
+  });
   for (let i = 0; i < omitted; i++) {
     const p = full[msg.parts.length + i];
     if (p) parts.push(p);
@@ -193,7 +199,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
           <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
-        {msg.error && <div className="t-msg-error">{msg.error}</div>}
+        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error)}</div>}
       </div>
     </div>
   );

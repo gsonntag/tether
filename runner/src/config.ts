@@ -29,6 +29,8 @@ export interface RunnerConfig {
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
 export interface SessionPrefs {
+  /** A title chosen in Tether, kept across harness discovery and process restarts. */
+  title?: string;
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;

@@ -657,6 +657,43 @@ Only the owner can run one (the same auth as sending).
 - **Home** (P5): one ranked inbox: requests, then finished-unread, then working.
 - **Responsive:** one layout that works at 375 px. Every action reachable by touch.
 
+### Credentials and billing safety
+
+The **Credentials** page belongs to a runner. Claude has one slot, **Anthropic API key**. Codex
+has **Azure** (Foundry) and **OpenAI API key** slots. Setting either Codex slot replaces the other;
+unsetting the active slot returns to the **ChatGPT subscription**, never to an older key. Claude
+returns to its **Claude subscription** when unset. There is no enable toggle, session source picker,
+fallback chain or automatic source migration. AWS for either harness is backlog only.
+
+Keys are written only to `credentials.json`, mode 600, under the runner's data directory
+(`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
+set/unset status and optional last four characters, plus Azure's endpoint and deployment. The
+browser clears the password field when submitting. Keys never belong in session prefs, summaries,
+transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
+The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
+and retired keys; terminal output is redacted before it is encoded for transport.
+
+A credential change applies at the next process start. A running turn finishes using its original
+source and label. Before an idle live session's next send, Tether closes the old process and starts
+with a new credential snapshot. A change racing startup refuses the send. The harness must confirm
+the configured source before any message is sent: unknown or mismatched billing refuses, rather
+than being treated as a subscription. Invalid credentials, exhausted quota and network failures
+stop on that source. Removing a key removes its environment from future processes. A Codex session
+bound to a different source refuses continuation and asks for a new session; no conversion occurs.
+
+The session label changes only after harness confirmation. API billing has one accessible colour
+token in light and dark themes: a loud source badge first in the session's chip row, visible at
+phone width without sideways scrolling; matching composer colour; and markers on Sidebar and Home
+rows. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
+early in the chip row on phones and never appears on API sessions. Terminal mode must use the same
+confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
+
+### Session names
+
+Clicking a session title opens an inline editor. Enter saves, Escape cancels, and leaving the editor
+saves a nonempty change. Names chosen in Tether persist through rediscovery and runner restarts,
+and update on every connected device. Renaming starts no harness process.
+
 ## 11. Phases
 
 ### How each phase is built

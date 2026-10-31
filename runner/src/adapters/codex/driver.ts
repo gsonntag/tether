@@ -10,7 +10,11 @@ import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachme
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
-import { connect } from "./daemon";
+import { assertCredentialCurrent, confirmedProxy, newConnection, observedCredential, rememberSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
+import { CostLedger } from "../../costs";
+import { sourceHome } from "./sources";
+import { join } from "node:path";
+import { type CredentialSnapshot } from "../../credentials";
 import { agentName } from "./items";
 import { codexBilling, dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
 import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
@@ -37,7 +41,8 @@ const NO_ROLLOUT = /no rollout found/i;
  */
 function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
-  if (opts.model && opts.model !== "default") out.model = opts.model;
+  if (opts.credential?.source === "azure" && opts.credential.deployment) out.model = opts.credential.deployment;
+  else if (opts.model && opts.model !== "default") out.model = opts.model;
   const m = knownMode(opts.permissionMode);
   if (m) {
     out.approvalPolicy = m.approvalPolicy;
@@ -55,11 +60,13 @@ const pending = new Map<string, { rpc: CodexRpc; started: any; timer: ReturnType
 /** Creates a thread in the daemon for a new session; its driver picks it up (CodexDriver.open). */
 export async function createThread(projectPath: string, opts: StartOpts): Promise<string> {
   if (!existsSync(projectPath)) throw new Error(`There's no folder ${projectPath} on this runner.`);
-  const rpc = await connect();
+  assertCredentialCurrent(opts.credential);
+  const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts) });
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}) });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
+    if (source) rememberSource(id, source);
     remember(id, { start: opts });
     // Nobody took it (the session failed to open): let it go.
     const timer = setTimeout(() => {
@@ -71,6 +78,7 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
     return id;
   } catch (e) {
     rpc.close();
+    if (source) await stopPrivateSource(source).catch(() => {});
     throw e;
   }
 }
@@ -130,7 +138,7 @@ export class CodexDriver implements Driver {
       return d;
     }
     if (!resume) throw new Error("This new Codex session is gone (the daemon may have restarted). Start a new one.");
-    const rpc = await connect();
+    const rpc = await threadConnection(nativeId, opts.credential, opts.observe);
     const d = new CodexDriver(nativeId, projectPath, rpc, sink, true);
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
@@ -175,19 +183,42 @@ export class CodexDriver implements Driver {
    * Tether only changes what you change).
    */
   /** What this start draws from: the thread's provider, and the account the daemon has now. */
-  private async noteBilling(r: any) {
+  private credential?: CredentialSnapshot;
+  get credentialRevision() { return this.credential?.revision; }
+
+  private noteCost() {
+    const source = remembered(this.nativeId)?.source;
+    if (source) this.sink.cost?.({ id: source.id, ...new CostLedger(join(sourceHome(source), "costs.json")).get(source.id) });
+  }
+
+  private async noteBilling(r: any, enforce = false) {
     const provider = r.modelProvider ?? r.thread?.modelProvider;
     const account = await this.rpc.call("account/read", { refreshToken: false }, 10_000).then((a: any) => a?.account, () => undefined);
-    const billing = codexBilling(provider, account);
+    const source = remembered(this.nativeId)?.source;
+    let billing = codexBilling(provider, account);
+    if (source) {
+      if (this.credential && sourceCredentialRevision(source) !== this.credential.revision) throw new Error("Codex has not restarted with the configured key. Nothing was sent.");
+      if (provider !== sourceProvider(source.source)) throw new Error("Codex did not confirm the configured API source. Nothing was sent.");
+      const cfg: any = await this.rpc.call("config/read", { cwd: this.projectPath });
+      const configured = cfg?.config?.model_providers?.[sourceProvider(source.source)];
+      const proxy = confirmedProxy(source);
+      if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== (source.source === "openai" ? "https://api.openai.com/v1" : this.credential.endpoint?.replace(/\/$/, ""))))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
+      billing = sourceBilling(source.source);
+    }
+    if (enforce && !source && billing.kind !== "plan") throw new Error("Codex did not confirm the ChatGPT subscription. Nothing was sent.");
     remember(this.nativeId, { billing });
     this.sink.state({ billing });
+    this.noteCost();
   }
 
   private async started(r: any, opts: StartOpts) {
-    void this.noteBilling(r).catch(() => {});
+    this.credential = opts.observe ? observedCredential(this.nativeId) : opts.credential;
+    if (this.credential) await this.noteBilling(r, true);
+    else void this.noteBilling(r).catch(() => {});
     const had = remembered(this.nativeId);
     const start = had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
     const since = start && had?.applied;
+    if (opts.credential?.source === "azure" && opts.credential.deployment) opts = { ...opts, model: opts.credential.deployment };
     const want: StartOpts = { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
     const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
     // Default picked here (now, or before a restart): shown as Default while it runs the default model.
@@ -263,6 +294,7 @@ export class CodexDriver implements Driver {
   // ---------------- what the daemon says ----------------
 
   private notify(method: string, p: any) {
+    if (method === "turn/completed") this.noteCost();
     if (method === "serverRequest/resolved") return this.resolved(String(p.requestId));
     if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME && this.placeholder) {
       this.placeholder = false;
@@ -450,6 +482,8 @@ export class CodexDriver implements Driver {
   readonly pinsSettings = true;
 
   private rememberChild(id: string, toolId: string) {
+    const source = remembered(this.nativeId)?.source;
+    if (source) rememberSource(id, source, true);
     remember(this.nativeId, { children: { ...remembered(this.nativeId)?.children, [id]: toolId } });
   }
 
@@ -624,6 +658,11 @@ export class CodexDriver implements Driver {
       this.pinned = { ...this.currentEff(), ...pin.eff };
       let r: any;
       try {
+        if (this.credential) {
+          const current: any = await this.rpc.call("thread/read", { threadId: this.nativeId, includeTurns: false });
+          await this.noteBilling(current, true);
+          assertCredentialCurrent(this.credential);
+        }
         r = await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments), ...pin.params }).finally(() => setTimeout(() => (this.starting = false), 5000));
       } finally {
         // Only provisional: the turn's own turn_context says what it really runs with.
@@ -647,7 +686,7 @@ export class CodexDriver implements Driver {
       if (this.stopAsked && turnId) await this.stopThread(this.nativeId, turnId).catch(() => {});
     } catch (e: any) {
       this.sink.state({ status: "idle" });
-      throw new Error(`Codex didn't start the turn: ${e?.message ?? e}`);
+      throw new Error(this.credential?.source !== "subscription" && this.credential ? "Codex API request failed. Check the configured key, quota and connection. Nothing was sent through another source." : `Codex didn't start the turn: ${e?.message ?? e}`);
     } finally {
       this.sendOnWay = false;
       this.stopAsked = false;
@@ -662,6 +701,7 @@ export class CodexDriver implements Driver {
 
   /** turn/start's settings for what's shown (a mode Tether can't express isn't pinned: it shows as Unknown). */
   private async pins(shown: StartOpts): Promise<{ params: Record<string, unknown>; eff: Eff }> {
+    if (this.credential?.source === "azure" && this.credential.deployment) shown = { ...shown, model: this.credential.deployment };
     const params: Record<string, unknown> = {};
     const eff: Eff = {};
     const model = shown.model === "default" ? await this.defaultId() : shown.model;
@@ -765,6 +805,7 @@ export class CodexDriver implements Driver {
   }
 
   async setModel(model: string) {
+    if (this.credential?.source === "azure" && this.credential.deployment && model !== this.credential.deployment) throw new Error("Change the Azure deployment in Credentials.");
     let id = model;
     if (model === "default") {
       id = (await this.defaultId()) ?? "";
@@ -819,6 +860,11 @@ export class CodexDriver implements Driver {
    * a new one gets a name (a placeholder titles ignore) to have its rollout written.
    */
   async beforeTerminal() {
+    if (this.credential) {
+      const current: any = await this.rpc.call("thread/read", { threadId: this.nativeId, includeTurns: false });
+      await this.noteBilling(current, true);
+      assertCredentialCurrent(this.credential);
+    }
     if (this.materialized) return;
     await this.rpc.call("thread/name/set", { threadId: this.nativeId, name: PLACEHOLDER_NAME });
     this.materialized = true;

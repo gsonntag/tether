@@ -9,10 +9,14 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import type { Billing } from "../../../../shared/transcript";
 import type { StartOpts } from "../../core/adapter";
+import type { PrivateSource } from "./sources";
 import { CONFIG_DIR } from "../../config";
 
 export interface Remembered {
   start?: StartOpts;
+  /** Private API daemon location; metadata only, never its key. */
+  source?: PrivateSource;
+  parentSource?: boolean;
   /** the settings the daemon last confirmed while Tether was on the thread, and when (ms) */
   applied?: StartOpts & { at: number };
   placeholder?: boolean;
@@ -47,13 +51,13 @@ function load(): Record<string, Remembered> {
   return map!;
 }
 
-function save() {
+function save(strict = false) {
   if (!file || !map) return;
   const now = Date.now();
   const kept = Object.entries(map)
-    .filter(([, r]) => now - r.at < MAX_AGE_MS)
+    .filter(([, r]) => r.source || now - r.at < MAX_AGE_MS)
     .sort((a, b) => b[1].at - a[1].at)
-    .slice(0, MAX);
+    .filter(([, r], i) => r.source || i < MAX);
   map = Object.fromEntries(kept);
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -61,8 +65,10 @@ function save() {
     writeFileSync(tmp, JSON.stringify(map), { mode: 0o600 });
     chmodSync(tmp, 0o600);
     renameSync(tmp, file);
-  } catch {}
+  } catch { if (strict) throw new Error("Couldn't save this Codex session's billing source. Nothing was sent."); }
 }
+
+export function rememberedThreads(): Record<string, Remembered> { return load(); }
 
 export function remembered(threadId: string): Remembered | undefined {
   return load()[threadId];
@@ -71,9 +77,11 @@ export function remembered(threadId: string): Remembered | undefined {
 /** Merges into what's remembered (undefined fields are dropped; nothing left: forgotten). */
 export function remember(threadId: string, patch: Partial<Omit<Remembered, "at">>) {
   const m = load();
-  const next: any = { ...m[threadId], ...patch, at: Date.now() };
+  const settings = (v: StartOpts) => ({ ...(v.model ? { model: v.model } : {}), ...(v.effort ? { effort: v.effort } : {}), ...(v.permissionMode ? { permissionMode: v.permissionMode } : {}) });
+  const safe = { ...patch, ...(patch.start ? { start: settings(patch.start) } : {}), ...(patch.applied ? { applied: { ...settings(patch.applied), at: patch.applied.at } } : {}) };
+  const next: any = { ...m[threadId], ...safe, at: Date.now() };
   for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
   if (Object.keys(next).length <= 1) delete m[threadId];
   else m[threadId] = next;
-  save();
+  save(!!patch.source && !patch.parentSource);
 }

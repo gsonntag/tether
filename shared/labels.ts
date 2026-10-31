@@ -86,3 +86,8 @@ export function usageChip(billing: Billing, plan: PlanUsage | undefined, now = D
   const limits = billing.kind === "plan" ? planChip(plan, now) : undefined;
   return limits ? { text: `${billing.label} · ${limits.text}`, detail: limits.detail } : { text: billing.label, detail: billing.kind === "unknown" ? "What this session draws from wasn't reported" : billing.label };
 }
+
+/** Only confirmed metered sources use the API colour. Unknown stays neutral. */
+export function isApiBilling(billing: Billing | undefined): boolean {
+  return billing?.kind === "apiKey" || billing?.kind === "provider";
+}
