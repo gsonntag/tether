@@ -87,6 +87,15 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         if (inference) unknown();
         const target = endpoint.replace(/\/$/, "") + url.pathname.slice(3) + url.search;
         const upstream = await fetch(target, { method: req.method, headers, body: req.body, redirect: "error", signal: req.signal });
+        if (!upstream.ok) {
+          // Providers sometimes repeat a partly masked key in auth errors. Do not forward any
+          // provider error body or headers into native logs, even when the full key is absent.
+          if (inference && (upstream.status === 401 || upstream.status === 403)) ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
+          await upstream.body?.cancel().catch(() => {});
+          const name = source === "azure" ? "Azure" : "OpenAI API key";
+          const message = upstream.status === 401 || upstream.status === 403 ? `${name} rejected the credential. Check Credentials.` : upstream.status === 429 ? `${name} quota or rate limit reached. The session stopped.` : `${name} request failed (HTTP ${upstream.status}). Check the configured source and connection.`;
+          return Response.json({ error: { message, type: upstream.status === 429 ? "rate_limit_error" : "api_error" } }, { status: upstream.status });
+        }
         const out = new Headers(upstream.headers);
         for (const h of ["content-length", "content-encoding", "transfer-encoding", "connection"]) out.delete(h);
         for (const [h,v] of out) if (h.includes(key)) out.delete(h); else out.set(h, v.replaceAll(key, "[redacted]"));
@@ -103,7 +112,6 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         }, unknown));
-        else if (inference && (upstream.status === 401 || upstream.status === 403)) ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         return new Response(body, { status: upstream.status, headers: out });
       } catch { unknown(); return Response.json({ error: { message: "The configured API source could not be reached.", type: "connection_error" } }, { status: 502 }); }
     },

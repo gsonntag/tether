@@ -1,5 +1,26 @@
 # API credentials acceptance
 
+## Verification record (2026-10-31)
+
+- All four packages typecheck; 847 unit tests pass.
+- Real Claude/Haiku with a random fake key confirmed Anthropic API key, stopped on the SDK's
+  authentication retry event, and emitted no fallback answer. After unset, a fresh process
+  confirmed Claude plan and answered. Descendant argv/environment, transcripts and temporary
+  logs/JSONL contained no complete fake key.
+- Real isolated Codex/gpt-6-luna at Low confirmed the private OpenAI and Azure providers with
+  fake keys. Local upstream probes independently returned 401 and 429, or refused the connection:
+  each turn failed without fallback; 401/429 made exactly one upstream request. A provider error
+  reflecting the complete key did not enter native notifications or files. The key was absent
+  from process command lines and the Codex child's environment.
+- Browser screenshots were inspected at desktop and 375 px in light/dark: Credentials, each API
+  source, Unknown, subscription, Home markers, estimates/unknown costs and local retry time.
+- Valid API-key inference, provider invoice/usage reconciliation and real-device touch behavior
+  remain owner checks. A Claude TUI's unobserved spend, missing Azure rates and incomplete pricing
+  metadata deliberately show Cost unknown.
+
+Artifacts are under `/tmp/claude-1001/keys/`. The shared Codex configuration SHA-256 remained
+`8b73d3941d6f02f411b3baedff3d4a936b5543a2b69a0d047bf123d201740493`.
+
 Use an isolated runner, data directory, tmux socket and ports. Never use production directories,
 the running runner, or the shared Codex daemon for a key test. Keep artifacts under
 `/tmp/claude-1001/keys/`; hold `flock -o /tmp/claude-1001/e2e.lock` for every test stack. Check load

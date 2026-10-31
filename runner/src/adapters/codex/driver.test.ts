@@ -87,6 +87,19 @@ test("resume keeps the thread's own settings: nothing sent; the state is the thr
   expect(sink.states[0]).toEqual({ model: "gpt-6-luna", modelResolved: "gpt-6-luna", effort: "low", permissionMode: "never+read-only" });
 });
 
+test("observing a TUI ignores stale saved model, effort and permission choices", async () => {
+  useDaemon();
+  const resume = daemon.answers["thread/resume"]!;
+  daemon.answers["thread/resume"] = (p) => ({ ...resume(p) as object, modelProvider: "openai" });
+  daemon.answers["account/read"] = () => ({ account: { type: "chatgpt", planType: "pro" } });
+  daemon.answers["config/read"] = () => ({ config: { model_provider: "openai" } });
+  remember(MAIN, { start: { model: "other", effort: "high", permissionMode: "full-access" } });
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, { observe: true, model: "other", effort: "high", permissionMode: "full-access" }, sink, true);
+  expect(daemon.calls("thread/settings/update")).toEqual([]);
+  expect(sink.lastWith("model")).toMatchObject({ model: "gpt-6-luna", effort: "low", permissionMode: "untrusted" });
+});
+
 test("settings you changed in Tether are applied after the resume (the daemon ignores them on a loaded thread) and confirmed", async () => {
   useDaemon();
   const sink = new TestSink();

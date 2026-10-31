@@ -358,6 +358,15 @@ try {
   }
   if (errors.length) fail(`page errors:\n${errors.join("\n")}`);
   console.log("\nall passed");
+} catch (error) {
+  // Preserve the actual screen when a native-model timing failure happens.
+  let n = 0;
+  for (const p of [...desktop.pages(), ...phone.pages()]) {
+    await shot(p, `failure-${++n}`).catch(() => {});
+    console.error("failure page", p.url(), await p.locator("body").innerText().catch(() => "closed"));
+  }
+  if (errors.length) console.error("page errors", errors);
+  throw error;
 } finally {
   await browser.close();
 }

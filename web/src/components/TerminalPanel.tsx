@@ -296,6 +296,7 @@ export function TerminalPanel({
         </div>
       </div>
       {metered && <div className="t-term-api-badge"><strong>{state.billing!.label}</strong><span title={cost.detail}>{cost.text}</span></div>}
+      {panel.tab === "tui" && (!state.billing || state.billing.kind === "unknown") && <div className="t-inline-status">Billing unknown</div>}
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">

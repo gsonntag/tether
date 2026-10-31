@@ -7,6 +7,12 @@ const dir = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, {
 const fake = (tag: string) => `fake-${tag}-${crypto.randomUUID()}`;
 
 describe("private credentials", () => {
+  test("a key accidentally pasted into public Azure metadata cannot reach argv or status", () => {
+    const store = new CredentialStore(join(dir(), "credentials.json")), key = fake("metadata");
+    expect(() => store.set("azure", key, `https://example.azure.com/${key}`)).toThrow("must not contain a key");
+    expect(() => store.set("azure", key, "https://example.azure.com/openai/v1", key)).toThrow("must not contain a key");
+    expect(store.status().azure.set).toBe(false);
+  });
   test("short invalid input cannot poison subsequent protocol data or property names", () => {
     const store = new CredentialStore(join(dir(), "credentials.json"));
     expect(() => store.set("anthropic", "a")).toThrow("valid key");

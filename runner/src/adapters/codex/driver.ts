@@ -232,10 +232,11 @@ export class CodexDriver implements Driver {
     if (this.credential) await this.noteBilling(r, true);
     else void this.noteBilling(r).catch(() => {});
     const had = remembered(this.nativeId);
-    const start = had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
+    const start = !opts.observe && had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
     const since = start && had?.applied;
-    if (opts.credential?.source === "azure" && opts.credential.deployment) opts = { ...opts, model: opts.credential.deployment };
-    const want: StartOpts = { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
+    if (!opts.observe && opts.credential?.source === "azure" && opts.credential.deployment) opts = { ...opts, model: opts.credential.deployment };
+    // Rejoining a TUI only observes its settings; stored Tether choices must not change it.
+    const want: StartOpts = opts.observe ? {} : { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
     const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
     // Default picked here (now, or before a restart): shown as Default while it runs the default model.
     if (want.model === "default" || (!want.model && remembered(this.nativeId)?.modelAlias === "default")) {

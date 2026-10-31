@@ -100,6 +100,11 @@ export class CredentialStore {
       } catch { throw new Error("Enter an HTTPS Azure endpoint."); }
       if (deployment && (!/^[A-Za-z0-9._-]{1,128}$/.test(deployment))) throw new Error("Enter a valid deployment name.");
       if (rates !== undefined && !validRates(rates)) throw new Error("Enter valid USD rates per million tokens.");
+      // Endpoint/deployment values are public metadata and can enter argv. Reject a key pasted
+      // into either field rather than leaking it through status or a native model argument.
+      const tokens = [key, ...secrets].map((value) => value.toLowerCase());
+      const metadata = [endpoint, deployment].filter((value): value is string => !!value).map((value) => { try { return decodeURIComponent(value).toLowerCase(); } catch { throw new Error("Enter a valid Azure endpoint."); } });
+      if (metadata.some((value) => tokens.some((token) => value.includes(token)))) throw new Error("Endpoint and deployment must not contain a key.");
     }
     secrets.add(key);
     const secret: Secret = { key, revision: randomUUID(), ...(source === "azure" ? { endpoint, ...(deployment ? { deployment } : {}), ...(rates ? { rates: { input: rates.input, output: rates.output, cached: rates.cached } } : {}) } : {}) };

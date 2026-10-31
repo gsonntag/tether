@@ -2,10 +2,13 @@
 //   flock -o /tmp/claude-1001/e2e.lock env BASE=http://127.0.0.1:5261 \
 //     CREDENTIAL_FILE=/tmp/claude-1001/keys/dev/credentials.json node scripts/e2e-keys.mjs
 // Source badges below use synthetic confirmed reports in the dev browser store: UI checks only.
-// Adapter/core tests and real-key acceptance checks verify actual billing. No inference here.
+// REAL_HARNESSES=1 adds actual fake-key rejection/source checks and a tiny Haiku subscription
+// turn after unset. It uses only the owner's explicitly trusted scratch folders. Valid API-key
+// billing remains an owner check; keys must never be pasted into chat.
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { execFileSync } from "node:child_process";
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5261";
 const ROOT = "/tmp/claude-1001/keys";
@@ -89,6 +92,41 @@ async function realSources(p) {
     await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
     assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"failed key changed billing source");
     await screenshot(p,`real-${source}-failure`);
+    if(process.env.RESTART_RUNNER) {
+      // The command belongs to the isolated test stack, never the production runner.
+      execFileSync("sh",["-c",process.env.RESTART_RUNNER],{stdio:"inherit"});
+      await p.reload();
+      await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:90000});
+      await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
+      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && !!v.state.error;},{runner,id},{timeout:90000});
+      assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"runner restart changed the key session's billing source");
+      console.log(`ok real ${source} runner restart: history resumed on the same source; rejected key stopped again`);
+    }
+    // Native TUI startup is tested without typing or accepting any trust/auth prompt.
+    try {
+      const opened=await call(p,"openTerminal",{sessionId:id,cols:80,rows:24});
+      await new Promise((r)=>setTimeout(r,1500));
+      const captured=await call(p,"terminalText",{attachId:opened.attachId});
+      const trust=/trust this folder|Yes, I trust|Do you trust/i.test(captured.text);
+      await call(p,"closeTerminal",{attachId:opened.attachId});
+      await p.locator(".t-chip-term").click();
+      await p.locator(".t-term-agent").waitFor();
+      await p.locator(".t-term-agent").click();
+      await p.locator(".t-term-api-badge").waitFor({timeout:30000});
+      assert((await p.locator(".t-term-api-badge").innerText()).includes(label),"terminal lost its source badge");
+      await p.setViewportSize({width:375,height:812});
+      await screenshot(p,`real-${source}-terminal-phone`);
+      const badge=await p.locator(".t-term-api-badge").boundingBox();
+      assert(badge && badge.x>=0 && badge.x+badge.width<=375,"terminal source badge is not visible on phone");
+      await p.setViewportSize({width:1280,height:900});
+      // Quit uses only cancel sequences when a prompt is up; no trust is accepted.
+      await call(p,"endTerminal",{sessionId:id});
+      await p.getByRole("button",{name:"Close terminal panel",exact:true}).click();
+      console.log(`ok real ${source} TUI startup: source pinned; ${trust?"trust prompt left unaccepted":"no trust prompt"}; no TUI message sent`);
+    } catch(e) {
+      if(!/could not confirm|cannot confirm/i.test(String(e))) throw e;
+      console.log(`ok real ${source} TUI refused an unconfirmed source before send`);
+    }
     await call(p,"unsetCredential",{source});
     if(harness==="claude") {
       await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
@@ -200,8 +238,8 @@ try {
     assert(outgoing.filter((v) => v.includes(key)).length === 1, "browser didn't send the key exactly once");
     if (process.env.RUNNER_PID) assert(!readFileSync(`/proc/${process.env.RUNNER_PID}/cmdline`, "utf8").includes(key), "key found in runner argv");
   }
-  const scan = (dir) => { for (const f of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, f.name); if (f.isDirectory()) scan(path); else if (f.isFile() && resolve(path) !== FILE) { const bytes = readFileSync(path); for (const key of secrets) assert(!bytes.includes(Buffer.from(key)), `key found outside private credentials file: ${path}`); } } };
+  const scan = (dir) => { for (const f of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, f.name); try { if (f.isDirectory()) scan(path); else if (f.isFile() && resolve(path) !== FILE) { const bytes = readFileSync(path); for (const key of secrets) assert(!bytes.includes(Buffer.from(key)), `key found outside private credentials file: ${path}`); } } catch (e) { if (e.code !== "ENOENT") throw e; } } };
   scan(ROOT);
   assert(errors.length === 0, `browser errors: ${errors.join("; ")}`);
-  console.log("all passed; synthetic billing confirms rendering only, no inference or real-key billing tested");
+  console.log("all passed; synthetic snapshots verify rendering; valid API-key billing remains an owner check");
 } finally { await browser.close(); }

@@ -834,12 +834,13 @@ export class LiveControl {
 
   /** Live again on the same session (Back to Tether, SPEC §8). */
   resumeLive(s: Session): Promise<Driver> {
-    return this.ensureDriver(s);
+    return this.ensureDriver(s, !!this.opts.credentials && !!s.state.terminal && !!s.capabilities.persistent);
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */
   private ensureDriver(s: Session, observe = false): Promise<Driver> {
     if (s.driver) {
+      if (observe) return Promise.resolve(s.driver);
       const revision = this.opts.credentials?.snapshot(s.summary.harness).revision;
       if (revision === undefined || revision === s.credentialRevision) return Promise.resolve(s.driver);
       // A running turn finishes on its original process and source. No new message can go to it

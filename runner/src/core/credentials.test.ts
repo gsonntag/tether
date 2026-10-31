@@ -30,6 +30,22 @@ function setup() {
   return { dir, file, adapter, core, live, credentials, prefs, frames, ops };
 }
 describe("credential process boundaries", () => {
+  test("an existing shared TUI can still be observed after credentials change, without allowing a new send", async () => {
+    const { live, adapter, credentials, core } = setup();
+    adapter.capabilities = { ...adapter.capabilities, persistent: true, terminal: "shared" };
+    credentials.set("anthropic", `fake-tui-${crypto.randomUUID()}`);
+    await live.send("claude:one", "first");
+    const s = await core.open("claude:one"), old = adapter.drivers.at(-1)!;
+    s.setState({ terminal: { kind: "shared" } });
+    credentials.unset("anthropic");
+    expect(await live.resumeLive(s)).toBe(old);
+    expect(old.closed).toBe(false);
+    await expect(live.send(s.id, "new source")).rejects.toThrow("Credentials changed");
+    s.setState({ terminal: undefined });
+    await live.send(s.id, "after closing the TUI");
+    expect(old.closed).toBe(true);
+    expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("subscription");
+  });
   test("an idle live process restarts on set and unset; keys never enter prefs, state or events", async () => {
     const { live, adapter, credentials, core, prefs, file, frames } = setup();
     await live.send("claude:one", "subscription");

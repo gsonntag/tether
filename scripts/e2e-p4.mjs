@@ -1167,8 +1167,16 @@ const steps = {
     if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
     await waitState(p, (x) => x.permissionMode === "read-only", "Read only", 15_000);
     await sleep(1000);
-    await typeInTerm(p, "Use the shell to run exactly: echo x > tui-ro.txt   Then reply with one word: done.");
-    await card(p).waitFor({ timeout: 90_000 });
+    // Luna can answer "done" without calling a tool. Retry that model no-op, while still
+    // requiring the real approval card and proving that no write happened before Deny.
+    let asked = false;
+    for (let attempt = 0; attempt < 2 && !asked; attempt++) {
+      await typeInTerm(p, "Call your exec_command shell tool now to run exactly: echo x > tui-ro.txt. Do not simulate the command or say done without a tool call. If it needs approval, request it.");
+      asked = await card(p).waitFor({ timeout: 30_000 }).then(() => true, () => false);
+      if (existsSync(scratch("tui-ro.txt"))) fail("the file was written without asking");
+      if (!asked) await idle(p, 60_000);
+    }
+    if (!asked) fail(`the model never requested a write: ${(await rendered(p)).at(-1)}`);
     if (existsSync(scratch("tui-ro.txt"))) fail("the file was written without asking");
     await button(card(p), "Deny").click();
     await idle(p, 60_000);
