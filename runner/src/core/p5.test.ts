@@ -478,6 +478,24 @@ describe("steering", () => {
   });
 });
 
+describe("a harness that reports deliveries itself", () => {
+  test("the message counts as delivered when the sink says the main agent sent it", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.capabilities = { ...adapter.capabilities, canSteer: true, subagents: { view: true, stop: true, steer: "via-parent" } };
+    adapter.addStored("s1", []);
+    adapter.script = (text) => (text === "go" ? [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1")] : []);
+    await live.send("claude:s1", "go");
+    const d = driver();
+    (d as any).relayMessage = (id: string, text: string) => `pass to ${id}: ${text}`;
+    await live.steer("claude:s1/agentA", "use tabs");
+    const kid = await core.open("claude:s1/agentA");
+    const shown = () => kid.transcript!.messages.find((m) => m.id.startsWith("n-relay-"));
+    expect(shown()!.relay).toBe("sending");
+    d.sink.relayed?.("s1/agentA");
+    expect(shown()!.relay).toBe("delivered");
+  });
+});
+
 describe("attachments", () => {
   test("upload in chunks, read-only, named safely; a message may name only its session's files", async () => {
     const { adapter, live } = setup();

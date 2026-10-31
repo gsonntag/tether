@@ -117,6 +117,7 @@ export class FakeAdapter implements Adapter {
   stored = new Map<string, { summary: SessionSummary; msgs: Msg[] }>();
   watchers = new Map<string, (msgs: Msg[]) => void>();
   drivers: FakeDriver[] = [];
+  backgroundRuns?: (nativeId: string) => Promise<boolean>;
   /** what each send does; default: a short reply, then idle */
   script: (text: string) => Step[] = (text) => [say(`a-${text}`, `echo ${text}`), idle];
   startError?: string;

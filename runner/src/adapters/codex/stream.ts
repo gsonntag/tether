@@ -41,7 +41,7 @@ export class CodexStream {
   /** subagent threads seen before their spawn call said whose they are: their events wait */
   private early = new Map<string, [string, any][]>();
   /** what thread/started said about subagent threads */
-  private info = new Map<string, { parent?: string; name?: string; role?: string }>();
+  private info = new Map<string, { parent?: string; name?: string; path?: string; role?: string }>();
   /** subagent thread -> its spawn call (the parent's tool part) */
   private spawns = new Map<string, { toolId: string; parent: string; prompt?: string }>();
 
@@ -176,6 +176,8 @@ export class CodexStream {
   onSettings?: (settings: any) => void;
   /** A subagent was spawned (its thread and the call that spawned it): the driver remembers it. */
   onSpawn?: (threadId: string, toolId: string) => void;
+  /** An agent sent a subagent something (Codex reports that it did, never what: the text is encrypted). */
+  onInteracted?: (threadId: string) => void;
 
   /**
    * A subagent found running when joining the thread (a runner restart): opened as if its spawn had
@@ -294,9 +296,10 @@ export class CodexStream {
       const name = pathLeaf(item.agentPath);
       this.spawns.set(child, { toolId: item.id, parent: v.id });
       this.onSpawn?.(child, item.id);
-      if (name) this.info.set(child, { ...this.info.get(child), name });
+      if (name) this.info.set(child, { ...this.info.get(child), name, path: item.agentPath });
       return this.openChild(child);
     }
+    if (item.type === "subAgentActivity" && item.kind === "interacted" && item.agentThreadId) return this.onInteracted?.(item.agentThreadId);
     if (item.type !== "collabAgentToolCall" || item.tool !== "spawnAgent") return;
     for (const child of item.receiverThreadIds ?? []) {
       if (this.spawns.has(child)) continue;
@@ -315,6 +318,12 @@ export class CodexStream {
       const owner = this.viewOf(sp.parent);
       if (owner) this.patchTool(owner, sp.toolId, { output: st.message });
     }
+  }
+
+  /** How an agent addresses a subagent (send_message's target). */
+  targetOf(threadId: string): string {
+    const i = this.info.get(threadId);
+    return i?.path ?? i?.name ?? threadId;
   }
 
   private threadStarted(t: any) {

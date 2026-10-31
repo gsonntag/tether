@@ -249,10 +249,11 @@ relay directly.
 - **Permissions:** native approval policy and sandbox. `item/commandExecution/requestApproval`,
   `item/fileChange/requestApproval` and `item/tool/requestUserInput` go to the request broker.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
-- **Terminal:** `terminal: "shared"`. `codex resume <id>` in the project folder attaches the TUI to the
-  same live thread through the daemon. Tether keeps driving; there is no handoff and no read-only mode.
-  To verify with a real turn in P4: approval requests reach every connection and clear everywhere
-  (`serverRequest/resolved`), and `turn/steer` works from either side.
+- **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
+  same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
+  keeps driving; there is no handoff and no read-only mode. Verified with real turns in P4: approval
+  requests reach every connection and clear everywhere (`serverRequest/resolved`), and `turn/steer`
+  works from either side.
 
 ## 6a. Subagents: precise turns and steering
 
@@ -265,7 +266,7 @@ its subagents as children in the sidebar and in the session header.
 | Live turns | SDK frames with `parent_tool_use_id` / `agent_id`; set `forwardSubagentText: true` so text and thinking come through, not only tool calls | each subagent is its own thread (`parentThreadId`); its `item/*` events stream like any thread |
 | Past transcript | `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.jsonl` (+ `.meta.json`), or SDK `getSubagentMessages`. Thinking isn't saved there, so past thinking is empty | its rollout file, or `thread/read` / `thread/items/list` on the child thread id |
 | Stop | `stopTask(taskId)` | `turn/interrupt` on the child thread |
-| Steer | via the main agent's `SendMessage` tool (see below) | `turn/steer` on the child thread, as you (verify in P4) |
+| Steer | via the main agent's `SendMessage` tool (see below) | via the main agent's `send_message` tool (see below): Codex refuses input on a subagent's thread |
 
 **Steering Claude subagents** (decided): the SDK can't address a message to a subagent (tested
 2026-10-29: `parent_tool_use_id`, `agent_id` and `priority` on a pushed user message all go to the main
@@ -274,6 +275,14 @@ Claude's own `SendMessage` tool to the subagent's agent id with exactly your tex
 the subagent's view marked "Sent via the main agent", delivered once the `SendMessage` call is seen,
 or "Not delivered" if the main agent's turn ends without it. This is an implementation detail behind
 `steer: "via-parent"`, so it can be swapped for a native path if the SDK ever adds one.
+
+**Steering Codex subagents** (decided, tested 2026-10-31 on daemon 0.166): `turn/steer`, `turn/start`
+and `thread/inject_items` on a child thread all fail with "direct app-server input is not allowed for
+multi-agent v2 sub-agents". Steering the parent works: it ends the parent's wait, it calls
+`send_message`, and the subagent follows. So `steer: "via-parent"` too, with the same marks in the
+subagent's view. Delivery is the daemon's `subAgentActivity` item of kind `interacted` for that
+subagent; the text is encrypted, so it can't be compared. For the same reason a reason given when
+denying a subagent's request can't reach it: its card offers no reason.
 
 Adapter capabilities: `subagents: { view: boolean; stop: boolean; steer: "direct" | "via-parent" | false }`.
 Viewing comes in P1 (Claude) and P4 (Codex). Steering and stopping come with each adapter.

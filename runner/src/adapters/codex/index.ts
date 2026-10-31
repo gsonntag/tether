@@ -6,7 +6,7 @@ import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
-import { codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
+import { codexBackgroundRuns, codexHistory, codexProjects, codexSessionInfo, codexSessions, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
@@ -40,7 +40,7 @@ const CLI_POLICIES = new Set(["on-request", "never"]);
 
 export const codexAdapter: Adapter = {
   id: "codex",
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "direct" }, persistent: true, settingsApply: "nextTurn" },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn" },
 
   async available() {
     return !!Bun.which(HARNESS_BINS.codex);
@@ -50,6 +50,7 @@ export const codexAdapter: Adapter = {
   listSessions: (opts) => codexSessions(opts),
   sessionInfo: (nativeId) => codexSessionInfo(nativeId),
   listSubagents: (nativeId) => codexSubagents(nativeId),
+  backgroundRuns: codexBackgroundRuns,
   readHistory: codexHistory,
   watchHistory: watchThread,
 

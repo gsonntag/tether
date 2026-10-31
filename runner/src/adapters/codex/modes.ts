@@ -1,7 +1,7 @@
 // Codex's models, effort levels and permission modes, with human labels (SPEC §2.6, §7).
 //
 // Codex has two permission settings: an approval policy (when to ask) and a sandbox (what commands
-// may touch). Tether offers them as one menu of the presets Codex's own TUI offers (/approvals),
+// may touch). Tether offers them as one menu of the presets Codex's own TUI offers (/permissions),
 // plus "untrusted" (ask before anything outside Codex's own list of safe commands). Approvals are
 // always routed to the client (`approvalsReviewer: "user"`), so they reach Tether's broker rather
 // than Codex's automatic reviewer.

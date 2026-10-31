@@ -140,6 +140,20 @@ export async function codexSubagents(nativeId: string): Promise<SessionSummary[]
   return (await listThreads({ parent: nativeId, max: 200 })).map(summaryOf);
 }
 
+/**
+ * Whether a thread or a subagent under it still has a command in a background terminal. Asked of
+ * the daemon without joining anything; a thread it hasn't loaded runs nothing.
+ */
+export async function codexBackgroundRuns(nativeId: string): Promise<boolean> {
+  const queue = [nativeId];
+  for (let i = 0; i < queue.length && i < 200; i++) {
+    const list: any = await call("thread/backgroundTerminals/list", { threadId: queue[i], limit: 1 }, 10_000).catch(() => undefined);
+    if (list?.data?.length) return true;
+    queue.push(...(await listThreads({ parent: queue[i], max: 50 }).catch(() => [])).map((t) => t.id));
+  }
+  return false;
+}
+
 /** Every turn of a thread, oldest first, with all their items. */
 export async function threadTurns(nativeId: string): Promise<any[]> {
   const turns: any[] = [];
@@ -152,6 +166,8 @@ export async function threadTurns(nativeId: string): Promise<any[]> {
     }
     return turns;
   } catch (e: any) {
+    // Never got a message (another client's): no turns to list.
+    if (/not materialized/i.test(String(e?.message))) return [];
     // An older daemon without paging: the whole thread at once.
     if (!/method|unknown|not found/i.test(String(e?.message)) || turns.length) throw e;
     const r: any = await call("thread/read", { threadId: nativeId, includeTurns: true });
@@ -319,29 +335,42 @@ export async function itemContextOf(path: unknown, itemId: string | undefined, p
   if (f.size > ROLLOUT_MAX) return undefined;
   const text = await f.text().catch(() => "");
   // A running command's item isn't in the rollout yet (it's written when the command ends): its
-  // process id is, in the tool output that said it started (the newest with that id).
-  const byItem = itemId ? text.indexOf(`"${itemId}"`) : -1;
-  let at = byItem;
-  if (at < 0 && processId) {
-    const pid = new RegExp(`(?<![0-9])${processId.replace(/[^0-9A-Za-z-]/g, "")}(?![0-9])`);
-    const lines = text.split("\n");
-    let pos = text.length;
-    for (let i = lines.length - 1; i >= 0 && at < 0; i--) {
-      const l = lines[i]!;
-      pos -= l.length + 1;
-      if (l.includes("_output") && pid.test(l)) at = Math.max(0, pos);
-    }
-  }
+  // process id is, in the tool output that said it started.
+  let at = itemId ? text.indexOf(`"${itemId}"`) : -1;
+  if (at < 0 && processId) at = commandStart(text, processId);
   if (at < 0) return undefined;
   const ctx = rolloutSettings(text.slice(0, at));
   return ctx.found ? ctx : undefined;
 }
 
-/** A thread's settings as its rollout's end records them. */
+/**
+ * Where a process's tool output says it started: the newest output naming its session id that isn't
+ * write_stdin's. A later turn polling or typing into the process names the same id, with the
+ * settings of that later turn. -1: not found, which reads as unknown (fail closed).
+ */
+function commandStart(text: string, processId: string): number {
+  const id = new RegExp(`session[ _]id[^0-9A-Za-z]{0,6}${processId.replace(/[^0-9A-Za-z-]/g, "")}(?![0-9A-Za-z-])`, "i");
+  let end = text.length;
+  while (end > 0) {
+    const from = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(from, end);
+    end = from - 1;
+    if (!line.includes("_output") || !id.test(line)) continue;
+    const callId = /"call_id":"([^"]+)"/.exec(line)?.[1];
+    const at = callId ? text.indexOf(`"call_id":"${callId}"`) : -1;
+    const call = at >= 0 ? text.slice(text.lastIndexOf("\n", at) + 1, text.indexOf("\n", at)) : "";
+    if (!(call.includes("write_stdin") && !call.includes("exec_command"))) return from;
+  }
+  return -1;
+}
+
+/** A thread's settings as its rollout records them: its end first, then the whole file (a long turn may have pushed them far back). */
 async function rolloutOf(t: any): Promise<RolloutSettings> {
   if (typeof t?.path !== "string") return {};
   const f = Bun.file(t.path);
-  return rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
+  const tail = rolloutSettings(await f.slice(Math.max(0, f.size - SETTINGS_TAIL)).text().catch(() => ""));
+  if (tail.found || f.size <= SETTINGS_TAIL || f.size > ROLLOUT_MAX) return tail;
+  return rolloutSettings(await f.text().catch(() => ""));
 }
 
 /** Whether a thread's first turn has recorded its settings. */

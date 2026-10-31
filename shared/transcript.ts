@@ -176,6 +176,8 @@ export interface Request {
   reason?: string;
   /** the harness asks for network access (Codex's network approvals) */
   network?: boolean;
+  /** a denial can't carry a reason to whoever asks (a Codex subagent takes no input) */
+  noReason?: boolean;
   /** a plan to approve (leaving plan mode), as markdown */
   plan?: string;
   /** ways to approve that also switch the permission mode ("Approve and accept edits") */

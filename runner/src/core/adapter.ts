@@ -31,6 +31,13 @@ export type RequestAsk = Omit<Request, "id" | "sessionId" | "openedAt" | "inputT
  */
 export const RESOLVED_ELSEWHERE = "resolved-elsewhere";
 
+/** A send that Stop cancelled before it reached the harness: nothing went out. */
+export class SendCancelled extends Error {
+  constructor() {
+    super("Stopped before it went out.");
+  }
+}
+
 /** A subagent the driver saw start: it becomes a child session (SPEC §6a). */
 export interface SubagentStart {
   /** the child's native id, unique within the harness */
@@ -64,6 +71,8 @@ export interface Sink {
   subagent(s: SubagentStart): Sink;
   /** a subagent of this sink's session ended */
   ended?(): void;
+  /** the harness reports the main agent sent this subagent a message (subagents.steer "via-parent") */
+  relayed?(nativeId: string): void;
 }
 
 export interface Driver {
@@ -91,7 +100,8 @@ export interface Driver {
   steerSubagent?(nativeId: string, text: string, attachments?: Attachment[]): Promise<void>;
   /**
    * capabilities.subagents.steer "via-parent" (SPEC §6a): the message that asks the main agent to
-   * pass `text` on to the subagent, and whether a tool call of the main agent's is that delivery.
+   * pass `text` on to the subagent, and whether a tool call of the main agent's is that delivery
+   * (a harness that reports deliveries instead says so through the sink: `relayed`).
    */
   relayMessage?(nativeId: string, text: string): string;
   relayedBy?(nativeId: string, tool: ToolPart, text?: string): boolean;
@@ -121,6 +131,8 @@ export interface Adapter {
    * (a crash): Tether waits for it to go quiet before continuing a cut-off turn (SPEC §4).
    */
   storeChangedAt?(nativeId: string, projectPath: string): number | undefined;
+  /** whether a stored session left something running in its harness (read-only: joins nothing) */
+  backgroundRuns?(nativeId: string): Promise<boolean>;
   /** a session's stored subagents, as child summaries */
   listSubagents(nativeId: string, projectPath: string): Promise<SessionSummary[]>;
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;

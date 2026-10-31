@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
@@ -40,6 +40,10 @@ export function SessionHeader({
     }
   };
   const ensureModels = () => void (models ? undefined : loadModels(runnerId, session.harness, session.id));
+  // "Default" reads as what it runs: stored, the session doesn't say, the list does.
+  useEffect(() => {
+    if (state.model === "default" && !state.modelResolved) ensureModels();
+  }, [state.model, state.modelResolved, !!models]);
   const current = models?.models.find((m) => m.id === state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;

@@ -13,7 +13,7 @@ import { FROM_TETHER } from "../../../shared/fromTether";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
-import type { Driver, Sink, StartOpts, SubagentStart } from "./adapter";
+import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
 import { ReadState } from "./inbox";
@@ -56,12 +56,7 @@ export function turnFinished(msgs: readonly Msg[]): boolean {
   return p?.type === "text" && !!p.text.trim();
 }
 
-/** A send that Stop cancelled while the harness was starting: nothing went out. */
-export class SendCancelled extends Error {
-  constructor() {
-    super("Stopped before it went out.");
-  }
-}
+export { SendCancelled };
 
 export class LiveControl {
   private readonly idleMs: number;
@@ -263,7 +258,7 @@ export class LiveControl {
    */
   private async relay(parent: Session, child: Session, text: string) {
     const d = parent.driver!;
-    if (!d.relayMessage || !d.relayedBy) throw new Error("Subagents can't take messages here. Message the main session instead.");
+    if (!d.relayMessage) throw new Error("Subagents can't take messages here. Message the main session instead.");
     const ask = FROM_TETHER + d.relayMessage(child.summary.nativeId, text);
     const msgId = `n-relay-${randomUUID()}`;
     const entry = { childId: child.id, nativeId: child.summary.nativeId, msgId, text };
@@ -290,6 +285,12 @@ export class LiveControl {
       const hit = list.find((r) => d.relayedBy!(r.nativeId, p, r.text));
       if (hit) this.relayDone(sessionId, hit, "delivered");
     }
+  }
+
+  /** The harness reports the main agent messaged a subagent: the oldest message pending for it went. */
+  private relayed(sessionId: string, nativeId: string) {
+    const hit = this.relays.get(sessionId)?.find((r) => r.nativeId === nativeId);
+    if (hit) this.relayDone(sessionId, hit, "delivered");
   }
 
   /** The main agent's turn ended: what it didn't pass on (and isn't about to) wasn't delivered. */
@@ -356,8 +357,8 @@ export class LiveControl {
       this.core.o.prefs.set(id, { running: undefined, continuedTurn: undefined, restartWait: undefined });
       this.core.o.prefs.flush();
     }
-    // Stopped while Claude is still starting: the message never goes out.
-    if (s.sending && !s.driver) {
+    // Stopped before the harness has the message (it may still be starting): it never goes out.
+    if (s.sending && (!s.driver || s.sentOut !== s.sending)) {
       // Free at once: a send right after this goes ahead (on the same start).
       s.cancelSend = s.sending;
       s.sending = undefined;
@@ -628,7 +629,7 @@ export class LiveControl {
     s.setState(patch);
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
-    if (!d) return;
+    if (!d) return patch.permissionMode ? this.lookForRunning(s) : undefined;
     try {
       await withTimeout(apply(d), this.settingMs, "didn't answer");
       // A harness that confirms settings itself (capabilities.persistent): shown as applied only
@@ -650,6 +651,19 @@ export class LiveControl {
       s.setState(shown);
       throw new Error(`${HARNESS_LABELS[s.summary.harness]} didn't take that setting (${e?.message ?? e}). It's unchanged.`);
     }
+  }
+
+  /**
+   * The mode of a stored session changed: what it left running (a command in a background terminal)
+   * keeps its old settings, so the session joins again to say so, with no turn started. The join
+   * applies the mode too. Nothing left running: it stays stored, and the change waits for the next
+   * send. A join that fails leaves it at that.
+   */
+  private async lookForRunning(s: Session) {
+    const a = this.core.adapter(s.summary.harness);
+    if (s.fresh || !(await a.backgroundRuns?.(s.summary.nativeId).catch(() => false))) return;
+    await this.core.load(s);
+    await this.ensureDriver(s).catch(() => {});
   }
 
   /**
@@ -921,6 +935,7 @@ export class LiveControl {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
       },
       subagent: (start) => this.child(s, start),
+      relayed: (nativeId) => this.relayed(s.id, nativeId),
       ended: () => {},
     };
   }

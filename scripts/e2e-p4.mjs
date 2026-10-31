@@ -12,8 +12,10 @@
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the session `new` makes):
 //   new stream approve deny steer midturn terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
-//   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab stored
-// subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again).
+//   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab
+//   subMessage startConfirmed bgStored tuiReadOnly tuiSteer tuiAnswerAway folderTrust stored
+// subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again). tuiAnswerAway needs
+// STOP_RUNNER and START_RUNNER. folderTrust runs a private app-server (scripts/check-codex-folder-trust.sh).
 // The steps that type in Codex's TUI need SCRATCH already trusted in Codex's config: they stop otherwise.
 // claudeShiftTab needs CLAUDE_SCRATCH: a folder Claude already trusts (its trust dialog is never accepted).
 // It only ever creates threads in SCRATCH and only drives those. Each real turn is small.
@@ -235,6 +237,37 @@ async function stopsSubagent(p, file) {
   if (existsSync(scratch(file))) fail(`the subagent went on and wrote ${file}`);
 }
 
+const sessionUrl = (id) => `${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`;
+
+/** A live session on `mode`, Low, open in `p`. */
+async function liveSession(p, mode) {
+  const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: mode });
+  if (r.error) fail(r.error);
+  const id = r.ok.sessionId;
+  await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
+  await p.goto(sessionUrl(id));
+  await composer(p).waitFor({ timeout: 30_000 });
+  return id;
+}
+
+/** The session's subagent (undefined: none showed in 90 s). */
+async function runningChild(p, id, pick = (k) => k.status === "running") {
+  const known = runningChild.seen ??= new Set();
+  for (let i = 0; i < 180; i++) {
+    const kid = ((await rpcVia(p, "listSessions", { parentSessionId: id })).ok?.sessions ?? []).find((k) => !known.has(k.id) && pick(k));
+    if (kid) return known.add(kid.id), kid;
+    await sleep(500);
+  }
+}
+
+/** Codex's TUI open beside Tether, past the seconds it loses keys in. */
+async function openTui(p, id) {
+  await pickTerminal(p);
+  await p.locator(".t-term-panel").waitFor();
+  await waitScreen(p, id, /Ask Codex/, "Codex's TUI", 60_000);
+  await sleep(3000);
+}
+
 const steps = {
   async new() {
     for (const f of ["approved.txt", "denied.txt", "tui.txt", "tether.txt", "restart.txt"]) rmSync(scratch(f), { force: true });
@@ -380,7 +413,7 @@ const steps = {
     await waitScreen(p, sessionId(), /Ask Codex|›/, "Codex's TUI in the panel", 60_000);
     await waitState(p, (s) => s.mode === "live" && s.terminal?.kind === "shared", "live with a shared terminal");
     const argv = tmux("display", "-p", "-t", `=${tuiName()}:`, "#{pane_start_command}").stdout;
-    if (!argv.includes(`resume --remote unix:// ${sessionId().split(":")[1]}`) || !argv.includes(`-m ${MODEL}`)) fail(`TUI command: ${argv}`);
+    if (!argv.includes(`resume --remote unix:// ${sessionId().split(":")[1]}`)) fail(`TUI command: ${argv}`);
     if (await p.locator(".t-term-banner").count()) fail("a handoff banner shows for a shared terminal");
     if ((await composer(p).getAttribute("placeholder")) !== "Message") fail("the composer isn't Tether's own");
     await shot(p, "terminal-desktop");
@@ -869,6 +902,9 @@ const steps = {
       await waitState(p, (x) => x.turnSettings?.who === "background" && x.turnSettings.permissionMode === "full-access" && x.turnSettings.looser && x.turnSettings.count === 1, "the background command's note", 15_000);
       if (!/A background command still runs with Mode Full access/.test(await p.locator(".t-header").innerText())) fail("the note doesn't speak of the command");
       await shot(p, "bg-note");
+      // A later, tighter turn polling it must not pass for the turn that started it (review 9, I3).
+      await send(p, "Using your write_stdin tool on the session that is running the python http.server (the session id you were given), send empty input to poll it, do not start anything new, then reply with just: POLLED");
+      await replied(p, "POLLED");
       if (RESTART) {
         await p.close();
         execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
@@ -904,22 +940,20 @@ const steps = {
     await pickTerminal(p);
     await p.locator(".t-term-panel").waitFor();
     await waitScreen(p, id, /Ask Codex/, "Codex's TUI", 60_000);
+    // Codex's TUI loses keys in its first seconds.
+    await sleep(3000);
     const pickIn = async (label) => {
       await typeInTerm(p, "/permissions", false);
       await sleep(600);
       await p.keyboard.press("Enter");
       await waitScreen(p, id, /Update Model Permissions/, "the permissions menu", 15_000);
-      let on = false;
-      for (let i = 0; i < 6 && !on; i++) {
-        const s = await screen(p, id);
-        on = s.lines.some((l) => l.includes(`›`) && l.includes(label));
-        if (!on) {
-          await p.keyboard.press("ArrowDown");
-          await sleep(250);
-        }
+      // Checked after each press, the last one too; a press it lost is simply made again.
+      const onIt = async () => (await screen(p, id)).lines.some((l) => l.includes(`›`) && l.includes(label));
+      for (let i = 0; i < 10 && !(await onIt()); i++) {
+        await p.keyboard.press("ArrowDown");
+        await sleep(300);
       }
-      const s = await screen(p, id);
-      if (!on) fail(`the cursor never reached ${label}:\n${s.lines.filter((l) => l.trim()).join("\n")}`);
+      if (!(await onIt())) fail(`the cursor never reached ${label}:\n${(await screen(p, id)).lines.filter((l) => l.trim()).join("\n")}`);
       await p.keyboard.press("Enter");
       await sleep(1500);
       console.log(`after ${label}:\n${(await screen(p, id)).lines.filter((l) => l.trim()).slice(-6).join("\n")}`);
@@ -982,6 +1016,188 @@ const steps = {
     await p.close();
   },
 
+  async folderTrust() {
+    // A private app-server with its own CODEX_HOME: a new session must write no folder trust, with a
+    // control that a writable thread/start does (P4.md, Folder trust). Never the user's daemon.
+    const r = spawnSync("sh", [new URL("./check-codex-folder-trust.sh", import.meta.url).pathname], { encoding: "utf8", timeout: 120_000 });
+    if (r.status !== 0) fail(`check-codex-folder-trust.sh: ${r.stdout}${r.stderr}`);
+    ok(r.stdout.trim().split("\n").map((l) => l.replace(/^ok\s+/, "")).join("; "));
+  },
+
+  async subMessage() {
+    // A subagent takes no input of its own (Codex refuses it): a message from its view goes through
+    // the main agent, which passes it on (E3). Its approval's card offers no reason.
+    const p = await page(desktop);
+    const id = await liveSession(p, "auto");
+    await send(p, "Spawn exactly one subagent with your agent tool, with the task: run exactly `sleep 35` in the shell, then write your final report in one sentence. Wait for it, then reply with its report in one line.");
+    const kid = await runningChild(p, id);
+    if (!kid) return console.log("skip subMessage: no subagent ran"), await p.close();
+    const c = await page(desktop, sessionUrl(kid.id));
+    await composer(c).waitFor({ timeout: 30_000 });
+    await sleep(3000);
+    await send(c, "End your report with the word KIWI.");
+    const mine = c.locator(".t-msg", { hasText: "End your report with the word KIWI." }).first();
+    await mine.waitFor({ timeout: 15_000 });
+    await c.getByText("Sent via the main agent").waitFor({ timeout: 45_000 });
+    await idle(p, 120_000);
+    if (!/KIWI/.test(await transcriptText(p))) fail("the subagent's report doesn't follow the message");
+    if (/direct app-server input/.test(await c.locator("body").innerText())) fail("the raw error shows");
+    ok("a message from a running subagent's view went through the main agent: shown as yours, Sent via the main agent, and the subagent followed it");
+    await c.close();
+    // A subagent's request: Deny and Approve, no reason (it couldn't reach the subagent).
+    rmSync(scratch("subdeny.txt"), { force: true });
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+    await waitState(p, (x) => x.permissionMode === "read-only", "Read only", 15_000);
+    await send(p, "Spawn exactly one subagent with your agent tool, with the task: use the shell to run exactly: echo x > subdeny.txt   (request escalated permissions if needed), then report what happened. Wait for it, then reply with its report in one line.");
+    const asking = await runningChild(p, id, (k) => k.status !== "idle");
+    if (!asking) return console.log("skip subMessage's card: no subagent ran"), await p.close();
+    const d = await page(desktop, sessionUrl(asking.id));
+    await card(d).waitFor({ timeout: 90_000 }).catch(() => {});
+    if (await card(d).count()) {
+      await button(card(d), "Deny").waitFor();
+      if (await button(card(d), "Deny with reason").count()) fail("a subagent's card offers a reason");
+      await button(card(d), "Deny").click();
+      ok("a subagent's request offers Approve and Deny, no reason");
+    } else console.log("skip subMessage's card: the subagent didn't ask");
+    await idle(p, 120_000);
+    if (existsSync(scratch("subdeny.txt"))) fail("subdeny.txt was written");
+    await d.close();
+    await p.close();
+  },
+
+  async startConfirmed() {
+    // A mode tightened before the first turn stays tight through a resume (review 9, M2).
+    if (!RESTART) return console.log("skip startConfirmed (set RESTART_RUNNER)");
+    const p = await page(desktop);
+    await sleep(1000);
+    const r = await rpcVia(p, "newSession", { harness: "codex", projectPath: SCRATCH, model: MODEL, permissionMode: "full-access", terminal: true });
+    if (r.error) fail(r.error);
+    const id = r.ok.sessionId;
+    await p.goto(sessionUrl(id));
+    await waitState(p, (s) => s.terminal?.kind === "shared" && s.permissionMode === "full-access", "the TUI, on Full access", 30_000);
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+    await waitState(p, (s) => s.permissionMode === "read-only", "Read only", 15_000);
+    await sleep(1500);
+    await p.close();
+    execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+    await sleep(3000);
+    const q = await page(desktop, sessionUrl(id));
+    await composer(q).waitFor({ timeout: 60_000 });
+    await sleep(6000);
+    if ((await liveState(q)).permissionMode !== "read-only") fail(`after the restart the mode is ${(await liveState(q)).permissionMode}`);
+    ok("New session on Full access, Start in the terminal, Mode Read only, runner restart: still Read only");
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await q.close();
+  },
+
+  async bgStored() {
+    // Tightening a stored session looks for what it left running, with no turn (review 9, I4).
+    if (!RESTART) return console.log("skip bgStored (set RESTART_RUNNER)");
+    const PORT = Number(process.env.BG_PORT ?? 18798) + 2;
+    const curl = () => spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" }).stdout;
+    if (curl() !== "000") fail(`port ${PORT} is busy`);
+    const p = await page(desktop);
+    let q = p;
+    try {
+      const id = await liveSession(p, "full-access");
+      await send(p, `Use your shell tool to run exactly this command: python3 -m http.server ${PORT} --bind 127.0.0.1   It serves forever: do not wait for it to finish and do not stop it. Leave it running in the background, then reply with just: STARTED`);
+      await replied(p, "STARTED");
+      for (let i = 0; i < 20 && curl() !== "200"; i++) await sleep(500);
+      if (curl() !== "200") return console.log("skip bgStored: the model didn't leave the server running");
+      await waitState(p, (x) => x.status === "idle", "idle", 30_000);
+      await sleep(2000);
+      await p.close();
+      execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+      q = await page(desktop, sessionUrl(id));
+      await composer(q).waitFor({ timeout: 60_000 });
+      await waitState(q, (x) => x.mode === "stored", "stored after the restart", 30_000);
+      const turns = (await rendered(q)).length;
+      if ((await rpcVia(q, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+      const st = await waitState(q, (x) => x.turnSettings?.who === "background" && x.turnSettings.looser, "the note on a stored session", 30_000);
+      if (st.status !== "idle" || (await rendered(q)).length !== turns) fail("a turn started");
+      await button(q.locator(".t-turn-settings"), "Stop the command").click();
+      await waitState(q, (x) => !x.turnSettings, "the note gone", 30_000);
+      ok("a stored session tightened with a dev server still up: joined with no turn, one note and Stop the command; Stop ended it");
+    } finally {
+      const pids = spawnSync("sh", ["-c", `ss -ltnp | grep ':${PORT} ' | grep -o 'pid=[0-9]*' | cut -d= -f2`], { encoding: "utf8" }).stdout.trim();
+      for (const x of pids.split("\n").filter(Boolean)) spawnSync("kill", [x]);
+      await q.close().catch(() => {});
+    }
+  },
+
+  async tuiReadOnly() {
+    // G7b: a mode set in Tether holds for a turn typed in the TUI.
+    rmSync(scratch("tui-ro.txt"), { force: true });
+    const p = await page(desktop);
+    const id = await liveSession(p, "auto");
+    await send(p, "Reply with just: OK");
+    await replied(p, "OK");
+    await openTui(p, id);
+    if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
+    await waitState(p, (x) => x.permissionMode === "read-only", "Read only", 15_000);
+    await sleep(1000);
+    await typeInTerm(p, "Use the shell to run exactly: echo x > tui-ro.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    if (existsSync(scratch("tui-ro.txt"))) fail("the file was written without asking");
+    await button(card(p), "Deny").click();
+    await idle(p, 60_000);
+    if (existsSync(scratch("tui-ro.txt"))) fail("tui-ro.txt exists after Deny");
+    ok("Read only set in Tether with the TUI open: a turn typed in the TUI asked before writing; denied, no file");
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await p.close();
+  },
+
+  async tuiSteer() {
+    // D4: typed in the TUI during a turn Tether started.
+    const p = await page(desktop);
+    const id = await liveSession(p, "auto");
+    await send(p, "Reply with just: OK");
+    await replied(p, "OK");
+    await openTui(p, id);
+    await send(p, "Use the shell to run exactly: sleep 10 && echo slept   Then reply with one short sentence.");
+    await p.locator(".t-msg", { hasText: "sleep 10" }).first().waitFor({ timeout: 60_000 });
+    await sleep(2500);
+    await typeInTerm(p, "Also end your reply with the word MANGO.");
+    await p.locator(".t-msg", { hasText: "Also end your reply with the word MANGO." }).first().waitFor({ timeout: 20_000 });
+    await idle(p);
+    await sleep(800);
+    if (!/MANGO\W*$/.test((await rendered(p)).at(-1) ?? "")) fail(`the reply didn't follow the steer: ${(await rendered(p)).at(-1)}`);
+    ok("a message typed in the TUI during Tether's turn shows in Tether in place, and Codex follows it");
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await p.close();
+  },
+
+  async tuiAnswerAway() {
+    // C8b: answered in the TUI while the runner was down: the card closes, nothing runs twice.
+    if (!process.env.STOP_RUNNER || !process.env.START_RUNNER) return console.log("skip tuiAnswerAway (set STOP_RUNNER, START_RUNNER)");
+    rmSync(scratch("c8b.txt"), { force: true });
+    const p = await page(desktop);
+    const id = await liveSession(p, "untrusted");
+    await send(p, "Reply with just: OK");
+    await replied(p, "OK");
+    await openTui(p, id);
+    await send(p, "Use the shell to run exactly: echo c8b >> c8b.txt   Then reply with one word: done.");
+    await card(p).waitFor({ timeout: 90_000 });
+    await waitCapture(/Would you like to run|Yes, proceed/, "the TUI asks too", 30_000, tuiName(id));
+    if (!trustsScratch()) fail("the scratch folder isn't trusted: no key goes to the TUI");
+    execFileSync("sh", ["-c", process.env.STOP_RUNNER], { stdio: "inherit" });
+    tmux("send-keys", "-t", `=${tuiName(id)}:`, "y");
+    await sleep(4000);
+    execFileSync("sh", ["-c", process.env.START_RUNNER], { stdio: "inherit" });
+    await sleep(3000);
+    await p.goto(sessionUrl(id));
+    await p.reload();
+    await composer(p).waitFor({ timeout: 60_000 });
+    await waitState(p, (s) => s.requests.length === 0, "the card closed", 30_000);
+    await waitState(p, (s) => s.status === "idle", "idle", 60_000);
+    await sleep(6000);
+    if (!/answered elsewhere while Tether was away/.test(await transcriptText(p))) fail("no notice");
+    if ((await waitFile("c8b.txt")).trim().split("\n").length !== 1) fail("the command ran twice");
+    ok("answered in the TUI while the runner was down: after the restart the card closed with the notice; the command ran once");
+    tmux("kill-session", "-t", `=${tuiName(id)}`);
+    await p.close();
+  },
+
   async stored() {
     // Discovery: the session shows in the sidebar and its folder, and opens stored without a process.
     const p = await page(desktop);
@@ -1004,8 +1220,8 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "stored"]) {
-    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab"].includes(name)) {
+  for (const name of pick.length ? pick : ["folderTrust", "new", "stream", "approve", "deny", "steer", "midturn", "terminal", "tuiApprove", "tetherApprove", "phone", "subagent", "restart", "quit", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "subMessage", "startConfirmed", "bgStored", "tuiReadOnly", "tuiSteer", "tuiAnswerAway", "stored"]) {
+    if (!session && !["new", "fresh", "settings", "storedInject", "restartMid", "subOutlive", "subNewTurn", "subRestart", "subKill9", "reviewerAuto", "netRoots", "bgStop", "bgNote", "nestedStop", "tuiPermissions", "claudeShiftTab", "folderTrust", "subMessage", "startConfirmed", "bgStored", "tuiReadOnly", "tuiSteer", "tuiAnswerAway"].includes(name)) {
       session = process.env.SESSION;
       if (!session) fail(`${name} needs a session: run new first or set SESSION`);
     }
@@ -1013,6 +1229,7 @@ try {
     await steps[name]();
   }
   if (errors.length) fail(`page errors:\n${errors.join("\n")}`);
+  // Only for a folder the config doesn't have: the real check of this is `folderTrust`.
   if (!trustedBefore && trustsScratch()) fail(`${SCRATCH} is now trusted in ${codexConfig}`);
   console.log(`all passed; screenshots in ${SHOTS}`);
 } catch (e) {

@@ -165,6 +165,34 @@ describe("subagents (capabilities.subagents.steer)", () => {
   });
 });
 
+test("Stop on a live session before the message reached the harness: it never goes out", async () => {
+  const { adapter, live } = setup();
+  adapter.addStored("s1", []);
+  await live.send("claude:s1", "first");
+  const sending = live.send("claude:s1", "second");
+  await live.interrupt("claude:s1");
+  await expect(sending).rejects.toThrow("Stopped before it went out.");
+  expect(adapter.drivers[0]!.sent).toEqual(["first"]);
+});
+
+describe("a stored session's mode changes, with something it left running", () => {
+  test("it joins to say so, with no turn started; with nothing running it stays stored", async () => {
+    const { adapter, core, live } = setup({ persistent: true });
+    adapter.addStored("s1", []);
+    adapter.backgroundRuns = async () => false;
+    await live.setPermissionMode("claude:s1", "plan");
+    const s = await core.open("claude:s1");
+    expect(s.state.mode).toBe("stored");
+    expect(adapter.drivers).toHaveLength(0);
+    adapter.backgroundRuns = async () => true;
+    adapter.script = () => [];
+    await live.setPermissionMode("claude:s1", "acceptEdits").catch(() => {});
+    expect(s.state.mode).toBe("live");
+    expect(adapter.drivers).toHaveLength(1);
+    expect(adapter.drivers[0]!.sent).toEqual([]);
+  });
+});
+
 test("a harness that makes its own session ids: newSession waits for it, with the folder and settings", async () => {
   const { adapter, live, core } = setup();
   adapter.asyncIds = true;

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_TETHER } from "../../../../shared/fromTether";
-import { RESOLVED_ELSEWHERE } from "../../core/adapter";
+import { RESOLVED_ELSEWHERE, SendCancelled } from "../../core/adapter";
 import { setConnector } from "./daemon";
 import { CodexDriver, createThread } from "./driver";
 import { CodexRpc } from "./rpc";
@@ -170,6 +170,133 @@ test("answered in Tether: the daemon gets the decision; a denial's reason goes i
   void d;
 });
 
+test("a subagent's request: its card offers no reason (it takes no input); one given anyway is said, never steered or lost", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t1" } } });
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_1", kind: "started", agentThreadId: "C", agentPath: "/root/scan" } } });
+  daemon.say({ method: "turn/started", params: { threadId: "C", turn: { id: "ct" } } });
+  daemon.say({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "C", turnId: "ct", itemId: "exec-1", command: "rm x" } });
+  const child = sink.children.get("C")!;
+  expect(child.asks[0]!.ask.noReason).toBe(true);
+  child.asks[0]!.resolve({ allow: false, reason: "use trash" });
+  await Bun.sleep(5);
+  expect(daemon.replies(7)).toEqual([{ id: 7, result: { decision: "decline" } }]);
+  expect(daemon.calls("turn/steer")).toEqual([]);
+  expect(JSON.stringify(child.t.messages)).toContain("The reason can't reach a subagent.");
+});
+
+test("Stop before turn/start answers: remembered, and the turn is interrupted as soon as its id arrives", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  let answer!: (r: any) => void;
+  const late = new Promise((r) => (answer = r));
+  (daemon.answers as any)["turn/start"] = () => ({ turn: { id: "t9" } });
+  const rpc = daemon.rpc;
+  const call = rpc.call.bind(rpc);
+  (rpc as any).call = async (m: string, p: any, ms?: number) => {
+    const r = await call(m, p, ms);
+    if (m === "turn/start") await late;
+    return r;
+  };
+  const sending = d.send("go");
+  await Bun.sleep(5);
+  await d.interrupt();
+  expect(daemon.calls("turn/interrupt")).toEqual([]);
+  expect(sink.status).not.toBe("idle");
+  answer(undefined);
+  await sending;
+  expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: MAIN, turnId: "t9" }]);
+});
+
+test("Stop before a send reached turn/start: nothing goes out", async () => {
+  useDaemon();
+  daemon.answers["model/list"] = () => ({ data: [{ id: "gpt-6.1-sol", isDefault: true }] });
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  const sending = d.send("go", [], { model: "default" });
+  await d.interrupt();
+  await expect(sending).rejects.toBeInstanceOf(SendCancelled);
+  expect(daemon.calls("turn/start")).toEqual([]);
+  expect(sink.status).toBe("idle");
+});
+
+test("what was confirmed since always beats a no-turn thread's start: never looser than that", async () => {
+  useDaemon();
+  const fullAccess = { thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "low", approvalPolicy: "never", approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } };
+  const readOnly = { ...fullAccess, approvalPolicy: "on-request", sandbox: { type: "readOnly" } };
+  remember(MAIN, { start: { permissionMode: "full-access" } });
+  remember(MAIN, { applied: { permissionMode: "read-only", at: 1 } });
+  // Nothing changed: the start isn't applied again.
+  daemon.answers["thread/resume"] = () => readOnly;
+  const sink = new TestSink();
+  await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  expect(daemon.calls("thread/settings/update")).toEqual([]);
+  expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "read-only" });
+  // The thread came back looser: tightened back.
+  useDaemon(false);
+  remember(MAIN, { applied: { permissionMode: "read-only", at: 1 } });
+  daemon.settings = { ...daemon.settings, approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } };
+  daemon.answers["thread/resume"] = () => fullAccess;
+  await CodexDriver.open(MAIN, CWD, {}, new TestSink(), true);
+  expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" } });
+  // Tightened elsewhere since: not loosened to what was last confirmed.
+  useDaemon(false);
+  remember(MAIN, { applied: { permissionMode: "auto", at: 1 } });
+  daemon.answers["thread/resume"] = () => readOnly;
+  await CodexDriver.open(MAIN, CWD, {}, new TestSink(), true);
+  expect(daemon.calls("thread/settings/update")).toEqual([]);
+});
+
+test("a background command's settings: those of the turn that started it, whoever polled it later", async () => {
+  const { itemContextOf } = await import("./discovery");
+  const dir = mkdtempSync(join(tmpdir(), "tether-codex-bg-"));
+  const path = join(dir, "r.jsonl");
+  const ctx = (t: string, ap: string, sb: string) => JSON.stringify({ timestamp: "2026-10-30T00:00:00.000Z", type: "turn_context", payload: { turn_id: t, approval_policy: ap, sandbox_policy: { type: sb }, model: "m" } });
+  const call = (id: string, name: string, args: string) => JSON.stringify({ type: "response_item", payload: { type: "function_call", name, call_id: id, arguments: args } });
+  const out = (id: string, output: string) => JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: id, output } });
+  const exec = (id: string, code: string) => JSON.stringify({ type: "response_item", payload: { type: "custom_tool_call", name: "exec", call_id: id, input: code } });
+  const execOut = (id: string, sessionId: number) => JSON.stringify({ type: "response_item", payload: { type: "custom_tool_call_output", call_id: id, output: [{ type: "input_text", text: JSON.stringify({ session_id: sessionId, output: "" }) }] } });
+  writeFileSync(path, [
+    ctx("t0", "on-request", "read-only"),
+    call("c0", "exec_command", '{"cmd":"ps"}'),
+    out("c0", "pid 56297 and 35111 are listed here"),
+    ctx("t1", "never", "danger-full-access"),
+    call("c1", "exec_command", '{"cmd":"server"}'),
+    out("c1", "Process running with session ID 56297"),
+    exec("e1", "await tools.exec_command({cmd:'python3'})"),
+    execOut("e1", 35111),
+    ctx("t2", "on-request", "read-only"),
+    call("c2", "write_stdin", '{"session_id":56297,"chars":""}'),
+    out("c2", "Process running with session ID 56297"),
+    exec("e2", "await tools.write_stdin({session_id:35111,chars:''})"),
+    execOut("e2", 35111),
+    "",
+  ].join("\n"));
+  expect((await itemContextOf(path, "exec-running", "56297"))?.mode).toBe("full-access");
+  expect((await itemContextOf(path, "exec-running", "35111"))?.mode).toBe("full-access");
+  // Named only by an output that isn't its start: not found, so Unknown (fail closed).
+  writeFileSync(path, [ctx("t2", "on-request", "read-only"), call("c2", "write_stdin", '{"session_id":777,"chars":""}'), out("c2", "Process running with session ID 777"), ""].join("\n"));
+  expect(await itemContextOf(path, undefined, "777")).toBeUndefined();
+  expect(await itemContextOf(path, undefined, "888")).toBeUndefined();
+});
+
+test("a thread that never got a message has no history (not an error); a turn_context past the rollout's last 2 MB is read", async () => {
+  useDaemon();
+  const { codexHistory, threadSettings } = await import("./discovery");
+  daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, cwd: CWD } });
+  daemon.answers["thread/turns/list"] = (p) => {
+    throw new Error(`thread ${p.threadId} is not materialized yet; thread/turns/list is unavailable before first user message`);
+  };
+  expect(await codexHistory("EMPTY", CWD)).toEqual([]);
+  const path = join(mkdtempSync(join(tmpdir(), "tether-codex-tail-")), "r.jsonl");
+  writeFileSync(path, [JSON.stringify({ type: "turn_context", payload: { turn_id: "t", approval_policy: "on-request", sandbox_policy: { type: "read-only" }, model: "m" } }), JSON.stringify({ pad: "x".repeat(2_100_000) }), ""].join("\n"));
+  daemon.answers["thread/read"] = (p) => ({ thread: { id: p.threadId, path } });
+  expect((await threadSettings("LONG"))?.permissionMode).toBe("read-only");
+});
+
 test("what Tether can't show is left for Codex's TUI, with a card saying so; nothing is answered on its own", async () => {
   useDaemon();
   const sink = new TestSink();
@@ -223,7 +350,7 @@ test("send, steer, interrupt and settings go to the thread; steering needs a run
   expect(sink.states.at(-1)).toEqual({ turnSettings: { model: "gpt-6-luna", effort: "low", permissionMode: "untrusted", who: "turn" } });
 });
 
-test("a subagent: stopped and steered on its own thread", async () => {
+test("a subagent: stopped on its own thread; a message goes through the main agent, delivered when Codex reports it", async () => {
   useDaemon();
   const sink = new TestSink();
   const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
@@ -231,9 +358,12 @@ test("a subagent: stopped and steered on its own thread", async () => {
   daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_1", kind: "started", agentThreadId: "C", agentPath: "/root/scan" } } });
   daemon.say({ method: "turn/started", params: { threadId: "C", turn: { id: "ct" } } });
   expect(d.busy()).toBe(true);
-  await d.steerSubagent("C", "check docs too");
+  expect(d.relayMessage("C", "check docs too")).toContain('target "/root/scan"');
+  expect(d.relayMessage("C", "check docs too")).toEndWith("check docs too");
+  daemon.say({ method: "item/completed", params: { threadId: MAIN, item: { type: "subAgentActivity", id: "call_2", kind: "interacted", agentThreadId: "C", agentPath: "/root/scan" } } });
+  expect(sink.relays).toEqual(["C"]);
   await d.stopSubagent("C");
-  expect(daemon.calls("turn/steer")[0]).toMatchObject({ threadId: "C", expectedTurnId: "ct" });
+  expect(daemon.calls("turn/steer")).toEqual([]);
   expect(daemon.calls("turn/interrupt")[0]).toEqual({ threadId: "C", turnId: "ct" });
   // And the commands it left running (a subagent's thread is all its own).
   expect(daemon.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "C" }]);
@@ -346,8 +476,9 @@ test("a thread with no turn yet: the settings Tether started it with, else unkno
   expect(await threadSettings("OTHER")).toEqual({ model: "gpt-6-luna", effort: "high", permissionMode: "unknown" });
   const id = await createThread(CWD, { model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
   expect(await threadSettings(id)).toEqual({ model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
+  daemon.settings = { model: "gpt-6-luna", effort: "low", approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" }, approvalsReviewer: "user" };
   await CodexDriver.open(id, CWD, {}, new TestSink(), false);
-  // A runner restart before its first turn: its start settings are applied again on resume.
+  // A runner restart before its first turn, the daemon having lost it: back to what was confirmed.
   daemon.answers["thread/resume"] = () => ({ thread: { id, status: { type: "idle" } }, model: "gpt-6-luna", reasoningEffort: "high", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "workspaceWrite" } });
   await CodexDriver.open(id, CWD, {}, new TestSink(), true);
   expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ effort: "low", approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" } });
@@ -577,7 +708,7 @@ test("a thread starts read-only (a writable start makes the daemon trust the fol
   expect(sink.states.filter((x) => "permissionMode" in x).at(-1)).toMatchObject({ permissionMode: "full-access" });
 });
 
-test("a nested subagent: stopped and steered by its own thread; stopping the one above stops it too; the main Stop reaches it", async () => {
+test("a nested subagent: stopped by its own thread; stopping the one above stops it too; the main Stop reaches it", async () => {
   useDaemon();
   const sink = new TestSink();
   const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
@@ -589,8 +720,6 @@ test("a nested subagent: stopped and steered by its own thread; stopping the one
     daemon.say({ method: "turn/started", params: { threadId: "N", turn: { id: "nt" } } });
   };
   start();
-  await d.steerSubagent("N", "and this");
-  expect(daemon.calls("turn/steer")[0]).toMatchObject({ threadId: "N", expectedTurnId: "nt" });
   await d.stopSubagent("N");
   expect(daemon.calls("turn/interrupt")).toEqual([{ threadId: "N", turnId: "nt" }]);
   daemon.sent = [];

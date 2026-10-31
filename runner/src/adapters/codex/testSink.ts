@@ -12,12 +12,16 @@ export class TestSink implements Sink {
   children = new Map<string, TestSink>();
   starts: SubagentStart[] = [];
   endedCount = 0;
+  relays: string[] = [];
 
   event(e: Parameters<Sink["event"]>[0]) {
     this.t.apply(e);
   }
   message(id: string) {
     return this.t.get(id);
+  }
+  relayed(nativeId: string) {
+    this.relays.push(nativeId);
   }
   state(patch: Partial<LiveState>) {
     this.states.push(patch);

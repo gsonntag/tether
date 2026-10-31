@@ -148,7 +148,7 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
                 <Button key={m.id} label={m.label} variant="secondary" isDisabled={busy} tooltip={m.description} onClick={() => void answer({ allow: true, mode: m.id })} />
               ))}
               <Button label="Deny" variant="secondary" isDisabled={busy} onClick={() => void answer({ allow: false })} />
-              <Button label="Deny with reason" variant="ghost" isDisabled={busy} onClick={() => setDenying(true)} />
+              {!r.noReason && <Button label="Deny with reason" variant="ghost" isDisabled={busy} onClick={() => setDenying(true)} />}
             </div>
           )}
         </>

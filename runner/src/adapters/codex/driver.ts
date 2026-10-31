@@ -9,12 +9,12 @@ import { existsSync } from "node:fs";
 import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
-import { RESOLVED_ELSEWHERE, type Driver, type Sink, type StartOpts } from "../../core/adapter";
+import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
 import { connect } from "./daemon";
 import { agentName } from "./items";
 import { dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
 import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
-import { customProfile, knownMode, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
+import { customProfile, knownMode, looser, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
 import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
@@ -99,6 +99,7 @@ export class CodexDriver implements Driver {
     this.stream = new CodexStream(sink, projectPath, nativeId);
     this.stream.onSettings = (s) => this.settingsChanged(s);
     this.stream.onSpawn = (child, toolId) => this.rememberChild(child, toolId);
+    this.stream.onInteracted = (child) => sink.relayed?.(child);
     rpc.onNotify((m, p) => this.notify(m, p));
     rpc.onRequest = (m, p, id) => this.request(m, p, id);
     rpc.onClose((reason) => {
@@ -167,14 +168,17 @@ export class CodexDriver implements Driver {
 
   /**
    * After start or resume: what you changed in Tether (`opts`; for a new thread with no turn yet,
-   * also what it started with) is applied with thread/settings/update and confirmed by the
-   * daemon's thread/settings/updated before anything is sent. What isn't confirmed fails the start:
-   * a turn never runs with looser settings than you chose. Then the thread's settings as they are
-   * become the session's (the thread is the truth; Tether only changes what you change).
+   * also what it started with, or what was confirmed since, which always beats that) is applied with
+   * thread/settings/update and confirmed by the daemon's thread/settings/updated before anything is
+   * sent. What isn't confirmed fails the start: a turn never runs with looser settings than you
+   * chose. Then the thread's settings as they are become the session's (the thread is the truth;
+   * Tether only changes what you change).
    */
   private async started(r: any, opts: StartOpts) {
-    const start = remembered(this.nativeId)?.start;
-    const want: StartOpts = { ...(start && !(await hasTurnContext(r.thread)) ? start : {}), ...opts };
+    const had = remembered(this.nativeId);
+    const start = had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
+    const since = start && had?.applied;
+    const want: StartOpts = { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
     const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
     // Default picked here (now, or before a restart): shown as Default while it runs the default model.
     if (want.model === "default" || (!want.model && remembered(this.nativeId)?.modelAlias === "default")) {
@@ -187,7 +191,11 @@ export class CodexDriver implements Driver {
     if (model && model !== cur.model) patch.model = model;
     if (want.effort && want.effort !== cur.effort) patch.effort = want.effort;
     // A mode set in Tether includes who answers approvals (you, or Codex's reviewer: "Approve for me").
-    if (mode && (mode.approvalPolicy !== cur.approvalPolicy || mode.sandbox !== cur.sandbox || sandboxExtras(r.sandbox) || customProfile(r.activePermissionProfile, r.sandbox) || (mode.reviewer ?? "user") !== (cur.reviewer ?? "user")))
+    const extras = sandboxExtras(r.sandbox) || customProfile(r.activePermissionProfile, r.sandbox);
+    // What was confirmed is a floor, not a target: it never loosens a thread tightened since.
+    const floorOnly = since && !opts.permissionMode;
+    const differs = extras || mode?.approvalPolicy !== cur.approvalPolicy || mode?.sandbox !== cur.sandbox || (mode?.reviewer ?? "user") !== (cur.reviewer ?? "user");
+    if (mode && differs && (!floorOnly || extras || looser(cur, mode)))
       Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox), approvalsReviewer: mode.reviewer ?? "user" });
     let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer, activePermissionProfile: r.activePermissionProfile ?? null };
     if (Object.keys(patch).length) {
@@ -252,6 +260,7 @@ export class CodexDriver implements Driver {
     }
     // Its first turn wrote its settings to its rollout: they can be read back from there now.
     if (method === "turn/completed" && p.threadId === this.nativeId && remembered(this.nativeId)?.start) remember(this.nativeId, { start: undefined });
+    if ((method === "turn/started" || method === "turn/completed") && p.threadId === this.nativeId) this.startedTurn = undefined;
     if (method === "turn/completed" && p.threadId === this.nativeId && this.placeholder) void this.namePlaceholder();
     if (method === "thread/closed" && p.threadId === this.nativeId && !this.closed) {
       this.closed = true;
@@ -490,7 +499,7 @@ export class CodexDriver implements Driver {
     }
   }
 
-  /** Settings changed on the thread (here, or /model and /approvals in Codex's TUI). */
+  /** Settings changed on the thread (here, or /model and /permissions in Codex's TUI). */
   private settingsChanged(s: any) {
     this.current = { ...this.current, ...s };
     const mode = modeOf(this.current.approvalPolicy, this.current.sandboxPolicy, this.current.approvalsReviewer, this.current.activePermissionProfile);
@@ -530,7 +539,8 @@ export class CodexDriver implements Driver {
     const sink = thread === this.nativeId ? this.sink : (this.stream.child(thread)?.sink ?? this.sink);
     // What Tether can't show (an MCP form, a link, a method it doesn't know): left for Codex's TUI,
     // with a card saying so. Declining from Tether is the one answer it can give.
-    const ask = (ASKS.has(method) && codexAsk(method, p, this.projectPath, p.itemId ? this.stream.patch(thread!, p.itemId) : undefined)) || cantShow(method, p);
+    const child = thread !== this.nativeId;
+    const ask = { ...((ASKS.has(method) && codexAsk(method, p, this.projectPath, p.itemId ? this.stream.patch(thread!, p.itemId) : undefined)) || cantShow(method, p)), ...(child ? { noReason: true } : {}) };
     const ac = new AbortController();
     const key = String(id);
     if (this.resolvedEarly.delete(key)) return Promise.resolve(undefined);
@@ -544,7 +554,11 @@ export class CodexDriver implements Driver {
         if (method === "mcpServer/elicitation/request") return DECLINE_ELICITATION;
         throw new Error("Declined in Tether.");
       }
-      if (!d.allow && !d.interrupt && d.reason) void this.steerTurn(thread!, `${FROM_TETHER}${d.reason}`).catch(() => {});
+      // A subagent takes no input (the card offers no reason); one that came anyway is said, not lost.
+      if (!d.allow && !d.interrupt && d.reason) {
+        if (child) this.stream.notice(this.stream.child(thread) ?? this.stream.main, "Denied. The reason can't reach a subagent.", "warning");
+        else void this.steerTurn(thread!, `${FROM_TETHER}${d.reason}`).catch(() => {});
+      }
       return codexAnswer(method, p, d);
     });
   }
@@ -578,7 +592,21 @@ export class CodexDriver implements Driver {
   async send(text: string, attachments: Attachment[] = [], shown: StartOpts = {}) {
     if (this.closed) throw new Error("This Codex session isn't connected.");
     if (this.turnRunning()) throw new Error("Codex is still working on a turn started elsewhere. Stop it first, or wait for it to finish.");
-    const pin = await this.pins(shown);
+    this.sendOnWay = true;
+    this.stopAsked = false;
+    let pin: Awaited<ReturnType<CodexDriver["pins"]>>;
+    try {
+      pin = await this.pins(shown);
+    } catch (e) {
+      this.sendOnWay = false;
+      throw e;
+    }
+    // Stopped before it went out: nothing goes.
+    if (this.stopAsked) {
+      this.sendOnWay = false;
+      this.sink.state({ status: "idle" });
+      throw new SendCancelled();
+    }
     this.sink.state({ status: "running", error: undefined });
     try {
       this.starting = true;
@@ -592,6 +620,7 @@ export class CodexDriver implements Driver {
         this.pinned = undefined;
       }
       const turnId: string | undefined = r?.turn?.id;
+      this.startedTurn = turnId;
       const seen = turnId ? this.turnSeen.get(turnId) : undefined;
       if (turnId && seen !== undefined && seen < sentAt) {
         // The daemon doesn't refuse turn/start on a busy thread: it put the message into a turn
@@ -604,11 +633,22 @@ export class CodexDriver implements Driver {
         void this.readTurnEff(this.nativeId, turnId, this.threadPath);
       }
       this.materialized = true;
+      // Stop pressed while turn/start was on its way: the turn id it needed is here now.
+      if (this.stopAsked && turnId) await this.stopThread(this.nativeId, turnId).catch(() => {});
     } catch (e: any) {
       this.sink.state({ status: "idle" });
       throw new Error(`Codex didn't start the turn: ${e?.message ?? e}`);
+    } finally {
+      this.sendOnWay = false;
+      this.stopAsked = false;
     }
   }
+
+  /** a send is on its way to turn/start's answer, and whether Stop was pressed meanwhile */
+  private sendOnWay = false;
+  private stopAsked = false;
+  /** the turn turn/start answered with, until it ends (its turn/started may still be on the way) */
+  private startedTurn?: string;
 
   /** turn/start's settings for what's shown (a mode Tether can't express isn't pinned: it shows as Unknown). */
   private async pins(shown: StartOpts): Promise<{ params: Record<string, unknown>; eff: Eff }> {
@@ -648,6 +688,8 @@ export class CodexDriver implements Driver {
     const children = new Set([...this.stream.runningChildren().map((c) => c.id), ...this.running.ids("subagent")]);
     await Promise.all([...children].map((c) => this.stopChild(c)));
     if (turnId) await this.stopThread(this.nativeId, turnId);
+    else if (this.sendOnWay) this.stopAsked = true;
+    else if (this.startedTurn) await this.stopThread(this.nativeId, this.startedTurn).catch(() => this.sink.state({ status: "idle" }));
     else this.sink.state({ status: "idle" });
   }
 
@@ -752,8 +794,14 @@ export class CodexDriver implements Driver {
     await Promise.all([nativeId, ...this.stream.descendants(nativeId)].map((id) => this.stopChild(id)));
   }
 
-  async steerSubagent(nativeId: string, text: string, attachments: Attachment[] = []) {
-    await this.steerTurn(nativeId, text, attachments);
+  /**
+   * A message for a subagent (SPEC §6a). Codex refuses input on a subagent's own thread ("direct
+   * app-server input is not allowed for multi-agent v2 sub-agents"), so the main agent is asked to
+   * pass it on with its send_message tool; steering it ends its wait for the subagent.
+   */
+  relayMessage(nativeId: string, text: string) {
+    const agent = this.stream.targetOf(nativeId);
+    return `Please pass this message from the user to your running subagent ${agent} right now: call your send_message tool with target "${agent}" and the message below exactly as written, then carry on with what you were doing. Don't answer it yourself.\n\n${text}`;
   }
 
   /**
