@@ -51,6 +51,15 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 - [ ] Take and inspect desktop/phone screenshots in both themes. No horizontal page overflow.
 - [ ] Click title: focused, selected inline input. Enter saves and updates Sidebar/Home/another
   browser; Escape cancels. Refresh and rediscover preserve the title. Renaming runs no harness.
+- [ ] API badge shows cumulative USD with `est.` for estimates. Repeated usage events do not
+  double-count; restart/resume does not add restored earlier totals again. Subscription-equivalent
+  spend is excluded. Unknown prior usage, cache-write breakdown or Azure rates says Cost unknown.
+- [ ] Azure optional USD / 1M rates persist beside the key. Cached reads are priced once; writes
+  without sufficient rates remain unknown. A pending request/crash never leaves a false complete
+  total. Opening a Claude key TUI marks its unobserved cost incomplete.
+- [ ] With browser timezone America/Los_Angeles, a usage-limit retry at `Nov 1st, 2026 2:33 AM`
+  (runner UTC) displays `Oct 31, 2026, 7:33 PM PDT`. Raw transcript text is unchanged; UTC and DST
+  boundary tests cover conversion.
 
 ## Secret audit
 

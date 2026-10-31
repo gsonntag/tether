@@ -183,6 +183,7 @@ export class ClaudeDriver implements Driver {
     if (this.failedError) return this.failedError;
     const error = "Anthropic API key failed. The session stopped. Check Credentials.";
     this.failedError = error;
+    if (this.costs) this.sink.cost?.(this.costs.report(undefined));
     this.sink.state({ status: "idle", error });
     void this.close().finally(() => this.onExit?.(error));
     return error;

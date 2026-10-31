@@ -395,8 +395,8 @@ export class TerminalControl {
     if (handoff && (launch.billing?.kind === "apiKey" || launch.billing?.kind === "provider") && this.o.core.o.costs) {
       // The handoff TUI has no dollar-report stream. Its unobserved spend must not masquerade as
       // a complete session total when the SDK rejoins later.
-      const cost = this.o.core.o.costs.markUnknown(s.id);
-      s.setState({ cost });
+      try { s.setState({ cost: this.o.core.o.costs.markUnknown(s.id) }); }
+      catch { s.setState({ cost: { estimated: true, complete: false } }); this.log("Couldn't persist API cost coverage for this terminal; its total is unknown."); }
       this.o.core.touch(s);
     }
     this.adopt(s, name);

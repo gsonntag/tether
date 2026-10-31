@@ -17,7 +17,7 @@ export const CLAUDE_AUTH_ENV = [
 /** No raw key enters the harness environment: shell tools must never inherit it. */
 export function claudeEnv(credential?: CredentialSnapshot, inherited: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(inherited)) if (!k.startsWith("TETHER_") && !CLAUDE_AUTH_ENV.includes(k)) env[k] = v;
+  for (const [k, v] of Object.entries(inherited)) if (!/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !CLAUDE_AUTH_ENV.includes(k)) env[k] = v;
   for (const k of CLAUDE_AUTH_ENV) env[k] = undefined;
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
   if (credential && credential.source !== "subscription" && credential.source !== "anthropic") throw new Error("Claude cannot use that billing source.");
@@ -106,7 +106,7 @@ import { dirname, join } from "node:path";
 const [file, revision, source, ...argv] = process.argv.slice(2);
 let server, socket;
 try {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("TETHER_") && !${JSON.stringify(CLAUDE_AUTH_ENV)}.includes(k)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !${JSON.stringify(CLAUDE_AUTH_ENV)}.includes(k)));
   for (const k of ${JSON.stringify(CLAUDE_AUTH_ENV)}) delete env[k];
   for (const k of ["DEBUG", "CLAUDE_DEBUG", "CLAUDE_CODE_DEBUG"]) delete env[k];
   let key;

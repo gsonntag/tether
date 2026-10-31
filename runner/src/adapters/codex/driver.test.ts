@@ -831,6 +831,7 @@ test("subscription source is confirmed before a send and an externally changed a
   useDaemon();
   let account: any = { type: "chatgpt" };
   daemon.answers["account/read"] = () => ({ account });
+  daemon.answers["config/read"] = () => ({ config: {} });
   const resumed = daemon.answers["thread/resume"]!;
   daemon.answers["thread/resume"] = (p) => ({ ...(resumed(p) as object), modelProvider: "openai" });
   daemon.answers["thread/read"] = () => ({ thread: { id: MAIN, modelProvider: "openai" } });
@@ -850,5 +851,17 @@ test("a daemon-env key with account null stays unknown and cannot be sent as a s
   const resumed = daemon.answers["thread/resume"]!;
   daemon.answers["thread/resume"] = (p) => ({ ...(resumed(p) as object), modelProvider: "openai" });
   await expect(CodexDriver.open(MAIN, CWD, { credential: { source: "subscription", revision: "subscription" } }, new TestSink(), true)).rejects.toThrow("did not confirm the ChatGPT subscription");
+  expect(daemon.calls("turn/start")).toEqual([]);
+});
+
+test("a cached ChatGPT account with an effective provider key override refuses subscription startup", async () => {
+  useDaemon();
+  daemon.answers["account/read"] = () => ({ account: { type: "chatgpt" } });
+  daemon.answers["config/read"] = () => ({ config: { model_providers: { openai: { requires_openai_auth: true, env_key: "OPENAI_API_KEY" } } } });
+  const resumed = daemon.answers["thread/resume"]!;
+  daemon.answers["thread/resume"] = (p) => ({ ...(resumed(p) as object), modelProvider: "openai" });
+  const sink = new TestSink();
+  await expect(CodexDriver.open(MAIN, CWD, { credential: { source: "subscription", revision: "subscription" } }, sink, true)).rejects.toThrow("authentication path");
+  expect(sink.lastWith("billing")?.billing).toEqual({ kind: "unknown", label: "Unknown" });
   expect(daemon.calls("turn/start")).toEqual([]);
 });

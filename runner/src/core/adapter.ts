@@ -132,6 +132,8 @@ export interface Driver {
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */
   busy(): boolean;
   close(): Promise<void>;
+  /** Retire an owned idle backing process. Never used for runner shutdown or a live TUI. */
+  retire?(): Promise<void>;
   /** the process ended by itself (crashed, logged out, …): `error` says why when known */
   onExit?: (error?: string) => void;
 }

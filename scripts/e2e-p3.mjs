@@ -28,6 +28,19 @@ const RESTART = process.env.RESTART_RUNNER;
 const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8899);
 mkdirSync(SHOTS, { recursive: true });
 
+// Test-only creation preference: the new-session dialog has no effort field. Set Low before
+// any harness/TUI starts, without changing the owner's harness defaults or configuration.
+async function cheapCreation(page) {
+  await page.addInitScript(() => {
+    const original = WebSocket.prototype.send;
+    WebSocket.prototype.send = function(data) {
+      if (typeof data === "string") {
+        try { const m=JSON.parse(data); if(m.t==="rpc" && m.op==="newSession" && ["haiku","gpt-6-luna"].includes(m.args?.model)) { m.args.effort="low"; return original.call(this,JSON.stringify(m)); } } catch {}
+      }
+      return original.call(this,data);
+    };
+  });
+}
 const browser = await chromium.launch();
 const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
@@ -36,6 +49,7 @@ const page = async (ctx, url = BASE) => {
   // The dev server on a loaded machine now and then leaves a page blank: try again.
   for (let i = 0; ; i++) {
     const p = await ctx.newPage();
+    await cheapCreation(p);
     // Where it happened: the step, and the top of its stack.
     p.on("pageerror", (e) => errors.push(`${current}: ${String(e)}\n    ${(e.stack ?? "").split("\n").slice(1, 6).join("\n    ")}`));
     await p.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});

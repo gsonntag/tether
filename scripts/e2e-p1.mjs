@@ -15,12 +15,26 @@ const LONG = process.env.LONG_SESSION; // claude:<id> of a long stored session, 
 const RESTART = process.env.RESTART_RUNNER; // a command that restarts the dev runner
 mkdirSync(SHOTS, { recursive: true });
 
+// Test-only creation preference: the new-session dialog has no effort field. Set Low before
+// any harness/TUI starts, without changing the owner's harness defaults or configuration.
+async function cheapCreation(page) {
+  await page.addInitScript(() => {
+    const original = WebSocket.prototype.send;
+    WebSocket.prototype.send = function(data) {
+      if (typeof data === "string") {
+        try { const m=JSON.parse(data); if(m.t==="rpc" && m.op==="newSession" && ["haiku","gpt-6-luna"].includes(m.args?.model)) { m.args.effort="low"; return original.call(this,JSON.stringify(m)); } } catch {}
+      }
+      return original.call(this,data);
+    };
+  });
+}
 const browser = await chromium.launch();
 const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 const errors = [];
 const page = async (ctx, url = BASE) => {
   const p = await ctx.newPage();
+  await cheapCreation(p);
   p.on("pageerror", (e) => errors.push(String(e)));
   await p.goto(url);
   return p;
@@ -297,26 +311,26 @@ const steps = {
       await idle(p);
     };
     await said(`Read ${new URL("../SPEC.md", import.meta.url).pathname} with the Read tool, all of it. Then reply with just: CTX-READ`, "CTX-READ");
-    const chip = p.locator(".t-header .t-chip-info").first();
+    const chip = p.locator(".t-header .t-context-chip");
     await chip.waitFor({ timeout: 30_000 });
     await said("Reply with just: CTX-ONE", "CTX-ONE");
     await said("Reply with just: CTX-TWO", "CTX-TWO");
     const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
     if (!/^Context \d+%$/.test(text) || !/^[\d.]+[kM]? of [\d.]+[kM] context$/.test(title)) fail(`chip: ${text} / ${title}`);
     // The usage chip: what it draws from (this machine: a login), with limits when a rate_limit_event has them.
-    const plan = p.locator(".t-header .t-chip-info").nth(1);
+    const plan = p.locator(".t-header .t-usage-chip");
     const planText = (await plan.count()) ? `${await plan.innerText()} (${await plan.getAttribute("title")})` : "none reported";
     if (!/^Claude plan( · (5h|Week) \d+%)?$/.test(await plan.innerText())) fail(`usage chip: ${planText}`);
     await shot(p, "context-desktop");
     const narrow = await page(phone, session);
     await composer(narrow).waitFor();
     await noOverflow(narrow, "phone with the context chip");
-    await narrow.locator(".t-header .t-chip-info").last().scrollIntoViewIfNeeded();
+    await narrow.locator(".t-header .t-context-chip").scrollIntoViewIfNeeded();
     await shot(narrow, "context-phone");
     await narrow.close();
     await send(p, "/compact");
     await p.getByText("Context compacted.").last().waitFor({ timeout: 120_000 });
-    await p.waitForFunction((was) => parseFloat(document.querySelector(".t-header .t-chip-info")?.title ?? "NaN") < was, parseFloat(title), { timeout: 30_000 });
+    await p.waitForFunction((was) => parseFloat(document.querySelector(".t-header .t-context-chip")?.title ?? "NaN") < was, parseFloat(title), { timeout: 30_000 });
     const after = await chip.getAttribute("title");
     await said("/context", "Tokens:");
     const m = (await p.locator(".t-msg, .t-notice", { hasText: "Tokens:" }).last().innerText()).match(/Tokens:\W*([\d.]+)k? \/ ([\d.]+[km]) \((\d+)%\)/);

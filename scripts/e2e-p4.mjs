@@ -440,7 +440,7 @@ const steps = {
     await composer(p).waitFor();
     await send(p, "Reply with just: CTX-OK");
     await replied(p, "CTX-OK");
-    const chip = p.locator(".t-header .t-chip-info").first();
+    const chip = p.locator(".t-header .t-context-chip");
     await chip.waitFor({ timeout: 30_000 });
     const st = await waitState(p, (s) => !!s.context, "a context in the state");
     const [text, title] = [await chip.innerText(), await chip.getAttribute("title")];
@@ -449,7 +449,7 @@ const steps = {
     const last = readFileSync(find, "utf8").split("\n").filter((l) => l.includes('"token_count"')).map((l) => JSON.parse(l).payload?.info).filter(Boolean).at(-1);
     if (st.context.used !== last.last_token_usage.total_tokens || st.context.total !== last.model_context_window) fail(`state ${JSON.stringify(st.context)}, rollout ${JSON.stringify(last)}`);
     // The plan chip, from the daemon's account/rateLimits/read: this account reports both windows.
-    const plan = p.locator(".t-header .t-chip-info").nth(1);
+    const plan = p.locator(".t-header .t-usage-chip");
     await plan.waitFor({ timeout: 10_000 });
     const planTitle = await plan.getAttribute("title");
     if (!/^ChatGPT plan · (5h|Week) \d+%$/.test(await plan.innerText()) || !/5-hour \d+%, resets .+ · Weekly \d+%, resets /.test(planTitle)) fail(`plan chip: ${await plan.innerText()} / ${planTitle}`);
@@ -736,7 +736,7 @@ const steps = {
     const CL = process.env.CLAUDE_SCRATCH;
     if (!CL) return console.log("skip claudeShiftTab (set CLAUDE_SCRATCH to a folder Claude already trusts)");
     const p = await page(desktop);
-    const r = await rpcVia(p, "newSession", { harness: "claude", projectPath: CL, model: "haiku", permissionMode: "default", terminal: true });
+    const r = await rpcVia(p, "newSession", { harness: "claude", projectPath: CL, model: "haiku", effort: "low", permissionMode: "default", terminal: true });
     if (r.error) fail(r.error);
     const id = r.ok.sessionId;
     await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(id)}`);
@@ -803,7 +803,7 @@ const steps = {
   async netRoots() {
     // A sandbox with network and an extra writable root, set by another client (review 7, M2):
     // Custom, with the note and Stop while a turn runs with it; Auto from Tether turns them off.
-    const WR = `${SCRATCH}-wr`;
+    const WR = process.env.WRITABLE_ROOT ?? `${SCRATCH}-wr`;
     mkdirSync(WR, { recursive: true });
     rmSync(`${WR}/wr.txt`, { force: true });
     const p = await page(desktop);

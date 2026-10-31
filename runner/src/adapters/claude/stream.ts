@@ -247,6 +247,17 @@ export class ClaudeStream {
       case "status":
         if (m.permissionMode) sink.state({ permissionMode: m.permissionMode });
         return;
+      case "api_error":
+      case "api_retry": {
+        // A key source can be rejected before Claude Code emits an assistant or result frame.
+        // Stop at the first provider error and never put its raw body in the transcript.
+        const safe = this.host.failed?.();
+        if (safe) {
+          this.lastError = safe;
+          sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), safe, "error") });
+        }
+        return;
+      }
       case "session_state_changed":
         this.stateEvents = true;
         if (m.state === "idle") this.turnEnded();

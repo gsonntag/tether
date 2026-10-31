@@ -10,7 +10,7 @@ import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjec
 import { CodexDriver, createThread } from "./driver";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
-import { sourceHome, sourceSocket } from "./sources";
+import { sourceHome, sourceProvider, sourceSocket } from "./sources";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -114,6 +114,7 @@ export const codexAdapter: Adapter = {
     if (opts.credential && (source?.source ?? "subscription") !== opts.credential.source) throw new Error("This Codex session belongs to another billing source. Start a new session to use the configured source.");
     const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false", "-c", `approvals_reviewer=${toml("user")}`];
+    argv.push("-c", `model_provider=${toml(source ? sourceProvider(source.source) : "openai")}`);
     const model = opts.credential?.source === "azure" && opts.credential.deployment ? opts.credential.deployment : opts.model;
     if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);

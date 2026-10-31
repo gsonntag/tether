@@ -44,6 +44,7 @@ export class CostLedger {
     if (!hadSession) this.data.sessions[sessionId] = { complete: false, reports: Object.create(null) };
     // Invalid cumulative reports must not replace a previous valid total with a lower number.
     const previous = this.data.sessions[sessionId]!.reports[reportId];
+    if (report.usd === undefined && previous && validUsd(previous.usd)) report = { ...report, usd: previous.usd };
     if (previous?.complete && report.complete && validUsd(previous.usd) && validUsd(report.usd) && report.usd < previous.usd) {
       report = { ...report, usd: previous.usd };
     }

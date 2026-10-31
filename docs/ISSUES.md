@@ -89,6 +89,11 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## Backlog
 
+- Optional wake-up messages for subscription sessions when a usage limit resets, using the
+  harness-reported reset time. API-key sessions are excluded. Future scope; no automatic messages
+  are sent now.
+- Per-key cumulative estimated usage across sessions, with source/rate history and rotation-aware
+  attribution. Future scope; current dollar tracking is per session only.
 - AWS credentials: Codex through AWS and Claude through Bedrock. Future scope; no slots, routing,
   environment activation or terminal support are implemented for either.
 - Harness update notice on the dashboard.

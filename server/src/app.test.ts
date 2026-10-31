@@ -78,15 +78,18 @@ test("malformed runner and browser frames are dropped and the server keeps worki
 });
 
 test("an exception inside the relay is logged and the frame dropped, not fatal", async () => {
+  const secret = `fake-relay-error-${crypto.randomUUID()}`;
   class Throwing extends Relay {
     override onRunnerMessage(): void {
-      throw new Error("boom");
+      throw new Error(`boom ${secret}`);
     }
   }
   const { base, logs } = app(new Throwing());
   const runner = await open(`ws://${base}/api/runner`, { headers: { Authorization: "Bearer dev" } });
   runner.ws.send(JSON.stringify(hello));
-  await until(() => logs.some((l) => l.includes("boom")));
+  await until(() => logs.some((l) => l.includes("dropped a runner frame")));
+  expect(logs.join("\n")).not.toContain(secret);
+  expect(logs.join("\n")).not.toContain("boom");
   const res = await fetch(`http://${base}/api/health`);
   expect(await res.json()).toEqual({ ok: true });
 });

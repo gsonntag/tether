@@ -17,6 +17,8 @@ import { ArrowUpIcon, ChatBubbleLeftRightIcon, DocumentDuplicateIcon, PlusIcon, 
 import type { ShellInfo } from "../../../shared/protocol";
 import { AGENT_NAMES, HARNESS_LABELS, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { isApiBilling } from "../../../shared/labels";
+import { costChip } from "../../../shared/costs";
 import { useStore } from "../store";
 import { KEYS, SHELL_TAB, shellOpened, type TermStatus } from "../terminal";
 import { raisesKeyboard, TermView, type TermViewHandle } from "./TermView";
@@ -92,6 +94,8 @@ export function TerminalPanel({
   const harness = HARNESS_LABELS[session.harness];
   const agent = AGENT_NAMES[session.harness];
   const showKeys = touch();
+  const metered = panel.tab === "tui" && isApiBilling(state.billing);
+  const cost = costChip(state.cost);
 
   const loadShells = useCallback(async () => {
     try {
@@ -291,6 +295,7 @@ export function TerminalPanel({
           <IconButton label="Close terminal panel" tooltip="Close (the terminal keeps running)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
+      {metered && <div className="t-term-api-badge"><strong>{state.billing!.label}</strong><span title={cost.detail}>{cost.text}</span></div>}
       {ask}
       {askBack && (
         <div className="t-term-ask" role="group" aria-label="Back to Tether">
@@ -404,7 +409,7 @@ export function TerminalPanel({
         </div>
       </div>
       {showKeys && (
-        <div className="t-term-phone">
+        <div className={`t-term-phone${metered ? " t-api-composer" : ""}`}>
           <div className="t-keybar" role="toolbar" aria-label="Keys">
             {KEYS.map((k) => (
               <button

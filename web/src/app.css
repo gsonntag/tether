@@ -2052,7 +2052,10 @@
   overflow: visible;
 }
 .t-chips > .t-chip.t-paid-badge::before { display: none; }
-.t-api-cost { font-variant-numeric: tabular-nums; border-left: 1px solid currentColor; padding-left: 7px; margin-left: 2px; font-weight: 600; }
+.t-api-cost { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; border-left: 1px solid currentColor; padding-left: 7px; margin-left: 2px; font-weight: 600; }
+.t-paid-badge > span:first-child { flex: none; }
+.t-term-api-badge { display: flex; flex: none; flex-wrap: wrap; gap: 8px; padding: 7px 12px; background: var(--t-api); color: light-dark(#fff, #21152a); font-size: 12px; }
+.t-term-api-badge > span { border-left: 1px solid currentColor; padding-left: 8px; }
 .t-api-composer {
   border-top: 3px solid var(--t-api);
   background: color-mix(in srgb, var(--t-api) 9%, transparent);

@@ -12,3 +12,9 @@ test("upstream credential echoes are removed before the native transcript, inclu
     expect(text).not.toContain(key);
   }
 });
+
+test("an upstream stream cut off inside a credential never flushes its held prefix", async () => {
+  const key = `fake-${randomUUID()}`;
+  const body = new Response(`error: ${key.slice(0, -1)}`).body!;
+  expect(await new Response(body.pipeThrough(redactStream(key))).text()).toBe("error: ");
+});

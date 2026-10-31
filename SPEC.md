@@ -270,13 +270,20 @@ relay directly.
   compaction or `/clear` has no message to read: live, the result that ends it asks
   `getContextUsage({ detail: "summary" })`; stored, a compaction with no message since is unknown (its
   `postTokens` leave out the system prompt and tools: 10.5k said, 33k real).
-- **Billing:** `accountInfo()` when a driver starts (with the environment that reaches the runner):
+- **Billing:** `accountInfo()` when a driver starts, with inherited provider/key/proxy variables
+  removed and the selected source supplied through private `apiKeyHelper` settings. Managed starts
+  require `apiProvider: firstParty`; a key start requires `apiKeySource: apiKeyHelper`, and a
+  subscription start must report a plan without a key/token override. Unknown or mismatched
+  reports refuse the send. The native report fields are:
   `apiProvider` other than `firstParty` is that provider (`bedrock`, `vertex`, `foundry`…); a real
   `apiKeySource` is "Anthropic API key", ahead of a login (with `ANTHROPIC_API_KEY` it still says
   `tokenSource: "claude.ai"`); `subscriptionType` is "Claude plan"; `ANTHROPIC_AUTH_TOKEN` shows as
   `tokenSource` ("Anthropic auth token"). Anything else is Unknown. `ANTHROPIC_BASE_URL` doesn't show
   in these reports. Only the start says, so it's kept per session in `claude-windows.json`. A start in
-  Claude's TUI reports nothing and clears it: Unknown until Tether next starts the session.
+  Claude's TUI is preflighted using read-only `auth status --json` with identical settings before
+  launch. Its launcher holds an immutable key lease in memory; the real TUI and its tools never
+  inherit the raw key in their environment. External/historical proxy starts remain a label gap
+  (docs/ISSUES.md).
 - **Plan limits:** `rate_limit_event` frames: `rate_limit_info.unifiedWindows.{five_hour,seven_day}`
   (`utilization` 0 to 1, `resetsAt` in seconds), or the top-level `rateLimitType`/`utilization` on a
   frame without them. A frame can have no number at all (status only), or just one window. The latest
@@ -286,7 +293,9 @@ relay directly.
 
 ### Codex
 
-- **Drive:** the **shared local app-server daemon**, not a private `app-server` process. Its control
+- **Drive (subscription):** the **shared local app-server daemon**. API sessions use a separate,
+  private app-server and key-sanitizing gateway per session, with their own home and socket. The
+  shared daemon is never reconfigured or restarted for credentials. Its control
   socket is `~/.codex/app-server-control/app-server-control.sock` and speaks **WebSocket over a Unix
   socket** (HTTP upgrade, then JSON-RPC text frames; `codex app-server proxy` only relays raw bytes, so
   Tether does the WS handshake itself). Methods: `thread/start`, `thread/resume` (rejoins a thread
@@ -693,6 +702,25 @@ confirmed source, or refuse to open. No terminal launch may edit the user's harn
 Clicking a session title opens an inline editor. Enter saves, Escape cancels, and leaving the editor
 saves a nonempty change. Names chosen in Tether persist through rediscovery and runner restarts,
 and update on every connected device. Renaming starts no harness process.
+
+### API session dollars and retry times
+
+An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**;
+unpriced or missing usage says **Cost unknown**, with any known subtotal in its tooltip. A partial
+subtotal is never presented as the whole session amount. Subscription sessions show no dollars.
+Claude's native cumulative cost is itself an estimate and resumes restore earlier, potentially
+subscription-equivalent spend. Tether subtracts a confirmed read-only pre-send baseline; missing or
+unstable baseline data leaves cost unknown. A handoff TUI has no cost stream and marks coverage
+incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
+pending requests before inference so a crash cannot leave a false complete total. Reports are
+idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported
+models/tiers and complete cache-read/write usage. Azure uses optional deployment rates entered in
+Credentials; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
+unknown. These estimates are not provider invoices.
+
+The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
+browser's local timezone, including the date and timezone label. Native error text stays unchanged
+in the store. Ordinary transcript dates and user messages are not rewritten.
 
 ## 11. Phases
 

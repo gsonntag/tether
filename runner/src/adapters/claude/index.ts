@@ -252,6 +252,9 @@ export const claudeAdapter: Adapter = {
     const settings = { ...claudeAuthSettings(), ...(opts.report ? JSON.parse(hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui)) : {}) };
     argv.push("--settings", JSON.stringify(settings));
     const credential = opts.credential;
+    // Screen polling and quit handling request metadata with empty options. They never execute
+    // this argv; only an actual launch (which always supplies `fresh`) needs a credential file.
+    if (!credential?.file && opts.fresh === undefined) return { argv, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
     if (!credential?.file) throw new Error("The runner's private credentials file is unavailable. The Claude terminal cannot confirm its billing source.");
     const scripts = claudeTerminalScripts(credential.file);
     return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...argv], quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };

@@ -14,13 +14,22 @@ export function redactStream(key: string): TransformStream<Uint8Array, Uint8Arra
   const encoder = new TextEncoder();
   let pending = "";
   const clean = (text: string) => key ? text.replaceAll(key, "[redacted]") : text;
+  const prefixLength = (text: string) => {
+    for (let n = Math.min(key.length - 1, text.length); n > 0; n--) if (text.endsWith(key.slice(0, n))) return n;
+    return 0;
+  };
   return new TransformStream({
     transform(chunk, controller) {
       pending = clean(pending + decoder.decode(chunk, { stream: true }));
-      const safe = Math.max(0, pending.length - Math.max(0, key.length - 1));
+      const safe = pending.length - prefixLength(pending);
       if (safe) { controller.enqueue(encoder.encode(pending.slice(0, safe))); pending = pending.slice(safe); }
     },
-    flush(controller) { controller.enqueue(encoder.encode(clean(pending + decoder.decode()))); },
+    flush(controller) {
+      const final = clean(pending + decoder.decode());
+      // A truncated upstream error may finish with almost an entire credential. Never flush an
+      // ambiguous key prefix into the native harness's permanent logs or rollout.
+      controller.enqueue(encoder.encode(final.slice(0, final.length - prefixLength(final))));
+    },
   });
 }
 
@@ -85,7 +94,11 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         if (inference && upstream.ok && body) body = body.pipeThrough(meterStream((response) => {
           const usage = response?.usage;
           const input = usage?.input_tokens; const output = usage?.output_tokens; const cached = usage?.input_tokens_details?.cached_tokens;
-          let cost = typeof input === "number" && typeof output === "number" && typeof cached === "number" ? estimateTokenCost(source, response?.model, { input, output, cached }, { rates, tier: response?.service_tier }) : { estimated: true, complete: false };
+          const writes = usage?.input_tokens_details?.cache_write_tokens_details;
+          const write30m = writes?.ttl_30m_tokens; const write12h = writes?.ttl_12h_tokens;
+          const writeTotal = usage?.input_tokens_details?.cache_write_tokens;
+          const writeBreakdownValid = writeTotal === 0 || (Number.isSafeInteger(writeTotal) && typeof write30m === "number" && typeof write12h === "number" && write30m + write12h === writeTotal);
+          let cost = typeof input === "number" && typeof output === "number" && typeof cached === "number" && writeBreakdownValid ? estimateTokenCost(source, response?.model, { input, output, cached, write30m: writeTotal === 0 ? 0 : write30m, write12h: writeTotal === 0 ? 0 : write12h }, { rates, tier: response?.service_tier }) : { estimated: true, complete: false };
           if (response?.output?.some((item: any) => ["web_search_call", "image_generation_call", "file_search_call", "code_interpreter_call"].includes(item.type))) cost = { ...cost, complete: false };
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });

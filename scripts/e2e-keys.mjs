@@ -24,7 +24,7 @@ const logs = [];
 const incoming = [];
 const outgoing = [];
 const makePage = async (phone = false) => {
-  const ctx = await browser.newContext({ viewport: phone ? { width: 375, height: 812 } : { width: 1280, height: 900 }, ...(phone ? { isMobile: true, hasTouch: true } : {}) });
+  const ctx = await browser.newContext({ timezoneId: "America/Los_Angeles", viewport: phone ? { width: 375, height: 812 } : { width: 1280, height: 900 }, ...(phone ? { isMobile: true, hasTouch: true } : {}) });
   const p = await ctx.newPage();
   p.on("pageerror", (e) => errors.push(e.message));
   p.on("console", (m) => logs.push(m.text()));
@@ -54,17 +54,57 @@ const unset = async (p, label) => { await slot(p, label).getByRole("button", { n
 const noOverflow = async (p) => assert(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "page overflows sideways");
 let runner;
 let session;
-async function inject(p, billing, theme) {
-  await p.evaluate(({ runner, session, billing, theme }) => {
+async function inject(p, billing, theme, cost = { usd: 0.0123, estimated: true, complete: true }) {
+  await p.evaluate(({ runner, session, billing, theme, cost }) => {
     for (const el of document.querySelectorAll("[data-theme]")) { el.setAttribute("data-theme", theme); el.style.colorScheme = theme; }
     document.documentElement.style.colorScheme = theme;
     const store = globalThis.__tetherStore;
     const current = store.getState();
     const key = `${runner}\u0000${session}`;
     const summary = { id: session, nativeId: session.split(":")[1], harness: "claude", projectPath: "/tmp/claude-1001/keys/ui", title: "Billing indicator", mode: "live", status: "running", updatedAt: Date.now(), billing };
-    store.setState({ summaries: { ...current.summaries, [runner]: { ...(current.summaries[runner] ?? { seq: -1 }), sessions: { ...(current.summaries[runner]?.sessions ?? {}), [session]: summary } } }, views: { ...current.views, [key]: { session: summary, window: { messages: [{ id: "ui", role: "notice", ts: Date.now(), parts: [{ type: "text", text: "Billing display check" }] }], hasOlder: false }, state: { mode: "live", status: "idle", model: "haiku", effort: "low", permissionMode: "default", requests: [], queue: [], billing, plan: { week: { percent: 63 } } }, capabilities: { canSteer: true, terminal: "handoff", subagents: { view: false, stop: false, steer: false } } } } });
-  }, { runner, session, billing, theme });
+    store.setState({ summaries: { ...current.summaries, [runner]: { ...(current.summaries[runner] ?? { seq: -1 }), sessions: { ...(current.summaries[runner]?.sessions ?? {}), [session]: summary } } }, views: { ...current.views, [key]: { session: summary, window: { messages: [{ id: "ui", role: "notice", ts: Date.now(), parts: [{ type: "text", text: "Billing display check" }] }], hasOlder: false }, state: { mode: "live", status: "idle", model: "haiku", effort: "low", permissionMode: "default", requests: [], queue: [], billing, cost, plan: { week: { percent: 63 } } }, capabilities: { canSteer: true, terminal: "handoff", subagents: { view: false, stop: false, steer: false } } } } });
+  }, { runner, session, billing, theme, cost });
   await p.locator(".t-input").waitFor();
+}
+async function call(p, op, args) {
+  return p.evaluate(async ({runner,op,args}) => {
+    const url=performance.getEntriesByType("resource").map((e)=>e.name).find((n)=>n.includes("/src/connection.ts")) ?? "/src/connection.ts";
+    const {rpc}=await import(url);
+    return rpc(runner,op,args);
+  },{runner,op,args});
+}
+async function realSources(p) {
+  const cl=process.env.CLAUDE_SCRATCH ?? "/home/ubuntu/.local/share/tether-dev-p3/projects/scratch";
+  const cx=process.env.CODEX_SCRATCH ?? "/home/ubuntu/tether-scratch/p4/projects/scratch";
+  for(const [source,label,harness,path,model] of [["anthropic","Anthropic API key","claude",cl,"haiku"],["openai","OpenAI API key","codex",cx,"gpt-6-luna"],["azure","Azure","codex",cx,"gpt-6-luna"]]) {
+    await p.goto(`${BASE}/#/credentials`);
+    await slot(p,label).waitFor();
+    if(source==="azure") await slot(p,label).getByLabel("Endpoint",{exact:true}).fill("https://example.invalid/openai/v1");
+    await save(p,label,newKey());
+    const made=await call(p,"newSession",{harness,projectPath:path,model,effort:"low",permissionMode:harness==="codex"?"read-only":"default"});
+    const id=made.sessionId;
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(id)}`);
+    await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:90000});
+    await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
+    await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
+    assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"failed key changed billing source");
+    await screenshot(p,`real-${source}-failure`);
+    await call(p,"unsetCredential",{source});
+    if(harness==="claude") {
+      await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
+      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.billing?.kind==="plan" && v?.window?.messages?.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text)));},{runner,id},{timeout:120000});
+      assert(await p.locator(".t-paid-badge").count()===0,"unset Claude retained API indicator");
+    } else {
+      let refused=false;
+      try {await call(p,"send",{sessionId:id,text:"Reply OK."});} catch(e) {refused=String(e).includes("another billing source");}
+      assert(refused,"unset converted an existing Codex source");
+      const sub=await call(p,"newSession",{harness:"codex",projectPath:cx,model:"gpt-6-luna",effort:"low",permissionMode:"read-only"});
+      await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(sub.sessionId)}`);
+      await p.getByText("ChatGPT plan",{exact:true}).waitFor({timeout:90000});
+      assert(await p.locator(".t-paid-badge").count()===0,"new Codex subscription retained API colour");
+    }
+    console.log(`ok real ${source}: harness-confirmed browser label, failure stops without fallback, unset restores subscription or refuses cross-source continuation`);
+  }
 }
 function contrast(a, b) {
   const lum = (s) => { const c = s.match(/[\d.]+/g).slice(0, 3).map(Number).map((x) => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; }); return c[0] * .2126 + c[1] * .7152 + c[2] * .0722; };
@@ -96,6 +136,7 @@ try {
   await noOverflow(phone);
   await screenshot(phone, "credentials-phone-unset");
   console.log("ok credentials save, replace, exclusive Codex slots, unset, reload; inputs clear and file is private");
+  if(process.env.REAL_HARNESSES === "1") await realSources(desktop);
   session = `claude:ui-keys-${randomBytes(8).toString("hex")}`;
   for (const [name, p] of [["desktop", desktop], ["phone", phone]]) {
     await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(session)}`);
@@ -105,8 +146,9 @@ try {
       for (const [source, billing] of [["anthropic", { kind: "apiKey", label: "Anthropic API key" }], ["openai", { kind: "apiKey", label: "OpenAI API key" }], ["azure", { kind: "provider", label: "Azure" }]]) {
         await inject(p, billing, theme);
         const badge = p.locator(".t-paid-badge");
-        assert(await badge.innerText() === billing.label, "wrong billing badge");
-        assert(await p.locator(".t-chips > :first-child").innerText() === billing.label, "API badge isn't first");
+        assert(await badge.locator(":scope > span").first().innerText() === billing.label, "wrong billing badge");
+        assert(await badge.locator(".t-api-cost").innerText() === "$0.01 est.", "session estimate missing or mislabeled");
+        assert(await p.locator(".t-chips > :first-child").getAttribute("class").then((v) => v.includes("t-paid-badge")), "API badge isn't first");
         const bounds = await badge.boundingBox();
         assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= (await p.viewportSize()).width, "API badge is off screen");
         assert(!(await p.locator(".t-header").innerText()).includes("63%"), "plan usage leaked onto API session");
@@ -120,6 +162,9 @@ try {
         const after = await badge.boundingBox();
         assert(after.x === bounds.x, "billing badge moved with scrolling chips");
       }
+      await inject(p, { kind: "apiKey", label: "Anthropic API key" }, theme, { usd: 1, estimated: true, complete: false });
+      assert(await p.locator(".t-api-cost").innerText() === "Cost unknown", "partial subtotal shown as full total");
+      await screenshot(p, `${name}-${theme}-partial-cost`);
       await inject(p, { kind: "unknown", label: "Unknown" }, theme);
       assert(await p.locator(".t-paid-badge, .t-api-composer").count() === 0, "unknown shown as API");
       assert((await p.locator(".t-header").innerText()).includes("Unknown"), "unknown billing is hidden");
@@ -129,6 +174,14 @@ try {
       assert((await p.locator(".t-chips > :first-child").innerText()).includes("Week 63%"), "plan usage isn't first before Mode");
       await screenshot(p, `${name}-${theme}-subscription`);
     }
+    await inject(p, { kind: "apiKey", label: "Anthropic API key" }, "dark");
+    await p.evaluate(({ runner, session }) => {
+      const store=globalThis.__tetherStore, key=`${runner}\u0000${session}`;
+      const v=store.getState().views[key];
+      store.setState({ views: {...store.getState().views, [key]: {...v, window: {...v.window, messages: [{id:"limit",role:"assistant",ts:Date.now(),error:"usage limit",parts:[{type:"text",text:"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 1st, 2026 2:33 AM."}]}]}}}});
+    }, {runner,session});
+    await p.getByText(/Oct 31, 2026, 7:33 PM PDT/).waitFor();
+    await screenshot(p, `${name}-local-retry`);
     // Inline edit is local until saved: Escape sends no rename RPC and restores the title.
     await p.getByRole("button", { name: "Rename session: Billing indicator", exact: true }).click();
     await p.getByRole("textbox", { name: "Session title", exact: true }).fill("Cancelled rename");

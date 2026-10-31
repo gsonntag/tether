@@ -4,10 +4,17 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileS
 import { join } from "node:path";
 import type { CredentialSnapshot } from "../../credentials";
 import { Transcript } from "../../core/transcript";
+import { ClaudeDriver } from "./driver";
 import { CLAUDE_AUTH_ENV, claudeAuthSettings, claudeEnv, claudeKeyLease, claudeTerminalScripts, confirmClaudeBilling, prepareClaudeTerminal } from "./credentials";
+import { ClaudeCostCounter } from "./cost";
 import { ClaudeStream } from "./stream";
+import { claudeAdapter } from "./index";
 
 const base = "/tmp/claude-1001/keys/unit";
+test("read-only terminal screen/quit metadata needs no launch credentials, while a launch does", () => {
+  expect(claudeAdapter.terminalCommand("stored-id", "/tmp", {}).screen).toBeDefined();
+  expect(() => claudeAdapter.terminalCommand("stored-id", "/tmp", { fresh: false })).toThrow("cannot confirm its billing source");
+});
 const fresh = () => { mkdirSync(base, { recursive: true }); return mkdtempSync(join(base, "claude-")); };
 function credential(): CredentialSnapshot {
   const file = join(fresh(), "credentials.json");
@@ -18,12 +25,14 @@ function credential(): CredentialSnapshot {
 
 test("subscription removes inherited keys, tokens, proxy routes and provider switches", () => {
   const inherited = Object.fromEntries(CLAUDE_AUTH_ENV.map((k) => [k, "inherited"]));
-  const env = claudeEnv({ source: "subscription", revision: "subscription" }, { ...inherited, PATH: "/bin", TETHER_TOKEN: "runner-secret", DEBUG: "*", TETHER_CLAUDE_API_KEY: "retired" });
+  const env = claudeEnv({ source: "subscription", revision: "subscription" }, { ...inherited, PATH: "/bin", TETHER_TOKEN: "runner-secret", DEBUG: "*", TETHER_CLAUDE_API_KEY: "retired", OPENAI_API_KEY: "other-source", AZURE_OPENAI_API_KEY: "other-source" });
   expect(CLAUDE_AUTH_ENV.every((k) => env[k] === undefined)).toBe(true);
   expect(env.PATH).toBe("/bin");
   expect(env.TETHER_TOKEN).toBeUndefined();
   expect(env.TETHER_CLAUDE_API_KEY).toBeUndefined();
   expect(env.DEBUG).toBeUndefined();
+  expect(env.OPENAI_API_KEY).toBeUndefined();
+  expect(env.AZURE_OPENAI_API_KEY).toBeUndefined();
   expect(claudeAuthSettings().apiKeyHelper).toBe("");
 });
 
@@ -128,13 +137,17 @@ test("a key API failure stops once and emits only a source-specific error, witho
   let stops = 0;
   const sink: any = { event: (e: any) => { events.push(e); transcript.apply(e); }, message: (id: string) => transcript.get(id), state() {} };
   const stream = new ClaudeStream(sink, { nativeId: "fake", failed: () => { stops++; return "Anthropic API key failed. The session stopped. Check Credentials."; } });
-  stream.handle({ type: "assistant", uuid: "x", error: "authentication_failed", message: { id: "a", content: [{ type: "text", text: "401 provider raw secret" }] } });
+  stream.handle({ type: "system", subtype: "api_retry", error: { message: "401 invalid key raw provider secret" } });
   expect(stops).toBe(1);
+  expect(JSON.stringify(events)).toContain("Anthropic API key failed");
+  expect(JSON.stringify(events)).not.toContain("raw provider secret");
+  stream.handle({ type: "assistant", uuid: "x", error: "authentication_failed", message: { id: "a", content: [{ type: "text", text: "401 provider raw secret" }] } });
+  expect(stops).toBe(2);
   expect(JSON.stringify(events)).toContain("Anthropic API key failed");
   expect(JSON.stringify(events)).not.toContain("provider raw secret");
   expect(JSON.stringify(events)).not.toContain("log in");
   stream.handle({ type: "result", subtype: "error_during_execution", is_error: true, errors: ["network down"] });
-  expect(stops).toBe(2);
+  expect(stops).toBe(3);
 });
 
 test("an intentional interruption does not classify the stopped API turn as a key failure", () => {
@@ -142,6 +155,20 @@ test("an intentional interruption does not classify the stopped API turn as a ke
   const stream = new ClaudeStream({ state() {}, message() {}, event() {} } as any, { nativeId: "fake", interrupted: () => true, failed: () => { failures++; return "failed"; } });
   stream.handle({ type: "result", subtype: "error_during_execution", is_error: true });
   expect(failures).toBe(0);
+});
+
+test("an API-key failure invalidates the current cost epoch before it shuts down", () => {
+  const reports: any[] = [];
+  const driver: any = Object.create(ClaudeDriver.prototype);
+  driver.closed = true;
+  driver.credential = { source: "anthropic", revision: "fake", key: "unused" };
+  driver.costs = new ClaudeCostCounter(0);
+  driver.sink = { cost: (report: any) => reports.push(report), state() {} };
+  reports.push(driver.costs.report(0.012));
+  expect(driver.failed()).toBe("Anthropic API key failed. The session stopped. Check Credentials.");
+  expect(reports[0]).toMatchObject({ usd: 0.012, estimated: true, complete: true });
+  expect(reports[1]).toMatchObject({ id: reports[0].id, estimated: true, complete: false });
+  expect(reports[1]).not.toHaveProperty("usd");
 });
 
 function dirname(file: string) { return join(file, ".."); }

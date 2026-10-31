@@ -9,8 +9,9 @@ import { existsSync } from "node:fs";
 import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
+import { UNKNOWN_BILLING } from "../../../../shared/transcript";
 import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
-import { assertCredentialCurrent, confirmedProxy, newConnection, observedCredential, rememberSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
+import { assertCredentialCurrent, confirmedProxy, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
 import { CostLedger } from "../../costs";
 import { sourceHome } from "./sources";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ import { remember, remembered } from "./remember";
 import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
+import { confirmSubscriptionProvider } from "./billing";
 
 /** A message as Codex's input: its text, and the attached images Codex reads from disk. */
 const input = (text: string, attachments: Attachment[] = []) => [
@@ -192,6 +194,7 @@ export class CodexDriver implements Driver {
   }
 
   private async noteBilling(r: any, enforce = false) {
+    try {
     const provider = r.modelProvider ?? r.thread?.modelProvider;
     const account = await this.rpc.call("account/read", { refreshToken: false }, 10_000).then((a: any) => a?.account, () => undefined);
     const source = remembered(this.nativeId)?.source;
@@ -205,10 +208,23 @@ export class CodexDriver implements Driver {
       if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== (source.source === "openai" ? "https://api.openai.com/v1" : this.credential.endpoint?.replace(/\/$/, ""))))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
       billing = sourceBilling(source.source);
     }
-    if (enforce && !source && billing.kind !== "plan") throw new Error("Codex did not confirm the ChatGPT subscription. Nothing was sent.");
+    if (enforce && !source) {
+      try {
+        const cfg: any = await this.rpc.call("config/read", { cwd: this.projectPath });
+        confirmSubscriptionProvider(provider, account, cfg?.config);
+      } catch {
+        this.sink.state({ billing: { kind: "unknown", label: "Unknown" } });
+        throw new Error("Codex did not confirm the ChatGPT subscription's authentication path. Nothing was sent.");
+      }
+    }
     remember(this.nativeId, { billing });
     this.sink.state({ billing });
     this.noteCost();
+    } catch (error) {
+      remember(this.nativeId, { billing: UNKNOWN_BILLING });
+      this.sink.state({ billing: UNKNOWN_BILLING });
+      throw error;
+    }
   }
 
   private async started(r: any, opts: StartOpts) {
@@ -901,5 +917,10 @@ export class CodexDriver implements Driver {
     this.abortAll();
     await this.rpc.call("thread/unsubscribe", { threadId: this.nativeId }, 5_000).catch(() => {});
     this.rpc.close();
+  }
+
+  /** Called by core only after an ordinary idle eviction or an idle credential restart. */
+  async retire() {
+    await retirePrivateSource(this.nativeId);
   }
 }

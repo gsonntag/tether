@@ -130,7 +130,7 @@ export function SessionHeader({
         <SubagentChips runnerId={runnerId} children={children} />
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (
-          <span className="t-chip t-chip-info" title={contextDetail(state.context)}>
+          <span className="t-chip t-chip-info t-context-chip" title={contextDetail(state.context)}>
             Context {contextPercent(state.context)}
           </span>
         )}

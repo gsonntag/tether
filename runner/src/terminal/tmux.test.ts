@@ -26,7 +26,7 @@ test("names are valid tmux session names", () => {
 });
 
 test("the environment loses Tether's secrets and tmux's nesting markers", () => {
-  const env = cleanEnv({ PATH: "/bin", TETHER_TOKEN: "secret", TETHER_URL: "u", TMUX: "x", HOME: "/h" });
+  const env = cleanEnv({ PATH: "/bin", TETHER_TOKEN: "secret", TETHER_URL: "u", TMUX: "x", HOME: "/h", OPENAI_API_KEY: "outside-key", AZURE_OPENAI_API_KEY: "outside-key", ANTHROPIC_API_KEY: "outside-key", CODEX_API_KEY: "outside-key" });
   expect(env).toEqual({ PATH: "/bin", HOME: "/h" });
 });
 

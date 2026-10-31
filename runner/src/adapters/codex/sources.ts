@@ -61,6 +61,14 @@ export function assertCredentialCurrent(credential?: CredentialSnapshot) {
 
 export const sourceCredentialRevision = (source: PrivateSource) => processRecord(source)?.revision;
 
+/** The RPC result must be complete before retirement treats a private thread as idle. */
+export function privateThreadBusy(nativeId: string, thread: any, terminals: any): boolean {
+  if (thread?.thread?.id !== nativeId || typeof thread?.thread?.status?.type !== "string" || !Array.isArray(terminals?.data)) {
+    throw new Error("Couldn't confirm this session's private Codex process is idle; it was left running.");
+  }
+  return thread.thread.status.type !== "idle" || terminals.data.length > 0;
+}
+
 function configuredFor(source: PrivateSource): CredentialSnapshot | undefined {
   const c = configuredCredential("codex");
   return c.source === source.source && c.key ? c : undefined;
@@ -143,6 +151,56 @@ export function privateConnection(source: PrivateSource, credential?: Credential
   return p.finally(() => { if (inFlight.get(key) === p) inFlight.delete(key); });
 }
 export async function stopPrivateSource(source: PrivateSource) { const record = processRecord(source); if (record) await stopPrivate(source, record); }
+
+/**
+ * Retires an idle API session's private host. This only connects to an existing socket and only
+ * stops the process recorded for this exact private source. A live turn or terminal keeps it up.
+ */
+export async function retirePrivateSource(nativeId: string): Promise<void> {
+  const source = remembered(nativeId)?.source;
+  if (!source) return; // subscription daemon, or no known private source
+  if (!/^[a-f0-9]{32}$/.test(source.id) || (source.source !== "openai" && source.source !== "azure")) return;
+  if (inFlight.has(source.id)) return; // a connect/start is still being established
+  const record = processRecord(source);
+  if (!record) return;
+
+  let rpc: CodexRpc;
+  try { rpc = await existingPrivateConnection(source); }
+  catch { throw new Error("This session's private Codex process isn't reachable; it was left running."); }
+  try {
+    let thread: any;
+    let terminals: any;
+    try {
+      [thread, terminals] = await Promise.all([
+        rpc.call("thread/read", { threadId: nativeId, includeTurns: false }),
+        rpc.call("thread/backgroundTerminals/list", { threadId: nativeId, limit: 1 }),
+      ]);
+    } catch {
+      throw new Error("Couldn't confirm this session's private Codex process is idle; it was left running.");
+    }
+    if (privateThreadBusy(nativeId, thread, terminals)) return;
+    // Child threads share this host. A parent can be idle while a child still works; confirm the
+    // whole descendant tree independently of notifications already delivered to Tether.
+    const parents = [nativeId];
+    const seen = new Set(parents);
+    while (parents.length) {
+      if (seen.size > 200) return;
+      const children: any = await rpc.call("thread/list", { parentThreadId: parents.shift(), sourceKinds: ["subAgent", "subAgentThreadSpawn", "subAgentOther"], limit: 100 });
+      if (!Array.isArray(children?.data) || children.nextCursor) return;
+      for (const child of children.data) {
+        if (!child?.id || (child.status?.type !== "idle" && child.status?.type !== "notLoaded")) return;
+        const running: any = await rpc.call("thread/backgroundTerminals/list", { threadId: child.id, limit: 1 });
+        if (!Array.isArray(running?.data) || running.data.length || running.nextCursor) return;
+        if (!seen.has(child.id)) { seen.add(child.id); parents.push(child.id); }
+      }
+    }
+  } finally { rpc.close(); }
+
+  // Re-read the durable ownership record after the RPCs so a replaced process is never stopped.
+  const current = processRecord(source);
+  if (!current || current.pid !== record.pid || current.birth !== record.birth || current.unit !== record.unit) return;
+  await stopPrivate(source, current);
+}
 
 export async function newConnection(projectPath: string, credential?: CredentialSnapshot): Promise<{ rpc: CodexRpc; source?: PrivateSource }> {
   if (!credential || credential.source === "subscription") return { rpc: await connect() };

@@ -51,7 +51,7 @@ const DROP_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID",
 /** The environment for tmux (and so for everything in it): the runner's, minus Tether's secrets. */
 export function cleanEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) if (v !== undefined && !k.startsWith("TETHER_") && !DROP_ENV.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(env)) if (v !== undefined && !/^(TETHER_|ANTHROPIC_|OPENAI_|AZURE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_API_KEY|CODEX_API_KEY)/.test(k) && !DROP_ENV.has(k)) out[k] = v;
   return out;
 }
 

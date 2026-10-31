@@ -29,6 +29,12 @@ describe("session API dollars", () => {
     ledger.begin("new", true);
     expect(ledger.get("new").complete).toBe(false);
   });
+  test("a failed request without final usage preserves its known subtotal but invalidates completeness", () => {
+    const ledger = new CostLedger();
+    ledger.begin("s", true);
+    ledger.report("s", "query", { usd: 0.2, estimated: true, complete: true });
+    expect(ledger.report("s", "query", { estimated: true, complete: false })).toEqual({ usd: 0.2, estimated: true, complete: false });
+  });
   test("special report ids are safe and lower cumulative totals cannot reduce prior totals", () => {
     const ledger = new CostLedger();
     ledger.begin("__proto__", true);

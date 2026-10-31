@@ -818,7 +818,7 @@ export class LiveControl {
    * flushes its store, its open requests are cancelled (the TUI asks again) and its subagents end.
    * The mode is left to the caller.
    */
-  async release(s: Session) {
+  async release(s: Session, retire = false) {
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
     clearTimeout(s.idleTimer);
     this.desk.cancel((_r, chain) => chain.at(-1) === s.id);
@@ -829,6 +829,7 @@ export class LiveControl {
     try {
       await d.close();
     } catch {}
+    if (retire) await d.retire?.();
   }
 
   /** Live again on the same session (Back to Tether, SPEC §8). */
@@ -844,7 +845,7 @@ export class LiveControl {
       // A running turn finishes on its original process and source. No new message can go to it
       // after a change; idle processes are closed before resuming with the new snapshot.
       if (s.driver.busy() || s.driver.turnRunning?.() || s.state.terminal) return Promise.reject(new Error("Credentials changed. Wait for this process to finish and close its terminal before sending."));
-      s.starting ??= this.release(s).then(() => this.startDriver(s)).finally(() => { s.starting = undefined; this.core.scheduleEvict(s); });
+      s.starting ??= this.release(s, true).then(() => this.startDriver(s)).finally(() => { s.starting = undefined; this.core.scheduleEvict(s); });
       return s.starting;
     }
     // Two processes must never drive one session (SPEC §8 handoff).
@@ -920,11 +921,12 @@ export class LiveControl {
     return d;
   }
 
-  private async close(s: Session) {
+  private async close(s: Session, retire = false) {
     const d = s.driver;
     if (!d) return;
     try {
       await d.close();
+      if (retire) await d.retire?.();
     } catch {}
     if (s.driver === d) this.toStored(s);
   }
@@ -975,7 +977,7 @@ export class LiveControl {
       // Not while a turn, a subagent or a background task runs, nor while the harness's own TUI
       // shares the session (it would lose what Tether relays): look again later.
       if (s.state.status !== "idle" || s.driver.busy() || s.state.terminal) return this.scheduleIdle(s);
-      void this.close(s);
+      void this.close(s, true);
     }, this.idleMs);
     s.idleTimer.unref?.();
   }

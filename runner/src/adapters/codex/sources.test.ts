@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { providerConfig, privateEnvironment, sourceBilling, threadConnection } from "./sources";
+import { privateThreadBusy, providerConfig, privateEnvironment, retirePrivateSource, sourceBilling, threadConnection } from "./sources";
 import { remember, remembered, rememberIn } from "./remember";
 
 let dir: string | undefined;
@@ -51,6 +51,24 @@ test("existing sessions refuse another source before connecting to any daemon", 
   remember("api", { source: { id: "private", source: "openai", projectPath: "/tmp" } });
   await expect(threadConnection("api", { source: "subscription", revision: "subscription" })).rejects.toThrow("another billing source");
   await expect(threadConnection("subscription", { source: "azure", revision: "a", key: randomUUID(), endpoint: "https://example.com" })).rejects.toThrow("another billing source");
+});
+
+test("private retirement only considers a confirmed idle thread with no background terminals", () => {
+  expect(privateThreadBusy("t", { thread: { id: "t", status: { type: "idle" } } }, { data: [] })).toBe(false);
+  expect(privateThreadBusy("t", { thread: { id: "t", status: { type: "active" } } }, { data: [] })).toBe(true);
+  expect(privateThreadBusy("t", { thread: { id: "t", status: { type: "unknown" } } }, { data: [] })).toBe(true);
+  expect(privateThreadBusy("t", { thread: { id: "t", status: { type: "idle" } } }, { data: [{ processId: "p" }] })).toBe(true);
+  expect(() => privateThreadBusy("t", { thread: { id: "other", status: { type: "idle" } } }, { data: [] })).toThrow("left running");
+  expect(() => privateThreadBusy("t", { thread: { id: "t" } }, { data: [] })).toThrow("left running");
+  expect(() => privateThreadBusy("t", { thread: { id: "t", status: { type: "idle" } } }, {})).toThrow("left running");
+});
+
+test("retirement never connects or starts an unrecorded private process or subscription daemon", async () => {
+  rememberIn(undefined);
+  remember("missing-private", { source: { id: randomUUID().replaceAll("-", ""), source: "openai", projectPath: "/tmp" } });
+  await expect(retirePrivateSource("missing-private")).resolves.toBeUndefined();
+  remember("subscription", {});
+  await expect(retirePrivateSource("subscription")).resolves.toBeUndefined();
 });
 
 
