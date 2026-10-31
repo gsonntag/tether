@@ -68,6 +68,11 @@ export class Prefs {
       .map(([id]) => id);
   }
 
+  /** Sessions whose TUI hadn't been seen gone when the runner last stopped, with what was saved at its start. */
+  inTerminal(): [string, NonNullable<SessionPrefs["tui"]>][] {
+    return Object.entries(this.map).flatMap(([id, p]) => (p.tui ? [[id, p.tui] as [string, NonNullable<SessionPrefs["tui"]>]] : []));
+  }
+
   /** Sessions with messages waiting in their queue. */
   queued(): string[] {
     return Object.entries(this.map)

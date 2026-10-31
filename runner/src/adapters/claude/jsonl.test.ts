@@ -227,6 +227,14 @@ test("a local command typed in Claude's own TUI (stored as a system entry) reads
   const f = new StoreFile(p);
   await f.update();
   expect(chainMessages(f.chain()).map((m) => `${m.role}:${(m.parts[0] as any).text}`)).toEqual(["user:hi", "user:/model", "notice:Kept model as `Haiku 5.5`"]);
+  expect(chainMessages(f.chain()).filter((m) => m.localCommand).map((m) => (m.parts[0] as any).text)).toEqual(["/model"]);
+});
+
+test("only Claude Code's own markup is a command entry, not a prompt that starts with a slash or quotes it", async () => {
+  const { isCommandEntry } = await import("./content");
+  expect(isCommandEntry("<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>")).toBe(true);
+  expect(isCommandEntry("/tmp/notes.txt is where I keep things.")).toBe(false);
+  expect(isCommandEntry("what does <command-name>/x</command-name> mean?")).toBe(false);
 });
 
 describe("parallel tool calls", () => {

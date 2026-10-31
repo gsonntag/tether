@@ -90,7 +90,7 @@ export function SessionHeader({
             <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
-              // While Claude's TUI drives, its mode comes from its hooks: the last one it reported.
+              // While Claude's TUI drives, its mode comes from its status line and hooks: the last they showed.
               label={locked ? `Set in the terminal (last seen: ${permissionModeLabel(state.permissionMode)})` : nextTurn(permissionModeLabel(state.permissionMode), turn?.permissionMode, state.permissionMode)}
               disabled={locked}
               choices={models?.permissionModes ?? []}

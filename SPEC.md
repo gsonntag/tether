@@ -342,7 +342,9 @@ input queue, a subagent's hooks, /compact), so Tether doesn't try. What it keeps
   (Shift+Tab alone fires no hook); the model and effort chips are disabled ("Set in the terminal
   (last seen: …)"). When the TUI goes, Back to Tether or by itself, the session is never left looser
   than it last showed: the status line and the store's entry from that TUI, the tighter if they
-  differ, and at most `default` if neither says.
+  differ, and at most `default` if neither says. A TUI gone while no runner was there is settled at the
+  next start from a mark in runner.json (it ran, and its store's entries then): never looser than
+  the store's newest entry, and at most `default` with no entry from that TUI (`plan` stays `plan`).
 - **Messages wait**: the composer never types into the TUI; what you send goes to Tether's queue,
   held "terminal", and is sent after Back to Tether.
 
@@ -352,7 +354,8 @@ lost." Then:
 1. It quits the TUI cleanly: `/exit` when it sits at an empty prompt (Tether hides the command and its
    goodbye in the transcript), else Esc and Ctrl-C; it kills the tmux session after 5 seconds.
 2. It resumes the driver on the same `nativeId` from the store, so whatever the TUI finished shows,
-   with the mode and model as last seen. The mode becomes `live`; the held queue goes out.
+   with the mode and model as last seen. Every view says "Going back to Tether…", with no buttons,
+   until the mode becomes `live`; the held queue goes out.
 
 If the TUI exits by itself (you typed `/exit`), the mode becomes `stored`.
 
@@ -432,8 +435,9 @@ On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
   as in live mode.
 - **Claude (handoff):** approvals are answered **in the terminal**, by the TUI itself. To keep
   "Needs you", its push and Home working, the runner launches the TUI with `--settings` adding hooks
-  that report to the runner's local socket (`PermissionRequest`, `Elicitation`, `Notification`, and
-  `SessionStart` to follow /clear). A runner restart readopts the TUI as "Driving in the terminal";
+  that report to the runner's local socket (`PermissionRequest`, `Elicitation` and `Notification` for
+  Needs you, `SessionStart` to follow /clear and /resume; those and `UserPromptSubmit`, `PreToolUse`,
+  `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` carry the mode as last seen). A runner restart readopts the TUI as "Driving in the terminal";
   a question visible on its screen is Needs you, nothing else is inferred.
 
 Later, a Claude `PreToolUse` hook can route terminal approvals through the same broker

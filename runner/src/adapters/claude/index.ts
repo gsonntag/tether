@@ -19,7 +19,7 @@ import { hookSettings } from "../../terminal/hooks";
  * Quitting Claude's TUI whatever it shows: Esc closes a dialog (denying a permission prompt) or stops
  * a turn; Ctrl-C clears what is typed or arms "Press Ctrl-C again to exit"; the next one exits.
  * Steps after it has exited are skipped. For anything but its plain, empty prompt, where `/exit`
- * is cleaner (CLAUDE_EXIT). Verified on 2.1.312 with text in the box and with the /model picker open.
+ * is cleaner (CLAUDE_EXIT). Verified on 2.1.314 with text in the box and with the /model picker open.
  */
 export const CLAUDE_QUIT: QuitStep[] = [{ keys: ["Escape"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }, { waitMs: 400 }, { keys: ["C-c"] }];
 
@@ -50,7 +50,7 @@ const CURSOR_OPTION = /^\s*❯\s*\d+[.)]\s/;
 const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
 
 /**
- * Reads Claude's TUI (verified on 2.1.312, at 40 to 200 columns), conservatively, for two things:
+ * Reads Claude's TUI (verified on 2.1.314; at 40 to 200 columns on 2.1.312), conservatively, for two things:
  * whether a question is up (Needs you after a runner restart; it clears only once the prompt shows
  * again, SPEC §8), and whether the TUI sits at its plain, empty prompt (Back to Tether quits with
  * /exit there). Only a clearly recognized prompt box counts:
@@ -63,8 +63,8 @@ const PLACEHOLDER = /^(?:Try "[^"]*"|Press up to edit queued messages)$/;
  *   menus, or the trust question; `picker` for Claude's menus; else `unknown`.
  */
 /** The permission mode in the TUI's status line, only that glyph-led label ("⏵⏵ accept edits on"). */
-const STATUS_MODE = /[⏵⏸]\s*(accept edits|plan mode|auto mode|bypass permissions|manual mode) on/i;
-const SHOWN_MODES: Record<string, string> = { "accept edits": "acceptEdits", "plan mode": "plan", "auto mode": "auto", "bypass permissions": "bypassPermissions", "manual mode": "default" };
+const STATUS_MODE = /[⏵⏸]\s*(accept edits|plan mode|auto mode|bypass permissions|manual mode|don't ask) on/i;
+const SHOWN_MODES: Record<string, string> = { "accept edits": "acceptEdits", "plan mode": "plan", "auto mode": "auto", "bypass permissions": "bypassPermissions", "manual mode": "default", "don't ask": "dontAsk" };
 
 export function claudeScreen(screen: string): ScreenRead {
   const lines = screen.replace(/\s+$/, "").split("\n");

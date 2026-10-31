@@ -112,6 +112,8 @@ export interface Msg {
    * a subagent's report): who it's from. The UI shows it apart from your own messages.
    */
   origin?: { kind: string; name?: string };
+  /** user: a slash command as the harness stored it, not a prompt (which may start with "/" too) */
+  localCommand?: boolean;
   /**
    * user: a message to a subagent that Tether passed on through the main agent (SPEC §6a,
    * subagents.steer "via-parent"): whether the main agent delivered it.

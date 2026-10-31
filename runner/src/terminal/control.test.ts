@@ -706,6 +706,56 @@ describe("review round 8: the edges of the simple model", () => {
     expect(state(core, sessionId).queue.map((m) => m.text)).toEqual(["keep me"]);
   });
 
+  test("a message waiting, a store with only local commands, /exit: it resumes (the id is taken), and the row stays", async () => {
+    const { adapter, core, live, tmux } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    await live.send(sessionId, "keep me");
+    adapter.addStored("new-1", [prompt("m1", "/exit")], { projectPath: dir });
+    adapter.neverStarted = async () => true;
+    tmux.sessions.clear();
+    await until(() => state(core, sessionId).mode === "stored");
+    await Bun.sleep(40);
+    expect(core.sessions.get(sessionId)!.fresh).toBe(false);
+    await live.queue.resume(sessionId);
+    await until(() => adapter.drivers[0]?.sent.includes("keep me") === true);
+    expect(adapter.resumed).toContain("new-1");
+  });
+
+  test("/clear on a new TUI with a message waiting, a store with only local commands: Resume resumes the old one", async () => {
+    const { adapter, core, live, term } = setup();
+    const dir = mkdtempSync(join(tmpdir(), "tether-proj-"));
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, terminal: true });
+    await live.send(sessionId, "keep me");
+    adapter.addStored("new-1", [prompt("m1", "/clear")], { projectPath: dir });
+    adapter.neverStarted = async () => true;
+    term.report({ sessionId, event: "SessionStart", nativeId: "00000009-0000-4000-8000-000000000000", source: "clear" });
+    await until(() => state(core, sessionId).mode === "stored");
+    await until(() => !core.sessions.get(sessionId)!.fresh);
+    await live.queue.resume(sessionId);
+    await until(() => adapter.drivers[0]?.sent.includes("keep me") === true);
+    expect(adapter.resumed).toContain("new-1");
+  });
+
+  test("/resume onto a live session with a message queued: it waits for Back to Tether, then goes", async () => {
+    const { adapter, core, live, term } = setup();
+    const next = "00000009-0000-4000-8000-000000000000";
+    adapter.addStored("s1", [prompt("m1")]);
+    adapter.addStored(next, [prompt("m2")]);
+    const B = `claude:${next}`;
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    adapter.script = () => [ask("Write", { file_path: "/p/a" }), say("a1", "ok"), idle];
+    void live.send(B, "write it").catch(() => {});
+    await until(() => core.sessions.get(B)?.state.requests.length === 1);
+    await live.queue.add(B, "after", []);
+    term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: next, source: "resume" });
+    await until(() => state(core, B).mode === "terminal");
+    expect(state(core, B)).toMatchObject({ queueHeld: true, queueHeldBy: "terminal", queue: [{ text: "after" }] });
+    await term.end(B);
+    await until(() => state(core, B).queue.length === 0);
+    expect(adapter.drivers.at(-1)!.sent).toContain("after");
+  });
+
   test("a subagent's hook doesn't change the session's mode", async () => {
     const { adapter, core, term } = setup();
     adapter.addStored("s1", []);
@@ -843,6 +893,88 @@ describe("review round 9", () => {
     await x.term.open({ sessionId: S, attachId: "a1", cols: 80, rows: 24 });
     return { ...x, store };
   };
+
+  /** The runner stops; `meanwhile` is what happens before the next one starts. */
+  const restarted = async (x: Awaited<ReturnType<typeof inTui>>, meanwhile: () => void) => {
+    x.term.stop();
+    x.core.stop();
+    x.core.o.prefs.flush();
+    meanwhile();
+    const adapter = new TermAdapter();
+    adapter.addStored("s1", []);
+    adapter.storedMode = async () => x.store;
+    const next = setup({ tmux: x.tmux, adapter, prefsFile: x.prefsFile });
+    await next.term.readopt();
+    return next;
+  };
+
+  test("the TUI tightened and quit while the runner was away: the store's newest entry stands", async () => {
+    const x = await inTui("acceptEdits");
+    expect(x.core.o.prefs.get(S).tui).toEqual({ entries: 3 });
+    const next = await restarted(x, () => {
+      x.store.mode = "default";
+      x.store.entries = 4;
+      x.tmux.sessions.clear();
+    });
+    expect(state(next.core, S)).toMatchObject({ mode: "stored", permissionMode: "default" });
+    expect(next.core.o.prefs.get(S)).toMatchObject({ permissionMode: "default" });
+    expect(next.core.o.prefs.get(S).tui).toBeUndefined();
+    await next.live.send(S, "go on");
+    expect(next.adapter.drivers[0]!.opts?.permissionMode).toBe("default");
+  });
+
+  test("gone while the runner was away with no entry of its own: at most default, plan stays plan", async () => {
+    const a = await inTui("acceptEdits", { entries: 3, mode: "acceptEdits" });
+    const next = await restarted(a, () => a.tmux.sessions.clear());
+    expect(next.core.o.prefs.get(S).permissionMode).toBe("default");
+    const b = await inTui("plan", { entries: 3, mode: "plan" });
+    const again = await restarted(b, () => b.tmux.sessions.clear());
+    expect(again.core.o.prefs.get(S).permissionMode).toBe("plan");
+  });
+
+  test("gone while the runner was away, its entry looser than last seen: never looser than that either", async () => {
+    const x = await inTui("default");
+    const next = await restarted(x, () => {
+      x.store.mode = "acceptEdits";
+      x.store.entries = 4;
+      x.tmux.sessions.clear();
+    });
+    expect(next.core.o.prefs.get(S).permissionMode).toBe("default");
+  });
+
+  test("a TUI that outlived the restart keeps the baseline of its start", async () => {
+    const x = await inTui("acceptEdits");
+    const next = await restarted(x, () => {
+      x.store.mode = "default";
+      x.store.entries = 4;
+    });
+    expect(state(next.core, S).mode).toBe("terminal");
+    expect(next.core.o.prefs.get(S).tui).toEqual({ entries: 3 });
+    next.tmux.sessions.clear();
+    await until(() => state(next.core, S).mode === "stored");
+    expect(state(next.core, S).permissionMode).toBe("default");
+    expect(next.core.o.prefs.get(S).tui).toBeUndefined();
+  });
+
+  test("Back to Tether says it's going back until the mode changes, then all at once", async () => {
+    const { adapter, core, term } = await inTui("default");
+    const resume = adapter.resume.bind(adapter);
+    const seen: unknown[] = [];
+    adapter.resume = async (...a: Parameters<typeof resume>) => (seen.push(state(core, S).terminal), resume(...a));
+    await term.end(S);
+    expect(seen).toEqual([{ kind: "handoff", returning: true }]);
+    expect(state(core, S).mode).toBe("live");
+    expect(state(core, S).terminal).toBeUndefined();
+  });
+
+  test("a session from outside Tether launches on what was set in Tether only", async () => {
+    const { adapter, core, term } = setup();
+    adapter.addStored("s1", []);
+    await core.subscribe(S);
+    core.sessions.get(S)!.setState({ model: "shown-default", permissionMode: "acceptEdits" });
+    await term.open({ sessionId: S, attachId: "a1", cols: 80, rows: 24 });
+    expect(adapter.launches[0]!.opts).toEqual({ fresh: false, report: undefined });
+  });
 
   test("Shift+Tab with no hook after it: the mode on the status line goes with Back, and shows before it", async () => {
     const { adapter, core, term, tmux } = await inTui("acceptEdits");

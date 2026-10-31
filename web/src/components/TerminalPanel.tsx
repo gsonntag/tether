@@ -19,7 +19,7 @@ import { AGENT_NAMES, HARNESS_LABELS, type LiveState, type SessionSummary } from
 import { rpc } from "../connection";
 import { useStore } from "../store";
 import { KEYS, SHELL_TAB, shellOpened, type TermStatus } from "../terminal";
-import { TermView, type TermViewHandle } from "./TermView";
+import { raisesKeyboard, TermView, type TermViewHandle } from "./TermView";
 import { useFitViewport } from "./useFitViewport";
 
 export type PanelTab = "tui" | typeof SHELL_TAB | string;
@@ -38,7 +38,6 @@ export interface PanelState {
   nonce: number;
 }
 
-const narrow = () => typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
 const touch = () => typeof matchMedia === "function" && (matchMedia("(pointer: coarse)").matches || matchMedia("(max-width: 767px)").matches);
 
 /**
@@ -125,7 +124,7 @@ export function TerminalPanel({
   /** Copy closes: the keys go back to the terminal (on a phone that would raise the keyboard). */
   const closeCopy = () => {
     setCopy(null);
-    if (!narrow()) view.current?.focus();
+    if (!raisesKeyboard(cover)) view.current?.focus();
   };
   const shell = tab === "tui" ? undefined : shells.find((s) => s.id === tab);
   const call = async (p: Promise<unknown>) => {
@@ -350,6 +349,7 @@ export function TerminalPanel({
             tuiRuns || panel.wantTui ? (
               <TermView
                 key={`tui-${panel.nonce}`}
+                cover={cover}
                 ref={view}
                 runnerId={runnerId}
                 target={{ sessionId: session.id }}
@@ -376,7 +376,7 @@ export function TerminalPanel({
               <span>Opening a shell…</span>
             </div>
           ) : shell ? (
-            <TermView key={shell.id} ref={view} runnerId={runnerId} target={{ shellId: shell.id }} onStatus={(s) => s === "ended" && shellGone(shell.id)} />
+            <TermView key={shell.id} ref={view} runnerId={runnerId} cover={cover} target={{ shellId: shell.id }} onStatus={(s) => s === "ended" && shellGone(shell.id)} />
           ) : (
             <div className="t-term-empty">
               <span>That shell has closed.</span>

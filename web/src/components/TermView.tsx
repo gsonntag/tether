@@ -43,6 +43,9 @@ export interface TermViewHandle {
 }
 
 const narrow = () => typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
+const fontSize = () => (narrow() ? 11 : 13);
+/** A panel over the chat on a touch screen: focus there would raise the keyboard over the terminal, unasked. */
+export const raisesKeyboard = (cover: boolean) => cover && typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
 export const TermView = forwardRef<
   TermViewHandle,
@@ -54,11 +57,15 @@ export const TermView = forwardRef<
     /** the first attach failed (the runner's message) */
     onError?: (message: string) => void;
     onStatus?: (s: TermStatus) => void;
+    /** the panel covers the chat (useTermCover) */
+    cover: boolean;
   }
->(function TermView({ runnerId, target, stop, onError, onStatus }, ref) {
+>(function TermView({ runnerId, target, stop, onError, onStatus, cover }, ref) {
   const box = useRef<HTMLDivElement>(null);
   const conn = useRef<TermConn>(null);
   const term = useRef<Terminal>(null);
+  const coverNow = useRef(cover);
+  coverNow.current = cover;
   const [status, setStatus] = useState<{ s: TermStatus; why?: string }>({ s: "connecting" });
   const key = "sessionId" in target ? target.sessionId : target.shellId;
 
@@ -72,7 +79,7 @@ export const TermView = forwardRef<
     const el = box.current!;
     const t = new Terminal({
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--t-mono").trim() || "ui-monospace, Menlo, monospace",
-      fontSize: narrow() ? 11 : 13,
+      fontSize: fontSize(),
       cursorBlink: true,
       scrollback: 3000,
       allowProposedApi: true,
@@ -180,7 +187,7 @@ export const TermView = forwardRef<
     const input = t.onData((d) => c.input(d));
     const binary = t.onBinary((d) => c.input(d));
     c.open(t.cols, t.rows, stop).then(
-      () => !narrow() && t.focus(),
+      () => !raisesKeyboard(coverNow.current) && t.focus(),
       (e: Error) => {
         setStatus({ s: "ended", why: e.message });
         onError?.(e.message);
@@ -189,6 +196,8 @@ export const TermView = forwardRef<
     const ro = new ResizeObserver(() => {
       // Hidden (a phone showing the chat): the PTY keeps its size until it shows again.
       if (!el.clientWidth || !el.clientHeight) return;
+      // Rotated: a phone upright gets the smaller font, on its side the larger.
+      if (t.options.fontSize !== fontSize()) t.options.fontSize = fontSize();
       try {
         fit.fit();
       } catch {}

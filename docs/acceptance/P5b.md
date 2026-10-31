@@ -424,12 +424,12 @@ J1. Desktop has Shell 1 open beside the chat; the phone opens the same session.
 → The phone's composer messages Claude as usual; the phone's ❯_ opens a shell too.
 
 J2. The desktop clicks Claude Code (handoff); on the phone:
-→ The banner "Driving in the terminal" shows; the composer's placeholder says "Claude gets this when
-you go Back to Tether"; `!echo X` from the phone still runs, its output waits for Back to Tether.
+→ The banner "Driving in the terminal" shows; the composer's placeholder says "Waits for Back to Tether";
+`!echo X` from the phone still runs, its output waits for Back to Tether.
 
 J3. Every place names the surface (`handoff`): the list ("Shell n", "Claude Code", "Claude Code ·
 driving"), the transcript banner (only once driving) and its **Open
-Claude Code** button, the composer's placeholder ("Claude gets this when you go Back to Tether"), the card
+Claude Code** button, the composer's placeholder ("Waits for Back to Tether"), the card
 ("Sent to Claude"). No place says just "Terminal" for the agent's TUI, and no "Driving" wording
 shows before Claude Code is clicked.
 

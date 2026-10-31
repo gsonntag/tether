@@ -251,7 +251,7 @@ const steps = {
     await waitHistory(tuiName(), /Claude Code v\d/, "the TUI's banner");
     await waitHistory(tuiName(), /PELICAN/, "the TUI resumed the same conversation");
     await p.locator(".t-term-banner", { hasText: "Driving in the terminal" }).waitFor();
-    if (!(await composer(p).getAttribute("placeholder")).includes("when you go Back to Tether")) fail("the composer doesn't say its messages wait for Back to Tether");
+    if (!(await composer(p).getAttribute("placeholder")).includes("Waits for Back to Tether")) fail("the composer doesn't say its messages wait for Back to Tether");
     await shot(p, "midturn-desktop");
     await noOverflow(p, "desktop with the terminal");
     const argv = tmux("display", "-p", "-t", `=${tuiName()}:`, "#{pane_start_command}").stdout;
@@ -323,7 +323,7 @@ const steps = {
     // held for Back to Tether. No Working/idle either: one state, "Driving in the terminal".
     const p = await page(desktop, session);
     await composer(p).waitFor();
-    if (!/when you go Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the composer doesn't say it waits for Back to Tether");
+    if (!/Waits for Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the composer doesn't say it waits for Back to Tether");
     await send(p, "What is the code word? Reply with just the word, in lowercase.");
     await waitState(p, (s) => s.queue.length === 1 && s.queueHeld && s.queueHeldBy === "terminal", "queued, held for the terminal", 15_000);
     await p.locator(".t-queue", { hasText: "What is the code word?" }).first().waitFor({ timeout: 10_000 });

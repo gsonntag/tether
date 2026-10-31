@@ -758,12 +758,18 @@ export class LiveControl {
     return s.starting;
   }
 
+  /**
+   * What a harness starts with: only what you set in Tether. The rest is the harness's own (its
+   * config, or the session's settings it keeps itself), never overwritten by what Tether merely showed.
+   */
+  chosen(s: Session): StartOpts {
+    const p = this.core.o.prefs.get(s.id);
+    return { ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) };
+  }
+
   private async startDriver(s: Session): Promise<Driver> {
     const a = this.core.adapter(s.summary.harness);
-    // Only what you set in Tether: the rest is the harness's own (its config, or the session's
-    // settings it keeps itself), never overwritten by what Tether merely showed.
-    const p = this.core.o.prefs.get(s.id);
-    const opts: StartOpts = { ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) };
+    const opts = this.chosen(s);
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
@@ -836,7 +842,8 @@ export class LiveControl {
 
   setMode(s: Session, mode: LiveState["mode"], extra: Partial<LiveState> = {}) {
     const from = s.state.mode;
-    s.setState({ mode, ...extra });
+    // Out of the terminal: what said so ("Going back to Tether…") goes with the mode, in one step.
+    s.setState({ mode, ...(from === "terminal" && mode !== "terminal" ? { terminal: undefined } : {}), ...extra });
     this.core.touch(s);
     if (from !== mode) this.core.o.bus.emit("modeChanged", { sessionId: s.id, from, to: mode });
   }

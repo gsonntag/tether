@@ -100,6 +100,9 @@ export function cleanUserText(text: string): string {
   return text;
 }
 
+/** Text that is nothing but Claude Code's own markup for a typed slash command. */
+export const isCommandEntry = (text: string) => /<command-name>/.test(text) && !text.replace(/<command-(name|message|args)>[^<]*<\/command-\1>/g, "").trim();
+
 /**
  * A user entry's visible message (its text and images), a notice for an injected turn, or
  * undefined. Tool results in it are applied separately (`toolResults`).
@@ -117,7 +120,7 @@ export function userMessage(content: unknown, id: string, ts: number, flags: Ent
     if (b?.type === "text" && typeof b.text === "string" && b.text) parts.push(...(bashParts(b.text, id) ?? [{ type: "text" as const, text: cleanUserText(b.text) }]));
     else if (b?.type === "image" && b.source?.type === "base64") parts.push({ type: "image", mimeType: b.source.media_type, data: b.source.data });
   }
-  return parts.length ? { id, role: "user", parts, ts } : undefined;
+  return parts.length ? { id, role: "user", parts, ts, ...(isCommandEntry(whole) ? { localCommand: true } : {}) } : undefined;
 }
 
 const BASH = /<bash-input>([\s\S]*?)<\/bash-input>|<bash-stdout>([\s\S]*?)<\/bash-stdout>\s*(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?|<bash-stderr>([\s\S]*?)<\/bash-stderr>/g;

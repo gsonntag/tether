@@ -122,6 +122,7 @@ test("the status line's mode and background shells; nothing from the transcript"
   expect(claudeScreen(screen("⏵⏵ auto mode on (shift+tab to cycle)")).mode).toBe("auto");
   expect(claudeScreen(screen("⏵⏵ bypass permissions on")).mode).toBe("bypassPermissions");
   expect(claudeScreen(screen("⏸ manual mode on · ← 2 agents")).mode).toBe("default");
+  expect(claudeScreen(screen("⏵⏵ don't ask on (shift+tab to cycle) · ← 2 agents")).mode).toBe("dontAsk");
   expect(claudeScreen(screen("? for shortcuts", "⏵⏵ accept edits on")).mode).toBeUndefined();
   expect(claudeScreen(screen("⏸ manual mode on · 1 shell · ← 2 agents")).background).toBe(true);
   expect(claudeScreen(screen("⏸ manual mode on · ← 2 agents")).background).toBeUndefined();

@@ -55,9 +55,11 @@ test("a store with only local commands never started; one with a prompt or an an
   const { onlyLocalCommands } = await import("./discovery");
   const user = (text: string) => ({ id: text, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
   expect(onlyLocalCommands([])).toBe(true);
-  expect(onlyLocalCommands([user("/clear"), { id: "n", role: "notice", ts: 2, parts: [{ type: "text", text: "Kept model" }] }])).toBe(true);
-  expect(onlyLocalCommands([user("/model"), user("Say hi.")])).toBe(false);
-  expect(onlyLocalCommands([user("/review"), { id: "a", role: "assistant", ts: 2, parts: [{ type: "text", text: "ok" }] }])).toBe(false);
+  const cmd = (text: string) => ({ ...user(text), localCommand: true });
+  expect(onlyLocalCommands([cmd("/clear"), { id: "n", role: "notice", ts: 2, parts: [{ type: "text", text: "Kept model" }] }])).toBe(true);
+  expect(onlyLocalCommands([cmd("/model"), user("Say hi.")])).toBe(false);
+  expect(onlyLocalCommands([user("/tmp/notes.txt is where I keep things.")])).toBe(false);
+  expect(onlyLocalCommands([cmd("/review"), { id: "a", role: "assistant", ts: 2, parts: [{ type: "text", text: "ok" }] }])).toBe(false);
 });
 
 test("the store's permission-mode entries: how many, and the last", async () => {

@@ -550,6 +550,12 @@
   max-height: 40vh;
   outline: none;
 }
+.t-input::placeholder {
+  /* One line, whatever the width: a second one would be cut off by the one-row box. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .t-input:focus {
   border-color: var(--color-border-emphasized);
 }

@@ -105,7 +105,7 @@ export class TerminalControl {
   private modeShown = new Set<string>();
   /** how each harness reads its TUI's screen */
   private readers = new Map<string, TerminalLaunch["screen"]>();
-  /** the mode entries a session's store had when its TUI started: only later ones are this TUI's */
+  /** the mode entries a session's store had when its TUI started: only later ones are this TUI's (saved too: prefs `tui`) */
   private modeEntries = new Map<string, number>();
   private poll?: ReturnType<typeof setInterval>;
   private polling = false;
@@ -358,6 +358,7 @@ export class TerminalControl {
       const error = `Couldn't open the terminal: ${e?.message ?? e}`;
       // Handed off already: it stays stored rather than pretending to be live.
       if (handoff && !s.live && s.state.mode === "live") this.o.live.setMode(s, "stored", { status: "idle", error });
+      this.o.core.o.prefs.set(s.id, { tui: undefined });
       throw new Error(error);
     }
     this.log(`${s.id}: started its TUI in tmux (${name})`);
@@ -384,15 +385,19 @@ export class TerminalControl {
   }
 
   private launch(s: Session, extra: Pick<TerminalOpts, "fresh" | "report"> = {}) {
-    const st = s.state;
-    return this.o.core.adapter(s.summary.harness).terminalCommand(s.summary.nativeId, s.summary.projectPath, { model: st.model, effort: st.effort, permissionMode: st.permissionMode, ...extra });
+    return this.o.core.adapter(s.summary.harness).terminalCommand(s.summary.nativeId, s.summary.projectPath, { ...this.o.live.chosen(s), ...extra });
   }
 
-  /** From here on the store's mode entries are this TUI's. */
+  /**
+   * From here on the store's mode entries are this TUI's. Saved at once, with the mark that it runs:
+   * a TUI that quits while no runner is there leaves nothing else behind (settleMissed).
+   */
   private async markEntries(s: Session) {
     const seen = await this.o.core.adapter(s.summary.harness).storedMode?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined);
     this.modeShown.delete(s.id);
     if (seen) this.modeEntries.set(s.id, seen.entries);
+    this.o.core.o.prefs.set(s.id, { tui: { ...(seen ? { entries: seen.entries } : {}) } });
+    this.o.core.o.prefs.flush();
   }
 
   private async stored(s: Session) {
@@ -402,6 +407,18 @@ export class TerminalControl {
   /** Its store holds no conversation, only local commands (a TUI nobody used, then /exit or /clear). */
   private async neverStarted(s: Session) {
     return !!(await this.o.core.adapter(s.summary.harness).neverStarted?.(s.summary.nativeId, s.summary.projectPath).catch(() => false));
+  }
+
+  /**
+   * A new session's TUI is gone. Fresh only while its store doesn't have it (a prompt typed there
+   * needn't have reached it): once it does, even with only local commands in it, the harness
+   * refuses its id for a new session and anything sent resumes. True: nothing was ever typed.
+   */
+  private async settleFresh(s: Session) {
+    if (!s.fresh) return false;
+    if (!(await this.stored(s))) return true;
+    s.fresh = false;
+    return this.neverStarted(s);
   }
 
   /** A session's TUI is gone from tmux (quit, exited, killed); `back`: Back to Tether quit it. */
@@ -419,18 +436,14 @@ export class TerminalControl {
       return;
     }
     await this.carryMode(s);
-    // Fresh until its store has it (a prompt typed there needn't have reached it): Back to Tether
-    // then starts it under its id, and anything else resumes.
-    if (s.fresh && (await this.stored(s))) {
-      if (back) s.fresh = false;
-      else s.fresh = await this.neverStarted(s);
-    }
+    this.o.core.o.prefs.set(s.id, { tui: undefined });
+    const unused = await this.settleFresh(s);
     if (back) return this.backLive(s);
     // It exited by itself (/exit): stored (SPEC §8).
     await this.o.core.syncFromStore(s);
     this.o.live.setMode(s, "stored", { status: "idle", terminal: undefined });
-    if (s.fresh) {
-      // Messages wait in its queue: it stays, to start when you send.
+    if (unused) {
+      // Messages wait in its queue: it stays, to go on when you send.
       if (s.state.queue.length) return;
       // Nothing was ever typed: nothing of it is in any store, or only local commands (/exit).
       this.o.core.book.remove([s.id]);
@@ -445,14 +458,12 @@ export class TerminalControl {
   private async backLive(s: Session) {
     await this.o.core.syncFromStore(s);
     await this.carryModel(s);
-    s.setState({ terminal: undefined, status: "idle" });
-    try {
-      await this.o.live.resumeLive(s);
-    } catch {
-      // startDriver already made it stored with the error in its state and transcript, and what
-      // waited for the terminal is paused, with Resume.
-      if (s.state.mode === "terminal") this.o.live.setMode(s, "stored", { status: "idle" });
-    }
+    // Still going back: every view says so, with no buttons, until the mode changes (setMode).
+    s.setState({ terminal: { kind: "handoff", returning: true }, status: "idle" });
+    // On failure startDriver has made it stored with the error in its state and transcript, and what
+    // waited for the terminal is paused, with Resume.
+    await this.o.live.resumeLive(s).catch(() => {});
+    if (s.state.mode === "terminal") this.o.live.setMode(s, s.driver ? "live" : "stored", { status: "idle" });
   }
 
   /** What the TUI shows now (status line or a hook): the mode as last seen, and kept. */
@@ -484,6 +495,30 @@ export class TerminalControl {
     if (mode) return this.setMode(s, mode);
     this.log(`${s.id}: couldn't tell the mode the TUI ended in`);
     this.setMode(s, tighter(s.state.permissionMode ?? "default", "default"));
+  }
+
+  /**
+   * A TUI that was gone when the runner came back: it may have quit tighter than last seen (Shift+Tab
+   * to manual, /exit), and nothing but the store says so. Never looser than the store's newest
+   * entry; with none from that TUI the mode can't be established: at most `default` too.
+   */
+  private async settleMissed(id: string, tui: { entries?: number }) {
+    const prefs = this.o.core.o.prefs;
+    const s = await this.o.core.open(id).catch(() => undefined);
+    if (!s) {
+      // Not in any store: nothing ran, but it may be started later, under what is saved here.
+      const m = prefs.get(id).permissionMode;
+      prefs.set(id, { tui: undefined, ...(m ? { permissionMode: tighter(m, "default") } : {}) });
+      return;
+    }
+    const stored = await this.o.core.adapter(s.summary.harness).storedMode?.(s.summary.nativeId, s.summary.projectPath).catch(() => undefined);
+    const ours = !!stored?.mode && tui.entries !== undefined && stored.entries > tui.entries;
+    let mode = tighter(s.state.permissionMode ?? "default", stored?.mode ?? "default");
+    if (!ours) mode = tighter(mode, "default");
+    this.setMode(s, mode);
+    // Pinned even when it's what was shown: a resume mustn't go by what the store last kept.
+    prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: mode, tui: undefined });
+    this.log(`${s.id}: its TUI went while the runner was away; going on in ${mode}${ours ? "" : " (it left no mode)"}`);
   }
 
   /**
@@ -617,6 +652,9 @@ export class TerminalControl {
     }
     core.pin(n);
     try {
+      // What waits there waits for Back to Tether, as in any handoff (held first: the driver's end
+      // would send it).
+      this.o.live.queue.hold(n, "terminal");
       if (n.driver || n.starting) await this.o.live.release(n);
       // The TUI goes on with the model and mode it runs in, on any session it moves to.
       const { model, effort, permissionMode, modelResolved } = old.state;
@@ -624,6 +662,7 @@ export class TerminalControl {
       await this.markEntries(n);
       if (this.modeShown.delete(old.id)) this.modeShown.add(n.id);
       this.modeEntries.delete(old.id);
+      core.o.prefs.set(old.id, { tui: undefined });
       core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
       this.tuis.delete(old.id);
       this.promptSince.delete(old.id);
@@ -634,6 +673,8 @@ export class TerminalControl {
       await this.o.tmux.tag(name, "launch", launch).catch(() => {});
       await this.o.tmux.tag(name, "session", newId).catch(() => {});
       this.adopt(n, name);
+      // Queued meanwhile, before the mode said terminal.
+      this.o.live.queue.hold(n, "terminal");
     } finally {
       core.unpin(n);
     }
@@ -642,9 +683,7 @@ export class TerminalControl {
     old.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "info", ts: core.now(), parts: [{ type: "text", text: `The terminal continued in another session${why ? ` ${why}` : ""}.` }], link: { sessionId: newId, label: "Open it" } } });
     this.o.live.setMode(old, "stored", { status: "idle", terminal: undefined, continuedIn: newId });
     // A TUI nobody used, then /clear: the old session never started (views follow continuedIn).
-    // Fresh until its store has it: once it does, a message to it resumes (--session-id would refuse).
-    if (old.fresh && (await this.stored(old))) old.fresh = await this.neverStarted(old);
-    if (old.fresh && !old.state.queue.length) {
+    if ((await this.settleFresh(old)) && !old.state.queue.length) {
       core.book.remove([old.id]);
       core.sessions.delete(old.id);
       return;
@@ -676,7 +715,10 @@ export class TerminalControl {
       }
       if (t.launchedFor && t.launchedFor !== s.id) this.moved.set(t.launchedFor, s.id);
       this.adopt(s, t.name);
-      if (s.capabilities.terminal === "handoff") await this.markEntries(s);
+      // The baseline from its start stands: what it wrote since is its own.
+      const saved = this.o.core.o.prefs.get(s.id).tui?.entries;
+      if (saved !== undefined) this.modeEntries.set(s.id, saved);
+      else if (s.capabilities.terminal === "handoff") await this.markEntries(s);
       this.log(`readopted the terminal of ${s.id}`);
       // No status is inferred; a question on its screen is Needs you (no push: it was announced).
       if (s.capabilities.terminal === "handoff" && (await this.readScreen(s, t.name))?.state === "asking") {
@@ -684,6 +726,8 @@ export class TerminalControl {
         if (term) this.needsYou(s, term, ASKING_THERE, false);
       }
     }
+    for (const [id, tui] of this.o.core.o.prefs.inTerminal()) if (!this.tuis.has(id)) await this.settleMissed(id, tui);
+    this.o.core.o.prefs.flush();
   }
 
   private startPoll() {

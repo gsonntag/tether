@@ -796,10 +796,10 @@ const steps = {
     const tuiText = await tuiSheet.locator(".t-term-copytext").innerText();
     if (!/Copy text · Claude Code/.test(await tuiSheet.innerText()) || !/Claude Code v\d|P5B-42-OK/.test(tuiText)) fail(`the TUI's copy sheet: ${tuiText.slice(0, 200)}`);
     await button(tuiSheet, "Done").click();
-    // J3: only now the banner; its button and the placeholder name Claude.
+    // J3: only now the banner; its button names Claude.
     await button(p.locator(".t-term-panel"), "Close terminal panel").click();
     await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code", exact: true }).waitFor();
-    if (!/Claude gets this when you go Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't name Claude");
+    if (!/Waits for Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't say it waits for Back to Tether");
     // ❯_ again: a shell, still handed off; the agent's entry says driving.
     await p.locator(".t-chip-term").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
@@ -848,7 +848,7 @@ const steps = {
     if (!/waits in the queue, paused after Stop/.test(await p.locator(".t-shell-hint").innerText())) fail("the hint doesn't say the queue is paused");
     await composer(p).fill("");
     await p.locator(".t-queued", { hasText: "AFTER-ASK" }).getByRole("button", { name: "Cancel this message", exact: true }).click();
-    ok("J3: only after clicking Claude Code: the entry reads Claude Code · driving, the banner (Open Claude Code) and the placeholder name Claude; ❯_ again opens a shell without handing back");
+    ok("J3: only after clicking Claude Code: the entry reads Claude Code · driving, the banner names Claude (Open Claude Code); ❯_ again opens a shell without handing back");
     ok("from a shell, the Claude Code entry (titled: drives Claude from Claude Code's own terminal UI) handed off (entry: Claude Code · driving); back on the shell it stayed handed off (entry still: driving); Back to Tether returned it; the hint said \"when you go Back to Tether\" meanwhile; after Back to Tether from the shell tab, the busy agent's tab asked again (Stop this turn … 1 queued message will wait) and Keep working kept it live; with the queue held the hint says it waits there");
     await p.close();
   },

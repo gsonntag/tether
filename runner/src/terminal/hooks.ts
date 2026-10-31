@@ -61,7 +61,7 @@ export interface HookReport {
  * Claude's hooks Tether listens to (SPEC §8). Tether doesn't follow the TUI's turns: these say
  * "Needs you" (PermissionRequest, the moment a permission prompt or a question shows, seconds before
  * Notification; Elicitation), follow /clear (SessionStart), and carry the TUI's mode as last seen
- * (every hook). Verified on 2.1.312.
+ * (every hook). Verified on 2.1.314.
  */
 export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Elicitation", "Notification", "PostToolUse", "Stop", "StopFailure", "SessionEnd"] as const;
 

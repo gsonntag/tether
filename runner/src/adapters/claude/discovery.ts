@@ -52,7 +52,8 @@ export async function claudeNeverStarted(nativeId: string, projectPath: string):
   return !!msgs && onlyLocalCommands(msgs);
 }
 
-export const onlyLocalCommands = (msgs: Msg[]) => msgs.every((m) => m.role === "notice" || (m.role === "user" && m.parts.every((p) => p.type === "text" && p.text.trimStart().startsWith("/"))));
+/** A prompt may start with "/" too (/tmp/notes.txt): only an entry stored as a command is one. */
+export const onlyLocalCommands = (msgs: Msg[]) => msgs.every((m) => m.role === "notice" || (m.role === "user" && m.localCommand));
 
 /** Claude's `permission-mode` entries in a session's store: how many, and the last one's mode. */
 export async function claudeStoredMode(nativeId: string, projectPath: string): Promise<{ mode?: string; entries: number }> {

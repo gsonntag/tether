@@ -47,6 +47,8 @@ export interface SessionPrefs {
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */
   queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  /** its TUI was started and hasn't been seen gone; `entries`: the mode entries its store had then (only later ones are that TUI's) */
+  tui?: { entries?: number };
   /** a turn ended and nobody has looked since (Home's inbox) */
   unread?: "finished" | "failed";
   /** the failed turn's error */

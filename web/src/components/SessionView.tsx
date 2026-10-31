@@ -288,7 +288,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               (state.terminal?.returning ? "Going back to Tether…" : undefined)
             }
             // While the TUI drives, a message waits in the queue for Back to Tether (SPEC §8).
-            placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? `Joins the paused queue: it goes when you resume it, after Back to Tether` : `${agent} gets this when you go Back to Tether`) : undefined}
+            placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? "Joins the paused queue" : "Waits for Back to Tether") : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
