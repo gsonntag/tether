@@ -159,6 +159,7 @@ export class FakeAdapter implements Adapter {
     this.watchers.set(nativeId, onChange);
     return () => this.watchers.delete(nativeId);
   }
+  unset?: Adapter["unset"];
   /** a session's own settings (a harness that keeps them per session) */
   sessionDefaults?: StartOpts;
   defaultsAsked: { projectPath: string; nativeId?: string }[] = [];

@@ -20,7 +20,7 @@ import { ReadState } from "./inbox";
 import { MessageQueue } from "./queue";
 import { RequestDesk } from "./requests";
 import { Session } from "./session";
-import type { SessionCore } from "./sessions";
+import { chosenOf, type SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
 
 /** Idle this long, a live session's process closes. */
@@ -419,6 +419,9 @@ export class LiveControl {
   }
 
   async setModel(id: string, model: string) {
+    const parsed = parseSessionId(id);
+    // From a page that still lists it.
+    if (model === "default" && parsed) model = this.core.adapter(parsed.harness).unset?.model ?? model;
     await this.setting(id, { model }, (d) => d.setModel(model));
   }
 
@@ -826,17 +829,31 @@ export class LiveControl {
   }
 
   /**
-   * What a harness starts with: only what you set in Tether. The rest is the harness's own (its
-   * config, or the session's settings it keeps itself), never overwritten by what Tether merely showed.
+   * What you set in Tether. The rest is the harness's own (its config, or the session's settings it
+   * keeps itself), never overwritten by what Tether merely showed.
    */
   chosen(s: Session): StartOpts {
-    const p = this.core.o.prefs.get(s.id);
-    return { ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) };
+    return chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id));
+  }
+
+  /**
+   * What a harness starts with, from Tether or in its TUI: `chosen`, and for one Tether always tells
+   * its model and effort (Adapter.unset) what the session's store says now, else `unset`. The session
+   * shows it; a setting changed while this looked stands. The permission mode isn't filled in.
+   */
+  async startOpts(s: Session): Promise<StartOpts> {
+    const a = this.core.adapter(s.summary.harness);
+    if (!a.unset) return this.chosen(s);
+    const known = await a.defaults(s.summary.projectPath, s.summary.nativeId).catch(() => ({}) as StartOpts);
+    const opts = this.chosen(s);
+    const filled = { model: known.model ?? a.unset.model, effort: known.effort ?? a.unset.effort };
+    s.setState({ ...(opts.model ? {} : { model: filled.model }), ...(opts.effort ? {} : { effort: filled.effort }) });
+    return { ...filled, ...opts };
   }
 
   private async startDriver(s: Session): Promise<Driver> {
     const a = this.core.adapter(s.summary.harness);
-    const opts = this.chosen(s);
+    const opts = await this.startOpts(s);
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;

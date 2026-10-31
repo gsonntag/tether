@@ -8,6 +8,7 @@
 // entry per content block, all with that id), a user message its entry's uuid.
 
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { StartOpts } from "../../core/adapter";
 import { readStore, type Entry } from "./jsonl";
 import type { Msg, ToolPart } from "../../../../shared/transcript";
 import { assistantPart, blockText, cleanUserText, commandOutput, joinBash, messageId, notice, toolResults, userMessage, type EntryFlags } from "./content";
@@ -113,11 +114,23 @@ export function linkSubagents(msgs: Msg[], session: string, children: { agentId:
       if (p.type === "tool" && byTool.has(p.id)) m.parts[i] = { ...p, childSessionId: `claude:${session}/${byTool.get(p.id)}` };
 }
 
+/** The file of a stored session, or a subagent's (`<session>/<agent>`). */
+function storeFile(nativeId: string, projectPath: string, children = storedSubagents(splitNative(nativeId).session, projectPath)) {
+  const { session, agent } = splitNative(nativeId);
+  return agent ? children.find((c) => c.agentId === agent)?.file : sessionFile(session, projectPath);
+}
+
+/** What the session's store says it last ran with: nothing it doesn't know. */
+export async function storedSettings(nativeId: string, projectPath: string): Promise<StartOpts> {
+  const file = storeFile(nativeId, projectPath);
+  return file ? (await readStore(file)).settings : {};
+}
+
 /** A stored session's transcript, or a subagent's (`<session>/<agent>`). */
 export async function readHistory(nativeId: string, projectPath: string): Promise<Msg[]> {
-  const { session, agent } = splitNative(nativeId);
+  const { session } = splitNative(nativeId);
   const children = storedSubagents(session, projectPath);
-  const file = agent ? children.find((c) => c.agentId === agent)?.file : sessionFile(session, projectPath);
+  const file = storeFile(nativeId, projectPath, children);
   const msgs = file ? chainMessages((await readStore(file)).chain()) : [];
   linkSubagents(msgs, session, children);
   return msgs;

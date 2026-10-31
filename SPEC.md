@@ -319,6 +319,19 @@ relay directly.
   `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
   `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
 
+### Claude's model and effort
+
+There's no "Default" for a Claude session: Tether always tells Claude Code its model and effort, so
+what's shown is what runs. Each is settled on its own, at every start and TUI launch: what you set in
+Tether, else what the session's store shows (the last real answer's `model` and `effort`), else
+`CLAUDE_UNSET` (Opus, medium: `shared/transcript.ts`, the only place they're spelled out). Claude's
+settings files are defaults, not a session's settings, and count for neither; the permission mode is
+not part of this. A filled-in value isn't saved as a choice, so it never outranks the store later.
+What Claude Code does with it is its own: a model it can't use fails through its usual error, with
+nothing substituted, and a model without effort runs without any (it reports that, and the chip goes).
+A model or effort picked in the TUI goes on with the session once an answer shows it. Codex keeps its
+own settings and its own "Default".
+
 ## 6a. Subagents: precise turns and steering
 
 You can open any subagent and see its exact turns (every message, thought, tool call and result, in

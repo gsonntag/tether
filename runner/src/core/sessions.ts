@@ -249,7 +249,7 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...pick(defaults), ...pick(prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -282,10 +282,10 @@ export class SessionCore {
     const a = this.adapter(harness);
     const id = sessionId(harness, nativeId);
     const summary: SessionSummary = { id, harness, nativeId, projectPath, title: "New session", mode: "live", status: "idle", updatedAt: this.now() };
-    const s = this.add(new Session(summary, { ...emptyState("live"), ...pick(opts) }, a.capabilities, this.out));
+    const s = this.add(new Session(summary, { ...emptyState("live"), ...a.unset, ...chosenOf(a, opts) }, a.capabilities, this.out));
     s.transcript = new Transcript();
     s.fresh = true;
-    this.o.prefs.set(id, { projectPath, blank: true, ...pick(opts) });
+    this.o.prefs.set(id, { projectPath, blank: true, ...chosenOf(a, opts) });
     return s;
   }
 
@@ -529,5 +529,12 @@ function pick(o: StartOpts): StartOpts {
   if (o.model) out.model = o.model;
   if (o.effort) out.effort = o.effort;
   if (o.permissionMode) out.permissionMode = o.permissionMode;
+  return out;
+}
+
+/** The settings set in Tether. A harness that's always told its model has no "default" one (picked before it went). */
+export function chosenOf(a: Adapter, o: StartOpts): StartOpts {
+  const out = pick(o);
+  if (a.unset && out.model === "default") delete out.model;
   return out;
 }

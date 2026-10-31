@@ -10,7 +10,7 @@ import { TERMINAL_BUSY, type RunnerToServer } from "../../../shared/protocol";
 import { applySummary, emptySummary } from "../../../shared/summary";
 import type { HarnessCapabilities, LiveState } from "../../../shared/transcript";
 import { saveConfig } from "../config";
-import type { QuitStep, ScreenRead, TerminalOpts } from "../core/adapter";
+import type { QuitStep, ScreenRead, StartOpts, TerminalOpts } from "../core/adapter";
 import { RequestBroker } from "../core/broker";
 import { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
@@ -1100,5 +1100,144 @@ describe("keys reach the program from copy mode", () => {
     term.input("a1", keys("\x1b[<64;1;1M\x1b[<64;1;1M"), { swipe: true });
     term.input("a1", keys("\x1b[<65;1;1M"), { swipe: true });
     expect(pty.written).toEqual(["\x1b[59991~\x1b[59991~", "\x1b[59992~"]);
+  });
+});
+
+describe("a harness Tether always tells its model and effort (Adapter.unset)", () => {
+  const OPUS = { model: "claude-opus-5-5", effort: "medium" };
+  const claudeLike = (known: StartOpts = {}) => {
+    const a = new TermAdapter();
+    a.unset = OPUS;
+    a.sessionDefaults = known;
+    return setup({ adapter: a });
+  };
+  const said = (a: { drivers: { opts: StartOpts }[] }) => a.drivers.at(-1)!.opts;
+
+  test("a new session with nothing chosen shows and runs Opus at medium, saved as nothing chosen", async () => {
+    const { adapter, core, live } = claudeLike();
+    const { sessionId: id } = await live.newSession({ harness: "claude", projectPath: tmpdir(), permissionMode: "default" });
+    expect(state(core, id)).toMatchObject(OPUS);
+    expect(said(adapter)).toMatchObject(OPUS);
+    expect(core.o.prefs.get(id).model).toBeUndefined();
+    expect(core.o.prefs.get(id).effort).toBeUndefined();
+  });
+
+  test("each is on its own: a chosen model keeps it and gets medium; a chosen effort keeps it and gets Opus", async () => {
+    const { adapter, live } = claudeLike();
+    await live.newSession({ harness: "claude", projectPath: tmpdir(), model: "haiku" });
+    expect(said(adapter)).toMatchObject({ model: "haiku", effort: "medium" });
+    await live.newSession({ harness: "claude", projectPath: tmpdir(), effort: "low" });
+    expect(said(adapter)).toMatchObject({ model: OPUS.model, effort: "low" });
+  });
+
+  test("a new session started in the terminal gets them too", async () => {
+    const { adapter, core, live } = claudeLike();
+    const { sessionId: id } = await live.newSession({ harness: "claude", projectPath: mkdtempSync(join(tmpdir(), "tether-proj-")), terminal: true });
+    expect(adapter.launches[0]!.opts).toMatchObject({ fresh: true, ...OPUS });
+    expect(state(core, id)).toMatchObject(OPUS);
+  });
+
+  test("a rebuilt blank session comes back on them", async () => {
+    const { adapter, core, live } = claudeLike();
+    const { sessionId: id } = await live.newSession({ harness: "claude", projectPath: tmpdir() });
+    await live.release(core.sessions.get(id)!);
+    core.dropFresh(core.sessions.get(id)!);
+    expect((await core.open(id)).state).toMatchObject(OPUS);
+    await live.send(id, "hi");
+    expect(said(adapter)).toMatchObject(OPUS);
+  });
+
+  test("a stored session the store says nothing about shows them, and its resume and TUI are told", async () => {
+    const { adapter, core, term } = claudeLike();
+    adapter.addStored("s1", []);
+    expect((await core.open("claude:s1")).state).toMatchObject(OPUS);
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    expect(adapter.launches[0]!.opts).toMatchObject(OPUS);
+    await term.end("claude:s1");
+    expect(said(adapter)).toMatchObject(OPUS);
+  });
+
+  test("what the store knows stays: a stored Haiku session stays Haiku, at the store's effort, in Tether and in its TUI", async () => {
+    const { adapter, core, term } = claudeLike({ model: "claude-haiku-5-5", effort: "low" });
+    adapter.addStored("s1", []);
+    expect((await core.open("claude:s1")).state).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    expect(adapter.launches[0]!.opts).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
+    await term.end("claude:s1");
+    expect(said(adapter)).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
+  });
+
+  test("a known model with an unknown effort keeps the model and gets medium", async () => {
+    const { adapter, core, live } = claudeLike({ model: "claude-haiku-5-5" });
+    adapter.addStored("s1", []);
+    expect((await core.open("claude:s1")).state).toMatchObject({ model: "claude-haiku-5-5", effort: "medium" });
+    await live.send("claude:s1", "hi");
+    expect(said(adapter)).toMatchObject({ model: "claude-haiku-5-5", effort: "medium" });
+  });
+
+  test("a resume goes by the store as it is now, not as it was when the session opened", async () => {
+    const { adapter, core, live } = claudeLike({ model: "claude-haiku-5-5" });
+    adapter.addStored("s1", []);
+    await core.open("claude:s1");
+    adapter.sessionDefaults = { model: "claude-sonnet-5-5", effort: "high" };
+    await live.send("claude:s1", "hi");
+    expect(said(adapter)).toMatchObject({ model: "claude-sonnet-5-5", effort: "high" });
+    expect(state(core, "claude:s1")).toMatchObject({ model: "claude-sonnet-5-5", effort: "high" });
+  });
+
+  test("what you set in Tether beats the store, and a mode is never filled in", async () => {
+    const { adapter, core, live } = claudeLike({ model: "claude-haiku-5-5", effort: "low", permissionMode: "acceptEdits" });
+    adapter.addStored("s1", []);
+    await core.open("claude:s1");
+    await live.setModel("claude:s1", "sonnet");
+    await live.setEffort("claude:s1", "high");
+    await live.send("claude:s1", "hi");
+    expect(said(adapter).model).toBe("sonnet");
+    expect(said(adapter).effort).toBe("high");
+    expect(said(adapter).permissionMode).toBeUndefined();
+  });
+
+  test("a Default picked before it went (a saved one, or from an old page) is nothing chosen", async () => {
+    const { adapter, core, live } = claudeLike();
+    adapter.addStored("s1", []);
+    core.o.prefs.set("claude:s1", { projectPath: tmpdir(), model: "default" });
+    expect((await core.open("claude:s1")).state.model).toBe(OPUS.model);
+    await live.send("claude:s1", "hi");
+    expect(said(adapter).model).toBe(OPUS.model);
+    await live.setModel("claude:s1", "default");
+    expect(adapter.drivers.at(-1)!.settings.model).toBe(OPUS.model);
+    expect(state(core, "claude:s1").model).toBe(OPUS.model);
+  });
+
+  test("a model and effort picked in the TUI go on after it exits, over what was set in Tether", async () => {
+    const { adapter, core, term } = claudeLike();
+    adapter.addStored("s1", []);
+    core.o.prefs.set("claude:s1", { projectPath: tmpdir(), model: "haiku", effort: "low" });
+    await core.open("claude:s1");
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    adapter.write("s1", [{ id: "a", role: "assistant", ts: 2, model: "claude-sonnet-5-5", parts: [{ type: "text", text: "hi" }] }]);
+    adapter.sessionDefaults = { model: "claude-sonnet-5-5", effort: "high" };
+    await term.end("claude:s1");
+    expect(said(adapter)).toMatchObject({ model: "claude-sonnet-5-5", effort: "high" });
+    expect(core.o.prefs.get("claude:s1")).toMatchObject({ model: "claude-sonnet-5-5", effort: "high" });
+  });
+
+  test("no answer in the TUI: what's set in Tether stands, whatever the store's last answer says", async () => {
+    const { adapter, core, term } = claudeLike({ model: "claude-sonnet-5-5", effort: "high" });
+    adapter.addStored("s1", [{ id: "a", role: "assistant", ts: 2, model: "claude-sonnet-5-5", parts: [{ type: "text", text: "hi" }] }]);
+    core.o.prefs.set("claude:s1", { projectPath: tmpdir(), model: "haiku", effort: "low" });
+    await core.open("claude:s1");
+    await core.subscribe("claude:s1");
+    await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
+    await term.end("claude:s1");
+    expect(said(adapter)).toMatchObject({ model: "haiku", effort: "low" });
+  });
+
+  test("a harness without it starts on what was chosen, nothing more", async () => {
+    const { adapter, core, live } = setup();
+    const { sessionId: id } = await live.newSession({ harness: "claude", projectPath: tmpdir() });
+    expect(said(adapter).model).toBeUndefined();
+    expect(said(adapter).effort).toBeUndefined();
+    expect(state(core, id).model).toBeUndefined();
   });
 });

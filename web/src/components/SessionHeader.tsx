@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
-import { contextDetail, contextPercent, effortLabel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
+import { contextDetail, contextPercent, effortLabel, findModel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
 import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -45,7 +45,7 @@ export function SessionHeader({
   useEffect(() => {
     if (state.model === "default" && !state.modelResolved) ensureModels();
   }, [state.model, state.modelResolved, !!models]);
-  const current = models?.models.find((m) => m.id === state.model);
+  const current = findModel(models?.models ?? [], state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
   // Changed during a turn on a harness where that counts from the next turn: the turn's own values.
@@ -81,7 +81,7 @@ export function SessionHeader({
           <>
             <ChoiceMenu
               name="Model"
-              value={state.model}
+              value={current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
               label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
               disabled={locked}

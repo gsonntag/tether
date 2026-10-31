@@ -10,7 +10,8 @@ import { CLAUDE_BIN } from "./bin";
 import { chainContext, forgetBilling, keptBilling, keptPlan } from "./context";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
-import { readHistory } from "./history";
+import { CLAUDE_UNSET } from "../../../../shared/transcript";
+import { readHistory, storedSettings } from "./history";
 import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
@@ -212,14 +213,14 @@ export const claudeAdapter: Adapter = {
     };
   },
 
-  async defaults(projectPath): Promise<StartOpts> {
+  unset: CLAUDE_UNSET,
+
+  // The model and effort the session's store shows it ran with. Claude's own settings files are only
+  // defaults, not what a session has: the mode comes from them, a model or effort doesn't (`unset`).
+  async defaults(projectPath, nativeId): Promise<StartOpts> {
     const r: any = await resolveSettings({ cwd: projectPath, settingSources: ["user", "project", "local"] }).catch(() => undefined);
-    const eff = r?.effective ?? {};
-    return {
-      ...(typeof eff.model === "string" ? { model: eff.model } : {}),
-      ...(typeof eff.effortLevel === "string" ? { effort: eff.effortLevel } : {}),
-      ...(typeof eff.permissions?.defaultMode === "string" ? { permissionMode: eff.permissions.defaultMode } : {}),
-    };
+    const mode = r?.effective?.permissions?.defaultMode;
+    return { ...(nativeId ? await storedSettings(nativeId, projectPath).catch(() => ({})) : {}), ...(typeof mode === "string" ? { permissionMode: mode } : {}) };
   },
 
   start: (projectPath, nativeId, opts, sink) => ClaudeDriver.open(nativeId, projectPath, opts, sink, false),

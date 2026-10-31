@@ -80,6 +80,9 @@ function askingFor(r: HookReport): string {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** The newest answer that says which of the harness's models gave it. */
+const lastAnswer = (msgs: readonly Msg[], own: (model: string) => boolean) => msgs.findLast((m) => m.role === "assistant" && m.model && own(m.model));
+
 /** The model family of a model id or alias ("claude-haiku-5-5" -> "haiku"). */
 const family = (m?: string) => m?.match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase();
 
@@ -108,6 +111,8 @@ export class TerminalControl {
   private readers = new Map<string, TerminalLaunch["screen"]>();
   /** the mode entries a session's store had when its TUI started: only later ones are this TUI's (saved too: prefs `tui`) */
   private modeEntries = new Map<string, number>();
+  /** the last answer in a session when its TUI opened: a newer one was given in the TUI */
+  private lastAnswer = new Map<string, string | undefined>();
   private poll?: ReturnType<typeof setInterval>;
   private polling = false;
   private readonly log: (line: string) => void;
@@ -369,7 +374,8 @@ export class TerminalControl {
     // A new session that has nothing in the store yet starts under its id; anything else resumes.
     if (s.fresh && (await this.stored(s))) s.fresh = false;
     if (handoff) await this.markEntries(s);
-    const launch = this.launch(s, { fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined });
+    this.lastAnswer.set(s.id, lastAnswer(s.transcript?.messages ?? [], this.o.core.adapter(s.summary.harness).ownModel ?? (() => true))?.id);
+    const launch = this.launch(s, { ...(await this.o.live.startOpts(s)), fresh: s.fresh, report: handoff && this.hooks ? { socketPath: this.hooks.socketPath, sessionId: s.id, tui: name } : undefined });
     try {
       await this.o.tmux.create({ name, cwd: s.summary.projectPath, argv: launch.argv, env: launch.env, cols: o.cols, rows: o.rows, tags: { kind: "tui", session: s.id, project: s.summary.projectPath } });
     } catch (e: any) {
@@ -402,8 +408,8 @@ export class TerminalControl {
     this.startPoll();
   }
 
-  private launch(s: Session, extra: Pick<TerminalOpts, "fresh" | "report"> = {}) {
-    return this.o.core.adapter(s.summary.harness).terminalCommand(s.summary.nativeId, s.summary.projectPath, { ...this.o.live.chosen(s), ...extra });
+  private launch(s: Session, opts: TerminalOpts = {}) {
+    return this.o.core.adapter(s.summary.harness).terminalCommand(s.summary.nativeId, s.summary.projectPath, opts);
   }
 
   /**
@@ -459,6 +465,7 @@ export class TerminalControl {
     if (back) return this.backLive(s);
     // It exited by itself (/exit): stored (SPEC §8).
     await this.o.core.syncFromStore(s);
+    await this.carrySettings(s);
     this.o.live.setMode(s, "stored", { status: "idle", terminal: undefined });
     if (unused) {
       // Messages wait in its queue: it stays, to go on when you send.
@@ -474,7 +481,7 @@ export class TerminalControl {
   /** Back to Tether: the driver resumes on the same session (a new one that never got a message starts). */
   private async backLive(s: Session) {
     await this.o.core.syncFromStore(s);
-    await this.carryModel(s);
+    await this.carrySettings(s);
     // Still going back: every view says so, with no buttons, until the mode changes (setMode).
     s.setState({ terminal: { kind: "handoff", returning: true }, status: "idle" });
     // On failure startDriver has made it stored with the error in its state and transcript, and what
@@ -535,27 +542,37 @@ export class TerminalControl {
     this.setMode(s, mode);
     // Pinned even when it's what was shown: a resume mustn't go by what the store last kept.
     prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: mode, tui: undefined });
+    await this.carrySettings(s);
     this.log(`${s.id}: its TUI went while the runner was away; going on in ${mode}${ours ? "" : " (it left no mode)"}`);
   }
 
   /**
-   * A model picked in the TUI (/model) goes on with the session: the last answer's model, when it's
-   * not what Tether had (another family, or another full id).
+   * A model or effort picked in the TUI (/model, /effort) goes on with the session: the last answer's
+   * model, when it's not what Tether had (another family, or another full id), and its effort. With
+   * no answer in the TUI, what's set here stands: the store's last one is older than that.
    */
-  private async carryModel(s: Session) {
-    const msgs = await this.o.core
-      .adapter(s.summary.harness)
-      .readHistory(s.summary.nativeId, s.summary.projectPath)
-      .catch(() => [] as Msg[]);
-    const own = this.o.core.adapter(s.summary.harness).ownModel ?? (() => true);
-    const used = [...msgs].reverse().find((m) => m.role === "assistant" && m.model && own(m.model))?.model;
-    if (!used) return;
+  private async carrySettings(s: Session) {
+    const a = this.o.core.adapter(s.summary.harness);
+    const before = this.lastAnswer.get(s.id);
+    this.lastAnswer.delete(s.id);
+    const msgs = await a.readHistory(s.summary.nativeId, s.summary.projectPath).catch(() => [] as Msg[]);
+    const own = a.ownModel ?? (() => true);
+    const last = lastAnswer(msgs, own);
+    if (!last?.model || last.id === before) return;
+    const used = last.model;
+    const prefs = this.o.core.o.prefs;
     const cur = s.state.modelResolved ?? s.state.model;
     const differs = family(cur) ? family(cur) !== family(used) : !!cur && cur !== "default" && cur !== used;
-    if (!differs || cur === used) return;
-    this.log(`${s.id}: the TUI used ${used}; the session goes on with it`);
-    s.setState({ model: used, modelResolved: undefined });
-    this.o.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, model: used });
+    if (differs && cur !== used) {
+      this.log(`${s.id}: the TUI used ${used}; the session goes on with it`);
+      s.setState({ model: used, modelResolved: undefined });
+      prefs.set(s.id, { projectPath: s.summary.projectPath, model: used });
+    }
+    if (!a.unset) return;
+    const effort = (await a.defaults(s.summary.projectPath, s.summary.nativeId).catch(() => undefined))?.effort;
+    if (!effort || effort === s.state.effort) return;
+    s.setState({ effort });
+    prefs.set(s.id, { projectPath: s.summary.projectPath, effort });
   }
 
   private async runSteps(name: string, steps: QuitStep[]) {

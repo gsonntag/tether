@@ -317,3 +317,16 @@ test("/compact written both before and after its compaction shows once, before t
   ]);
   expect(msgs.map((m) => `${m.role}:${(m.parts[0] as any)?.text}`)).toEqual(["user:hi", "assistant:hello", "user:/compact", "notice:Context compacted.", "user:next"]);
 });
+
+test("the store's settings are the last real answer's, ignoring its own errors and subagents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tether-settings-"));
+  const file = join(dir, "s.jsonl");
+  const line = (uuid: string, model: string, extra = {}) => JSON.stringify({ type: "assistant", uuid, parentUuid: null, message: { id: uuid, role: "assistant", model, content: [] }, ...extra }) + "\n";
+  writeFileSync(file, line("a", "claude-opus-5-5", { effort: "high" }));
+  expect((await readStore(file)).settings).toEqual({ model: "claude-opus-5-5", effort: "high" });
+  appendFileSync(file, line("b", "claude-haiku-5-5", { effort: "low" }) + line("c", "<synthetic>") + line("d", "claude-sonnet-5-5", { isSidechain: true, effort: "max" }));
+  expect((await readStore(file)).settings).toEqual({ model: "claude-haiku-5-5", effort: "low" });
+  // An older Claude Code stored no effort: it isn't known, whatever an earlier entry said.
+  appendFileSync(file, line("e", "claude-haiku-5-5"));
+  expect((await readStore(file)).settings).toEqual({ model: "claude-haiku-5-5" });
+});

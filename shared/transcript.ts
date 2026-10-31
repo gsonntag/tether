@@ -6,6 +6,12 @@ import type { ShellRun } from "./shellRun";
 
 export type HarnessId = "claude" | "codex";
 
+/**
+ * What a Claude session runs with when its model or effort isn't known (each on its own): always
+ * sent to Claude Code, so what's shown is what runs. The only place these are spelled out.
+ */
+export const CLAUDE_UNSET = { model: "claude-opus-5-5", effort: "medium" };
+
 export const HARNESS_LABELS: Record<HarnessId, string> = {
   claude: "Claude Code",
   codex: "Codex",

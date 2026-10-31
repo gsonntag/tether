@@ -119,6 +119,15 @@ export class ClaudeDriver implements Driver {
     }
     await this.noteBilling();
     void this.pump();
+    void this.reportEffort();
+  }
+
+  /** The effort that really goes out: Claude Code drops it on a model without effort (Haiku 4.5), and says so only here. */
+  private async reportEffort() {
+    // Not in the SDK's types yet (0.3.312), and it may go: then the session shows what was sent.
+    const q = this.q as unknown as { getSettings?(): Promise<{ applied?: { effort?: string | null } }> };
+    const applied = (await q.getSettings?.().catch(() => undefined))?.applied;
+    if (applied && "effort" in applied && !this.closed) this.sink.state({ effort: applied.effort ?? undefined });
   }
 
   /** What this start draws from: only Claude Code can say, and only now. */
@@ -218,10 +227,12 @@ export class ClaudeDriver implements Driver {
 
   async setModel(model: string) {
     await this.q.setModel(model === "default" ? undefined : model);
+    void this.reportEffort();
   }
 
   async setEffort(effort: string) {
     await this.q.applyFlagSettings({ effortLevel: effort as any });
+    void this.reportEffort();
   }
 
   async setPermissionMode(mode: string) {

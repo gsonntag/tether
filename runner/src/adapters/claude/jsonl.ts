@@ -30,6 +30,8 @@ export interface Entry {
   /** the id Claude Code gives that prompt's message (its source_uuid) */
   messageId?: string;
   timestamp?: string;
+  /** the effort its turn ran at (an assistant entry; older Claude Codes don't say) */
+  effort?: string;
   /** its place in the file (line count) */
   order: number;
 }
@@ -53,6 +55,7 @@ function entryOf(line: string): Entry | undefined {
     if (e.isMeta) out.isMeta = true;
     if (e.isCompactSummary) out.isCompactSummary = true;
     if (e.origin) out.origin = e.origin;
+    if (typeof e.effort === "string") out.effort = e.effort;
   } else if (e.type === "attachment" && e.attachment?.type === "queued_command" && (typeof e.attachment.prompt === "string" || Array.isArray(e.attachment.prompt))) {
     // A prompt (yours, a task's report, another agent's message) delivered while a turn ran, where
     // it reached Claude: a user turn, as Claude Code shows it.
@@ -83,6 +86,8 @@ export class StoreFile {
   /** entries by parent, in file order */
   private children = new Map<string, Entry[]>();
   private lines = 0;
+  /** the model and effort of the newest real answer on this thread (not an error Claude Code wrote itself) */
+  settings: { model?: string; effort?: string } = {};
 
   /** a subagent's own file (subagents/agent-*.jsonl, or a workflow's subagents/workflows/<run>/agent-*.jsonl): every entry is its thread, all marked sidechain */
   private readonly subagent: boolean;
@@ -130,6 +135,7 @@ export class StoreFile {
     this.messages = [];
     this.children.clear();
     this.lines = 0;
+    this.settings = {};
   }
 
   private add(line: string): boolean {
@@ -144,6 +150,7 @@ export class StoreFile {
     }
     // Conversation entries (a slash command's output too: it can be the last thing written).
     if (((e.type === "user" || e.type === "assistant") && (!e.isSidechain || this.subagent)) || (e.type === "system" && e.subtype === "local_command")) this.messages.push(e);
+    if (e.type === "assistant" && (!e.isSidechain || this.subagent) && typeof e.message?.model === "string" && !e.message.model.startsWith("<")) this.settings = { model: e.message.model, ...(e.effort ? { effort: e.effort } : {}) };
     return true;
   }
 

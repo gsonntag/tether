@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { modelLabel } from "../../../shared/labels";
+import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
 import type { FolderCheck } from "../../../shared/protocol";
-import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
+import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
 import { openSession } from "../route";
@@ -116,6 +116,9 @@ export function NewSessionDialog() {
   // A mode another harness (or an older list) had: this one's first instead.
   const validMode = modes.some((m) => m.id === mode) ? mode : (modes[0]?.id ?? mode);
   const modelOk = !models || models.models.some((m) => m.id === model);
+  // Claude with nothing picked: what the runner starts it on, by that name.
+  const listed = models?.models.length ? models.models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
+  const unpicked = harness === "claude" ? (findModel(listed, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default";
   return (
     <Dialog isOpen={open} onOpenChange={(o) => !o && close()} width={520} purpose="form">
       <DialogHeader title="New session" subtitle={HARNESS_LABELS[harness]} onOpenChange={(o) => !o && close()} />
@@ -187,8 +190,8 @@ export function NewSessionDialog() {
         )}
         <label>
           <span className="t-field-label">Model</span>
-          <select className="t-select" value={modelOk ? model : "default"} onChange={(e) => setModel(e.target.value)}>
-            {(models?.models.length ? models.models : [{ id: "default", label: "Default" }]).map((m) => (
+          <select className="t-select" value={modelOk && model !== "default" ? model : unpicked} onChange={(e) => setModel(e.target.value)}>
+            {listed.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.id === "default" ? modelLabel("default", models?.models) : m.label}
               </option>

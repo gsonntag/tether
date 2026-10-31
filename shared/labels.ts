@@ -17,13 +17,16 @@ export function prettyModel(id: string): string {
   return `${cap(m[1]!.toLowerCase())}${version ? ` ${version}` : ""}${m[3] ? " (1M)" : ""}`;
 }
 
+/** A model of the list, by id or by what an alias resolves to. */
+export const findModel = (models: ModelOption[], id: string | undefined) => models.find((m) => m.id === id) ?? models.find((m) => m.resolved === id && m.id !== "default");
+
 /**
  * A model's label: the harness's own name for it when the list has it (by id or by what an alias
  * resolves to), else its id made readable. "default" reads as what it runs now when known.
  */
 export function modelLabel(id: string | undefined, models: ModelOption[] = [], resolved?: string): string {
   if (!id) return "Default";
-  const hit = models.find((m) => m.id === id) ?? models.find((m) => m.resolved === id && m.id !== "default");
+  const hit = findModel(models, id);
   if (id === "default") {
     const runs = resolved ?? hit?.resolved;
     return runs ? `Default (${modelLabel(runs, models.filter((m) => m.id !== "default"))})` : "Default";

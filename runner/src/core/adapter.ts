@@ -158,6 +158,11 @@ export interface Adapter {
    * for the folder, or (`nativeId`, for a harness that keeps settings per session) that session's.
    */
   defaults(projectPath: string, nativeId?: string): Promise<StartOpts>;
+  /**
+   * For a harness Tether always tells its model and effort (Claude): what it runs with where they're
+   * neither set in Tether nor known from `defaults`, each on its own. Absent: left to the harness.
+   */
+  unset?: { model: string; effort: string };
   // live driving
   start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { contextDetail, contextPercent, planChip, usageChip, effortLabel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -56,4 +56,15 @@ test("the usage chip says what the session draws from; limits only on a plan", (
   expect(usageChip({ kind: "apiKey", label: "Anthropic API key" }, plan).text).toBe("Anthropic API key");
   expect(usageChip({ kind: "provider", label: "Azure" }, plan).text).toBe("Azure");
   expect(usageChip({ kind: "unknown", label: "Unknown" }, plan).text).toBe("Unknown");
+});
+
+test("findModel goes by id, then by what an alias resolves to, never by the default entry", () => {
+  const list = [
+    { id: "default", label: "Default", resolved: "claude-opus-5-5" },
+    { id: "opus", label: "Opus 5.5", resolved: "claude-opus-5-5" },
+  ];
+  expect(findModel(list, "claude-opus-5-5")?.id).toBe("opus");
+  expect(findModel(list, "default")?.id).toBe("default");
+  expect(findModel(list, "haiku")).toBeUndefined();
+  expect(findModel(list, undefined)).toBeUndefined();
 });

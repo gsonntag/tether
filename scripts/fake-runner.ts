@@ -196,7 +196,6 @@ const get = (sid: string) => {
 };
 const MODELS: ModelList = {
   models: [
-    { id: "default", label: "Default (recommended)", resolved: "claude-opus-5-5", efforts: ["low", "medium", "high", "xhigh", "max"] },
     { id: "opus", label: "Opus 5.5", resolved: "claude-opus-5-5", efforts: ["low", "medium", "high", "xhigh", "max"] },
     { id: "sonnet", label: "Sonnet 5.5", resolved: "claude-sonnet-5-5", efforts: ["low", "medium", "high", "xhigh", "max"] },
     { id: "haiku", label: "Haiku 5.5", resolved: "claude-haiku-5-5", efforts: ["low", "medium", "high"] },

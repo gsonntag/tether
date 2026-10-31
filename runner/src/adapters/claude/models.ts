@@ -4,16 +4,15 @@
 
 import { query, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { homedir } from "node:os";
-import { effortLabel, modelLabel, prettyModel } from "../../../../shared/labels";
-import type { Choice, ModelList, ModelOption } from "../../../../shared/transcript";
+import { effortLabel, findModel, prettyModel } from "../../../../shared/labels";
+import { CLAUDE_UNSET, type Choice, type ModelList, type ModelOption } from "../../../../shared/transcript";
 import { CLAUDE_BIN } from "./bin";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 /** Only when Claude Code can't list its models. */
 const FALLBACK: ModelOption[] = [
-  { id: "default", label: "Default" },
-  { id: "opus", label: "Opus" },
+  { id: "opus", label: "Opus", resolved: CLAUDE_UNSET.model },
   { id: "sonnet", label: "Sonnet" },
   { id: "haiku", label: "Haiku" },
 ];
@@ -29,18 +28,22 @@ const AUTO: Choice = { id: "auto", label: "Auto", description: "Claude decides w
 
 /** Claude Code's model list as Tether shows it. */
 export function modelList(infos: ModelInfo[]): ModelList {
-  const plain = infos.filter((m) => m.value !== "default").map((m) => ({ id: m.value, label: m.displayName || prettyModel(m.value), resolved: m.resolvedModel }));
-  const models: ModelOption[] = infos.map((m) => {
-    const resolved = m.resolvedModel && m.resolvedModel !== m.value ? m.resolvedModel : undefined;
-    const label = m.value === "default" ? modelLabel("default", plain, resolved) : m.displayName || prettyModel(m.value);
-    return {
-      id: m.value,
-      label,
-      ...(m.description ? { description: m.description } : {}),
-      ...(resolved ? { resolved } : {}),
-      ...(m.supportsEffort && m.supportedEffortLevels?.length ? { efforts: m.supportedEffortLevels } : {}),
-    };
-  });
+  // Not its "default" entry: nothing in Tether runs on Claude Code's own default (CLAUDE_UNSET).
+  const models: ModelOption[] = infos
+    .filter((m) => m.value !== "default")
+    .map((m) => {
+      const resolved = m.resolvedModel && m.resolvedModel !== m.value ? m.resolvedModel : undefined;
+      return {
+        id: m.value,
+        label: m.displayName || prettyModel(m.value),
+        ...(m.description ? { description: m.description } : {}),
+        ...(resolved ? { resolved } : {}),
+        // Empty: the model has no effort (Haiku 4.5).
+        efforts: (m.supportsEffort && m.supportedEffortLevels) || [],
+      };
+    });
+  // Offered even when Claude Code doesn't list it: it's what runs, or what it refuses.
+  if (!findModel(models, CLAUDE_UNSET.model)) models.unshift({ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) });
   const efforts = EFFORTS.filter((e) => infos.some((m) => m.supportedEffortLevels?.includes(e as any))).map((id) => ({ id, label: effortLabel(id) }));
   const auto = infos.some((m) => m.supportsAutoMode);
   return { models, efforts: efforts.length ? efforts : EFFORTS.map((id) => ({ id, label: effortLabel(id) })), permissionModes: auto ? [...MODES, AUTO] : MODES };
