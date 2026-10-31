@@ -46,9 +46,13 @@ export class ClaudeStream {
   /** running tasks (subagents, shells, …) */
   readonly running = new Set<string>();
   /** tasks background_tasks_changed has listed: only those can end by dropping off its list */
-  private background = new Set<string>();
+  readonly background = new Set<string>();
   /** subagents that ended, by task id: frames still arriving (a stop's interrupt, a last tool result) land here, never reopening them */
   private endedAgents = new Map<string, Thread>();
+  /** the main agent is on a turn: session_state_changed also stays running for background tasks */
+  mainTurn = false;
+  /** onlyBackground, as last reported */
+  private wasFree = false;
   /** the message streaming on the main thread */
   private current?: string;
   /** session_state_changed frames arrive: they, not `result`, end turns */
@@ -71,14 +75,36 @@ export class ClaudeStream {
   }
 
   handle(m: any) {
+    this.dispatch(m);
+    this.freeChanged();
+  }
+
+  /** The main agent starts a turn: a message went to it. */
+  mainStarts() {
+    this.mainTurn = true;
+    this.freeChanged();
+  }
+
+  private freeChanged() {
+    const now = this.onlyBackground();
+    if (now === this.wasFree) return;
+    this.wasFree = now;
+    this.main.sink.mainChanged?.();
+  }
+
+  private dispatch(m: any) {
     if (!m || typeof m !== "object") return;
     const parent: string | null = m.parent_tool_use_id ?? null;
     if (parent && (m.type === "assistant" || m.type === "user")) return this.subagentFrame(m, parent);
     switch (m.type) {
       case "stream_event":
-        if (!parent) this.streamEvent(m.event);
+        if (!parent) {
+          this.mainTurn = true;
+          this.streamEvent(m.event);
+        }
         return;
       case "assistant":
+        this.mainTurn = true;
         return this.assistant(this.main, m);
       case "user":
         return this.user(this.main, m);
@@ -265,11 +291,17 @@ export class ClaudeStream {
     }
     this.lastError = undefined;
     this.resultContext(m);
+    this.mainTurn = false;
     // Without state events (an older CLI), the result ends the turn.
     if (!this.stateEvents) {
       this.turnEnded();
       sink.state({ status: "idle" });
-    }
+    } else if (m.subtype === "success" && !m.is_error && this.onlyBackground()) sink.mainFree?.();
+  }
+
+  /** The main agent is free; the session runs on only for its background tasks. */
+  onlyBackground() {
+    return !this.mainTurn && this.background.size > 0;
   }
 
   /** The result says the window; a compaction or /clear with no message after it asks Claude Code. */

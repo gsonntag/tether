@@ -75,6 +75,10 @@ export interface Sink {
   ended?(): void;
   /** the harness reports the main agent sent this subagent a message (subagents.steer "via-parent") */
   relayed?(nativeId: string): void;
+  /** the main agent's turn ended, and only background work keeps the session running: Driver.onlyBackground */
+  mainFree?(): void;
+  /** Driver.onlyBackground changed */
+  mainChanged?(): void;
 }
 
 export interface Driver {
@@ -96,6 +100,10 @@ export interface Driver {
   setPermissionMode(mode: string): Promise<void>;
   /** stops one running subagent (capabilities.subagents.stop) */
   stopSubagent?(nativeId: string): Promise<void>;
+  /** moves a foreground subagent, started by this tool call, to the background (capabilities.subagents.background) */
+  backgroundSubagent?(toolId: string): Promise<void>;
+  /** the main agent is free and only background work keeps the session running: a message starts its next turn now */
+  onlyBackground?(): boolean;
   /** Ends the commands in background terminals running with more access than the session shows. */
   stopBackground?(): Promise<void>;
   /** a message into a running subagent's turn, as the person (capabilities.subagents.steer "direct") */

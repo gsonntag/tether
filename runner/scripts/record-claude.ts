@@ -1,5 +1,7 @@
 // Records a real Agent SDK stream as a fixture: every SDKMessage as one JSONL line.
-//   bun scripts/record-claude.ts <out.jsonl> <cwd> "<prompt>" [--interrupt-after-ms N] [--model haiku]
+//   bun scripts/record-claude.ts <out.jsonl> <cwd> "<prompt>" [--interrupt-after-ms N] [--background-after-ms N] [--then "<message>"] [--model haiku]
+// --background-after-ms: N ms after a foreground subagent starts, moves it to the background and
+// (--then) sends a message.
 // The adapter's tests replay these (src/adapters/claude/fixtures).
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { writeFileSync } from "node:fs";
@@ -11,6 +13,8 @@ const flag = (n: string) => {
   return i >= 0 ? rest[i + 1] : undefined;
 };
 const interruptAfter = Number(flag("--interrupt-after-ms")) || 0;
+const backgroundAfter = Number(flag("--background-after-ms")) || 0;
+const then = flag("--then");
 const model = flag("--model") ?? "haiku";
 
 let wake: (() => void) | undefined;
@@ -42,8 +46,19 @@ const q = query({
 const lines: string[] = [];
 const t0 = Date.now();
 if (interruptAfter) setTimeout(() => void q.interrupt().then(() => console.error("interrupted")), interruptAfter);
+let backgrounding: ReturnType<typeof setTimeout> | undefined;
 for await (const m of q) {
   lines.push(JSON.stringify(m));
+  const started = m as any;
+  if (backgroundAfter && !backgrounding && started.subtype === "task_started" && started.task_type === "local_agent" && !started.is_backgrounded) {
+    backgrounding = setTimeout(() => {
+      void q.backgroundTasks(started.tool_use_id).then((moved) => {
+        console.error("backgrounded", moved);
+        if (then) items.push({ type: "user", message: { role: "user", content: then }, parent_tool_use_id: null } as SDKUserMessage);
+        wake?.();
+      });
+    }, backgroundAfter);
+  }
   // The turn is over only when Claude Code says idle: background subagents can still be running after a result.
   if ((m as any).type === "system" && (m as any).subtype === "session_state_changed" && (m as any).state === "idle" && lines.some((l) => l.includes('"type":"result"'))) {
     ended = true;

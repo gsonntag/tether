@@ -6,6 +6,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
+import { rpc } from "../connection";
 import { openSession } from "../route";
 import { useStore, viewKey } from "../store";
 import { useRowState, useSessionCtx } from "./sessionContext";
@@ -184,7 +185,15 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   // A background subagent: Claude answers the call at once ("launched") while the subagent runs on,
   // so its own session's status says more than the call's.
   const childStatus = useStore((s) => (part.childSessionId ? s.summaries[runnerId]?.sessions[part.childSessionId]?.status : undefined));
-  const status = childStatus === "running" || childStatus === "waiting" ? "running" : part.status;
+  const childLive = childStatus === "running" || childStatus === "waiting";
+  const status = childLive ? "running" : part.status;
+  // Foreground: the main agent is waiting on this very call, still unanswered.
+  const canBackground = useStore((s) => !!s.views[viewKey(runnerId, sessionId)]?.capabilities?.subagents.background);
+  const background = part.kind === "task" && part.status === "running" && childLive && canBackground && (
+    <button type="button" className="t-link t-tool-background" onClick={() => void rpc(runnerId, "backgroundSubagent", { sessionId, toolId: part.id }).catch(() => {})}>
+      Background
+    </button>
+  );
   return (
     <div className="t-tool" data-kind={part.kind}>
       <button type="button" className="t-tool-head" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
@@ -195,14 +204,16 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
         {waiting ? <span className="t-tool-waiting">Waiting for you</span> : <StatusIcon status={status} />}
       </button>
       {part.kind === "task" && part.childSessionId && !isOpen && (
-        <div className="t-tool-body">
+        <div className="t-tool-body t-tool-row">
           <button type="button" className="t-link" onClick={() => openSession(runnerId, part.childSessionId!)}>
             Open the subagent's transcript <Icon icon={ArrowTopRightOnSquareIcon} size="xsm" />
           </button>
+          {background}
         </div>
       )}
       {isOpen && (
         <div className="t-tool-body">
+          {background}
           <ToolDetails p={part} root={root} />
           {extra}
         </div>

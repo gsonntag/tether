@@ -41,6 +41,8 @@ export interface HarnessCapabilities {
     /** a running subagent can be stopped on its own */
     stop: boolean;
     steer: "direct" | "via-parent" | false;
+    /** a foreground subagent, which the main agent is waiting for, can move to the background */
+    background?: boolean;
   };
   /**
    * The harness keeps sessions running itself, outside the runner (Codex's daemon): a turn running
@@ -314,6 +316,8 @@ export interface LiveState {
     /** a subagent's: its session (Stop stops just it) */
     subagentSessionId?: string;
   };
+  /** the main agent is free and this many of its subagents still run (never saved: it can't outlive them) */
+  backgroundSubagents?: number;
   /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
   error?: string;
 }
@@ -342,6 +346,8 @@ export interface SessionSummary {
   queued?: number;
   /** its queue is paused for you (after Stop, a failure or a restart): Home shows it as needing you */
   queuePaused?: boolean;
+  /** LiveState.backgroundSubagents: the session is still working */
+  backgroundSubagents?: number;
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
   parentSessionId?: string;
   parentToolId?: string;

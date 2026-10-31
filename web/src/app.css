@@ -785,6 +785,16 @@
   font-size: 12px;
   color: var(--t-muted);
 }
+.t-tool-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.t-tool-background {
+  align-self: flex-start;
+  flex: none;
+}
 .t-tool-waiting {
   font-size: 12px;
   color: var(--color-warning);
@@ -1992,7 +2002,7 @@
 @media (max-width: 767px), (pointer: coarse) {
   .t-keybar {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     overflow: visible;
   }
   .t-key {
@@ -2010,7 +2020,7 @@
   .t-term-cover .t-keybar {
     flex: 3 1 0;
     min-width: 0;
-    grid-template-columns: repeat(10, minmax(0, 1fr));
+    grid-template-columns: repeat(11, minmax(0, 1fr));
   }
   .t-term-cover .t-term-line {
     flex: 1 1 0;

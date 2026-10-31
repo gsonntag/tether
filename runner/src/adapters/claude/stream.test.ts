@@ -43,6 +43,8 @@ class TestSink implements Sink {
   ended() {
     this.ended_ = true;
   }
+  mainFree?: () => void;
+  mainChanged?: () => void;
 }
 
 function replay(name: string, nativeId = "S") {
@@ -104,6 +106,51 @@ test("a subagent becomes a child with its own exact turns; the main turn stays r
   expect(stream.running.size).toBe(0);
   // No subagent message leaked into the main transcript.
   expect(sink.t.messages.some((m) => cm.some((c) => c.id === m.id))).toBe(false);
+});
+
+test("a foreground subagent moved to the background: the call returns, the main agent goes on, the subagent's end still arrives", () => {
+  // Real Claude 2.1.314 (Haiku): Agent with run_in_background false, Query.backgroundTasks(its tool
+  // id) while it sleeps in Bash, then a message (scripts/record-claude.ts --background-after-ms).
+  const sink = new TestSink();
+  let free = 0;
+  sink.mainFree = () => free++;
+  const changes: boolean[] = [];
+  sink.mainChanged = () => changes.push(stream.onlyBackground());
+  const stream = new ClaudeStream(sink, { nativeId: "S" });
+  const frames = fixture("background.jsonl");
+  const started = frames.findIndex((m) => m.subtype === "task_started" && m.task_type === "local_agent");
+  const moved = frames.findIndex((m) => m.subtype === "task_updated" && m.patch?.is_backgrounded);
+  const results = frames.flatMap((m, i) => (m.type === "result" ? [i] : []));
+  const agentCall = () => sink.t.messages.flatMap((m) => m.parts).find((p) => p.type === "tool" && p.name === "Agent") as any;
+  expect(frames[started].is_backgrounded).toBe(false);
+
+  frames.slice(0, moved).forEach((m) => stream.handle(m));
+  expect(agentCall().status).toBe("running");
+  expect(stream.background.size).toBe(1);
+  expect(stream.onlyBackground()).toBe(false);
+
+  // The first result: the main agent is free, though the session stays running.
+  frames.slice(moved, results[0]! + 1).forEach((m) => stream.handle(m));
+  expect(agentCall().status).toBe("done");
+  expect(stream.onlyBackground()).toBe(true);
+  expect(free).toBe(1);
+  expect(sink.statuses).toEqual(["running"]);
+  const [[, child]] = [...sink.children];
+  expect(child!.sink.ended_).toBe(false);
+
+  // The rest: the message's reply, then the subagent's end and the main agent's summary.
+  frames.slice(results[0]! + 1).forEach((m) => stream.handle(m));
+  expect(child!.sink.ended_).toBe(true);
+  expect(texts(child!.sink.t.messages.at(-1)!).join(" ")).toContain("4321");
+  expect(sink.t.messages.flatMap(texts).join(" ")).toContain("PONG-MANGO");
+  expect(texts(sink.t.messages.at(-1)!).join(" ")).toContain("4321");
+  expect(sink.statuses).toEqual(["running", "idle"]);
+  expect(stream.onlyBackground()).toBe(false);
+  expect(stream.running.size).toBe(0);
+  expect(free).toBe(2);
+  // Free after the first result, busy again with the message, free, busy for the summary it writes.
+  expect(changes.slice(0, 2)).toEqual([true, false]);
+  expect(changes.at(-1)).toBe(false);
 });
 
 test("a stopped subagent stays stopped: its last frames land in it, its calls keep their results", () => {

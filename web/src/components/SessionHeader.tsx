@@ -9,6 +9,7 @@ import { openSession } from "../route";
 import type { Row } from "../sessionList";
 import { loadModels } from "../store";
 import { ChoiceMenu } from "./ChoiceMenu";
+import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
 import { SubagentChips } from "./SubagentChips";
 
@@ -64,7 +65,7 @@ export function SessionHeader({
         <span className="t-header-title" title={session.title}>
           {session.title || "Untitled"}
         </span>
-        <StatusDot status={state.status} requests={state.requests.length} />
+        <StatusDot status={shownStatus(state)} requests={state.requests.length} />
         {isChild && state.status === "running" && (
           <Button label="Stop" size="sm" variant="secondary" icon={<Icon icon={StopIcon} size="sm" />} onClick={() => void call(rpc(runnerId, "interrupt", { sessionId: session.id }))} />
         )}

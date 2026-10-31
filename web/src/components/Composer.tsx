@@ -59,6 +59,8 @@ export const Composer = forwardRef<
     waiting?: boolean;
     disabled?: string;
     placeholder?: string;
+    /** only background subagents run: the main agent takes a message as usual */
+    mainFree?: boolean;
     /** who works: "Claude is working…" */
     agent?: string;
     /** a message can go into the running turn */
@@ -75,7 +77,7 @@ export const Composer = forwardRef<
     onStop: () => Promise<void>;
     status?: React.ReactNode;
   }
->(function Composer({ draftKey, running, waiting, disabled, placeholder, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
+>(function Composer({ draftKey, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -277,7 +279,7 @@ export const Composer = forwardRef<
   const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? (inTerminal ? "Send when you're back from the terminal (Enter)" : "Send after this turn (Enter)") : "Send (Enter)";
   const hint =
     disabled ??
-    (busyTurn
+    (busyTurn && !mainFree
       ? waiting
         ? "Waiting for your answer above"
         : coarse()

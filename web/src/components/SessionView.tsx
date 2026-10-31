@@ -192,13 +192,14 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       {isChild ? "Nothing here yet." : `No messages yet. What should ${agent} do?`}
     </div>
   );
-  const working = (running || (isChild && waiting)) && (
+  const beside = isChild ? 0 : (state.backgroundSubagents ?? 0);
+  const working = (running || beside > 0 || (isChild && waiting)) && (
     <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
       {waiting ? (
         <>Waiting for you below.</>
       ) : (
         <>
-          <Spinner size="sm" /> {isChild ? "Working…" : `${agent} is working…`}
+          <Spinner size="sm" /> {beside ? `Waiting for ${beside} background subagent${beside === 1 ? "" : "s"}…` : isChild ? "Working…" : `${agent} is working…`}
         </>
       )}
     </div>
@@ -285,6 +286,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             ref={composer}
             draftKey={k}
             running={running}
+            mainFree={beside > 0}
             waiting={waiting && state.status !== "running"}
             canSteer={!!view.capabilities?.canSteer}
             inTerminal={inTerminal}

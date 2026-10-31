@@ -421,6 +421,45 @@ const steps = {
 
 
 
+  async ctrlB() {
+    // Claude's "run in background" key reaches the TUI through xterm and tmux (no prefix there): one
+    // press from the desktop keyboard, one from the phone's key bar. A foreground Bash call, since
+    // the TUI starts subagents in the background anyway. The store says what the key did.
+    const store = `${process.env.HOME}/.claude/projects/${SCRATCH.replace(/[^A-Za-z0-9]/g, "-")}/${sessionId().split(":")[1]}.jsonl`;
+    const moved = () => (existsSync(store) ? readFileSync(store, "utf8").split("manually backgrounded by user").length - 1 : 0);
+    const foreground = async (p, type, word, press) => {
+      const before = moved();
+      await waitScreen(p, sessionId(), /❯/, "the TUI");
+      await type(`Use the Bash tool, not in the background, to run exactly: timeout 25 tail -f /dev/null; echo waited   Then reply with exactly one word: ${word}`);
+      await waitScreen(p, sessionId(), /Do you want to proceed|ctrl\+b/, "the command asks or runs", 60_000);
+      if (/Do you want to proceed/.test((await screen(p, sessionId())).lines.join("\n"))) await p.keyboard.press("Enter");
+      await waitScreen(p, sessionId(), /ctrl\+b/, "the command runs in the foreground", 30_000);
+      await sleep(1500);
+      await press();
+      for (let i = 0; i < 40 && moved() === before; i++) await sleep(250);
+      if (moved() === before) fail(`${word}: the key didn't background the command`);
+      await waitScreen(p, sessionId(), new RegExp(word), "the reply, before the command ends", 20_000);
+    };
+    const p = await page(desktop, session);
+    await openPanel(p);
+    await waitScreen(p, sessionId(), /❯/, "the TUI");
+    await foreground(p, (t) => typeInTerm(p, t), "CTRLB-DESK", () => p.keyboard.press("Control+b"));
+    const ph = await page(phone, session);
+    await ph.locator(".t-term-banner").waitFor({ timeout: 30_000 });
+    await ph.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code" }).tap();
+    await ph.locator(".t-term-panel").waitFor();
+    await ph.locator(".t-keybar").waitFor();
+    await noOverflow(ph, "phone terminal with ^B");
+    await shot(ph, "ctrlb-keybar-phone");
+    await foreground(p, (t) => typeInTerm(p, t), "CTRLB-PHONE", () => ph.getByRole("button", { name: "Control B", exact: true }).tap());
+    // Done before the next step: /exit would ask about background work.
+    await sleep(30_000);
+    await waitScreen(p, sessionId(), /❯/, "the TUI after the commands ended");
+    ok("Ctrl+B from the desktop keyboard and ^B from the phone's key bar each moved a running command to the background in the TUI, with one press");
+    await ph.close();
+    await p.close();
+  },
+
   async clear() {
     // /clear in the TUI: Tether follows the new session; the old one points on to it.
     const old = sessionId();

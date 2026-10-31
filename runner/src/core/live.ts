@@ -168,9 +168,15 @@ export class LiveControl {
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
-      await this.interrupt(id);
+      // Background work isn't in the way: the message starts the main agent's next turn beside it.
+      if (!s.driver?.onlyBackground?.()) await this.interrupt(id);
       const until = this.core.now() + 15_000;
-      while ((s.state.status !== "idle" || s.sending) && this.core.now() < until) await Bun.sleep(100);
+      while ((s.state.status !== "idle" || s.sending) && !s.driver?.onlyBackground?.() && this.core.now() < until) await Bun.sleep(100);
+    }
+    // Only background work runs: the main agent is free, and a steer starts its next turn.
+    if (!s.sending && s.driver?.steer && s.driver.onlyBackground?.()) {
+      if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
+      return s.driver.steer(withAttachments(text, attachments), attachments);
     }
     // Checked and claimed with no await in between, so two sends can't both start a turn.
     if (s.state.status !== "idle" || s.sending) throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
@@ -374,6 +380,13 @@ export class LiveControl {
   async stopBackground(id: string) {
     const s = await this.core.open(id);
     await s.driver?.stopBackground?.();
+  }
+
+  /** Ctrl+B for one subagent (SPEC §6a). `id`: the session whose transcript has the call. */
+  async backgroundSubagent(id: string, toolId: string) {
+    const s = await this.core.open(id);
+    const root = s.summary.parentSessionId ? this.rootOf(s) : s;
+    await root?.driver?.backgroundSubagent?.(toolId);
   }
 
   /** The main session a subagent runs under (nested ones too), which has the driver. */
@@ -966,6 +979,8 @@ export class LiveControl {
         }
       },
       message: (id) => s.transcript?.get(id),
+      mainFree: () => this.queue.later(s.id),
+      mainChanged: () => this.countBackground(s),
       state: (patch) => {
         const before = s.state.status;
         // A harness that keeps the session's settings itself (capabilities.persistent) reports them.
@@ -1011,7 +1026,19 @@ export class LiveControl {
     };
   }
 
+  /** How many subagents still run with the main agent free (SPEC §6a): running ones only, counted afresh. */
+  private countBackground(s: Session) {
+    if (s.summary.parentSessionId) return;
+    const free = s.state.status === "idle" || !!s.driver?.onlyBackground?.();
+    let n = 0;
+    if (free) for (const c of this.core.sessions.values()) if (c !== s && c.childRunning && this.rootOf(c) === s) n++;
+    if (n === (s.state.backgroundSubagents ?? 0)) return;
+    s.setState({ backgroundSubagents: n || undefined });
+    this.core.touch(s);
+  }
+
   private statusChanged(s: Session, before: LiveState["status"]) {
+    this.countBackground(s);
     const bus = this.core.o.bus;
     const now = s.state.status;
     // Kept in runner.json, so a turn cut off by a restart is reported when the session reopens.
@@ -1077,6 +1104,7 @@ export class LiveControl {
     c.rootId = parent.rootId ?? parent.id;
     c.setState({ mode: "live", status: "running" });
     this.core.touch(c, { updatedAt: now });
+    this.countBackground(this.rootOf(c) ?? parent);
     // The parent's tool card links to it.
     const at = parent.transcript?.findTool(start.parentToolId);
     if (at) parent.apply({ type: "tool", msgId: at.msg.id, toolId: start.parentToolId, patch: { childSessionId: id } });
@@ -1103,6 +1131,7 @@ export class LiveControl {
     this.core.scheduleEvict(c);
     // The last subagent of a finished turn: nothing runs on the turn's settings any more.
     const parent = this.rootOf(c);
+    if (parent && parent !== c) this.countBackground(parent);
     // Only for a subagent that ended by itself: one ended because the runner stops (or the process
     // went away) may well go on in a harness that keeps it (persistent), and must be found again.
     if (parent && parent !== c && parent.driver && !this.stopping && parent.state.status === "idle" && !parent.driver.busy()) {

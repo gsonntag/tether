@@ -68,6 +68,15 @@ export class FakeDriver implements Driver {
     this.stopped.push(id);
     this.children.get(id)?.ended?.();
   }
+  backgrounded: string[] = [];
+  async backgroundSubagent(toolId: string) {
+    this.backgrounded.push(toolId);
+  }
+  /** the main agent is free, background work runs on */
+  freeBeside = false;
+  onlyBackground() {
+    return this.freeBeside;
+  }
   /** a turn another client started is running (found on joining) */
   runningElsewhere = false;
   turnRunning() {

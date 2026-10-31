@@ -11,8 +11,9 @@
 //   CRASH_RUNNER    a command that kill -9s the dev runner and starts it again (for `restartCrash`)
 //   SHOTS           where screenshots go
 // Steps (in order; later ones use the sessions earlier ones make):
-//   home claude steer queue lostEdit stopSend terminal restart restartCrash codex blank restartCodex attach push inbox relay
+//   home claude steer queue lostEdit stopSend terminal restart restartCrash codex blank restartCodex attach push inbox relay background waiting
 // blank waits for processes to idle out: run the dev runner with short TETHER_IDLE_MS and TETHER_EVICT_MS.
+// background and waiting make their own sessions.
 // Every real turn is small. Sessions are only ever made in SCRATCH.
 
 import { execFileSync } from "node:child_process";
@@ -944,6 +945,166 @@ const steps = {
     ok("Claude subagent steered via the main agent: shown in the subagent's view as yours, marked Sent via the main agent once its SendMessage call was seen; the subagent got it (its reply has the code word)");
     await a.close();
     await c.close();
+  },
+
+  async background() {
+    // A foreground subagent moves to the background (SPEC §6a): Query.backgroundTasks on real Claude.
+    const FG = (name, what) =>
+      `Use the Agent tool with run_in_background set to false (pass run_in_background: false explicitly), subagent_type "general-purpose", model "haiku", description "${name}", and this prompt: "${what}" Then tell me what it replied.`;
+    const WAIT = (n, word) => `Run the Bash command: timeout ${n} tail -f /dev/null; echo ${word}. Then reply with just ${word}.`;
+    const a = await page(desktop);
+    const url = await newSession(a, "claude");
+    const id = idOf(url);
+    await composer(a).waitFor();
+    const b = await page(phone, url);
+    await composer(b).waitFor();
+    const child = (name) =>
+      a.evaluate(
+        async ([store, runnerId, parent, name]) => {
+          const { useStore } = await import(eval(store));
+          return Object.values(useStore.getState().summaries[runnerId]?.sessions ?? {}).find((s) => s.parentSessionId === parent && s.title === name) ?? null;
+        },
+        [MOD("store.ts"), RUNNER, id, name],
+      );
+    const control = (p) => p.locator(".t-tool-background");
+    const gone = async (p) => {
+      if (!(await control(p).waitFor({ state: "detached", timeout: 15_000 }).then(() => true, () => false))) fail("Background stays after the move");
+    };
+
+    // Round 1, from the phone: what queued goes out while the subagent runs on; its end still arrives.
+    await send(a, FG("bg one", WAIT(45, "BG-KIWI")));
+    await control(a).waitFor({ timeout: 60_000 });
+    await control(b).waitFor({ timeout: 15_000 });
+    await noOverflow(b, "foreground card, phone");
+    await shot(a, "background-control-desktop");
+    await shot(b, "background-control-phone");
+    await composer(a).fill("Reply with exactly: BG-QUEUED");
+    await composer(a).press("Tab");
+    await a.locator(".t-queued", { hasText: "BG-QUEUED" }).waitFor();
+    await sleep(3000);
+    if ((await liveState(a)).queue.length !== 1) fail("the queued message went out while the main agent waited");
+    await control(b).tap();
+    await gone(a);
+    await gone(b);
+    await waitState(a, (s) => s.queue.length === 0, "the queue went out", 60_000);
+    await a.locator(".t-msg.assistant", { hasText: "BG-QUEUED" }).last().waitFor({ timeout: 60_000 });
+    if ((await child("bg one"))?.status !== "running") fail("the subagent isn't running after the queued reply");
+    if ((await liveState(a)).status === "idle") fail("idle while the subagent runs");
+    await shot(a, "background-moved-desktop");
+    await shot(b, "background-moved-phone");
+    await noOverflow(b, "moved, phone");
+    await idle(a, 120_000);
+    const t = await transcriptText(a);
+    if (!/BG-KIWI/.test(t.slice(t.lastIndexOf("BG-QUEUED")))) fail(`the subagent's result didn't reach the main agent:\n${t.slice(-400)}`);
+    if ((await child("bg one"))?.status !== "idle") fail("the subagent still shows running");
+    ok("a foreground subagent moved to the background from the phone: the call returned, the queued message went out while it ran, its result reached the main agent, and the session went idle after it");
+
+    // Round 2: Stop stops the reply and leaves the subagent; with only it left, Stop stops it.
+    await send(a, FG("bg two", WAIT(90, "BG-NEVER")));
+    await control(a).waitFor({ timeout: 60_000 });
+    await control(a).click();
+    await gone(a);
+    await sleep(3000);
+    await send(a, SLOW(40, "TOO-LATE"));
+    await inCommand(a, /timeout 40 tail/);
+    await sleep(1000);
+    await composer(a).press("Escape");
+    await a.locator(".t-msg.notice", { hasText: "Interrupted" }).last().waitFor({ timeout: 15_000 });
+    await sleep(3000);
+    if ((await child("bg two"))?.status !== "running") fail("Stop on the reply stopped the background subagent");
+    if ((await liveState(a)).status === "idle") fail("idle while the subagent runs, after Stop");
+    await send(a, "Reply with exactly: BG-STILL-HERE");
+    await a.locator(".t-msg.assistant", { hasText: "BG-STILL-HERE" }).last().waitFor({ timeout: 60_000 });
+    await sleep(1500);
+    await composer(a).press("Escape");
+    await idle(a, 60_000);
+    const stopped = await child("bg two");
+    // Ended: idle, or out of the live summaries already.
+    if (stopped && stopped.status !== "idle") fail(`Stop with only the subagent left didn't stop it: ${JSON.stringify(stopped)}`);
+    ok("Stop stopped the main agent's reply and left the background subagent; a message still went to the main agent; Stop with only the subagent left stopped it");
+
+    // Round 3: requests. One open while it moves stays open; one after the move asks too.
+    await rpcVia(a, "setPermissionMode", { sessionId: id, mode: "default" });
+    await waitState(a, (s) => s.permissionMode === "default", "default mode");
+    const name = `bg-e2e-${Date.now()}.txt`;
+    await send(a, FG("bg three", `Run the Bash command: timeout 5 tail -f /dev/null; echo first. Then use the Write tool to create ${name} containing hello. Then reply with just BG-WROTE.`));
+    await waitState(a, (s) => s.requests.length === 1 && s.status === "waiting", "the subagent's first request", 60_000);
+    await control(a).waitFor({ timeout: 15_000 });
+    await control(a).click();
+    await gone(a);
+    await sleep(3000);
+    let st = await liveState(a);
+    if (st.requests.length !== 1) fail("the open request closed with the move");
+    if (!(await a.locator(".t-dock").isVisible())) fail("the open request isn't shown");
+    await shot(a, "background-request-desktop");
+    await button(a.locator(".t-dock"), "Approve").click();
+    await waitState(a, (s) => s.requests.some((r) => r.tool === "Write"), "the request after the move", 60_000);
+    if ((await liveState(a)).status !== "waiting") fail("Needs you isn't shown for the background subagent's request");
+    await button(a.locator(".t-dock"), "Approve").click();
+    await idle(a, 120_000);
+    const t3 = await transcriptText(a);
+    if (!/BG-WROTE/.test(t3.slice(t3.lastIndexOf("bg three")))) fail("the subagent didn't finish after its requests");
+    rmSync(`${SCRATCH}/${name}`, { force: true });
+    ok("a request open while the subagent moved stayed open and worked; a later one showed as Needs you and worked; the subagent finished");
+    await a.close();
+    await b.close();
+  },
+
+  async waiting() {
+    // The main agent idle, background subagents running (SPEC §6a): the session reads as working
+    // everywhere, with a live count, and takes messages as usual. Claude, then Codex.
+    const line = (p, re) => p.locator(".t-inline-status", { hasText: re }).first();
+    const noLine = async (p, what) => {
+      if (!(await line(p, /background subagent/).waitFor({ state: "detached", timeout: 90_000 }).then(() => true, () => false))) fail(`${what}: the line stays`);
+    };
+    for (const [harness, prompt, say] of [
+      ["claude", 'Use the Agent tool twice in one message, both with run_in_background set to true, subagent_type "general-purpose", model "haiku". First: description "bg long", prompt "Run the Bash command: timeout 50 tail -f /dev/null; echo LONG. Then reply with just LONG." Second: description "bg short", prompt "Run the Bash command: timeout 20 tail -f /dev/null; echo SHORT. Then reply with just SHORT." When both are launched, reply with exactly STARTED and end your turn; do not wait for them.', "Claude"],
+      ["codex", "Spawn two subagents now, without waiting for them. One runs the shell command: timeout 50 tail -f /dev/null; then replies LONG. The other runs: timeout 20 tail -f /dev/null; then replies SHORT. Once both are spawned, reply with exactly STARTED and end your turn right away. Do not call wait.", "Codex"],
+    ]) {
+      const a = await page(desktop);
+      const url = await newSession(a, harness);
+      const id = idOf(url);
+      await composer(a).waitFor();
+      const b = await page(phone, url);
+      await composer(b).waitFor();
+      const home = await page(desktop);
+      await send(a, prompt);
+      await line(a, /Waiting for 2 background subagents…/).waitFor({ timeout: 120_000 });
+      await line(b, /Waiting for 2 background subagents…/).waitFor({ timeout: 15_000 });
+      await a.locator(".t-msg.assistant", { hasText: "STARTED" }).last().waitFor({ timeout: 30_000 });
+      const seen = await row(a, id);
+      if (seen?.backgroundSubagents !== 2) fail(`${say}: the row says ${JSON.stringify(seen)}`);
+      await home.locator(".t-inbox-kind", { hasText: "Working" }).first().waitFor({ timeout: 15_000 });
+      await noOverflow(b, `waiting, phone, ${say}`);
+      await shot(a, `waiting-2-${harness}-desktop`);
+      await shot(b, `waiting-2-${harness}-phone`);
+      await shot(home, `waiting-home-${harness}`);
+      if (await a.locator(".t-inline-status", { hasText: "is working…" }).isVisible()) fail(`${say}: both lines`);
+      // A message goes to the main agent as usual, and the line comes back after its turn.
+      await send(a, "Reply with exactly: BESIDE-THEM");
+      await a.locator(".t-msg.assistant", { hasText: "BESIDE-THEM" }).last().waitFor({ timeout: 60_000 });
+      await line(a, /Waiting for 1 background subagent…|Waiting for 2 background subagents…/).waitFor({ timeout: 30_000 });
+      await line(a, /Waiting for 1 background subagent…/).waitFor({ timeout: 60_000 });
+      await shot(b, `waiting-1-${harness}-phone`);
+      await shot(a, `waiting-1-${harness}-desktop`);
+      await noLine(a, say);
+      await noLine(b, say);
+      await waitState(a, (s) => !s.backgroundSubagents && s.status === "idle", "idle, none left", 90_000);
+      ok(`${say}: two background subagents read as working on the page, the row and Home at both widths, the count went 2, 1, gone, and a message went out meanwhile`);
+      // A runner restart with one still running: never stuck.
+      if (RESTART) {
+        await send(a, harness === "claude" ? 'Use the Agent tool with run_in_background set to true, subagent_type "general-purpose", model "haiku", description "bg restart", prompt "Run the Bash command: timeout 30 tail -f /dev/null; echo DONE. Then reply DONE." Then reply with exactly STARTED-AGAIN and end your turn.' : "Spawn one subagent now, without waiting for it. It runs the shell command: timeout 30 tail -f /dev/null; then replies DONE. Then reply with exactly STARTED-AGAIN and end your turn right away. Do not call wait.");
+        await line(a, /Waiting for 1 background subagent…/).waitFor({ timeout: 120_000 });
+        execFileSync("sh", ["-c", RESTART], { stdio: "inherit" });
+        await sleep(45_000);
+        await waitState(a, (s) => !s.backgroundSubagents, "nothing stuck after the restart", 120_000);
+        await noLine(a, `${say}, after a restart`);
+        ok(`${say}: a restart with a subagent running left no stuck line`);
+      }
+      await a.close();
+      await b.close();
+      await home.close();
+    }
   },
 };
 

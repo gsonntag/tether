@@ -1,14 +1,17 @@
 // The sidebar's lists, derived from every runner's summaries.
 
 import type { SummaryState } from "../../shared/summary";
-import type { SessionSummary } from "../../shared/transcript";
+import type { RunStatus, SessionSummary } from "../../shared/transcript";
 
 export interface Row extends SessionSummary {
   runnerId: string;
 }
 
+/** Background subagents still running: the session is working, whatever its main agent does. */
+export const shownStatus = <S extends { status: RunStatus; backgroundSubagents?: number }>(s: S): RunStatus => (s.backgroundSubagents && s.status === "idle" ? "running" : s.status);
+
 const rows = (summaries: Record<string, SummaryState>): Row[] =>
-  Object.entries(summaries).flatMap(([runnerId, s]) => Object.values(s.sessions).map((x) => ({ ...x, runnerId })));
+  Object.entries(summaries).flatMap(([runnerId, s]) => Object.values(s.sessions).map((x) => ({ ...x, status: shownStatus(x), runnerId })));
 
 const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
@@ -62,7 +65,7 @@ export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   for (const r of rows(summaries)) {
     if (r.parentSessionId) continue;
     const kind: InboxKind | undefined =
-      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" ? "finished" : r.status === "running" ? "working" : undefined;
+      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
     if (kind) out.push({ ...r, inbox: kind });
   }
   const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3 };

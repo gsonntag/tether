@@ -198,7 +198,9 @@ export class MessageQueue {
   private async drain(id: string) {
     const s = this.core.sessions.get(id);
     if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld) return;
-    if (s.state.mode === "terminal" || s.state.status !== "idle" || s.sending || s.starting || this.host.waiting(id)) return;
+    // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
+    const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
+    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id)) return;
     const [next, ...rest] = s.state.queue;
     this.draining.add(id);
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once

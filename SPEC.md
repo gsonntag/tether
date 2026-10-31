@@ -361,7 +361,35 @@ subagent's view. Delivery is the daemon's `subAgentActivity` item of kind `inter
 subagent; the text is encrypted, so it can't be compared. For the same reason a reason given when
 denying a subagent's request can't reach it: its card offers no reason.
 
-Adapter capabilities: `subagents: { view: boolean; stop: boolean; steer: "direct" | "via-parent" | false }`.
+**Moving a Claude subagent to the background** (decided, tested 2026-10-31 on Claude Code 2.1.314): a
+foreground subagent blocks the main agent, so a message waits for it. `Query.backgroundTasks(toolUseId)`
+is Ctrl+B for that one call: the call returns "running in the background", the main agent goes on, and
+the subagent keeps running, its running Bash included. The **Background** link on its card shows while
+the call is unanswered and the subagent runs. Foreground needs the model to pass
+`run_in_background: false`: since 2.1.314 Claude Code otherwise starts subagents in the background, and
+its TUI always does. Nested ones work the same, from their parent's transcript. Requests are unchanged:
+one open during the move stays open, and a background subagent's later ones ask as usual.
+
+The session stays running until background work ends (`session_state_changed`), so Tether tracks the
+main agent apart from it (`Driver.onlyBackground`): the main agent is free from a successful `result`
+until its next turn. Meanwhile the queue goes on and a message goes straight in (§9). Tether declares
+`perTaskStopAffordance`, so Stop stops the main agent's reply and spares background work, as Esc does
+in the TUI. With only background work left, Stop stops that, since an interrupt there does nothing. A
+handoff still ends it (§8): the process closes.
+
+**Waiting on background subagents** (both harnesses): with the main agent free and subagents running,
+the session still reads as working on its page, in the sidebar and on Home, and the transcript's last
+line says "Waiting for 2 background subagents…" where "Claude is working…" goes, while the main agent
+works it says that as usual. The count (`LiveState.backgroundSubagents`, on the row too) is the session's
+children with `childRunning`, recounted when one starts or ends and when the main agent's state changes.
+It is never saved, so a restart can't leave it behind. The composer stays a normal message box. On
+Codex the main turn does end meanwhile, so its turn-finished push still comes then, as it always has;
+its Finished mark waits on the row and on Home until the subagents are done.
+
+Codex has no such step: its parent waits in a `wait` tool that a steer ends, and subagents already run
+beside it. So `background` is Claude's alone.
+
+Adapter capabilities: `subagents: { view: boolean; stop: boolean; steer: "direct" | "via-parent" | false; background?: boolean }`.
 Viewing comes in P1 (Claude) and P4 (Codex). Steering and stopping come with each adapter.
 
 ## 7. Requests: approvals and questions
@@ -518,7 +546,7 @@ On startup the runner lists `tmux -L tether ls` and readopts the ones it knows.
 - **Sizing:** the tether tmux server is set to `window-size latest`, so the device you're typing on
   sets the size. Switching devices reflows. Phone and desktop are treated equally.
 - **Phone:** a key bar above the keyboard, two rows so every key is in reach (Esc, Tab, ⇧Tab, ↑, ↓,
-  ←, →, Ctrl-C, Ctrl-D, Enter) and a line under
+  ←, →, Ctrl-C, Ctrl-D, Ctrl-B, Enter) and a line under
   it that types its text into the terminal in front, then Enter, as a keyboard would. Tether's
   composer never types into a handoff TUI (its messages wait for Back to Tether).
 
@@ -547,6 +575,7 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
 
 - The **queue** is held on the runner, in order. Any device can edit, reorder or cancel waiting
   messages. Queued messages go out one per turn. Stop keeps the queue, held, until you send.
+  Background work doesn't hold it: "this turn" is the main agent's (§6a).
 - A steer can't be taken back once the harness has it.
 - Desktop keys: Enter send or steer, Tab queue (when the box has text), ⌘/Ctrl+Enter stop and send now,
   Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.

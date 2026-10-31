@@ -361,7 +361,8 @@ export class TerminalControl {
       if (busy) {
         await this.o.live.interrupt(s.id).catch(() => {});
         const until = Date.now() + 10_000;
-        while (s.state.status !== "idle" && Date.now() < until) await Bun.sleep(100);
+        // Background work stops with the process, on release.
+        while (s.state.status !== "idle" && !s.driver?.onlyBackground?.() && Date.now() < until) await Bun.sleep(100);
       }
       await this.o.live.release(s);
     }

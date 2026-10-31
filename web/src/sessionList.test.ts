@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, mergeRows, recentSessions, waitingOn } from "./sessionList";
+import { childrenOf, folderName, mergeRows, recentSessions, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -29,4 +29,14 @@ test("sessions waiting on you, per runner, without subagents (their parent count
     r2: { seq: 1, sessions: { e: row("e", { requests: 1 }) } },
   };
   expect(waitingOn(summaries as any, "r1").map((r: any) => r.id)).toEqual(["c", "a"]);
+});
+
+test("background subagents running: the session reads as working, and not as finished until they end", () => {
+  const row = (over: object) => ({ id: "a", harness: "codex", nativeId: "a", projectPath: "/p", title: "a", mode: "live", status: "idle", updatedAt: 1, ...over });
+  const at = (over: object) => inbox({ r1: { seq: 1, sessions: { a: row(over) } } } as any)[0]?.inbox;
+  expect(at({ backgroundSubagents: 2, unread: "finished" })).toBe("working");
+  expect(at({ unread: "finished" })).toBe("finished");
+  expect(at({ backgroundSubagents: 1, requests: 1 })).toBe("needs");
+  expect(at({})).toBeUndefined();
+  expect(recentSessions({ r1: { seq: 1, sessions: { a: row({ backgroundSubagents: 1 }) } } } as any)[0]!.status).toBe("running");
 });

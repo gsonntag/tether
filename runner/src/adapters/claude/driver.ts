@@ -95,6 +95,8 @@ export class ClaudeDriver implements Driver {
         allowDangerouslySkipPermissions: true,
         includePartialMessages: true,
         forwardSubagentText: true,
+        // Each subagent has its own Stop, so Stop on the main turn leaves background ones running.
+        perTaskStopAffordance: true,
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code" },
         canUseTool,
@@ -193,6 +195,7 @@ export class ClaudeDriver implements Driver {
 
   /** A message to Claude Code, shown in the transcript under the uuid it stores it with. */
   private push(text: string, attachments: Attachment[]) {
+    this.stream.mainStarts();
     const uuid = randomUUID();
     const images = nativeImages(attachments);
     // Tether's own message (an answer passed on after a restart) shows as Tether's, as stored ones do.
@@ -222,7 +225,10 @@ export class ClaudeDriver implements Driver {
   }
 
   async interrupt() {
+    // With the main agent free only background work is left, which an interrupt spares.
+    const left = this.stream.onlyBackground() ? [...this.stream.background] : [];
     await this.q.interrupt();
+    await Promise.all(left.map((id) => this.q.stopTask(id).catch(() => {})));
   }
 
   async setModel(model: string) {
@@ -242,6 +248,15 @@ export class ClaudeDriver implements Driver {
   async stopSubagent(nativeId: string) {
     const task = this.stream.taskOf(nativeId);
     if (task) await this.q.stopTask(task);
+  }
+
+  /** Ctrl+B in the terminal, for one subagent: its call returns, and the main agent goes on. */
+  async backgroundSubagent(toolId: string) {
+    await this.q.backgroundTasks(toolId);
+  }
+
+  onlyBackground() {
+    return this.stream.onlyBackground();
   }
 
   busy() {

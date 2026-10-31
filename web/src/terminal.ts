@@ -301,6 +301,7 @@ export const KEYS: { label: string; aria: string; data: string }[] = [
   { label: "→", aria: "Right", data: "\x1b[C" },
   { label: "^C", aria: "Control C", data: "\x03" },
   { label: "^D", aria: "Control D", data: "\x04" },
+  { label: "^B", aria: "Control B", data: "\x02" },
   { label: "⏎", aria: "Enter", data: "\r" },
 ];
 

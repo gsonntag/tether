@@ -478,6 +478,118 @@ describe("steering", () => {
   });
 });
 
+describe("a subagent moved to the background", () => {
+  test("the call goes to the main session's driver, from a nested subagent's transcript too", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1")];
+    await live.send("claude:s1", "go");
+    await live.backgroundSubagent("claude:s1", "t1");
+    await core.open("claude:s1/agentA");
+    await live.backgroundSubagent("claude:s1/agentA", "t2");
+    expect(driver().backgrounded).toEqual(["t1", "t2"]);
+  });
+
+  test("with only background work running, the queue goes out at the main turn's end, one per turn", async () => {
+    const { adapter, live, core, driver, end } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "first");
+    const s = await core.open("claude:s1");
+    await live.queue.add("claude:s1", "second", []);
+    await live.queue.add("claude:s1", "third", []);
+    const d = driver();
+    await Bun.sleep(80);
+    expect(d.steered).toEqual([]);
+    // The main agent's result; the session stays running for the subagent.
+    d.freeBeside = true;
+    d.sink.mainFree!();
+    await until(() => d.steered.length === 1);
+    d.freeBeside = false;
+    await Bun.sleep(80);
+    expect(d.steered).toEqual(["second"]);
+    expect(d.sent).toEqual(["first"]);
+    expect(s.state.queue.map((m) => m.text)).toEqual(["third"]);
+    expect(s.state.status).toBe("running");
+    end();
+    await until(() => d.sent.length === 2);
+    expect(d.sent).toEqual(["first", "third"]);
+  });
+
+  test("a message, or Stop and send now, goes straight to the free main agent and stops nothing", async () => {
+    const { adapter, live, driver } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "first");
+    const d = driver();
+    let stops = 0;
+    const interrupt = d.interrupt.bind(d);
+    d.interrupt = async () => (stops++, interrupt());
+    d.freeBeside = true;
+    await live.send("claude:s1", "second");
+    await live.send("claude:s1", "third", [], { stop: true });
+    expect(d.steered).toEqual(["second", "third"]);
+    expect(stops).toBe(0);
+  });
+
+  test("the count: only running subagents, only while the main agent is free, never left behind", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1"), toolCall("a2", "t2", "Agent", {}), subagent("s1/agentB", "t2")];
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    const d = driver();
+    // The main agent works: the normal line.
+    expect(s.state.backgroundSubagents).toBeUndefined();
+    d.freeBeside = true;
+    d.sink.mainChanged!();
+    expect(s.state.backgroundSubagents).toBe(2);
+    expect(s.summary.backgroundSubagents).toBe(2);
+    // It takes a message: the normal line again.
+    d.freeBeside = false;
+    d.sink.mainChanged!();
+    expect(s.state.backgroundSubagents).toBeUndefined();
+    d.freeBeside = true;
+    d.sink.mainChanged!();
+    d.children.get("s1/agentA")!.ended!();
+    expect(s.state.backgroundSubagents).toBe(1);
+    d.children.get("s1/agentB")!.ended!();
+    expect(s.state.backgroundSubagents).toBeUndefined();
+    expect(s.summary.backgroundSubagents).toBeUndefined();
+  });
+
+  test("idle with subagents running (Codex): counted, and a send starts a turn as usual; the process going counts them gone", async () => {
+    const { adapter, live, core, driver, end } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = (t) => (t === "go" ? [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1")] : []);
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    const d = driver();
+    end();
+    expect(s.state.backgroundSubagents).toBe(1);
+    await live.send("claude:s1", "more");
+    expect(d.sent).toEqual(["go", "more"]);
+    expect(s.state.backgroundSubagents).toBeUndefined();
+    end();
+    expect(s.state.backgroundSubagents).toBe(1);
+    await live.release(s);
+    expect(s.state.backgroundSubagents).toBeUndefined();
+  });
+
+  test("a held queue stays held", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "first");
+    const s = await core.open("claude:s1");
+    await live.queue.add("claude:s1", "second", []);
+    await live.interrupt("claude:s1");
+    const d = driver();
+    d.freeBeside = true;
+    d.sink.mainFree!();
+    await Bun.sleep(80);
+    expect(d.steered).toEqual([]);
+    expect(s.state.queueHeld).toBe(true);
+  });
+});
+
 describe("a harness that reports deliveries itself", () => {
   test("the message counts as delivered when the sink says the main agent sent it", async () => {
     const { adapter, live, core, driver } = setup();
