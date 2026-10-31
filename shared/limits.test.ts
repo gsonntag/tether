@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { capEvent, capInput, capMessage, capPart, capRequest, capToolPatch, cutBytes, fetchFullPart, utf8Length, FRAME_BYTES_MAX, guardFrame, IMAGE_DATA_MAX, INPUT_JSON_MAX, INPUT_STRING_MAX, MESSAGE_BYTES_MAX, newestPage, PAGE_BYTES_MAX, partChunk, PART_CHUNK_MAX, PART_TEXT_MAX } from "./limits";
+import { stripControls } from "./limits";
 import type { Msg, Part, ToolPart } from "./transcript";
 
 test("big text, tool output and images are cut short and marked with their full length", () => {
@@ -162,4 +163,11 @@ test("a queued command's output travels with its command cut too, and counts tow
   expect(JSON.stringify(c.shell!.command).length - 2).toBeLessThanOrEqual(QUEUED_COMMAND_WIRE);
   expect(c.shell!.command.endsWith("…")).toBe(true);
   expect(capQueue([m])[0]!.shell!.cardId).toBe("n-sh-1");
+});
+
+test("control characters go, tab and newline stay: CR and C1 too, not text around them", () => {
+  expect(stripControls("a\tb\nc")).toBe("a\tb\nc");
+  expect(stripControls("a\r\nb\rc")).toBe("a\nbc");
+  expect(stripControls("x\u0000\u001b\u007f\u0080\u0085\u009b\u009fy")).toBe("xy");
+  expect(stripControls("é\u00a0€\u200b")).toBe("é\u00a0€\u200b");
 });

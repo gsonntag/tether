@@ -25,7 +25,7 @@ export function registerTerminalOps(ops: OpRegistry, control: TerminalControl | 
   ops.register("closeTerminal", (a) => (control?.detach([str(a.attachId, "attachId")]), null));
   ops.register("terminalInput", (a) => {
     if (typeof a.data !== "string") throw new Error("data is required.");
-    need().input(str(a.attachId, "attachId"), a.data);
+    need().input(str(a.attachId, "attachId"), a.data, { ...(typeof a.leave === "boolean" ? { leave: a.leave } : {}), swipe: a.swipe === true });
     return null;
   });
   ops.register("terminalResize", (a) => (need().resize(str(a.attachId, "attachId"), num(a.cols, 80), num(a.rows, 24)), null));

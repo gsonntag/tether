@@ -6,7 +6,7 @@
 // read-side flow control (docs/notes/pty.md), so an attach whose connection falls far behind ends
 // (termEnd "too slow") instead of dropping bytes: the browser reattaches and tmux redraws.
 
-import { decodeChunk, encodeChunk } from "../../../shared/wire";
+import { encodeChunk } from "../../../shared/wire";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { spawnPty, type Pty, type PtyOptions } from "./pty";
 
@@ -102,9 +102,8 @@ export class Attaches {
     this.map.set(id, a);
   }
 
-  input(id: string, data: string) {
-    const a = this.need(id);
-    a.pty.write(decodeChunk(data));
+  input(id: string, bytes: Uint8Array) {
+    this.need(id).pty.write(bytes);
   }
 
   resize(id: string, cols: number, rows: number) {

@@ -10,12 +10,16 @@
 //   RESTART_RUNNER  a command that restarts the dev runner, leaving it down a moment (for `restart`)
 //   CRASH_RUNNER    a command that kills the dev runner with SIGKILL, which then starts again (for `crash`)
 //   SHOTS           where screenshots go
+//   TMUX_SOCKET     the dev runner's tmux socket (default tdp5b; never Tether's own), read by `copymode` and the rest
+//   HIDDEN          set when the runner has TETHER_HIDE_PROJECTS matching SCRATCH: only then `hide` runs
 // Steps (in order; later ones use the sessions earlier ones make):
-//   claude midturn stop stubborn hold huge runaway phone copy webkit needs race spoof restart crash shell handoff phonetoggle codex
-// Every real turn is small. Sessions are only ever made in SCRATCH.
+//   claude midturn stop stubborn hold huge runaway phone copy copymode select widths newfolder webkit needs race spoof restart crash shell handoff phonetoggle codex hide
+// Every real turn is small. Sessions are only ever made in SCRATCH, and by `newfolder` in a new folder under SHOTS.
+// `codex` opens Codex's TUI and quits it with keys, so it needs SCRATCH already trusted in Codex's
+// config: it stops otherwise. No trust prompt is ever answered here.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 
 const { chromium, webkit, devices } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5186";
@@ -25,6 +29,19 @@ const SCRATCH = process.env.SCRATCH ?? `${process.env.HOME}/.local/share/tdp5b/p
 const CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-6-luna";
 const RESTART = process.env.RESTART_RUNNER;
 const CRASH = process.env.CRASH_RUNNER;
+const TMUX_SOCKET = process.env.TMUX_SOCKET ?? "tdp5b";
+if (["tether", "default"].includes(TMUX_SOCKET)) throw new Error(`TMUX_SOCKET ${TMUX_SOCKET}: this script only reads a dev runner's tmux`);
+const tmux = (...args) => execFileSync("tmux", ["-L", TMUX_SOCKET, ...args], { encoding: "utf8" });
+/** Whether a terminal's pane is in copy mode, and how far it is scrolled. */
+const pane = (key) => {
+  const [mode, pos] = tmux("display", "-p", "-t", `=${key}:`, "#{pane_in_mode} #{scroll_position}").trim().split(" ");
+  return { scrolled: mode === "1", lines: Number(pos ?? 0) };
+};
+const history = (key) => tmux("capture-pane", "-p", "-J", "-S", "-", "-t", `=${key}:`);
+// Nothing here may make Codex trust SCRATCH (P4.md, Folder trust; only read).
+const codexConfig = `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/config.toml`;
+const trustsScratch = () => existsSync(codexConfig) && readFileSync(codexConfig, "utf8").includes(`[projects."${SCRATCH}"]`);
+const trustedBefore = trustsScratch();
 /** Processes whose command line contains `text` (one look, no waiting). */
 const procs = (text) =>
   execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8" })
@@ -136,6 +153,47 @@ const waitScreen = async (p, key, re, what, ms = 30_000) => {
   fail(`${what}: the terminal shows:\n${s?.lines.filter((l) => l.trim()).join("\n") ?? "(no terminal)"}`);
 };
 const shellKey = (p) => p.evaluate(() => [...(globalThis.__tetherTerms?.keys() ?? [])].find((k) => k.startsWith("sh-")));
+
+const waitUntil = async (f, what, ms = 15_000) => {
+  const end = Date.now() + ms;
+  let last;
+  while (Date.now() < end) {
+    last = await f();
+    if (last) return last;
+    await sleep(100);
+  }
+  fail(`${what}: ${JSON.stringify(last)}`);
+};
+/** ❯_: the panel on a project shell, at its prompt; its key. */
+const openShell = async (p, { tap = false } = {}) => {
+  await (tap ? p.locator(".t-chip-term").tap() : p.locator(".t-chip-term").click());
+  await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
+  await sleep(300);
+  const key = await shellKey(p);
+  await waitScreen(p, key, /\$ *$|# *$|> *$/m, "a shell prompt");
+  return key;
+};
+/** Starts a step's terminals from nothing, whatever the step before left. */
+const closeShells = async (p) => {
+  const { shells } = (await rpcVia(p, "listShells", { projectPath: SCRATCH })).ok;
+  for (const s of shells) await rpcVia(p, "closeShell", { shellId: s.id });
+};
+const lineIn = async (p, text) => {
+  await p.locator(".t-term-line input").fill(text);
+  await button(p.locator(".t-term-line"), "Send line").tap();
+};
+/** A real finger through the browser's input pipeline, held still at the end unless `fling`. */
+const fingerSwipe = async (p, cdp, from, to, { fling = false } = {}) => {
+  const b = await p.locator(".t-term-box").boundingBox();
+  const at = (y) => [{ x: b.x + b.width / 2, y: b.y + y }];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(from) });
+  for (let i = 1; i <= 14; i++) {
+    await sleep(16);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(from + ((to - from) * i) / 14) });
+  }
+  if (!fling) await sleep(200);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+};
 
 /** The newest `!` card on the page, and what it says. */
 const card = (p) => p.locator(".t-msg.shellrun").last();
@@ -444,6 +502,383 @@ const steps = {
     if ((await liveState(p)).mode !== "live") fail("closing the shells handed the session over");
     ok("copy: the sheet is named for its terminal, closes on another tab and on Esc, and on a phone the key bar and line are off while it's open; closing the last shell closed the panel (nothing handed over); and: Copy text showed the shell's text with its scrollback (1 … 400, COPY-END-9) and Copy all put it on the clipboard; Shift-drag selected in the terminal and Ctrl+C copied it without sending ^C (the sleep finished); on the phone, Copy text opens the same selectable sheet");
     await ph.close();
+    await p.close();
+  },
+
+  async copymode() {
+    // Scrolled back, what's meant for the program still gets there (P5b.md, K2b).
+    const ctx = await newCtx({ viewport: { width: 393, height: 739 }, hasTouch: true, isMobile: true });
+    const ph = await page(ctx, claude);
+    await composer(ph).waitFor();
+    await closeShells(ph);
+    const key = await openShell(ph, { tap: true });
+    const cdp = await ctx.newCDPSession(ph);
+    await lineIn(ph, "seq 1 400");
+    await waitScreen(ph, key, /^400$/m, "the output");
+    const { rows } = await screen(ph, key);
+    const box = await ph.locator(".t-term-box").boundingBox();
+    const px = box.height / rows;
+    // A swipe that stops before lifting: no glide, and the view moved with the finger, line for line.
+    await fingerSwipe(ph, cdp, 60, 340);
+    await waitUntil(() => pane(key).scrolled, "a swipe didn't scroll back");
+    await sleep(400);
+    const moved = pane(key).lines;
+    const want = 280 / px;
+    if (Math.abs(moved - want) > 3) fail(`a 280 px swipe at ${px.toFixed(1)} px a line moved ${moved} lines, not about ${want.toFixed(0)}`);
+    await shot(ph, "copymode-scrolled");
+    // The line: it runs, and the view is back at the end.
+    await lineIn(ph, "echo AFTER-SWIPE-$((40+2))");
+    await waitUntil(() => /^AFTER-SWIPE-42$/m.test(history(key)), "the line typed while scrolled back never ran");
+    await waitUntil(() => !pane(key).scrolled, "still scrolled back after a line");
+    await waitScreen(ph, key, /^AFTER-SWIPE-42$/m, "the end, with the line's output");
+    // During a glide too: it stops, or its next notch would scroll away from the answer.
+    await fingerSwipe(ph, cdp, 60, 340, { fling: true });
+    await lineIn(ph, "echo IN-THE-GLIDE-$((1+2))");
+    await waitUntil(() => /^IN-THE-GLIDE-3$/m.test(history(key)), "the line typed during a glide never ran");
+    await sleep(1200);
+    if (pane(key).scrolled) fail("the glide went on after the line");
+    // The key bar: ^C reaches what runs; an arrow reaches the shell; Esc only leaves.
+    await lineIn(ph, "sleep 61.5; echo NOT-STOPPED");
+    await sleep(500);
+    await fingerSwipe(ph, cdp, 60, 340);
+    await waitUntil(() => pane(key).scrolled, "not scrolled back");
+    await ph.getByRole("button", { name: "Control C", exact: true }).tap();
+    await waitUntil(() => !procs("sleep 61.5").length, "^C from the key bar never reached the program");
+    await waitUntil(() => !pane(key).scrolled, "still scrolled back after ^C");
+    if (/^NOT-STOPPED$/m.test(history(key))) fail("the sleep wasn't stopped by ^C");
+    await fingerSwipe(ph, cdp, 60, 340);
+    await waitUntil(() => pane(key).scrolled, "not scrolled back");
+    await ph.getByRole("button", { name: "Up", exact: true }).tap();
+    await waitUntil(() => !pane(key).scrolled, "still scrolled back after the key bar's arrow");
+    await waitScreen(ph, key, /sleep 61\.5; echo NOT-STOPPED$/m, "the shell's history came up");
+    await ph.getByRole("button", { name: "Control C", exact: true }).tap();
+    await fingerSwipe(ph, cdp, 60, 340);
+    await waitUntil(() => pane(key).scrolled, "not scrolled back");
+    await ph.getByRole("button", { name: "Escape", exact: true }).tap();
+    await waitUntil(() => !pane(key).scrolled, "Esc didn't leave");
+    // Enter goes to the terminal the text went to, whichever is in front by then.
+    await button(ph.locator(".t-term-panel"), "New shell").tap();
+    await waitUntil(async () => (await ph.locator(".t-term-tab[aria-selected=true]").innerText()) !== "" && (await shellKey(ph)) !== key, "the new shell");
+    const other = await shellKey(ph);
+    await waitScreen(ph, other, /\$ *$|# *$|> *$/m, "the new shell's prompt");
+    await ph.locator(".t-term-line input").fill("echo LINE-RACE");
+    const tabNow = await ph.locator(".t-term-tab").allInnerTexts();
+    await ph.evaluate(() => {
+      document.querySelector('.t-term-line button[aria-label="Send line"]').click();
+      setTimeout(() => document.querySelector(".t-term-tab").click(), 40);
+    });
+    await waitUntil(() => /^LINE-RACE$/m.test(history(other)), "the line's Enter went astray", 8000).catch((e) => fail(`${e.message}\nits shell:\n${history(other).trimEnd().slice(-300)}\nthe other:\n${history(key).trimEnd().slice(-200)}\nfront: ${tabNow}`));
+    if (/LINE-RACE/.test(history(key))) fail("the line reached the other shell");
+    await ctx.close();
+    // Desktop: the wheel, then keys that scroll stay there, keys that type leave.
+    const p = await page(desktop, claude);
+    await composer(p).waitFor();
+    const k2 = await openShell(p);
+    await p.locator(".t-term-box").click({ force: true });
+    await p.keyboard.type("clear; seq 1 200", { delay: 3 });
+    await p.keyboard.press("Enter");
+    await waitScreen(p, k2, /^200$/m, "the output");
+    const b2 = await p.locator(".t-term-box").boundingBox();
+    await p.mouse.move(b2.x + 100, b2.y + 100);
+    for (let i = 0; i < 3; i++) await p.mouse.wheel(0, -120);
+    await waitUntil(() => pane(k2).scrolled, "the wheel didn't scroll back");
+    for (const k of ["ArrowUp", "PageUp", "ArrowDown"]) {
+      await p.keyboard.press(k);
+      await sleep(250);
+      if (!pane(k2).scrolled) fail(`${k} left the scrollback`);
+    }
+    await p.keyboard.type("echo DESK-AFTER-WHEEL-$((1+1))", { delay: 3 });
+    await p.keyboard.press("Enter");
+    await waitUntil(() => /^DESK-AFTER-WHEEL-2$/m.test(history(k2)), "text typed after the wheel never ran");
+    if (pane(k2).scrolled) fail("still scrolled back after typing");
+    await p.mouse.wheel(0, -120);
+    await p.mouse.wheel(0, -120);
+    await waitUntil(() => pane(k2).scrolled, "the wheel didn't scroll back again");
+    await p.keyboard.press("Escape");
+    await waitUntil(() => !pane(k2).scrolled, "Esc didn't leave on the desktop");
+    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
+    ok(`scrolled back: a 280 px swipe moved ${moved} lines at ${px.toFixed(1)} px a line; the phone's line ran and returned to the end, during a glide too; the key bar's ^C and ↑ reached the shell, Esc only left; the desktop's arrows and PageUp stayed scrolled, typed text and Enter ran; a line's Enter stayed with its shell when another came to the front`);
+    await p.close();
+  },
+
+  async select() {
+    // K2: a plain drag selects and copies while tmux has the mouse; a click still reaches the terminal.
+    const p = await page(desktop, claude);
+    await composer(p).waitFor();
+    await p.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await closeShells(p);
+    const key = await openShell(p);
+    await p.locator(".t-term-box").click({ force: true });
+    await p.keyboard.type("clear; seq 1 12; printf 'WORD-ONE WORD-TWO\\n'", { delay: 3 });
+    await p.keyboard.press("Enter");
+    await waitScreen(p, key, /^WORD-ONE WORD-TWO$/m, "the output");
+    const b = await p.locator(".t-term-box").boundingBox();
+    const clip = () => p.evaluate(() => navigator.clipboard.readText());
+    const setClip = (t) => p.evaluate((t) => navigator.clipboard.writeText(t), t);
+    const selection = () => p.evaluate((k) => globalThis.__tetherTerms.get(k).getSelection(), key);
+    const drag = async (x0, y0, x1, y1) => {
+      await p.mouse.move(b.x + x0, b.y + y0);
+      await p.mouse.down();
+      await p.mouse.move(b.x + x1, b.y + y1, { steps: 6 });
+      await p.mouse.up();
+      await sleep(250);
+    };
+    await setClip("BEFORE");
+    await drag(5, 5, 80, 70);
+    const sel = await selection();
+    if (!/2\s*\n\s*3/.test(sel)) fail(`a plain drag selected: ${JSON.stringify(sel)}`);
+    if ((await clip()) !== sel) fail(`the clipboard after a drag: ${JSON.stringify(await clip())}, selected ${JSON.stringify(sel)}`);
+    if (pane(key).scrolled) fail("a plain drag put tmux in copy mode");
+    // A click clears it and copies nothing.
+    await setClip("KEPT");
+    await p.mouse.click(b.x + 300, b.y + 300);
+    await sleep(250);
+    if (await selection()) fail("a click left the selection");
+    if ((await clip()) !== "KEPT") fail("a click changed the clipboard");
+    // A blank drag copies nothing.
+    await drag(300, 350, 400, 360);
+    if ((await clip()) !== "KEPT") fail("a blank drag changed the clipboard");
+    await p.mouse.click(b.x + 300, b.y + 300);
+    // A right-click selects a word, and tmux shows no menu.
+    const cell = await p.evaluate((k) => { const t = globalThis.__tetherTerms.get(k); const e = document.querySelector(".t-term-box .xterm-screen"); return [e.clientWidth / t.cols, e.clientHeight / t.rows]; }, key);
+    const row = (await screen(p, key)).lines.findIndex((l) => l.startsWith("WORD-ONE"));
+    await p.mouse.click(b.x + cell[0] * 3, b.y + cell[1] * (row + 0.5), { button: "right" });
+    await sleep(400);
+    const word = await selection();
+    if (word.trim() !== "ONE" && word.trim() !== "WORD-ONE") fail(`a right-click selected ${JSON.stringify(word)}`);
+    if (pane(key).scrolled) fail("a right-click reached tmux");
+    await p.mouse.click(b.x + 300, b.y + 300);
+    // In a program that takes the mouse, a click still gets there, press and release.
+    await p.keyboard.type("clear; printf '\\033[?1000h\\033[?1006h'; cat -v", { delay: 3 });
+    await p.keyboard.press("Enter");
+    await sleep(500);
+    await p.mouse.click(b.x + 100, b.y + 60);
+    await waitScreen(p, key, /\^\[\[<0;\d+;\d+M\^\[\[<0;\d+;\d+m/, "the click's press and release");
+    await p.keyboard.press("Control+c");
+    await sleep(200);
+    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
+    await closeShells(p);
+    ok("K2: a plain drag selected while tmux had the mouse, the clipboard held it at once and tmux stayed out of copy mode; a click cleared it and left the clipboard alone, as did a blank drag; a right-click selected the word; in a program taking the mouse a click arrived as press and release");
+    await p.close();
+  },
+
+  async widths() {
+    // K7, K8: the handles, the limits, and tether.width.* per device.
+    const p = await page(desktop, claude);
+    // Wide enough for the limits to be reached with the panel still beside the transcript.
+    await p.setViewportSize({ width: 1600, height: 900 });
+    await composer(p).waitFor();
+    await p.evaluate(() => {
+      localStorage.removeItem("tether.width.sidebar");
+      localStorage.removeItem("tether.width.panel");
+    });
+    await p.reload();
+    await composer(p).waitFor();
+    await closeShells(p);
+    const key = await openShell(p);
+    const m = () =>
+      p.evaluate(() => {
+        const w = (s) => document.querySelector(s)?.getBoundingClientRect().width;
+        return { side: w(".t-side-frame > nav") ?? w("nav"), session: w(".t-session"), panel: w(".t-term-panel"), over: document.documentElement.scrollWidth - innerWidth };
+      });
+    const stored = () => p.evaluate(() => [localStorage.getItem("tether.width.sidebar"), localStorage.getItem("tether.width.panel")]);
+    const drag = async (name, dx) => {
+      const b = await p.getByRole("separator", { name }).boundingBox();
+      const [x, y] = [b.x + b.width / 2, b.y + b.height / 2];
+      await p.mouse.move(x, y);
+      await p.mouse.down();
+      await p.mouse.move(x + dx, y, { steps: 8 });
+      await p.mouse.up();
+      await sleep(400);
+    };
+    const start = await m();
+    await drag("Resize terminal", -80);
+    const dragged = await m();
+    if (Math.abs(dragged.panel - start.panel - 80) > 3) fail(`the panel followed the mouse from ${start.panel} to ${dragged.panel}`);
+    // The PTY follows.
+    await waitUntil(async () => Number(tmux("display", "-p", "-t", `=${key}:`, "#{pane_width}").trim()) === (await screen(p, key)).cols, "the PTY's width isn't xterm's");
+    await drag("Resize terminal", -900);
+    if ((await m()).session < 299) fail(`the transcript went to ${(await m()).session} px`);
+    await drag("Resize terminal", 2000);
+    const least = await m();
+    if ((await screen(p, key)).cols < 60) fail(`the panel went to ${(await screen(p, key)).cols} columns`);
+    await drag("Resize sidebar", 900);
+    if (Math.round((await m()).side) > 480) fail(`the sidebar went to ${(await m()).side} px`);
+    await drag("Resize sidebar", -900);
+    if (Math.round((await m()).side) !== 200) fail(`the sidebar stopped at ${(await m()).side} px`);
+    await drag("Resize sidebar", 150);
+    await drag("Resize terminal", -120);
+    const set = await m();
+    if ((await stored()).some((v) => !v)) fail(`not kept: ${await stored()}`);
+    // A reload keeps them.
+    await p.reload();
+    await composer(p).waitFor();
+    await openShell(p);
+    const back = await m();
+    if (Math.abs(back.side - set.side) > 2 || Math.abs(back.panel - set.panel) > 2) fail(`after a reload: ${JSON.stringify(back)}, was ${JSON.stringify(set)}`);
+    // Arrow keys on a handle; a double click goes back to the default and forgets the width.
+    const handle = p.getByRole("separator", { name: "Resize terminal" });
+    await handle.focus();
+    const was = (await m()).panel;
+    await p.keyboard.press("ArrowRight");
+    await p.keyboard.press("Shift+ArrowRight");
+    await sleep(300);
+    if (!((await m()).panel < was)) fail("arrow keys didn't move the handle");
+    await handle.dblclick();
+    await p.getByRole("separator", { name: "Resize sidebar" }).dblclick();
+    await sleep(300);
+    const dflt = await m();
+    if ((await stored()).some(Boolean) || Math.abs(dflt.side - start.side) > 2 || Math.abs(dflt.panel - start.panel) > 2) fail(`after double clicks: ${JSON.stringify(dflt)}, ${await stored()}`);
+    // A narrower window never scrolls sideways, whatever is stored.
+    await drag("Resize sidebar", 150);
+    await drag("Resize terminal", -120);
+    for (const [w, h] of [[1024, 768], [900, 700], [800, 700]]) {
+      await p.setViewportSize({ width: w, height: h });
+      await sleep(600);
+      const n = await m();
+      if (n.over > 1) fail(`at ${w} px the page scrolls sideways by ${n.over}`);
+    }
+    await p.setViewportSize({ width: 1600, height: 900 });
+    await sleep(400);
+    await p.getByRole("separator", { name: "Resize terminal" }).dblclick();
+    await p.getByRole("separator", { name: "Resize sidebar" }).dblclick();
+    await button(p.locator(".t-term-panel"), "Close terminal panel").click();
+    await p.close();
+    // K8: no handles on a phone or a touch tablet, and stored widths don't touch the layout.
+    for (const [name, viewport] of [["phone", { width: 375, height: 812 }], ["tablet", { width: 820, height: 1180 }]]) {
+      const c = await newCtx({ viewport, hasTouch: true, isMobile: true });
+      const q = await c.newPage();
+      await q.goto(BASE, { waitUntil: "domcontentloaded" });
+      await q.evaluate(() => {
+        localStorage.setItem("tether.width.sidebar", "450");
+        localStorage.setItem("tether.width.panel", "900");
+      });
+      await q.goto(claude);
+      await composer(q).waitFor({ timeout: 60_000 });
+      await openShell(q, { tap: true });
+      if (await q.locator("[role=separator]").count()) fail(`handles on a ${name}`);
+      await noOverflow(q, name);
+      await c.close();
+    }
+    ok(`K7, K8: the panel followed the mouse (${start.panel} → ${dragged.panel}) and the PTY its width; limits held (transcript ≥ 300 px, panel ${least.panel} px at ≥ 60 columns, sidebar 200–480); tether.width.* kept the widths over a reload; arrow keys moved a handle; a double click went back to the default and forgot it; no sideways scroll at 1024, 900, 800 px; no handles and no effect of stored widths on a phone or a touch tablet`);
+  },
+
+  async newfolder() {
+    // P5.md K1, K2: New session makes a folder only when asked, on either harness.
+    const top = `${SHOTS}/newfolder`;
+    rmSync(top, { recursive: true, force: true });
+    const p = await page(desktop);
+    await p.getByRole("button", { name: "New session", exact: true }).first().click();
+    const path = p.locator("#t-new-path");
+    const form = async () => ({ err: (await p.locator(".t-form-error").allInnerTexts()).join(" "), missing: !!(await p.locator(".t-folder-missing").count()), off: await button(p, "Create").isDisabled() });
+    const settle = async (v) => {
+      await path.fill(v);
+      await sleep(900);
+      return form();
+    };
+    const target = `${top}/a/b`;
+    await path.fill(target);
+    if ((await form()).missing) fail("the warning shows while typing");
+    await sleep(900);
+    let f = await form();
+    if (!f.missing || !f.off || !/doesn't exist yet/.test(await p.locator(".t-folder-missing").innerText())) fail(`a path that doesn't exist: ${JSON.stringify(f)}`);
+    await path.press("Enter");
+    await sleep(500);
+    if (existsSync(target) || p.url().includes("/s/")) fail("Enter went ahead without the tick");
+    const tick = p.locator(".t-folder-missing input[type=checkbox]");
+    await tick.check();
+    if ((await form()).off) fail("Create stays off once ticked");
+    await settle(`${target}x`);
+    if (await tick.isChecked()) fail("a new path kept the tick");
+    await shot(p, "newfolder-desktop");
+    f = await settle(`${SCRATCH}/README.md`);
+    if (!/isn't a folder/.test(f.err) || !f.off) fail(`a file: ${JSON.stringify(f)}`);
+    f = await settle(`${SCRATCH}/README.md/sub`);
+    if (!/isn't a folder/.test(f.err) || !f.off) fail(`through a file: ${JSON.stringify(f)}`);
+    f = await settle("/proc/tether-no/such");
+    if (!/No permission to create/.test(f.err) || !f.off) fail(`no permission: ${JSON.stringify(f)}`);
+    f = await settle("zzqq-no-such-project");
+    if (!/Use a full path, like ~\/code\/app/.test(f.err) || !f.off) fail(`a relative path: ${JSON.stringify(f)}`);
+    f = await settle(`~/tether-e2e-no-such-${process.pid}/x`);
+    if (!f.missing || f.err) fail(`~/ doesn't expand: ${JSON.stringify(f)}`);
+    f = await settle(SCRATCH);
+    if (f.missing || f.err || f.off) fail(`a folder that exists: ${JSON.stringify(f)}`);
+    await settle(target);
+    await tick.check();
+    await button(p, "Create").click();
+    await p.waitForURL(/#\/s\//, { timeout: 30_000 });
+    await composer(p).waitFor({ timeout: 30_000 });
+    if (!existsSync(target)) fail("Create didn't make the folder");
+    // The runner refuses by itself too.
+    const refused = await p.evaluate(async ([conn, runner, top]) => {
+      const { rpc } = await import(eval(conn));
+      const out = {};
+      for (const [k, a] of Object.entries({ none: { projectPath: `${top}/none` }, relative: { projectPath: "rel/zz", createFolder: true }, file: { projectPath: "/etc/passwd/x", createFolder: true }, notTrue: { projectPath: `${top}/str`, createFolder: "true" } })) {
+        try {
+          out[k] = await rpc(runner, "newSession", { harness: "claude", model: "haiku", ...a });
+        } catch (e) {
+          out[k] = e.message;
+        }
+      }
+      return out;
+    }, [MOD("connection.ts"), RUNNER, top]);
+    if (Object.values(refused).some((v) => typeof v !== "string") || existsSync(`${top}/none`) || existsSync(`${top}/str`)) fail(`the runner: ${JSON.stringify(refused)}`);
+    await p.close();
+    // Codex, on a phone: the same, and the box is a finger's size. A new folder is no git repository,
+    // and no TUI opens, so nothing can ask to trust it.
+    const q = await page(phone);
+    await q.getByRole("button", { name: /navigation|menu/i }).first().tap();
+    await q.getByRole("button", { name: "New session", exact: true }).first().tap();
+    await q.getByRole("radio", { name: "Codex" }).tap();
+    const inCodex = `${top}/codex/c`;
+    await q.locator("#t-new-path").fill(inCodex);
+    await q.locator(".t-folder-missing").waitFor({ timeout: 5000 });
+    const row = await q.locator(".t-folder-missing .t-check").boundingBox();
+    if (!row || row.height < 44) fail(`the checkbox's row on a phone: ${JSON.stringify(row)}`);
+    await noOverflow(q, "New session with a missing folder");
+    await q.locator(".t-folder-missing input[type=checkbox]").check({ force: true });
+    await button(q, "Create").tap();
+    await q.waitForURL(/#\/s\/.*codex/, { timeout: 60_000 });
+    if (!existsSync(inCodex)) fail("Create didn't make the folder for Codex");
+    await q.close();
+    ok("P5.md K1, K2: a missing path warned only after a pause, Enter and Create stayed off and nothing was made until ticked; a new path cleared the tick; a file, a path through one, no permission and a relative path each said so with Create off; ~/ expanded; a folder that exists showed neither; ticked, Create made the folder and started the session, on Claude (desktop) and Codex (phone, a 44 px row); the runner refused every case by itself");
+  },
+
+  async hide() {
+    // G11: needs a runner started with TETHER_HIDE_PROJECTS matching SCRATCH, and sessions stored there.
+    if (!process.env.HIDDEN) return ok("hide skipped (no HIDDEN: a stack of its own, P5b.md Setup)");
+    const p = await page(desktop);
+    const scratchRows = () =>
+      p.evaluate(async ([conn, runner, sc]) => {
+        const { rpc } = await import(eval(conn));
+        const all = await rpc(runner, "listSessions", {});
+        const projects = await rpc(runner, "listProjects", {});
+        const found = await rpc(runner, "listSessions", { query: "e" });
+        return { rows: all.sessions.length, sessions: all.sessions.filter((s) => s.projectPath === sc).map((s) => s.id), projects: projects.projects.filter((x) => x.path === sc).length, search: found.sessions.filter((s) => s.projectPath === sc).length, others: projects.projects.length };
+      }, [MOD("connection.ts"), RUNNER, SCRATCH]);
+    const start = await scratchRows();
+    if (start.sessions.length || start.projects || start.search) fail(`hidden sessions are listed: ${JSON.stringify(start)}`);
+    if (!start.rows || !start.others) fail("nothing is listed at all: the check would prove nothing");
+    if (/\bscratch\b/.test((await p.locator(".t-inbox-head").locator("xpath=ancestor::*[2]").innerText()).replace(/tether-scratch/g, ""))) fail("Home shows a hidden session");
+    // Nothing was deleted: the store still has them, and one opens by its URL, listed while it's open.
+    const store = `${process.env.HOME}/.claude/projects/${SCRATCH.replace(/[^A-Za-z0-9]/g, "-")}`;
+    const newest = readdirSync(store).filter((f) => f.endsWith(".jsonl")).map((f) => [statSync(`${store}/${f}`).mtimeMs, f]).sort((a, b) => b[0] - a[0]);
+    if (!newest.length) fail(`no stored session in ${store}`);
+    const stored = `claude:${newest[0][1].replace(".jsonl", "")}`;
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(stored)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await waitUntil(async () => (await scratchRows()).sessions.includes(stored), "a hidden session that's open isn't listed", 20_000);
+    await p.goto(`${BASE}/#/`);
+    await waitUntil(async () => !(await scratchRows()).sessions.includes(stored), "a hidden session stays listed after leaving it", 60_000);
+    // A new one there is listed while live, and works.
+    const r = await rpcVia(p, "newSession", { harness: "claude", projectPath: SCRATCH, model: "haiku", permissionMode: "bypassPermissions" });
+    if (r.error) fail(`newSession: ${r.error}`);
+    await p.goto(`${BASE}/#/s/${encodeURIComponent(RUNNER)}/${encodeURIComponent(r.ok.sessionId)}`);
+    await composer(p).waitFor({ timeout: 30_000 });
+    await send(p, "Reply with exactly: HIDE-OK");
+    await p.locator(".t-msg.assistant", { hasText: "HIDE-OK" }).first().waitFor({ timeout: 90_000 });
+    if (!(await scratchRows()).sessions.includes(r.ok.sessionId)) fail("a live hidden session isn't listed");
+    ok(`G11: with TETHER_HIDE_PROJECTS matching ${SCRATCH}, its sessions weren't in the session list, projects, search or Home (${start.rows} others were listed), its store was untouched; a stored one opened by URL and was listed only while open; a new one was listed while live and got a reply`);
     await p.close();
   },
 
@@ -916,6 +1351,8 @@ const steps = {
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const entry = p.locator(".t-term-tab.t-term-agent");
     if (!/joined to this session/.test((await entry.getAttribute("title")) ?? "")) fail(`the Codex entry: ${await entry.getAttribute("title")}`);
+    // In a folder it doesn't trust, Codex's TUI asks, and the keys that quit it would go to that question.
+    if (!trustsScratch()) fail(`${SCRATCH} isn't trusted in ${codexConfig}: Codex's TUI would ask (never accepted here). Trust it yourself to run this step.`);
     await entry.click();
     await waitState(p, (s) => s.terminal?.kind === "shared" && s.mode === "live", "Codex's TUI joined", 60_000);
     if (!/Codex\s*·\s*joined/.test(await entry.innerText())) fail(`the entry: ${await entry.innerText()}`);
@@ -928,7 +1365,7 @@ const steps = {
   },
 };
 
-const order = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(steps);
+const order = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(steps).filter((s) => s !== "hide");
 let failed = 0;
 for (const name of order) {
   if (!steps[name]) {
@@ -947,5 +1384,9 @@ for (const name of order) {
   }
 }
 if (errors.length) console.log(`page errors:\n${errors.join("\n")}`);
+if (!trustedBefore && trustsScratch()) {
+  console.log(`FAIL ${SCRATCH} is now trusted in ${codexConfig}`);
+  failed++;
+}
 await browser.close();
 process.exit(failed || errors.length ? 1 : 0);

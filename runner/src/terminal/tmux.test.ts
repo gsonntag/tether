@@ -4,7 +4,8 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanEnv, projectKey, SERVER_OPTIONS, shellName, Tmux, tuiName } from "./tmux";
+import { cleanEnv, forProgram, LEAVE_KEY, projectKey, SERVER_OPTIONS, shellName, swipeKeys, Tmux, tuiName } from "./tmux";
+import { spawnPty } from "./pty";
 
 const tmux = new Tmux({ socket: `tether-test-${process.pid}` });
 const dir = mkdtempSync(join(tmpdir(), "tether-tmux-"));
@@ -153,4 +154,53 @@ test("leaving copy mode: keys reach the program again; outside it, nothing happe
   await tmux.leaveCopyMode("sh-copy-1");
   expect(inMode()).toBe("0");
   await tmux.kill("sh-copy-1");
+});
+
+const bytes = (s: string) => new TextEncoder().encode(s);
+
+test("what's meant for the program, and what stays with copy mode", () => {
+  for (const k of ["a", "ls -l", "\r", "\x03", "\x7f", "\t", "\x1b[Z", "\x1b[3~", "\x1bf", "\x1b\r", "\x1b[200~text\x1b[201~"]) expect([k, forProgram(bytes(k))]).toEqual([k, true]);
+  for (const k of ["", "\x1b", "\x1b[A", "\x1b[B", "\x1bOA", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[1;5A", "\x1b[<64;1;1M", "\x1b[<0;3;4m", "\x1b[I", "\x1b[O", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b]11;rgb:1616/1717/1a1a\x1b\\", "\x1bP>|xterm\x1b\\", "\x1b[12;40R"]) expect([k, forProgram(bytes(k))]).toEqual([k, false]);
+});
+
+test("through a real attach: a swipe moves line by line, and Tether's leave key quits copy mode ahead of the keys, never reaching the program", async () => {
+  const name = "sh-test-copy";
+  await tmux.create({ name, cwd: dir, argv: ["bash", "--norc"], cols: 80, rows: 24, tags: { kind: "shell", project: dir, n: "7" } });
+  const pty = spawnPty(tmux.argv("attach-session", "-t", `=${name}`), { cols: 80, rows: 24, env: { ...cleanEnv(), TERM: "xterm-256color" }, onData: () => {}, onExit: () => {} });
+  const show = async () => {
+    const p = Bun.spawn(tmux.argv("display", "-p", "-t", `=${name}:`, "#{pane_in_mode} #{scroll_position}"), { stdout: "pipe" });
+    return (await new Response(p.stdout).text()).trim();
+  };
+  const hist = () => tmux.history(name);
+  const type = (s: string) => pty.write(bytes(s));
+  try {
+    await until(async () => /[$#] *$/m.test(await tmux.capture(name)));
+    type("seq 1 300\r");
+    await until(async () => (await tmux.capture(name)).includes("300"));
+    const older = (n: number) => swipeKeys("\x1b[<64;1;1M".repeat(n));
+    // Out of copy mode the leave key is nothing: the text arrives whole.
+    type(`${LEAVE_KEY}echo PLAIN-$((1+1))\r`);
+    await until(async () => /^PLAIN-2$/m.test(await hist()));
+    // The first line enters copy mode, the others scroll one line each, sent in one write.
+    type(older(1));
+    await until(async () => (await show()).startsWith("1 "));
+    type(older(5));
+    await until(async () => (await show()) === "1 5");
+    type(swipeKeys("\x1b[<65;1;1M".repeat(2)));
+    await until(async () => (await show()) === "1 3");
+    // Text after the leave key, in the same write and right after scrolling: it runs.
+    type(`${older(2)}${LEAVE_KEY}echo SCROLLED-$((2+2))\r`);
+    await until(async () => /^SCROLLED-4$/m.test(await hist()));
+    expect((await show()).trim()).toBe("0");
+    // A program never sees the key; one that takes the mouse gets a swipe as the wheel.
+    type("printf '\\033[?1000h\\033[?1006h'; cat -v\r");
+    await until(async () => (await tmux.capture(name)).includes("cat -v"));
+    await Bun.sleep(100);
+    type(`${older(2)}${LEAVE_KEY}x\r`);
+    await until(async () => /\^\[\[<64;1;1M\^\[\[<64;1;1Mx$/m.test(await tmux.capture(name)));
+    expect(await tmux.capture(name)).not.toContain("59990");
+  } finally {
+    pty.close();
+    await tmux.kill(name);
+  }
 });

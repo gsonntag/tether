@@ -196,16 +196,12 @@ export function TerminalPanel({
   const onTuiStatus = (s: TermStatus) => {
     if (s === "ended") setPanel((p) => p && { ...p, wantTui: false, stop: false });
   };
-  const sendLine = async () => {
+  const sendLine = () => {
     const text = line.trim() ? line : "";
     // An empty line is just Enter (confirming a choice in the TUI).
-    if (!text) return view.current?.input("\r");
+    if (!text) return view.current?.input("\r", true);
     setLine("");
-    // Typed into the terminal in front as keys, the way a keyboard would: the text, then (a beat
-    // later, so a TUI doesn't take it as part of a paste) Enter.
-    view.current?.input(text);
-    await new Promise((r) => setTimeout(r, 150));
-    view.current?.input("\r");
+    view.current?.line(text);
   };
 
   const returning = !!state.terminal?.returning;
@@ -420,7 +416,8 @@ export function TerminalPanel({
                 // cancelled (iOS Safari would drop the click).
                 onMouseDown={(e) => e.preventDefault()}
                 disabled={!!copy}
-                onClick={() => view.current?.input(k.data)}
+                // Scrolled back, a key is still for the program; Esc is how you leave without one.
+                onClick={() => view.current?.input(k.data, k.data !== "\x1b")}
               >
                 {k.label}
               </button>
@@ -440,11 +437,11 @@ export function TerminalPanel({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  void sendLine();
+                  sendLine();
                 }
               }}
             />
-            <IconButton label="Send line" variant="primary" isDisabled={!!lineOff || !!copy} icon={<Icon icon={ArrowUpIcon} />} onClick={() => void sendLine()} />
+            <IconButton label="Send line" variant="primary" isDisabled={!!lineOff || !!copy} icon={<Icon icon={ArrowUpIcon} />} onClick={() => sendLine()} />
           </div>
         </div>
       )}

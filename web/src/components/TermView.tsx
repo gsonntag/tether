@@ -7,7 +7,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { on, rpc } from "../connection";
 import { useStore } from "../store";
-import { Swipe, TermConn, wheelSeq, type TermDeps, type TermStatus, type TermTarget } from "../terminal";
+import { Swipe, TermConn, type TermDeps, type TermStatus, type TermTarget } from "../terminal";
 import { copyable, plainDragSelects } from "../termSelect";
 
 const deps: TermDeps = {
@@ -35,8 +35,10 @@ const deps: TermDeps = {
 const debugTerms: Map<string, Terminal> | undefined = import.meta.env?.DEV ? ((globalThis as any).__tetherTerms ??= new Map()) : undefined;
 
 export interface TermViewHandle {
-  /** sends keys as typed (the phone's key bar, its input line) */
-  input(data: string): void;
+  /** sends keys as typed (the phone's key bar); `leave`: out of copy mode first, whatever the keys */
+  input(data: string, leave?: boolean): void;
+  /** a whole line, then Enter, to this terminal (the phone's line) */
+  line(text: string): void;
   /** the attach now (for the panel's Copy), if attached */
   attachId(): string | undefined;
   focus(): void;
@@ -66,11 +68,19 @@ export const TermView = forwardRef<
   const term = useRef<Terminal>(null);
   const coverNow = useRef(cover);
   coverNow.current = cover;
+  const stopGlide = useRef(() => {});
   const [status, setStatus] = useState<{ s: TermStatus; why?: string }>({ s: "connecting" });
   const key = "sessionId" in target ? target.sessionId : target.shellId;
 
   useImperativeHandle(ref, () => ({
-    input: (d) => conn.current?.input(d),
+    input: (d, leave) => {
+      stopGlide.current();
+      conn.current?.input(d, leave);
+    },
+    line: (text) => {
+      stopGlide.current();
+      conn.current?.line(text);
+    },
     attachId: () => conn.current?.attachId,
     focus: () => term.current?.focus(),
   }));
@@ -145,14 +155,15 @@ export const TermView = forwardRef<
       window.addEventListener("mouseup", released);
     }
     // A swipe scrolls: tmux has the mouse, so xterm's own touch scrolling stands aside, and a drag
-    // goes to tmux as wheel notches (a tap stays a tap: it focuses the terminal).
+    // goes to tmux line by line, with the finger (a tap stays a tap: it focuses the terminal).
     const scroll = (lines: number) => {
       if (!lines) return;
       if (t.modes.mouseTrackingMode === "none") t.scrollLines(-lines);
-      else c.input(wheelSeq(lines > 0, Math.min(Math.abs(lines), 30)));
+      else c.swipe(Math.max(-30, Math.min(30, lines)));
     };
     const swipe = new Swipe(Math.max(8, el.clientHeight / Math.max(1, t.rows)));
     let glide = 0;
+    stopGlide.current = () => cancelAnimationFrame(glide);
     const touchStart = (e: TouchEvent) => {
       cancelAnimationFrame(glide);
       if (e.touches.length === 1) swipe.start(e.touches[0]!.clientY, e.timeStamp);
@@ -184,7 +195,11 @@ export const TermView = forwardRef<
     el.addEventListener("touchstart", touchStart, { passive: true, capture: true });
     el.addEventListener("touchmove", touchMove, { passive: false, capture: true });
     el.addEventListener("touchend", touchEnd, { passive: true, capture: true });
-    const input = t.onData((d) => c.input(d));
+    // Typing ends a glide: its next notch would scroll back away from what was typed.
+    const input = t.onData((d) => {
+      if (d[0] !== "\x1b") cancelAnimationFrame(glide);
+      c.input(d);
+    });
     const binary = t.onBinary((d) => c.input(d));
     c.open(t.cols, t.rows, stop).then(
       () => !raisesKeyboard(coverNow.current) && t.focus(),

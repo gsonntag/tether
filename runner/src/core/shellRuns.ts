@@ -353,9 +353,9 @@ export class ShellRuns {
       r.carry = text.slice(esc);
       text = text.slice(0, esc);
     } else r.carry = "";
-    // Colors and other escapes go, then every other control character but tab and newlines (a NUL
+    // Colors and other escapes go, a CR is a line break, then every other control character but tab and newlines (a NUL
     // would take 6 bytes in a frame).
-    r.buf.push(stripControls(stripAnsi(text).replace(/\r\n/g, "\n")));
+    r.buf.push(stripControls(stripAnsi(text).replace(/\r\n?/g, "\n")));
   }
 
   /** New output to the card: appended in bounded deltas, or (cut in the middle) whole, at most once a second. */

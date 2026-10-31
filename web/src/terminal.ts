@@ -64,6 +64,12 @@ function wire(d: TermDeps): Wiring {
 const HELD_KEYS_MS = 5000;
 const HELD_KEYS_MAX = 4096;
 
+/** A line's text, then this long before its Enter, so a TUI doesn't take Enter as part of a paste. */
+const LINE_ENTER_MS = 150;
+
+/** Between tries to reattach after one failed: doubling, up to the last. */
+const REATTACH_MS = [1000, 2000, 4000, 8000, 15_000];
+
 /** What "exited" etc. mean to a person. */
 const ENDED = new Set(["exited"]);
 
@@ -82,7 +88,12 @@ export class TermConn {
   /** the first attach waits for the runner (it was offline when the view opened) */
   private first?: { stop: boolean };
   /** keys typed while the attach is away (a reattach): sent when it's back, if that's soon */
-  private held: { at: number; text: string }[] = [];
+  private held: { at: number; text: string; leave?: boolean }[] = [];
+  /** a line's Enter on its way: it goes to this terminal even if the view has moved on */
+  private enter?: ReturnType<typeof setTimeout>;
+  /** reattach tries that failed in a row, and the next try */
+  private fails = 0;
+  private again?: ReturnType<typeof setTimeout>;
   private w: Wiring;
 
   constructor(
@@ -133,10 +144,11 @@ export class TermConn {
         this.attachId = r.attachId;
         this.w.routes.set(r.attachId, this);
         this.set("open");
+        this.fails = 0;
         const now = Date.now();
-        const keys = this.held.filter((k) => now - k.at < HELD_KEYS_MS).map((k) => k.text).join("");
+        const keys = this.held.filter((k) => now - k.at < HELD_KEYS_MS);
         this.held = [];
-        if (keys) this.input(keys);
+        for (const k of keys) this.input(k.text, k.leave);
         const e = this.w.early.get(r.attachId);
         this.w.early.delete(r.attachId);
         for (const c of e?.chunks ?? []) this.cb.data(c);
@@ -179,6 +191,8 @@ export class TermConn {
   }
 
   private retry() {
+    clearTimeout(this.again);
+    this.again = undefined;
     if (this.closed || this.status === "ended" || this.attachId || this.attaching) return;
     if (!this.d.linkOpen() || !this.d.runnerOnline(this.runnerId)) return;
     if (this.first) {
@@ -193,20 +207,54 @@ export class TermConn {
     if (!this.attachedOnce) return;
     this.attach(false, true).catch((e: Error) => {
       // Gone for good (exited meanwhile) or the runner can't: say so; a later reconnect tries again.
-      if (/closed/i.test(e.message)) this.set("ended", "The terminal has closed.");
-      else this.set("reconnecting", e.message);
+      if (/closed/i.test(e.message)) return this.set("ended", "The terminal has closed.");
+      this.set("reconnecting", e.message);
+      this.again = setTimeout(() => this.retry(), REATTACH_MS[Math.min(this.fails++, REATTACH_MS.length - 1)]);
     });
   }
 
-  /** Keys as typed (xterm's onData: a string of characters and escape sequences). */
-  input(text: string) {
+  /**
+   * Keys as typed (xterm's onData: a string of characters and escape sequences). `leave`: out of
+   * tmux's copy mode first, whatever the keys (else the runner goes by what they are).
+   */
+  input(text: string, leave?: boolean) {
     if (!text || this.closed || this.status === "ended") return;
+    this.send(text, leave);
+  }
+
+  private send(text: string, leave?: boolean) {
     if (!this.attachId) {
       // Reattaching: kept a moment, not dropped.
-      if (this.held.reduce((n, k) => n + k.text.length, 0) + text.length <= HELD_KEYS_MAX) this.held.push({ at: Date.now(), text });
+      if (this.held.reduce((n, k) => n + k.text.length, 0) + text.length <= HELD_KEYS_MAX) this.held.push({ at: Date.now(), text, ...(leave === undefined ? {} : { leave }) });
       return;
     }
-    void this.d.rpc(this.runnerId, "terminalInput", { attachId: this.attachId, data: encodeChunk(new TextEncoder().encode(text)) }).catch(() => {});
+    void this.d.rpc(this.runnerId, "terminalInput", { attachId: this.attachId, data: encodeChunk(new TextEncoder().encode(text)), ...(leave === undefined ? {} : { leave }) }).catch(() => {});
+  }
+
+  /** A line as a keyboard would type it: the text, then Enter, both to this terminal. */
+  line(text: string) {
+    if (this.closed || this.status === "ended") return;
+    this.flushEnter();
+    this.input(text, true);
+    this.enter = setTimeout(() => {
+      this.flushEnter();
+      // Closing the attach ends its tmux client, which may not have read the Enter yet.
+      if (this.closed) setTimeout(() => this.detach(), LINE_ENTER_MS);
+    }, LINE_ENTER_MS);
+  }
+
+  private flushEnter() {
+    if (!this.enter) return;
+    clearTimeout(this.enter);
+    this.enter = undefined;
+    this.send("\r", true);
+  }
+
+  /** Lines a swipe moved: as wheel notches, which the runner makes one line each. */
+  swipe(lines: number) {
+    if (!lines || !this.attachId || this.closed) return;
+    const data = encodeChunk(new TextEncoder().encode(wheelSeq(lines > 0, Math.abs(lines))));
+    void this.d.rpc(this.runnerId, "terminalInput", { attachId: this.attachId, data, swipe: true }).catch(() => {});
   }
 
   resize(cols: number, rows: number) {
@@ -224,12 +272,16 @@ export class TermConn {
     if (this.closed) return;
     this.closed = true;
     clearTimeout(this.resizeTimer);
+    clearTimeout(this.again);
     this.offs.forEach((f) => f());
-    if (this.attachId) {
-      this.w.routes.delete(this.attachId);
-      void this.d.rpc(this.runnerId, "closeTerminal", { attachId: this.attachId }).catch(() => {});
-      this.attachId = undefined;
-    }
+    if (!this.enter) this.detach();
+  }
+
+  private detach() {
+    if (!this.attachId) return;
+    this.w.routes.delete(this.attachId);
+    void this.d.rpc(this.runnerId, "closeTerminal", { attachId: this.attachId }).catch(() => {});
+    this.attachId = undefined;
   }
 
   private set(s: TermStatus, why?: string) {

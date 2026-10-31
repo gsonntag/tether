@@ -355,10 +355,18 @@ describe("! commands", () => {
     await t.core.subscribe("claude:s1");
     const { id } = await t.runs.run("claude:s1", "head -c 3000000 /dev/zero; head -c 3000000 /dev/urandom");
     await until(() => t.shell(id).state === "sent", 15_000);
-    expect(t.tool(id).output).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/);
+    expect(t.tool(id).output).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(t.driver()!.sent.at(-1)).not.toContain("\u0000");
     const big = Math.max(...t.frames.map((f) => JSON.stringify(f).length));
     expect(big).toBeLessThan(200 * 1024);
+  }, 30_000);
+
+  test("a CR is a line break, so a progress bar reads as lines; C1 goes", async () => {
+    const t = setup();
+    await t.core.subscribe("claude:s1");
+    const { id } = await t.runs.run("claude:s1", "printf '10%%\\r20%%\\r\\n\\302\\233done\\n'");
+    await until(() => t.shell(id).state === "sent", 15_000);
+    expect(t.tool(id).output).toBe("10%\n20%\ndone\n");
   }, 30_000);
 
   test("a runner crash: the next start ends what still runs (by its saved group) and keeps what it printed", async () => {

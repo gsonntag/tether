@@ -206,7 +206,8 @@ export interface Ops {
   closeShell: { args: { shellId: string }; result: null };
   closeTerminal: { args: { attachId: string }; result: null };
   /** base64 bytes typed into an attached terminal */
-  terminalInput: { args: { attachId: string; data: string }; result: null };
+  /** `leave`: out of copy mode first, whatever the keys (the runner tells otherwise by the bytes); `swipe`: wheel notches of one line each */
+  terminalInput: { args: { attachId: string; data: string; leave?: boolean; swipe?: boolean }; result: null };
   terminalResize: { args: { attachId: string; cols: number; rows: number }; result: null };
   /**
    * An attached terminal's text, scrollback included (the panel's Copy), the newest

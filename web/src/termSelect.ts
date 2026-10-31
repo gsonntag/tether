@@ -2,7 +2,8 @@
 // to tmux and selects only when the press carries the force-selection modifier. So a plain press
 // waits here. Released in place it is a click and goes to tmux as usual, press then release, which
 // keeps clicks working in whatever runs inside; moved, it goes to xterm with that modifier and is a
-// browser selection. Shift-drag and Option-drag go straight to xterm, as they always did.
+// browser selection. Shift-drag and Option-drag go straight to xterm, as they always did. A right
+// press carries the same modifier, so it never reaches tmux (its menu) and xterm selects the word.
 
 /** Pixels the mouse moves before a press is a drag. */
 const DRAG_PX = 4;
@@ -21,11 +22,7 @@ export const forceSelection = (platform: string): MouseEventInit => (/Mac|iPod|i
 export function plainDragSelects(el: HTMLElement, active: () => boolean, focus: () => void): () => void {
   let held: MouseEvent | undefined;
   let replaying = false;
-  const release = (init?: MouseEventInit) => {
-    const e = held!;
-    held = undefined;
-    document.removeEventListener("mousemove", move, true);
-    document.removeEventListener("mouseup", up, true);
+  const replay = (e: MouseEvent, button: number, init?: MouseEventInit) => {
     replaying = true;
     e.target!.dispatchEvent(
       new MouseEvent("mousedown", {
@@ -34,8 +31,8 @@ export function plainDragSelects(el: HTMLElement, active: () => boolean, focus: 
         composed: true,
         view: window,
         detail: e.detail,
-        button: 0,
-        buttons: 1,
+        button,
+        buttons: button === 2 ? 2 : 1,
         clientX: e.clientX,
         clientY: e.clientY,
         screenX: e.screenX,
@@ -45,12 +42,23 @@ export function plainDragSelects(el: HTMLElement, active: () => boolean, focus: 
     );
     replaying = false;
   };
+  const release = (init?: MouseEventInit) => {
+    const e = held!;
+    held = undefined;
+    document.removeEventListener("mousemove", move, true);
+    document.removeEventListener("mouseup", up, true);
+    replay(e, 0, init);
+  };
   const move = (e: MouseEvent) => {
     if (held && isDrag(held, e)) release(forceSelection(navigator.platform));
   };
   // Still ahead of xterm: the press reaches it first, then this same mouseup as its release.
   const up = () => held && release();
   const down = (e: MouseEvent) => {
+    if (e.button === 2 && !replaying && active()) {
+      e.stopPropagation();
+      return replay(e, 2, forceSelection(navigator.platform));
+    }
     if (replaying || held || !isPlainPress(e) || !active()) return;
     e.stopPropagation();
     e.preventDefault();
@@ -59,9 +67,14 @@ export function plainDragSelects(el: HTMLElement, active: () => boolean, focus: 
     document.addEventListener("mousemove", move, true);
     document.addEventListener("mouseup", up, true);
   };
+  const rightUp = (e: MouseEvent) => {
+    if (e.button === 2 && active()) e.stopPropagation();
+  };
   el.addEventListener("mousedown", down, true);
+  el.addEventListener("mouseup", rightUp, true);
   return () => {
     el.removeEventListener("mousedown", down, true);
+    el.removeEventListener("mouseup", rightUp, true);
     document.removeEventListener("mousemove", move, true);
     document.removeEventListener("mouseup", up, true);
   };

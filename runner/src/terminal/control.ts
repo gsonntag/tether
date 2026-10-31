@@ -25,6 +25,7 @@
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
+import { decodeChunk } from "../../../shared/wire";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, TERMINAL_TEXT_MAX, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
 import type { LiveState, Msg } from "../../../shared/transcript";
 import type { QuitStep, ScreenRead, TerminalLaunch, TerminalOpts } from "../core/adapter";
@@ -36,7 +37,7 @@ import { Transcript } from "../core/transcript";
 import { Attaches, type SpawnPty } from "./attach";
 import { HookServer, type HookReport } from "./hooks";
 import { tailBytes } from "../../../shared/shellRun";
-import { cleanEnv, projectKey, shellName, Tmux, tuiName } from "./tmux";
+import { cleanEnv, forProgram, LEAVE_KEY, projectKey, shellName, swipeKeys, Tmux, tuiName } from "./tmux";
 
 export interface TerminalOptions {
   core: SessionCore;
@@ -188,6 +189,8 @@ export class TerminalControl {
       await this.enter(s, { stop: a.stop, cols: a.cols, rows: a.rows });
       target = this.nameOf(s.id);
     } else throw new Error("Say which terminal to open.");
+    // A tmux server older than this runner gets today's settings before anyone types.
+    await this.o.tmux.ensureServer().catch((e) => this.log(`tmux: ${e?.message ?? e}`));
     this.attaches.open(a.attachId, target, this.o.tmux.argv("attach-session", "-t", `=${target}`), a.cols, a.rows, { ...cleanEnv(), TERM: "xterm-256color" });
     return { attachId: a.attachId, target };
   }
@@ -206,8 +209,20 @@ export class TerminalControl {
     return { text, cut: text.length < all.length || full };
   }
 
-  input(attachId: string, data: string) {
-    this.attaches.input(attachId, data);
+  /**
+   * Keys from a browser. What's meant for the program leaves copy mode first (scrolled back, tmux
+   * would swallow it), in the same write, so nothing can come between: `leave` says so for keys that
+   * can't be told by their bytes (the phone's key bar). `swipe`: wheel notches that move one line.
+   */
+  input(attachId: string, data: string, o: { leave?: boolean; swipe?: boolean } = {}) {
+    const bytes = decodeChunk(data);
+    if (o.swipe) return this.attaches.input(attachId, new TextEncoder().encode(swipeKeys(new TextDecoder().decode(bytes))));
+    if (!(o.leave ?? forProgram(bytes))) return this.attaches.input(attachId, bytes);
+    const lead = new TextEncoder().encode(LEAVE_KEY);
+    const all = new Uint8Array(lead.length + bytes.length);
+    all.set(lead);
+    all.set(bytes, lead.length);
+    this.attaches.input(attachId, all);
   }
 
   resize(attachId: string, cols: number, rows: number) {

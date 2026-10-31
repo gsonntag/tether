@@ -20,6 +20,7 @@ import { Prefs } from "../core/prefs";
 import { SessionCore } from "../core/sessions";
 import { FakePty } from "./attach.test";
 import { TerminalControl } from "./control";
+import { encodeChunk } from "../../../shared/wire";
 import { Tmux, type TmuxSession } from "./tmux";
 
 /** tmux in memory: sessions, what was typed, keys pressed. A TUI "quits" on its quit text. */
@@ -1053,5 +1054,42 @@ describe("review round 9", () => {
     await live.queue.resume(S);
     await until(() => state(core, S).queue.length === 0);
     expect(adapter.drivers.length).toBe(1);
+  });
+});
+
+describe("keys reach the program from copy mode", () => {
+  const LEAVE = "\x1b[59990~";
+  const keys = (s: string) => encodeChunk(new TextEncoder().encode(s));
+  const shell = async () => {
+    const { term } = setup();
+    const sh = await term.newShell(PROJ);
+    await term.open({ shellId: sh.id, attachId: "a1", cols: 80, rows: 24 });
+    const pty = FakePty.all.at(-1)!;
+    pty.written.length = 0;
+    return { term, pty };
+  };
+
+  test("typing leaves it first, in one write; scrolling keys and what the terminal says by itself don't", async () => {
+    const { term, pty } = await shell();
+    term.input("a1", keys("x"));
+    term.input("a1", keys("\r"));
+    expect(pty.written).toEqual([`${LEAVE}x`, `${LEAVE}\r`]);
+    pty.written.length = 0;
+    for (const k of ["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]) term.input("a1", keys(k));
+    expect(pty.written).toEqual(["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]);
+  });
+
+  test("the key bar says so itself: its arrows leave too, its Esc doesn't need to", async () => {
+    const { term, pty } = await shell();
+    term.input("a1", keys("\x1b[A"), { leave: true });
+    term.input("a1", keys("\x1b"), { leave: false });
+    expect(pty.written).toEqual([`${LEAVE}\x1b[A`, "\x1b"]);
+  });
+
+  test("a swipe's notches go as one-line keys", async () => {
+    const { term, pty } = await shell();
+    term.input("a1", keys("\x1b[<64;1;1M\x1b[<64;1;1M"), { swipe: true });
+    term.input("a1", keys("\x1b[<65;1;1M"), { swipe: true });
+    expect(pty.written).toEqual(["\x1b[59991~\x1b[59991~", "\x1b[59992~"]);
   });
 });

@@ -7,6 +7,11 @@
 // (Ctrl-B belongs to the TUI), no status line, no escape delay, `window-size latest` (the device
 // you type on sets the size), mouse on for scrolling, and focus events (Claude asks for them).
 //
+// Three keys of Tether's own (`user-keys`) reach tmux in the input stream itself, so they keep their
+// order with what is typed around them, which a separate tmux command wouldn't: LEAVE_KEY quits
+// copy mode, SCROLL_* move one line (a wheel notch moves five). tmux eats them: a program never sees
+// them.
+//
 // Commands run with Tether's secrets removed from the environment: the tmux server keeps the
 // environment of the process that started it, and every shell in it inherits that.
 
@@ -56,6 +61,30 @@ export const defaultExec: Exec = async (argv, opts) => {
   return { code, stdout, stderr };
 };
 
+export const LEAVE_KEY = "\x1b[59990~";
+const SCROLL_OLDER = "\x1b[59991~";
+const SCROLL_NEWER = "\x1b[59992~";
+
+/** A swipe's wheel notches (the browser's way to say it) as one line each. */
+export const swipeKeys = (wheel: string) => wheel.replaceAll("\x1b[<64;1;1M", SCROLL_OLDER).replaceAll("\x1b[<65;1;1M", SCROLL_NEWER);
+
+/** Outside copy mode: a program that takes the mouse gets a wheel notch, as with tmux's own wheel binding. */
+const swipeBinding = (key: string, report: string, otherwise: string[]) => ["bind-key", "-T", "root", key, "if-shell", "-F", "#{mouse_any_flag}", `send-keys -l '${report}'`, ...otherwise];
+
+/**
+ * Whether keys are meant for the program, not for scrolling, so copy mode must not swallow them:
+ * text, Enter, control keys, a paste, Alt with a key, Delete, Shift+Tab. Not Esc alone, which quits
+ * copy mode by itself; not arrows and page keys, which scroll there; and not what a terminal says
+ * by itself (mouse and focus reports, replies to tmux's queries).
+ */
+export function forProgram(b: Uint8Array): boolean {
+  if (!b.length) return false;
+  if (b[0] !== 0x1b) return true;
+  if (b.length === 1) return false;
+  const s = String.fromCharCode(...b.subarray(0, 6));
+  return s.startsWith("\x1b[200~") || s === "\x1b[Z" || s === "\x1b[3~" || /^\x1b[^[\]OP_^X]/.test(s);
+}
+
 /** Options set on Tether's tmux server (see the header). */
 export const SERVER_OPTIONS: string[][] = [
   ["set", "-g", "prefix", "None"],
@@ -73,6 +102,18 @@ export const SERVER_OPTIONS: string[][] = [
   ["set", "-g", "detach-on-destroy", "on"],
   // A bigger device than the one typing sees the window plain, with blank space around it (not dots).
   ["set", "-wg", "fill-character", " "],
+  // Keys that arrive together are still keys: tmux would take them for a paste and skip the bindings.
+  ["set", "-g", "assume-paste-time", "0"],
+  // tmux picks vi keys from $EDITOR, where Esc doesn't quit copy mode.
+  ["set", "-wg", "mode-keys", "emacs"],
+  ["set", "-s", "user-keys[0]", LEAVE_KEY],
+  ["set", "-s", "user-keys[1]", SCROLL_OLDER],
+  ["set", "-s", "user-keys[2]", SCROLL_NEWER],
+  ["bind-key", "-T", "copy-mode", "User0", "send-keys", "-X", "cancel"],
+  ["bind-key", "-T", "copy-mode", "User1", "send-keys", "-X", "scroll-up"],
+  ["bind-key", "-T", "copy-mode", "User2", "send-keys", "-X", "scroll-down"],
+  swipeBinding("User1", "\x1b[<64;1;1M", ["copy-mode -e"]),
+  swipeBinding("User2", "\x1b[<65;1;1M", []),
 ];
 
 const FORMAT = ["#{session_name}", "#{@tether_kind}", "#{@tether_session}", "#{@tether_project}", "#{@tether_n}", "#{pane_current_command}", "#{session_created}", "#{@tether_launch}"].join("\t");

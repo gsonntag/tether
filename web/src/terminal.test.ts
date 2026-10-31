@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ServerToBrowser } from "../../shared/protocol";
-import { encodeChunk } from "../../shared/wire";
+import { decodeChunk, encodeChunk } from "../../shared/wire";
 import { handoffPrompt, shellOpened, TermConn, type TermDeps } from "./terminal";
 
 /** A relay and runner in miniature: records rpcs, answers openTerminal with fresh attach ids. */
@@ -211,6 +211,96 @@ test("keys typed during a reattach go out when it's back", async () => {
   expect(sent).toHaveLength(1);
   expect(sent[0]!.args.attachId).toBe(c.attachId);
   c.close();
+});
+
+const typed = (f: ReturnType<typeof fake>) => f.calls.filter((c) => c.op === "terminalInput").map((c) => ({ id: c.args.attachId, text: new TextDecoder().decode(decodeChunk(c.args.data)), leave: c.args.leave, swipe: c.args.swipe }));
+
+test("a line goes to the terminal it was typed for, Enter too, even if another comes to the front meanwhile", async () => {
+  const f = fake();
+  const c = new TermConn("r1", { shellId: "s1" }, view().cb, f.deps);
+  await c.open(80, 24);
+  c.line("ls");
+  expect(typed(f)).toEqual([{ id: "a1", text: "ls", leave: true, swipe: undefined }]);
+  // The view moves on: the attach stays until its Enter is out, then closes.
+  c.close();
+  expect(f.calls.some((x) => x.op === "closeTerminal")).toBe(false);
+  await Bun.sleep(200);
+  expect(typed(f).at(-1)).toEqual({ id: "a1", text: "\r", leave: true, swipe: undefined });
+  expect(f.calls.some((x) => x.op === "closeTerminal")).toBe(false);
+  await Bun.sleep(200);
+  expect(f.calls.at(-1)?.op).toBe("closeTerminal");
+});
+
+test("two lines in a row keep their order", async () => {
+  const f = fake();
+  const c = new TermConn("r1", { shellId: "s1" }, view().cb, f.deps);
+  await c.open(80, 24);
+  c.line("one");
+  c.line("two");
+  await Bun.sleep(200);
+  expect(typed(f).map((k) => k.text)).toEqual(["one", "\r", "two", "\r"]);
+  c.close();
+});
+
+test("a swipe says it's a swipe; a key held through a reattach keeps what it asked for", async () => {
+  const f = fake();
+  const c = new TermConn("r1", { shellId: "s1" }, view().cb, f.deps);
+  await c.open(80, 24);
+  c.swipe(-2);
+  expect(typed(f)).toEqual([{ id: "a1", text: "\x1b[<65;1;1M\x1b[<65;1;1M", leave: undefined, swipe: true }]);
+  f.setLink(false);
+  c.input("\x1b[A", true);
+  c.swipe(3); // not kept: gone with the moment
+  f.setLink(true);
+  await Bun.sleep(0);
+  expect(typed(f).at(-1)).toEqual({ id: "a2", text: "\x1b[A", leave: true, swipe: undefined });
+  expect(typed(f).length).toBe(2);
+  c.close();
+});
+
+test("a reattach that fails tries again, then keeps trying at a capped pace; a closed terminal ends it", async () => {
+  const f = fake();
+  const v = view();
+  const c = new TermConn("r1", { shellId: "s1" }, v.cb, f.deps);
+  await c.open(80, 24);
+  const realSet = globalThis.setTimeout;
+  const delays: number[] = [];
+  const timers: (() => void)[] = [];
+  (globalThis as any).setTimeout = (fn: () => void, ms: number) => (ms >= 1000 ? (delays.push(ms), timers.push(fn), 1) : realSet(fn, ms));
+  try {
+    f.failWith("The runner is busy.");
+    f.setLink(false);
+    f.setLink(true);
+    for (let i = 0; i < 7; i++) {
+      await Bun.sleep(0);
+      timers.shift()?.();
+    }
+    await Bun.sleep(0);
+    expect(delays).toEqual([1000, 2000, 4000, 8000, 15000, 15000, 15000, 15000]);
+    expect(c.status).toBe("reconnecting");
+    f.failWith(undefined);
+    timers.shift()?.();
+    await Bun.sleep(0);
+    expect(c.status).toBe("open");
+    expect(timers).toEqual([]);
+  } finally {
+    globalThis.setTimeout = realSet;
+    c.close();
+  }
+});
+
+test("a close during the backoff stops the tries", async () => {
+  const f = fake();
+  const c = new TermConn("r1", { shellId: "s1" }, view().cb, f.deps);
+  await c.open(80, 24);
+  f.failWith("The runner is busy.");
+  f.setLink(false);
+  f.setLink(true);
+  await Bun.sleep(0);
+  c.close();
+  const n = f.calls.filter((x) => x.op === "openTerminal").length;
+  await Bun.sleep(1100);
+  expect(f.calls.filter((x) => x.op === "openTerminal").length).toBe(n);
 });
 
 test("the prompt before handing off, with the queue paused", () => {

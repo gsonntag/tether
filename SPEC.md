@@ -334,9 +334,10 @@ the terminal": no Working or idle, no turn pushes, no "back when it's done". Tra
 turns from hooks, its store and its screen proved unreliable (an Esc before any output, Claude's own
 input queue, a subagent's hooks, /compact), so Tether doesn't try. What it keeps:
 - **Needs you**, best-effort and add-only: set by the TUI's hooks (`PermissionRequest` the moment a
-  permission prompt or a question shows, `Elicitation`, `Notification`), with what Claude waits for
-  ("Claude needs your permission to use Write", "Claude is asking you something."), and pushed as
-  ever. It clears only on evidence (the TUI's screen shows its prompt again, no dialog, for a few
+  permission prompt or a question shows, `Elicitation`, `Notification`). The session's state and
+  Tether's own UI say what Claude waits for ("Claude needs your permission to use Write", "Claude is
+  asking you something."). The push doesn't: it has a fixed phrase ("Claude needs you in the
+  terminal."), never what Claude waits for, because lock screens show notifications. It clears only on evidence (the TUI's screen shows its prompt again, no dialog, for a few
   seconds) or when the TUI is left; a hook never clears it.
 - **Settings as last seen**: the mode the TUI's status line last showed or its hooks last reported
   (Shift+Tab alone fires no hook); the model and effort chips are disabled ("Set in the terminal
@@ -384,9 +385,14 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
 - No explanatory line: a shell needs no words, and which surface drives the agent shows on its
   entry ("Claude Code · driving", "Codex · joined"), whichever tab is in front, plus the banner.
 - On a phone the panel covers the requests dock: **Chat** shows an amber dot while a request or the
-  agent waits on you, and the phone doesn't count as looking at the session, so notifications reach
-  it. A swipe scrolls a terminal (a drag goes to tmux as wheel input, with a short glide); a tap
-  focuses it. Keys typed during a reattach are held a few seconds and sent.
+  agent waits on you (a paused queue, which Home lists as Needs you, doesn't light it), and the phone doesn't count as looking at the session, so notifications reach
+  it. A swipe scrolls a terminal, line for line with the finger, with a short glide; a tap
+  focuses it. Keys typed during a reattach are held a few seconds and sent; a reattach that fails
+  tries again, up to every 15 s.
+- **Scrolled back.** Scrolling puts tmux in copy mode. What's meant for the program leaves it first
+  and is delivered, never swallowed: the phone's line and key bar, and on desktop text, Enter,
+  control keys and a paste, in the same write, so nothing comes between. Scrolling keys stay in
+  copy mode; Esc only leaves.
 - With room the panel sits beside the transcript, and the sidebar's and the panel's inner edges
   drag to change their width (arrow keys too; a double click goes back to the default). The widths
   are kept per device; the transcript never gets narrower than 300 px, the panel 60 columns, and
@@ -399,7 +405,8 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
 - **Copying.** On desktop, a drag selects in a terminal even while tmux takes the mouse, and letting
   go copies the selection at once and leaves it on screen (nothing shows, nothing reaches the
   terminal; a blank selection copies nothing). A plain press waits to see whether it moves: a click
-  still goes to tmux, press and release, so programs inside get clicks, but no longer a plain drag.
+  still goes to tmux, press and release, so programs inside get clicks, but no longer a plain drag
+  or a right-click.
   Shift-drag (Option-drag on a Mac) selects too. With a selection, Ctrl/Cmd+C (or Ctrl+Shift+C)
   copies it and never sends ^C, and a right-click selects a word. Everywhere, **Copy text** in the panel's header shows the terminal's
   whole text, scrollback included (tmux's history, wrapped lines joined, the newest 2 MB), in a sheet
@@ -474,7 +481,8 @@ Only the owner can run one (the same auth as sending).
 - **Composer:** once the text starts with `!` the box visibly becomes a shell prompt (monospace,
   green, a "Shell" hint saying where it runs and when the agent gets the output) and Enter (or
   **Run**) runs it, whatever the agent is doing. A ❯ toggle in the composer adds or removes the
-  leading `!`, which is the way in on a phone. Attachments wait for the next message.
+  leading `!`. On a phone the way in is **Run a shell command** in the composer's + menu; the toggle
+  shows there only in shell mode, to leave it. Attachments wait for the next message.
 - **The card:** a message of yours that only Tether has (kept with Tether's notices): the command,
   its output streaming in, how it ended (exit code, signal, stopped), a **Stop** button while it
   runs (SIGTERM to the whole process group, then SIGKILL to the group 2 s later whatever happened
@@ -502,8 +510,8 @@ Only the owner can run one (the same auth as sending).
   agent gets 8 KB + 22 KB with a "[… 1.2 MB of output cut from the middle …]" note. Output is read
   as raw bytes, at most 16 MB a second (a runaway `yes` waits on its pipe rather than keeping the
   runner busy), and decoded only when it goes out; escape sequences split between chunks are kept
-  whole, then stripped, and so is every other control character but tab and newlines (NULs and
-  binary output never reach the card or the agent, so frames stay under 200 KB).
+  whole, then stripped, a carriage return becomes a line break, and every other control character
+  but tab and newline goes, C1 included (NULs and binary output never reach the card or the agent, so frames stay under 200 KB).
 - **The hint** says when the output gets there: "when it finishes", "when this turn ends", "when
   you go Back to Tether" (the TUI drives), or "waits in the queue, paused after Stop" (the actual
   hold reason).

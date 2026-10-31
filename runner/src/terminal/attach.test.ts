@@ -65,12 +65,12 @@ test("output is coalesced into frames for that attach only; input and resize rea
   expect(frames.length).toBe(1);
   expect(frames[0]).toMatchObject({ t: "term", attachId: "a1" });
   expect(text(frames)).toBe("hello ✻");
-  a.input("a1", encodeChunk(new TextEncoder().encode("ls\r")));
+  a.input("a1", new TextEncoder().encode("ls\r"));
   expect(p.written).toEqual(["ls\r"]);
   a.resize("a1", 40, 0);
   expect(p.sizes.at(-1)).toEqual([40, 24]);
   expect(a.of("t-x")).toEqual(["a1"]);
-  expect(() => a.input("nope", "")).toThrow(/isn't attached/);
+  expect(() => a.input("nope", new Uint8Array())).toThrow(/isn't attached/);
 });
 
 test("a PTY that exits by itself ends its attach with termEnd and reports its target", async () => {

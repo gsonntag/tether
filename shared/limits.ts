@@ -168,8 +168,8 @@ function cutJson(s: string, max: number): string {
   return out;
 }
 
-/** C0 control characters (but tab and newlines) and DEL: never kept in queued text. */
-export const stripControls = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+/** C0 control characters (but tab and newline), DEL and C1: never kept in queued text or a card. */
+export const stripControls = (s: string) => s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 
 /** A queued `!` command's text in a state frame (`shell.command`), at most (JSON bytes). */
 export const QUEUED_COMMAND_WIRE = 512;
