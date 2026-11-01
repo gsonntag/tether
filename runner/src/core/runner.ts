@@ -4,6 +4,7 @@
 import { hostname } from "node:os";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
+import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
 import type { BillingSource } from "../../../shared/credentials";
@@ -116,6 +117,8 @@ export function createRunner(o: RunnerOptions) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates));
     ops.register("unsetCredential", (a) => o.credentials!.unset(a.source));
+    ops.register("setAzure", (a) => o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }));
+    ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
     ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), a.on === true); return null; });
     ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
@@ -182,7 +185,8 @@ export function createRunner(o: RunnerOptions) {
         open: async (id: string) => lookAt(await core.open(id)),
         adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string) => {
           const id = sessionId(harness, nativeId);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(from ? { carrying: true } : {}) });
+          opts = live.forSource(source, opts);
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts

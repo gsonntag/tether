@@ -924,7 +924,7 @@ export class CodexDriver implements Driver {
   }
 
   async setModel(model: string) {
-    if (this.credential?.source === "azure" && this.credential.deployment && model !== this.credential.deployment) throw new Error("Change the Azure deployment in Credentials.");
+    if (this.credential?.source === "azure" && this.credential.deployment && model !== this.credential.deployment) throw new Error("An Azure session keeps its deployment. Use Move to run on another.");
     let id = model;
     if (model === "default") {
       id = (await this.defaultId()) ?? "";

@@ -42,6 +42,8 @@ export interface SessionPrefs {
   permissionMode?: string;
   /** what the session draws from, on every start, whatever keys are set later. Never a key itself */
   source?: BillingSource;
+  /** on Azure: the deployment it runs on, kept across restarts. Removed from Settings, the session stops */
+  deployment?: string;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
   /** a start for nextBilling failed; shown until a retry succeeds or the source is cancelled */

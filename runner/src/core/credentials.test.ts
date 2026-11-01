@@ -92,6 +92,52 @@ describe("credential process boundaries", () => {
     expect(JSON.stringify((await core.open("claude:one")).snapshot(50))).not.toContain(key);
     expect(JSON.stringify(frames)).not.toContain(key);
   });
+  test("Azure: a session keeps its deployment; a rates change restarts it with them; a removed one stops it in the chat, nothing sent", async () => {
+    const { live, adapter, credentials, core, prefs, dir } = setup();
+    adapter.billing = { ...adapter.billing!, keys: ["azure"] };
+    credentials.set("azure", `fake-azure-${crypto.randomUUID()}`);
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }, { name: "d-two", model: "gpt-6-luna" }] });
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, source: "azure", model: "d-two" });
+    expect(prefs.get(sessionId).deployment).toBe("d-two");
+    await live.send(sessionId, "first");
+    const first = adapter.drivers.at(-1)!;
+    expect(first.opts.credential).toMatchObject({ source: "azure", deployment: "d-two" });
+    // Another deployment's change leaves this process be.
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one", rates: { input: 1, output: 1, cached: 1 } }, { name: "d-two", model: "gpt-6-luna" }] });
+    await live.send(sessionId, "same process");
+    expect(first.closed).toBe(false);
+    const rates = { input: 2, output: 8, cached: 0.5 };
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }, { name: "d-two", rates }] });
+    await live.send(sessionId, "new rates");
+    expect(first.closed).toBe(true);
+    const second = adapter.drivers.at(-1)!;
+    expect(second.opts.credential).toMatchObject({ deployment: "d-two", rates });
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }] });
+    const sent = second.sent.length, count = adapter.drivers.length;
+    await expect(live.send(sessionId, "nothing")).rejects.toThrow("Azure deployment d-two was removed");
+    expect(second.sent).toHaveLength(sent);
+    expect(adapter.drivers).toHaveLength(count);
+    const s = await core.open(sessionId);
+    expect(JSON.stringify(s.transcript?.messages)).toContain("Azure deployment d-two was removed");
+    expect(prefs.get(sessionId).deployment).toBe("d-two");
+    // No deployment at all.
+    credentials.setAzure({ endpoint: "my-res", deployments: [] });
+    await expect(live.send(sessionId, "nothing")).rejects.toThrow("Azure deployment d-two was removed");
+    expect((await live.sources("claude")).options.map((o) => o.source)).not.toContain("azure");
+  });
+  test("Azure: a session from before deployment lists runs on the one deployment it had, which is then kept", async () => {
+    const { live, adapter, credentials, prefs } = setup();
+    adapter.billing = { ...adapter.billing!, keys: ["azure"] };
+    credentials.set("azure", `fake-azure-${crypto.randomUUID()}`, "https://old-res.openai.azure.com/openai/v1", "legacy");
+    prefs.set("claude:one", { source: "azure" });
+    await live.send("claude:one", "go on");
+    expect(adapter.drivers.at(-1)!.opts.credential).toMatchObject({ deployment: "legacy", endpoint: "https://old-res.openai.azure.com/openai/v1" });
+    expect(prefs.get("claude:one").deployment).toBe("legacy");
+    // Added later, ahead of it: the session stays where it was.
+    credentials.setAzure({ endpoint: "old-res", deployments: [{ name: "newer" }, { name: "legacy" }] });
+    await live.send("claude:one", "still");
+    expect(adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("legacy");
+  });
   test("a running turn and its label finish on the old key before a queued send starts on the new one", async () => {
     const { live, adapter, credentials, core, prefs } = setup();
     adapter.script = () => [];

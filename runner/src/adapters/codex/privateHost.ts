@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
+import { upstreamFailure, upstreamHeaders, upstreamUrl } from "./upstream";
 
 /** A streaming redactor holds a possible partial key across network chunk boundaries. */
 export function redactStream(key: string): TransformStream<Uint8Array, Uint8Array> {
@@ -57,6 +58,12 @@ export function meterStream(report: (response: any) => void, incomplete: () => v
   });
 }
 
+/** A deployment's rates price only requests to that deployment. */
+export function deploymentRates(rates: TokenRates | undefined, deployment: string | undefined, request?: string): TokenRates | undefined {
+  if (!rates || !deployment) return rates;
+  try { return JSON.parse(request ?? "").model === deployment ? rates : undefined; } catch { return undefined; }
+}
+
 export async function servePrivateHost(args = process.argv.slice(2)) {
   const [home, projectPath, sourceArg, endpoint, id, bin] = args;
   if (!home || !projectPath || !endpoint || !id || !bin || (sourceArg !== "openai" && sourceArg !== "azure")) throw new Error("Invalid private Codex launch.");
@@ -65,6 +72,8 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   if (!key) throw new Error("No configured API key for private Codex.");
   let rates: TokenRates | undefined;
   try { rates = JSON.parse(process.env.TETHER_GATEWAY_RATES ?? "null") ?? undefined; } catch {}
+  // Azure: the deployment the rates are for. A request naming another isn't priced with them.
+  const deployment = process.env.TETHER_GATEWAY_DEPLOYMENT || undefined;
   const ledger = new CostLedger(join(home, "costs.json"));
   ledger.begin(id, true);
   const bearer = `tether-private-${id}`; // A local capability; never the upstream credential.
@@ -74,10 +83,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
       if (req.headers.get("authorization") !== `Bearer ${bearer}`) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
       if (!url.pathname.startsWith("/v1/")) return new Response("Not found", { status: 404 });
-      const headers = new Headers(req.headers);
-      for (const h of ["host", "authorization", "api-key", "content-length", "connection"]) headers.delete(h);
-      if (source === "azure") headers.set("api-key", key);
-      else headers.set("authorization", `Bearer ${key}`);
+      const headers = upstreamHeaders(source, key, req.headers);
       const inference = req.method === "POST" && url.pathname.endsWith("/responses");
       const requestId = `request-${randomUUID()}`;
       const unknown = () => { if (inference) ledger.report(id, requestId, { estimated: true, complete: false, reasons: ["no-usage"] }); };
@@ -87,15 +93,14 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         if (inference) unknown();
         // Whole, for pricing: bytes, because only the upstream has to understand them.
         const sent = inference ? await req.arrayBuffer() : undefined;
-        const target = endpoint.replace(/\/$/, "") + url.pathname.slice(3) + url.search;
+        const target = upstreamUrl(endpoint, url.pathname.slice(3) + url.search);
         const upstream = await fetch(target, { method: req.method, headers, body: sent ?? req.body, redirect: "error", signal: req.signal });
         if (!upstream.ok) {
           // Providers sometimes repeat a partly masked key in auth errors. Do not forward any
           // provider error body or headers into native logs, even when the full key is absent.
           if (inference && (upstream.status === 401 || upstream.status === 403)) ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
           await upstream.body?.cancel().catch(() => {});
-          const name = source === "azure" ? "Azure" : "OpenAI API key";
-          const message = upstream.status === 401 || upstream.status === 403 ? `${name} rejected the credential. Check Credentials.` : upstream.status === 429 ? `${name} quota or rate limit reached. The session stopped.` : `${name} request failed (HTTP ${upstream.status}). Check the configured source and connection.`;
+          const message = upstreamFailure(source, upstream.status);
           return Response.json({ error: { message, type: upstream.status === 429 ? "rate_limit_error" : "api_error" } }, { status: upstream.status });
         }
         const out = new Headers(upstream.headers);
@@ -103,7 +108,8 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         for (const [h,v] of out) if (h.includes(key)) out.delete(h); else out.set(h, v.replaceAll(key, "[redacted]"));
         let body = upstream.body?.pipeThrough(redactStream(key));
         if (inference && upstream.ok && body) body = body.pipeThrough(meterStream((response) => {
-          const cost = priceResponse(source, response, { rates, request: sent && new TextDecoder().decode(sent) });
+          const request = sent && new TextDecoder().decode(sent);
+          const cost = priceResponse(source, response, { rates: deploymentRates(rates, deployment, request), request });
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         }, unknown));
@@ -129,6 +135,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   const env = privateEnvironment(home, bearer);
   delete env.TETHER_GATEWAY_KEY;
   delete env.TETHER_GATEWAY_RATES;
+  delete env.TETHER_GATEWAY_DEPLOYMENT;
   const codex = spawn(bin, ["app-server", "--listen", `unix://${join(home, "s")}`], { env, stdio: "ignore", cwd: projectPath });
   let ending = false;
   const end = () => { if (ending) return; ending = true; codex.kill("SIGTERM"); server.stop(true); };

@@ -37,7 +37,7 @@ function processRecord(source: PrivateSource): ProcessRecord | undefined {
 /** Provider config contains no secret. Never use the built-in openai provider's login fallback. */
 export function providerConfig(source: ApiSource, endpoint?: string): Record<string, unknown> {
   const provider = sourceProvider(source);
-  if (source === "azure" && !endpoint) throw new Error("Set an Azure endpoint in Credentials.");
+  if (source === "azure" && !endpoint) throw new Error("Set the Azure resource in Settings, Azure.");
   return {
     model_provider: provider,
     [`model_providers.${provider}.name`]: source === "azure" ? "Azure" : "OpenAI API key",
@@ -63,7 +63,7 @@ export function privateEnvironment(home: string, key?: string): Record<string, s
 
 /** No stale driver can send after its key changes, including a change during settings RPCs. */
 export function assertCredentialCurrent(credential?: CredentialSnapshot) {
-  if (credential && CredentialStore.current && CredentialStore.current.snapshot(credential.source)?.revision !== credential.revision) throw new Error(`${sourceName(credential.source)} changed. Send again. Nothing was sent.`);
+  if (credential && CredentialStore.current && CredentialStore.current.snapshot(credential.source, credential.deployment)?.revision !== credential.revision) throw new Error(`${sourceName(credential.source)} changed. Send again. Nothing was sent.`);
 }
 
 export const sourceCredentialRevision = (source: PrivateSource) => processRecord(source)?.revision;
@@ -116,14 +116,14 @@ async function ensurePrivate(source: PrivateSource, credential?: CredentialSnaps
   const home = sourceHome(source);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  if (!use?.key) throw new Error(`Set ${sourceName(source.source)} in Credentials before continuing. Nothing was sent.`);
+  if (!use?.key) throw new Error(`Set ${sourceName(source.source)} in ${source.source === "azure" ? "Settings, Azure" : "Credentials"} before continuing. Nothing was sent.`);
   const endpoint = source.source === "openai" ? "https://api.openai.com/v1" : use.endpoint;
-  if (!endpoint) throw new Error("Set an Azure endpoint in Credentials.");
+  if (!endpoint) throw new Error("Set the Azure resource in Settings, Azure. Nothing was sent.");
   try { unlinkSync(socket); } catch {}
   const argv = [process.execPath, join(import.meta.dir, "privateHost.ts"), home, source.projectPath, source.source, endpoint, source.id, HARNESS_BINS.codex];
   const unit = process.env.INVOCATION_ID && Bun.which("systemd-run") ? `tether-key-${source.id}.scope` : undefined;
   const command = unit ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, ...argv] : argv;
-  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home), TETHER_GATEWAY_KEY: use.key, ...(use.rates ? { TETHER_GATEWAY_RATES: JSON.stringify(use.rates) } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
+  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home), TETHER_GATEWAY_KEY: use.key, ...(use.rates ? { TETHER_GATEWAY_RATES: JSON.stringify(use.rates) } : {}), ...(use.deployment ? { TETHER_GATEWAY_DEPLOYMENT: use.deployment } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
   let failed = false;
   p.on("error", () => { failed = true; });
   p.unref();

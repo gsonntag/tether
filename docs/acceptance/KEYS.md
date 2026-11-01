@@ -109,13 +109,13 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 
 ## Credentials page
 
-- [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; Credentials is its only subpage. Exactly Claude/Anthropic,
-  Codex/Azure and Codex/OpenAI slots appear, and only keys: nothing says which is in use. Multiple
-  runners have a runner selector.
+- [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; its nav has
+  Credentials and Azure (AZURE.md). Credentials has exactly Claude/Anthropic and Codex/OpenAI slots,
+  and only keys: nothing says which is in use. Multiple runners have a runner selector.
 - [ ] Save a random fake Anthropic key. The password field clears immediately; status becomes Set,
   optionally with last four characters. Reload: only status is returned, never the key.
-- [ ] Save OpenAI, then Azure with HTTPS endpoint and optional deployment, then Anthropic. All three
-  stay Set, including after reconnect and runner restart. There is no enable switch.
+- [ ] Save OpenAI, then Anthropic, and Azure's key on its page. All three stay Set, including after
+  reconnect and runner restart. There is no enable switch.
 - [ ] Unset one: the others stay Set, and no session changes source. An unset key doesn't return.
 - [ ] Invalid endpoint/key and unavailable runner show terse inline errors; no key is repeated.
 

@@ -5,7 +5,9 @@
 // REAL_HARNESSES=1 adds real sessions on each source, side by side with a plan session while a key
 // is set: picker, label, a tiny plan turn, a fake key stopping with no fallback, resume, a replaced
 // and an unset key, Source, TUIs and /proc environment names. Needs RUNNER_PID_FILE, TMUX_SOCKET and
-// RESTART_RUNNER from the stack. KEYS_ROOT moves the artifact root. It uses only the owner's
+// RESTART_RUNNER from the stack. KEYS_ROOT moves the artifact root. FAKE_ENDPOINT (scripts/fake-responses.ts,
+// logging to FAKE_LOG; the runner needs NODE_TLS_REJECT_UNAUTHORIZED=0) adds the Azure page's Test and Codex
+// sessions on its deployments through a fake Azure upstream; ONLY_AZURE=1 runs just the Azure parts. It uses only the owner's
 // explicitly trusted scratch folders. Valid API-key billing remains an owner check; keys must never
 // be pasted into chat.
 import { randomBytes } from "node:crypto";
@@ -215,6 +217,19 @@ async function tuiStarts(p,id,cfg) {
   await call(p,"closeTerminal",{attachId:opened.attachId});
   return /trust this folder|Yes, I trust|Do you trust/i.test(captured.text);
 }
+/** A key from its page: Azure's has its resource and the session model as its one deployment. */
+async function setKey(p,cfg,endpoint) {
+  if(cfg.source==="azure") {
+    await p.goto(`${BASE}/#/settings/azure`);
+    await call(p,"setAzure",{endpoint,deployments:[{name:cfg.model,model:cfg.model}]});
+    await p.reload();
+    await slot(p,"Azure API key").waitFor();
+    return save(p,"Azure API key",newKey());
+  }
+  await p.goto(`${BASE}/#/credentials`);
+  await slot(p,cfg.label).waitFor();
+  await save(p,cfg.label,newKey());
+}
 async function realSources(p,phone) {
   const cl=process.env.CLAUDE_SCRATCH ?? "/home/ubuntu/.local/share/tether-dev-p3/projects/scratch";
   const cx=process.env.CODEX_SCRATCH ?? "/home/ubuntu/tether-scratch/p4/projects/scratch";
@@ -225,10 +240,7 @@ async function realSources(p,phone) {
   ];
   for(const cfg of sources.filter((c)=>!process.env.ONLY_SOURCE||c.source===process.env.ONLY_SOURCE)) {
     const {source,label,plan,harness,path,model,mode}=cfg;
-    await p.goto(`${BASE}/#/credentials`);
-    await slot(p,label).waitFor();
-    if(source==="azure") await slot(p,label).getByLabel("Endpoint",{exact:true}).fill("https://example.invalid/openai/v1");
-    await save(p,label,newKey());
+    await setKey(p,cfg,"https://example.invalid/openai/v1");
     const choices=await call(p,"billingSources",{harness});
     const names=choices.options.map((o)=>o.billing.label);
     assert(names.includes(plan)&&names.includes(label),`sources: ${names.join(", ")}`);
@@ -366,10 +378,7 @@ async function realSources(p,phone) {
       console.log(`ok real ${source} TUI refused an unconfirmed source before send`);
     }
     // A replaced key: the same session carries on with it, and it's the new key that's refused.
-    await p.goto(`${BASE}/#/credentials`);
-    await slot(p,label).waitFor();
-    if(source==="azure") await slot(p,label).getByLabel("Endpoint",{exact:true}).fill("https://example.invalid/openai/v1");
-    await save(p,label,newKey());
+    await setKey(p,cfg,"https://example.invalid/openai/v1");
     await open(p,id);
     await p.locator(".t-paid-badge").waitFor({timeout:30000});
     await keyTurn(p,id,label);
@@ -387,6 +396,200 @@ async function realSources(p,phone) {
     console.log(`ok real ${source}: unset stops with the source named, nothing sent, no fallback`);
   }
 }
+class Done extends Error {}
+const fakeRequests=()=>{ try { return readFileSync(process.env.FAKE_LOG,"utf8").split("\n").filter(Boolean).map((l)=>JSON.parse(l)).filter((r)=>r.path.endsWith("/responses")).map((r)=>({path:r.path,model:JSON.parse(r.body||"{}").model})); } catch { return []; } };
+const azureStatus=async(p)=>(await call(p,"credentials",{})).azure;
+const until=async(what,check,ms=30000)=>{ const end=Date.now()+ms; for(;;) { const v=await check(); if(v) return v; if(Date.now()>end) throw new Error(`timed out: ${what}`); await new Promise((r)=>setTimeout(r,250)); } };
+const row=(p,n)=>p.locator(".t-azure-row").nth(n);
+async function fillRow(p,n,{name,model,rates}) {
+  const r=row(p,n);
+  await r.getByLabel("Deployment",{exact:true}).fill(name);
+  await r.getByLabel("Model",{exact:true}).fill(model??"");
+  if(rates) {
+    if(!(await r.locator("details").getAttribute("open")!==null)) await r.locator("summary").click();
+    for(const [k,label] of [["input","Input"],["cached","Cached"],["output","Output"]]) await r.getByLabel(label,{exact:true}).fill(String(rates[k]));
+  }
+}
+async function saveAzure(p,check) {
+  await p.getByRole("form",{name:"Azure settings"}).getByRole("button",{name:"Save",exact:true}).click();
+  return until("Azure settings saved",async()=>{ const a=await azureStatus(p); return check(a)&&a; });
+}
+async function testRow(p,n,expect) {
+  const r=row(p,n);
+  await r.getByRole("button",{name:"Test",exact:true}).click();
+  const result=r.locator(".t-azure-result");
+  await until(`Test answered ${expect}`,async()=>{ const t=await result.innerText().catch(()=>""); return t&&t!=="Testing…"&&t; });
+  const text=await result.innerText();
+  assert(text===expect,`Test said "${text}", not "${expect}"`);
+}
+const reply=(m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&part.text.includes("Fake reply"));
+async function fakeTurn(p,id,text) {
+  const before=(await viewOf(p,id))?.messages.filter(reply).length??0;
+  await call(p,"send",{sessionId:id,text});
+  await until("the fake Azure reply",async()=>((await viewOf(p,id))?.messages.filter(reply).length??0)>before,90000);
+}
+const prefsOf=(id)=>JSON.parse(readFileSync(`${dirname(FILE)}/runner.json`,"utf8")).sessions?.[id] ?? {};
+/**
+ * Settings, Azure: the resource, its key and its deployments; Test through a fake Azure; and Codex
+ * sessions on a deployment from New session and the Move dialog, kept over a restart, stopped when
+ * it's removed. Fake keys and a fake upstream: no real Azure usage.
+ */
+async function azurePage(p,phone) {
+  const cx=process.env.CODEX_SCRATCH ?? "/home/ubuntu/tether-scratch/p4/projects/scratch";
+  await p.goto(`${BASE}/#/settings/credentials`);
+  await p.getByRole("navigation",{name:"Settings"}).getByRole("link",{name:"Azure",exact:true}).click();
+  await slot(p,"Azure API key").waitFor();
+  assert(p.url().endsWith("#/settings/azure"),"the Azure page isn't #/settings/azure");
+  assert(await p.locator('.t-settings-nav a[aria-current="page"]').innerText()==="Azure","the nav doesn't mark Azure");
+  await screenshot(p,"azure-empty-desktop");
+  // A resource name is made into the v1 endpoint; two deployments, one with rates.
+  const form=p.getByRole("form",{name:"Azure settings"});
+  await form.getByLabel("Resource",{exact:true}).fill("e2e-res");
+  await form.getByRole("button",{name:"Add deployment",exact:true}).click();
+  await form.getByRole("button",{name:"Add deployment",exact:true}).click();
+  await fillRow(p,0,{name:"luna-a",model:"gpt-6-luna",rates:{input:2000,cached:0,output:2000}});
+  await fillRow(p,1,{name:"luna-b",model:"gpt-6-luna"});
+  await saveAzure(p,(a)=>a.endpoint==="https://e2e-res.openai.azure.com/openai/v1"&&a.deployments.length===2);
+  await p.locator(".t-azure-endpoint",{hasText:"https://e2e-res.openai.azure.com/openai/v1"}).waitFor();
+  assert(await row(p,0).getByRole("button",{name:"Test",exact:true}).isDisabled(),"Test runs with no key set");
+  assert(!(await call(p,"billingSources",{harness:"codex"})).options.some((o)=>o.source==="azure"),"Azure offered with no key");
+  await save(p,"Azure API key",newKey());
+  await p.reload();
+  await slot(p,"Azure API key").waitFor();
+  await until("rows after reload",async()=>(await p.locator(".t-azure-row").count())===2);
+  assert(await form.getByLabel("Resource",{exact:true}).inputValue()==="e2e-res","the resource didn't come back as its name");
+  assert(await row(p,0).getByLabel("Deployment",{exact:true}).inputValue()==="luna-a","a deployment didn't come back");
+  assert((await row(p,0).locator("summary").innerText()).includes("2000"),"rates aren't shown");
+  const status=await azureStatus(p);
+  assert(status.set&&status.deployments[0].rates?.input===2000&&!JSON.stringify(status).includes("test-"),"status");
+  const sources=(await call(p,"billingSources",{harness:"codex"})).options.find((o)=>o.source==="azure");
+  assert(JSON.stringify(sources?.deployments)===JSON.stringify([{name:"luna-a",model:"gpt-6-luna"},{name:"luna-b",model:"gpt-6-luna"}]),`sources: ${JSON.stringify(sources)}`);
+  await noOverflow(p);
+  await screenshot(p,"azure-desktop");
+  await phone.goto(`${BASE}/#/settings/azure`);
+  await phone.locator(".t-azure-row").nth(1).waitFor();
+  await phone.locator(".t-azure-row").first().locator("summary").click();
+  await noOverflow(phone);
+  await screenshot(phone,"azure-phone");
+  console.log("ok azure page: resource name to v1 endpoint, key apart, two deployments with rates, reload, phone width");
+  if(!process.env.FAKE_ENDPOINT) { console.log("skip azure sessions: no FAKE_ENDPOINT"); return; }
+  // A full URL instead of a name: the fake Azure. Test sends one request where a session's go.
+  await form.getByLabel("Resource",{exact:true}).fill(process.env.FAKE_ENDPOINT);
+  await saveAzure(p,(a)=>a.endpoint===process.env.FAKE_ENDPOINT);
+  const asked=fakeRequests().length;
+  await testRow(p,0,"OK · luna-a");
+  const sent=fakeRequests().slice(asked);
+  assert(sent.length===1&&sent[0].path==="/openai/v1/responses"&&sent[0].model==="luna-a",`Test requests: ${JSON.stringify(sent)}`);
+  await form.getByRole("button",{name:"Add deployment",exact:true}).click();
+  await fillRow(p,2,{name:"missing-deploy"});
+  assert(await row(p,0).getByRole("button",{name:"Test",exact:true}).isDisabled(),"Test runs with unsaved changes");
+  await saveAzure(p,(a)=>a.deployments.length===3);
+  await testRow(p,2,"Deployment not found");
+  await screenshot(p,"azure-tests-desktop");
+  await phone.reload();
+  await phone.locator(".t-azure-row").nth(2).waitFor();
+  await phone.locator(".t-azure-row").nth(0).getByRole("button",{name:"Test",exact:true}).click();
+  await phone.locator(".t-azure-result",{hasText:"OK · luna-a"}).waitFor({timeout:30000});
+  await noOverflow(phone);
+  await screenshot(phone,"azure-tests-phone");
+  await row(p,2).getByRole("button",{name:"Remove",exact:true}).click();
+  await saveAzure(p,(a)=>a.deployments.length===2);
+  console.log("ok azure test: OK with the model Azure names, Deployment not found, one request each, only when clicked");
+  // New session: Source Azure lists the deployments as its models.
+  for(const [name,q] of [["desktop",p],["phone",phone]]) {
+    await q.evaluate(()=>{location.hash="#/";globalThis.__tetherStore.setState({newSessionOpen:true});});
+    const d=q.getByRole("dialog");
+    await d.getByRole("radio",{name:"Codex",exact:true}).click();
+    await d.getByLabel("Source",{exact:true}).selectOption({label:"Azure"});
+    const models=d.locator("label",{hasText:"Model"}).locator("select");
+    await until("deployments as models",async()=>(await models.locator("option").allInnerTexts()).join("|")==="luna-a · gpt-6-luna|luna-b · gpt-6-luna");
+    await noOverflow(q);
+    await screenshot(q,`azure-new-session-${name}`);
+    if(name==="phone") { await q.keyboard.press("Escape"); continue; }
+    await models.selectOption("luna-b");
+    await d.locator("#t-new-path").fill(cx);
+    await d.locator("label",{hasText:"Permissions"}).locator("select").selectOption("read-only");
+    await d.getByRole("button",{name:"Create",exact:true}).click();
+    await q.waitForFunction(()=>location.hash.startsWith("#/s/"),null,{timeout:90000});
+  }
+  const b=decodeURIComponent(p.url().split("/").pop());
+  assert(prefsOf(b).deployment==="luna-b"&&prefsOf(b).source==="azure",`prefs: ${JSON.stringify(prefsOf(b))}`);
+  await p.locator(".t-paid-badge > span:first-child",{hasText:"Azure"}).waitFor({timeout:90000});
+  await fakeTurn(p,b,"Say anything.");
+  assert(fakeRequests().at(-1).model==="luna-b","the session's request didn't name its deployment");
+  await until("luna-b's cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="Cost unknown");
+  assert((await p.locator(".t-api-cost").getAttribute("title")).includes("luna-b has no published price"),"no reason for the unknown cost");
+  await screenshot(p,"azure-session-unpriced");
+  // The other, from its rates: (10 × 2000 + 2 × 2000) / 1M.
+  const a=(await call(p,"newSession",{harness:"codex",projectPath:cx,source:"azure",model:"luna-a",permissionMode:"read-only"})).sessionId;
+  await open(p,a);
+  await fakeTurn(p,a,"Say anything.");
+  assert(fakeRequests().at(-1).model==="luna-a","luna-a's request");
+  await until("luna-a's priced cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="$0.02 est.");
+  await screenshot(p,"azure-session-priced");
+  console.log("ok azure sessions: New session lists deployments with their model; each session names its deployment and is priced by its rates, or unknown with the reason");
+  if(process.env.RESTART_RUNNER) {
+    execFileSync("sh",["-c",process.env.RESTART_RUNNER],{stdio:"inherit"});
+    await open(p,b);
+    await p.reload();
+    await p.locator(".t-paid-badge > span:first-child",{hasText:"Azure"}).waitFor({timeout:90000});
+    await fakeTurn(p,b,"Again.");
+    assert(fakeRequests().at(-1).model==="luna-b","after a restart the session left its deployment");
+    console.log("ok azure restart: the session kept its deployment");
+  }
+  // Move: a Codex session on the plan, to Azure on luna-b. No turn: the import starts it on its source.
+  const listed=(await call(p,"listSessions",{projectPath:cx})).sessions;
+  const stored=listed.find((s)=>s.harness==="codex"&&!s.parentSessionId&&s.id!==a&&s.id!==b&&s.status==="idle"&&s.billing?.kind!=="provider"&&s.billing?.kind!=="apiKey");
+  if(stored) {
+    for(const [name,q] of [["phone",phone],["desktop",p]]) {
+      await open(q,stored.id);
+      await q.getByRole("button",{name:"Session menu"}).click();
+      await q.getByRole("menuitem",{name:"Move to…"}).click();
+      const d=q.getByRole("dialog");
+      const seg=d.getByRole("radio",{name:"Codex",exact:true});
+      await seg.waitFor({timeout:30000}).catch(()=>{});
+      if(await seg.count()) await seg.click();
+      // With Azure the only other source, it's shown without a picker.
+      const picker=d.getByLabel("Source",{exact:true});
+      await until("the dialog's sources",async()=>(await picker.count())||(await d.innerText()).includes("Azure"));
+      if(await picker.count()) await picker.selectOption({label:"Azure"});
+      const models=d.locator("label",{hasText:"Model"}).locator("select");
+      await until("Move lists the deployments",async()=>(await models.locator("option").allInnerTexts()).join("|")==="luna-a · gpt-6-luna|luna-b · gpt-6-luna");
+      await noOverflow(q);
+      await screenshot(q,`azure-move-${name}`);
+      if(name==="phone") { await d.getByRole("button",{name:"Cancel",exact:true}).click(); continue; }
+      await models.selectOption("luna-b");
+      const was=q.url();
+      await d.getByRole("button",{name:"Move",exact:true}).click();
+      await q.waitForFunction((was)=>location.href!==was,was,{timeout:90000});
+    }
+    const moved=decodeURIComponent(p.url().split("/").pop());
+    await p.locator(".t-paid-badge > span:first-child",{hasText:"Azure"}).waitFor({timeout:90000});
+    assert(prefsOf(moved).deployment==="luna-b",`moved prefs: ${JSON.stringify(prefsOf(moved))}`);
+    console.log("ok azure move: the dialog lists the deployments; the moved session is on the one picked");
+  } else console.log("skip azure move: no plan Codex session in the scratch folder");
+  // luna-b removed: its session stops in the chat, and nothing reaches Azure.
+  await p.goto(`${BASE}/#/settings/azure`);
+  await p.locator(".t-azure-row").nth(1).waitFor();
+  await row(p,1).getByRole("button",{name:"Remove",exact:true}).click();
+  await saveAzure(p,(a)=>a.deployments.length===1);
+  const count=fakeRequests().length;
+  await open(p,b);
+  const refused=await call(p,"send",{sessionId:b,text:"Nothing."}).then(()=>undefined,(e)=>String(e));
+  assert(refused?.includes("Azure deployment luna-b was removed"),`removed deployment: ${refused}`);
+  await p.getByText("Azure deployment luna-b was removed",{exact:false}).first().waitFor({timeout:15000});
+  assert(fakeRequests().length===count,"a request went out for a removed deployment");
+  await screenshot(p,"azure-removed-desktop");
+  await phone.goto(p.url()); await phone.getByText("Azure deployment luna-b was removed",{exact:false}).first().waitFor({timeout:15000});
+  await screenshot(phone,"azure-removed-phone");
+  argvAudit();
+  // luna-a's session still goes.
+  await open(p,a);
+  await p.locator(".t-paid-badge > span:first-child",{hasText:"Azure"}).waitFor({timeout:30000});
+  await fakeTurn(p,a,"Still here.");
+  await call(p,"unsetCredential",{source:"azure"});
+  console.log("ok azure removed: the chat says so and nothing is sent; another deployment's session goes on");
+}
 function contrast(a, b) {
   const lum = (s) => { const c = s.match(/[\d.]+/g).slice(0, 3).map(Number).map((x) => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; }); return c[0] * .2126 + c[1] * .7152 + c[2] * .0722; };
   const x = lum(a), y = lum(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
@@ -396,31 +599,29 @@ try {
   const phone = await makePage(true);
   runner = process.env.RUNNER_ID ?? await desktop.evaluate(() => globalThis.__tetherStore.getState().runners.find((r) => r.online)?.id);
   assert(runner, "no online test runner");
-  for (const label of ["Anthropic API key", "OpenAI API key", "Azure"]) await isSet(desktop, label, false);
+  for (const label of ["Anthropic API key", "OpenAI API key"]) await isSet(desktop, label, false);
+  assert(await desktop.locator("form.t-credential-slot").count() === 2, "Credentials has a slot besides Anthropic and OpenAI");
+  if (process.env.ONLY_AZURE === "1") { await azurePage(desktop, phone); throw new Done(); }
   // Only an isolated, initially empty runner is allowed: never overwrite a person's credentials.
   await save(desktop, "Anthropic API key", newKey());
   await screenshot(desktop, "credentials-desktop-set");
   await save(desktop, "Anthropic API key", newKey());
   await unset(desktop, "Anthropic API key");
   await save(desktop, "OpenAI API key", newKey());
-  await slot(desktop, "Azure").getByLabel("Endpoint", { exact: true }).fill("https://example.invalid/openai/v1");
-  await slot(desktop, "Azure").getByLabel("Deployment", { exact: true }).fill("gpt-6-luna");
-  await save(desktop, "Azure", newKey());
   await save(desktop, "Anthropic API key", newKey());
   await isSet(desktop, "OpenAI API key", true);
   await screenshot(desktop, "credentials-desktop-all-set");
-  await unset(desktop, "Azure");
-  await isSet(desktop, "OpenAI API key", true);
   await unset(desktop, "OpenAI API key");
   await unset(desktop, "Anthropic API key");
   await desktop.reload();
   await desktop.getByRole("form", { name: "Anthropic API key", exact: true }).waitFor();
-  for (const label of ["Anthropic API key", "OpenAI API key", "Azure"]) await isSet(desktop, label, false);
+  for (const label of ["Anthropic API key", "OpenAI API key"]) await isSet(desktop, label, false);
   await phone.reload();
   await phone.getByRole("form", { name: "Anthropic API key", exact: true }).waitFor();
   await noOverflow(phone);
   await screenshot(phone, "credentials-phone-unset");
-  console.log("ok credentials save, replace, all three set together, unset one at a time, reload; inputs clear and file is private");
+  console.log("ok credentials save, replace, both set together, unset one at a time, reload; inputs clear and file is private");
+  await azurePage(desktop, phone);
   if(process.env.REAL_HARNESSES === "1") await realSources(desktop, phone);
   session = `claude:ui-keys-${randomBytes(8).toString("hex")}`;
   for (const [name, p] of [["desktop", desktop], ["phone", phone]]) {
@@ -448,7 +649,7 @@ try {
         assert(after.x === bounds.x, "billing badge moved with scrolling chips");
       }
       await inject(p, { kind: "apiKey", label: "Anthropic API key" }, theme, { usd: 1, estimated: true, complete: false });
-      assert(await p.locator(".t-api-cost").innerText() === "Cost unknown", "partial subtotal shown as full total");
+      assert(await p.locator(".t-api-cost").innerText() === "~$1.00+", "partial subtotal shown as full total");
       await screenshot(p, `${name}-${theme}-partial-cost`);
       await inject(p, { kind: "unknown", label: "Unknown" }, theme);
       assert(await p.locator(".t-paid-badge, .t-api-composer").count() === 0, "unknown shown as API");
@@ -479,6 +680,22 @@ try {
     await screenshot(p, `${name}-home-api`);
     console.log(`ok ${name}: all source badges, neutral unknown, quiet subscription, phone pinning, composer colour, Home/sidebar markers, title cancel`);
   }
+  await audit();
+} catch(error) {
+  if (error instanceof Done) await audit();
+  else {
+    let n=0;
+    for(const context of browser.contexts()) for(const p of context.pages()) {
+      await screenshot(p,`failure-${++n}`).catch(()=>{});
+      const body=await p.locator("body").innerText().catch(()=>"closed");
+      assert(!secrets.some((key)=>body.includes(key)),"key found in failure DOM");
+      console.error("failure page",p.url(),body);
+    }
+    console.error("browser errors",errors);
+    throw error;
+  }
+} finally { await browser.close(); }
+async function audit() {
   for (const key of secrets) {
     assert(!incoming.some((v) => v.includes(key)), "runner sent a key back to the browser");
     assert(!logs.some((v) => v.includes(key)), "browser console contains a key");
@@ -491,14 +708,4 @@ try {
   console.log(`ok audit: ${secrets.length} fake keys in no argv (${argvChecks} process reads), nowhere under ${ROOT} but the private file`);
   assert(errors.length === 0, `browser errors: ${errors.join("; ")}`);
   console.log("all passed; synthetic snapshots verify rendering; valid API-key billing remains an owner check");
-} catch(error) {
-  let n=0;
-  for(const context of browser.contexts()) for(const p of context.pages()) {
-    await screenshot(p,`failure-${++n}`).catch(()=>{});
-    const body=await p.locator("body").innerText().catch(()=>"closed");
-    assert(!secrets.some((key)=>body.includes(key)),"key found in failure DOM");
-    console.error("failure page",p.url(),body);
-  }
-  console.error("browser errors",errors);
-  throw error;
-} finally { await browser.close(); }
+}

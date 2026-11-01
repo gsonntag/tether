@@ -2115,6 +2115,18 @@
 .t-credential-rates summary { font-size: 13px; color: var(--t-muted); cursor: pointer; }
 .t-rate-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
 .t-rate-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
+.t-azure { display: flex; flex-direction: column; gap: 12px; }
+.t-azure .t-field input { min-width: 0; width: 100%; box-sizing: border-box; }
+.t-azure-endpoint { margin-top: -6px; font-size: 12px; color: var(--t-muted); overflow-wrap: anywhere; }
+.t-azure-row { border: 1px solid var(--t-border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.t-azure-names { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.t-azure-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.t-azure-actions > :last-child { margin-left: auto; }
+.t-azure-result { font-size: 13px; color: var(--t-muted); overflow-wrap: anywhere; min-width: 0; }
+.t-azure-result.ok { color: var(--color-text-green, var(--color-success)); }
+.t-azure-result.fail { color: var(--color-text-red, var(--color-error)); }
+.t-azure-foot { display: flex; justify-content: space-between; gap: 8px; }
+@media (max-width: 520px) { .t-azure-names { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 767px), (pointer: coarse) {
   /* The source stays outside the scrollable choices, including on small phones. */
   .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }

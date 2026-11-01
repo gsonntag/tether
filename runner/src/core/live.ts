@@ -10,7 +10,7 @@
 import { Commands } from "./commands";
 import { randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
+import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -389,11 +389,12 @@ export class LiveControl {
       const folder = this.core.folder(s.summary.projectPath);
       const { model, effort, permissionMode } = s.state;
       const source = this.sourceOf(s);
-      const credential = this.credentialFor(s.summary.harness, source);
+      const deployment = this.deploymentOf(s);
+      const credential = this.credentialFor(s.summary.harness, source, deployment);
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
-      this.core.o.prefs.set(n.id, { source, ...kept });
+      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
       n.setState(kept);
       this.core.touch(n);
       try {
@@ -968,7 +969,7 @@ export class LiveControl {
   private ensureDriver(s: Session, observe = false): Promise<Driver> {
     if (s.driver) {
       if (observe) return Promise.resolve(s.driver);
-      if (!this.opts.credentials || this.opts.credentials.snapshot(this.sourceOf(s))?.revision === s.credentialRevision) return Promise.resolve(s.driver);
+      if (!this.opts.credentials || this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
       // A running turn finishes on its original process and source. No new message can go to it
       // after a change; idle processes are closed before starting again, on the session's source
       // with its key as it is now. With its key unset that start stops, saying so.
@@ -991,7 +992,7 @@ export class LiveControl {
    * keeps itself), never overwritten by what Tether merely showed.
    */
   chosen(s: Session, observe = false): StartOpts {
-    const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s));
+    const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
     return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
   }
 
@@ -1010,17 +1011,56 @@ export class LiveControl {
     return recorded;
   }
 
+  /**
+   * An Azure session's deployment: what's saved with it, else (a session from before deployment
+   * lists) its model if that's a deployment, else the first, which is then saved. Kept from then on:
+   * one that's removed later stops the session, saying so, and nothing stands in for it.
+   */
+  deploymentOf(s: Session): string | undefined {
+    if (!this.opts.credentials || this.sourceOf(s) !== "azure") return undefined;
+    const id = s.summary.parentSessionId ?? s.id;
+    const prefs = this.core.o.prefs.get(id);
+    if (prefs.deployment) return prefs.deployment;
+    const deployment = this.pickDeployment(prefs.model ?? s.state.model);
+    if (deployment) this.core.o.prefs.set(id, { deployment });
+    return deployment;
+  }
+
+  /** The deployment a model names, else Azure's first. None when there are none. */
+  private pickDeployment(model?: string): string | undefined {
+    const list = this.opts.credentials?.azure().deployments ?? [];
+    return (list.find((d) => d.name === model) ?? list[0])?.name;
+  }
+
+  /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
+  forSource(source: BillingSource, opts: StartOpts): StartOpts {
+    if (source !== "azure" || !this.opts.credentials) return opts;
+    const deployment = this.pickDeployment(opts.model);
+    return { ...opts, model: deployment };
+  }
+
+  /** What a session's process must have been started with to be current. */
+  private revisionOf(s: Session): string | undefined {
+    return this.opts.credentials?.snapshot(this.sourceOf(s), this.deploymentOf(s))?.revision;
+  }
+
   private labelOf(harness: HarnessId, source: BillingSource): string {
     return this.core.adapter(harness).billing?.label(source).label ?? source;
   }
 
   /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
-  credentialFor(harness: HarnessId, source: BillingSource): CredentialSnapshot | undefined {
-    if (!this.opts.credentials) return undefined;
-    const credential = this.opts.credentials.snapshot(source);
+  credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
+    const store = this.opts.credentials;
+    if (!store) return undefined;
+    const credential = store.snapshot(source, source === "azure" ? deployment ?? "" : undefined);
     if (credential) return credential;
     const change = this.core.adapter(harness).capabilities.sourceSwitch ? "change the session's Source" : "use Move to continue on another source";
-    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in Credentials, or ${change}. Nothing was sent.`);
+    if (source === "azure" && store.snapshot("azure")) {
+      if (!deployment) throw new Error("Azure has no deployment. Add one in Settings, Azure. Nothing was sent.");
+      throw new Error(`This session's Azure deployment ${deployment} was removed. Add it again in Settings, Azure, or ${change}. Nothing was sent.`);
+    }
+    if (source === "azure" && store.status().azure.set) throw new Error("Azure has no resource set. Set it in Settings, Azure. Nothing was sent.");
+    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : "Credentials"}, or ${change}. Nothing was sent.`);
   }
 
   /** The sources that exist for a harness now: its login, if it reports one, and keys that are set. */
@@ -1029,9 +1069,11 @@ export class LiveControl {
     if (!billing || !this.opts.credentials) return { options: [] };
     const status = this.opts.credentials.status();
     const login = await billing.loggedIn().catch(() => false);
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter((k) => status[k].set)].map((source) => {
-      const deployment = source === "subscription" ? undefined : status[source].deployment;
-      return { source, billing: billing.label(source), ...(deployment ? { deployment } : {}) };
+    // Azure is there with its key, its resource and a deployment to run on.
+    const ready = (k: CredentialSource) => status[k].set && (k !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
+    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => {
+      const deployments = source === "azure" ? status.azure.deployments!.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) : undefined;
+      return { source, billing: billing.label(source), ...(deployments ? { deployments } : {}) };
     });
     const fallback = login ? "subscription" : options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
@@ -1049,14 +1091,16 @@ export class LiveControl {
 
   /** A new native id on a source: a key's thread is made on its own private process. */
   async newNativeId(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<string> {
-    const credential = this.credentialFor(harness, source);
+    opts = this.forSource(source, opts);
+    const credential = this.credentialFor(harness, source, opts.model);
     return this.core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) });
   }
 
   /** A new session, its source saved with it before anything can start it. */
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
+    opts = this.forSource(source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source });
+    this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
     return s;
   }
 
@@ -1225,7 +1269,7 @@ export class LiveControl {
   }
 
   private checkCredential(s: Session) {
-    if (this.opts.credentials && this.opts.credentials.snapshot(this.sourceOf(s))?.revision !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
+    if (this.opts.credentials && this.revisionOf(s) !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
   }
 
   private async startDriver(s: Session, observe = false): Promise<Driver> {

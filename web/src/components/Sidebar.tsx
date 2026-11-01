@@ -125,10 +125,10 @@ export function Sidebar() {
           )}
           <button
             type="button"
-            className={route.page === "credentials" ? "t-settings selected" : "t-settings"}
+            className={route.page === "credentials" || route.page === "azure" ? "t-settings selected" : "t-settings"}
             aria-label="Settings"
             title="Settings"
-            aria-current={route.page === "credentials" ? "page" : undefined}
+            aria-current={route.page === "credentials" || route.page === "azure" ? "page" : undefined}
             onClick={() => {
               navigate({ page: "credentials" });
               close();

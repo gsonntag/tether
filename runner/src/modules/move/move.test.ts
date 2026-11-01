@@ -15,6 +15,7 @@ import { codexAdapter } from "../../adapters/codex";
 import { historyMsgs } from "../../adapters/codex/items";
 import { batches, importedFrom, itemOf } from "../../adapters/codex/move";
 import { saveConfig } from "../../config";
+import { CredentialStore } from "../../credentials";
 import type { Adapter, ImportRequest } from "../../core/adapter";
 import { FakeAdapter } from "../../core/fakeAdapter";
 import { movedDir } from "../../core/moved";
@@ -291,15 +292,46 @@ describe("the source a move goes to", () => {
     expect(omp.imports.length).toBe(1);
     expect(runner.core.sessions.get(r.sessionId)!.state.error).toContain("key failed");
   });
-  test("an Azure deployment fixes the model", async () => {
+  test("on Azure the model is one of its deployments, kept with the session; one removed stops it", async () => {
     const pi = new Neutral("pi", true);
     const omp = new Neutral("omp", true);
-    const { mover, runner } = keyed([pi, omp], "anthropic", "my-deploy");
+    omp.billing = { ...omp.billing, keys: ["azure"], label: (source) => (source === "subscription" ? { kind: "plan", label: "Plan" } : { kind: "provider", label: "Azure" }) };
+    const dir = mkdtempSync(join(tmpdir(), "tether-move-azure-"));
+    const prefsFile = join(dir, "runner.json");
+    saveConfig({ runnerId: "t" }, prefsFile);
+    const store = new CredentialStore(join(dir, "credentials.json"));
+    const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [pi, omp], prefsFile, credentials: store } as any);
+    stops.push(() => runner.core.stop());
+    const mover = new Mover({ sessions: runner.look.sessions as any, dataDir: join(dir, "m"), log: () => {} });
     pi.stored_("s1", convo);
     await runner.core.open("pi:s1");
-    expect((await mover.options("pi:s1")).targets[0]!.sources?.options.find((o) => o.source === "anthropic")?.deployment).toBe("my-deploy");
-    const r = await mover.move("pi:s1", "omp", { model: "picked", source: "anthropic" });
-    expect(runner.core.o.prefs.get(r.sessionId).model).toBeUndefined();
+    store.set("azure", "fake-azure-key-0123456789abcdef");
+    // A key with no resource or deployment isn't a source yet.
+    expect((await runner.look.sessions.sources("omp" as any)).options.map((o) => o.source)).toEqual(["subscription"]);
+    const rates = { input: 1, output: 2, cached: 0.5 };
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one", model: "gpt-6-luna", rates }, { name: "d-two" }] });
+    const azure = (await mover.options("pi:s1")).targets.find((t) => (t.harness as string) === "omp")!.sources!.options.find((o) => o.source === "azure")!;
+    expect(azure.deployments).toEqual([{ name: "d-one", model: "gpt-6-luna" }, { name: "d-two" }]);
+    const two = await mover.move("pi:s1", "omp", { model: "d-two", source: "azure" });
+    expect(runner.core.o.prefs.get(two.sessionId).deployment).toBe("d-two");
+    const started = omp.drivers.at(-1)!.opts as any;
+    expect(started.model).toBe("d-two");
+    expect(started.credential).toMatchObject({ source: "azure", deployment: "d-two", endpoint: "https://my-res.openai.azure.com/openai/v1" });
+    expect(started.credential.rates).toBeUndefined();
+    // A model that isn't a deployment: the first.
+    const one = await mover.move("pi:s1", "omp", { model: "gpt-6-luna", source: "azure" });
+    expect(runner.core.o.prefs.get(one.sessionId).deployment).toBe("d-one");
+    expect((omp.drivers.at(-1)!.opts as any).credential.rates).toEqual(rates);
+    // Its rates change: the snapshot is another revision, so an idle process restarts with them.
+    const before = store.snapshot("azure", "d-one")!.revision;
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one", rates: { ...rates, input: 3 } }] });
+    expect(store.snapshot("azure", "d-one")!.revision).not.toBe(before);
+    // d-two was removed: its session stops, saying so, and nothing reaches the harness.
+    const sent = omp.drivers.flatMap((d) => d.sent).length;
+    const s = runner.core.sessions.get(two.sessionId)!;
+    s.driver = undefined;
+    await expect(runner.look.sessions.send(two.sessionId, "hello")).rejects.toThrow("Azure deployment d-two was removed");
+    expect(omp.drivers.flatMap((d) => d.sent).length).toBe(sent);
   });
   test("what a source is called, on the real adapters", () => {
     expect(claudeAdapter.billing!.label("anthropic")).toEqual({ kind: "apiKey", label: "Anthropic API key" });

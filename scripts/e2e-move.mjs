@@ -338,8 +338,11 @@ const steps = {
     const p = await page(desktop);
     if ((await rpcVia(p, "setCredential", { source: "openai", key: `sk-not-a-real-key-${"z".repeat(24)}` })).error) fail("no key");
     // Rates that make the fake's 12 tokens visible, to follow the amount across thread changes.
-    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}`, endpoint, rates: { input: 2000, output: 2000, cached: 0 } });
+    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}` });
     if (azure.error) fail(azure.error);
+    // One deployment, named for the model, so the session's model stays what it was.
+    const settings = await rpcVia(p, "setAzure", { endpoint, deployments: [{ name: CODEX_MODEL, model: CODEX_MODEL, rates: { input: 2000, output: 2000, cached: 0 } }] });
+    if (settings.error) fail(settings.error);
     const amount = async () => {
       const cost = (await stateOf(p))?.cost;
       if (!cost?.complete || typeof cost.usd !== "number") fail(`no whole API amount: ${JSON.stringify(cost)}`);

@@ -727,8 +727,10 @@ Only the owner can run one (the same auth as sending).
 
 ### Credentials and billing safety
 
-The **Credentials** page belongs to a runner and holds keys only: **Anthropic API key** for Claude,
-**OpenAI API key** and **Azure** (Foundry) for Codex. All can be set together. Setting, replacing or
+Settings belongs to a runner and has two subpages in one nav. **Credentials** (`#/settings/credentials`)
+holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
+(`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
+set together. Setting, replacing or
 unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
 fallback chain or automatic source migration, with one exception you tick per session (**When the
 plan runs out**, below). AWS for either harness is backlog only.
@@ -736,7 +738,8 @@ plan runs out**, below). AWS for either harness is backlog only.
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
 really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
-on the shared daemon, Claude's read-only `auth status`), a key when it's set, labelled "ChatGPT plan",
+on the shared daemon, Claude's read-only `auth status`), a key when it's set (Azure: its key, its
+resource and at least one deployment), labelled "ChatGPT plan",
 "OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
 picker; a key in the picker has the API colour. It always starts on the subscription when there's
 a login, and on the first key only when there isn't. `newSession` or `moveSession` with no source (an older web) is the subscription,
@@ -828,13 +831,17 @@ of a Codex compaction: it's encrypted for its account, so a new source couldn't 
 themselves are carried instead, as far as they fit. Subagents of the old thread stay viewable from
 the transcript, and aren't listed under the new one.
 
-`credentials.json` is version 2, one slot per key. A version 1 file (one `codex` slot) still reads, its
-key in the slot it was for and its revision kept, and is rewritten by the next change. A web deployed
+`credentials.json` is version 3: one slot per key, and `azureSettings` (`endpoint`, `deployments`)
+apart from Azure's key, so either can be set first and unsetting the key keeps them. A version 2 file
+(Azure's endpoint, one optional deployment and its rates in the key's slot) and a version 1 file (one
+`codex` slot) still read, their revisions kept: the one deployment becomes a list of one with its rates,
+and rates with no deployment are dropped (they priced whatever model was picked). The file is rewritten
+by the next change. A runner from before version 3 can't read it, and disables sending. A web deployed
 ahead of its runner gets no `billingSources` answer and hides the picker.
 
 Keys are written only to `credentials.json`, mode 600, under the runner's data directory
 (`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
-set/unset status and optional last four characters, plus Azure's endpoint and deployment. The
+set/unset status and optional last four characters, plus Azure's endpoint and deployments. The
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
@@ -860,6 +867,41 @@ early in the chip row on phones and never appears on an API session's chip. Term
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
 passes no CLI permission overrides, which remote resume rejects.
+
+### Azure
+
+The Azure page has Azure's **API key** (write-only, as any key), the **Resource** and the
+**Deployments**, saved together. Codex's Azure provider uses the v1 API: base URL
+`https://<resource>.openai.azure.com/openai/v1`, `api-key` header, `wire_api = "responses"`, no
+`api-version` (the owner's own `[model_providers.azure]` has that shape). A resource name is made into
+that URL and the page shows it under the field. A full HTTPS URL is taken instead (a Foundry resource's
+`https://<name>.services.ai.azure.com`), with `/openai/v1` added when it has no path. Each deployment
+row has its name (what requests send as `model`), the model it runs (free text, suggested from Codex's
+model list; it's shown, never used for prices) and optional USD rates per 1M tokens: input, cached and
+output, all three or none. Names are unique, at most 50 rows. Endpoint, names and models are public
+metadata and may reach argv and status; a key in any of them is refused.
+
+**Test**, per saved row, sends one tiny request (`max_output_tokens` 16, not stored) where a session's
+go: the endpoint plus `/responses`, the same `api-key` header (`adapters/codex/upstream.ts`, shared
+with the private host's gateway). It costs a little real Azure usage and runs only when clicked, never
+by itself. It answers in a few words: "OK · <model Azure names>", "Key rejected", "Deployment not
+found", "Rate limited", "HTTP 400 · <code>", "Can't reach the endpoint". No response text or header is
+shown. It's disabled with unsaved changes or no key.
+
+There is no "Load deployments": Azure lists deployments only through the management plane (ARM,
+`Microsoft.CognitiveServices/accounts/deployments`), which needs an Entra login, not the API key. The
+data plane's `/openai/deployments` was retired after `2023-03-15-preview`, and v1's `/models` lists
+models, not deployments.
+
+**A session on Azure has one deployment** (`SessionPrefs.deployment`), chosen as its Model in New
+session or Move, kept across restarts and used on every start: Codex is told it as the model, the
+private host prices with its rates (`TETHER_GATEWAY_RATES`, `TETHER_GATEWAY_DEPLOYMENT`), and a change
+to its rates, the endpoint or the key restarts an idle session's private process at the next send, as a
+replaced key does; other deployments' changes don't. A source change onto Azure (the chip) takes the
+deployment matching the session's model, else the first. A session from before deployment lists takes
+its model if that's a deployment, else the first, and keeps it. A deployment removed later stops its
+session with a chat error naming it, and nothing is sent; no other deployment stands in. The header's
+model menu can't change it: Move does.
 
 ### Session names
 
@@ -913,8 +955,8 @@ decreasing baseline leaves that process's spend unknown (`no-baseline`). `/clear
 incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
 pending requests before inference so a crash cannot leave a false complete total. Reports are
 idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported
-models and tiers. Azure uses optional deployment rates entered in
-Credentials; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
+models and tiers. Azure uses the session's deployment's optional rates, entered on the Azure page,
+and only for requests naming that deployment; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
 unknown. These estimates are not provider invoices.
 
 The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
@@ -1114,8 +1156,8 @@ Claude `acceptEdits` (Claude has no sandbox, so commands ask), Claude `auto` bec
 command can touch, Claude what's run without asking.
 
 **Model and effort** are chosen in the dialog. Claude unset is `CLAUDE_UNSET`, as for any session;
-Codex keeps its Default. An Azure source with a deployment fixes the model: the dialog shows it, and so
-does New session.
+Codex keeps its Default. On Azure the Model lists its deployments, each with the model it runs ("luna-a ·
+gpt-6-luna"), here and in New session; there is no Effort choice.
 
 **Billing.** The dialog's Source picks the new session's source, as in New session, with no fallback.
 Its id comes with a snapshot of that source, a key's Codex thread is made on its private app-server
