@@ -924,9 +924,16 @@ Claude `acceptEdits` (Claude has no sandbox, so commands ask), Claude `auto` bec
 command can touch, Claude what's run without asking.
 
 **Model and effort** are chosen in the dialog. Claude unset is `CLAUDE_UNSET`, as for any session;
-Codex keeps its Default. **Billing** on the moved session is what the harness reports, as for any
-session. The dialog shows the target's newest known report (`storedBilling` of its recent sessions),
-and nothing when there is none.
+Codex keeps its Default. An Azure source with a deployment fixes the model: the dialog shows it.
+
+**Billing.** A move has no source of its own and no fallback. The new session is a new session on the
+target's configured source (Credentials): its id comes with the same credential snapshot as
+`newSession`, a key's Codex thread is made on its private app-server and imported there, and each
+process start gets a fresh snapshot, as for any session. The dialog shows that configured source,
+with API sources in the API colour (`Adapter.move.billingOf`). A native import starts the session at
+once, so the harness confirms the source and the loud badge shows before anything is typed. If it
+can't confirm, the session opens with the error and refuses to send; it never goes to another source.
+Thus a move can cross from a subscription to a key: the dialog is where that's seen.
 
 **Reading the history.** Codex reads anywhere in every sandbox. Claude would ask, so a moved
 session's driver and TUI get one read rule for exactly its folder (`Read(//…/**)`), and nothing else;

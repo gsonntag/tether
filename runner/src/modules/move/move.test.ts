@@ -48,6 +48,7 @@ class Neutral extends FakeAdapter {
           }
         : {}),
       contextWindow: async () => window,
+      billingOf: (source) => (source === "subscription" ? { kind: "plan", label: "Plan" } : { kind: "apiKey", label: "Key" }),
     };
   }
   move: Adapter["move"];
@@ -147,6 +148,72 @@ describe("N-way: three harnesses, every direction, one code path", () => {
     expect(o.targets.map((t) => t.harness as string).sort()).toEqual(["codex", "omp"]);
     expect(o.targets.every((t) => t.permissionMode === "ask")).toBe(true);
     expect(o.blocked).toBeUndefined();
+  });
+});
+
+describe("the target's configured source", () => {
+  function keyed(adapters: Adapter[], source: "subscription" | "anthropic", deployment?: string) {
+    const dir = mkdtempSync(join(tmpdir(), "tether-move-keys-"));
+    const prefsFile = join(dir, "runner.json");
+    saveConfig({ runnerId: "t" }, prefsFile);
+    const credentials = { snapshot: () => ({ source, revision: "r1", key: "never-in-prefs-000", ...(deployment ? { deployment } : {}) }) };
+    const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters, prefsFile, credentials: credentials as any } as any);
+    stops.push(() => runner.core.stop());
+    return { runner, prefsFile, mover: new Mover({ sessions: runner.look.sessions as any, dataDir: join(dir, "m"), log: () => {} }) };
+  }
+  test("the dialog shows it, and a new session gets it; prefs never hold it", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const seen: any[] = [];
+    const newId = omp.newId.bind(omp);
+    omp.newId = ((_p: string, o: any) => (seen.push(o), newId())) as any;
+    const { mover, runner, prefsFile } = keyed([pi, omp], "anthropic");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    expect((await mover.options("pi:s1")).targets[0]!.billing).toEqual({ kind: "apiKey", label: "Key" });
+    const r = await mover.move("pi:s1", "omp", {});
+    expect(seen[0].credential.revision).toBe("r1");
+    expect(runner.core.sessions.get(r.sessionId)!.driver).toBeDefined();
+    runner.core.o.prefs.flush();
+    expect(readFileSync(prefsFile, "utf8")).not.toContain("never-in-prefs");
+  });
+  test("the moved session starts with a fresh snapshot, so the harness confirms the source now", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const { mover, runner } = keyed([pi, omp], "subscription");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    const r = await mover.move("pi:s1", "omp", {});
+    expect((omp.drivers[0]!.opts as any).credential.source).toBe("subscription");
+    expect(runner.core.sessions.get(r.sessionId)!.state.mode).toBe("live");
+  });
+  test("a source that won't start stays an error on the session: no other source, no file route", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    omp.startError = "Anthropic API key failed.";
+    const { mover, runner } = keyed([pi, omp], "anthropic");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    const r = await mover.move("pi:s1", "omp", {});
+    expect(omp.imports.length).toBe(1);
+    expect(runner.core.sessions.get(r.sessionId)!.state.error).toContain("key failed");
+  });
+  test("an Azure deployment fixes the model", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const { mover, runner } = keyed([pi, omp], "anthropic", "my-deploy");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    expect((await mover.options("pi:s1")).targets[0]!.deployment).toBe("my-deploy");
+    const r = await mover.move("pi:s1", "omp", { model: "picked" });
+    expect(runner.core.o.prefs.get(r.sessionId).model).toBeUndefined();
+  });
+  test("what a source is called, on the real adapters", () => {
+    expect(claudeAdapter.move!.billingOf("anthropic")).toEqual({ kind: "apiKey", label: "Anthropic API key" });
+    expect(claudeAdapter.move!.billingOf("subscription").kind).toBe("plan");
+    expect(codexAdapter.move!.billingOf("azure")).toEqual({ kind: "provider", label: "Azure" });
+    expect(codexAdapter.move!.billingOf("openai").label).toBe("OpenAI API key");
+    expect(codexAdapter.move!.billingOf("subscription")).toEqual({ kind: "plan", label: "ChatGPT plan" });
   });
 });
 

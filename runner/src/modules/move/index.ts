@@ -6,7 +6,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
 import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type Level, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
-import { HARNESS_LABELS, type Billing, type HarnessId, type Msg } from "../../../../shared/transcript";
+import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import type { Module, ModuleContext, SessionLook } from "..";
@@ -15,7 +15,6 @@ const labelOf = (h: HarnessId) => HARNESS_LABELS[h] ?? h;
 
 /** The store was written this recently: something outside Tether may be mid-turn on it. */
 const STORE_QUIET_MS = 3_000;
-const BILLING_MS = 3_000;
 
 /** Why a session can't move now. */
 export function refusal(s: SessionLook): string | undefined {
@@ -161,19 +160,6 @@ export class Mover {
     return undefined;
   }
 
-  /** What the harness last said a session of it draws from; nothing, when it hasn't. */
-  private async billing(a: Adapter): Promise<Billing | undefined> {
-    const find = async () => {
-      const rows = (await a.listSessions({ since: Date.now() - 7 * 24 * 3600_000 }).catch(() => [])).sort((x, y) => y.updatedAt - x.updatedAt).slice(0, 8);
-      for (const r of rows) {
-        const b = await a.storedBilling?.(r.nativeId, r.projectPath).catch(() => undefined);
-        if (b && b.kind !== "unknown") return b;
-      }
-      return undefined;
-    };
-    return Promise.race([find(), Bun.sleep(BILLING_MS).then(() => undefined)]);
-  }
-
   async options(id: string): Promise<MoveOptions> {
     const { look, adapter } = await this.source(id);
     const blocked = adapter.capabilities.move ? await this.blocked(adapter, look) : "This harness can't export a session yet.";
@@ -182,8 +168,8 @@ export class Mover {
     await Promise.all(
       candidates.map(async (a) => {
         if (!(await a.available().catch(() => false))) return;
-        const billing = await this.billing(a);
-        targets.push({ harness: a.id, label: labelOf(a.id), route: a.capabilities.move!.import, permissionMode: targetMode(adapter, look.state.permissionMode, a), ...(billing ? { billing } : {}) });
+        const source = this.ctx.sessions.configured(a.id);
+        targets.push({ harness: a.id, label: labelOf(a.id), route: a.capabilities.move!.import, permissionMode: targetMode(adapter, look.state.permissionMode, a), ...(source?.billing ? { billing: source.billing } : {}), ...(source?.deployment ? { deployment: source.deployment } : {}) });
       }),
     );
     const background = await this.background(adapter, look);
@@ -207,7 +193,8 @@ export class Mover {
       if (!portable.messages.some((m) => m.role !== "notice")) throw new Error("Nothing to move yet.");
       const background = await this.background(from, look);
       // Never looser than it was (shared/move.ts LEVELS).
-      const opts: StartOpts = { ...(choice.model ? { model: choice.model } : {}), ...(choice.effort ? { effort: choice.effort } : {}), permissionMode: targetMode(from, look.state.permissionMode, target) };
+      // A deployment is the model on such a source, set in Credentials.
+      const opts: StartOpts = { ...(choice.model && !this.ctx.sessions.configured(target.id)?.deployment ? { model: choice.model } : {}), ...(choice.effort ? { effort: choice.effort } : {}), permissionMode: targetMode(from, look.state.permissionMode, target) };
       const route = this.forceRoute ?? target.capabilities.move.import;
       let moved = route === "native" ? await this.native(target, portable, opts, background).catch((e) => void this.ctx.log(`native import into ${target.id} failed, using the file: ${e?.message ?? e}`)) : undefined;
       moved ??= await this.fallback(target, portable, opts, background);
@@ -230,7 +217,7 @@ export class Mover {
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
   private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean) {
     const { projectPath, title } = s.from;
-    const nativeId = await t.newId(projectPath, opts);
+    const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
     try {
       const { file, imagesDir } = writeArchive(s, dir, this.ctx.attachmentsDir, this.earlier(s));

@@ -178,15 +178,28 @@ export function createRunner(o: RunnerOptions) {
         adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts) => {
           const id = sessionId(harness, nativeId);
           core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts) });
-          core.book.upsert([(await core.open(id)).summary]);
+          const s = await core.open(id);
+          core.book.upsert([s.summary]);
+          // A failure (a key refused, a source it can't confirm) stays on the session: nothing falls back.
+          await live.resumeLive(s).catch(() => {});
           return id;
         },
         // Not started: its first send does that, after whatever the module sets up for it.
         create: async ({ harness, projectPath, ...opts }: { harness: HarnessId; projectPath: string } & StartOpts) => {
           const folder = core.folder(projectPath);
-          const s = core.create(harness, await core.adapter(harness).newId(folder, opts), folder, opts);
+          const credential = o.credentials?.snapshot(harness);
+          const s = core.create(harness, await core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) }), folder, opts);
           core.touch(s);
           return s.id;
+        },
+        newId: async (harness: HarnessId, projectPath: string, opts: StartOpts) => {
+          const credential = o.credentials?.snapshot(harness);
+          return core.adapter(harness).newId(projectPath, { ...opts, ...(credential ? { credential } : {}) });
+        },
+        configured: (harness: HarnessId) => {
+          const c = o.credentials?.snapshot(harness);
+          const a = core.adapter(harness);
+          return c && a.move ? { billing: a.move.billingOf(c.source), ...(c.deployment ? { deployment: c.deployment } : {}) } : undefined;
         },
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {

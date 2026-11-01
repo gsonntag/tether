@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
-import { effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
+import { effortLabel, findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
 import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessId, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -65,7 +65,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
     setBusy(true);
     setError(undefined);
     try {
-      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(model && model !== "default" ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
+      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(model && model !== "default" && !target?.deployment ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
       onClose();
       focusComposerOf(runnerId, sessionId);
       openSession(runnerId, sessionId);
@@ -94,7 +94,12 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
         {options && !targets.length && <div className="t-form-error">No other agent on this runner.</div>}
         {target && (
           <>
-            <label>
+            {target.deployment ? (
+              <div>
+                <span className="t-field-label">Deployment</span>
+                <div>{target.deployment}</div>
+              </div>
+            ) : (<label>
               <span className="t-field-label">Model</span>
               <select className="t-select" value={shownModel} onChange={(e) => setModel(e.target.value)}>
                 {listed.map((m) => (
@@ -103,8 +108,8 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
                   </option>
                 ))}
               </select>
-            </label>
-            {efforts.length > 0 && (
+            </label>)}
+            {efforts.length > 0 && !target.deployment && (
               <label>
                 <span className="t-field-label">Effort</span>
                 <select className="t-select" value={validEffort || unsetEffort} onChange={(e) => setEffort(e.target.value)}>
@@ -123,7 +128,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
               {target.billing && (
                 <>
                   <dt>Billing</dt>
-                  <dd>{target.billing.label}</dd>
+                  <dd>{isApiBilling(target.billing) ? <span className="t-move-api">{target.billing.label}</span> : target.billing.label}</dd>
                 </>
               )}
             </dl>

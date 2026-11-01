@@ -1,6 +1,7 @@
 // Moving sessions out of and into Codex (SPEC §15).
 //
-// In: `thread/inject_items`, the daemon's own call for appending to a thread's model-visible
+// In: `thread/inject_items` (on whichever app-server has the thread: the shared daemon, or a key's
+// private one), the daemon's own call for appending to a thread's model-visible
 // history. It persists to the rollout and survives thread/resume (checked on daemon 0.166). Its
 // items aren't turns, so the daemon's turn lists don't show them: `importedMsgs` reads them back
 // from the rollout, marked in codex-threads.json, and the transcript starts with them (which is also
@@ -16,10 +17,10 @@ import { LEVELS, movedHistoryStart, type Level, type PortableItem } from "../../
 import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part } from "../../../../shared/transcript";
 import type { AdapterMove } from "../../core/adapter";
-import { call } from "./daemon";
 import { codexHistory, readThread, threadTurns } from "./discovery";
 import { dropPending } from "./driver";
 import { knownMode } from "./modes";
+import { sourceBilling, threadCall } from "./sources";
 import { CODEX_HOME } from "./rpc";
 import { remember, remembered } from "./remember";
 
@@ -142,7 +143,7 @@ const windows = async (): Promise<Record<string, number>> => {
 };
 
 /** A thread whose import failed leaves no row. */
-const forget = (nativeId: string) => call("thread/archive", { threadId: nativeId }).catch(() => undefined);
+const forget = (nativeId: string) => threadCall(nativeId, "thread/archive", { threadId: nativeId }).catch(() => undefined);
 
 const PRESETS: { mode: string; level: Level }[] = [
   { mode: "read-only", level: LEVELS.readOnly },
@@ -179,8 +180,8 @@ export const codexMove: AdapterMove = {
 
   async importHistory(r) {
     try {
-      for (const b of batches(r.items.map(itemOf), (i) => JSON.stringify(i).length)) await call("thread/inject_items", { threadId: r.nativeId, items: b }, 60_000);
-      await call("thread/name/set", { threadId: r.nativeId, name: r.title });
+      for (const b of batches(r.items.map(itemOf), (i) => JSON.stringify(i).length)) await threadCall(r.nativeId, "thread/inject_items", { threadId: r.nativeId, items: b }, 60_000);
+      await threadCall(r.nativeId, "thread/name/set", { threadId: r.nativeId, name: r.title });
       remember(r.nativeId, { imported: true });
     } catch (e) {
       await forget(r.nativeId);
@@ -197,7 +198,9 @@ export const codexMove: AdapterMove = {
     return ok;
   },
 
-  setTitle: async (nativeId, _projectPath, title) => void (await call("thread/name/set", { threadId: nativeId, name: title })),
+  setTitle: async (nativeId, _projectPath, title) => void (await threadCall(nativeId, "thread/name/set", { threadId: nativeId, name: title })),
+
+  billingOf: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
 
   async contextWindow(model) {
     const w = await windows();

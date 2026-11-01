@@ -350,8 +350,10 @@ export interface MoveTarget {
   route: "native" | "context";
   /** the mode the session would start in there */
   permissionMode: string;
-  /** what it would draw from, from the harness's last report. Absent: not known */
+  /** what it would draw from: the harness's configured source (Credentials), confirmed when it starts */
   billing?: Billing;
+  /** the source fixes the model (an Azure deployment) */
+  deployment?: string;
 }
 
 export interface MoveOptions {

@@ -11,6 +11,7 @@
 // Steps:
 //   errors    a running turn is refused, Cancel does nothing, phone and desktop dialogs (Claude only)
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
+//   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
 //   long      a session bigger than the window moves twice; its first line is only in the file.
 //             CODEX_TURNS=1 asks Codex on the way
 //   round     Claude to Codex and back: tool call, image, an edit on each side, source unchanged
@@ -218,6 +219,38 @@ const steps = {
     has(reply, picked.tool.output.trim().slice(0, 12));
     ok(`Claude quotes a real Codex tool result (${target})`);
     await p.close();
+  },
+
+  /** With a key set, the dialog and the session say so loudly, and a refused key stops there. */
+  async keyRefused() {
+    const p = await page(desktop);
+    const folder = process.env.CODEX_SCRATCH ?? `${HOME}/tether-scratch/p4/projects/scratch`;
+    const src = (await rpcVia(p, "listSessions", { projectPath: folder })).ok?.sessions.find((s) => s.harness === "codex" && !s.parentSessionId);
+    if (!src) fail("no stored Codex thread");
+    const set = await rpcVia(p, "setCredential", { source: "anthropic", key: `sk-ant-not-a-real-key-${"x".repeat(24)}` });
+    if (set.error) fail(set.error);
+    try {
+      await p.goto(sessionUrl(src.id));
+      await openMenu(p);
+      await p.locator(".t-move-api", { hasText: "Anthropic API key" }).waitFor({ timeout: 30_000 });
+      if ((await p.locator(".t-move-api").evaluate((e) => getComputedStyle(e).borderRadius)) === "0px") fail("the API colour isn't styled");
+      await shot(p, "key-dialog");
+      await button(p.getByRole("dialog"), "Cancel").click();
+      await move(p, "Claude Code", CLAUDE_MODEL, { name: "key" });
+      await p.locator(".t-paid-badge").waitFor({ timeout: 60_000 });
+      await shot(p, "key-moved");
+      ok("the configured key shows in the dialog and, confirmed, as the loud badge before anything is sent");
+      await composer(p).fill("Reply OK.");
+      await composer(p).press("Enter");
+      await p.getByText("Anthropic API key failed", { exact: false }).first().waitFor({ timeout: 120_000 });
+      await waitState(p, (s) => s.status === "idle", "stopped");
+      await shot(p, "key-refused");
+      if ((await p.locator(".t-paid-badge").count()) === 0) fail("the badge went");
+      ok("a refused key stops on that source: nothing goes to the plan");
+    } finally {
+      await rpcVia(p, "unsetCredential", { source: "anthropic" });
+      await p.close();
+    }
   },
 
   /** Bigger than the target's window, moved twice, and something from the very start of it. */

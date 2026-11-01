@@ -170,6 +170,8 @@ export interface AdapterMove {
   contextWindow?(model: string | undefined): Promise<number | undefined>;
   /** A client outside Tether is running a turn on it. */
   busy?(nativeId: string): Promise<boolean>;
+  /** What a configured source is called on this harness, before anything confirms it. */
+  billingOf(source: CredentialSnapshot["source"]): Billing;
 }
 
 export interface Adapter {

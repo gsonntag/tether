@@ -52,6 +52,7 @@ Compare `sha256sum ~/.codex/config.toml` before and after: a move must not chang
 13. **Modes** [unit, e2e: round for two] The table in SPEC §15: never looser, unknown the safest.
 14. **Background work** [unit] A stored Codex thread with a background command: the dialog says
     "Background work stays here", and the agent and the notice say it too.
-15. **Billing** [by hand] The dialog's Billing is the harness's last report; the moved session's chip
-    is what it reports on start.
+15. **Billing** [unit, for the source; by hand with a real key] With a key set for the target, the
+    dialog shows it in the API colour; the moved session starts at once, with the loud badge. A
+    refused key shows its error and nothing is sent. Without a key: the plan's label, quiet.
 16. **Title and folder** [e2e: stored] The moved session has the old title and folder.
