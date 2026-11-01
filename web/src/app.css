@@ -638,6 +638,9 @@
   font-size: 14px;
   padding: 7px 10px;
 }
+.t-form > * {
+  flex-shrink: 0;
+}
 .t-form-error {
   color: var(--color-text-red, var(--color-error));
   font-size: 13px;
