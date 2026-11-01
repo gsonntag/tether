@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { planLines, reportedAt, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
-import { keyTarget } from "./credentials";
+import { keyTarget, keyTargets } from "./credentials";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -36,11 +36,11 @@ test("the context chip and its tooltip", () => {
   expect(contextDetail({ used: 800, total: 258_400 })).toBe("800 of 258k context");
 });
 
-test("the plan chip: the fuller window, both in the tooltip, a window past its reset gone", () => {
+test("the plan chip: 5-hour preferred, both in the tooltip, a window past its reset gone", () => {
   const at = Date.UTC(2026, 10, 1);
   const fiveHour = { percent: 5, resetsAt: at + 3_600_000 };
   const week = { percent: 63, resetsAt: at + 86_400_000 };
-  expect(planChip({ fiveHour, week }, at)?.text).toBe("Week 63%");
+  expect(planChip({ fiveHour, week }, at)?.text).toBe("5h 5%");
   expect(planChip({ fiveHour, week }, at)?.detail).toMatch(/^5-hour 5%, resets .+ · Weekly 63%, resets .+$/);
   expect(planChip({ fiveHour: { ...fiveHour, percent: 90 }, week }, at)?.text).toBe("5h 90%");
   expect(planChip({ week }, at + 2 * 86_400_000)).toBeUndefined();
@@ -48,11 +48,17 @@ test("the plan chip: the fuller window, both in the tooltip, a window past its r
   expect(planChip({ week: { percent: 7 } }, at)).toEqual({ text: "Week 7%", detail: "Weekly 7%" });
   expect(planChip(undefined)).toBeUndefined();
   expect(planChip({})).toBeUndefined();
+  expect(planChip({ fiveHour: { percent: 0 }, week }, at)?.text).toBe("5h 0%");
+  expect(planChip({ fiveHour: { ...fiveHour, resetsAt: at - 1 }, week }, at)?.text).toBe("Week 63%");
 });
 
 test("the usage chip says what the session draws from; limits only on a plan", () => {
   const plan = { week: { percent: 63 } };
   expect(usageChip({ kind: "plan", label: "Claude plan" }, plan).text).toBe("Claude plan · Week 63%");
+  for (const label of ["ChatGPT plan", "Claude plan"]) {
+    expect(usageChip({ kind: "plan", label }, { ...plan, fiveHour: { percent: 10 } }).text).toBe(`${label} · 5h 10%`);
+    expect(usageChip({ kind: "plan", label }, plan).text).toBe(`${label} · Week 63%`);
+  }
   expect(usageChip({ kind: "plan", label: "Claude plan" }, undefined).text).toBe("Claude plan");
   expect(usageChip({ kind: "apiKey", label: "Anthropic API key" }, plan).text).toBe("Anthropic API key");
   expect(usageChip({ kind: "provider", label: "Azure" }, plan).text).toBe("Azure");
@@ -103,4 +109,10 @@ test("the key a plan session goes to: its last used, else the first set", () => 
   expect(keyTarget([plan, openai], "azure")).toBe(openai);
   expect(keyTarget([plan, azure])).toBe(azure);
   expect(keyTarget([plan])).toBeUndefined();
+  expect(keyTargets([plan, openai, azure], "openai", ["azure", "openai"])).toEqual([azure, openai]);
+  expect(keyTarget([plan, openai, azure], "openai", ["azure"])).toBe(azure);
+  expect(keyTarget([plan, openai], "openai", ["azure"])).toBeUndefined();
+  expect(keyTarget([plan, openai, azure], "azure", [])).toBeUndefined();
+  expect(keyTarget([plan, openai], undefined, ["azure", "openai"])).toBe(openai);
+
 });

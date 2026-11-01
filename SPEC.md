@@ -731,7 +731,8 @@ Only the owner can run one (the same auth as sending).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
   permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
-  draws from, and on a plan its fuller window, "Claude plan · Week 63%"; tooltip the windows and
+  draws from, and on a plan its 5-hour window when available, "ChatGPT plan · 5h 10%",
+  otherwise its weekly window, "Claude plan · Week 63%"; tooltip the windows and
   their resets) and the **Terminal** button. Those two
   chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
@@ -786,9 +787,14 @@ keeps its rule: plan % only on a plan session.
 
 **When the plan runs out.** The menu has a checkbox, "Switch to API key when plan runs out"
 (`SessionPrefs.autoKey`, off by default, per session; it doesn't close the menu), shown on a plan
-session when a key is set for that harness. With two keys it names its target: the session's last-used
-key (`SessionPrefs.lastKey`, set by anything picked on the chip), else OpenAI. This is the only
-automatic source change there is, and it exists because you ticked it for that session.
+session when a key is set for that harness (or the switch is already enabled). Its description names
+its target. "Fallback keys…" lets the user rank and exclude supported keys per session
+(`SessionPrefs.fallbackKeys`): use the first configured key in that order, never an excluded key.
+An empty list excludes all keys. Before a policy is saved, the default is the session's last-used
+key (`SessionPrefs.lastKey`), then the harness's other configured keys. The order and exclusions
+survive reopening, restarts, toggling the switch and source carries. Unsetting a preferred key
+only falls through to another allowed key; no allowed key available means no switch and a notice.
+This is the only automatic source change, and exists because you ticked it for that session.
 
 When a turn on the plan ends on the harness's own exhausted signal (`Sink.limitReached`,
 `LiveControl.planOut`), the source changes as from the chip, one chat notice says so ("Plan limit
@@ -927,7 +933,10 @@ replaced key does; other deployments' changes don't. A source change onto Azure 
 deployment matching the session's model, else the first. A session from before deployment lists takes
 its model if that's a deployment, else the first, and keeps it. A deployment removed later stops its
 session with a chat error naming it, and nothing is sent; no other deployment stands in. The header's
-model menu can't change it: Move does.
+Model menu lists configured deployments and changes the selection between turns on the same thread.
+The saved deployment and the model change together; a rejected change rolls both back. At the next
+send the private process resumes that same thread with the selected deployment's pricing snapshot.
+The running turn keeps its original deployment and pricing; close a shared terminal before switching.
 
 ### Session names
 

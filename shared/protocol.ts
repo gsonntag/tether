@@ -83,7 +83,7 @@ export interface Ops {
   /** a session's source from its next process start (only with capabilities.sourceSwitch) */
   setSessionSource: { args: { sessionId: string; source: BillingSource }; result: null };
   /** the box in the billing chip's menu: on a plan session, switch to a key when the plan runs out */
-  setAutoKey: { args: { sessionId: string; on: boolean }; result: null };
+  setAutoKey: { args: { sessionId: string; on: boolean; fallbackKeys?: CredentialSource[] }; result: null };
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };

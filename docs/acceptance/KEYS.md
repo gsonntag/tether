@@ -100,8 +100,12 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 
 - [ ] Desktop and 375 px: the billing chip's menu shows the plan's windows on a plan session and on a
   key session, by the plan's name; nothing reported is no line; the chip shows a % only on a plan.
-- [ ] The box shows only on a plan session with a key set, off by default, and toggling keeps the menu
-  open. With two Codex keys it names the target, the session's last-used key, else OpenAI.
+  For both harnesses the chip uses 5h when current, otherwise Week, even when Week is fuller.
+- [ ] The box shows on a plan session with a key set or the switch already enabled, off by default,
+  and toggling keeps the menu open. Its description names the target. Fallback keys lets the user rank Azure before OpenAI,
+  exclude either or both, and save. Reload and source carry preserve the order and exclusions.
+- [ ] Unset the preferred fallback: only the next allowed key is chosen. Exclude that key too:
+  no switch, with a notice saying no allowed fallback is available. Toggling preserves the policy.
 - [ ] Ticked, a real exhausted signal switches once, with one notice and the loud badge, and the message
   goes once more; if tools ran it isn't resent and the notice says so. It stays on the key.
 - [ ] Unticked, or on a short 429, a network error, auth, overloaded or a 5xx: nothing switches.
@@ -142,7 +146,10 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
   stops with an error; it never calls the subscription. An Unknown/mismatched report refuses send.
 - [ ] OpenAI: a private Codex process confirms the key provider; its fake-key turn fails on that
   source. The shared subscription daemon's PID, environment, login and configuration remain intact.
-- [ ] Azure: supply an endpoint and optional deployment. Its private process confirms Azure; a
+- [ ] Azure: configure an endpoint and multiple deployments in Settings, Azure. Choose a deployment
+  in New session or Change session harness, then change it between turns in the Model chip.
+  The thread id and history stay the same; reopening keeps the model selected and its matching pricing. Close a shared terminal before switching.
+  Its private process confirms Azure; a
   fake-key/invalid-endpoint turn stops there, without trying OpenAI or the subscription.
 - [ ] Unset a key; send again in a session on it. A chat error names the source, nothing is sent, the
   badge stays, and no process starts. Set it again: that session carries on.

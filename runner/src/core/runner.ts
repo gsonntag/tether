@@ -120,7 +120,7 @@ export function createRunner(o: RunnerOptions) {
     ops.register("setAzure", (a) => o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }));
     ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
-    ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), a.on === true); return null; });
+    ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), a.on === true, a.fallbackKeys); return null; });
     ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }

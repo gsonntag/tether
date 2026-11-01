@@ -62,7 +62,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await menu(p);
   want((await box(p).getAttribute("aria-checked")) === "true", "still ticked after a reload (saved in prefs)");
   await close(p);
-  want(/Week 64%/.test(await chip(p).textContent()), "the chip keeps its plan %");
+  want(/5h 12%/.test(await chip(p).textContent()), "the chip keeps its plan %");
 
   await send(p, "please limit me");
   await until(p, "Plan limit reached. Switched to Anthropic API key.");
@@ -162,7 +162,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await p.close();
 }
 
-// No key: no box.
+// Removing a key keeps an enabled switch visible so it can be turned off.
 {
   const p = await open(desktop, "claude:plan-c");
   const unset = await p.evaluate(async (r) => {
@@ -172,7 +172,10 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
     return true;
   }, RUNNER);
   await menu(p);
-  want(unset && await box(p).count() === 0, "no key set: no box");
+  want(unset && await box(p).count() === 1 && await box(p).getAttribute("aria-checked") === "true", "removed key: enabled switch can still be turned off");
+  await box(p).click();
+  await p.waitForTimeout(300);
+  want(await box(p).count() === 0, "no key set and switch off: no box");
   await shot(p, "desktop-no-key");
   await p.close();
 }

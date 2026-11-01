@@ -66,7 +66,7 @@ export const contextDetail = (c: { used: number; total: number }) => `${tokens(c
 export const resetTime = (ms: number, week = true) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
 
 /**
- * The header's plan chip: the fuller window ("Week 63%"), and both in the tooltip. A window past its
+ * The header's plan chip: the 5-hour window when available, otherwise the weekly window ("Week 63%"), and both in the tooltip. A window past its
  * reset is no longer known. Nothing known: undefined.
  */
 export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text: string; detail: string } | undefined {
@@ -76,7 +76,7 @@ export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text:
     { short: "Week", long: "Weekly", w: known(plan?.week), week: true },
   ].filter((r) => r.w);
   if (!rows.length) return undefined;
-  const top = rows.reduce((a, b) => (b.w!.percent >= a.w!.percent ? b : a));
+  const top = rows[0]!;
   const detail = rows.map((r) => `${r.long} ${r.w!.percent}%${r.w!.resetsAt ? `, resets ${resetTime(r.w!.resetsAt, r.week)}` : ""}`).join(" · ");
   return { text: `${top.short} ${top.w!.percent}%`, detail };
 }

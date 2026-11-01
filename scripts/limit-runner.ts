@@ -13,6 +13,7 @@ import { CredentialStore } from "../runner/src/credentials";
 import { saveConfig } from "../runner/src/config";
 import { FakeAdapter, FakeDriver, type Step } from "../runner/src/core/fakeAdapter";
 import { createRunner } from "../runner/src/core/runner";
+import type { Sink } from "../runner/src/core/adapter";
 
 const dir = process.env.TETHER_CONFIG_DIR!;
 if (!dir?.startsWith("/tmp/")) throw new Error("Set TETHER_CONFIG_DIR to a private folder under /tmp.");
@@ -78,6 +79,14 @@ codex.planUsage = async () => {
   const at = ++reads < 3 ? Date.now() - 3 * H : Date.now();
   return { fiveHour: { percent: 100, resetsAt: Date.now() + 2 * H, at }, week: { percent: 41 + reads, resetsAt: Date.now() + 70 * H, at } };
 };
+// Driver restarts must not reuse FakeDriver's local u1/u2 ids and replace earlier user turns.
+const uniqueUsers = (sink: Sink): Sink => {
+  const prefix = crypto.randomUUID();
+  return { ...sink, event: (event) => sink.event(event.type === "msg" && event.msg.role === "user" ? { ...event, msg: { ...event.msg, id: `${prefix}-${event.msg.id}` } } : event) };
+};
+const startCodex = codex.start.bind(codex), resumeCodex = codex.resume.bind(codex);
+codex.start = (path, id, opts, sink) => startCodex(path, id, opts, uniqueUsers(sink));
+codex.resume = (id, path, opts, sink) => resumeCodex(id, path, opts, uniqueUsers(sink));
 const codexStreams = new WeakMap<FakeDriver, CodexStream>();
 codex.script = (text) => [
   (sink, d) => {

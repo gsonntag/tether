@@ -849,8 +849,14 @@ export class LiveControl {
   private async applySetting(s: Session, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const id = s.id;
     const before = this.core.o.prefs.get(id);
+    const azureModel = patch.model !== undefined && this.sourceOf(s) === "azure";
+    if (azureModel) {
+      const deployment = this.opts.credentials?.azure().deployments.find((d) => d.name === patch.model);
+      if (!deployment) throw new Error("Choose a deployment configured in Settings, Azure.");
+      if (s.state.terminal || s.state.mode === "terminal") throw new Error("Close the terminal before changing the Azure deployment.");
+    }
     const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
-    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
+    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(azureModel ? { deployment: patch.model } : {}) });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
     if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
@@ -873,7 +879,7 @@ export class LiveControl {
       // were, so nothing runs with settings other than those shown. A late confirmation still
       // counts (the sink says so).
       const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
-      this.core.o.prefs.set(id, undo);
+      this.core.o.prefs.set(id, { ...undo, ...(azureModel ? { deployment: before.deployment } : {}) });
       s.rolledBack = patch;
       this.rollBackTurnSettings(s, shown);
       s.setState(shown);
@@ -1036,7 +1042,7 @@ export class LiveControl {
 
   /**
    * An Azure session's deployment: what's saved with it, else (a session from before deployment
-   * lists) its model if that's a deployment, else the first, which is then saved. Kept from then on:
+   * lists) its model if that's a deployment, else the first, which is then saved. Model changes update it:
    * one that's removed later stops the session, saying so, and nothing stands in for it.
    */
   deploymentOf(s: Session): string | undefined {
@@ -1214,19 +1220,24 @@ export class LiveControl {
     return cost;
   }
 
-  /** The box in the billing chip's menu, saved with the session. Nothing checks keys here: the menu shows it, the switch looks. */
-  async setAutoKey(id: string, on: boolean) {
+  /** The fallback switch and optional allowed key order, saved with this session. */
+  async setAutoKey(id: string, on: boolean, fallbackKeys?: CredentialSource[]) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
-    this.core.o.prefs.set(id, { autoKey: on || undefined });
+    if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
+    const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
+    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) || fallbackKeys.some((key) => !supported.includes(key)) || new Set(fallbackKeys).size !== fallbackKeys.length))
+      throw new Error("Choose each supported fallback key at most once.");
+    const patch = { autoKey: on || undefined, ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
+    this.core.o.prefs.set(id, patch);
     this.core.o.prefs.flush();
-    s.setState({ autoKey: on || undefined });
+    s.setState(patch);
   }
 
   /** What a session's successor on another id keeps. */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey } = this.core.o.prefs.get(s.id);
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}) };
+    const { autoKey, lastKey, fallbackKeys } = this.core.o.prefs.get(s.id);
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
   }
 
   /**
@@ -1246,8 +1257,8 @@ export class LiveControl {
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       const resetsAt = await this.planReset(harness, s, hit);
       const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey);
-      if (!target) return void say("Plan limit reached. No API key is set, so nothing switched.", "warning");
+      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
+      if (!target) return void say(prefs.fallbackKeys !== undefined ? "Plan limit reached. No allowed fallback key is available, so nothing switched." : "Plan limit reached. No API key is set, so nothing switched.", "warning");
       try {
         await this.setSource(s.id, target.source);
       } catch (e) {

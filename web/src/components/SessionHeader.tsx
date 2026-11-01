@@ -8,7 +8,7 @@ import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
 import { loadModels } from "../store";
-import { BillingChip } from "./BillingChip";
+import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
@@ -64,6 +64,9 @@ export function SessionHeader({
   useEffect(() => {
     if (state.model === "default" && !state.modelResolved) ensureModels();
   }, [state.model, state.modelResolved, !!models]);
+  const onAzure = billingForDisplay(state)?.label === "Azure";
+  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure);
+  const azureModels = sources?.options.find((o) => o.source === "azure")?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
   const current = findModel(models?.models ?? [], state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
@@ -103,12 +106,13 @@ export function SessionHeader({
           <>
             <ChoiceMenu
               name="Model"
+              customLabel={session.harness === "codex" && !onAzure ? "Other model or deployment…" : undefined}
               value={current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
               label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
               disabled={locked}
-              choices={(models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
-              onOpen={ensureModels}
+              choices={(onAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
+              onOpen={() => { ensureModels(); if (onAzure) refreshSources(); }}
               onPick={(model) => void call(rpc(runnerId, "setModel", { sessionId: session.id, model }))}
             />
             {(efforts.length > 0 || state.effort) && (

@@ -424,3 +424,62 @@ describe("credential process boundaries", () => {
     expect(adapter.drivers).toHaveLength(0);
   });
 });
+
+
+describe("Azure model changes on the same session", () => {
+  async function azureSession() {
+    const t = setup();
+    t.adapter.billing = { ...t.adapter.billing, keys: ["azure"] };
+    t.credentials.set("azure", `fake-${crypto.randomUUID()}`);
+    t.credentials.setAzure({ endpoint: "test-resource", deployments: [{ name: "one", model: "gpt-6-luna" }, { name: "two", rates: { input: 2, output: 8, cached: 0.5 } }] });
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: t.dir, source: "azure", model: "one" });
+    await t.live.send(sessionId, "first turn");
+    return { ...t, sessionId, s: await t.core.open(sessionId) };
+  }
+
+  test("a new model resumes the same thread with its own deployment and pricing", async () => {
+    const t = await azureSession();
+    const first = t.adapter.drivers.at(-1)!;
+    await t.live.setModel(t.sessionId, "two");
+    expect(t.s.state.model).toBe("two");
+    expect(t.prefs.get(t.sessionId).deployment).toBe("two");
+    await t.live.send(t.sessionId, "second turn");
+    const second = t.adapter.drivers.at(-1)!;
+    expect(first.closed).toBe(true);
+    expect(second.nativeId).toBe(first.nativeId);
+    expect(second.opts.credential).toMatchObject({ source: "azure", deployment: "two", rates: { input: 2, output: 8, cached: 0.5 } });
+    expect(t.prefs.get(t.sessionId).movedTo).toBeUndefined();
+    t.prefs.flush();
+    expect(new Prefs(t.file).get(t.sessionId).deployment).toBe("two");
+    await t.live.setModel(t.sessionId, "one");
+    await t.live.send(t.sessionId, "third turn");
+    expect(t.adapter.drivers.at(-1)!.opts.credential).toMatchObject({ deployment: "one", pricing: { model: "gpt-6-luna" } });
+  });
+
+  test("a rejected model restores both the saved deployment and the displayed model", async () => {
+    const t = await azureSession();
+    t.adapter.drivers.at(-1)!.onSetting = async () => { throw new Error("model rejected"); };
+    await expect(t.live.setModel(t.sessionId, "two")).rejects.toThrow("model rejected");
+    expect(t.prefs.get(t.sessionId).deployment).toBe("one");
+    expect(t.s.state.model).toBe("one");
+    expect(t.live.chosen(t.s).credential?.deployment).toBe("one");
+  });
+
+  test("an unknown deployment or open terminal leaves the saved selection unchanged", async () => {
+    const t = await azureSession();
+    await expect(t.live.setModel(t.sessionId, "missing")).rejects.toThrow("configured in Settings");
+    expect(t.prefs.get(t.sessionId).deployment).toBe("one");
+    t.s.setState({ terminal: { kind: "shared" } as any });
+    await expect(t.live.setModel(t.sessionId, "two")).rejects.toThrow("Close the terminal");
+    expect(t.prefs.get(t.sessionId).deployment).toBe("one");
+  });
+
+  test("a stored session's new deployment is used at its next start", async () => {
+    const t = await azureSession();
+    await t.live.release(t.s);
+    await t.live.setModel(t.sessionId, "two");
+    await t.live.send(t.sessionId, "next start");
+    expect(t.adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("two");
+    expect(t.live.deploymentOf(t.s)).toBe("two");
+  });
+});

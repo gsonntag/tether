@@ -1,4 +1,7 @@
-import { DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@astryxdesign/core/DropdownMenu";
+import { useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { DropdownMenu, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@astryxdesign/core/DropdownMenu";
 import type { Choice } from "../../../shared/transcript";
 
 /**
@@ -13,6 +16,7 @@ export function ChoiceMenu({
   onPick,
   onOpen,
   disabled,
+  customLabel,
 }: {
   name: string;
   value?: string;
@@ -22,7 +26,10 @@ export function ChoiceMenu({
   onOpen?: () => void;
   /** why it can't be changed here now (shown instead of a menu) */
   disabled?: string;
+  customLabel?: string;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [custom, setCustom] = useState("");
   // The current value is always offered, even when the list doesn't (yet) have it.
   const list = value && !choices.some((c) => c.id === value) ? [{ id: value, label }, ...choices] : choices;
   if (disabled)
@@ -33,6 +40,7 @@ export function ChoiceMenu({
       </span>
     );
   return (
+    <>
     <DropdownMenu
       menuMaxHeight={420}
       onOpenChange={(open) => open && onOpen?.()}
@@ -46,6 +54,15 @@ export function ChoiceMenu({
       <DropdownMenuRadioGroup label={name} value={value} onChange={onPick}>
         {list.length === 0 ? <DropdownMenuRadioItem value="" label="Loading…" isDisabled /> : list.map((c) => <DropdownMenuRadioItem key={c.id} value={c.id} label={c.label} description={c.description} />)}
       </DropdownMenuRadioGroup>
+      {customLabel && <DropdownMenuItem label={customLabel} onClick={() => { setCustom(value === "default" ? "" : value ?? ""); setEditing(true); }} />}
     </DropdownMenu>
+    {editing && <Dialog isOpen onOpenChange={(open) => !open && setEditing(false)} width={420} purpose="form">
+      <DialogHeader title="Choose model or deployment" onOpenChange={(open) => !open && setEditing(false)} />
+      <form className="t-form" style={{ padding: 16 }} onSubmit={(e) => { e.preventDefault(); if (custom.trim()) { onPick(custom.trim()); setEditing(false); } }}>
+        <label><span className="t-field-label">Model or deployment name</span><input className="t-search" autoFocus required value={custom} onChange={(e) => setCustom(e.target.value)} autoComplete="off" /></label>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><Button label="Cancel" variant="secondary" onClick={() => setEditing(false)} /><Button label="Apply" variant="primary" type="submit" isDisabled={!custom.trim()} /></div>
+      </form>
+    </Dialog>}
+    </>
   );
 }
