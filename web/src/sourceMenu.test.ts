@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import type { SourceChoices } from "../../shared/credentials";
+import { isApiBilling } from "../../shared/labels";
 import type { LiveState } from "../../shared/transcript";
-import { CURRENT_SOURCE, sourceMenu, switchBlocked } from "./sourceMenu";
+import { billingForDisplay, CURRENT_SOURCE, sourceMenu, switchBlocked, visibleNextBilling } from "./sourceMenu";
 
 const state = (o: Partial<LiveState> = {}): LiveState => ({ mode: "live", status: "idle", requests: [], queue: [], ...o });
 const plan = { kind: "plan", label: "Claude plan" } as const;
@@ -17,6 +18,26 @@ test("the harness's sources, its own marked, and no way to add a key that's set"
 
 test("what's next is what's marked; the confirmed one is the way back", () => {
   expect(sourceMenu("claude", state({ billing: plan, nextBilling: key }), both).value).toBe("anthropic");
+});
+
+test("a completed turn shows its queued source, while a running turn keeps its confirmed source", () => {
+  const completed = state({ billing: key, nextBilling: plan });
+  expect(billingForDisplay(completed)).toBe(plan);
+  expect(isApiBilling(billingForDisplay(completed))).toBe(false);
+  expect(visibleNextBilling(completed)).toBeUndefined();
+  expect(sourceMenu("claude", completed, both).value).toBe("subscription");
+
+  for (const status of ["running", "waiting"] as const) {
+    const running = state({ status, billing: key, nextBilling: plan });
+    expect(billingForDisplay(running)).toBe(key);
+    expect(isApiBilling(billingForDisplay(running))).toBe(true);
+    expect(visibleNextBilling(running)).toBe(plan);
+    expect(sourceMenu("claude", running, both).value).toBe("anthropic");
+  }
+
+  const terminal = state({ mode: "terminal", billing: key, nextBilling: plan, terminal: { kind: "shared" } });
+  expect(billingForDisplay(terminal)).toBe(key);
+  expect(visibleNextBilling(terminal)).toBe(plan);
 });
 
 test("a key that isn't set: Add API key, on any harness with one missing", () => {
