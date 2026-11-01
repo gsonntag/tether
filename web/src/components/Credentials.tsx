@@ -37,7 +37,7 @@ function RunnerCredentials({ runnerId }: { runnerId: string }) {
   const change = async (request: Promise<CredentialsStatus>) => {
     setBusy(true);
     setError(undefined);
-    try { setStatus(await request); } catch { setError("Couldn't update credentials."); } finally { setBusy(false); }
+    try { setStatus(await request); } catch (e) { setError((e as Error)?.message || "Couldn't update credentials."); } finally { setBusy(false); }
   };
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
@@ -70,7 +70,7 @@ function CredentialSlot({ source, status, disabled, save, unset }: { source: Sou
     const key = secret.current.value;
     secret.current.value = "";
     setHasKey(false);
-    void save({ source, key, ...(source === "azure" ? { endpoint: endpoint.current?.value.trim(), deployment: deployment.current?.value.trim(), ...(rates ? { rates } : {}) } : {}) });
+    void save({ source, key, ...(source === "azure" ? { endpoint: endpoint.current?.value.trim(), deployment: deployment.current?.value.trim() || undefined, ...(rates ? { rates } : {}) } : {}) });
   }}>
     <div className="t-credential-title"><label htmlFor={id}>{labels[source]}</label><span className="t-credential-status">{status.set ? `Set${status.last4 ? ` · ••••${status.last4}` : ""}` : "Not set"}</span></div>
     {source === "azure" && <>

@@ -76,6 +76,17 @@ async function call(p, op, args) {
     return rpc(runner,op,args);
   },{runner,op,args});
 }
+// Every process on the box, so the runner, harnesses, helpers and tmux are covered across restarts.
+// Run while keys are live, not just at the end, when their processes are gone.
+let argvChecks=0;
+function argvAudit() {
+  for(const pid of readdirSync("/proc").filter((n)=>/^\d+$/.test(n))) {
+    let argv;
+    try { argv=readFileSync(`/proc/${pid}/cmdline`); } catch { continue; }
+    argvChecks++;
+    for(const key of secrets) assert(!argv.includes(Buffer.from(key)),`key found in the argv of pid ${pid}`);
+  }
+}
 async function realSources(p) {
   const cl=process.env.CLAUDE_SCRATCH ?? "/home/ubuntu/.local/share/tether-dev-p3/projects/scratch";
   const cx=process.env.CODEX_SCRATCH ?? "/home/ubuntu/tether-scratch/p4/projects/scratch";
@@ -92,6 +103,7 @@ async function realSources(p) {
     await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
     assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"failed key changed billing source");
     await screenshot(p,`real-${source}-failure`);
+    argvAudit();
     if(process.env.RESTART_RUNNER) {
       // The command belongs to the isolated test stack, never the production runner.
       execFileSync("sh",["-c",process.env.RESTART_RUNNER],{stdio:"inherit"});
@@ -123,6 +135,7 @@ async function realSources(p) {
       assert((await p.locator(".t-term-api-badge").innerText()).includes(label),"terminal lost its source badge");
       await p.setViewportSize({width:375,height:812});
       await screenshot(p,`real-${source}-terminal-phone`);
+      argvAudit();
       const badge=await p.locator(".t-term-api-badge").boundingBox();
       assert(badge && badge.x>=0 && badge.x+badge.width<=375,"terminal source badge is not visible on phone");
       await p.setViewportSize({width:1280,height:900});
@@ -147,7 +160,9 @@ async function realSources(p) {
       await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(sub.sessionId)}`);
       await call(p,"send",{sessionId:sub.sessionId,text:"Reply exactly OK. Do not use tools."});
       await p.locator(".t-usage-chip",{hasText:"ChatGPT plan"}).waitFor({timeout:30000});
-      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && v.window?.messages?.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text)));},{runner,id:sub.sessionId},{timeout:90000});
+      // An exhausted plan is ChatGPT itself answering, so the source is still proved; the reply isn't.
+      const ending=await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];if(v?.state?.status!=="idle")return false;const msgs=v.window?.messages??[];if(msgs.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text))))return "replied";return /usage limit/i.test(JSON.stringify(msgs))&&"limit";},{runner,id:sub.sessionId},{timeout:90000}).then((h)=>h.jsonValue());
+      if(ending==="limit") console.log("NOT VERIFIED: ChatGPT plan is at its usage limit, so the subscription reply wasn't seen; the label and the plan's own limit error were");
       assert(await p.locator(".t-paid-badge").count()===0,"new Codex subscription retained API colour");
     }
     console.log(`ok real ${source}: harness-confirmed browser label, failure stops without fallback, unset restores subscription or refuses cross-source continuation`);
@@ -245,10 +260,22 @@ try {
     assert(!incoming.some((v) => v.includes(key)), "runner sent a key back to the browser");
     assert(!logs.some((v) => v.includes(key)), "browser console contains a key");
     assert(outgoing.filter((v) => v.includes(key)).length === 1, "browser didn't send the key exactly once");
-    if (process.env.RUNNER_PID) assert(!readFileSync(`/proc/${process.env.RUNNER_PID}/cmdline`, "utf8").includes(key), "key found in runner argv");
   }
+  argvAudit();
   const scan = (dir) => { for (const f of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, f.name); try { if (f.isDirectory()) scan(path); else if (f.isFile() && resolve(path) !== FILE) { const bytes = readFileSync(path); for (const key of secrets) assert(!bytes.includes(Buffer.from(key)), `key found outside private credentials file: ${path}`); } } catch (e) { if (e.code !== "ENOENT") throw e; } } };
   scan(ROOT);
+  assert(argvChecks>0,"no process was audited");
+  console.log(`ok audit: ${secrets.length} fake keys in no argv (${argvChecks} process reads), nowhere under ${ROOT} but the private file`);
   assert(errors.length === 0, `browser errors: ${errors.join("; ")}`);
   console.log("all passed; synthetic snapshots verify rendering; valid API-key billing remains an owner check");
+} catch(error) {
+  let n=0;
+  for(const context of browser.contexts()) for(const p of context.pages()) {
+    await screenshot(p,`failure-${++n}`).catch(()=>{});
+    const body=await p.locator("body").innerText().catch(()=>"closed");
+    assert(!secrets.some((key)=>body.includes(key)),"key found in failure DOM");
+    console.error("failure page",p.url(),body);
+  }
+  console.error("browser errors",errors);
+  throw error;
 } finally { await browser.close(); }

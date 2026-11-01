@@ -2,7 +2,7 @@
 
 ## Verification record (2026-10-31–2026-11-01)
 
-- All four packages typecheck; 849 unit tests pass.
+- All four packages typecheck; 851 unit tests pass.
 - The complete default P1 and P4 browser suites passed. Optional P1 stored paging/compacted-history
   fixtures were not supplied. P4's conditional subagent approval branch was skipped because the
   subagent did not request approval; its permission behavior has unit coverage.
@@ -17,6 +17,10 @@
   from process command lines and the Codex child's environment.
 - Browser screenshots were inspected at desktop and 375 px in light/dark: Credentials, each API
   source, Unknown, subscription, Home markers, estimates/unknown costs and local retry time.
+- `scripts/e2e-keys.mjs` with `REAL_HARNESSES=1` ran each source in the browser with fake keys,
+  Azure included: confirmed label, stop without fallback, dev runner restart, TUI startup and unset.
+  Process argv was read across every process while keys were live, and no key was found there or
+  anywhere under the artifact root but the private file.
 - Valid API-key inference, provider invoice/usage reconciliation and real-device touch behavior
   remain owner checks. A Claude TUI's unobserved spend, missing Azure rates and incomplete pricing
   metadata deliberately show Cost unknown.

@@ -69,6 +69,8 @@ function azureFields(key: string, endpoint?: string, deployment?: string, rates?
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error();
     endpoint = url.href.replace(/\/$/, "");
   } catch { throw new Error("Enter an HTTPS Azure endpoint."); }
+  // Optional: a blank field means none.
+  if (deployment === "") deployment = undefined;
   if (deployment !== undefined && (typeof deployment !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(deployment))) throw new Error("Enter a valid deployment name.");
   if (rates !== undefined && !validRates(rates)) throw new Error("Enter valid USD rates per million tokens.");
   // Endpoint/deployment values are public metadata and can enter argv. Reject a key pasted

@@ -92,7 +92,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const { projectPath, runnerId } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
-    const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text) : p.text) : "")).join("\n");
+    const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
     return (
       <div className={`t-msg notice ${msg.level ?? "info"}`} role={msg.level === "error" ? "alert" : undefined}>
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
@@ -114,7 +114,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
   const parts = msg.parts.map((p, i) => {
     const part = full[i] ?? p;
     return msg.role === "assistant" && part.type === "text"
-      ? { ...part, text: localizeUsageLimitRetry(part.text) }
+      ? { ...part, text: localizeUsageLimitRetry(part.text, undefined, msg.ts) }
       : part;
   });
   for (let i = 0; i < omitted; i++) {
@@ -199,7 +199,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
           <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
-        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error)}</div>}
+        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
       </div>
     </div>
   );

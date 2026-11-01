@@ -97,6 +97,10 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## Backlog
 
+- Unlimited-length pasted messages. A long paste is refused with "That message is too long."
+  (`MESSAGE_TEXT_MAX` = 200 * 1024, checked in `runner/src/core/live.ts` and `queue.ts`). Wanted: no length
+  limit on a pasted message, which means a large message can't travel in one relay frame or be
+  held whole in the queue, so it needs chunking or an attachment-style path.
 - Optional wake-up messages for subscription sessions when a usage limit resets, using the
   harness-reported reset time. API-key sessions are excluded. Future scope; no automatic messages
   are sent now.

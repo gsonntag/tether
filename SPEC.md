@@ -721,7 +721,8 @@ Credentials; missing rates, unsupported write charges, hosted tool fees and unkn
 unknown. These estimates are not provider invoices.
 
 The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
-browser's local timezone, including the date and timezone label. Native error text stays unchanged
+browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
+within a day), it means the next such UTC time after the message. Native error text stays unchanged
 in the store. Ordinary transcript dates and user messages are not rewritten.
 
 ## 11. Phases

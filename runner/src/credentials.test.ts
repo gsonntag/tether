@@ -7,6 +7,14 @@ const dir = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, {
 const fake = (tag: string) => `fake-${tag}-${crypto.randomUUID()}`;
 
 describe("private credentials", () => {
+  test("Azure saves with a blank optional deployment", () => {
+    const store = new CredentialStore(join(dir(), "credentials.json"));
+    store.set("azure", fake("blank"), "https://example.azure.com/openai/v1", "");
+    expect(store.status().azure.set).toBe(true);
+    expect(store.status().azure.deployment).toBeUndefined();
+    expect(store.snapshot("codex").deployment).toBeUndefined();
+    expect(() => store.set("azure", fake("bad"), "https://example.azure.com/openai/v1", "has space")).toThrow("valid deployment");
+  });
   test("loaded Azure metadata fails closed too, and unsupported file fields never enter snapshots", () => {
     const file = join(dir(), "credentials.json"), key = fake("loaded");
     for (const endpoint of [`https://example.azure.com/${key}`, "http://example.azure.com/v1"]) {

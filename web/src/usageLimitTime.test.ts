@@ -20,3 +20,13 @@ test("leaves normal text and usage errors without a retry date unchanged", () =>
   expect(localizeUsageLimitRetry(ordinary, "America/Los_Angeles")).toBe(ordinary);
   expect(localizeUsageLimitRetry(noDate, "America/Los_Angeles")).toBe(noDate);
 });
+
+test("a retry time without a date is the next such UTC time after the message", () => {
+  const timeOnly = message.replace("Nov 1st, 2026 2:33 AM", "3:56 AM");
+  const at = Date.UTC(2026, 10, 1, 1, 15);
+  expect(localizeUsageLimitRetry(timeOnly, "America/Los_Angeles", at)).toContain("try again at Oct 31, 2026, 8:56 PM PDT.");
+  // Past that time today: it means tomorrow.
+  expect(localizeUsageLimitRetry(timeOnly, "UTC", Date.UTC(2026, 10, 1, 5, 0))).toContain("try again at Nov 2, 2026, 3:56 AM UTC.");
+  // With no anchor it stays as written, and the timestamp isn't invented.
+  expect(localizeUsageLimitRetry(timeOnly, "America/Los_Angeles")).toBe(timeOnly);
+});
