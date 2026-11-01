@@ -864,7 +864,7 @@ Only one field was added to `Msg`: `compactSummary`, on an exported compaction's
 | Route | What happens |
 |---|---|
 | `native` | The turns go into the new session's own store (`importHistory`) and are checked (`imported`). The newest that fit go in; the session's first send resumes it as usual. A failure anywhere falls back to `context`, and leaves no session |
-| `context` | For a harness with no import: a new session whose first turn is Tether's message with a summary, the last reply and where the history is. The agent replies "Ready." `TETHER_MOVE_ROUTE=context` forces it for tests |
+| `context` | For a harness with no import: a new session whose first turn is Tether's message with a summary, the last reply and where the history is. The agent replies "Ready." `TETHER_MOVE_ROUTE=context` forces it for tests (`TETHER_MOVE_BUDGET` sets the token budget, to keep a test's turns small) |
 
 Either way the **whole history** is written first to a private file: `<config dir>/modules/move/<new
 session>/history.md`, folder 700 and file 600, outside any project, with `images/` and `attachments/`

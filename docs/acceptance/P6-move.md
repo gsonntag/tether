@@ -17,9 +17,11 @@ cd server && env -u TETHER_URL -u TETHER_TOKEN -u PORT PORT=8871 bun src/index.t
 cd runner && env -u TETHER_URL -u TETHER_TOKEN TETHER_DEV=1 TETHER_URL=http://localhost:8871 TETHER_TOKEN=dev \
   TETHER_CONFIG_DIR=$D TETHER_TMUX_SOCKET=tether-dev-move bun src/index.ts
 cd web && TETHER_SERVER=http://127.0.0.1:8871 bunx vite --port 5271 --strictPort
-CONFIG_DIR=$D node scripts/e2e-move.mjs errors stored long round codexFirst
+CONFIG_DIR=$D node scripts/e2e-move.mjs errors keyRefused stored long round codexFirst
 # The file route: a runner with TETHER_MOVE_ROUTE=context, then
 CONFIG_DIR=$D node scripts/e2e-move.mjs fallback
+# Codex asked about a cut history: a runner with TETHER_MOVE_BUDGET=12000, so its turns stay small, then
+CODEX_TURNS=1 CONFIG_DIR=$D node scripts/e2e-move.mjs long
 ```
 
 Compare `sha256sum ~/.codex/config.toml` before and after: a move must not change it.

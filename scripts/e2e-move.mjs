@@ -90,12 +90,14 @@ async function turn(p, text, { approve = false, ms = 240_000 } = {}) {
   await waitState(p, (s) => s.status === "idle", "idle before the turn");
   const n = await p.locator(".t-msg.assistant").count();
   await composer(p).fill(text);
-  await composer(p).press("Enter");
+  // On a phone Enter is a new line.
+  if (p.context() === phone) await p.locator('button[aria-label="Send"]').tap();
+  else await composer(p).press("Enter");
   const end = Date.now() + ms;
   await waitState(p, (s) => s.status !== "idle", "the turn started", 60_000).catch(() => {});
   for (;;) {
     const st = await stateOf(p);
-    if (st?.status === "idle" && (await p.locator(".t-msg.assistant").count()) >= n) break;
+    if (st?.status === "idle" && (await p.locator(".t-msg.assistant").count()) > n) break;
     if (Date.now() > end) fail(`the turn never ended: ${JSON.stringify(st?.status)}`);
     const req = p.locator(".t-req").first();
     if (approve && (await req.count())) await button(req, "Approve").click().catch(() => {});
@@ -128,8 +130,11 @@ async function move(p, label, model, { tap = false, name } = {}) {
   const d = p.getByRole("dialog");
   await d.locator("select.t-select").first().waitFor({ timeout: 30_000 });
   // Claude lists aliases ("haiku"): the one that resolves to this model, by its family name.
-  const word = model.replace(/^claude-/, "").split("-")[0];
-  const value = await p.waitForFunction(([m, w]) => [...document.querySelectorAll("dialog select option, [role=dialog] select option")].find((o) => o.value === m || o.value === w || o.value.includes(w))?.value, [model, word], { timeout: 40_000 });
+  const word = model.startsWith("claude-") ? model.split("-")[1] : model;
+  const value = await p.waitForFunction(([m, w]) => {
+    const all = [...document.querySelectorAll("dialog select option, [role=dialog] select option")];
+    return (all.find((o) => o.value === m) ?? all.find((o) => o.value === w))?.value;
+  }, [model, word], { timeout: 40_000 });
   await d.locator("select.t-select").first().selectOption(await value.jsonValue());
   const eff = d.locator("select.t-select").nth(1);
   if ((await eff.count()) && (await eff.locator('option[value="low"]').count())) await eff.selectOption("low");
@@ -144,6 +149,9 @@ async function move(p, label, model, { tap = false, name } = {}) {
   await p.locator(".t-msg.notice", { hasText: "Moved from" }).first().waitFor({ timeout: 30_000 });
   const id = idOf(p);
   if (id === was) fail("the new session didn't open");
+  // Only the cheap model ever runs here: said by the session itself, before any turn.
+  const st = await waitState(p, (s) => !!s.model, "a model", 30_000);
+  if (![model, word].includes(st.model)) fail(`it would run ${st.model}, not ${model}`);
   return id;
 }
 const storeFile = (nativeId) => `${HOME}/.claude/projects/${SCRATCH.replace(/[^a-zA-Z0-9]/g, "-")}/${nativeId}.jsonl`;
@@ -189,6 +197,8 @@ const steps = {
     if ((await rpcVia(p, "listSessions", { query: "" })).ok?.sessions?.length !== before) fail("Cancel made a session");
     ok("Cancel does nothing");
     const f = await page(phone, sessionUrl(id));
+    await f.getByRole("button", { name: "Session menu" }).locator("span").waitFor({ state: "visible", timeout: 30_000 });
+    await shot(f, "phone-header");
     await openMenu(f, true);
     await noOverflow(f, "the phone's dialog");
     await shot(f, "phone-dialog");
@@ -344,7 +354,9 @@ const steps = {
     await f.locator(".t-msg.notice", { hasText: "Moved from Codex" }).first().waitFor({ timeout: 30_000 });
     await noOverflow(f, "the moved session on a phone");
     await shot(f, "round-phone");
-    await f.locator(".t-msg.notice", { hasText: "Moved from Codex" }).first().getByRole("button", { name: "Open it" }).tap();
+    if (!(await f.getByRole("button", { name: "Session menu" }).locator("span").isVisible())) fail("the menu's glyph is hidden on a phone");
+    // (Not tap(): following the bottom scrolls it away again under a synthetic tap.)
+    await f.locator(".t-msg.notice", { hasText: "Moved from Codex" }).first().getByRole("button", { name: "Open it" }).evaluate((b) => b.click());
     await f.waitForFunction((c) => decodeURIComponent(location.hash).includes(c), codexId, { timeout: 15_000 });
     ok("the two link to each other, on a phone too");
     await p.close();

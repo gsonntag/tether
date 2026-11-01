@@ -17,7 +17,7 @@ export function SessionMenu({ runnerId, session }: { runnerId: string; session: 
     <>
       <DropdownMenu
         renderTrigger={(p) => (
-          <button type="button" className="t-chip t-chip-term t-chip-more" {...p} aria-label="Session menu">
+          <button type="button" className="t-chip t-chip-more" {...p} aria-label="Session menu">
             <span aria-hidden>⋯</span>
           </button>
         )}
