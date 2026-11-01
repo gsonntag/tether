@@ -108,5 +108,9 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
   attribution. Future scope; current dollar tracking is per session only.
 - AWS credentials: Codex through AWS and Claude through Bedrock. Future scope; no slots, routing,
   environment activation or terminal support are implemented for either.
+- Moved sessions' history files (`<config dir>/modules/move/<session>/`, SPEC §15) stay on the runner until
+  removed by hand, even after the session is deleted, and they hold the full conversation: every
+  message, tool output, image and attachment, secrets included. Nothing sweeps them. Wanted: removal
+  with the session, or a retention rule.
 - Harness update notice on the dashboard.
 - Revert `TETHER_HIDE_PROJECTS=/tmp/*,*/scratch` and remove the two test trust entries in `~/.codex/config.toml` when the build-out ends.

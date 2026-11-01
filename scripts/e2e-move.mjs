@@ -13,7 +13,8 @@
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
 //   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
 //   long      a session bigger than the window moves twice; its first line is only in the file.
-//             CODEX_TURNS=1 asks Codex on the way
+//             CODEX_TURNS=1 asks Codex instead of moving on (run the runner with a small
+//             TETHER_MOVE_BUDGET: every request resends what's in context)
 //   round     Claude to Codex and back: tool call, image, an edit on each side, source unchanged
 //   codexFirst a session started on Codex moves to Claude, on a phone
 //   fallback  needs a runner with TETHER_MOVE_ROUTE=context: the file route, on both targets
@@ -287,6 +288,8 @@ const steps = {
       const r = await turn(p, "From this session's history, what's the deploy phrase and what artifact did the build print? Read the history file if you need to. One line.", { approve: true });
       has(r, early, late);
       ok("Codex answers from the start of a history it holds only in a file");
+      await p.close();
+      return;
     }
     const back = await move(p, "Claude Code", CLAUDE_MODEL, { name: "long-claude" });
     await shot(p, "long-on-claude");

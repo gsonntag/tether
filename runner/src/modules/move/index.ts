@@ -222,7 +222,7 @@ export class Mover {
     try {
       const { file, imagesDir } = writeArchive(s, dir, this.ctx.attachmentsDir, this.earlier(s));
       const window = await t.move!.contextWindow?.(opts.model ?? t.unset?.model).catch(() => undefined);
-      const plan = planImport(s, budgetFor(window), { file, imagesDir, background });
+      const plan = planImport(s, Number(process.env.TETHER_MOVE_BUDGET) || budgetFor(window), { file, imagesDir, background });
       const request = { nativeId, projectPath, title, items: plan.items };
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
