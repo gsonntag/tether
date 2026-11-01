@@ -261,7 +261,7 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -423,9 +423,13 @@ export class SessionCore {
   }
 
   private async readPlan(s: Session) {
-    if (s.summary.parentSessionId) return;
-    const plan = await this.adapter(s.summary.harness).planUsage?.().catch(() => undefined);
-    if (plan) this.notePlan(s.summary.harness, plan);
+    if (!s.summary.parentSessionId) await this.refreshPlan(s.summary.harness);
+  }
+
+  /** What the harness can say of its plan limits now, on all its sessions. */
+  async refreshPlan(harness: HarnessId) {
+    const plan = await this.adapter(harness).planUsage?.().catch(() => undefined);
+    if (plan) this.notePlan(harness, plan);
   }
 
   /** The context and billing as they're stored, when no driver reports them. Main sessions only. */

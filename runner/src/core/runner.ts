@@ -117,6 +117,8 @@ export function createRunner(o: RunnerOptions) {
     ops.register("setCredential", (a) => o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates));
     ops.register("unsetCredential", (a) => o.credentials!.unset(a.source));
     ops.register("billingSources", (a) => live.sources(a.harness));
+    ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), a.on === true); return null; });
+    ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
   registerSessionOps(ops, core, live);

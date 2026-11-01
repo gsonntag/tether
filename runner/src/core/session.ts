@@ -3,6 +3,7 @@
 // every change goes out through `emit` with the next seq.
 
 import type { HarnessCapabilities, LiveState, Msg, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
+import type { Attachment } from "../../../shared/attachments";
 import type { Driver, StartOpts, TranscriptEvent } from "./adapter";
 import type { OverlayNotice } from "./notices";
 import { capState } from "../../../shared/limits";
@@ -55,6 +56,12 @@ export class Session {
   renewing?: Promise<Session>;
   /** the send that is starting the harness or handing it the message (a token per send) */
   sending?: object;
+  /** the message that started the running turn, for a resend when the plan runs out (live.ts planOut) */
+  lastSend?: { text: string; attachments: Attachment[]; tether?: boolean };
+  /** this turn ran a tool or took a steer: resending it could repeat them */
+  turnActed = false;
+  /** this turn hit the plan's limit */
+  limitHit?: { resetsAt?: number };
   /** the send Stop cancelled before its message went out */
   cancelSend?: object;
   /** the person stopped the running turn (its turnEnded says so) */

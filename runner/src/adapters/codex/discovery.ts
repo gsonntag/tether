@@ -5,6 +5,7 @@
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
+import { reportedAt } from "../../../../shared/labels";
 import { UNKNOWN_BILLING, type Billing, type ContextUse, type Msg, type PlanUsage, type ProjectInfo, type SessionSummary } from "../../../../shared/transcript";
 import { call } from "./daemon";
 import { existingPrivateConnection, privateThreads, sourceProvider, sourceCredentialRevision, threadCall } from "./sources";
@@ -374,7 +375,7 @@ let planRead: { at: number; p: Promise<PlanUsage | undefined> } | undefined;
 
 /** The account's plan limits, from the daemon (no model turn). Undefined: an account without them. */
 export function codexPlan(): Promise<PlanUsage | undefined> {
-  if (!planRead || Date.now() - planRead.at > PLAN_MS) planRead = { at: Date.now(), p: call("account/rateLimits/read", { excludeResetCreditDetails: true }).then((r: any) => reportedPlan(r?.rateLimits), () => undefined) };
+  if (!planRead || Date.now() - planRead.at > PLAN_MS) planRead = { at: Date.now(), p: call("account/rateLimits/read", { excludeResetCreditDetails: true }).then((r: any) => { const plan = reportedPlan(r?.rateLimits); return plan && reportedAt(plan); }, () => undefined) };
   return planRead.p;
 }
 

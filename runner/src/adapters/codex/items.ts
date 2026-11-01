@@ -181,6 +181,16 @@ export function turnError(turn: any): string | undefined {
   return [e?.message, e?.additionalDetails].filter(Boolean).join(": ") || "The turn failed.";
 }
 
+/**
+ * A turn's error is the plan running out: `codexErrorInfo` says, and any other code (rateLimitExceeded,
+ * serverOverloaded, unauthorized, ...) means it isn't. Only with no code at all, the message says.
+ */
+export function usageLimitHit(error: any): boolean {
+  const info = error?.codexErrorInfo;
+  if (info !== undefined && info !== null) return info === "usageLimitExceeded" || info === "usage_limit_exceeded" || (typeof info === "object" && "usageLimitExceeded" in info);
+  return typeof error?.message === "string" && /^You[’']ve hit your usage limit\b/.test(error.message);
+}
+
 /** A stored thread's turns as a transcript. */
 export function historyMsgs(turns: any[], cwd: string, model?: string): Msg[] {
   const out: Msg[] = [];

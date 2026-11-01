@@ -63,7 +63,7 @@ const tokens = (n: number) => (n >= 999_500 ? `${+(n / 1_000_000).toFixed(1)}M` 
 export const contextPercent = (c: { used: number; total: number }) => `${Math.round((c.used / c.total) * 100)}%`;
 export const contextDetail = (c: { used: number; total: number }) => `${tokens(c.used)} of ${tokens(c.total)} context`;
 
-const resetTime = (ms: number, week: boolean) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
+export const resetTime = (ms: number, week = true) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
 
 /**
  * The header's plan chip: the fuller window ("Week 63%"), and both in the tooltip. A window past its
@@ -79,6 +79,27 @@ export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text:
   const top = rows.reduce((a, b) => (b.w!.percent >= a.w!.percent ? b : a));
   const detail = rows.map((r) => `${r.long} ${r.w!.percent}%${r.w!.resetsAt ? `, resets ${resetTime(r.w!.resetsAt, r.week)}` : ""}`).join(" · ");
   return { text: `${top.short} ${top.w!.percent}%`, detail };
+}
+
+const HOUR_MS = 60 * 60_000;
+const ago = (ms: number) => (ms < 24 * HOUR_MS ? `${Math.floor(ms / HOUR_MS)}h ago` : `${Math.floor(ms / (24 * HOUR_MS))}d ago`);
+
+/**
+ * The billing menu's plan lines, whatever the session draws from: "Week 64% · resets Nov 5, 6:00 PM",
+ * each window as last reported, its age when that's over an hour. Nothing known: no lines.
+ */
+export function planLines(plan: PlanUsage | undefined, now = Date.now()): string[] {
+  const line = (name: string, w: PlanWindow | undefined, week: boolean) => {
+    if (!w || (w.resetsAt !== undefined && w.resetsAt <= now)) return [];
+    const old = w.at !== undefined && now - w.at > HOUR_MS ? ` · ${ago(now - w.at)}` : "";
+    return [`${name} ${Math.round(w.percent)}%${w.resetsAt ? ` · resets ${resetTime(w.resetsAt, week)}` : ""}${old}`];
+  };
+  return [...line("Week", plan?.week, true), ...line("5 hours", plan?.fiveHour, false)];
+}
+
+/** A report's windows, marked with when it came. */
+export function reportedAt(plan: PlanUsage, at = Date.now()): PlanUsage {
+  return { ...(plan.fiveHour ? { fiveHour: { ...plan.fiveHour, at } } : {}), ...(plan.week ? { week: { ...plan.week, at } } : {}) };
 }
 
 /** The header's usage chip: what the session draws from, with the plan's limits only if it's a plan. */

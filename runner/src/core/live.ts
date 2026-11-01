@@ -9,10 +9,11 @@
 
 import { randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, type BillingSource, type SourceChoices } from "../../../shared/credentials";
+import { isBillingSource, keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
+import { reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
@@ -184,6 +185,7 @@ export class LiveControl {
     // Only background work runs: the main agent is free, and a steer starts its next turn.
     if (!s.sending && s.driver?.steer && s.driver.onlyBackground?.()) {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
+      s.limitHit = s.lastSend = undefined;
       return s.driver.steer(withAttachments(text, attachments), attachments);
     }
     // Checked and claimed with no await in between, so two sends can't both start a turn.
@@ -228,11 +230,15 @@ export class LiveControl {
       }
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
       this.checkCredential(s);
+      s.lastSend = { text, attachments, ...(o.tether ? { tether: true } : {}) };
+      s.turnActed = false;
+      s.limitHit = undefined;
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
       if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
+      if (s.sending === me) s.lastSend = undefined;
       if (s.sending === me && !(e instanceof SendCancelled)) {
         s.turnError = redact((e as Error)?.message ?? String(e));
         // Errors show in the chat. A failed start has said this already, and repeats don't add a row.
@@ -319,7 +325,9 @@ export class LiveControl {
   private async replaceWith(s: Session, n: Session) {
     const prefs = this.core.o.prefs;
     const { title } = prefs.get(s.id);
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}) });
+    const kept = this.keptPrefs(s);
+    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
+    n.setState(kept);
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined });
     prefs.flush();
     s.movedTo = n.id;
@@ -360,7 +368,9 @@ export class LiveControl {
       const credential = this.credentialFor(s.summary.harness, source);
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
-      this.core.o.prefs.set(n.id, { source });
+      const kept = this.keptPrefs(s);
+      this.core.o.prefs.set(n.id, { source, ...kept });
+      n.setState(kept);
       this.core.touch(n);
       try {
         await this.ensureDriver(n);
@@ -401,6 +411,7 @@ export class LiveControl {
     while (s.sending && s.sentOut !== s.sending) await Bun.sleep(20);
     if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
+    s.turnActed = true;
     await s.driver.steer(withAttachments(text, attachments), attachments);
   }
 
@@ -1040,7 +1051,13 @@ export class LiveControl {
     if (s.state.status !== "idle" || s.sending || s.starting || s.carrying) throw new Error("Wait for the turn to end.");
     if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
     const carries = !!s.capabilities.sourceCarry;
-    if (asked === this.sourceOf(s)) {
+    const own = this.sourceOf(s);
+    const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
+    if (lastKey) {
+      this.core.o.prefs.set(id, { lastKey });
+      s.setState({ lastKey });
+    }
+    if (asked === own) {
       // Thought better of it: the thread never left.
       if (carries) {
         this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined });
@@ -1060,6 +1077,68 @@ export class LiveControl {
     this.core.o.prefs.flush();
     s.setState({ nextBilling: confirmed ? undefined : next });
     this.core.touch(s);
+  }
+
+  /** The box in the billing chip's menu, saved with the session. Nothing checks keys here: the menu shows it, the switch looks. */
+  async setAutoKey(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    this.core.o.prefs.set(id, { autoKey: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ autoKey: on || undefined });
+  }
+
+  /** What a session's successor on another id keeps. */
+  keptPrefs(s: Session) {
+    const { autoKey, lastKey } = this.core.o.prefs.get(s.id);
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}) };
+  }
+
+  /**
+   * The plan ran out on a session with the box ticked, the one exception to no fallback (SPEC §10):
+   * its source changes as from the chip, one notice says so, and the message that started the turn
+   * goes again unless the turn had already acted. From there it's a key session, which never comes
+   * here: a key that fails stops as usual, and it stays on the key until you change it.
+   */
+  private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
+    const prefs = this.core.o.prefs.get(s.id);
+    const harness = s.summary.harness;
+    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    this.core.pin(s);
+    try {
+      // A turn can end before its send has returned.
+      const until = this.core.now() + 5000;
+      while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
+      const resetsAt = await this.planReset(harness, s, hit);
+      const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
+      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey);
+      if (!target) return void say("Plan limit reached. No API key is set, so nothing switched.", "warning");
+      try {
+        await this.setSource(s.id, target.source);
+      } catch (e) {
+        return void say(`Plan limit reached. Not switched: ${redact((e as Error)?.message ?? String(e))}`, "warning");
+      }
+      const switched = `Plan limit reached. Switched to ${target.billing.label}.`;
+      if (!sent) return void say(`${switched} Send your message again.`);
+      if (acted) return void say(`${switched} Tools had already run in that turn, so it wasn't resent: replaying could repeat edits. Send a message to continue.`);
+      if (s.driver?.busy()) return void say(`${switched} Background work still runs, so nothing was resent. Send your message again once it's done.`);
+      say(`${switched} Resending your message.`);
+      // A failure says so in the chat, as any send's does.
+      await this.send(s.id, sent.text, sent.attachments, sent.tether ? { tether: true } : {});
+    } catch (e) {
+      this.core.log(`${s.id}: after the plan limit: ${(e as Error)?.message ?? e}`);
+    } finally {
+      this.core.unpin(s);
+    }
+  }
+
+  /** When the plan comes back: the signal says, else the full window that resets last. Unknown: undefined. */
+  private async planReset(harness: HarnessId, s: Session, hit: { resetsAt?: number }) {
+    const now = this.core.now();
+    if (hit.resetsAt && hit.resetsAt > now) return hit.resetsAt;
+    await this.core.refreshPlan(harness);
+    const full = [s.state.plan?.fiveHour, s.state.plan?.week].flatMap((w) => (w?.resetsAt && w.percent >= 100 && w.resetsAt > now ? [w.resetsAt] : []));
+    return full.length ? Math.max(...full) : undefined;
   }
 
   /**
@@ -1204,6 +1283,7 @@ export class LiveControl {
       event: (e) => {
         e = redactValue(e);
         const out = s.apply(e);
+        if (e.type === "tool" || (e.type === "msg" && e.msg.role === "assistant" && e.msg.parts.some((p) => p.type === "tool"))) s.turnActed = true;
         if (e.type === "msg") {
           // The turn failed: its turnEnded says why (Home and notifications show it), also when
           // the error repeats the row above it and adds none.
@@ -1260,7 +1340,13 @@ export class LiveControl {
         if (changed.permissionMode && !s.summary.parentSessionId && !s.capabilities.persistent) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },
       request: (r, signal) => this.desk.ask(s, redactValue(r), signal),
-      plan: (p) => core.notePlan(s.summary.harness, p),
+      // The account's, reported by what runs on its login: a key's process says nothing of the plan.
+      plan: (p) => {
+        if (this.sourceOf(s) === "subscription") core.notePlan(s.summary.harness, reportedAt(p));
+      },
+      limitReached: (hit) => {
+        s.limitHit = hit;
+      },
       nativeId: (id) => {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
       },
@@ -1300,8 +1386,13 @@ export class LiveControl {
       if (s.state.turnSettings && !s.driver?.busy() && !s.capabilities.persistent) s.setState({ turnSettings: undefined });
       const stopped = s.stopped;
       s.stopped = false;
+      const { limitHit, lastSend, turnActed } = s;
+      s.limitHit = undefined;
+      // A process start can report idle before the turn: the send isn't over.
+      if (limitHit || !s.sending) s.lastSend = undefined;
       bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });
       s.turnError = undefined;
+      if (limitHit && !stopped) void this.planOut(s, limitHit, lastSend, turnActed);
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

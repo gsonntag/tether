@@ -16,6 +16,7 @@ import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
+import { resetTime } from "../../../shared/labels";
 import { localizeUsageLimitRetry } from "../usageLimitTime";
 
 const isCut = (p: Part) => (p.type === "tool" ? !!p.truncated || !!p.inputTruncated : !!p.truncated);
@@ -98,6 +99,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
         <span className="t-notice-text">
           {text}
+          {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
           {msg.link && (
             <>
               {" "}

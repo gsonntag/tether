@@ -48,6 +48,10 @@ export interface SessionPrefs {
   nextBilling?: Billing;
   /** with capabilities.sourceCarry: the source the next message goes to, in a new thread */
   nextSource?: BillingSource;
+  /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
+  autoKey?: boolean;
+  /** the key this session last used or had picked */
+  lastKey?: BillingSource;
   /** a thread being made for a source change: nobody's until its first message has an answer */
   carrying?: boolean;
   /** with movedTo: replaced by a thread on another source, so it isn't anyone's to see */

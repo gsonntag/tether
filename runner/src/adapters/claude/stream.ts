@@ -16,12 +16,17 @@ import type { Sink } from "../../core/adapter";
 import { contextOf, contextUsed, keepPlan, noteWindows, planOf } from "./context";
 import { assistantPart, blockText, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
+/** The limit messages Claude Code writes itself ("You've hit your session limit · resets 8:40am (UTC)"). */
+const PLAN_LIMIT_TEXT = /^You['’]ve (?:hit|reached) your\b.*\blimit\b/;
+
 /** What the stream needs from the driver around it. */
 export interface StreamHost {
   /** the session's native id (subagents are `<this>/<agent id>`) */
   nativeId: string;
   /** the context as Claude Code's own count has it, between messages (after a compaction, a /clear) */
   contextNow?(): Promise<ContextUse | undefined>;
+  /** On a key: the account's plan limits aren't this process's to report. */
+  keyed?(): boolean;
   /** A key-backed failure stops the process, without emitting the provider's raw error text. */
   failed?(): string | undefined;
   /** Only an explicit Stop can make a key-backed execution error an intentional interruption. */
@@ -63,6 +68,10 @@ export class ClaudeStream {
   private stateEvents = false;
   /** the last API error seen in this turn (an assistant frame's `error`) */
   private lastError?: string;
+  /** a rate_limit_event rejected a request of this turn */
+  private rejected?: { resetsAt?: number };
+  /** the main thread's API error this turn: the assistant frame's `error` code and its text */
+  private apiError?: { code: string; text: string };
   /** the main thread's last real message: its model and the context it had */
   private last?: { model: string; used: number };
   /** the session the last frames are about (/clear moves on to a new one) */
@@ -86,6 +95,7 @@ export class ClaudeStream {
   /** The main agent starts a turn: a message went to it. */
   mainStarts() {
     this.mainTurn = true;
+    this.rejected = this.apiError = undefined;
     this.freeChanged();
   }
 
@@ -120,8 +130,11 @@ export class ClaudeStream {
         this.contextChanged();
         return;
       case "rate_limit_event": {
-        const plan = planOf(m.rate_limit_info);
-        if (plan) {
+        const info = m.rate_limit_info;
+        if (info?.status === "rejected") this.rejected = typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt * 1000 } : {};
+        else if (info?.status) this.rejected = undefined;
+        const plan = planOf(info);
+        if (plan && !this.host.keyed?.()) {
           keepPlan(plan);
           this.main.sink.plan?.(plan);
         }
@@ -197,6 +210,7 @@ export class ClaudeStream {
     }
     if (t === this.main) this.contextFrom(msg);
     const id = messageId(msg.id, m.uuid);
+    if (m.error && t === this.main) this.apiError = { code: String(m.error), text: blockText(msg.content) };
     if (m.error) {
       const safe = this.host.failed?.();
       if (safe) {
@@ -305,6 +319,9 @@ export class ClaudeStream {
     this.current = undefined;
     const interrupted = m.subtype === "error_during_execution" || m.terminal_reason === "aborted_streaming" || m.terminal_reason === "aborted_tools";
     const failed = m.is_error || (m.subtype && m.subtype !== "success");
+    const limit = failed && !interrupted && !this.host.interrupted?.() ? this.planLimit(m) : undefined;
+    this.rejected = this.apiError = undefined;
+    if (limit) sink.limitReached?.(limit);
     if (failed) {
       const safe = !this.host.interrupted?.() && this.host.failed?.();
       if (safe) {
@@ -329,6 +346,18 @@ export class ClaudeStream {
       this.turnEnded();
       sink.state({ status: "idle" });
     } else if (m.subtype === "success" && !m.is_error && this.onlyBackground()) sink.mainFree?.();
+  }
+
+  /**
+   * Whether a failed turn hit the plan's limit: a rejected rate_limit_event, or Claude Code's own
+   * limit message. Another API error code, or a 5xx, isn't, whatever was rejected before it. The
+   * `rate_limit` code alone isn't either: a short 429 has it too, with no rejection and other text.
+   */
+  private planLimit(m: any): { resetsAt?: number } | undefined {
+    const code = this.apiError?.code;
+    if ((code && code !== "rate_limit") || (m.api_error_status && m.api_error_status !== 429)) return undefined;
+    if (this.rejected) return this.rejected;
+    return PLAN_LIMIT_TEXT.test(code ? this.apiError!.text : typeof m.result === "string" ? m.result : "") ? {} : undefined;
   }
 
   /** The main agent is free; the session runs on only for its background tasks. */

@@ -19,6 +19,11 @@ export interface SourceOption {
   /** Azure's deployment: it is the model on that source */
   deployment?: string;
 }
+/** Where a plan session goes when its plan runs out: the session's last-used key, else the harness's first set. */
+export function keyTarget(options: SourceOption[], lastKey?: BillingSource): SourceOption | undefined {
+  const keys = options.filter((o) => o.source !== "subscription");
+  return keys.find((o) => o.source === lastKey) ?? keys[0];
+}
 export interface SourceChoices {
   options: SourceOption[];
   /** the last one chosen for this harness on this runner, else the subscription */

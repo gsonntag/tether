@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
 import type { Sink, SubagentStart } from "../../core/adapter";
 import { reportedContext, reportedPlan } from "./discovery";
-import { agentName, compactionNotice, itemPart, pathLeaf, shown, turnError, userMsg } from "./items";
+import { agentName, compactionNotice, itemPart, pathLeaf, shown, turnError, usageLimitHit, userMsg } from "./items";
 
 /** Shell output kept per tool card while streaming (the stored output is whole). */
 const OUTPUT_MAX = 100_000;
@@ -229,6 +229,7 @@ export class CodexStream {
       if (m.streaming || changed || last) this.put(v, { ...m, parts, streaming: false, ...(last ? { error } : {}) });
     }
     if (error && !v.msg) this.put(v, { id: `e-${turn.id}`, role: "assistant", ts: Date.now(), parts: [], error });
+    if (error && v === this.main && usageLimitHit(turn.error)) v.sink.limitReached?.({});
     v.turnId = undefined;
     v.msg = undefined;
     if (v === this.main) this.state(v, { status: "idle", ...(error ? {} : { error: undefined }) });

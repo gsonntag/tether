@@ -7,6 +7,7 @@
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { reportedAt } from "../../../../shared/labels";
 import { UNKNOWN_BILLING, type Billing, type ContextUse, type PlanUsage, type PlanWindow } from "../../../../shared/transcript";
 import { CONFIG_DIR } from "../../config";
 import type { Entry } from "./jsonl";
@@ -132,7 +133,7 @@ export function keptBilling(sessionId: string): Billing {
 /** The latest report, kept for stored sessions after a restart. */
 export function keepPlan(report: PlanUsage) {
   const w = load();
-  w.plan = { ...w.plan, ...report };
+  w.plan = { ...w.plan, ...reportedAt(report) };
   save();
 }
 export const keptPlan = () => load().plan;

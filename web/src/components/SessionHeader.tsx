@@ -90,7 +90,7 @@ export function SessionHeader({
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
-        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} />
+        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
         {state.nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(state.nextBilling) ? " t-next-api" : ""}`} title={`${state.nextBilling.label} from the next start`}>Next: {state.nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (

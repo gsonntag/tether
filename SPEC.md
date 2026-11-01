@@ -203,13 +203,15 @@ and on each store change). Subagents have none. A runner without the field shows
 reported it at runtime, never from config: "Claude plan", "Anthropic API key", "ChatGPT plan", "OpenAI
 API key", "Azure" and so on, or "Unknown". Unknown is an answer: a stored session whose start wasn't
 recorded says it. Absent means an old runner, or a session not started yet. Plan limits show only
-when `kind` is `plan`, so a session on a key or a provider never shows them. It stays off push
-notifications.
+when `kind` is `plan`, so a session on a key or a provider never shows them on its chip (the chip's
+menu shows the plan's figures, by the plan's name, on any session). It stays off push notifications.
 
 **`plan`** is the harness account's plan limits, `{ fiveHour?, week? }`, each `{ percent, resetsAt? }`.
 It's account-wide: the latest report goes to all the harness's open sessions and to those opened
 later (`SessionCore.notePlan`). Only windows the harness named are there; partial reports merge. The
-browser drops a window past its `resetsAt`. Nothing reported means absent, and no chip.
+browser drops a window past its `resetsAt`. Nothing reported means absent, and no chip. A window's
+`at` is when it was reported. Only what runs on the login reports: a report from a session on a key
+is dropped, so `plan` is always the plan's.
 
 ### Core ops
 
@@ -291,6 +293,7 @@ relay directly.
   launch. Its launcher holds an immutable key lease in memory; the real TUI and its tools never
   inherit the raw key in their environment. External/historical proxy starts remain a label gap
   (docs/ISSUES.md).
+- **Plan exhausted:** §10 **When the plan runs out** has the signals.
 - **Plan limits:** `rate_limit_event` frames: `rate_limit_info.unifiedWindows.{five_hour,seven_day}`
   (`utilization` 0 to 1, `resetsAt` in seconds), or the top-level `rateLimitType`/`utilization` on a
   frame without them. A frame can have no number at all (status only), or just one window. The latest
@@ -331,6 +334,7 @@ relay directly.
   key only in the daemon's environment shows that way, and isn't used. The account is the daemon's now,
   so it's read at each driver start and remembered per thread (`codex-threads.json`); a stored `openai`
   thread Tether never started is Unknown (the provider of any stored thread is known).
+- **Plan exhausted:** §10 **When the plan runs out** has the signals.
 - **Plan limits:** `account/rateLimits/read` when a session opens (at most once a minute, no turn) and
   `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
   `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
@@ -678,7 +682,8 @@ Only the owner can run one (the same auth as sending).
 The **Credentials** page belongs to a runner and holds keys only: **Anthropic API key** for Claude,
 **OpenAI API key** and **Azure** (Foundry) for Codex. All can be set together. Setting, replacing or
 unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
-fallback chain or automatic source migration. AWS for either harness is backlog only.
+fallback chain or automatic source migration, with one exception you tick per session (**When the
+plan runs out**, below). AWS for either harness is backlog only.
 
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
@@ -695,7 +700,7 @@ set later. A session with nothing saved uses what its harness has on record, whi
 Codex thread's private app-server, a Claude session's last confirmed label. No record is the
 subscription: a Codex thread with none belongs to the shared daemon. Subagents use their main session's
 source; a TUI's `/clear` carries it on. A session whose key is unset fails with a chat error naming the
-source and nothing is sent; there's never a fallback. A key replaced in the same slot carries on with
+source and nothing is sent; there's no fallback. A key replaced in the same slot carries on with
 the new key.
 
 An existing session's source changes in two ways. **Move** (§15) accepts the same harness with another
@@ -708,6 +713,43 @@ refuses it: the items are disabled with the reason as their description, and the
 one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
 on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
 no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Move to….
+
+The menu opens with the **plan's usage**, whether the session is on the plan or a key, so you see it
+before switching: under the plan's name, each window the harness reported, "Week 64% · resets Nov 5,
+6:00 PM", "5 hours 12% · resets 3:10 PM". Unknown is no line. A figure over an hour old says so
+("· 3h ago"). Opening the menu asks for a refresh (`refreshPlan`): Codex reads
+`account/rateLimits/read`, at most once a minute; Claude has only its latest report. The chip itself
+keeps its rule: plan % only on a plan session.
+
+**When the plan runs out.** The menu has a checkbox, "Switch to API key when plan runs out"
+(`SessionPrefs.autoKey`, off by default, per session; it doesn't close the menu), shown on a plan
+session when a key is set for that harness. With two keys it names its target: the session's last-used
+key (`SessionPrefs.lastKey`, set by anything picked on the chip), else OpenAI. This is the only
+automatic source change there is, and it exists because you ticked it for that session.
+
+When a turn on the plan ends on the harness's own exhausted signal (`Sink.limitReached`,
+`LiveControl.planOut`), the source changes as from the chip, one chat notice says so ("Plan limit
+reached. Switched to OpenAI API key."), with when the plan resets if that's known, and the message that
+started the turn goes again, once. A Codex switch takes the carry route above, with its cost of
+re-sending the history. The loud badge shows as for any key. Push is unchanged.
+
+| Harness | Exhausted | Not exhausted, whatever it says |
+|---|---|---|
+| Claude | A failed turn with a `rate_limit_event` of status `rejected` that nothing later cleared; or the assistant frame's `error: "rate_limit"` with Claude Code's own text ("You've hit your session limit · resets 8:40am (UTC)"); or, with no error code at all, that text as an error `result` | `rate_limit` with other text (a short 429: "Server is temporarily limiting requests (not your usage limit)", which has no rejection); any other `error` code (`overloaded`, `server_error`, `authentication_failed`…); `api_error_status` other than 429; a stopped turn; a finished one |
+| Codex | A `failed` turn whose `error.codexErrorInfo` is `usageLimitExceeded`; or, with no code at all, a message starting "You've hit your usage limit" | Any other code (`rateLimitExceeded`, `serverOverloaded`, `internalServerError`, `unauthorized`, `responseStreamDisconnected`, `responseTooManyFailedAttempts`, `other`…) whatever its text; a retry; a subagent's turn |
+
+Codes come first: text decides only with no code, except that Claude's `rate_limit` code needs its
+text, since a short 429 has the same code. The reset is the signal's `resetsAt`, else that of the
+fullest window a fresh read shows at 100%.
+
+A turn that had already run a tool or taken a steer isn't resent, since replaying could repeat
+edits: the source still changes and the notice says so, leaving you to continue. The same goes for
+background work still running, and a turn Tether didn't start. An open terminal keeps the session
+where it is and the notice says why, as does no key being set.
+
+It stays on the key until you change it from the chip. It never switches back, and a key session
+never comes here: a key that fails stops with the usual error, with no further switch. A queue the
+failed turn held goes on after the resend.
 
 On Claude (`capabilities.sourceSwitch`) the next message's process start takes the new source.
 
@@ -756,7 +798,8 @@ using its original source and label. Before an idle live session's next send, Te
 process and starts with a new snapshot of the session's own source. A change racing startup refuses
 the send. The harness must confirm the session's source before any message is sent: unknown or
 mismatched billing refuses, rather than being treated as a subscription. Invalid credentials,
-exhausted quota and network failures stop on that source. Removing a key removes its environment from
+exhausted quota and network failures stop on that source, unless you ticked the switch above and
+it's the plan that ran out. Removing a key removes its environment from
 future processes. A subscription session carries no key: its process never sees one, and a Claude
 terminal launch doesn't read the file's key. A key session never uses the login: Claude's goes through
 its private helper, and each Codex key thread has a private app-server and `CODEX_HOME` with no login.
@@ -766,7 +809,7 @@ The session label changes only after harness confirmation. API billing has one a
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
 phone width without sideways scrolling; matching composer colour; and markers on Sidebar and Home
 rows. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
-early in the chip row on phones and never appears on API sessions. Terminal mode must use the same
+early in the chip row on phones and never appears on an API session's chip. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
 passes no CLI permission overrides, which remote resume rejects.

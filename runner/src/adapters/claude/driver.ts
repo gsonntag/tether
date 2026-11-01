@@ -66,7 +66,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), failed: () => this.failed(), interrupted: () => this.interrupting });
+    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), keyed: () => this.credential?.source === "anthropic", failed: () => this.failed(), interrupted: () => this.interrupting });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */

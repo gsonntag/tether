@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { planLines, reportedAt, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { keyTarget } from "./credentials";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -75,4 +76,31 @@ test("metered indicators require confirmed API billing, never a plan or unknown"
   expect(isApiBilling({ kind: "unknown", label: "Unknown" })).toBe(false);
   expect(isApiBilling({ kind: "plan", label: "Claude plan" })).toBe(false);
   expect(isApiBilling(undefined)).toBe(false);
+});
+
+test("the billing menu's plan lines: what's known, with its reset and, past an hour, its age", () => {
+  const now = Date.UTC(2026, 10, 1, 12);
+  const plan = { week: { percent: 64, resetsAt: now + 4 * 86_400_000, at: now - 60_000 }, fiveHour: { percent: 12.4, at: now - 3 * 3_600_000 } };
+  const [week, five] = planLines(plan, now);
+  expect(week).toMatch(/^Week 64% · resets .+$/);
+  expect(week).not.toContain("ago");
+  expect(five).toBe("5 hours 12% · 3h ago");
+  expect(planLines({ week: { percent: 1, at: now - 3 * 86_400_000 } }, now)).toEqual(["Week 1% · 3d ago"]);
+  expect(planLines({ week: { percent: 1, at: now - 3_600_000 } }, now)).toEqual(["Week 1%"]);
+  // Past its reset, or never reported: no line, and no number made up.
+  expect(planLines({ week: { percent: 90, resetsAt: now - 1 } }, now)).toEqual([]);
+  expect(planLines(undefined, now)).toEqual([]);
+  expect(planLines({}, now)).toEqual([]);
+  expect(reportedAt({ week: { percent: 1 } }, 5)).toEqual({ week: { percent: 1, at: 5 } });
+});
+
+test("the key a plan session goes to: its last used, else the first set", () => {
+  const plan = { source: "subscription" as const, billing: { kind: "plan" as const, label: "ChatGPT plan" } };
+  const openai = { source: "openai" as const, billing: { kind: "apiKey" as const, label: "OpenAI API key" } };
+  const azure = { source: "azure" as const, billing: { kind: "provider" as const, label: "Azure" } };
+  expect(keyTarget([plan, openai, azure])).toBe(openai);
+  expect(keyTarget([plan, openai, azure], "azure")).toBe(azure);
+  expect(keyTarget([plan, openai], "azure")).toBe(openai);
+  expect(keyTarget([plan, azure])).toBe(azure);
+  expect(keyTarget([plan])).toBeUndefined();
 });

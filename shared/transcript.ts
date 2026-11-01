@@ -3,6 +3,7 @@
 
 import type { Attachment } from "./attachments";
 import type { SessionCost } from "./costs";
+import type { BillingSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
 
 export type HarnessId = "claude" | "codex";
@@ -124,6 +125,8 @@ export interface Msg {
   model?: string;
   /** notice: severity */
   level?: "info" | "warning" | "error";
+  /** notice: when the plan resets (ms), shown in the reader's own time after the text */
+  resetsAt?: number;
   /** notice: a session it points to ("Open it") */
   link?: { sessionId: string; label: string };
   /** assistant: the turn ended in this error */
@@ -255,6 +258,8 @@ export interface ContextUse {
 export interface PlanWindow {
   percent: number;
   resetsAt?: number;
+  /** when the harness reported it (ms). Absent: not known */
+  at?: number;
 }
 
 /** The account's plan limits as the harness last reported them, the same for all its sessions (SPEC §5). */
@@ -288,6 +293,10 @@ export interface LiveState {
   billing?: Billing;
   /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
   nextBilling?: Billing;
+  /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
+  autoKey?: boolean;
+  /** the key this session last used or had picked: where `autoKey` goes */
+  lastKey?: BillingSource;
   /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
   cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */

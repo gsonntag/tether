@@ -2203,6 +2203,7 @@
 .t-chip.t-chip-info.t-source-chip:hover { background: var(--color-overlay-hover); }
 .t-chips > .t-chip.t-paid-badge.t-source-chip:hover { filter: brightness(1.12); }
 .t-source-chip > svg { flex: none; width: 12px; height: 12px; }
+.t-plan-line { padding: 2px 8px; font-size: 13px; color: var(--t-muted); overflow-wrap: anywhere; }
 .t-chips > .t-chip.t-next-source { flex: none; cursor: default; }
 .t-chips > .t-chip.t-next-api { color: var(--t-api); border-color: var(--t-api); font-weight: 700; }
 .t-select.t-source-api {

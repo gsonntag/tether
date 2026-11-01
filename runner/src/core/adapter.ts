@@ -77,6 +77,11 @@ export interface Sink {
   request(r: RequestAsk, signal?: AbortSignal): Promise<Decision>;
   /** the harness reported the account's plan limits: partial, merged into what's known */
   plan?(p: PlanUsage): void;
+  /**
+   * The turn failed on the harness's own signal that the plan is exhausted (SPEC §10), never on a
+   * short rate limit or any other failure. `resetsAt` (ms) if the signal says.
+   */
+  limitReached?(hit: { resetsAt?: number }): void;
   /** the native id became known or changed (a new session's id comes with the harness's first answer) */
   nativeId?(id: string): void;
   /** a subagent started under this session: its sink */

@@ -25,6 +25,22 @@ No real key: `scripts/e2e-cost.ts` ran every response shape through the real pri
 upstream, and `sourceCarry` followed the amount over takeovers with Azure rates on a fake endpoint.
 Neither is a real OpenAI response: see Real-key checks.
 
+## When the plan runs out (2026-11-01)
+
+No source ever changes by itself, with one exception: the checkbox in the billing chip's menu, ticked
+by you, for that session (SPEC §10 has the signals). Without it, an exhausted plan stops on the plan.
+
+- Unit: `runner/src/adapters/claude/limits.test.ts` and `codex/limits.test.ts` have a fixture for each
+  signal and each non-signal, `runner/src/core/planOut.test.ts` the switch on the real core.
+- Browser, desktop and 375 px, on the real core with scripted frames through the real stream parsers
+  (`scripts/limit-runner.ts`, `scripts/e2e-auto.mjs`, with made-up keys): plan lines on plan and key
+  sessions, no line when nothing is reported, a stale figure's age, the box saved over a reload and
+  hidden with no key, the switch and its one notice, tools run and not resent, a short 429 changing
+  nothing, the target with two keys, the notice across a carry.
+- Not run: a really exhausted plan, on either harness. The signals come from Claude Code's stored
+  limit messages and CLI and from Codex 0.164's schema and stored rollouts, and a key that really
+  works wasn't used. A Claude `rate_limit_event` of status `rejected` hasn't been seen live.
+
 ## Verification record (2026-10-31–2026-11-01)
 
 - All four packages typecheck; 851 unit tests pass.
@@ -58,6 +74,17 @@ the running runner, or the shared Codex daemon for a key test. Keep artifacts un
 `/tmp/claude-1001/keys/`; hold `flock -o /tmp/claude-1001/e2e.lock` for every test stack. Check load
 below 8 and at least 5 GB free before starting. Hash `~/.codex/config.toml` before and after: stop
 immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6-luna at Low.
+
+## When the plan runs out
+
+- [ ] Desktop and 375 px: the billing chip's menu shows the plan's windows on a plan session and on a
+  key session, by the plan's name; nothing reported is no line; the chip shows a % only on a plan.
+- [ ] The box shows only on a plan session with a key set, off by default, and toggling keeps the menu
+  open. With two Codex keys it names the target, the session's last-used key, else OpenAI.
+- [ ] Ticked, a real exhausted signal switches once, with one notice and the loud badge, and the message
+  goes once more; if tools ran it isn't resent and the notice says so. It stays on the key.
+- [ ] Unticked, or on a short 429, a network error, auth, overloaded or a 5xx: nothing switches.
+- [ ] A key that fails after the switch stops with the usual error, with no further switch.
 
 ## Credentials page
 

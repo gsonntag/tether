@@ -196,7 +196,7 @@ test("a rate_limit_event reports to the sink and is kept for stored sessions, me
   s.handle({ type: "rate_limit_event", rate_limit_info: WEEK_ONLY });
   s.handle({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
   expect(seen.length).toBe(2);
-  expect(keptPlan()).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000 }, week: { percent: 62, resetsAt: 1793901600_000 } });
+  expect(keptPlan()).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000, at: expect.any(Number) }, week: { percent: 62, resetsAt: 1793901600_000, at: expect.any(Number) } });
 });
 
 // accountInfo as Claude Code 2.1.314 really reports it, in each environment.
