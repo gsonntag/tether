@@ -66,6 +66,16 @@ test("Codex background work, shell commands, queues, and restart waits keep the 
   expect(switchBlocked(idle)).toBeUndefined();
 });
 
+test("a paused queue doesn't block a failed source change from being cancelled", () => {
+  const paused = state({ billing: key, nextBilling: plan, sourceSwitchFailed: true, queue: [{ id: "q1", text: "queued", queuedAt: 1 }], queueHeld: true, queueHeldBy: "failed" });
+  expect(switchBlocked(paused)).toBeUndefined();
+  expect(billingForDisplay(paused)).toBe(key);
+  expect(visibleNextBilling(paused)).toBe(plan);
+  const menu = sourceMenu("claude", paused, both);
+  expect(menu.value).toBe("subscription");
+  expect(menu.items.every((item) => !item.reason)).toBe(true);
+});
+
 test("a failed source start keeps the confirmed source and leaves the queued target cancellable", () => {
   const failed = state({ billing: key, nextBilling: plan, sourceSwitchFailed: true });
   expect(billingForDisplay(failed)).toBe(key);

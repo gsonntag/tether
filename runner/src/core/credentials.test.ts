@@ -330,6 +330,19 @@ describe("credential process boundaries", () => {
     expect(prefs.get(s.id).sourceSwitchFailed).toBeUndefined();
     expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("anthropic");
   });
+  test("an idle source change is allowed while its queue is paused", async () => {
+    const { live, adapter, credentials, core } = setup();
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    credentials.set("anthropic", `fake-paused-queue-${crypto.randomUUID()}`);
+    adapter.addStored("two", []);
+    const s = await core.open("claude:two");
+    s.setState({ queue: [{ id: "q1", text: "queued", queuedAt: 1 }], queueHeld: true, queueHeldBy: "failed" });
+
+    await live.setSource(s.id, "anthropic");
+
+    expect(s.state.queueHeld).toBe(true);
+    expect(s.state.nextBilling?.label).toBe("Anthropic API key");
+  });
   test("Source is refused with a terminal open, during a turn, off the capability, or for a key that isn't set", async () => {
     const { live, adapter, credentials, core } = setup();
     await expect(live.setSource("claude:one", "subscription")).rejects.toThrow("Use Move");

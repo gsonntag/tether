@@ -9,7 +9,7 @@ export function sourceSwitchBlocker(state: LiveState): SourceSwitchBlocker | und
   const backgroundCommands = state.turnSettings?.who === "background" ? state.turnSettings.count ?? 1 : 0;
   if ((state.backgroundSubagents ?? 0) > 0 || (state.shellsRunning ?? 0) > 0 || backgroundCommands > 0) return "background";
   if (state.restartWait) return "restart";
-  if (state.queue.length > 0) return "queue";
+  if (state.queue.length > 0 && !state.queueHeld) return "queue";
   return undefined;
 }
 
