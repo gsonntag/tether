@@ -2156,3 +2156,47 @@
     height: 44px;
   }
 }
+
+/* The session's menu beside the terminal button, and the move dialog. */
+.t-chip-more {
+  margin-right: 6px;
+  min-width: 32px;
+  justify-content: center;
+}
+@media (pointer: coarse) {
+  .t-header-pin .t-chip-more {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+.t-header:has(> .t-header-pin) > .t-header-top {
+  padding-right: 170px;
+}
+@media (pointer: coarse) {
+  .t-header:has(> .t-header-pin) > .t-header-top {
+    padding-right: 0;
+  }
+}
+.t-move-to {
+  font-weight: 600;
+}
+.t-move-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+.t-move-facts dt {
+  opacity: 0.7;
+}
+.t-move-facts dd {
+  margin: 0;
+}
+.t-move-api {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--t-api);
+  color: light-dark(#fff, #21152a);
+  font-weight: 700;
+}
