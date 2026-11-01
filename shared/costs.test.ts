@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { costChip, costReasons, dollars, reasonValue, validRates } from "./costs";
 
 test("API dollars distinguish estimates, tiny amounts, unknown and partial totals", () => {
-  expect(costChip({ usd: 1.23, estimated: true, complete: true }).text).toBe("$1.23 est.");
-  expect(costChip({ usd: 0.0003, estimated: true, complete: true }).text).toBe("$0.0003 est.");
+  expect(costChip({ usd: 1.23, estimated: true, complete: true }).text).toBe("est. $1.23");
+  expect(costChip({ usd: 0.0003, estimated: true, complete: true }).text).toBe("est. $0.0003");
   expect(dollars(0.000001)).toBe("<$0.0001");
   expect(costChip({ usd: 0, estimated: false, complete: true }).text).toBe("$0.00");
   expect(costChip(undefined).text).toBe("Cost unknown");
@@ -25,7 +25,7 @@ test("cost formatting does not turn an unsafe or negative total into a reported 
 
 test("a known subtotal with a named gap reads as a floor, never a total", () => {
   const one = costChip({ usd: 0.02, estimated: true, complete: false, reasons: ["model:gpt-x"] });
-  expect(one.text).toBe("~$0.02+");
+  expect(one.text).toBe("est. $0.02");
   expect(one.detail).toContain("not the session's whole cost");
   expect(one.detail).toContain("gpt-x has no published price");
   expect(costChip({ usd: 0.02, estimated: true, complete: false, reasons: ["tool-fee"] }).detail).toContain("tool fees");
@@ -35,7 +35,7 @@ test("a known subtotal with a named gap reads as a floor, never a total", () => 
 
 test("a lower bound keeps est. and says so", () => {
   const chip = costChip({ usd: 0.02, estimated: true, complete: false, reasons: ["no-cache-ttl"] });
-  expect(chip.text).toBe("~$0.02+ est.");
+  expect(chip.text).toBe("est. $0.02");
   expect(chip.detail).toContain("lower bound");
 });
 
@@ -45,9 +45,9 @@ test("no subtotal or a zero one stays Cost unknown, with what's known", () => {
 });
 
 test("a known subtotal is never a bare Cost unknown, whatever the gap", () => {
-  expect(costChip({ usd: 2, estimated: true, complete: false }).text).toBe("~$2.00+");
+  expect(costChip({ usd: 2, estimated: true, complete: false }).text).toBe("est. $2.00");
   const earlier = costChip({ usd: 2.28, estimated: true, complete: false, reasons: ["earlier-usage"] });
-  expect(earlier.text).toBe("~$2.28+");
+  expect(earlier.text).toBe("est. $2.28");
   expect(earlier.detail).toBe("Known API subtotal $2.28 estimated, not the session's whole cost. Missing: API usage from before Tether tracked this session isn't included.");
   expect(costChip({ usd: 0.5, estimated: true, complete: false, reasons: ["terminal"] }).detail).toContain("in the terminal isn't tracked");
   expect(costChip({ usd: 0.5, estimated: true, complete: false, reasons: ["no-baseline"] }).detail).toContain("earlier total couldn't be read");
@@ -56,17 +56,17 @@ test("a known subtotal is never a bare Cost unknown, whatever the gap", () => {
 
 test("a complete estimate says what it assumed", () => {
   const chip = costChip({ usd: 0.02, estimated: true, complete: true, notes: ["no-cache-ttl", "tier:missing"] });
-  expect(chip.text).toBe("$0.02 est.");
+  expect(chip.text).toBe("est. $0.02");
   expect(chip.detail).toContain("default 30-minute rate");
   expect(chip.detail).toContain("priced as Standard");
 });
 
 test("an assumption on a priced report isn't reported as missing beside a real gap", () => {
   const chip = costChip({ usd: 0.02, estimated: true, complete: false, reasons: ["tool-fee"], notes: ["no-cache-ttl", "tier:missing"] });
-  expect(chip.text).toBe("~$0.02+");
+  expect(chip.text).toBe("est. $0.02");
   expect(chip.detail).not.toContain("lower bound");
   expect(chip.detail).not.toContain("tier");
-  expect(costChip({ usd: 0.02, estimated: true, complete: false, notes: ["tier:missing"] })).toEqual({ text: "~$0.02+", detail: "Known API subtotal $0.02 estimated, not the session's whole cost." });
+  expect(costChip({ usd: 0.02, estimated: true, complete: false, notes: ["tier:missing"] })).toEqual({ text: "est. $0.02", detail: "Known API subtotal $0.02 estimated, not the session's whole cost." });
 });
 
 test("only fixed codes and plain ids count as reasons", () => {

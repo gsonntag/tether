@@ -44,7 +44,7 @@ partial because the session wasn't new, and with no reason the chip had no subto
   returned the plan process's last cumulative total (0.00988): the baseline Tether subtracts. A plan
   session's `/clear` took the cumulative total from 0.0036 to 0.
 - Not run: a key that really works, so `total - baseline` on a real paid turn isn't seen live (unit
-  only). The prod session's entry stays partial (no repair): it shows `~$x+` with `earlier-usage`.
+  only). The prod session's entry stays partial (no repair): it shows `est. $x` with `earlier-usage`.
 
 ## When the plan runs out (2026-11-01)
 
@@ -85,7 +85,7 @@ by you, for that session (SPEC §10 has the signals). Without it, an exhausted p
   anywhere under the artifact root but the private file.
 - Valid API-key inference, provider invoice/usage reconciliation and real-device touch behavior
   remain owner checks. A Claude TUI's unobserved spend, missing Azure rates and incomplete pricing
-  metadata deliberately leave the total partial: `~$x+` with the reason, or Cost unknown with no figure.
+  metadata deliberately leave the total partial: `est. $x` with the reason, or Cost unknown with no figure.
 
 Artifacts are under `/tmp/claude-1001/keys/`. The shared Codex configuration SHA-256 remained
 `8b73d3941d6f02f411b3baedff3d4a936b5543a2b69a0d047bf123d201740493`.
@@ -181,8 +181,8 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 - [ ] API badge shows cumulative USD with `est.` for estimates. Repeated usage events do not
   double-count; restart/resume does not add restored earlier totals again. Subscription-equivalent
   spend is excluded. A session switched from the plan to a key starts whole; unknown prior usage
-  reads `~$0.02+` with `earlier-usage` in the tooltip. Any gap with a subtotal above zero reads
-  `~$0.02+`; without a figure, Cost unknown, its reason in the tooltip.
+  reads `est. $0.02` with `earlier-usage` in the tooltip. Any gap with a subtotal above zero reads
+  `est. $0.02`; without a figure, Cost unknown, its reason in the tooltip.
 - [ ] `NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-cost.ts <dir> <port>`: the real private host
   in front of `scripts/fake-responses.ts`, each response shape; `costs.json` holds only numbers, ids
   and codes. A source change carries the amount, there and back (`scripts/e2e-move.mjs sourceCarry`).

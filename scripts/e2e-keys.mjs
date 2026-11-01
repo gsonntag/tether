@@ -432,7 +432,7 @@ try {
         await inject(p, billing, theme);
         const badge = p.locator(".t-paid-badge");
         assert(await badge.locator(":scope > span").first().innerText() === billing.label, "wrong billing badge");
-        assert(await badge.locator(".t-api-cost").innerText() === "$0.01 est.", "session estimate missing or mislabeled");
+        assert(await badge.locator(".t-api-cost").innerText() === "est. $0.01", "session estimate missing or mislabeled");
         assert(await p.locator(".t-chips > :first-child").getAttribute("class").then((v) => v.includes("t-paid-badge")), "API badge isn't first");
         const bounds = await badge.boundingBox();
         assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= (await p.viewportSize()).width, "API badge is off screen");

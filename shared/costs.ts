@@ -52,9 +52,9 @@ export function costChip(cost: SessionCost | undefined): { text: string; detail:
   const reasons = costReasons(cost?.reasons);
   if (!known || !cost?.complete) {
     const why = sentence(reasons.map(missing));
-    // What's known is shown as a lower bound, never as the whole: the reasons say what's missing.
+    // What's known is shown as an estimate; the tooltip says it isn't the whole and what's missing.
     if (known && cost!.usd! > 0) return {
-      text: `~${dollars(cost!.usd!)}+${reasons.includes("no-cache-ttl") ? " est." : ""}`,
+      text: `est. ${dollars(cost!.usd!)}`,
       detail: `Known API subtotal ${dollars(cost!.usd!)}${cost!.estimated ? " estimated" : ""}, not the session's whole cost.${why}`,
     };
     return {
@@ -64,7 +64,7 @@ export function costChip(cost: SessionCost | undefined): { text: string; detail:
   }
   const notes = costReasons(cost.notes).flatMap((r) => assumed(r) ?? []);
   return {
-    text: `${dollars(cost.usd!)}${cost.estimated ? " est." : ""}`,
+    text: `${cost.estimated ? "est. " : ""}${dollars(cost.usd!)}`,
     detail: (cost.estimated ? "Estimated session API cost in USD; provider billing may differ." : "Reported session API cost in USD.") + (notes.length ? ` ${notes.join(" ")}` : ""),
   };
 }

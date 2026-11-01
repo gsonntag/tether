@@ -55,7 +55,7 @@ try {
   if (!cost.notes?.includes("no-cache-ttl") || !cost.notes.includes("tier:missing")) fail(`notes ${cost.notes}`);
   cost = await turn({ ...usage({ cached_tokens: 149_651, cache_write_tokens: 0 }) });
   check("a read", cost, { complete: true, usd: write + read });
-  if (costChip(cost).text !== "$0.02 est.") fail(`chip ${costChip(cost).text}`);
+  if (costChip(cost).text !== "est. $0.02") fail(`chip ${costChip(cost).text}`);
 
   cost = await turn({ service_tier: "default", ...usage({ cache_write_tokens: 700, cache_write_tokens_details: { ttl_30m_tokens: 300, ttl_12h_tokens: 400 } }, 1000) });
   check("the guide's full breakdown", cost, { complete: true });
@@ -72,7 +72,7 @@ try {
     cost = await turn(fake, extra);
     check(name, cost, { complete: false, has });
     const chip = costChip(cost);
-    if (!chip.text.startsWith("~$") || !chip.text.includes("+") || cost.usd! < subtotal) fail(`${name}: chip ${chip.text}`);
+    if (!chip.text.startsWith("est. $") || cost.usd! < subtotal) fail(`${name}: chip ${chip.text}`);
     console.log(`    ${chip.text} | ${chip.detail}`);
   }
 

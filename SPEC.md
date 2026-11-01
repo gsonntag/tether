@@ -870,8 +870,8 @@ and update on every connected device. Renaming starts no harness process.
 ### API session dollars and retry times
 
 An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**. A total
-that isn't whole but has a known subtotal above zero reads **~$0.02+**, its tooltip saying what's
-missing (**~$0.02+ est.** for a lower bound on cache writes); with no subtotal, or a zero one, it says
+that isn't whole but has a known subtotal above zero reads **est. $0.02**, its tooltip saying what's
+missing (the same, with the cache-write lower bound named in the tooltip); with no subtotal, or a zero one, it says
 **Cost unknown**, with what's known and missing in its tooltip. A partial subtotal is never presented
 as the whole session amount, and a known subtotal is never a bare Cost unknown.
 
@@ -903,7 +903,7 @@ stays partial: an earlier source Unknown, a last start on a key with no entry (b
 entry that was lost (`SessionPrefs.metered` says the session had one), and a handoff TUI on a key.
 Entries made partial before this rule (a plan-to-key switch on an existing session) aren't repaired:
 nothing kept says whether an earlier key period came before, so they show their subtotal as
-**~$x+** with `earlier-usage`.
+**est. $x** with `earlier-usage`.
 Claude's native cumulative cost is itself an estimate and resumes restore earlier, potentially
 subscription-equivalent spend: a key process resumed after plan turns starts at the plan turns'
 estimate (seen with Haiku: the pre-send read returned exactly the plan process's last total). Tether
