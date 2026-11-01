@@ -242,6 +242,8 @@ describe("credential process boundaries", () => {
       expect(first.closed).toBe(false);
       expect(t.adapter.drivers.at(-1)!.closed).toBe(true);
       expect(t.prefs.get(s.id)).toMatchObject({ source: "subscription", nextSource: "anthropic" });
+      expect(s.state.sourceSwitchFailed).toBe(true);
+      expect(t.prefs.get(s.id).sourceSwitchFailed).toBe(true);
       expect(s.state.continuedIn).toBeUndefined();
       expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
       expect(rows(t)).not.toContain("claude:carried-1");
@@ -250,6 +252,8 @@ describe("credential process boundaries", () => {
       // Picking the source it's on calls it off.
       await t.live.setSource(s.id, "subscription");
       expect(s.state.nextBilling).toBeUndefined();
+      expect(s.state.sourceSwitchFailed).toBeUndefined();
+      expect(t.prefs.get(s.id).sourceSwitchFailed).toBeUndefined();
       t.adapter.script = () => [answers];
       await t.live.send(s.id, "back on the plan");
       expect(first.sent).toEqual(["plan", "back on the plan"]);
@@ -297,6 +301,35 @@ describe("credential process boundaries", () => {
     expect(s.state.nextBilling).toBeUndefined();
     expect(prefs.get(s.id).nextBilling).toBeUndefined();
   });
+  test("a failed source start stays pending until a retry succeeds", async () => {
+    const { live, adapter, credentials, core, prefs, file } = setup();
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    credentials.set("anthropic", `fake-switch-failure-${crypto.randomUUID()}`);
+    await live.send("claude:one", "plan");
+    const s = await core.open("claude:one");
+    const plan = { kind: "plan", label: "Claude plan" } as const;
+    const key = { kind: "apiKey", label: "Anthropic API key" } as const;
+    s.setState({ billing: plan });
+    await live.setSource(s.id, "anthropic");
+
+    adapter.startError = "Key process failed to start.";
+    await expect(live.send(s.id, "try the key")).rejects.toThrow("failed to start");
+    expect(s.state).toMatchObject({ billing: plan, nextBilling: key, sourceSwitchFailed: true });
+    expect(prefs.get(s.id).sourceSwitchFailed).toBe(true);
+    prefs.flush();
+    expect(new Prefs(file, 0).get(s.id).sourceSwitchFailed).toBe(true);
+    adapter.stored.get("one")!.summary.billing = plan;
+    const restored = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs(file, 0), epoch: "restored", log: () => {} });
+    cleanups.push(() => restored.stop());
+    expect((await restored.open(s.id)).state).toMatchObject({ billing: plan, nextBilling: key, sourceSwitchFailed: true });
+
+    adapter.startError = undefined;
+    await live.send(s.id, "retry the key");
+    expect(s.state.sourceSwitchFailed).toBeUndefined();
+    expect(s.state.nextBilling).toBeUndefined();
+    expect(prefs.get(s.id).sourceSwitchFailed).toBeUndefined();
+    expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("anthropic");
+  });
   test("Source is refused with a terminal open, during a turn, off the capability, or for a key that isn't set", async () => {
     const { live, adapter, credentials, core } = setup();
     await expect(live.setSource("claude:one", "subscription")).rejects.toThrow("Use Move");
@@ -310,6 +343,14 @@ describe("credential process boundaries", () => {
     await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Close the terminal first");
     s.setState({ terminal: undefined, status: "running" });
     await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the turn");
+    s.setState({ status: "idle", requests: [{} as never] });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the turn");
+    s.setState({ requests: [], backgroundSubagents: 1 });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for background work");
+    s.setState({ backgroundSubagents: undefined, queue: [{ id: "q1", text: "queued", queuedAt: 1 }] });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for queued messages");
+    s.setState({ queue: [], restartWait: true });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the session to reconnect");
   });
   test("rename persists and survives discovery and reopening", async () => {
     const { ops, core, adapter, prefs, file } = setup();

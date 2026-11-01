@@ -1,8 +1,10 @@
 import { DropdownMenuGroup } from "@astryxdesign/core/DropdownMenu";
-import { costChip } from "../../../shared/costs";
-import type { LiveState } from "../../../shared/transcript";
+import { costChip, type SessionCost } from "../../../shared/costs";
+import { isApiBilling } from "../../../shared/labels";
+import type { Billing } from "../../../shared/transcript";
 
-export function SessionApiCostGroup({ cost: sessionCost }: { cost: LiveState["cost"] }) {
+export function SessionApiCostGroup({ billing, cost: sessionCost }: { billing?: Billing; cost?: SessionCost }) {
+  if (!isApiBilling(billing) && !sessionCost) return null;
   const cost = costChip(sessionCost);
   return (
     <DropdownMenuGroup title="API key spend this session">

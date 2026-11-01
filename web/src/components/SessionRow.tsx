@@ -1,4 +1,3 @@
-import { isApiBilling } from "../../../shared/labels";
 import type { Billing, HarnessId, RunStatus } from "../../../shared/transcript";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { openSession } from "../route";
@@ -34,7 +33,6 @@ export function StatusDot({ status, requests }: { status: RunStatus; requests?: 
 }
 
 export function BillingMarker({ billing }: { billing?: Billing }) {
-  if (isApiBilling(billing)) return <span className="t-api-marker" role="img" aria-label={billing!.label} title={billing!.label}>$</span>;
   if (!billing || billing.kind === "unknown") return <span className="t-billing-unknown" title="Billing unknown" aria-label="Billing unknown">?</span>;
   return null;
 }

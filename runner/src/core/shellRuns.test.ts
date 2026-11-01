@@ -77,12 +77,14 @@ describe("! commands", () => {
     await t.core.subscribe("claude:s1");
     const { id } = await t.runs.run("claude:s1", "echo one; sleep 0.3; echo two; exit 3");
     expect(t.shell(id).state).toBe("running");
+    expect(t.core.sessions.get("claude:s1")!.state.shellsRunning).toBe(1);
     expect(t.card(id).role).toBe("user");
     await until(() => (t.tool(id).output ?? "").includes("one"));
     expect(t.shell(id).state).toBe("running");
     // Streamed as deltas on the card's tool part.
     expect(t.frames.some((f) => f.t === "event" && f.event.type === "delta" && f.event.msgId === id)).toBe(true);
     await until(() => t.shell(id).state === "sent");
+    expect(t.core.sessions.get("claude:s1")!.state.shellsRunning).toBeUndefined();
     expect(t.shell(id).exitCode).toBe(3);
     expect(t.tool(id).status).toBe("error");
     expect(t.tool(id).output).toBe("one\ntwo\n");

@@ -18,6 +18,7 @@ import { FROM_TETHER } from "../../../shared/fromTether";
 import { reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
+import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
@@ -254,6 +255,7 @@ export class LiveControl {
     } catch (e) {
       if (s.sending === me) s.lastSend = undefined;
       if (s.sending === me && !(e instanceof SendCancelled)) {
+        this.markSourceSwitchFailed(s);
         s.turnError = redact((e as Error)?.message ?? String(e));
         // Errors show in the chat. A failed start has said this already, and repeats don't add a row.
         s.apply({ type: "msg", msg: notice(s.turnError, "error") });
@@ -301,6 +303,7 @@ export class LiveControl {
       }
       await this.replaceWith(s, n);
     } catch (e) {
+      this.markSourceSwitchFailed(s);
       s.apply({ type: "msg", msg: notice(redact((e as Error)?.message ?? String(e)), "error") });
       throw e;
     } finally {
@@ -349,7 +352,7 @@ export class LiveControl {
     const kept = this.keptPrefs(s);
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
     n.setState(kept);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
@@ -357,7 +360,7 @@ export class LiveControl {
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
     await this.close(s, true);
-    s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined });
+    s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
 
   /**
@@ -1060,6 +1063,14 @@ export class LiveControl {
   /** Makes the thread a source change goes to, on the move module's export and import. */
   carrier?: (id: string, source: BillingSource) => Promise<string>;
 
+  /** A queued source remains pending after its first start fails, across views and runner restarts. */
+  private markSourceSwitchFailed(s: Session) {
+    if (!s.state.nextBilling || s.state.sourceSwitchFailed) return;
+    this.core.o.prefs.set(s.id, { sourceSwitchFailed: true });
+    this.core.o.prefs.flush();
+    s.setState({ sourceSwitchFailed: true });
+  }
+
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown) {
     const s = await this.core.open(id);
@@ -1067,8 +1078,10 @@ export class LiveControl {
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
-    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
-    if (s.state.status !== "idle" || s.sending || s.starting || s.carrying) throw new Error("Wait for the turn to end.");
+    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
+    const blocker = sourceSwitchBlocker(s.state);
+    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
+    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
     if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
     const carries = !!s.capabilities.sourceCarry;
     const own = this.sourceOf(s);
@@ -1080,16 +1093,17 @@ export class LiveControl {
     if (asked === own) {
       // Thought better of it: the thread never left.
       if (carries) {
-        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined });
-        s.setState({ nextBilling: undefined });
+        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+        this.core.o.prefs.flush();
+        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
       }
       return;
     }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
-      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next });
+      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next });
+      s.setState({ nextBilling: next, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1099,9 +1113,9 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next });
+    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, ...(cost ? { cost } : {}) });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1228,6 +1242,7 @@ export class LiveControl {
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
       const error = redact(e?.message ?? String(e));
+      this.markSourceSwitchFailed(s);
       s.rebuilt = s.fresh;
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
@@ -1242,8 +1257,8 @@ export class LiveControl {
     s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
     // Waiting for a new thread to confirm it (carry), not this one.
     if (s.state.nextBilling && !this.core.o.prefs.get(s.id).nextSource) {
-      this.core.o.prefs.set(s.id, { nextBilling: undefined });
-      s.setState({ nextBilling: undefined });
+      this.core.o.prefs.set(s.id, { nextBilling: undefined, sourceSwitchFailed: undefined });
+      s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
     }
     d.onExit = (error) => {
       if (s.driver !== d) return;

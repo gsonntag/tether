@@ -37,6 +37,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const usage = usageChip(billing, state.plan);
   const cost = costChip(state.cost);
   const paid = isApiBilling(billing);
+  const showSessionCost = paid || !!state.cost;
   const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
   const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : usage.text;
   if (!choices) return <span {...chip}>{body}</span>;
@@ -69,8 +70,10 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
           </DropdownMenuGroup>
         )}
         {plan.length > 0 && <DropdownMenuDivider />}
-        <SessionApiCostGroup cost={state.cost} />
-        <DropdownMenuDivider />
+        {showSessionCost && <>
+          <SessionApiCostGroup billing={billing} cost={state.cost} />
+          <DropdownMenuDivider />
+        </>}
         <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
           {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
         </DropdownMenuRadioGroup>

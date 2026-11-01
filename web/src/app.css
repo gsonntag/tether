@@ -2073,12 +2073,6 @@
   background: color-mix(in srgb, var(--t-api) 9%, transparent);
 }
 .t-api-composer .t-input, .t-api-composer .t-input:focus { border-color: var(--t-api); }
-.t-api-marker {
-  display: inline-block;
-  color: var(--t-api);
-  font-weight: 800;
-  margin-right: 6px;
-}
 .t-billing-unknown { color: var(--t-muted); margin-right: 6px; }
 .t-title-button {
   all: unset;
