@@ -49,6 +49,8 @@ export class Session {
   rebuilt = false;
   /** a rebuilt session that got a new id: what's sent here goes there (Adapter.renew) */
   movedTo?: string;
+  /** a source change on its way with this session's next message (live.ts carry) */
+  carrying = false;
   /** getting that new id */
   renewing?: Promise<Session>;
   /** the send that is starting the harness or handing it the message (a token per send) */

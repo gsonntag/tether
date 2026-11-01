@@ -302,19 +302,18 @@ async function realSources(p,phone) {
       await p.locator(".t-usage-chip",{hasText:plan}).waitFor({timeout:30000});
       await screenshot(p,"real-openai-stored-plan");
       console.log("ok real openai: a thread with no record, which used to be refused, ran on the plan with the key set, in place");
-      const menu=p.getByRole("button",{name:"Session menu"});
-      await menu.click();
-      assert(await p.getByRole("menuitem",{name:"Source…"}).count()===0,"Codex offers Source; its threads don't cross app-servers");
+      await p.locator(".t-source-chip").click();
+      await p.getByRole("menuitemradio",{name:label,exact:true}).waitFor();
+      await p.keyboard.press("Escape");
+      await p.getByRole("button",{name:"Session menu"}).click();
+      assert(await p.getByRole("menuitem",{name:"Source…"}).count()===0,"the ⋯ menu still offers Source");
       await p.keyboard.press("Escape");
     }
     if(source==="anthropic") {
       await open(p,planId);
-      await p.getByRole("button",{name:"Session menu"}).click();
-      await p.getByRole("menuitem",{name:"Source…"}).click();
-      const d=p.getByRole("dialog");
-      await d.getByLabel("Source",{exact:true}).selectOption({label});
-      await screenshot(p,"real-source-dialog");
-      await d.getByRole("button",{name:"Apply",exact:true}).click();
+      await p.locator(".t-source-chip").click();
+      await screenshot(p,"real-source-menu");
+      await p.getByRole("menuitemradio",{name:label,exact:true}).click();
       await p.locator(".t-next-source",{hasText:label}).waitFor();
       assert((await viewOf(p,planId)).state.billing?.label===plan,"the label moved before the harness confirmed");
       await screenshot(p,"real-source-next-desktop");

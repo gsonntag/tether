@@ -56,8 +56,13 @@ export interface HarnessCapabilities {
    * running turn's own values show beside the change (LiveState.turnSettings).
    */
   settingsApply?: "now" | "nextTurn";
-  /** An existing session can change source on its next process start. Absent: only Move does it. */
+  /** An existing session can change source from the next message. Absent: only Move does it. */
   sourceSwitch?: boolean;
+  /**
+   * With sourceSwitch: a thread can't cross sources, so a new one takes the history at that message
+   * and takes the session's place (SPEC, Credentials and billing safety).
+   */
+  sourceCarry?: boolean;
   /**
    * Moving a session between harnesses (SPEC §15). `import`: "native", the harness takes a history
    * itself (Adapter.move.importHistory); "context", a new session gets the whole history as a file
@@ -298,6 +303,8 @@ export interface LiveState {
    * The terminal's TUI moved on to this session (/clear, /resume): the view follows it there.
    */
   continuedIn?: string;
+  /** continuedIn replaced this session (a source change): there is nothing here to stay for */
+  carried?: boolean;
   /**
    * Queued messages wait, untouched, while set (SPEC §8, §9): while the TUI drives (released by
    * Back to Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart

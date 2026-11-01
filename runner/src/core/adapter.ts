@@ -162,6 +162,10 @@ export interface AdapterMove {
   /** Whether the imported history is really there (the check after `importHistory`). */
   imported?(r: ImportRequest): Promise<boolean>;
   /** Names a session started by the context route. */
+  /** This thread takes over that one's session (capabilities.sourceCarry): its transcript comes first. */
+  carried?(nativeId: string, from: string): void;
+  /** Drops a thread made for a source change that didn't happen. */
+  discard?(nativeId: string): Promise<void>;
   setTitle?(nativeId: string, projectPath: string, title: string): Promise<void>;
   /** The harness's own modes, each with its level. */
   modes: { mode: string; level: Level }[];

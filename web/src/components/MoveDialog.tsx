@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { effortLabel, findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
-import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import type { BillingSource } from "../../../shared/credentials";
 import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -12,10 +12,9 @@ import { loadModels, modelListKey, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Move to… and its dialog (SPEC §15), and its Source where a process start can change that. */
-export function SessionMenu({ runnerId, session, state, capabilities }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities }) {
+/** The session's menu, in the header: Move to… and its dialog (SPEC §15). */
+export function SessionMenu({ runnerId, session, state }: { runnerId: string; session: SessionSummary; state: LiveState }) {
   const [open, setOpen] = useState(false);
-  const [sourceOpen, setSourceOpen] = useState(false);
   return (
     <>
       <DropdownMenu
@@ -26,57 +25,9 @@ export function SessionMenu({ runnerId, session, state, capabilities }: { runner
         )}
       >
         <DropdownMenuItem label="Move to…" onClick={() => setOpen(true)} />
-        {capabilities?.sourceSwitch && !session.parentSessionId ? <DropdownMenuItem label="Source…" onClick={() => setSourceOpen(true)} /> : null}
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
-      {sourceOpen && <SourceDialog runnerId={runnerId} session={session} state={state} onClose={() => setSourceOpen(false)} />}
     </>
-  );
-}
-
-/** A session's source from its next process start. A terminal blocks it; the runner says so too. */
-function SourceDialog({ runnerId, session, state, onClose }: { runnerId: string; session: SessionSummary; state: LiveState; onClose: () => void }) {
-  const [choices, setChoices] = useState<SourceChoices>();
-  const [picked, setPicked] = useState<BillingSource>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const current = choices?.options.find((o) => o.billing.label === (state.nextBilling ?? state.billing)?.label)?.source;
-  const value = picked ?? current ?? choices?.default;
-  const blocked = state.mode === "terminal" || state.terminal ? "Close the terminal first." : state.status !== "idle" ? "Wait for the turn to end." : undefined;
-
-  useEffect(() => {
-    rpc(runnerId, "billingSources", { harness: session.harness }).then(setChoices, () => setError("Update and restart the runner to change source."));
-  }, [runnerId, session.harness]);
-
-  const apply = async () => {
-    if (!value || busy) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      await rpc(runnerId, "setSessionSource", { sessionId: session.id, source: value });
-      onClose();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog isOpen onOpenChange={(o) => !o && !busy && onClose()} width={360} purpose="form">
-      <DialogHeader title="Source" onOpenChange={(o) => !o && !busy && onClose()} />
-      <div className="t-form" style={{ padding: 16 }}>
-        <SourcePicker choices={choices} value={value} onChange={setPicked} />
-        {choices && !choices.options.length && <div className="t-inline-status">No source available.</div>}
-        <div className="t-inline-status">Applies on the next start.</div>
-        {blocked && <div className="t-form-error">{blocked}</div>}
-        {error && <div className="t-form-error">{error}</div>}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />
-          <Button label="Apply" variant="primary" isDisabled={!value || !!blocked || busy} onClick={() => void apply()} />
-        </div>
-      </div>
-    </Dialog>
   );
 }
 

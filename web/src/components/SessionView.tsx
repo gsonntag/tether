@@ -69,9 +69,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // unless the session is empty (a new one that went on under a new id): nothing to stay for.
   const loaded = !!view?.state;
   const continuedIn = view?.state?.continuedIn;
+  const carried = !!view?.state?.carried;
   const seenContinued = useRef<string | undefined | null>(null);
   useEffect(() => {
     if (!loaded) return;
+    // Replaced by the same conversation on another source: this id is only ever a way there.
+    if (carried && continuedIn) return replaceSession(runnerId, continuedIn);
     if (seenContinued.current === null) {
       seenContinued.current = continuedIn;
       if (!continuedIn || view?.window?.messages.length) return;
@@ -242,7 +245,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && view.capabilities?.move && <SessionMenu runnerId={runnerId} session={summary} state={state} capabilities={view.capabilities} />}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && view.capabilities?.move && <SessionMenu runnerId={runnerId} session={summary} state={state} />}{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>

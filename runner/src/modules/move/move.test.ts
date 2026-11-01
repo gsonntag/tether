@@ -80,6 +80,48 @@ const convo: Msg[] = [
   { id: "a1", role: "assistant", ts: 11, parts: [{ type: "tool", id: "call_native_1", name: "bash", kind: "shell", input: { command: "ls" }, command: "ls", status: "done", output: "vault-4417.txt" }, { type: "text", text: "One file." }] },
 ];
 
+describe("a source change (Mover.carry)", () => {
+  test("the same harness, settings and history, unlisted and marked as taking over", async () => {
+    const pi = new Neutral("pi", true);
+    const carried: [string, string][] = [];
+    pi.move!.carried = (n, from) => void carried.push([n, from]);
+    const { mover, runner } = setup([pi]);
+    pi.stored_("s1", convo);
+    const s = await runner.core.open("pi:s1");
+    s.setState({ model: "m1", effort: "low", permissionMode: "ro" });
+    const id = await mover.carry("pi:s1", "subscription");
+    expect(id.startsWith("pi:")).toBe(true);
+    expect(pi.imports[0]!.items.map((i) => i.text).join("\n")).toContain("vault-4417.txt");
+    expect(carried).toEqual([[id.slice(3), "s1"]]);
+    expect(pi.drivers.at(-1)!.opts).toMatchObject({ model: "m1", effort: "low", permissionMode: "ro" });
+    expect(runner.core.book.all().sessions.map((r) => r.id)).not.toContain(id);
+  });
+
+  test("a failed import leaves no thread and uses no file route, where a move would", async () => {
+    const pi = new Neutral("pi", true);
+    pi.failImport = true;
+    const dropped: string[] = [];
+    pi.move!.discard = async (n) => void dropped.push(n);
+    const { mover, runner } = setup([pi]);
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    await expect(mover.carry("pi:s1", "subscription")).rejects.toThrow("no");
+    expect(dropped).toHaveLength(1);
+    expect(pi.drivers).toHaveLength(0);
+  });
+
+  test("cut to fit, the notice says so in the move's own words; and nothing else", async () => {
+    const pi = new Neutral("pi", true, 4_000);
+    const { mover, runner } = setup([pi]);
+    pi.stored_("s1", Array.from({ length: 40 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? ("assistant" as const) : ("user" as const), ts: i, parts: [{ type: "text" as const, text: `word `.repeat(4000) }] })));
+    await runner.core.open("pi:s1");
+    const id = await mover.carry("pi:s1", "subscription");
+    await runner.core.subscribe(id);
+    const notices = runner.core.sessions.get(id)!.transcript!.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text);
+    expect(notices).toEqual(["40 messages in a file the agent can read."]);
+  });
+});
+
 describe("N-way: three harnesses, every direction, one code path", () => {
   const a = () => new Neutral("pi", true);
   const b = () => new Neutral("omp", true);

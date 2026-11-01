@@ -123,6 +123,7 @@ export class SessionCore {
     this.book = new SummaryBook(o.epoch, (summary) => void o.send({ t: "summary", summary }), this.now);
     o.bus.on("unwatched", ({ sessionIds }) => sessionIds.forEach((id) => this.unwatch(id)));
     o.bus.on("disconnected", () => [...this.watched].forEach((id) => this.unwatch(id)));
+    this.book.hidden = (id) => this.replaced(id);
     o.bus.on("connected", () => this.book.announce());
   }
 
@@ -181,8 +182,15 @@ export class SessionCore {
     return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
   }
 
+  /** A session that went on under another id, or a thread that may yet: one row for the conversation. */
+  private replaced(id: string) {
+    const p = this.o.prefs.get(id);
+    return !!p.carrying || !!(p.carried && p.movedTo);
+  }
+
   /** Left out of the lists: a folder TETHER_HIDE_PROJECTS names, unless the session is open or live right now. */
   private shown(row: SessionSummary) {
+    if (this.replaced(row.id)) return false;
     if (!this.hide?.test(row.projectPath)) return true;
     const s = this.sessions.get(row.id);
     return this.watched.has(row.id) || (!!s && this.held(s));
@@ -253,7 +261,7 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;

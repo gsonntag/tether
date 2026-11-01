@@ -13,6 +13,9 @@
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
 //   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
 //   sourceChange the same harness on another source, on both harnesses, with made-up keys
+//   sourceCarry a Codex session changes source from the chip: a refused key stays put, a thread on
+//             FAKE_ENDPOINT (scripts/fake-responses.ts, logging to FAKE_LOG) gets the history and takes
+//             over, and the real plan answers from it on the way back. Needs both variables
 //   long      a session bigger than the window moves twice; its first line is only in the file.
 //             CODEX_TURNS=1 asks Codex instead of moving on (run the runner with a small
 //             TETHER_MOVE_BUDGET: every request resends what's in context)
@@ -284,6 +287,98 @@ const steps = {
   },
 
   /** The same harness, another source: a new session with the context, the old one as it was. Fake keys only. */
+  async sourceCarry() {
+    const endpoint = process.env.FAKE_ENDPOINT, log = process.env.FAKE_LOG;
+    if (!endpoint || !log) fail("sourceCarry needs FAKE_ENDPOINT and FAKE_LOG");
+    const p = await page(desktop);
+    if ((await rpcVia(p, "setCredential", { source: "openai", key: `sk-not-a-real-key-${"z".repeat(24)}` })).error) fail("no key");
+    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}`, endpoint });
+    if (azure.error) fail(azure.error);
+    const rows = async () => (await rpcVia(p, "listSessions", { projectPath: folder })).ok.sessions.map((s) => s.id);
+    const pick = async (label) => {
+      await p.locator(".t-source-chip").click();
+      await p.getByRole("menuitemradio", { name: label }).click();
+      await p.locator(".t-next-source", { hasText: label }).waitFor({ timeout: 15_000 });
+    };
+    const send = async (text) => { await composer(p).fill(text); await composer(p).press("Enter"); };
+    const folder = process.env.CODEX_SCRATCH ?? `${HOME}/tether-scratch/p4/projects/scratch`;
+    const word = token("HERON");
+    const made = await rpcVia(p, "newSession", { harness: "codex", projectPath: folder, model: CODEX_MODEL, permissionMode: "read-only", source: "subscription" });
+    if (made.error) fail(made.error);
+    const first = made.ok.sessionId;
+    await rpcVia(p, "setEffort", { sessionId: first, effort: "low" });
+    await p.goto(sessionUrl(first));
+    await composer(p).waitFor({ timeout: 30_000 });
+    await confirmModel(p, CODEX_MODEL);
+    await turn(p, `The word is ${word}. Reply with only: noted. Do not use tools.`);
+    await rpcVia(p, "renameSession", { sessionId: first, title: "Carry test" });
+    await p.locator(".t-usage-chip", { hasText: "ChatGPT plan" }).waitFor({ timeout: 30_000 });
+    const size = await p.evaluate(() => document.querySelectorAll(".t-msg").length);
+
+    // A refused key: nothing moves, the message stays, nothing else answers it.
+    await p.locator(".t-source-chip").click();
+    await p.getByRole("menuitemradio", { name: "OpenAI API key" }).waitFor();
+    if (await p.getByRole("menu").getByText("new session", { exact: false }).count()) fail("the menu mentions a new session");
+    await shot(p, "carry-menu");
+    await p.keyboard.press("Escape");
+    await pick("OpenAI API key");
+    await shot(p, "carry-next");
+    await send("This goes to the fake key.");
+    await p.locator(".t-msg.notice.error").first().waitFor({ timeout: 60_000 });
+    await shot(p, "carry-refused");
+    if (idOf(p) !== first) fail("a refused key changed the session");
+    if ((await composer(p).inputValue()) !== "This goes to the fake key.") fail("the message left the box");
+    if (!(await p.locator(".t-usage-chip", { hasText: "ChatGPT plan" }).count())) fail("a refused key changed the label");
+    if (await p.locator(".t-msg.assistant").filter({ hasText: "fake key" }).count()) fail("something answered");
+    if (!(await p.locator(".t-next-source").count())) fail("the change stopped waiting");
+    if ((await rows()).filter((id) => id === first).length !== 1) fail("the row went");
+    ok("a refused key: same thread, same label, the message in the box, no fallback");
+    await composer(p).fill("");
+
+    // A source that answers: the same conversation, on a thread that got all of it.
+    const before = readFileSync(log, "utf8").length;
+    await pick("Azure");
+    await send("Go on, on Azure.");
+    await p.waitForFunction((id) => !decodeURIComponent(location.hash).endsWith(id), first, { timeout: 60_000 });
+    const second = idOf(p);
+    await p.locator(".t-paid-badge", { hasText: "Azure" }).waitFor({ timeout: 30_000 });
+    await p.getByText("Go on, on Azure.").first().waitFor({ timeout: 30_000 });
+    await p.getByText(word).first().waitFor({ timeout: 30_000 });
+    await shot(p, "carry-azure");
+    if ((await composer(p).inputValue()) !== "") fail("the sent message stayed in the box");
+    if (await p.getByText(/moved (here )?(from|to)/i).count()) fail("the move shows");
+    if ((await p.locator(".t-header-title").innerText()) !== "Carry test") fail("the title changed");
+    if ((await p.evaluate(() => document.querySelectorAll(".t-msg").length)) < size) fail("history is missing");
+    const seen = readFileSync(log, "utf8").slice(before);
+    if (!seen.includes(word)) fail("the new thread's request didn't have the history");
+    let list = await rows();
+    if (list.includes(first) || !list.includes(second)) fail(`rows: ${list.join()}`);
+    ok("Azure: followed without a jump in the URL's history; the request carried the history; one row");
+
+    // An old link goes where the conversation is.
+    await p.goto(sessionUrl(first));
+    await p.waitForFunction((id) => decodeURIComponent(location.hash).endsWith(id), second, { timeout: 30_000 });
+    await p.locator(".t-paid-badge", { hasText: "Azure" }).waitFor({ timeout: 30_000 });
+    ok("the old link follows");
+
+    // Back, on the real plan: a real model answers from what came across.
+    await pick("ChatGPT plan");
+    await send("What was the word I gave you? Reply with only the word. Do not use tools.");
+    await p.waitForFunction((id) => !decodeURIComponent(location.hash).endsWith(id), second, { timeout: 120_000 });
+    const third = idOf(p);
+    await p.locator(".t-msg.assistant").filter({ hasText: word }).last().waitFor({ timeout: 120_000 });
+    await p.locator(".t-usage-chip", { hasText: "ChatGPT plan" }).waitFor({ timeout: 30_000 });
+    if (await p.locator(".t-paid-badge").count()) fail("the badge stayed");
+    await shot(p, "carry-back");
+    list = await rows();
+    if (list.includes(first) || list.includes(second) || !list.includes(third)) fail(`rows: ${list.join()}`);
+    const stored = await rpcVia(p, "moveOptions", { sessionId: third });
+    if (stored.error) fail(stored.error);
+    ok(`back on the plan: a real gpt-6-luna reply from history (${word}), one row, nothing stacked`);
+    writeFileSync(`${SHOTS}/carry-ids.json`, JSON.stringify({ first, second, third, word }));
+    await p.close();
+  },
+
   async sourceChange() {
     const p = await page(desktop);
     const keys = { anthropic: `sk-ant-not-a-real-key-${"y".repeat(24)}`, openai: `sk-not-a-real-key-${"z".repeat(24)}` };

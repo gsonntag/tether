@@ -113,8 +113,9 @@ export class Prefs {
     this.dirty = false;
     const cutoff = Date.now() - MAX_AGE_MS;
     const kept = Object.entries(this.map)
-      .filter(([, p]) => (p.at ?? 0) >= cutoff)
-      .sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0))
+      // A replaced thread stays out of the lists for good: this is the only thing that says so.
+      .filter(([, p]) => p.carried || (p.at ?? 0) >= cutoff)
+      .sort((a, b) => Number(!!b[1].carried) - Number(!!a[1].carried) || (b[1].at ?? 0) - (a[1].at ?? 0))
       .slice(0, MAX_ENTRIES);
     this.map = Object.fromEntries(kept);
     // Reread, so a name edited by hand meanwhile isn't overwritten.

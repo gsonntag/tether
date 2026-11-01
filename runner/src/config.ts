@@ -46,6 +46,12 @@ export interface SessionPrefs {
   source?: BillingSource;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
+  /** with capabilities.sourceCarry: the source the next message goes to, in a new thread */
+  nextSource?: BillingSource;
+  /** a thread being made for a source change: nobody's until its first message has an answer */
+  carrying?: boolean;
+  /** with movedTo: replaced by a thread on another source, so it isn't anyone's to see */
+  carried?: boolean;
   /** a turn was running: still set at start means it was cut off (a runner restart, a crash); through the quiet wait too */
   running?: boolean;
   /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */

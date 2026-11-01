@@ -30,8 +30,10 @@ export interface SessionActions {
   adapters(): Adapter[];
   /** a session, brought into memory if it's stored; throws when there's none */
   open(id: string): Promise<SessionLook>;
-  /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed */
-  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource): Promise<string>;
+  /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed. `from`: it's for that session's source change, unlisted, and a failed start throws */
+  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string): Promise<string>;
+  /** what makes the thread a session's source change goes to (Mover.carry) */
+  carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
   /** a new session; its first send starts it */
   create(args: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts): Promise<string>;
   /** a new native id, on that source */

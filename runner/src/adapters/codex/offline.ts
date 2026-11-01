@@ -35,6 +35,8 @@ export function parsePrivateRollout(text: string, nativeId: string, source: Priv
   const records: any[] = [];
   for (const line of text.split("\n")) try { records.push(JSON.parse(line)); } catch {}
   const hasUserEvents = records.some((r) => r.type === "event_msg" && r.payload?.type === "user_message");
+  // A move's import comes before its first turn, and isn't a turn (move.ts importedMsgs).
+  const firstTurn = remembered(nativeId)?.imported ? records.findIndex((r) => r.type === "event_msg" && (r.payload?.type === "task_started" || r.payload?.type === "turn_started")) : 0;
   for (let i = 0; i < records.length; i++) {
     const m = records[i]; const p = m.payload ?? {}; const at = Date.parse(m.timestamp ?? "") || 0;
     updated = Math.max(updated, at);
@@ -56,9 +58,11 @@ export function parsePrivateRollout(text: string, nativeId: string, source: Priv
       else if ((p.type === "task_complete" || p.type === "turn_complete") && turn) turn.completedAt = at / 1000;
       continue;
     }
-    if (m.type !== "response_item") continue;
+    if (m.type !== "response_item" || firstTurn < 0 || i < firstTurn) continue;
     if (p.type === "message" && p.role === "user" && !hasUserEvents) {
-      const body = textOf(p.content); preview ||= body;
+      const body = textOf(p.content);
+      if (body.startsWith("<environment_context>")) continue;
+      preview ||= body;
       add({ type: "userMessage", id, content: [{ type: "text", text: body }] }, at);
     } else if (p.type === "message" && p.role === "assistant") add({ type: "agentMessage", id, text: textOf(p.content), phase: p.phase }, at);
     else if (p.type === "reasoning") add({ type: "reasoning", id, summary: (p.summary ?? []).map((c: any) => c.text ?? ""), content: (p.content ?? []).map((c: any) => c.text ?? "") }, at);

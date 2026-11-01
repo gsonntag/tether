@@ -61,6 +61,9 @@ export function turnFinished(msgs: readonly Msg[]): boolean {
 
 export { SendCancelled };
 
+/** How long a source change waits for the harness to answer the first message on it. */
+const CARRY_ANSWER_MS = 30_000;
+
 export class LiveControl {
   private readonly idleMs: number;
   terminal?: TerminalSeam;
@@ -145,7 +148,7 @@ export class LiveControl {
     const s = await this.core.open(id);
     // A subagent the harness lets you message: into its running turn (SPEC §6a).
     if (s.summary.parentSessionId) return this.steer(id, text, attachments);
-    const to = s.rebuilt ? await this.current(s) : s;
+    const to = s.rebuilt || s.movedTo ? await this.current(s) : s;
     if (to !== s) {
       await this.send(to.id, text, attachments, o);
       // After the send, so a message that didn't go stays in the box it was typed in.
@@ -176,6 +179,8 @@ export class LiveControl {
       const until = this.core.now() + 15_000;
       while ((s.state.status !== "idle" || s.sending) && !s.driver?.onlyBackground?.() && this.core.now() < until) await Bun.sleep(100);
     }
+    const next = this.core.o.prefs.get(id).nextSource;
+    if (next && s.state.status === "idle" && !s.sending) return this.carry(s, next, text, attachments, o);
     // Only background work runs: the main agent is free, and a steer starts its next turn.
     if (!s.sending && s.driver?.steer && s.driver.onlyBackground?.()) {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
@@ -243,6 +248,75 @@ export class LiveControl {
       // A send keeps a session in memory: it may go now (a start that failed).
       this.core.scheduleEvict(s);
     }
+  }
+
+  /**
+   * A source change reaching its next message (capabilities.sourceCarry): the message goes to a new
+   * thread on that source with the history, and that thread takes the session's place once the
+   * harness has answered it. Until then nothing has changed: anything that fails leaves this thread,
+   * its source and the message where they were, with the change still waiting. Nothing falls back.
+   */
+  private async carry(s: Session, source: BillingSource, text: string, attachments: Attachment[], o: { queued?: boolean; tether?: boolean }) {
+    if (s.carrying) throw new Error(`${AGENT_NAMES[s.summary.harness]} is still working. Stop it first, or wait for it to finish.`);
+    if (!this.carrier) throw new Error("This runner can't change a session's source.");
+    s.carrying = true;
+    this.core.pin(s);
+    try {
+      if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
+      const id = await this.carrier(s.id, source);
+      const n = await this.core.open(id);
+      this.core.pin(n);
+      try {
+        await this.core.load(n);
+        const seen = new Set(n.transcript!.messages.map((m) => m.id));
+        await this.send(id, text, attachments, { tether: true });
+        await this.answered(n, seen);
+      } catch (e) {
+        await this.close(n);
+        await this.core.adapter(n.summary.harness).move?.discard?.(n.summary.nativeId).catch(() => {});
+        this.core.dropFresh(n);
+        throw e;
+      } finally {
+        this.core.unpin(n);
+      }
+      await this.replaceWith(s, n);
+    } catch (e) {
+      s.apply({ type: "msg", msg: notice(redact((e as Error)?.message ?? String(e)), "error") });
+      throw e;
+    } finally {
+      s.carrying = false;
+      this.core.unpin(s);
+    }
+  }
+
+  /** Back once the harness has answered, or says it won't. Slow isn't failed: its errors then show in the chat. */
+  private async answered(n: Session, seen: Set<string>) {
+    const until = this.core.now() + CARRY_ANSWER_MS;
+    while (this.core.now() < until) {
+      const fresh = (n.transcript?.messages ?? []).filter((m) => !seen.has(m.id));
+      if (fresh.some((m) => m.role === "assistant" && !m.error && m.parts.length)) return;
+      if (n.state.status === "idle" && !n.sending) {
+        const said = fresh.find((m) => m.role === "notice" && m.level === "error");
+        const failed = fresh.find((m) => typeof m.error === "string")?.error;
+        if (said || failed || n.turnError) throw new Error(failed || said?.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join(" ") || n.turnError);
+        return;
+      }
+      await Bun.sleep(50);
+    }
+  }
+
+  private async replaceWith(s: Session, n: Session) {
+    const prefs = this.core.o.prefs;
+    const { title } = prefs.get(s.id);
+    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}) });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined });
+    prefs.flush();
+    s.movedTo = n.id;
+    this.core.book.remove([s.id]);
+    this.core.touch(n, { title: title ?? s.summary.title });
+    this.core.book.upsert([n.summary]);
+    await this.close(s, true);
+    s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined });
   }
 
   /**
@@ -940,6 +1014,9 @@ export class LiveControl {
     return s;
   }
 
+  /** Makes the thread a source change goes to, on the move module's export and import. */
+  carrier?: (id: string, source: BillingSource) => Promise<string>;
+
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown) {
     const s = await this.core.open(id);
@@ -948,10 +1025,24 @@ export class LiveControl {
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
     if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
-    if (s.state.status !== "idle" || s.sending || s.starting) throw new Error("Wait for the turn to end.");
+    if (s.state.status !== "idle" || s.sending || s.starting || s.carrying) throw new Error("Wait for the turn to end.");
     if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
-    if (asked === this.sourceOf(s)) return;
+    const carries = !!s.capabilities.sourceCarry;
+    if (asked === this.sourceOf(s)) {
+      // Thought better of it: the thread never left.
+      if (carries) {
+        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined });
+        s.setState({ nextBilling: undefined });
+      }
+      return;
+    }
     const next = this.core.adapter(harness).billing!.label(asked);
+    if (carries) {
+      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next });
+      this.core.o.prefs.flush();
+      s.setState({ nextBilling: next });
+      return this.core.touch(s);
+    }
     const confirmed = s.state.billing?.label === next.label;
     this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next });
     this.core.o.prefs.flush();
@@ -1004,7 +1095,8 @@ export class LiveControl {
     }
     s.driver = d;
     s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
-    if (s.state.nextBilling) {
+    // Waiting for a new thread to confirm it (carry), not this one.
+    if (s.state.nextBilling && !this.core.o.prefs.get(s.id).nextSource) {
       this.core.o.prefs.set(s.id, { nextBilling: undefined });
       s.setState({ nextBilling: undefined });
     }

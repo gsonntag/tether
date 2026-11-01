@@ -699,10 +699,45 @@ source and nothing is sent; there's never a fallback. A key replaced in the same
 the new key.
 
 An existing session's source changes in two ways. **Move** (§15) accepts the same harness with another
-source: a new session with the context, the old one intact. On a harness with `capabilities.sourceSwitch`
-(Claude, not Codex: its threads don't cross app-servers) the session menu has **Source**, which applies
-on the next process start. A TUI or a running turn refuses it. Until the harness confirms it, the label
-stays what's confirmed and a chip beside it says what's next (`LiveState.nextBilling`).
+source: a new session with the context, the old one intact. And the **billing chip** in the header, in
+its quiet and loud forms alike, is a button with a chevron that opens a menu of the harness's sources
+with the session's own marked. Picking another applies from the next message, on Claude and Codex
+alike: until the harness confirms it, the label stays what's confirmed and a chip beside it says what's
+next (`LiveState.nextBilling`). Picking the session's own again calls it off. A TUI or a running turn
+refuses it: the items are disabled with the reason as their description, and the op refuses too. When
+one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
+on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
+no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Move to….
+
+On Claude (`capabilities.sourceSwitch`) the next message's process start takes the new source.
+
+A **Codex** thread can't cross app-servers (`capabilities.sourceCarry`), so a new thread takes the
+session's place, and nothing shows it. This is deliberate, tested on 0.164 and 0.166: a rollout copied
+into a private `CODEX_HOME` does resume under the same id, but 0.166 refuses a thread recorded on another
+provider unless every provider id in the copy is rewritten, and coming back can't work. The shared
+daemon has no way to unload a thread, so it answers from its memory, without the turns in between, and
+writes on over them; it would also take writing into `~/.codex`.
+
+At the next message (`LiveControl.carry`, on `Mover.carry`) the history is exported and imported as
+in §15 into a new thread on that source, with the same model, effort and mode, and the harness confirms
+the source. That message goes to it, unlisted (`SessionPrefs.carrying`), while the old thread stays
+as it was. When the harness answers (or after 30 s without a refusal: slow isn't failed), the new thread
+takes the session's place: the title and notices carry over, the old id gets `movedTo` and `carried`,
+views follow with `location.replace`, old links too, and the old thread stays on disk, out of the lists
+for good, after a restart and when opened by id. The API badge shows from that first message. The
+transcript shown is the old thread's own followed by the new one's (`carriedFrom`), not the import.
+
+Any failure, from the import to a refused key on that first message, leaves the old thread, its source
+and label as they were, the message in the box, and an error in the chat. The new thread is archived
+and its private process stopped. There's no fallback, and the change stays waiting, so the next message
+doesn't go somewhere else by surprise: pick the source it's on to call it off.
+
+A history too big for the window uses §15's budget and history file, with its notice only when
+context was cut. The file route isn't used here: it's a turn nobody asked for. Only plain messages
+cross. Tool calls are carried as text, the model's encrypted reasoning isn't, and neither is the summary
+of a Codex compaction: it's encrypted for its account, so a new source couldn't read it. The turns
+themselves are carried instead, as far as they fit. Subagents of the old thread stay viewable from
+the transcript, and aren't listed under the new one.
 
 `credentials.json` is version 2, one slot per key. A version 1 file (one `codex` slot) still reads, its
 key in the slot it was for and its revision kept, and is rewritten by the next change. A web deployed
@@ -967,7 +1002,8 @@ that's seen.
 
 **The same harness** is a target when it has another source; the session's own isn't offered, and with
 no other the harness isn't listed. The mode and, by default, the model and effort stay. The notices name
-the sources ("Moved from ChatGPT plan."). This is how a Codex session changes source.
+the sources ("Moved from ChatGPT plan."). The billing chip changes a session's source in place; this
+keeps the old session as its own.
 
 **Reading the history.** Codex reads anywhere in every sandbox. Claude would ask, so a moved
 session's driver and TUI get one read rule for exactly its folder (`Read(//…/**)`), and nothing else;

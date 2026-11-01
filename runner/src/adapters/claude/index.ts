@@ -9,6 +9,7 @@ import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../cor
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
+import { HARNESS_KEYS } from "../../../../shared/credentials";
 import { claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
@@ -151,7 +152,7 @@ export const claudeAdapter: Adapter = {
   capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, move: { import: "native" } },
   move: claudeMove,
   billing: {
-    keys: ["anthropic"],
+    keys: HARNESS_KEYS.claude,
     label: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
     loggedIn: () => claudeLoggedIn(CLAUDE_BIN ?? "claude"),
     // What it last ran on, as Claude Code confirmed. Nothing recorded: not a key by surprise.

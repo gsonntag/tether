@@ -178,11 +178,18 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string) => {
           const id = sessionId(harness, nativeId);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source });
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(from ? { carrying: true } : {}) });
+          for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           const s = await core.open(id);
           core.book.upsert([s.summary]);
+          if (from) {
+            // A source change: nothing is anyone's until the harness has confirmed it.
+            try { await live.resumeLive(s); }
+            catch (e) { core.dropFresh(s); throw e; }
+            return id;
+          }
           // A failure (a key refused, a source it can't confirm) stays on the session: nothing falls back.
           await live.resumeLive(s).catch(() => {});
           return id;
@@ -198,6 +205,7 @@ export function createRunner(o: RunnerOptions) {
         sourceOf: async (id: string) => live.sourceOf(await core.open(id)),
         sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
+        carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);
           // Not read yet: it joins what the store has when it's read.

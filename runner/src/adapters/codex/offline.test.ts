@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { historyMsgs } from "./items";
 import { parsePrivateRollout } from "./offline";
+import { remember } from "./remember";
 
 const source = { id: "private", source: "openai" as const, projectPath: "/tmp" };
 const line = (type: string, payload: any, i: number) => JSON.stringify({ timestamp: `2026-10-31T22:00:${String(i).padStart(2, "0")}Z`, ordinal: i, type, payload });
@@ -36,4 +37,22 @@ test("a private rollout's failure remains failed when its daemon is gone", () =>
   expect(parsed.turns[0].status).toBe("failed");
   const messages = historyMsgs(parsed.turns, "/tmp");
   expect(messages.at(-1)?.error).toContain("quota exhausted");
+});
+
+test("a thread that took a history in: what it imported isn't a turn, and Codex's own context isn't a message", () => {
+  remember("imported-thread", { imported: true });
+  const raw = [
+    line("session_meta", { id: "imported-thread", cwd: "/tmp", timestamp: "2026-10-31T22:00:00Z" }, 0),
+    line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>x</environment_context>" }] }, 1),
+    line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Imported." }] }, 2),
+    line("response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text: "Imported too." }] }, 3),
+    line("event_msg", { type: "task_started", turn_id: "turn" }, 4),
+    line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "New." }] }, 5),
+    line("response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text: "Reply." }] }, 6),
+  ].join("\n");
+  const texts = JSON.stringify(parsePrivateRollout(raw, "imported-thread", source).turns);
+  expect(texts).toContain("New.");
+  expect(texts).toContain("Reply.");
+  expect(texts).not.toContain("Imported");
+  expect(texts).not.toContain("environment_context");
 });

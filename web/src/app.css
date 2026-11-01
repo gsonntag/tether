@@ -2113,6 +2113,8 @@
   .t-chip-options { display: flex; flex: 1 1 0; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .t-chip-options::-webkit-scrollbar { display: none; }
   .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
+  /* The loud pill stays 30 px; the button around it is a full tap target. */
+  .t-chips > .t-chip.t-paid-badge.t-source-chip::after { content: ""; position: absolute; inset: -7px 0; }
   .t-header > .t-header-top { flex: 1; max-width: none; }
 }
 
@@ -2192,6 +2194,11 @@
 .t-move-facts dd {
   margin: 0;
 }
+/* The billing chip as a button: quiet or loud, it stays what it was, with a chevron. */
+.t-chip.t-chip-info.t-source-chip, .t-chips > .t-chip.t-paid-badge.t-source-chip { cursor: pointer; }
+.t-chip.t-chip-info.t-source-chip:hover { background: var(--color-overlay-hover); }
+.t-chips > .t-chip.t-paid-badge.t-source-chip:hover { filter: brightness(1.12); }
+.t-source-chip > svg { flex: none; width: 12px; height: 12px; }
 .t-chips > .t-chip.t-next-source { flex: none; cursor: default; }
 .t-chips > .t-chip.t-next-api { color: var(--t-api); border-color: var(--t-api); font-weight: 700; }
 .t-select.t-source-api {

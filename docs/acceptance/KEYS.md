@@ -13,8 +13,8 @@ Real Claude/Haiku and Codex/gpt-6-luna at Low, in a browser, with random fake ke
   thread with no record, the kind that was refused, ran on the plan in place, with the key set.
 - A replaced key carried on in the same session. An unset key stopped with the source named in chat and
   in the op, the badge unchanged, nothing sent.
-- Claude's Source went from plan to key and back at the next start, the label following the harness; an
-  open TUI refused it. Codex has no Source item. Move changed source on the same harness for both,
+- Claude's source, from the billing chip, went from plan to key and back at the next start, the label
+  following the harness; an open TUI refused it. Move changed source on the same harness for both,
   with the old session unchanged (`scripts/e2e-move.mjs sourceChange`).
 - A file in the version 1 shape read, offered its key and migrated on the next change, its revision
   kept. The new web on a runner from before this change showed no picker and worked.
@@ -94,8 +94,17 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
   badge stays, and no process starts. Set it again: that session carries on.
 - [ ] An existing subscription session resumes with keys set, and a stored Codex thread with no record
   runs on the ChatGPT plan in place.
-- [ ] Claude: session menu → Source. A chip says what's next, the label stays what's confirmed until
-  the next start confirms it. An open TUI and a running turn refuse it. Codex has no such item: Move.
+- [ ] The billing chip, quiet, loud and Unknown, opens the harness's sources with its own marked, at
+  desktop and 375 px with no sideways scroll. The ⋯ menu has no Source. A subagent and an old runner:
+  plain text. A key that isn't set: Add API key… opens Credentials.
+- [ ] Claude: pick another. A chip says what's next, the label stays what's confirmed until the next
+  start confirms it. An open TUI and a running turn refuse it, with the reason on the item.
+- [ ] Codex, the same menu with the same wording (`scripts/e2e-move.mjs sourceCarry`): a refused key
+  stays on its thread and label with the message in the box, an error in the chat and the change
+  waiting; a source that answers takes over with no new-session wording, the same title and history
+  and one row; old links follow, also after a runner restart; there and back stacks no rows, and the
+  real plan answers from what came across. A fake key can't prove a real key accepts the imported
+  history: that's in the owner checks.
 - [ ] Move to the same harness with another source: a new session with the context, confirmed before
   anything is typed; the old session stays as it was.
 - [ ] Rotate a key while another session uses the previous revision. That turn finishes; rotation
@@ -147,6 +156,9 @@ Enter keys only in Tether's Credentials page, never in chat.
   Reload/restart and resume. A ChatGPT plan thread beside it records nothing on Platform.
 - [ ] Azure: use the actual Foundry endpoint/deployment. A new thread and TUI show Azure and usage
   reaches that resource, with the OpenAI key set too.
+- [ ] From a ChatGPT plan session with history, tool calls and a compaction, pick OpenAI API key, then
+  Azure, then the plan: each first message is answered from the history, and Platform usage records
+  only the key's turns.
 - [ ] Compare the session estimate after two turns and a reload/resume with the provider's usage
   record. Enter the resource's Azure rates. Claude's TUI intentionally makes cost coverage unknown.
 - [ ] Temporarily invalidate/revoke each key: the next turn fails on the named source with no

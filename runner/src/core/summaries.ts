@@ -11,6 +11,8 @@ export const RECENT_MS = 3 * 24 * 60 * 60 * 1000;
 export const RECENT_MAX = 200;
 
 export class SummaryBook {
+  /** never a row, whatever says otherwise */
+  hidden?: (id: string) => boolean;
   private rows = new Map<string, SessionSummary>();
   private seq = 0;
 
@@ -42,8 +44,8 @@ export class SummaryBook {
   }
 
   /** Adds or changes rows; only real changes go out. */
-  upsert(rows: SessionSummary[]) {
-    rows = rows.map((r) => this.decorate(r));
+  upsert(all: SessionSummary[]) {
+    const rows = all.filter((r) => !this.hidden?.(r.id)).map((r) => this.decorate(r));
     const changed = rows.filter((r) => JSON.stringify(this.rows.get(r.id)) !== JSON.stringify(r));
     if (!changed.length) return;
     for (const r of changed) this.rows.set(r.id, r);

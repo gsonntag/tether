@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
-import { isApiBilling, contextDetail, contextPercent, effortLabel, findModel, modelLabel, usageChip, permissionModeLabel } from "../../../shared/labels";
-import { costChip } from "../../../shared/costs";
-import { HARNESS_LABELS, UNKNOWN_BILLING, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
+import { isApiBilling, contextDetail, contextPercent, effortLabel, findModel, modelLabel, permissionModeLabel } from "../../../shared/labels";
+import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
 import { loadModels } from "../store";
+import { BillingChip } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
@@ -33,10 +33,7 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
-  const billing = state.billing ?? UNKNOWN_BILLING;
-  const paid = isApiBilling(billing);
-  const usage = usageChip(billing, state.plan);
-  const cost = costChip(state.cost);
+  const paid = isApiBilling(state.billing);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
@@ -93,8 +90,7 @@ export function SessionHeader({
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
-        {paid && <span className="t-chip t-paid-badge" title={billing.label}><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></span>}
-        {!paid && <span className="t-chip t-chip-info t-usage-chip" title={usage.detail}>{usage.text}</span>}
+        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} />
         {state.nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(state.nextBilling) ? " t-next-api" : ""}`} title={`${state.nextBilling.label} from the next start`}>Next: {state.nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (

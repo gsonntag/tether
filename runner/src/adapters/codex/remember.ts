@@ -28,6 +28,8 @@ export interface Remembered {
   billing?: Billing;
   /** a moved session's history was injected into it (move.ts): the transcript starts with that */
   imported?: boolean;
+  /** the thread whose session this one took over at a source change: its transcript comes first */
+  carriedFrom?: string;
   at: number;
 }
 
@@ -57,9 +59,9 @@ function save(strict = false) {
   if (!file || !map) return;
   const now = Date.now();
   const kept = Object.entries(map)
-    .filter(([, r]) => r.source || now - r.at < MAX_AGE_MS)
+    .filter(([, r]) => r.source || r.carriedFrom || now - r.at < MAX_AGE_MS)
     .sort((a, b) => b[1].at - a[1].at)
-    .filter(([, r], i) => r.source || i < MAX);
+    .filter(([, r], i) => r.source || r.carriedFrom || i < MAX);
   map = Object.fromEntries(kept);
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });

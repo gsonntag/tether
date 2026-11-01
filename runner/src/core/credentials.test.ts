@@ -166,6 +166,127 @@ describe("credential process boundaries", () => {
     await live.newSession({ harness: "claude", projectPath: dir, source: "anthropic" });
     expect(prefs.lastSource("claude")).toBeUndefined();
   });
+  describe("a source change a thread can't make itself (capabilities.sourceCarry)", () => {
+    const carrying = () => {
+      const t = setup();
+      t.adapter.capabilities = { ...t.adapter.capabilities, sourceSwitch: true, sourceCarry: true };
+      t.credentials.set("anthropic", `fake-carry-${crypto.randomUUID()}`);
+      let n = 0;
+      // What the move module does: a stored thread, unlisted, confirmed before anyone sees it.
+      t.live.carrier = async (from, source) => {
+        const nativeId = `carried-${++n}`;
+        t.adapter.addStored(nativeId, []);
+        const id = `claude:${nativeId}`;
+        t.prefs.set(id, { carrying: true, projectPath: t.dir, source });
+        const c = await t.core.open(id);
+        await t.live.resumeLive(c);
+        return id;
+      };
+      return t;
+    };
+    const fails = (sink: any) => {
+      sink.event({ type: "msg", msg: { id: "e1", role: "notice", level: "error", ts: 2, parts: [{ type: "text", text: "Key rejected." }] } });
+      sink.state({ status: "idle" });
+    };
+    const answers = (sink: any) => {
+      sink.event({ type: "msg", msg: { id: `a-${Math.random()}`, role: "assistant", ts: 2, parts: [{ type: "text", text: "Yes." }] } });
+      sink.state({ status: "idle" });
+    };
+    const rows = (t: ReturnType<typeof setup>) => t.core.book.all().sessions.map((r) => r.id);
+
+    test("the chip waits for the next message, then one conversation goes on, under one row", async () => {
+      const t = carrying();
+      t.adapter.script = () => [answers];
+      await t.live.send("claude:one", "plan");
+      const s = await t.core.open("claude:one"), first = t.adapter.drivers.at(-1)!;
+      t.prefs.set(s.id, { title: "Mine" });
+      await t.live.setSource(s.id, "anthropic");
+      expect(s.state.nextBilling?.label).toBe("Anthropic API key");
+      expect(t.prefs.get(s.id).source).toBe("subscription");
+      expect(first.closed).toBe(false);
+
+      await t.live.send(s.id, "on the key");
+      const on = t.adapter.drivers.at(-1)!;
+      expect(on.nativeId).toBe("carried-1");
+      expect(on.sent).toEqual(["on the key"]);
+      expect(on.opts.credential?.source).toBe("anthropic");
+      expect(first.sent).toEqual(["plan"]);
+      expect(first.closed).toBe(true);
+      expect(s.state).toMatchObject({ continuedIn: "claude:carried-1", carried: true });
+      expect(s.state.nextBilling).toBeUndefined();
+      expect(rows(t)).toContain("claude:carried-1");
+      expect(rows(t)).not.toContain(s.id);
+      expect((await t.core.open("claude:carried-1")).summary.title).toBe("Mine");
+
+      // An old tab's message follows too.
+      await t.live.send(s.id, "from an old tab");
+      expect(on.sent).toEqual(["on the key", "from an old tab"]);
+    });
+
+    test("after a restart the old thread stays out of the lists and its id still leads on", async () => {
+      const t = carrying();
+      t.adapter.script = () => [answers];
+      await t.live.send("claude:one", "plan");
+      await t.live.setSource("claude:one", "anthropic");
+      await t.live.send("claude:one", "on the key");
+      t.prefs.flush();
+      const prefs = new Prefs(t.file, 0);
+      const core = new SessionCore({ adapters: [t.adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "later", log: () => {} });
+      cleanups.push(() => core.stop());
+      await core.discover();
+      expect(core.book.all().sessions.map((r) => r.id)).not.toContain("claude:one");
+      expect((await core.listSessions({ projectPath: t.adapter.stored.get("one")?.summary?.projectPath, limit: 50 })).sessions.map((r) => r.id)).not.toContain("claude:one");
+      expect((await core.open("claude:one")).state).toMatchObject({ continuedIn: "claude:carried-1", carried: true });
+    });
+
+    test("a refused key leaves everything where it was, the change still waiting: no fallback", async () => {
+      const t = carrying();
+      t.adapter.script = (text: string) => (text === "plan" ? [answers] : [fails]);
+      await t.live.send("claude:one", "plan");
+      const s = await t.core.open("claude:one"), first = t.adapter.drivers.at(-1)!;
+      await t.live.setSource(s.id, "anthropic");
+      await expect(t.live.send(s.id, "on the key")).rejects.toThrow("Key rejected.");
+      expect(first.sent).toEqual(["plan"]);
+      expect(first.closed).toBe(false);
+      expect(t.adapter.drivers.at(-1)!.closed).toBe(true);
+      expect(t.prefs.get(s.id)).toMatchObject({ source: "subscription", nextSource: "anthropic" });
+      expect(s.state.continuedIn).toBeUndefined();
+      expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
+      expect(rows(t)).not.toContain("claude:carried-1");
+      expect(t.core.sessions.has("claude:carried-1")).toBe(false);
+
+      // Picking the source it's on calls it off.
+      await t.live.setSource(s.id, "subscription");
+      expect(s.state.nextBilling).toBeUndefined();
+      t.adapter.script = () => [answers];
+      await t.live.send(s.id, "back on the plan");
+      expect(first.sent).toEqual(["plan", "back on the plan"]);
+    });
+
+    test("there and back: each change one more thread, and still one row", async () => {
+      const t = carrying();
+      t.adapter.script = () => [answers];
+      await t.live.send("claude:one", "plan");
+      await t.live.setSource("claude:one", "anthropic");
+      await t.live.send("claude:one", "key");
+      await t.live.setSource("claude:carried-1", "subscription");
+      await t.live.send("claude:carried-1", "plan again");
+      expect(t.adapter.drivers.at(-1)!.opts.credential?.source ?? "subscription").toBe("subscription");
+      const mine = rows(t).filter((id) => /one|carried/.test(id));
+      expect(mine).toEqual(["claude:carried-2"]);
+    });
+
+    test("refused during a turn or with a terminal open, like any source change", async () => {
+      const t = carrying();
+      t.adapter.script = () => [];
+      await t.live.send("claude:one", "plan");
+      const s = await t.core.open("claude:one");
+      await expect(t.live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the turn");
+      t.adapter.drivers.at(-1)!.sink.state({ status: "idle" });
+      s.setState({ terminal: { kind: "handoff" } });
+      await expect(t.live.setSource(s.id, "anthropic")).rejects.toThrow("Close the terminal first");
+    });
+  });
   test("Source applies on the next process start, with the label honest until it's confirmed", async () => {
     const { live, adapter, credentials, core, prefs } = setup();
     adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };

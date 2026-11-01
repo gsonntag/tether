@@ -230,13 +230,39 @@ export class Mover {
     }
   }
 
+  /**
+   * A session's source change (capabilities.sourceCarry): a thread on that source with the history
+   * and the same settings, confirmed and unlisted. Native import or nothing: the file route is a
+   * turn on the new source that the person didn't ask for.
+   */
+  async carry(id: string, source: BillingSource): Promise<string> {
+    const { look, adapter } = await this.source(id);
+    // What's waiting follows the session (live.ts send), so it's no reason to refuse.
+    const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
+    if (why) throw new Error(why);
+    this.moving.add(id);
+    try {
+      const portable = await exportSession(adapter, look);
+      const deployment = (await this.ctx.sessions.sources(adapter.id)).options.find((o) => o.source === source)?.deployment;
+      const { model, effort, permissionMode } = look.state;
+      const opts: StartOpts = { ...(model && model !== "default" && !deployment ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
+      const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
+      const note = contextNote(moved.kept, moved.total);
+      if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});
+      this.ctx.log(`${id} goes on as ${moved.sessionId} on ${source}: ${moved.kept} of ${moved.total} messages in context`);
+      return moved.sessionId;
+    } finally {
+      this.moving.delete(id);
+    }
+  }
+
   /** The history file of the move that made this session, when one did. */
   private earlier(s: PortableSession) {
     return join(movedDir(s.from.sessionId, this.ctx.dataDir), "history.md");
   }
 
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
-  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource) {
+  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string) {
     const { projectPath, title } = s.from;
     const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts, source);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
@@ -247,12 +273,14 @@ export class Mover {
       const request = { nativeId, projectPath, title, items: plan.items };
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
-      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source);
+      if (carriedFrom) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
+      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom);
       // Where a person opening the session looks: under what came across, above what's new.
       const after = (await t.readHistory(nativeId, projectPath).catch(() => [])).at(-1)?.id;
       return { sessionId, kept: plan.kept, total: plan.total, after };
     } catch (e) {
       rmSync(dir, { recursive: true, force: true });
+      if (carriedFrom) await t.move!.discard?.(nativeId).catch(() => {});
       throw e;
     }
   }
@@ -278,6 +306,7 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
+    ctx.sessions.carrier((id, source) => mover.carry(id, source));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));
   },

@@ -20,7 +20,7 @@ import type { AdapterMove } from "../../core/adapter";
 import { codexHistory, readThread, threadTurns } from "./discovery";
 import { dropPending } from "./driver";
 import { knownMode } from "./modes";
-import { threadCall } from "./sources";
+import { stopPrivateSource, threadCall } from "./sources";
 import { CODEX_HOME } from "./rpc";
 import { remember, remembered } from "./remember";
 
@@ -196,6 +196,14 @@ export const codexMove: AdapterMove = {
     const ok = (await importedMsgs(r.nativeId)).length === r.items.length;
     if (!ok) await forget(r.nativeId);
     return ok;
+  },
+
+  carried: (nativeId, from) => remember(nativeId, { carriedFrom: from }),
+  discard: async (nativeId) => {
+    dropPending(nativeId);
+    await forget(nativeId);
+    const source = remembered(nativeId)?.source;
+    if (source) await stopPrivateSource(source);
   },
 
   setTitle: async (nativeId, _projectPath, title) => void (await threadCall(nativeId, "thread/name/set", { threadId: nativeId, name: title })),

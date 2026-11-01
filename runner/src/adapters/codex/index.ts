@@ -2,6 +2,8 @@
 // through the shared app-server daemon, subagents as child threads (§6a), and a shared terminal:
 // Codex's own TUI joins the live thread beside Tether (§8).
 
+import { HARNESS_KEYS } from "../../../../shared/credentials";
+import type { Msg } from "../../../../shared/transcript";
 import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
@@ -39,14 +41,18 @@ async function fetchModels(): Promise<CodexModel[]> {
 const toml = (v: string) => JSON.stringify(v);
 
 /** The stored turns, after what a move imported (not turns, so the daemon doesn't list it). */
-const fullHistory = async (nativeId: string, projectPath: string) => [...(await importedMsgs(nativeId)), ...(await codexHistory(nativeId, projectPath))];
+const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]> => {
+  // A thread that took a session's place shows that session's own transcript, not its import.
+  const before = remembered(nativeId)?.carriedFrom;
+  return [...(before ? await fullHistory(before, projectPath) : await importedMsgs(nativeId)), ...(await codexHistory(nativeId, projectPath))];
+};
 
 export const codexAdapter: Adapter = {
   id: "codex",
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, move: { import: "native" } },
   move: codexMove,
   billing: {
-    keys: ["openai", "azure"],
+    keys: HARNESS_KEYS.codex,
     label: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
     // Asked of the shared daemon, whose login a subscription session uses.
     loggedIn: async () => (await call("account/read", { refreshToken: false }, 10_000))?.account?.type === "chatgpt",
