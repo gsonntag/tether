@@ -134,7 +134,7 @@ describe("credential process boundaries", () => {
     adapter.billing.recorded = undefined;
     expect(live.sourceOf(await core.open("claude:two"))).toBe("anthropic");
   });
-  test("sources are what exists; the default is the last choice, the subscription first, never a key unasked", async () => {
+  test("sources are what exists; the default is the subscription whatever was last picked, never a key unasked", async () => {
     const { live, adapter, credentials, prefs, file, dir: folder } = setup();
     expect(await live.sources("claude")).toEqual({ options: [{ source: "subscription", billing: { kind: "plan", label: "Claude plan" } }], default: "subscription" });
     credentials.set("anthropic", `fake-choice-${crypto.randomUUID()}`);
@@ -145,9 +145,8 @@ describe("credential process boundaries", () => {
     expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("subscription");
     await live.newSession({ harness: "claude", projectPath: folder, source: "anthropic" });
     expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("anthropic");
-    expect((await live.sources("claude")).default).toBe("anthropic");
+    expect((await live.sources("claude")).default).toBe("subscription");
     prefs.flush();
-    expect(new Prefs(file).lastSource("claude")).toBe("anthropic");
     await live.newSession({ harness: "claude", projectPath: folder });
     expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("subscription");
     credentials.unset("anthropic");
@@ -158,13 +157,6 @@ describe("credential process boundaries", () => {
     expect(await live.sources("claude")).toEqual({ options: [] });
     credentials.set("anthropic", `fake-choice-${crypto.randomUUID()}`);
     expect((await live.sources("claude")).options.map((o) => o.source)).toEqual(["anthropic"]);
-  });
-  test("the only source isn't a choice, so it isn't remembered", async () => {
-    const { live, adapter, credentials, prefs, dir } = setup();
-    adapter.loggedIn = false;
-    credentials.set("anthropic", `fake-only-${crypto.randomUUID()}`);
-    await live.newSession({ harness: "claude", projectPath: dir, source: "anthropic" });
-    expect(prefs.lastSource("claude")).toBeUndefined();
   });
   describe("a source change a thread can't make itself (capabilities.sourceCarry)", () => {
     const carrying = () => {

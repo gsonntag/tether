@@ -31,7 +31,6 @@ export class Prefs {
 
   private open: SavedRequest[];
   private closed: ClosedRequest[];
-  private lastSources: NonNullable<RunnerConfig["lastSources"]>;
 
   constructor(
     private file = CONFIG_FILE,
@@ -41,19 +40,8 @@ export class Prefs {
     this.map = { ...(cfg.sessions ?? {}) };
     this.open = Array.isArray(cfg.requests) ? cfg.requests : [];
     this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
-    this.lastSources = { ...cfg.lastSources };
   }
 
-  /** The billing source last chosen for a harness on this runner. */
-  lastSource(harness: HarnessId): BillingSource | undefined {
-    return this.lastSources[harness];
-  }
-
-  setLastSource(harness: HarnessId, source: BillingSource) {
-    this.lastSources[harness] = source;
-    this.dirty = true;
-    this.flush();
-  }
 
   /** The open requests saved last time. */
   requests(): SavedRequest[] {
@@ -123,7 +111,7 @@ export class Prefs {
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
     const { requests: _, closedRequests: __, ...rest } = cfg;
     saveConfig(
-      { ...rest, runnerId: cfg.runnerId, sessions: this.map, ...(Object.keys(this.lastSources).length ? { lastSources: this.lastSources } : {}), ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      { ...rest, runnerId: cfg.runnerId, sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
       this.file,
     );
   }

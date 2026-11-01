@@ -738,9 +738,8 @@ which is a source's name, never a key). New session and the Move dialog show **S
 really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
 on the shared daemon, Claude's read-only `auth status`), a key when it's set, labelled "ChatGPT plan",
 "OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
-picker; a key in the picker has the API colour. It starts on the last source explicitly chosen for
-that harness on this runner (`lastSources` in `runner.json`, kept when there was a choice to make),
-else the subscription. `newSession` or `moveSession` with no source (an older web) is the subscription,
+picker; a key in the picker has the API colour. It always starts on the subscription when there's
+a login, and on the first key only when there isn't. `newSession` or `moveSession` with no source (an older web) is the subscription,
 never a key by surprise.
 
 The source is used on every start, resume, restart and TUI launch of that session, whatever keys are

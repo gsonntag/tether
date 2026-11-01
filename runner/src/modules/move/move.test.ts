@@ -221,7 +221,7 @@ describe("the source a move goes to", () => {
     expect(seen[0].credential.revision).toBe("r1");
     expect(runner.core.sessions.get(r.sessionId)!.driver).toBeDefined();
     expect(runner.core.o.prefs.get(r.sessionId).source).toBe("anthropic");
-    expect((await runner.look.sessions.sources("omp" as any)).default).toBe("anthropic");
+    expect((await runner.look.sessions.sources("omp" as any)).default).toBe("subscription");
     runner.core.o.prefs.flush();
     expect(readFileSync(prefsFile, "utf8")).not.toContain("never-in-prefs");
   });

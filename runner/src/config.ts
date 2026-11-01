@@ -26,8 +26,6 @@ export interface RunnerConfig {
   requests?: SavedRequest[];
   /** recently closed request ids, so an answer arriving after a restart is still told "Already answered." */
   closedRequests?: ClosedRequest[];
-  /** the billing source last chosen for each harness: what its next new session offers first */
-  lastSources?: Partial<Record<HarnessId, BillingSource>>;
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */

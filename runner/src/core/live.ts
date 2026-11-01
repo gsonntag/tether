@@ -1022,20 +1022,17 @@ export class LiveControl {
       const deployment = source === "subscription" ? undefined : status[source].deployment;
       return { source, billing: billing.label(source), ...(deployment ? { deployment } : {}) };
     });
-    const last = this.core.o.prefs.lastSource(harness);
     const fallback = login ? "subscription" : options[0]?.source;
-    return { options, ...(last && options.some((o) => o.source === last) ? { default: last } : fallback ? { default: fallback } : {}) };
+    return { options, ...(fallback ? { default: fallback } : {}) };
   }
 
   /**
-   * The source a new session gets. None asked for: the subscription, never a key by surprise. An
-   * asked-for source becomes the harness's default when there was a choice to make.
+   * The source a new session gets. None asked for: the subscription, never a key by surprise.
    */
   async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
     if (asked === undefined) return "subscription";
     const a = this.core.adapter(harness);
     if (!isBillingSource(asked) || (asked !== "subscription" && !a.billing?.keys.includes(asked))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
-    if ((await this.sources(harness)).options.length > 1) this.core.o.prefs.setLastSource(harness, asked);
     return asked;
   }
 
