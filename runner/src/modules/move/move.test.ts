@@ -254,6 +254,10 @@ describe("the source a move goes to", () => {
     expect(pi.imports).toHaveLength(1);
     expect(runner.core.o.prefs.get(r.sessionId).source).toBe("anthropic");
     expect(runner.core.o.prefs.get("pi:s1").source).toBe("subscription");
+    // A new session on the key: what came across was spent in the old one, so its cost starts whole.
+    expect(runner.core.o.costs!.get(r.sessionId)).toEqual({ usd: 0, estimated: false, complete: true });
+    expect(runner.core.o.prefs.get(r.sessionId).metered).toBe(true);
+    expect(runner.core.o.costs!.has("pi:s1")).toBe(false);
     const old = await runner.core.open("pi:s1");
     await runner.core.load(old);
     expect(JSON.stringify(old.transcript!.messages)).toContain("Moved to Key.");

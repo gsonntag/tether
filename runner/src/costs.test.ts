@@ -7,7 +7,7 @@ const file = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, 
 describe("session API dollars", () => {
   test("cumulative process reports replace replayed totals and add across processes and restart", () => {
     const path = file(), ledger = new CostLedger(path);
-    expect(ledger.get("s")).toEqual({ estimated: true, complete: false });
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
     expect(ledger.begin("s", true)).toEqual({ usd: 0, estimated: false, complete: true });
     ledger.report("s", "first-process", { usd: 0.1, estimated: true, complete: true });
     ledger.report("s", "first-process", { usd: 0.3, estimated: true, complete: true });
@@ -19,13 +19,13 @@ describe("session API dollars", () => {
   });
   test("unknown history/rates remain unknown, never a complete partial subtotal", () => {
     const ledger = new CostLedger();
-    expect(ledger.report("older", "new", { usd: 2, estimated: true, complete: true })).toEqual({ usd: 2, estimated: true, complete: false });
+    expect(ledger.report("older", "new", { usd: 2, estimated: true, complete: true })).toEqual({ usd: 2, estimated: true, complete: false, reasons: ["earlier-usage"] });
     ledger.begin("new", true);
     ledger.report("new", "priced", { usd: 1, estimated: true, complete: true });
-    expect(ledger.report("new", "unpriced", { estimated: true, complete: false })).toEqual({ usd: 1, estimated: true, complete: false });
+    expect(ledger.report("new", "unpriced", { estimated: true, complete: false })).toEqual({ usd: 1, estimated: true, complete: false, reasons: ["no-usage"] });
     expect(ledger.report("new", "unpriced", { usd: 0.5, estimated: true, complete: true })).toEqual({ usd: 1.5, estimated: true, complete: true });
     ledger.markUnknown("new");
-    expect(ledger.get("new").complete).toBe(false);
+    expect(ledger.get("new")).toMatchObject({ usd: 1.5, complete: false, reasons: ["terminal"] });
     ledger.begin("new", true);
     expect(ledger.get("new").complete).toBe(false);
   });
@@ -33,7 +33,7 @@ describe("session API dollars", () => {
     const ledger = new CostLedger();
     ledger.begin("s", true);
     ledger.report("s", "query", { usd: 0.2, estimated: true, complete: true });
-    expect(ledger.report("s", "query", { estimated: true, complete: false })).toEqual({ usd: 0.2, estimated: true, complete: false });
+    expect(ledger.report("s", "query", { estimated: true, complete: false })).toEqual({ usd: 0.2, estimated: true, complete: false, reasons: ["no-usage"] });
   });
   test("special report ids are safe and lower cumulative totals cannot reduce prior totals", () => {
     const ledger = new CostLedger();
@@ -47,7 +47,8 @@ describe("session API dollars", () => {
     mkdirSync(path, { recursive: true });
     const ledger = new CostLedger(path);
     expect(() => ledger.report("s", "r", { usd: 1, estimated: true, complete: true })).toThrow("Couldn't save");
-    expect(ledger.get("s")).toEqual({ estimated: true, complete: false });
+    expect(ledger.has("s")).toBe(false);
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
   });
   test("a corrupt saved ledger cannot turn lost costs into a new zero total", () => {
     const path = file(); writeFileSync(path, '{broken', { mode: 0o600 });
@@ -190,10 +191,35 @@ describe("reasons and carrying", () => {
     ledger.report("s", "b", { estimated: true, complete: false, reasons: ["tool-fee"] });
     expect(ledger.get("s")).toMatchObject({ complete: false, reasons: ["tool-fee"], notes: ["no-cache-ttl", "tier:missing"] });
   });
-  test("a file from before reasons reads unchanged", () => {
+  test("a file from before reasons reads with a code for every gap", () => {
     const path = file();
-    writeFileSync(path, JSON.stringify({ version: 1, sessions: { s: { complete: true, reports: { r: { estimated: true, complete: false } } } } }));
-    expect(new CostLedger(path).get("s")).toEqual({ estimated: true, complete: false });
+    writeFileSync(path, JSON.stringify({ version: 1, sessions: {
+      s: { complete: true, reports: { r: { estimated: true, complete: false } } },
+      // The prod shape: coverage begun partial on a switch, one whole report, no reasons anywhere.
+      switched: { complete: false, reports: { p: { usd: 2.28, estimated: true, complete: true } } },
+    } }));
+    const ledger = new CostLedger(path);
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["no-usage"] });
+    expect(ledger.get("switched")).toEqual({ usd: 2.28, estimated: true, complete: false, reasons: ["earlier-usage"] });
+    // Read, not rewritten: the file keeps its shape until something reports.
+    expect(JSON.parse(readFileSync(path, "utf8")).sessions.switched).toEqual({ complete: false, reports: { p: { usd: 2.28, estimated: true, complete: true } } });
+  });
+  test("why coverage isn't whole is kept with the entry, saved, and never makes it whole again", () => {
+    const path = file(), ledger = new CostLedger(path);
+    expect(ledger.begin("resumed", false)).toEqual({ estimated: false, complete: false, reasons: ["earlier-usage"] });
+    ledger.report("resumed", "p", { usd: 0.4, estimated: true, complete: true });
+    expect(new CostLedger(path).get("resumed")).toEqual({ usd: 0.4, estimated: true, complete: false, reasons: ["earlier-usage"] });
+    ledger.markUnknown("resumed");
+    expect(new CostLedger(path).get("resumed").reasons).toEqual(["earlier-usage", "terminal"]);
+    expect(ledger.begin("resumed", true).complete).toBe(false);
+    ledger.begin("whole", true);
+    expect(ledger.markUnknown("whole", "earlier-usage")).toEqual({ estimated: false, complete: false, reasons: ["earlier-usage"] });
+    writeFileSync(path, JSON.stringify({ version: 1, sessions: { x: { complete: false, reasons: ["Bearer sk-x", "terminal"], reports: {} } } }));
+    expect(new CostLedger(path).get("x").reasons).toEqual(["terminal"]);
+  });
+  test("an unreadable ledger begins nothing whole, and says why", () => {
+    const path = file(); writeFileSync(path, "{broken", { mode: 0o600 });
+    expect(new CostLedger(path).begin("new", true)).toMatchObject({ complete: false, reasons: ["earlier-usage"] });
   });
   test("a takeover carries the total once, there and back, and a plan brings nothing", () => {
     const ledger = new CostLedger();

@@ -39,10 +39,19 @@ test("a lower bound keeps est. and says so", () => {
   expect(chip.detail).toContain("lower bound");
 });
 
-test("no subtotal, a zero one, or a gap with no reason stays Cost unknown, with what's known", () => {
+test("no subtotal or a zero one stays Cost unknown, with what's known", () => {
   expect(costChip({ estimated: true, complete: false, reasons: ["tier:scale"] })).toEqual({ text: "Cost unknown", detail: "This session's API cost hasn't been reported or priced. Missing: service tier scale isn't confirmed as Standard." });
   expect(costChip({ usd: 0, estimated: true, complete: false, reasons: ["no-usage"] }).text).toBe("Cost unknown");
-  expect(costChip({ usd: 2, estimated: true, complete: false }).text).toBe("Cost unknown");
+});
+
+test("a known subtotal is never a bare Cost unknown, whatever the gap", () => {
+  expect(costChip({ usd: 2, estimated: true, complete: false }).text).toBe("~$2.00+");
+  const earlier = costChip({ usd: 2.28, estimated: true, complete: false, reasons: ["earlier-usage"] });
+  expect(earlier.text).toBe("~$2.28+");
+  expect(earlier.detail).toBe("Known API subtotal $2.28 estimated, not the session's whole cost. Missing: API usage from before Tether tracked this session isn't included.");
+  expect(costChip({ usd: 0.5, estimated: true, complete: false, reasons: ["terminal"] }).detail).toContain("in the terminal isn't tracked");
+  expect(costChip({ usd: 0.5, estimated: true, complete: false, reasons: ["no-baseline"] }).detail).toContain("earlier total couldn't be read");
+  expect(costChip({ usd: 0.5, estimated: true, complete: false, reasons: ["unsaved"] }).detail).toContain("couldn't be saved");
 });
 
 test("a complete estimate says what it assumed", () => {
@@ -57,12 +66,13 @@ test("an assumption on a priced report isn't reported as missing beside a real g
   expect(chip.text).toBe("~$0.02+");
   expect(chip.detail).not.toContain("lower bound");
   expect(chip.detail).not.toContain("tier");
-  expect(costChip({ usd: 0.02, estimated: true, complete: false, notes: ["tier:missing"] }).text).toBe("Cost unknown");
+  expect(costChip({ usd: 0.02, estimated: true, complete: false, notes: ["tier:missing"] })).toEqual({ text: "~$0.02+", detail: "Known API subtotal $0.02 estimated, not the session's whole cost." });
 });
 
 test("only fixed codes and plain ids count as reasons", () => {
   expect(costReasons(["no-usage", "no-usage", "tier:auto", "model:a b", "Bearer x", 3])).toEqual(["no-usage", "tier:auto"]);
   expect(costReasons("no-usage")).toEqual([]);
+  expect(costReasons(["earlier-usage", "terminal", "no-baseline", "unsaved", "earlier"])).toEqual(["earlier-usage", "terminal", "no-baseline", "unsaved"]);
   expect(reasonValue("gpt-6-luna")).toBe("gpt-6-luna");
   expect(reasonValue("sk [redacted]")).toBe("other");
 });

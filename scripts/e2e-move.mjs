@@ -13,6 +13,8 @@
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
 //   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
 //   sourceChange the same harness on another source, on both harnesses, with made-up keys
+//   costSwitch a Claude session's plan turns, then a made-up Anthropic key from the chip: the key's
+//             cost starts whole and the plan's native estimate isn't API spend (CONFIG_DIR's costs.json)
 //   sourceCarry a Codex session changes source from the chip: a refused key stays put, a thread on
 //             FAKE_ENDPOINT (scripts/fake-responses.ts, logging to FAKE_LOG) gets the history and takes
 //             over, and the real plan answers from it on the way back. Needs both variables
@@ -280,6 +282,49 @@ const steps = {
       await shot(p, "key-refused");
       if ((await p.locator(".t-paid-badge").count()) === 0) fail("the badge went");
       ok("a refused key stops on that source: nothing goes to the plan");
+    } finally {
+      await rpcVia(p, "unsetCredential", { source: "anthropic" });
+      await p.close();
+    }
+  },
+
+  /**
+   * A Claude session with plan turns switches to a key from the chip: its API cost starts whole,
+   * the plan turns' native estimate is the baseline and never API spend, and the chip never says a
+   * bare Cost unknown. A made-up key, so the key's turn is refused and costs nothing.
+   */
+  async costSwitch() {
+    const p = await page(desktop);
+    const id = await newSession(p, "claude", "default");
+    for (const word of ["ready", "done"]) if (!(await turn(p, `Reply with the single word ${word}. Do not use tools.`))) fail("no reply on the plan");
+    if ((await stateOf(p)).billing?.kind !== "plan") fail("the plan turns weren't on the plan");
+    const set = await rpcVia(p, "setCredential", { source: "anthropic", key: `sk-ant-not-a-real-key-${"w".repeat(24)}` });
+    if (set.error) fail(set.error);
+    try {
+      await p.reload();
+      await composer(p).waitFor({ timeout: 30_000 });
+      await p.locator(".t-source-chip").click();
+      await p.getByRole("menuitemradio", { name: "Anthropic API key", exact: true }).click();
+      const switched = await waitState(p, (s) => s.cost?.complete === true, "cost begun at the switch", 30_000);
+      if (switched.cost.usd !== 0 || switched.cost.reasons) fail(`at the switch: ${JSON.stringify(switched.cost)}`);
+      const ledger = () => JSON.parse(readFileSync(`${CONFIG_DIR}/costs.json`, "utf8")).sessions[id];
+      if (ledger()?.complete !== true) fail(`costs.json at the switch: ${JSON.stringify(ledger())}`);
+      ok(`switched on the chip: ${JSON.stringify(switched.cost)}, costs.json ${JSON.stringify(ledger())}`);
+      await composer(p).fill("Reply OK.");
+      await composer(p).press("Enter");
+      await p.getByText("Anthropic API key failed", { exact: false }).first().waitFor({ timeout: 120_000 });
+      const after = await waitState(p, (s) => s.status === "idle" && s.billing?.kind === "apiKey", "stopped on the key");
+      await sleep(1500);
+      const entry = ledger();
+      await shot(p, "cost-switch");
+      const chip = (await p.locator(".t-api-cost").first().innerText()).trim();
+      const detail = await p.locator(".t-api-cost").first().getAttribute("title");
+      ok(`on the key: state ${JSON.stringify((await stateOf(p)).cost)}, costs.json ${JSON.stringify(entry)}, chip "${chip}" (${detail})`);
+      if (!entry || entry.complete !== true) fail("the entry isn't whole: plan turns made it partial");
+      if (Object.values(entry.reports).some((r) => (r.usd ?? 0) > 0)) fail("plan turns' native estimate was counted as API spend");
+      if (JSON.stringify(after.cost ?? {}).includes("earlier-usage")) fail("earlier usage marked unknown after plan turns");
+      if (chip === "Cost unknown" && !detail?.includes("Missing:")) fail("a bare Cost unknown");
+      ok("the plan period is not API spend, and the key's cost started whole");
     } finally {
       await rpcVia(p, "unsetCredential", { source: "anthropic" });
       await p.close();

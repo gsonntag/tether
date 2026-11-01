@@ -12,12 +12,13 @@ import { randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
 import { isBillingSource, keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
+import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
-import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
@@ -326,11 +327,18 @@ export class LiveControl {
 
   private carryCost(s: Session, n: Session) {
     const paid = n.state.billing?.kind === "apiKey" || n.state.billing?.kind === "provider";
+    const costs = this.opts.costs;
+    if (!costs) return;
     try {
-      const cost = this.opts.costs?.carry(s.id, n.id);
+      // Nothing in the ledger to carry: nothing was spent, unless it was and Tether can't say what.
+      let cost = costs.carry(s.id, n.id);
+      if (!cost && !s.fresh && !this.spendKnown(s)) {
+        cost = costs.markUnknown(n.id, "earlier-usage");
+        this.core.o.prefs.set(n.id, { metered: true });
+      }
       if (cost && paid) n.setState({ cost });
     } catch {
-      if (paid) n.setState({ cost: { estimated: true, complete: false } });
+      if (paid) n.setState({ cost: { estimated: true, complete: false, reasons: ["unsaved"] } });
       this.core.log("Couldn't carry this session's API cost to its new thread. Its total is unknown.");
     }
   }
@@ -1085,10 +1093,44 @@ export class LiveControl {
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
+    // Where its API cost starts is decided now, while what it was on until now is still what's confirmed.
+    let cost: SessionCost | undefined;
+    if (asked !== "subscription") {
+      try { cost = this.startCost(s); }
+      catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
+    }
     this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next });
+    s.setState({ nextBilling: confirmed ? undefined : next, ...(cost ? { cost } : {}) });
     this.core.touch(s);
+  }
+
+  /**
+   * Whether Tether knows what a session spent on an API so far: what the ledger holds, or nothing,
+   * because until now its confirmed source was the plan and it never had an entry that's gone since.
+   */
+  private spendKnown(s: Session, before: Billing | undefined = s.state.billing): boolean {
+    if (this.opts.costs?.has(s.id)) return true;
+    return !this.core.o.prefs.get(s.id).metered && before?.kind === "plan";
+  }
+
+  /**
+   * A session's API cost from its first time on a key (SPEC "API session dollars"): whole when its
+   * earlier API spend is known (spendKnown, or a new session's nothing), else partial, `earlier-usage`.
+   * `before` is the source confirmed until now. Once it has an entry, that stands.
+   */
+  startCost(s: Session, before: Billing | undefined = s.state.billing): SessionCost | undefined {
+    const costs = this.opts.costs;
+    if (!costs || s.summary.parentSessionId) return undefined;
+    if (costs.has(s.id)) return costs.get(s.id);
+    return this.beginCost(s.id, s.fresh || this.spendKnown(s, before));
+  }
+
+  /** A new entry, and a note in the session's prefs that it had one. */
+  beginCost(id: string, known: boolean): SessionCost | undefined {
+    const cost = this.opts.costs?.begin(id, known);
+    if (cost) this.core.o.prefs.set(id, { metered: true });
+    return cost;
   }
 
   /** The box in the billing chip's menu, saved with the session. Nothing checks keys here: the menu shows it, the switch looks. */
@@ -1286,10 +1328,10 @@ export class LiveControl {
         const billing = s.state.billing;
         if (billing?.kind !== "apiKey" && billing?.kind !== "provider") return;
         try {
-          this.opts.costs.begin(s.id, s.fresh);
+          this.startCost(s);
           const cost = this.opts.costs.report(s.id, report.id, { usd: report.usd, estimated: report.estimated, complete: report.complete, reasons: report.reasons, notes: report.notes });
           s.setState({ cost });
-        } catch { s.setState({ cost: { estimated: true, complete: false } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
+        } catch { s.setState({ cost: { ...(s.state.cost?.usd !== undefined ? { usd: s.state.cost.usd } : {}), estimated: true, complete: false, reasons: ["unsaved"] } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
         core.touch(s);
       },
       event: (e) => {
@@ -1315,8 +1357,9 @@ export class LiveControl {
       state: (patch) => {
         patch = redactValue(patch);
         if (this.opts.costs && (patch.billing?.kind === "apiKey" || patch.billing?.kind === "provider") && !s.summary.parentSessionId) {
-          try { patch.cost = this.opts.costs.begin(s.id, s.fresh); }
-          catch { patch.cost = { estimated: true, complete: false }; }
+          // What it was on until now: the billing this patch replaces.
+          try { patch.cost = this.startCost(s, s.state.billing); }
+          catch { patch.cost = { estimated: true, complete: false, reasons: ["unsaved"] }; }
         }
         const before = s.state.status;
         // A harness that keeps the session's settings itself (capabilities.persistent) reports them.

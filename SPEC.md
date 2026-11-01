@@ -869,15 +869,18 @@ and update on every connected device. Renaming starts no harness process.
 
 ### API session dollars and retry times
 
-An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**;
-unpriced or missing usage says **Cost unknown**, with any known subtotal in its tooltip. Where the
-gap is a report with a known reason, and something is priced, the chip reads **~$0.02+** and its
-tooltip says what's missing (**~$0.02+ est.** for a lower bound on cache writes). A partial subtotal
-is never presented as the whole session amount; a coverage gap with no reason (a TUI's unobserved
-spend, lost history) can be any size and stays Cost unknown.
+An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**. A total
+that isn't whole but has a known subtotal above zero reads **~$0.02+**, its tooltip saying what's
+missing (**~$0.02+ est.** for a lower bound on cache writes); with no subtotal, or a zero one, it says
+**Cost unknown**, with what's known and missing in its tooltip. A partial subtotal is never presented
+as the whole session amount, and a known subtotal is never a bare Cost unknown.
 
-Each report keeps why it isn't whole, as a fixed code in `reasons`, in `costs.json` and the tooltip:
-`no-usage`, `no-cache-ttl`, `tier:<value>`, `model:<id>`, `tool-fee`, `long-context`; and in `notes`
+Every gap has a reason, as a fixed code in `reasons`, in `costs.json` and the tooltip. A report's:
+`no-usage`, `no-cache-ttl`, `tier:<value>`, `model:<id>`, `tool-fee`, `long-context`, and Claude's
+`no-baseline` (its earlier native total couldn't be read). The session's coverage: `earlier-usage`
+(API usage from before Tether tracked it), `terminal` (a handoff TUI's unobserved spend). `unsaved`
+is a total that couldn't be written. A file from before these codes reads with one for every gap:
+coverage that wasn't whole is `earlier-usage`, a report that wasn't whole `no-usage`. `notes` keep
 what a priced report left to a rule. Only those strings, the tier and the model id, never response
 text, keys or headers. An OpenAI response prices from its own usage. A request that set no tier
 (Codex's) is Standard, unless the response names another. Cache writes without a lifetime breakdown
@@ -886,9 +889,27 @@ add up, or there's no write count, they're at the cheaper rate, a lower bound an
 model ids aren't priced, because OpenAI publishes none. Over 272K input, other tiers and tool fees
 stay unpriced. A thread that takes a session's place (a source change) starts from what the session
 had spent, and plan turns add nothing to it. Subscription sessions show no dollars.
+
+**Where a session's API cost starts.** The first time a session's source is a key, its cost is whole
+when Tether knows what it spent on an API before; otherwise it's partial, `earlier-usage`, and stays
+so. Known means: a new session (nothing before), a session whose confirmed source until now was the
+plan (`state.billing` from the harness, kept across restarts as Claude's `keptBilling` and Codex's
+remembered thread), or what the ledger already holds. The chip's switch and the plan running out
+(`planOut`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
+start that confirms a key decides it from what that start replaced. A Move into a key, on any harness,
+is a new session that starts whole: what came across was spent in the old one, which keeps its total.
+A Codex source change's new thread starts whole and adds what the old thread's entry holds. Unknown
+stays partial: an earlier source Unknown, a last start on a key with no entry (before the ledger), an
+entry that was lost (`SessionPrefs.metered` says the session had one), and a handoff TUI on a key.
+Entries made partial before this rule (a plan-to-key switch on an existing session) aren't repaired:
+nothing kept says whether an earlier key period came before, so they show their subtotal as
+**~$x+** with `earlier-usage`.
 Claude's native cumulative cost is itself an estimate and resumes restore earlier, potentially
-subscription-equivalent spend. Tether subtracts a confirmed read-only pre-send baseline; missing or
-unstable baseline data leaves cost unknown. A handoff TUI has no cost stream and marks coverage
+subscription-equivalent spend: a key process resumed after plan turns starts at the plan turns'
+estimate (seen with Haiku: the pre-send read returned exactly the plan process's last total). Tether
+subtracts that read-only pre-send baseline, so plan turns never count as API spend; a missing or
+decreasing baseline leaves that process's spend unknown (`no-baseline`). `/clear` (and any
+`conversation_reset` or new session id) zeroes Claude Code's total, so the baseline is zero from there. A handoff TUI has no cost stream and marks coverage
 incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
 pending requests before inference so a crash cannot leave a false complete total. Reports are
 idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported

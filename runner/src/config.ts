@@ -50,6 +50,8 @@ export interface SessionPrefs {
   autoKey?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
+  /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
+  metered?: boolean;
   /** a thread being made for a source change: nobody's until its first message has an answer */
   carrying?: boolean;
   /** with movedTo: replaced by a thread on another source, so it isn't anyone's to see */

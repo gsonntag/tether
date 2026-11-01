@@ -5,7 +5,8 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { dirname } from "node:path";
 import { costReasons, reasonValue, validRates, type SessionCost, type TokenRates } from "../../shared/costs";
 
-interface Entry { complete: boolean; reports: Record<string, SessionCost> }
+/** `reasons`: why coverage isn't whole (earlier usage, a terminal), apart from any report's. */
+interface Entry { complete: boolean; reports: Record<string, SessionCost>; reasons?: string[] }
 interface Saved { version: 1; sessions: Record<string, Entry> }
 const unknown = (...reasons: string[]): SessionCost => ({ estimated: true, complete: false, ...(reasons.length ? { reasons } : {}) });
 const validUsd = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
@@ -24,15 +25,21 @@ export class CostLedger {
       }
       const sessions = Object.create(null);
       for (const [id, entry] of Object.entries(saved.sessions) as [string, Entry][]) {
-        sessions[id] = { complete: entry.complete, reports: Object.assign(Object.create(null), entry.reports) };
+        const reasons = costReasons(entry.reasons);
+        sessions[id] = { complete: entry.complete, reports: Object.assign(Object.create(null), entry.reports), ...(reasons.length ? { reasons } : {}) };
       }
       this.data = { version: 1, sessions };
     } catch (e: any) { if (e?.code !== "ENOENT") this.unreadable = true; }
   }
-  /** `complete` is true only when all API usage is tracked from this session's first API turn. */
-  begin(sessionId: string, complete: boolean): SessionCost {
+  has(sessionId: string): boolean { return Object.hasOwn(this.data.sessions, sessionId); }
+  /**
+   * `complete` is true only when all API usage is tracked from this session's first API turn: Tether
+   * knows what it spent on an API before (nothing, or what this ledger holds). Otherwise `reason` says why.
+   */
+  begin(sessionId: string, complete: boolean, reason = "earlier-usage"): SessionCost {
     if (!Object.hasOwn(this.data.sessions, sessionId)) {
-      this.data.sessions[sessionId] = { complete: complete && !this.unreadable, reports: Object.create(null) };
+      const whole = complete && !this.unreadable;
+      this.data.sessions[sessionId] = { complete: whole, reports: Object.create(null), ...(whole ? {} : { reasons: costReasons([this.unreadable ? "earlier-usage" : reason]) }) };
       try { this.save(); } catch (error) { delete this.data.sessions[sessionId]; throw error; }
     }
     return this.get(sessionId);
@@ -41,7 +48,7 @@ export class CostLedger {
     if (!reportId || !validReport(report)) throw new Error("Invalid API cost report.");
     // A report by itself cannot prove that earlier usage wasn't lost.
     const hadSession = Object.hasOwn(this.data.sessions, sessionId);
-    if (!hadSession) this.data.sessions[sessionId] = { complete: false, reports: Object.create(null) };
+    if (!hadSession) this.data.sessions[sessionId] = { complete: false, reports: Object.create(null), reasons: ["earlier-usage"] };
     // Invalid cumulative reports must not replace a previous valid total with a lower number.
     const previous = this.data.sessions[sessionId]!.reports[reportId];
     if (report.usd === undefined && previous && validUsd(previous.usd)) report = { ...report, usd: previous.usd };
@@ -64,13 +71,16 @@ export class CostLedger {
     if (!Object.hasOwn(this.data.sessions, to)) this.begin(to, true);
     return this.report(to, `carried:${from}`, prior);
   }
-  markUnknown(sessionId: string): SessionCost {
+  /** Usage Tether can't see from here on (a terminal's), or before (`earlier-usage`): coverage stops being whole. */
+  markUnknown(sessionId: string, reason = "terminal"): SessionCost {
     const hadSession = Object.hasOwn(this.data.sessions, sessionId);
     if (!hadSession) this.data.sessions[sessionId] = { complete: false, reports: Object.create(null) };
-    const wasComplete = this.data.sessions[sessionId]!.complete;
-    this.data.sessions[sessionId]!.complete = false;
+    const entry = this.data.sessions[sessionId]!;
+    const was = { complete: entry.complete, reasons: entry.reasons };
+    entry.complete = false;
+    entry.reasons = costReasons([...(entry.reasons ?? []), reason]);
     try { this.save(); } catch (error) {
-      if (hadSession) this.data.sessions[sessionId]!.complete = wasComplete;
+      if (hadSession) Object.assign(entry, was);
       else delete this.data.sessions[sessionId];
       throw error;
     }
@@ -78,12 +88,17 @@ export class CostLedger {
   }
   get(sessionId: string): SessionCost {
     const entry = Object.hasOwn(this.data.sessions, sessionId) ? this.data.sessions[sessionId] : undefined;
-    if (!entry) return unknown();
+    // Nothing recorded for it: whatever it spent, Tether didn't see.
+    if (!entry) return unknown("earlier-usage");
     const reports = Object.values(entry.reports);
     const complete = entry.complete && reports.every((r) => r.complete && validUsd(r.usd));
     const known = reports.filter((r) => validUsd(r.usd));
     const usd = known.reduce((sum, report) => sum + report.usd!, 0);
-    return { ...(known.length || complete ? { usd } : {}), estimated: reports.some((r) => r.estimated), complete, ...codes({ reasons: reports.flatMap((r) => r.reasons ?? []), notes: reports.flatMap((r) => r.notes ?? []) }) };
+    // Every gap has a code. Files from before entry reasons: a gap in coverage was always usage
+    // Tether didn't see, and a report that wasn't whole said nothing more than that it had no usage.
+    const gap = entry.complete ? [] : entry.reasons?.length ? entry.reasons : ["earlier-usage"];
+    const missing = reports.flatMap((r) => r.reasons?.length ? r.reasons : r.complete && validUsd(r.usd) ? [] : ["no-usage"]);
+    return { ...(known.length || complete ? { usd } : {}), estimated: reports.some((r) => r.estimated), complete, ...codes({ reasons: [...gap, ...missing], notes: reports.flatMap((r) => r.notes ?? []) }) };
   }
   private save() {
     if (!this.file) return;

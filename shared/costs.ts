@@ -9,7 +9,7 @@ export interface SessionCost {
   notes?: string[];
 }
 
-const REASON = /^(no-usage|no-cache-ttl|tool-fee|long-context|(tier|model):[\w.:-]{1,64})$/;
+const REASON = /^(no-usage|no-cache-ttl|tool-fee|long-context|earlier-usage|terminal|no-baseline|unsaved|(tier|model):[\w.:-]{1,64})$/;
 /** A value inside a reason: what doesn't look like a tier or a model id isn't stored. */
 export const reasonValue = (value: unknown) => (typeof value === "string" && /^[\w.:-]{1,64}$/.test(value) ? value : "other");
 export const costReasons = (value: unknown): string[] =>
@@ -33,6 +33,10 @@ function missing(reason: string): string {
   if (reason === "no-cache-ttl") return "cache write lifetimes weren't reported, so this is a lower bound";
   if (reason === "tool-fee") return "hosted tool fees aren't included";
   if (reason === "long-context") return "a request over 272K input tokens isn't priced";
+  if (reason === "earlier-usage") return "API usage from before Tether tracked this session isn't included";
+  if (reason === "terminal") return "API usage in the terminal isn't tracked";
+  if (reason === "no-baseline") return "Claude Code's earlier total couldn't be read, so one process's spend isn't known";
+  if (reason === "unsaved") return "the total couldn't be saved";
   if (reason.startsWith("tier:")) return `service tier ${reason.slice(5)} isn't confirmed as Standard`;
   return `${reason.slice(6)} has no published price`;
 }
@@ -48,8 +52,8 @@ export function costChip(cost: SessionCost | undefined): { text: string; detail:
   const reasons = costReasons(cost?.reasons);
   if (!known || !cost?.complete) {
     const why = sentence(reasons.map(missing));
-    // A coverage gap with no reason (a TUI's unobserved spend, lost history) can be any size: no figure.
-    if (known && cost!.usd! > 0 && reasons.length) return {
+    // What's known is shown as a lower bound, never as the whole: the reasons say what's missing.
+    if (known && cost!.usd! > 0) return {
       text: `~${dollars(cost!.usd!)}+${reasons.includes("no-cache-ttl") ? " est." : ""}`,
       detail: `Known API subtotal ${dollars(cost!.usd!)}${cost!.estimated ? " estimated" : ""}, not the session's whole cost.${why}`,
     };
