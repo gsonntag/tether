@@ -289,14 +289,16 @@ const steps = {
     await send(p, "Plan how to add a subtract function to math.ts, in at most three lines, then present the plan with ExitPlanMode. Don't implement it yet.");
     await card(p).waitFor({ timeout: 120_000 });
     await card(p).locator(".t-req-plan").waitFor({ timeout: 5_000 });
-    if (!(await button(card(p), "Approve and accept edits").count())) fail("no Approve and accept edits");
+    // The plan opens as a document by itself (scripts/e2e-plan.mjs covers comments).
+    const doc = p.locator(".t-plan");
+    await doc.waitFor({ timeout: 10_000 });
+    if (!(await button(doc, "Approve and accept edits").count())) fail("no Approve and accept edits");
     await shot(p, "plan");
-    await button(card(p), "Deny with reason").click();
-    await card(p).getByRole("textbox", { name: "Reason" }).fill("Not now. Stop here.");
-    await button(card(p), "Deny").click();
+    await doc.getByRole("textbox", { name: "General comment" }).fill("Not now. Stop here.");
+    await button(doc, "Send feedback").click();
     await card(p).waitFor({ state: "detached", timeout: 10_000 });
     await idle(p, 120_000);
-    ok("plan mode: the plan shows as markdown with Approve / Approve and accept edits; denying with a reason kept planning");
+    ok("plan mode: the plan opens as a document with Approve / Approve and accept edits; feedback kept planning");
     await p.getByRole("button", { name: /^Mode:/ }).click();
     await p.getByRole("menuitemradio", { name: /^Ask first/ }).click();
     await p.getByRole("button", { name: "Mode: Ask first" }).waitFor({ timeout: 10_000 });
@@ -311,8 +313,8 @@ const steps = {
     await p.getByRole("menuitemradio", { name: /^Plan/ }).click({ timeout: 90_000 });
     await p.getByRole("button", { name: "Mode: Plan" }).waitFor({ timeout: 10_000 });
     await send(p, "Plan adding `export const subtract = (a: number, b: number) => a - b;` to math.ts, in one line, then present it with ExitPlanMode. Once approved, make exactly that edit and nothing else.");
-    await card(p).locator(".t-req-plan").waitFor({ timeout: 120_000 });
-    await button(card(p), "Approve and accept edits").click();
+    await p.locator(".t-plan").waitFor({ timeout: 120_000 });
+    await button(p.locator(".t-plan"), "Approve and accept edits").click();
     await p.getByRole("button", { name: "Mode: Accept edits" }).waitFor({ timeout: 30_000 });
     await idle(p, 120_000);
     if (!/subtract/.test(readFileSync(scratch("math.ts"), "utf8"))) fail("math.ts wasn't edited");
