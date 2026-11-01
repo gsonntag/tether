@@ -305,6 +305,17 @@ export class LiveControl {
     }
   }
 
+  private carryCost(s: Session, n: Session) {
+    const paid = n.state.billing?.kind === "apiKey" || n.state.billing?.kind === "provider";
+    try {
+      const cost = this.opts.costs?.carry(s.id, n.id);
+      if (cost && paid) n.setState({ cost });
+    } catch {
+      if (paid) n.setState({ cost: { estimated: true, complete: false } });
+      this.core.log("Couldn't carry this session's API cost to its new thread. Its total is unknown.");
+    }
+  }
+
   private async replaceWith(s: Session, n: Session) {
     const prefs = this.core.o.prefs;
     const { title } = prefs.get(s.id);
@@ -315,6 +326,7 @@ export class LiveControl {
     this.core.book.remove([s.id]);
     this.core.touch(n, { title: title ?? s.summary.title });
     this.core.book.upsert([n.summary]);
+    this.carryCost(s, n);
     await this.close(s, true);
     s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined });
   }
@@ -1184,7 +1196,7 @@ export class LiveControl {
         if (billing?.kind !== "apiKey" && billing?.kind !== "provider") return;
         try {
           this.opts.costs.begin(s.id, s.fresh);
-          const cost = this.opts.costs.report(s.id, report.id, { usd: report.usd, estimated: report.estimated, complete: report.complete });
+          const cost = this.opts.costs.report(s.id, report.id, { usd: report.usd, estimated: report.estimated, complete: report.complete, reasons: report.reasons, notes: report.notes });
           s.setState({ cost });
         } catch { s.setState({ cost: { estimated: true, complete: false } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
         core.touch(s);

@@ -182,6 +182,11 @@ export function createRunner(o: RunnerOptions) {
           const id = sessionId(harness, nativeId);
           core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(from ? { carrying: true } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
+          // A new thread on a key, metered from its first request: what it brought across was spent
+          // elsewhere. Resuming doesn't mean unknown earlier usage here (live.ts sink).
+          if (source !== "subscription" && core.adapter(harness).capabilities.sourceCarry) {
+            try { core.o.costs?.begin(id, true); } catch { core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
+          }
           const s = await core.open(id);
           core.book.upsert([s.summary]);
           if (from) {

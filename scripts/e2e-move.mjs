@@ -292,8 +292,14 @@ const steps = {
     if (!endpoint || !log) fail("sourceCarry needs FAKE_ENDPOINT and FAKE_LOG");
     const p = await page(desktop);
     if ((await rpcVia(p, "setCredential", { source: "openai", key: `sk-not-a-real-key-${"z".repeat(24)}` })).error) fail("no key");
-    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}`, endpoint });
+    // Rates that make the fake's 12 tokens visible, to follow the amount across thread changes.
+    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}`, endpoint, rates: { input: 2000, output: 2000, cached: 0 } });
     if (azure.error) fail(azure.error);
+    const amount = async () => {
+      const cost = (await stateOf(p))?.cost;
+      if (!cost?.complete || typeof cost.usd !== "number") fail(`no whole API amount: ${JSON.stringify(cost)}`);
+      return cost.usd;
+    };
     const rows = async () => (await rpcVia(p, "listSessions", { projectPath: folder })).ok.sessions.map((s) => s.id);
     const pick = async (label) => {
       await p.locator(".t-source-chip").click();
@@ -345,6 +351,8 @@ const steps = {
     await p.getByText("Go on, on Azure.").first().waitFor({ timeout: 30_000 });
     await p.getByText(word).first().waitFor({ timeout: 30_000 });
     await shot(p, "carry-azure");
+    await waitState(p, (st) => st.cost?.usd > 0, "the Azure amount");
+    const spent = await amount();
     if ((await composer(p).inputValue()) !== "") fail("the sent message stayed in the box");
     if (await p.getByText(/moved (here )?(from|to)/i).count()) fail("the move shows");
     if ((await p.locator(".t-header-title").innerText()) !== "Carry test") fail("the title changed");
@@ -375,6 +383,18 @@ const steps = {
     const stored = await rpcVia(p, "moveOptions", { sessionId: third });
     if (stored.error) fail(stored.error);
     ok(`back on the plan: a real gpt-6-luna reply from history (${word}), one row, nothing stacked`);
+    if (await p.locator(".t-api-cost").count()) fail("dollars on the plan");
+
+    // On a key again: what the session spent before the plan is still there, and the plan adds none.
+    await pick("Azure");
+    await send("Back on Azure.");
+    await p.waitForFunction((id) => !decodeURIComponent(location.hash).endsWith(id), third, { timeout: 60_000 });
+    await p.locator(".t-paid-badge", { hasText: "Azure" }).waitFor({ timeout: 30_000 });
+    await waitState(p, (st) => st.cost?.usd > spent, "the carried amount with the new turn's");
+    const total = await amount();
+    await shot(p, "carry-cost");
+    if (total > spent * 3) fail(`the amount jumped: ${spent} then ${total}`);
+    ok(`the session's cost carried over the takeovers: $${spent.toFixed(4)} then $${total.toFixed(4)}, with no plan spend`);
     writeFileSync(`${SHOTS}/carry-ids.json`, JSON.stringify({ first, second, third, word }));
     await p.close();
   },

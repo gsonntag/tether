@@ -780,15 +780,29 @@ and update on every connected device. Renaming starts no harness process.
 ### API session dollars and retry times
 
 An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**;
-unpriced or missing usage says **Cost unknown**, with any known subtotal in its tooltip. A partial
-subtotal is never presented as the whole session amount. Subscription sessions show no dollars.
+unpriced or missing usage says **Cost unknown**, with any known subtotal in its tooltip. Where the
+gap is a report with a known reason, and something is priced, the chip reads **~$0.02+** and its
+tooltip says what's missing (**~$0.02+ est.** for a lower bound on cache writes). A partial subtotal
+is never presented as the whole session amount; a coverage gap with no reason (a TUI's unobserved
+spend, lost history) can be any size and stays Cost unknown.
+
+Each report keeps why it isn't whole, as a fixed code in `reasons`, in `costs.json` and the tooltip:
+`no-usage`, `no-cache-ttl`, `tier:<value>`, `model:<id>`, `tool-fee`, `long-context`; and in `notes`
+what a priced report left to a rule. Only those strings, the tier and the model id, never response
+text, keys or headers. An OpenAI response prices from its own usage. A request that set no tier
+(Codex's) is Standard, unless the response names another. Cache writes without a lifetime breakdown
+are at the documented 30-minute default; if the request chose a lifetime, or the breakdown doesn't
+add up, or there's no write count, they're at the cheaper rate, a lower bound and not whole. Dated
+model ids aren't priced, because OpenAI publishes none. Over 272K input, other tiers and tool fees
+stay unpriced. A thread that takes a session's place (a source change) starts from what the session
+had spent, and plan turns add nothing to it. Subscription sessions show no dollars.
 Claude's native cumulative cost is itself an estimate and resumes restore earlier, potentially
 subscription-equivalent spend. Tether subtracts a confirmed read-only pre-send baseline; missing or
 unstable baseline data leaves cost unknown. A handoff TUI has no cost stream and marks coverage
 incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
 pending requests before inference so a crash cannot leave a false complete total. Reports are
 idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported
-models/tiers and complete cache-read/write usage. Azure uses optional deployment rates entered in
+models and tiers. Azure uses optional deployment rates entered in
 Credentials; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
 unknown. These estimates are not provider invoices.
 

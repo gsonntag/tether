@@ -2,7 +2,7 @@
 // upstream error or stream can reach Codex's rollout, logs or tool environment.
 import { randomUUID } from "node:crypto";
 import type { TokenRates } from "../../../../shared/costs";
-import { CostLedger, estimateTokenCost } from "../../costs";
+import { CostLedger, priceResponse } from "../../costs";
 import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -80,13 +80,15 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
       else headers.set("authorization", `Bearer ${key}`);
       const inference = req.method === "POST" && url.pathname.endsWith("/responses");
       const requestId = `request-${randomUUID()}`;
-      const unknown = () => { if (inference) ledger.report(id, requestId, { estimated: true, complete: false }); };
+      const unknown = () => { if (inference) ledger.report(id, requestId, { estimated: true, complete: false, reasons: ["no-usage"] }); };
       try {
         // Persist an incomplete request before forwarding. A host crash or failed cost write
         // can leave a partial total, never a falsely complete one.
         if (inference) unknown();
+        // Whole, for pricing: bytes, because only the upstream has to understand them.
+        const sent = inference ? await req.arrayBuffer() : undefined;
         const target = endpoint.replace(/\/$/, "") + url.pathname.slice(3) + url.search;
-        const upstream = await fetch(target, { method: req.method, headers, body: req.body, redirect: "error", signal: req.signal });
+        const upstream = await fetch(target, { method: req.method, headers, body: sent ?? req.body, redirect: "error", signal: req.signal });
         if (!upstream.ok) {
           // Providers sometimes repeat a partly masked key in auth errors. Do not forward any
           // provider error body or headers into native logs, even when the full key is absent.
@@ -101,14 +103,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         for (const [h,v] of out) if (h.includes(key)) out.delete(h); else out.set(h, v.replaceAll(key, "[redacted]"));
         let body = upstream.body?.pipeThrough(redactStream(key));
         if (inference && upstream.ok && body) body = body.pipeThrough(meterStream((response) => {
-          const usage = response?.usage;
-          const input = usage?.input_tokens; const output = usage?.output_tokens; const cached = usage?.input_tokens_details?.cached_tokens;
-          const writes = usage?.input_tokens_details?.cache_write_tokens_details;
-          const write30m = writes?.ttl_30m_tokens; const write12h = writes?.ttl_12h_tokens;
-          const writeTotal = usage?.input_tokens_details?.cache_write_tokens;
-          const writeBreakdownValid = writeTotal === 0 || (Number.isSafeInteger(writeTotal) && typeof write30m === "number" && typeof write12h === "number" && write30m + write12h === writeTotal);
-          let cost = typeof input === "number" && typeof output === "number" && typeof cached === "number" && writeBreakdownValid ? estimateTokenCost(source, response?.model, { input, output, cached, write30m: writeTotal === 0 ? 0 : write30m, write12h: writeTotal === 0 ? 0 : write12h }, { rates, tier: response?.service_tier }) : { estimated: true, complete: false };
-          if (response?.output?.some((item: any) => ["web_search_call", "image_generation_call", "file_search_call", "code_interpreter_call"].includes(item.type))) cost = { ...cost, complete: false };
+          const cost = priceResponse(source, response, { rates, request: sent && new TextDecoder().decode(sent) });
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         }, unknown));

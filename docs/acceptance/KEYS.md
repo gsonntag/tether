@@ -19,6 +19,12 @@ Real Claude/Haiku and Codex/gpt-6-luna at Low, in a browser, with random fake ke
 - A file in the version 1 shape read, offered its key and migrated on the next change, its revision
   kept. The new web on a runner from before this change showed no picker and worked.
 
+## Cost reasons (2026-11-01)
+
+No real key: `scripts/e2e-cost.ts` ran every response shape through the real private host and a fake
+upstream, and `sourceCarry` followed the amount over takeovers with Azure rates on a fake endpoint.
+Neither is a real OpenAI response: see Real-key checks.
+
 ## Verification record (2026-10-31–2026-11-01)
 
 - All four packages typecheck; 851 unit tests pass.
@@ -126,7 +132,11 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
   browser; Escape cancels. Refresh and rediscover preserve the title. Renaming runs no harness.
 - [ ] API badge shows cumulative USD with `est.` for estimates. Repeated usage events do not
   double-count; restart/resume does not add restored earlier totals again. Subscription-equivalent
-  spend is excluded. Unknown prior usage, cache-write breakdown or Azure rates says Cost unknown.
+  spend is excluded. Unknown prior usage or Azure rates says Cost unknown, its reason in the tooltip.
+  A report that can't be priced beside ones that are reads `~$0.02+`; without a figure, Cost unknown.
+- [ ] `NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-cost.ts <dir> <port>`: the real private host
+  in front of `scripts/fake-responses.ts`, each response shape; `costs.json` holds only numbers, ids
+  and codes. A source change carries the amount, there and back (`scripts/e2e-move.mjs sourceCarry`).
 - [ ] Azure optional USD / 1M rates persist beside the key. Cached reads are priced once; writes
   without sufficient rates remain unknown. A pending request/crash never leaves a false complete
   total. Opening a Claude key TUI marks its unobserved cost incomplete.
@@ -159,6 +169,10 @@ Enter keys only in Tether's Credentials page, never in chat.
 - [ ] From a ChatGPT plan session with history, tool calls and a compaction, pick OpenAI API key, then
   Azure, then the plan: each first message is answered from the history, and Platform usage records
   only the key's turns.
+- [ ] A real OpenAI key's first turns are what prove the pricing, since nothing here has seen a real
+  response. In the session's private `costs.json`, `resp_…` reports should have `usd`. Their `notes`
+  name what the API left out: `no-cache-ttl` means no lifetime breakdown, `tier:missing` or
+  `tier:auto` means no tier. A report with `reasons` and no `usd` names the real cause.
 - [ ] Compare the session estimate after two turns and a reload/resume with the provider's usage
   record. Enter the resource's Azure rates. Claude's TUI intentionally makes cost coverage unknown.
 - [ ] Temporarily invalidate/revoke each key: the next turn fails on the named source with no
