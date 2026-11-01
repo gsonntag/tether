@@ -18,6 +18,7 @@ import { readHistory, storedSettings } from "./history";
 import { claudeMove, movedReadRule } from "./move";
 import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
+import { claudeCommandRoute, claudeCommands } from "./commands";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
 
@@ -149,7 +150,7 @@ function watchFile(path: () => string | undefined, onChange: () => void): () => 
 
 export const claudeAdapter: Adapter = {
   id: "claude",
-  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, commands: true, move: { import: "native" } },
   move: claudeMove,
   billing: {
     keys: HARNESS_KEYS.claude,
@@ -241,6 +242,9 @@ export const claudeAdapter: Adapter = {
   listModels(driver?: Driver) {
     return claudeModels(driver instanceof ClaudeDriver ? () => driver.models() : undefined);
   },
+
+  listCommands: (projectPath, driver) => (driver instanceof ClaudeDriver ? driver.commands() : claudeCommands(projectPath)),
+  commandRoute: claudeCommandRoute,
 
   neverStarted: claudeNeverStarted,
   storedMode: claudeStoredMode,

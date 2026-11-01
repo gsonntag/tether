@@ -21,6 +21,8 @@ interface ThreadView {
   sink: Sink;
   /** the running turn */
   turnId?: string;
+  /** a review's turn runs under its own id and ends under this one */
+  rootTurnId?: string;
   /** this turn's retries have been mentioned */
   retryNoted?: boolean;
   /** the assistant message being written */
@@ -209,6 +211,7 @@ export class CodexStream {
 
   private turnStarted(v: ThreadView, turn: any) {
     v.turnId = turn?.id;
+    v.rootTurnId = turn?.rootTurnId ?? undefined;
     v.retryNoted = false;
     v.msg = undefined;
     v.msgs.clear();
@@ -218,7 +221,7 @@ export class CodexStream {
   }
 
   private turnCompleted(v: ThreadView, turn: any) {
-    if (turn?.id && v.turnId && turn.id !== v.turnId) return;
+    if (turn?.id && v.turnId && turn.id !== v.turnId && turn.id !== v.rootTurnId) return;
     const error = turnError(turn);
     // Calls the turn left running (it was stopped) are over.
     for (const id of [...v.msgs.keys()]) {

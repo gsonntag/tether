@@ -12,7 +12,10 @@ import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
+import { parseCommand } from "../../../../shared/commands";
 import { CLAUDE_BIN } from "./bin";
+import { commandList, lastGoalStatus } from "./commands";
+import { sessionFile } from "./paths";
 import { movedReadRule } from "./move";
 import { canonicalCommand } from "./content";
 import { keepBilling } from "./context";
@@ -66,7 +69,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), keyed: () => this.credential?.source === "anthropic", failed: () => this.failed(), interrupted: () => this.interrupting });
+    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), keyed: () => this.credential?.source === "anthropic", failed: () => this.failed(), interrupted: () => this.interrupting, goalStatus: (id) => this.goalStatus(id) });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
@@ -314,6 +317,34 @@ export class ClaudeDriver implements Driver {
 
   busy() {
     return this.stream.running.size > 0;
+  }
+
+  /** The store a moment after the turn: Claude Code writes the evaluation around its result. */
+  private async goalStatus(sessionId: string) {
+    await Bun.sleep(200);
+    return lastGoalStatus(sessionFile(sessionId, this.projectPath));
+  }
+
+  /** skills as Claude Code last read them from disk (reloadSkills) */
+  private reloaded?: { at: number; names: Set<string> };
+
+  /**
+   * What this session has now. Claude Code's list doesn't see a file added since it started, so
+   * between turns the skills are read again first (at most every 30s); that also says which are skills.
+   */
+  async commands() {
+    if (!this.stream.mainTurn && (!this.reloaded || Date.now() - this.reloaded.at > 30_000)) {
+      const r = await this.q.reloadSkills().catch(() => undefined);
+      if (r) this.reloaded = { at: Date.now(), names: new Set(r.skills.map((s) => s.name)) };
+    }
+    return commandList(await this.q.supportedCommands(), this.reloaded?.names ?? this.stream.skills, this.stream.terminalCommands);
+  }
+
+  async isCommand(text: string) {
+    const c = parseCommand(text);
+    if (!c) return false;
+    const list = await this.q.supportedCommands().catch(() => []);
+    return list.some((x) => x.name === c.name || x.aliases?.includes(c.name));
   }
 
   /** The live list of models, from this process. */

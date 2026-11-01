@@ -68,6 +68,10 @@ function entryOf(line: string): Entry | undefined {
     if (a.isMeta && a.origin?.kind !== "human") out.isMeta = true;
     if (a.origin) out.origin = a.origin;
     else if (a.commandMode === "task-notification") out.origin = { kind: "task-notification" };
+  } else if (e.type === "attachment" && e.attachment?.type === "goal_status" && e.attachment.met && !e.attachment.sentinel) {
+    // A /goal met: read like the live notice (content.ts), under the same id.
+    out.type = "user";
+    out.message = { role: "user", content: `<goal-met>${e.attachment.reason ?? ""}</goal-met>` };
   } else if (e.type === "system") {
     out.subtype = e.subtype;
     // A slash command's output (/context, /cost, …), shown as a notice.

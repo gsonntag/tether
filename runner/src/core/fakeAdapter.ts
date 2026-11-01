@@ -123,6 +123,8 @@ export const subagentEnds = (nativeId: string): Step => (_s, d) => d.children.ge
 export class FakeAdapter implements Adapter {
   id = "claude" as const;
   capabilities = FAKE_CAPS;
+  listCommands?: Adapter["listCommands"];
+  commandRoute?: Adapter["commandRoute"];
   loggedIn = true;
   billing: AdapterBilling = {
     keys: ["anthropic"],

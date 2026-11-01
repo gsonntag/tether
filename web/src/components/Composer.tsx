@@ -18,6 +18,8 @@ import { formatSize, isImageType, type Attachment } from "../../../shared/attach
 import { isApiBilling } from "../../../shared/labels";
 import type { Billing } from "../../../shared/transcript";
 import { ATTACH_MAX } from "../../../shared/limits";
+import { menuMatches, menuPick, menuQuery, type HarnessCommand } from "../../../shared/commands";
+import { CommandMenu } from "./CommandMenu";
 import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
 
@@ -76,12 +78,14 @@ export const Composer = forwardRef<
     uploadTo?: { runnerId: string; sessionId: string };
     /** `!` commands run here (none: no shell mode): the folder they run in, for the hint */
     shell?: { folder: string; heldBy?: string };
+    /** the session's commands and skills (none: no menu) */
+    loadCommands?: () => Promise<HarnessCommand[]>;
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
     onStop: () => Promise<void>;
     /** a send or Stop failed: the chat shows it */
     onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, onFailed }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, onSend, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -179,6 +183,41 @@ export const Composer = forwardRef<
   const ready = files.filter((f) => f.attachment).map((f) => f.attachment!);
   const hasContent = !!text.trim() || ready.length > 0;
 
+  // The menu of commands: open while the box holds only "/" and a name. Read from the harness each
+  // time it opens, so it's what the session has now.
+  const query = loadCommands && !steerOnly ? menuQuery(text) : undefined;
+  const asking = query !== undefined;
+  const [commands, setCommands] = useState<{ key: string; list: HarnessCommand[] }>();
+  const [menuClosed, setMenuClosed] = useState(false);
+  const [active, setActive] = useState(0);
+  const loadRef = useRef(loadCommands);
+  loadRef.current = loadCommands;
+  useEffect(() => {
+    if (!asking) return setMenuClosed(false);
+    const key = draftKey;
+    let gone = false;
+    loadRef.current?.().then(
+      (list) => void (!gone && setCommands({ key, list })),
+      () => {},
+    );
+    return () => void (gone = true);
+  }, [asking, draftKey]);
+  useEffect(() => setActive(0), [query]);
+  const matches = asking && !menuClosed && commands?.key === draftKey ? menuMatches(commands.list, query!) : [];
+  const menuOpen = matches.length > 0;
+  const current = matches[Math.min(active, matches.length - 1)];
+
+  /** A pick: the command goes in the box, or (Enter on one that takes nothing) out. */
+  const pick = (c: HarnessCommand, key: "Enter" | "Tab" | "tap") => {
+    if (menuPick(c, text, key) === "send") {
+      setMenuClosed(true);
+      return act(primaryAction(mode));
+    }
+    if (!c.args) setMenuClosed(true);
+    change(`/${c.name}${c.args ? " " : ""}`);
+    box.current?.focus();
+  };
+
   /** A `!` command: runs now; only the text is cleared (files stay for the next message). */
   const run = async () => {
     const command = shellCommand(text);
@@ -262,6 +301,21 @@ export const Composer = forwardRef<
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (menuOpen && current && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      if (step) {
+        e.preventDefault();
+        return setActive((Math.min(active, matches.length - 1) + step + matches.length) % matches.length);
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        return setMenuClosed(true);
+      }
+      if ((e.key === "Tab" || (e.key === "Enter" && !coarse())) && !e.shiftKey) {
+        e.preventDefault();
+        return pick(current, e.key);
+      }
+    }
     const a = keyAction(e, mode, { hasText: hasContent, phone: coarse() });
     if (!a) return;
     e.preventDefault();
@@ -314,6 +368,7 @@ export const Composer = forwardRef<
       }}
     >
       <div className="t-composer-inner">
+        {menuOpen && <CommandMenu items={matches} active={Math.min(active, matches.length - 1)} onPick={(c) => pick(c, "tap")} />}
         {shellOn && (
           <div className="t-shell-hint" role="status">
             <span className="t-shell-badge">Shell</span>
@@ -392,7 +447,7 @@ export const Composer = forwardRef<
               )}
             </>
           )}
-          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={placeholderText} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
+          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={placeholderText} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" aria-controls={menuOpen ? "t-command-menu" : undefined} aria-activedescendant={menuOpen && current ? `t-command-${current.name}` : undefined} onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
           {busyTurn && !hasContent && !shellOn ? (
             <IconButton label="Stop" tooltip="Stop (Esc)" variant="secondary" icon={<Icon icon={StopIcon} />} onClick={() => void stop()} />
           ) : (

@@ -98,7 +98,14 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
       <div className={`t-msg notice ${msg.level ?? "info"}`} role={msg.level === "error" ? "alert" : undefined}>
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
         <span className="t-notice-text">
-          {text}
+          {/* A command's output (/context): often more than a line, in Markdown. */}
+          {text.includes("\n") ? (
+            <Markdown density="compact" contentWidth="100%">
+              {text}
+            </Markdown>
+          ) : (
+            text
+          )}
           {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
           {msg.link && (
             <>

@@ -532,6 +532,7 @@
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
 }
 .t-composer-inner {
+  position: relative;
   max-width: 820px;
   margin: 0 auto;
   display: flex;
@@ -2217,4 +2218,81 @@
   background: var(--t-api);
   color: light-dark(#fff, #21152a);
   font-weight: 700;
+}
+
+/* The menu of commands over the message box */
+.t-command-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 20;
+  max-height: min(320px, 45dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--t-card);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius-element, 8px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 16%);
+  padding: 4px;
+}
+.t-command {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.t-command.active,
+.t-command:hover {
+  background: var(--t-soft);
+}
+.t-command-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--t-mono);
+}
+.t-command-args,
+.t-command-kind,
+.t-command-desc {
+  color: var(--t-muted);
+}
+.t-command-kind {
+  flex: none;
+  font-size: 11px;
+}
+.t-command-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (pointer: coarse), (max-width: 600px) {
+  .t-command {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-height: 44px;
+  }
+  .t-command-name {
+    flex: 1;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .t-command-desc {
+    flex-basis: 100%;
+  }
 }

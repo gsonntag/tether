@@ -1,7 +1,7 @@
 // P1 end-to-end against a local dev stack and REAL Claude (Haiku), desktop and phone:
 //   PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p1.mjs [step…]
 // Needs: server on :8790, the dev runner `tether-dev`, vite on :5180 (README "Local development").
-// Steps: new stream twodev interrupt reopen subagent restart paging context. Screenshots go to $SHOTS.
+// Steps: new stream twodev interrupt reopen subagent restart paging context commands. Screenshots go to $SHOTS.
 // Each real turn is small; the whole run is a handful of Haiku turns.
 
 import { spawn } from "node:child_process";
@@ -78,6 +78,39 @@ async function send(p, text) {
 
 let session; // the hash URL of the session made in `new`
 const steps = {
+  // The menu of commands, and commands reaching Claude as commands (SPEC §9 Commands). SCRATCH may
+  // hold .claude/commands/slash-hello.md; never /config, /login or anything that writes settings.
+  async commands() {
+    const p = await page(desktop);
+    await p.locator('button:has-text("New session")').first().waitFor();
+    const box = p.locator("textarea.t-input[aria-label=Message]");
+    if (!session) fail("run `new` first: this step uses its session");
+    await p.goto(session);
+    await box.waitFor();
+    const idle = () => p.locator('button[aria-label="Send"]').waitFor({ timeout: 90_000 });
+    await box.pressSequentially("/cont");
+    await p.locator(".t-command").first().waitFor({ timeout: 20_000 });
+    if ((await p.locator(".t-command-name").first().innerText()).trim() !== "/context") fail("the menu's first match isn't /context");
+    await shot(p, "commands-menu");
+    await p.keyboard.press("Escape");
+    if (await p.locator(".t-command").count()) fail("Esc left the menu open");
+    await box.fill("");
+    await box.fill("/context");
+    await box.press("Enter");
+    await p.getByText("Context Usage").first().waitFor({ timeout: 60_000 });
+    await idle();
+    await box.fill("/goal the assistant has replied with the word mango");
+    await box.press("Enter");
+    await p.getByText(/Goal met/).first().waitFor({ timeout: 90_000 });
+    await idle();
+    await box.fill("/config");
+    await box.press("Enter");
+    await p.getByText("/config needs the terminal.").first().waitFor({ timeout: 10_000 });
+    await idle();
+    await shot(p, "commands-chat");
+    ok("commands: menu, /context, /goal met, /config refused");
+    await p.close();
+  },
   async new() {
     const p = await page(desktop);
     await p.getByRole("button", { name: "New session" }).first().click();
@@ -351,7 +384,7 @@ const steps = {
 
 const pick = process.argv.slice(2);
 try {
-  for (const name of pick.length ? pick : ["new", "stream", "context", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "drag", "paging", "compacted", "layout"]) {
+  for (const name of pick.length ? pick : ["new", "stream", "context", "commands", "twodev", "interrupt", "reopen", "subagent", "restart", "phone", "scrollup", "drag", "paging", "compacted", "layout"]) {
     if (!session && !["new", "paging", "compacted", "layout"].includes(name) && process.env.SESSION) session = `${BASE}/#/s/tether-dev/${encodeURIComponent(process.env.SESSION)}`;
     console.log(`\n== ${name}`);
     await steps[name]();

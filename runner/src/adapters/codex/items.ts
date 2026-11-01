@@ -135,8 +135,11 @@ export function itemPart(item: any, cwd: string): Part | undefined {
 
 /** A user message's text: its text inputs (images and skills as a word). */
 export function userText(item: any, withImages = true): string {
-  return (item.content ?? [])
-    .map((c: any) => (c.type === "text" ? c.text : (c.type === "image" || c.type === "localImage") && withImages ? "[image]" : c.type === "skill" || c.type === "mention" ? `$${c.name}` : ""))
+  const content: any[] = item.content ?? [];
+  // A skill Tether sent beside its typed "/name": the text already says it.
+  const typed = (c: any) => c.type === "skill" && content.some((x) => x.type === "text" && String(x.text).startsWith(`/${c.name}`));
+  return content
+    .map((c: any) => (c.type === "text" ? c.text : (c.type === "image" || c.type === "localImage") && withImages ? "[image]" : typed(c) ? "" : c.type === "skill" || c.type === "mention" ? `$${c.name}` : ""))
     .filter(Boolean)
     .join("\n");
 }

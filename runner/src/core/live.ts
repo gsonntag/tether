@@ -7,6 +7,7 @@
 // permission requests go to the request desk (core/requests.ts), and subagents become child
 // sessions (SPEC §6a).
 
+import { Commands } from "./commands";
 import { randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
 import { isBillingSource, keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
@@ -72,6 +73,7 @@ export class LiveControl {
   readonly queue: MessageQueue;
   readonly read: ReadState;
   readonly attachments: AttachmentStore;
+  readonly commands: Commands;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
   /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
@@ -94,6 +96,7 @@ export class LiveControl {
     this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
     this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
     this.read = new ReadState(core);
+    this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
     AttachmentStore.current = this.attachments;
     const bus = core.o.bus;
@@ -179,6 +182,16 @@ export class LiveControl {
       if (!s.driver?.onlyBackground?.()) await this.interrupt(id);
       const until = this.core.now() + 15_000;
       while ((s.state.status !== "idle" || s.sending) && !s.driver?.onlyBackground?.() && this.core.now() < until) await Bun.sleep(100);
+    }
+    // A command Tether answers itself (the model, the terminal's): no turn.
+    if (s.state.status === "idle" && !s.sending && !o.tether && !o.continued && this.commands.routed(s, text)) {
+      const me = {};
+      s.sending = me;
+      try {
+        return await this.commands.run(s, text);
+      } finally {
+        s.sending = undefined;
+      }
     }
     const next = this.core.o.prefs.get(id).nextSource;
     if (next && s.state.status === "idle" && !s.sending) return this.carry(s, next, text, attachments, o);
@@ -411,6 +424,8 @@ export class LiveControl {
     while (s.sending && s.sentOut !== s.sending) await Bun.sleep(20);
     if (s.state.mode === "terminal") return void (await this.queue.add(id, text, attachments));
     if (s.state.status === "idle" || !s.driver?.steer) throw new Error("Nothing is running to steer. Send it as a new message instead.");
+    // A command waits for the turn, as in the queue (SPEC §9 Commands).
+    if (await this.commands.isCommand(s, text)) return void (await this.queue.add(id, text, attachments));
     s.turnActed = true;
     await s.driver.steer(withAttachments(text, attachments), attachments);
   }

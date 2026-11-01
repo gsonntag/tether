@@ -559,3 +559,71 @@ test("a runner stop while a subagent outlives its turn keeps the session marked 
   await live.closeAll();
   expect(prefs.get("claude:s1").running).toBe(true);
 });
+
+describe("commands (capabilities.commands)", () => {
+  const texts = (live: LiveControl, id: string) => live["core"].sessions.get(id)!.transcript!.messages.map((m) => (m.parts[0] as any)?.text);
+  function commands(caps: Partial<HarnessCapabilities> = { commands: true }) {
+    const c = setup(caps);
+    c.adapter.addStored("s1", []);
+    c.adapter.commandRoute = (name, args) => (name === "config" ? { terminal: true } : name === "model" ? { setting: "model", ...(args ? { value: args } : {}) } : undefined);
+    c.adapter.listCommands = async () => [{ name: "compact", description: "Compact" }];
+    return c;
+  }
+
+  test("the list comes from the harness; a harness without the capability has none", async () => {
+    expect(await commands().live.commands.list("claude:s1")).toEqual([{ name: "compact", description: "Compact" }]);
+    expect(await commands({}).live.commands.list("claude:s1")).toEqual([]);
+  });
+
+  test("what needs the terminal says so in a line, and nothing reaches the harness", async () => {
+    const { adapter, live } = commands();
+    await live.send("claude:s1", "/config theme=dark");
+    expect(adapter.drivers[0]?.sent ?? []).toEqual([]);
+    expect(texts(live, "claude:s1")).toEqual(["/config theme=dark", "/config needs the terminal."]);
+  });
+
+  test("a model that isn't offered says so; the box's text isn't sent", async () => {
+    const { adapter, live } = commands();
+    await live.send("claude:s1", "/model nosuch");
+    expect(adapter.drivers[0]?.sent ?? []).toEqual([]);
+    expect(texts(live, "claude:s1")).toEqual(["/model nosuch", "No model nosuch."]);
+  });
+
+  test("anything else goes to the harness as typed, paths and unknown words too", async () => {
+    const { adapter, live } = commands();
+    adapter.script = () => [idle];
+    for (const t of ["/compact", "/nosuch x", "/tmp/a.txt"]) {
+      await live.send("claude:s1", t);
+      await Bun.sleep(5);
+    }
+    expect(adapter.drivers[0]!.sent).toEqual(["/compact", "/nosuch x", "/tmp/a.txt"]);
+  });
+
+  test("without the capability a typed command is only text", async () => {
+    const { adapter, live } = commands({});
+    adapter.script = () => [idle];
+    await live.send("claude:s1", "/config");
+    expect(adapter.drivers[0]!.sent).toEqual(["/config"]);
+  });
+
+  test("a command during a turn waits in the queue instead of steering, then runs", async () => {
+    const { adapter, live } = commands({ commands: true, canSteer: true });
+    (FakeDriver.prototype as any).isCommand = async (t: string) => t === "/compact";
+    const h = held();
+    adapter.script = (t) => (t === "start" ? [h.step, idle] : [idle]);
+    void live.send("claude:s1", "start");
+    await Bun.sleep(5);
+    await live.steer("claude:s1", "/compact");
+    await live.steer("claude:s1", "/config");
+    await live.steer("claude:s1", "plain words");
+    const d = adapter.drivers[0]!;
+    expect(d.steered).toEqual(["plain words"]);
+    expect(live["core"].sessions.get("claude:s1")!.state.queue?.map((q) => q.text)).toEqual(["/compact", "/config"]);
+    h.release();
+    await Bun.sleep(400);
+    delete (FakeDriver.prototype as any).isCommand;
+    expect(d.sent).toEqual(["start", "/compact"]);
+    expect(live["core"].sessions.get("claude:s1")!.state.queue ?? []).toEqual([]);
+    expect(texts(live, "claude:s1")).toContain("/config needs the terminal.");
+  });
+});

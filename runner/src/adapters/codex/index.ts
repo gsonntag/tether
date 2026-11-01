@@ -9,6 +9,7 @@ import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
+import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, createThread } from "./driver";
 import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
@@ -49,7 +50,7 @@ const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]
 
 export const codexAdapter: Adapter = {
   id: "codex",
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" } },
   move: codexMove,
   billing: {
     keys: HARNESS_KEYS.codex,
@@ -106,6 +107,12 @@ export const codexAdapter: Adapter = {
 
   start: (projectPath, nativeId, opts, sink) => CodexDriver.open(nativeId, projectPath, opts, sink, false),
   resume: (nativeId, projectPath, opts, sink) => CodexDriver.open(nativeId, projectPath, opts, sink, true),
+
+  async listCommands(projectPath, driver) {
+    if (driver instanceof CodexDriver) return driver.commands();
+    return commandList(enabledSkills(await call("skills/list", { cwds: [projectPath] })));
+  },
+  commandRoute: codexCommandRoute,
 
   async listModels() {
     return modelList(await fetchModels().catch(() => []));

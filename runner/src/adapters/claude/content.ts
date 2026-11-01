@@ -2,6 +2,7 @@
 // live stream (stream.ts), so a session reads the same either way. Ported from v1's claude.ts,
 // trimmed to P1's parts (text, thinking, image, tool).
 
+import { needsTerminal } from "../../../../shared/commands";
 import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part } from "../../../../shared/transcript";
 import { toolPart } from "../toolKind";
@@ -59,6 +60,8 @@ function fromElsewhere(text: string, o: NonNullable<EntryFlags["origin"]>, id: s
 }
 
 
+export const goalMet = (reason: string) => (reason.trim() ? `Goal met: ${reason.trim()}` : "Goal met.");
+
 export const notice = (id: string, ts: number, text: string, level: Msg["level"] = "info"): Msg => ({ id, role: "notice", level, ts, parts: [{ type: "text", text }] });
 
 /**
@@ -86,6 +89,11 @@ export function injected(text: string, flags: EntryFlags, id: string, ts: number
     const out = commandOutput(t);
     return out ? notice(id, ts, out) : null;
   }
+  // Why Claude goes on instead of stopping: a /goal not met yet, or another Stop hook.
+  const stop = t.match(/^Stop hook feedback:\n(?:\[[\s\S]*?\]: )?([\s\S]*)/);
+  if (stop) return notice(id, ts, `Not done yet: ${stop[1]!.trim()}`);
+  const goal = t.match(/^<goal-met>([\s\S]*)<\/goal-met>$/);
+  if (goal) return notice(id, ts, goalMet(goal[1]!));
   if (flags.isMeta) return null;
   return undefined;
 }
@@ -190,7 +198,8 @@ const ABORTED_PROMPT = /^Tool permission request failed: (?:Error: )?(?:AbortErr
 export function commandOutput(text: string): string {
   const inner = text.match(/<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/)?.[1] ?? text;
   // Terminal styling (dim, bold) means nothing here.
-  return inner.replace(/\u001b\[[0-9;]*m/g, "").trim();
+  // Refused because it needs the TUI: in Tether's words, the same as the commands Tether refuses.
+  return inner.replace(/\u001b\[[0-9;]*m/g, "").trim().replace(/^\/(\S+) isn't available in this environment\.$/, (_, name) => needsTerminal(name));
 }
 
 /**

@@ -1,0 +1,36 @@
+[
+{
+"m": "turn/started",
+"p": {
+"threadId": "01a1988d-fffd-7453-8f7b-647e5256946a",
+"turn": {
+"id": "01a1988e-1352-7a63-8ded-83f2c1b7c4f0",
+"rootTurnId": "01a1988e-1341-71c1-b271-e4c194cc813a",
+"items": [],
+"itemsView": "notLoaded",
+"status": "inProgress",
+"error": null,
+"startedAt": 1793560810,
+"completedAt": null,
+"durationMs": null
+}
+}
+},
+{
+"m": "turn/completed",
+"p": {
+"threadId": "01a1988d-fffd-7453-8f7b-647e5256946a",
+"turn": {
+"id": "01a1988e-1341-71c1-b271-e4c194cc813a",
+"rootTurnId": "01a1988e-1341-71c1-b271-e4c194cc813a",
+"items": [],
+"itemsView": "summary",
+"status": "completed",
+"error": null,
+"startedAt": 1793560810,
+"completedAt": 1793560811,
+"durationMs": 1360
+}
+}
+}
+]

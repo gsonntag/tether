@@ -263,6 +263,8 @@ async function handle(op: string, a: any): Promise<unknown> {
       if (!part) throw new Error("No such part.");
       return partChunk(part, a.offset);
     }
+    case "listCommands":
+      return { commands: [] };
     case "listModels":
       await Bun.sleep(200);
       return MODELS;

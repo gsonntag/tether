@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_TETHER } from "../../../../shared/fromTether";
@@ -889,4 +889,77 @@ test("a cached ChatGPT account with an effective provider key override refuses s
   await expect(CodexDriver.open(MAIN, CWD, { credential: { source: "subscription", revision: "subscription" } }, sink, true)).rejects.toThrow("authentication path");
   expect(sink.lastWith("billing")?.billing).toEqual({ kind: "unknown", label: "Unknown" });
   expect(daemon.calls("turn/start")).toEqual([]);
+});
+
+// Real shapes: Codex 0.164 (fixtures/review-turn.json, skills/list).
+describe("commands", () => {
+  const SKILL = { name: "slash-probe", description: "A skill", path: "/p/.agents/skills/slash-probe/SKILL.md", scope: "repo", enabled: true, pluginId: null };
+  async function open() {
+    useDaemon();
+    daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, status: { type: "idle" } }, model: "gpt-6-luna", approvalPolicy: "on-request", sandbox: { type: "readOnly" } });
+    daemon.answers["skills/list"] = () => ({ data: [{ cwd: CWD, errors: [], skills: [SKILL, { ...SKILL, name: "off", enabled: false }] }] });
+    const sink = new TestSink();
+    return { sink, d: await CodexDriver.open(MAIN, CWD, {}, sink, true) };
+  }
+  const notices = (sink: TestSink) => sink.t.messages.filter((m) => m.role === "notice").map((m) => (m.parts[0] as any).text);
+
+  test("the menu: what Codex can't report, then its skills that are on", async () => {
+    const { d } = await open();
+    const list = await d.commands();
+    expect(list.map((c) => c.name)).toEqual(["compact", "goal", "review", "slash-probe"]);
+    expect(list.at(-1)).toEqual({ name: "slash-probe", description: "A skill", skill: true });
+  });
+
+  test("/compact is a call, not a turn of text", async () => {
+    const { sink, d } = await open();
+    await d.send("/compact");
+    expect(daemon.calls("thread/compact/start")).toEqual([{ threadId: MAIN }]);
+    expect(daemon.calls("turn/start")).toEqual([]);
+    expect(sink.t.messages[0]).toMatchObject({ role: "user", localCommand: true, parts: [{ text: "/compact" }] });
+  });
+
+  test("/review with and without instructions", async () => {
+    const { d } = await open();
+    await d.send("/review");
+    await d.send("/review look at auth");
+    expect(daemon.calls("review/start").map((c: any) => c.target)).toEqual([{ type: "uncommittedChanges" }, { type: "custom", instructions: "look at auth" }]);
+  });
+
+  test("a skill goes as a skill input beside the text; a word that's nothing stays text", async () => {
+    const { d } = await open();
+    await d.send("/slash-probe now");
+    await d.send("/tmp/x");
+    await d.send("/nosuch");
+    const [skill, path, word] = daemon.calls("turn/start").map((c: any) => c.input);
+    expect(skill).toEqual([{ type: "text", text: "/slash-probe now", text_elements: [] }, { type: "skill", name: "slash-probe", path: SKILL.path }]);
+    expect(path).toHaveLength(1);
+    expect(word).toHaveLength(1);
+  });
+
+  test("/goal: set, shown, cleared, and its end said once", async () => {
+    const { sink, d } = await open();
+    const goal = (status: string) => ({ threadId: MAIN, objective: "ship", status });
+    daemon.answers["thread/goal/set"] = () => ({ goal: goal("active") });
+    daemon.answers["thread/goal/get"] = () => ({ goal: goal("active") });
+    daemon.answers["thread/goal/clear"] = () => ({ cleared: true });
+    await d.send("/goal ship");
+    expect(daemon.calls("thread/goal/set")[0]).toEqual({ threadId: MAIN, origin: "user", status: "active", objective: "ship" });
+    await d.send("/goal");
+    for (const _ of [1, 2]) daemon.say({ method: "thread/goal/updated", params: { threadId: MAIN, turnId: null, goal: goal("complete") } });
+    await d.send("/goal clear");
+    expect(notices(sink)).toEqual(["Goal set: ship", "Goal (active): ship", "Goal met: ship", "Goal cleared"]);
+    expect(sink.states.at(-1)).toMatchObject({ status: "idle" });
+  });
+
+  test("a review's turn ends under its root id, and the session with it", async () => {
+    const { sink, d } = await open();
+    const [started, completed] = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/review-turn.json"), "utf8"));
+    for (const e of [started, completed]) {
+      e.p.threadId = MAIN;
+      daemon.say({ method: e.m, params: e.p });
+    }
+    await Bun.sleep(5);
+    expect(d.stream.main.turnId).toBeUndefined();
+    expect(sink.states.filter((x) => x.status).at(-1)?.status).toBe("idle");
+  });
 });

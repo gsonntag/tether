@@ -14,7 +14,7 @@
 import type { ContextUse, Msg } from "../../../../shared/transcript";
 import type { Sink } from "../../core/adapter";
 import { contextOf, contextUsed, keepPlan, noteWindows, planOf } from "./context";
-import { assistantPart, blockText, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
+import { assistantPart, blockText, goalMet, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
 /** The limit messages Claude Code writes itself ("You've hit your session limit · resets 8:40am (UTC)"). */
 const PLAN_LIMIT_TEXT = /^You['’]ve (?:hit|reached) your\b.*\blimit\b/;
@@ -29,6 +29,8 @@ export interface StreamHost {
   keyed?(): boolean;
   /** A key-backed failure stops the process, without emitting the provider's raw error text. */
   failed?(): string | undefined;
+  /** How the last /goal evaluation went, from the store (the stream doesn't say). */
+  goalStatus?(sessionId: string): Promise<{ uuid: string; met: boolean; reason: string } | undefined>;
   /** Only an explicit Stop can make a key-backed execution error an intentional interruption. */
   interrupted?(): boolean;
 }
@@ -78,6 +80,11 @@ export class ClaudeStream {
   private sessionId: string;
   /** the context changed with no message to say so yet (a compaction, a /clear) */
   private contextStale = false;
+  /** a /goal was set and hasn't been seen met */
+  private goalOpen = false;
+  /** skills and terminal-only commands, as the last init message listed them */
+  skills: ReadonlySet<string> = new Set();
+  terminalCommands: ReadonlySet<string> = new Set();
 
   constructor(
     sink: Sink,
@@ -128,6 +135,7 @@ export class ClaudeStream {
         return this.result(m);
       case "conversation_reset":
         this.contextChanged();
+        if (m.trigger === "clear") this.main.sink.event({ type: "msg", msg: notice(m.uuid ?? `n-clear-${Date.now()}`, Date.now(), "Context cleared.") });
         return;
       case "rate_limit_event": {
         const info = m.rate_limit_info;
@@ -206,6 +214,8 @@ export class ClaudeStream {
     if (msg.model === "<synthetic>" && !m.error && m.uuid) {
       const text = commandOutput(blockText(msg.content));
       if (text) t.sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
+      if (t === this.main && text.startsWith("Goal set:")) this.goalOpen = true;
+      if (t === this.main && /^(No goal set|Goal cleared)/.test(text)) this.goalOpen = false;
       return;
     }
     if (t === this.main) this.contextFrom(msg);
@@ -257,6 +267,8 @@ export class ClaudeStream {
           sink.nativeId?.(m.session_id);
         }
         sink.state({ ...(m.model ? { modelResolved: m.model } : {}), ...(m.permissionMode ? { permissionMode: m.permissionMode } : {}) });
+        if (Array.isArray(m.skills)) this.skills = new Set(m.skills);
+        this.terminalCommands = new Set(m.terminal_slash_commands ?? []);
         return;
       case "status":
         if (m.permissionMode) sink.state({ permissionMode: m.permissionMode });
@@ -283,6 +295,10 @@ export class ClaudeStream {
         if (text && m.uuid) sink.event({ type: "msg", msg: notice(m.uuid, Date.now(), text) });
         return;
       }
+      case "notification":
+        // Its own limit ended the turn with the goal (or another Stop hook) still unmet.
+        if (m.key === "stop-hook-block-cap") sink.event({ type: "msg", msg: notice(m.uuid ?? `n-cap-${Date.now()}`, Date.now(), "Claude Code ended the turn: a Stop hook kept it going too many times.", "warning") });
+        return;
       case "compact_boundary":
         // Claude continues from a summary; the conversation so far stays on screen, as in the
         // store (history.ts reads across compactions), with the same notice at the spot.
@@ -340,6 +356,7 @@ export class ClaudeStream {
     }
     this.lastError = undefined;
     this.resultContext(m);
+    if (this.goalOpen) void this.noteGoal();
     this.mainTurn = false;
     // Without state events (an older CLI), the result ends the turn.
     if (!this.stateEvents) {
@@ -358,6 +375,14 @@ export class ClaudeStream {
     if ((code && code !== "rate_limit") || (m.api_error_status && m.api_error_status !== 429)) return undefined;
     if (this.rejected) return this.rejected;
     return PLAN_LIMIT_TEXT.test(code ? this.apiError!.text : typeof m.result === "string" ? m.result : "") ? {} : undefined;
+  }
+
+  /** Claude Code says nothing live when a /goal is met: its store does. */
+  private async noteGoal() {
+    const status = await this.host.goalStatus?.(this.sessionId).catch(() => undefined);
+    if (!status?.met || !this.goalOpen) return;
+    this.goalOpen = false;
+    this.main.sink.event({ type: "msg", msg: notice(status.uuid, Date.now(), goalMet(status.reason)) });
   }
 
   /** The main agent is free; the session runs on only for its background tasks. */

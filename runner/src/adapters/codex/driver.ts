@@ -5,7 +5,10 @@
 // approvals and questions go to the broker through the sink, and close as resolved elsewhere when
 // another client (the TUI) answers first (serverRequest/resolved).
 
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { parseCommand, type HarnessCommand } from "../../../../shared/commands";
+import { CODEX_BUILTINS, commandList, enabledSkills, type CodexSkill } from "./commands";
 import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachments";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
@@ -322,6 +325,7 @@ export class CodexDriver implements Driver {
   private notify(method: string, p: any) {
     if (method === "turn/completed") this.noteCost();
     if (method === "serverRequest/resolved") return this.resolved(String(p.requestId));
+    if (method === "thread/goal/updated" && p.threadId === this.nativeId) this.goalChanged(p.goal);
     if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME && this.placeholder) {
       this.placeholder = false;
       remember(this.nativeId, { placeholder: undefined });
@@ -689,7 +693,7 @@ export class CodexDriver implements Driver {
           await this.noteBilling(current, true);
           assertCredentialCurrent(this.credential);
         }
-        r = await this.rpc.call("turn/start", { threadId: this.nativeId, input: input(text, attachments), ...pin.params }).finally(() => setTimeout(() => (this.starting = false), 5000));
+        r = await this.outgoing(text, attachments, pin.params).finally(() => setTimeout(() => (this.starting = false), 5000));
       } finally {
         // Only provisional: the turn's own turn_context says what it really runs with.
         this.pinned = undefined;
@@ -717,6 +721,95 @@ export class CodexDriver implements Driver {
       this.sendOnWay = false;
       this.stopAsked = false;
     }
+  }
+
+  // ---------------- commands and skills (SPEC §9 Commands) ----------------
+
+  /** The skills on for this folder, as the daemon has them now. */
+  private async skills(): Promise<CodexSkill[]> {
+    return enabledSkills(await this.rpc.call("skills/list", { cwds: [this.projectPath] }, 10_000));
+  }
+
+  async commands(): Promise<HarnessCommand[]> {
+    return commandList(await this.skills());
+  }
+
+  async isCommand(text: string) {
+    const c = parseCommand(text);
+    if (!c) return false;
+    return (await this.commands().catch(() => CODEX_BUILTINS)).some((x) => x.name === c.name);
+  }
+
+  /** The typed command as the transcript's (no item comes from Codex for it). */
+  private showCommand(text: string) {
+    this.sink.event({ type: "msg", msg: { id: randomUUID(), role: "user", ts: Date.now(), localCommand: true, parts: [{ type: "text", text }] } });
+  }
+
+  /**
+   * What a message becomes: a "/word" reaches Codex's model as plain text, so its own commands are
+   * calls, and a skill goes as a skill input beside the text. Anything else is an ordinary turn.
+   */
+  private async outgoing(text: string, attachments: Attachment[], pins: Record<string, unknown>): Promise<any> {
+    const threadId = this.nativeId;
+    const c = parseCommand(text);
+    if (c?.name === "compact") {
+      this.showCommand(text);
+      return this.rpc.call("thread/compact/start", { threadId });
+    }
+    if (c?.name === "review") {
+      // Instructions come back as the turn's user message; the plain review has none.
+      if (!c.args) this.showCommand(text);
+      return this.rpc.call("review/start", { threadId, target: c.args ? { type: "custom", instructions: c.args } : { type: "uncommittedChanges" } });
+    }
+    if (c?.name === "goal") {
+      this.showCommand(text);
+      return this.goal(c.args);
+    }
+    const skill = c && (await this.skills().catch(() => [])).find((s) => s.name === c.name);
+    const items = [...input(text, attachments), ...(skill ? [{ type: "skill", name: skill.name, path: skill.path }] : [])];
+    return this.rpc.call("turn/start", { threadId, input: items, ...pins });
+  }
+
+  /** the goal's status as last said, so each change shows once */
+  private goalState?: string;
+
+  /** /goal: says how it stands, or changes it. Setting an objective (or resuming) starts a turn of Codex's own. */
+  private async goal(args: string) {
+    const threadId = this.nativeId;
+    const main = this.stream.main;
+    const done = (line: string) => {
+      this.stream.notice(main, line);
+      this.sink.state({ status: "idle" });
+    };
+    const verb = args.toLowerCase();
+    if (!args) {
+      const goal = (await this.rpc.call("thread/goal/get", { threadId }))?.goal;
+      return done(goal ? `Goal (${goal.status}): ${goal.objective}` : "No goal set. Usage: /goal <objective>");
+    }
+    if (verb === "clear") {
+      const cleared = (await this.rpc.call("thread/goal/clear", { threadId, origin: "user" }))?.cleared;
+      this.goalState = undefined;
+      return done(cleared ? "Goal cleared" : "No goal set");
+    }
+    if (verb === "pause") {
+      await this.rpc.call("thread/goal/set", { threadId, origin: "user", status: "paused" });
+      return done("Goal paused");
+    }
+    const r = await this.rpc.call("thread/goal/set", { threadId, origin: "user", status: "active", ...(verb === "resume" ? {} : { objective: args }) });
+    this.goalState = "active";
+    this.stream.notice(main, `Goal set: ${r?.goal?.objective ?? args}`);
+    // Codex starts the turn by itself; if it doesn't, the session isn't left working.
+    setTimeout(() => {
+      if (!this.closed && !this.turnRunning()) this.sink.state({ status: "idle" });
+    }, 3000).unref?.();
+  }
+
+  private goalChanged(goal: any) {
+    const status = goal?.status;
+    if (!status || status === this.goalState) return;
+    this.goalState = status;
+    const said: Record<string, [string, "info" | "warning"]> = { complete: ["Goal met", "info"], blocked: ["Goal blocked", "warning"], usageLimited: ["Goal stopped at the usage limit", "warning"], budgetLimited: ["Goal stopped at its budget", "warning"] };
+    if (said[status]) this.stream.notice(this.stream.main, `${said[status]![0]}: ${goal.objective}`, said[status]![1]);
   }
 
   /** a send is on its way to turn/start's answer, and whether Stop was pressed meanwhile */

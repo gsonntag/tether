@@ -57,6 +57,8 @@ export interface HarnessCapabilities {
    * running turn's own values show beside the change (LiveState.turnSettings).
    */
   settingsApply?: "now" | "nextTurn";
+  /** The harness reports commands and skills for the menu in the message box (SPEC §9 Commands). */
+  commands?: boolean;
   /** An existing session can change source from the next message. Absent: only Move does it. */
   sourceSwitch?: boolean;
   /**

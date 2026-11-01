@@ -3,6 +3,7 @@
 // branches only on `capabilities`, never on the harness id.
 
 import type { Attachment } from "../../../shared/attachments";
+import type { CommandRoute, HarnessCommand } from "../../../shared/commands";
 import type { BillingSource, CredentialSource } from "../../../shared/credentials";
 import type { CredentialSnapshot } from "../credentials";
 import type { SessionCost } from "../../../shared/costs";
@@ -134,6 +135,8 @@ export interface Driver {
   relayedBy?(nativeId: string, tool: ToolPart, text?: string): boolean;
   /** the harness's own TUI is about to join this live session (capabilities.terminal "shared") */
   beforeTerminal?(): Promise<void>;
+  /** whether this text is one of the session's commands (capabilities.commands): it waits for the turn, never steers */
+  isCommand?(text: string): Promise<boolean>;
   /** a turn is running in the harness right now (one another client started, found on joining) */
   turnRunning?(): boolean;
   /** work still running after the turn (background subagents, shells): the session isn't idle-closed */
@@ -245,6 +248,10 @@ export interface Adapter {
   start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   listModels(driver?: Driver): Promise<ModelList>;
+  /** capabilities.commands: what the session has now, from its process when live, else for the folder */
+  listCommands?(projectPath: string, driver?: Driver): Promise<HarnessCommand[]>;
+  /** capabilities.commands: a typed command the core answers itself; undefined: it goes to the harness */
+  commandRoute?(name: string, args: string): CommandRoute | undefined;
   /**
    * Whether a model id in this harness's transcripts is one of its own (Claude: "claude-…"), so a
    * model picked in its TUI can be carried back to the session. Absent: any.

@@ -32,9 +32,10 @@ harness's real terminal UI for anything Tether doesn't show.
 ### Non-goals for the core
 
 Fallback chains, the judge, master context (shared memory), the MCP registry, cross-harness
-subagents, `/goal` `/loop` `/schedule` `/review`, plan review, forks, and libraries (hooks,
-commands, subagent definitions). Each may come back later as a module (§3). None of them may
-require editing the session core. Cross-harness handoff came back this way, as an explicit move a
+subagents, plan review, forks, and libraries for writing hooks, commands or subagent definitions.
+Each may come back later as a module (§3). None of them may require editing the session core. A
+harness's own commands and skills, `/goal` `/loop` `/schedule` `/review` among them, aren't Tether
+features: the message box offers and passes on what the harness has (§9 Commands). Cross-harness handoff came back this way, as an explicit move a
 person starts (§15); an automatic one stays a non-goal.
 
 ## 2. Principles
@@ -217,7 +218,7 @@ is dropped, so `plan` is always the plan's.
 
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
-`setPermissionMode`, `listModels`, `deleteSession`, `openTerminal`, `closeTerminal`,
+`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15).
 
@@ -605,6 +606,53 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   `~/.config/tether/attachments/<session>/`. They go to the harness natively where supported, and as
   paths otherwise.
 
+### Commands and skills
+
+"/" at the start of the box opens a menu of the session's real commands and skills: name, what it
+takes, a short description. Typing filters it. Arrows move, Enter or Tab picks, Esc closes, a tap
+picks. A command that takes arguments goes in the box with the cursor after it; Enter on one that
+takes nothing, or typed in full, sends it. A `!` command isn't affected. The box never refuses
+text: "/tmp/x" or a word that matches nothing goes to the harness as typed.
+
+The list comes from the harness (`listCommands`, `capabilities.commands`; an older runner has no
+menu). Nothing is hardcoded but what the harness can't report, marked as such in its adapter
+(`commands.ts`). A live session asks its process each time the menu opens; a session with no
+process is answered for its folder (Claude: a throwaway process with no prompt, kept a minute).
+
+What a typed command does (Claude Code 2.1.316, Codex 0.164; checked on real runs):
+
+| | Claude Code | Codex |
+|---|---|---|
+| List | `supportedCommands()`; `reloadSkills()` between turns sees new files and says which are skills; the init message's `terminal_slash_commands` are hidden | `skills/list` for the folder, the enabled ones; `/compact` `/goal` `/review` are Tether's list, as the app-server reports no commands |
+| How it goes | as a message: Claude Code recognizes it | a "/word" in a turn is only text to the model, so each is its own call |
+| `/compact` | runs | `thread/compact/start` |
+| `/context`, `/usage` | output in the chat as a notice | terminal only |
+| `/goal <condition>` | runs: a session-scoped Stop hook re-evaluates after each turn | `thread/goal/set`, which starts a turn itself; `/goal`, `clear`, `pause`, `resume` |
+| Custom commands | user, project and plugin commands run; their text goes to the model | none: the app-server can't list or run saved prompts |
+| Skills | `/name [args]` runs | `turn/start` with a `skill` input beside the typed text |
+| `/review` | a skill (`/code-review` alias) | `review/start`: your changes, or the given instructions |
+| Unknown "/word" | the model reads it | the model reads it |
+
+Tether answers some itself, the same on each harness (`Adapter.commandRoute`): `/model` and
+`/effort` are the header's controls (bare, they say what's set; a name that isn't offered says so),
+and `/rename <title>` is the session's title. Commands that change the account or global config,
+and TUI screens, say "/name needs the terminal." in one line: Claude's `/config`, `/login`,
+`/logout`, `/install`, `/plugin`, which never reach it from the chat, and whatever Claude Code
+itself refuses ("isn't available in this environment", worded the same), and on Codex those of the
+TUI's commands the app-server has no call for. Without this Codex's would reach the model as text.
+
+**`/goal` on Claude.** "Goal set: …" shows, and Claude works. Each time it would stop, Claude Code
+evaluates the condition: not met, "Not done yet: <reason>" shows and Claude goes on. Met, "Goal
+met: <reason>" shows; the stream doesn't say so, so that notice comes from the store, read after the
+turn while a goal is open. After 9 refusals in a row Claude Code ends the turn itself, and the chat
+says so.
+
+**While a turn runs** a command follows the queue, whichever way it was sent (`steer` queues it):
+it can't be part of a running turn.
+
+**Freshness.** Claude Code's list is fixed at start: a command file added since shows after the
+next `reloadSkills()`, which runs at most every 30 seconds and only between turns.
+
 ### Shell commands (P5b)
 
 `!npm test` in the composer runs **right away** as a one-off `$SHELL -c` in the session's folder,
@@ -924,7 +972,7 @@ hands over, switching back doesn't; copying works on desktop and phone; the phon
 shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
-the Changes view and file panel, fallback chains, pi, opencode and other harnesses, `/goal` etc.
+the Changes view and file panel, fallback chains, pi, opencode and other harnesses.
 
 ## 12. Carried over from v1 (`~/web-coder`)
 

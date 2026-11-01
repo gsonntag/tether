@@ -13,7 +13,7 @@
 // Steps (in order; later ones use the session `new` makes):
 //   new stream approve deny steer midturn context terminal tuiApprove tetherApprove phone subagent restart quit fresh settings
 //   storedInject restartMid subOutlive subNewTurn subRestart subKill9 reviewerAuto netRoots bgStop bgNote nestedStop tuiPermissions claudeShiftTab
-//   subMessage startConfirmed bgStored tuiReadOnly tuiSteer tuiAnswerAway folderTrust stored
+//   commands subMessage startConfirmed bgStored tuiReadOnly tuiSteer tuiAnswerAway folderTrust stored
 // subKill9 needs KILL9_RUNNER (kill -9 the dev runner and start it again). tuiAnswerAway needs
 // STOP_RUNNER and START_RUNNER. folderTrust runs a private app-server (scripts/check-codex-folder-trust.sh).
 // The steps that type in Codex's TUI need SCRATCH already trusted in Codex's config: they stop otherwise.
@@ -284,6 +284,32 @@ const steps = {
     await p.close();
   },
 
+  // Commands as Codex's own calls, and its skills, from the menu (SPEC §9 Commands). Small turns.
+  async commands() {
+    const p = await page(desktop, session);
+    await composer(p).waitFor();
+    await composer(p).pressSequentially("/com");
+    await p.locator(".t-command").first().waitFor({ timeout: 20_000 });
+    await shot(p, "commands-menu");
+    await composer(p).fill("");
+    await send(p, "/goal reply with the word mango");
+    await p.getByText(/Goal met/).first().waitFor({ timeout: 90_000 });
+    await idle(p);
+    await send(p, "/goal clear");
+    await p.getByText("Goal cleared").first().waitFor({ timeout: 10_000 });
+    await idle(p);
+    await send(p, "/compact");
+    await p.getByText("Context compacted.").first().waitFor({ timeout: 90_000 });
+    await idle(p);
+    await send(p, "/review say only: nothing to review.");
+    await sleep(1500);
+    await idle(p, 90_000);
+    await send(p, "/status");
+    await p.getByText("/status needs the terminal.").first().waitFor({ timeout: 10_000 });
+    await shot(p, "commands-chat");
+    ok("commands: menu, /goal, /compact, /review end; /status says it needs the terminal");
+    await p.close();
+  },
   async stream() {
     // P1 acceptance on Codex: start on desktop, close the tab, open on the phone mid-turn and see it
     // stream; both devices show identical transcripts after the turn.

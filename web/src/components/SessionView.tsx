@@ -305,6 +305,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? "Joins the paused queue" : "Waits for Back to Tether") : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
+            loadCommands={view.capabilities?.commands ? () => rpc(runnerId, "listCommands", { sessionId }).then((r) => r.commands) : undefined}
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
