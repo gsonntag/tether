@@ -73,6 +73,17 @@ export class SessionModel {
     if (!this.view.window) this.view = { ...this.view, error: e.message };
   }
 
+  /**
+   * A send the runner turned down, or that never reached it: an error row at the end of the chat, in
+   * this browser only (a fresh snapshot replaces it). When the runner said the same, the two collapse.
+   */
+  addNotice(text: string, id = `n-local-${crypto.randomUUID()}`) {
+    const w = this.view.window;
+    if (!w) return;
+    const msg: Msg = { id, role: "notice", level: "error", ts: Date.now(), parts: [{ type: "text", text }] };
+    this.view = { ...this.view, window: { ...w, messages: [...w.messages, msg] } };
+  }
+
   /** An older page, fetched with `history`, goes in front. */
   prepend(page: { messages: Msg[]; hasOlder: boolean }) {
     if (!this.view.window) return;

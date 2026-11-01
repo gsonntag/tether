@@ -1,3 +1,5 @@
+import type { Msg } from "../../shared/transcript";
+import { collapseErrors } from "../../shared/notices";
 import { expect, test } from "bun:test";
 import { CAP, Follow, FOLLOW_KEEP, Gesture, HOLD, LEAVE, nextWindow, OVERSHOOT, PAGE, remap, restoreTop, rowAt, scrollInFlight, type WinInput } from "./scrollKeep";
 
@@ -222,4 +224,14 @@ test("a scroll on its way is told from a browser clamp", () => {
   expect(scrollInFlight(34810, 34810, 27151, 27151)).toBe(false);
   // the same clamp seen without a "before" (a ResizeObserver callback)
   expect(scrollInFlight(27151, 34810, 27151, 27151)).toBe(false);
+});
+
+test("a row collapsed once an older page brought the first of its run: its kept copy holds the slice", () => {
+  const notice = (id: string): Msg => ({ id, role: "notice", level: "error", ts: 0, parts: [{ type: "text", text: "Boom." }] });
+  const reply = (id: string): Msg => ({ id, role: "assistant", ts: 0, parts: [{ type: "text", text: id }] });
+  const after = collapseErrors([notice("old"), notice("first"), reply("a"), reply("b"), reply("c")]);
+  const ids = after.messages.map((m) => m.id);
+  expect(ids).toEqual(["old", "a", "b", "c"]);
+  // Without the stand-in the slice falls back to the tail, away from the reader.
+  expect(remap(ids, after.hidden.get("first"), "b", false)).toEqual({ lo: 0, hi: 3, tail: false });
 });

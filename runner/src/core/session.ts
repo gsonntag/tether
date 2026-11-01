@@ -6,6 +6,7 @@ import type { HarnessCapabilities, LiveState, Msg, SessionEvent, SessionSnapshot
 import type { Driver, StartOpts, TranscriptEvent } from "./adapter";
 import type { OverlayNotice } from "./notices";
 import { capState } from "../../../shared/limits";
+import { repeatsError } from "../../../shared/notices";
 import { Transcript } from "./transcript";
 import { redactValue } from "../credentials";
 
@@ -98,6 +99,8 @@ export class Session {
       // Not loaded (nobody has opened it): the store has it when someone does.
       return null;
     }
+    // The same error again, right after itself: one row is enough (a send's failure says so elsewhere).
+    if (e.type === "msg" && !this.transcript.get(e.msg.id) && repeatsError(this.transcript.messages.at(-1), e.msg)) return null;
     // A notice is anchored to the message before it that the store has: not to another notice of
     // Tether's, which no store read has, so it would be pruned.
     const last = this.transcript.messages.findLast((m) => !isTetherNotice(m))?.id;

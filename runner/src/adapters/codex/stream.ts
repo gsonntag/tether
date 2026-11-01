@@ -21,6 +21,8 @@ interface ThreadView {
   sink: Sink;
   /** the running turn */
   turnId?: string;
+  /** this turn's retries have been mentioned */
+  retryNoted?: boolean;
   /** the assistant message being written */
   msg?: Msg;
   /** this turn's messages (the transcript may not be loaded: the stream keeps its own copy) */
@@ -175,8 +177,12 @@ export class CodexStream {
         if (v === this.main) this.notice(v, `Codex moved this turn from ${p.fromModel} to ${p.toModel}.`);
         return;
       case "error":
-        // A failed request Codex retries by itself: said once, inline.
-        if (p.willRetry && v === this.main && p.error?.message) this.state(v, { error: `Retrying: ${p.error.message}` });
+        // A failed request Codex retries by itself: said once a turn, in the chat. Not an error yet.
+        if (p.willRetry && v === this.main && p.error?.message) {
+          this.state(v, { error: `Retrying: ${p.error.message}` });
+          if (!v.retryNoted) this.notice(v, `Retrying: ${p.error.message}`);
+          v.retryNoted = true;
+        }
         return;
     }
   }
@@ -203,6 +209,7 @@ export class CodexStream {
 
   private turnStarted(v: ThreadView, turn: any) {
     v.turnId = turn?.id;
+    v.retryNoted = false;
     v.msg = undefined;
     v.msgs.clear();
     v.parts.clear();

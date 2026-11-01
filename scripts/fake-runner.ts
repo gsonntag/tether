@@ -145,6 +145,19 @@ if (process.env.SHORT) {
 }
 add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 add({ id: "claude:short-2", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
+// A session that can't start: the same error kept many times (an older runner), with and without its
+// prefix and across a message that failed. `send` here fails the same way.
+const FAILS = "This session belongs to another billing source. Start a new session to use the configured source. Nothing was sent.";
+const failure = (text: string, ts = now): Msg => ({ id: `n-${id("e")}`, role: "notice", level: "error", ts, parts: [{ type: "text", text }] });
+add({ id: "claude:fail-1", title: "Can't start", projectPath: P, updatedAt: now - 40_000 }, [
+  user("Fix the build."),
+  failure(`Couldn't start Claude Code: ${FAILS}`),
+  failure(`Couldn't start Claude Code: ${FAILS}`),
+  failure(FAILS),
+  user("Try again."),
+  failure(`Couldn't start Claude Code: ${FAILS}`),
+  failure(`Couldn't start Claude Code: ${FAILS}`),
+], { error: FAILS });
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 
 // ---------- wire ----------
@@ -287,6 +300,10 @@ async function handle(op: string, a: any): Promise<unknown> {
 /** A scripted turn: thinking and text streamed as deltas, a shell call, and a subagent. */
 function send(s: Sess, text: string) {
   if (s.state.status === "running") throw new Error("Claude is working; stop it first.");
+  if (s.summary.id === "claude:fail-1") {
+    emit(s, { type: "msg", isNew: true, msg: failure(`Couldn't start Claude Code: ${FAILS}`, Date.now()) });
+    throw new Error(FAILS);
+  }
   const at = (ms: number, f: () => void) => s.timers.push(setTimeout(f, ms));
   if (s.summary.title === "New session") s.summary.title = text.slice(0, 80);
   emit(s, { type: "msg", isNew: true, msg: user(text, Date.now()) });

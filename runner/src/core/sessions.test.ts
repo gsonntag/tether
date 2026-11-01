@@ -12,6 +12,7 @@ import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import { FakeAdapter, idle, say, stream, subagent, subagentEnds, toolCall, toolDone } from "./fakeAdapter";
 import { LiveControl } from "./live";
+import type { Session } from "./session";
 import { Prefs } from "./prefs";
 import { NoticeStore } from "./notices";
 import { saveConfig } from "../config";
@@ -218,6 +219,56 @@ describe("live sessions", () => {
     const s = await core.open("claude:s1");
     expect(s.state.error).toContain("signed in");
     expect(s.state.mode).toBe("stored");
+  });
+
+  const errorRows = (s: Session) => s.transcript!.messages.filter((m) => m.role === "notice" && m.level === "error");
+
+  test("a start that keeps failing: one row in the chat and in notices, and each send still fails", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.startError = "No way to start.";
+    const ended: (string | undefined)[] = [];
+    core.o.bus.on("turnEnded", ({ error }) => ended.push(error));
+    for (let i = 0; i < 3; i++) await expect(live.send("claude:s1", "go")).rejects.toThrow("No way to start.");
+    const s = await core.open("claude:s1");
+    expect(errorRows(s).map((m) => m.parts)).toEqual([[{ type: "text", text: "Couldn't start Claude Code: No way to start." }]]);
+    expect(s.overlay.length).toBe(1);
+    expect(s.state).toMatchObject({ status: "idle", error: "No way to start." });
+    expect(ended).toEqual(["No way to start.", "No way to start.", "No way to start."]);
+  });
+
+  test("a send that fails past the start says so in the chat", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    await core.subscribe("claude:s1");
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    await new Promise((r) => setTimeout(r, 20));
+    s.driver!.send = () => Promise.reject(new Error("The pipe broke."));
+    await expect(live.send("claude:s1", "again")).rejects.toThrow("The pipe broke.");
+    expect(s.state.error).toBe("The pipe broke.");
+    expect(errorRows(s).map((m) => m.parts)).toEqual([[{ type: "text", text: "The pipe broke." }]]);
+  });
+
+  test("the same error from a harness's turn adds no row, and the turn still reads as failed", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    await core.subscribe("claude:s1");
+    const ended: (string | undefined)[] = [];
+    core.o.bus.on("turnEnded", ({ error }) => ended.push(error));
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    const say = (id: string) => (adapter.drivers[0] as any).sink.event({ type: "msg", msg: { id, role: "notice", level: "error", ts: 1, parts: [{ type: "text", text: "Overloaded." }] } });
+    await new Promise((r) => setTimeout(r, 20));
+    const sink = (adapter.drivers[0] as any).sink;
+    sink.state({ status: "running" });
+    say("n-1");
+    sink.state({ status: "idle" });
+    sink.state({ status: "running" });
+    say("n-2");
+    sink.state({ status: "idle" });
+    expect(errorRows(s).map((m) => m.id)).toEqual(["n-1"]);
+    expect(ended.slice(-2)).toEqual(["Overloaded.", "Overloaded."]);
   });
 });
 

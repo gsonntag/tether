@@ -230,6 +230,8 @@ export class LiveControl {
     } catch (e) {
       if (s.sending === me && !(e instanceof SendCancelled)) {
         s.turnError = redact((e as Error)?.message ?? String(e));
+        // Errors show in the chat. A failed start has said this already, and repeats don't add a row.
+        s.apply({ type: "msg", msg: notice(s.turnError, "error") });
         s.setState({ error: s.turnError });
         this.status(s, "idle");
       }
@@ -1004,13 +1006,14 @@ export class LiveControl {
       event: (e) => {
         e = redactValue(e);
         const out = s.apply(e);
-        if (out?.type === "msg") {
-          // The turn failed: its turnEnded says why (Home and notifications show it).
-          const m = out.msg;
+        if (e.type === "msg") {
+          // The turn failed: its turnEnded says why (Home and notifications show it), also when
+          // the error repeats the row above it and adds none.
+          const m = e.msg;
           const failed = m.error ?? (m.role === "notice" && m.level === "error" ? m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ") : undefined);
           if (failed && s.state.status !== "idle") s.turnError = failed;
-          bus.emit("message", { sessionId: s.id, msg: m });
         }
+        if (out?.type === "msg") bus.emit("message", { sessionId: s.id, msg: out.msg });
         if (out?.type === "tool") {
           const tool = s.transcript?.get(e.type === "tool" ? e.msgId : "")?.parts.find((p) => p.type === "tool" && p.id === (e as any).toolId);
           if (tool?.type === "tool") bus.emit("toolCall", { sessionId: s.id, msgId: (e as any).msgId, tool });

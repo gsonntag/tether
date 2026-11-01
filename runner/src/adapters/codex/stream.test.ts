@@ -202,3 +202,18 @@ test("billing: the provider first, so Azure never reads as ChatGPT; then the acc
   expect(codexBilling("openai", null).kind).toBe("unknown");
   expect(codexBilling(undefined, { type: "chatgpt" }).kind).toBe("unknown");
 });
+
+test("a request Codex retries is said once a turn in the chat, as no error", () => {
+  const sink = new TestSink();
+  const s = new CodexStream(sink, CWD, MAIN);
+  const retry = (message: string) => s.handle("error", { threadId: MAIN, willRetry: true, error: { message } });
+  s.handle("turn/started", { threadId: MAIN, turn: { id: "t1" } });
+  retry("Reconnecting... 1/5");
+  retry("Reconnecting... 2/5");
+  expect(sink.t.messages.map((m) => [m.role, m.level, m.parts])).toEqual([["notice", "info", [{ type: "text", text: "Retrying: Reconnecting... 1/5" }]]]);
+  expect(sink.states.at(-1)).toMatchObject({ error: "Retrying: Reconnecting... 2/5" });
+  s.handle("turn/completed", { threadId: MAIN, turn: { id: "t1" } });
+  s.handle("turn/started", { threadId: MAIN, turn: { id: "t2" } });
+  retry("Reconnecting... 1/5");
+  expect(sink.t.messages.length).toBe(2);
+});

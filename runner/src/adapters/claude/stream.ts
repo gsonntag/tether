@@ -315,10 +315,11 @@ export class ClaudeStream {
     }
     if (failed && !interrupted) {
       const text = [typeof m.result === "string" ? m.result : "", this.lastError].filter(Boolean)[0] || (Array.isArray(m.errors) && m.errors.join(" ")) || "The turn failed.";
-      // Claude's own error reply is already in the transcript: no second copy of it.
-      if (!this.lastError || text !== this.lastError) sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), text, "error") });
-      if (/not logged in|\/login|invalid api key|authentication/i.test(text))
-        sink.state({ error: "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again." });
+      // Not signed in: what to do about it, in the chat. Claude's own error reply is already in the
+      // transcript: no second copy of it.
+      const signIn = /not logged in|\/login|invalid api key|authentication/i.test(text) ? "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again." : undefined;
+      if (signIn || !this.lastError || text !== this.lastError) sink.event({ type: "msg", msg: notice(`n-${m.uuid ?? Date.now()}`, Date.now(), signIn ?? text, "error") });
+      if (signIn) sink.state({ error: signIn });
     }
     this.lastError = undefined;
     this.resultContext(m);

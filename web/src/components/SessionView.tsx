@@ -6,7 +6,7 @@ import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
 import { openSession, replaceSession } from "../route";
-import { loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
+import { failedSend, loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
@@ -277,6 +277,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
             }}
+            onFailed={(message) => failedSend(runnerId, sessionId, message)}
           />
         ) : isChild ? (
           <div className="t-composer">
@@ -301,7 +302,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
-            status={state.error ? <div className="t-inline-status error">{state.error}</div> : undefined}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
@@ -313,6 +313,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
             }}
+            onFailed={(message) => failedSend(runnerId, sessionId, message)}
           />
         )}
       </div>

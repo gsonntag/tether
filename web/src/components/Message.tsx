@@ -88,7 +88,7 @@ function Attached({ mimeType, data }: { mimeType: string; data: string }) {
   return <img className="t-img" alt="Attached image" src={`data:${mimeType};base64,${data}`} style={style} />;
 }
 
-export const Message = memo(function Message({ msg }: { msg: Msg }) {
+export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed?: boolean }) {
   const { projectPath, runnerId } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
@@ -184,6 +184,7 @@ export const Message = memo(function Message({ msg }: { msg: Msg }) {
             ))}
           </div>
         )}
+        {failed && <div className="t-relay failed">Failed with the same error.</div>}
         {msg.relay && (
           <div className={`t-relay ${msg.relay}`}>
             {msg.relay === "sending" ? "Sending via the main agent…" : msg.relay === "delivered" ? "Sent via the main agent" : "Not delivered: the main agent didn't pass it on."}

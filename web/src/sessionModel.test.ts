@@ -42,6 +42,18 @@ test("in-order events apply, stale ones are ignored, a gap asks for a fresh snap
   expect(ids(m)).toEqual(["a", "b", "c", "d", "e", "f"]);
 });
 
+test("a failed send shows at the end of the chat; a fresh snapshot replaces it", () => {
+  const m = new SessionModel();
+  m.onSnapshot(snap(1, ["a"]));
+  m.addNotice("Nothing is running to steer. Send it as a new message instead.", "n-local-1");
+  expect(ids(m)).toEqual(["a", "n-local-1"]);
+  expect(m.view.window!.messages[1]).toMatchObject({ role: "notice", level: "error", parts: [{ text: "Nothing is running to steer. Send it as a new message instead." }] });
+  m.onEvent(2, append("b"));
+  expect(ids(m)).toEqual(["a", "n-local-1", "b"]);
+  m.onSnapshot(snap(2, ["a", "b"]));
+  expect(ids(m)).toEqual(["a", "b"]);
+});
+
 test("a buffered gap after the snapshot asks again", () => {
   const m = new SessionModel();
   m.subscribing();

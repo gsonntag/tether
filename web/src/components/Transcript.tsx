@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } fro
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ArrowDownIcon } from "@heroicons/react/24/outline";
+import { collapseErrors } from "../../../shared/notices";
 import type { TranscriptWindow } from "../../../shared/window";
 import { Follow, FOLLOW_KEEP, Gesture, nextWindow, remap, restoreTop, rowAt, scrollInFlight, type Anchor } from "../scrollKeep";
 import { Message } from "./Message";
@@ -65,9 +66,13 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   const [atBottom, setAtBottom] = useState(true);
   const [paging, setPaging] = useState(false);
 
-  const msgs = w.messages;
+  const rows = useMemo(() => collapseErrors(w.messages), [w.messages]);
+  const msgs = rows.messages;
   const ids = useMemo(() => msgs.map((m) => m.id), [msgs]);
-  const win = nextWindow(remap(ids, shown.current.first, shown.current.last, shown.current.tail), {
+  // A row that went (an older page brought the first of its run): its kept copy stands in for it.
+  const kept = (id: string | undefined) => (id === undefined ? id : (rows.hidden.get(id) ?? id));
+  if (anchor.current) anchor.current = { ...anchor.current, id: kept(anchor.current.id)! };
+  const win = nextWindow(remap(ids, kept(shown.current.first), kept(shown.current.last), shown.current.tail), {
     n: ids.length,
     settled: gesture.idle(performance.now()),
     stick: f.on,
@@ -316,7 +321,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
           <div ref={list}>
             {msgs.slice(win.lo, win.hi).map((m) => (
               <div key={m.id} data-id={m.id}>
-                <Message msg={m} />
+                <Message msg={m} failed={rows.failed.has(m.id)} />
               </div>
             ))}
           </div>

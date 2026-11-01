@@ -78,13 +78,15 @@ export const Composer = forwardRef<
     shell?: { folder: string; heldBy?: string };
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
     onStop: () => Promise<void>;
-    status?: React.ReactNode;
+    /** a send or Stop failed: the chat shows it */
+    onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, status }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, onSend, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  /** a note about what's in the box, not a failure (those go to the chat): shown under it */
+  const [hint, setHint] = useState<string>();
   const [drag, setDrag] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -109,7 +111,7 @@ export const Composer = forwardRef<
     setForKey(draftKey);
     setText(drafts.get(draftKey) ?? "");
     setFilesState(draftFiles.get(draftKey) ?? []);
-    setError(undefined);
+    setHint(undefined);
   }
 
   /** Files belong to the draft they were attached in, even if the view moved on meanwhile. */
@@ -145,7 +147,7 @@ export const Composer = forwardRef<
     const key = draftKey;
     const to = uploadTo;
     const room = ATTACH_MAX - (draftFiles.get(key)?.length ?? 0);
-    if (list.length > room) setError(`At most ${ATTACH_MAX} files on one message.`);
+    if (list.length > room) setHint(`At most ${ATTACH_MAX} files on one message.`);
     for (const file of list.slice(0, Math.max(0, room))) {
       const p: Pending = { key: crypto.randomUUID(), name: file.name || "file", size: file.size, mimeType: file.type, progress: 0, ...(isImageType(file.type) ? { preview: URL.createObjectURL(file) } : {}) };
       updateFiles(key, (l) => [...l, p]);
@@ -181,9 +183,9 @@ export const Composer = forwardRef<
   const run = async () => {
     const command = shellCommand(text);
     if (busy || disabled) return;
-    if (!command) return setError("Type a command after the !.");
+    if (!command) return setHint("Type a command after the !.");
     setBusy(true);
-    setError(undefined);
+    setHint(undefined);
     const key = draftKey;
     const sentText = text;
     try {
@@ -198,7 +200,7 @@ export const Composer = forwardRef<
         if (now !== textRef.current) setText(now);
       }
     } catch (e) {
-      setError((e as Error).message);
+      onFailed((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -213,10 +215,10 @@ export const Composer = forwardRef<
     if (kind === "shell") return run();
     const t = text.trim();
     if ((!t && !ready.length) || busy || disabled) return;
-    if (uploading) return setError("Wait for the files to finish uploading.");
+    if (uploading) return setHint("Wait for the files to finish uploading.");
     if (steerOnly && kind !== "steer") kind = "steer";
     setBusy(true);
-    setError(undefined);
+    setHint(undefined);
     // What goes, and from which draft: only that is cleared afterwards. Text typed meanwhile, or
     // another session's draft (the view moved on during a slow stop-and-send), stays.
     const key = draftKey;
@@ -238,18 +240,18 @@ export const Composer = forwardRef<
         return l.filter((f) => !sentFiles.has(f.key));
       });
     } catch (e) {
-      setError((e as Error).message);
+      onFailed((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
   const stop = async () => {
-    setError(undefined);
+    setHint(undefined);
     try {
       await onStop();
     } catch (e) {
-      setError((e as Error).message);
+      onFailed((e as Error).message);
     }
   };
 
@@ -280,7 +282,7 @@ export const Composer = forwardRef<
   const busyTurn = mode === "steer" || mode === "queue";
   const label = primary === "shell" ? "Run" : primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
   const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? (inTerminal ? "Send when you're back from the terminal (Enter)" : "Send after this turn (Enter)") : "Send (Enter)";
-  const hint =
+  const placeholderText =
     disabled ??
     (busyTurn && !mainFree
       ? waiting
@@ -312,7 +314,6 @@ export const Composer = forwardRef<
       }}
     >
       <div className="t-composer-inner">
-        {status}
         {shellOn && (
           <div className="t-shell-hint" role="status">
             <span className="t-shell-badge">Shell</span>
@@ -321,7 +322,7 @@ export const Composer = forwardRef<
             </span>
           </div>
         )}
-        {error && <div className="t-inline-status error">{error}</div>}
+        {hint && <div className="t-inline-status">{hint}</div>}
         {files.length > 0 && (
           <div className="t-files" aria-label="Attachments">
             {files.map((f) => (
@@ -391,7 +392,7 @@ export const Composer = forwardRef<
               )}
             </>
           )}
-          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={hint} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
+          <textarea ref={box} className="t-input" rows={1} value={text} placeholder={placeholderText} spellCheck={!shellOn} autoCapitalize={shellOn ? "off" : undefined} autoCorrect={shellOn ? "off" : undefined} aria-label="Message" onChange={(e) => change(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} />
           {busyTurn && !hasContent && !shellOn ? (
             <IconButton label="Stop" tooltip="Stop (Esc)" variant="secondary" icon={<Icon icon={StopIcon} />} onClick={() => void stop()} />
           ) : (

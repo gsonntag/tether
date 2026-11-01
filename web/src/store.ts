@@ -250,6 +250,12 @@ export async function loadOlder(runnerId: string, sessionId: string): Promise<bo
   }
 }
 
+/** A send that failed: shown in the chat of the session it was for, if that's still open. */
+export function failedSend(runnerId: string, sessionId: string, text: string) {
+  models.get(key(runnerId, sessionId))?.model.addNotice(text);
+  publish(runnerId, sessionId);
+}
+
 /** Drops a disconnected runner from this browser's list. */
 export function forgetRunner(id: string) {
   const runners = sortRunners(get().runners.filter((r) => r.id !== id || r.online));

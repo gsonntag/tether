@@ -178,6 +178,11 @@ v1's `Msg` / `Part` model is kept, but trimmed: parts are `text`, `thinking`, `i
 `kind` (`shell`, `edit`, `write`, `read`, `search`, `fetch`, `todo`, `task`, `other`) is how the UI renders
 tool calls from every harness the same way. Messages have roles `user`, `assistant` and `notice`.
 
+Session and send errors show only in the chat, as error notices; nothing red sits above the composer, and
+a send that failed leaves its text in the box. The same error again is one row: the runner adds no repeat of
+the row above it, and the transcript hides repeats (`shared/notices.ts`), also across messages you sent
+meanwhile, which then say they failed.
+
 Session events: `msg` (upsert by id), `delta` (streamed text), `tool` (patch a tool part), `state`
 (patch live state), `reset` (replace the transcript, after compaction).
 

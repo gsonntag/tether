@@ -321,7 +321,7 @@ export interface LiveState {
   };
   /** the main agent is free and this many of its subagents still run (never saved: it can't outlive them) */
   backgroundSubagents?: number;
-  /** why the session can't run right now (the harness failed to start, isn't signed in, …) */
+  /** why the session can't run right now (the harness failed to start, isn't signed in, …); the chat shows it as a notice */
   error?: string;
 }
 

@@ -200,3 +200,12 @@ test("Claude Code's own replies read as the store has them: a notice, or a messa
   expect(sink.t.get("s1")).toMatchObject({ role: "notice", parts: [{ text: "No response requested." }] });
   expect(sink.t.get("x2")).toMatchObject({ role: "assistant", error: "You've hit your limit" });
 });
+
+test("not signed in: what to do goes in the chat as one error, not only in the state", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  s.handle({ type: "result", subtype: "success", is_error: true, uuid: "r1", result: "Not logged in · Please run /login" });
+  const hint = "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again.";
+  expect(sink.t.messages.map((m) => [m.role, m.level, m.parts])).toEqual([["notice", "error", [{ type: "text", text: hint }]]]);
+  expect(sink.st.error).toBe(hint);
+});
