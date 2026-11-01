@@ -87,6 +87,18 @@ test("resume keeps the thread's own settings: nothing sent; the state is the thr
   expect(sink.states[0]).toEqual({ model: "gpt-6-luna", modelResolved: "gpt-6-luna", effort: "low", permissionMode: "never+read-only" });
 });
 
+test("a key TUI remotely resumes its private thread without rejected permission overrides", () => {
+  useDaemon();
+  remember(MAIN, { source: { id: "private-terminal", source: "openai", projectPath: CWD } });
+  const launch = codexAdapter.terminalCommand!(MAIN, CWD, { credential: { source: "openai", revision: "one" }, model: "gpt-6-luna", effort: "low", permissionMode: "read-only" });
+  expect(launch.argv).toContain("--remote");
+  expect(launch.argv).toContain('model_provider="tether_openai"');
+  expect(launch.argv).not.toContain("-a");
+  expect(launch.argv).not.toContain("-s");
+  expect(launch.argv.some((arg) => arg.startsWith("approvals_reviewer="))).toBe(false);
+  expect(launch.env?.CODEX_HOME).toContain("codex-keys/private-terminal");
+});
+
 test("observing a TUI ignores stale saved model, effort and permission choices", async () => {
   useDaemon();
   const resume = daemon.answers["thread/resume"]!;

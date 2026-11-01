@@ -36,8 +36,6 @@ async function fetchModels(): Promise<CodexModel[]> {
 }
 
 const toml = (v: string) => JSON.stringify(v);
-/** Approval policies `codex -a` takes. */
-const CLI_POLICIES = new Set(["on-request", "never"]);
 
 export const codexAdapter: Adapter = {
   id: "codex",
@@ -107,19 +105,17 @@ export const codexAdapter: Adapter = {
   // Terminal (SPEC §8, shared): Codex's TUI joins the same thread through the daemon (`--remote`;
   // without it the TUI runs its own app-server and finds the thread "open in another app"), beside
   // Tether's connection. Approvals stay routed to clients, so Tether and the TUI both ask; the
-  // model, effort and permissions are the session's (the CLI takes only some approval policies:
-  // with "untrusted" the thread keeps its own). No update prompt: it would block the TUI.
+  // permissions are the thread's: remote resume rejects CLI permission overrides. No update
+  // prompt: it would block the TUI.
   terminalCommand(nativeId, _projectPath, opts) {
     const source = remembered(nativeId)?.source;
     if (opts.credential && (source?.source ?? "subscription") !== opts.credential.source) throw new Error("This Codex session belongs to another billing source. Start a new session to use the configured source.");
     const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
-    const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false", "-c", `approvals_reviewer=${toml("user")}`];
+    const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false"];
     argv.push("-c", `model_provider=${toml(source ? sourceProvider(source.source) : "openai")}`);
     const model = opts.credential?.source === "azure" && opts.credential.deployment ? opts.credential.deployment : opts.model;
     if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
-    const m = knownMode(opts.permissionMode);
-    if (m && CLI_POLICIES.has(m.approvalPolicy)) argv.push("-a", m.approvalPolicy, "-s", m.sandbox);
     // tmux may have inherited provider keys long before this runner started.
     const remove = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TETHER_GATEWAY_KEY"]);
     for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_)/.test(name)) remove.add(name);

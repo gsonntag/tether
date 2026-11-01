@@ -696,6 +696,8 @@ phone width without sideways scrolling; matching composer colour; and markers on
 rows. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
 early in the chip row on phones and never appears on API sessions. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
+Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
+passes no CLI permission overrides, which remote resume rejects.
 
 ### Session names
 

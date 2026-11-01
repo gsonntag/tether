@@ -2,7 +2,7 @@
 
 ## Verification record (2026-10-31–2026-11-01)
 
-- All four packages typecheck; 848 unit tests pass.
+- All four packages typecheck; 849 unit tests pass.
 - The complete default P1 and P4 browser suites passed. Optional P1 stored paging/compacted-history
   fixtures were not supplied. P4's conditional subagent approval branch was skipped because the
   subagent did not request approval; its permission behavior has unit coverage.

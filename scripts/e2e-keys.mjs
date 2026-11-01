@@ -98,7 +98,7 @@ async function realSources(p) {
       await p.reload();
       await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:90000});
       await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
-      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && !!v.state.error;},{runner,id},{timeout:90000});
+      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
       assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"runner restart changed the key session's billing source");
       console.log(`ok real ${source} runner restart: history resumed on the same source; rejected key stopped again`);
     }
@@ -106,7 +106,14 @@ async function realSources(p) {
     try {
       const opened=await call(p,"openTerminal",{sessionId:id,cols:80,rows:24});
       await new Promise((r)=>setTimeout(r,1500));
-      const captured=await call(p,"terminalText",{attachId:opened.attachId});
+      let captured;
+      try { captured=await call(p,"terminalText",{attachId:opened.attachId}); }
+      catch(e) {
+        const text=incoming.map((frame)=>{try{const m=JSON.parse(frame);return m.t==="term" && m.attachId===opened.attachId ? Buffer.from(m.data,"base64").toString("utf8") : "";}catch{return "";}}).join("");
+        assert(!secrets.some((key)=>text.includes(key)),"key found in terminal output");
+        console.error(`native ${source} TUI exited before capture:`,text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,""));
+        throw e;
+      }
       const trust=/trust this folder|Yes, I trust|Do you trust/i.test(captured.text);
       await call(p,"closeTerminal",{attachId:opened.attachId});
       await p.locator(".t-chip-term").click();
@@ -138,7 +145,9 @@ async function realSources(p) {
       assert(refused,"unset converted an existing Codex source");
       const sub=await call(p,"newSession",{harness:"codex",projectPath:cx,model:"gpt-6-luna",effort:"low",permissionMode:"read-only"});
       await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(sub.sessionId)}`);
-      await p.getByText("ChatGPT plan",{exact:true}).waitFor({timeout:90000});
+      await call(p,"send",{sessionId:sub.sessionId,text:"Reply exactly OK. Do not use tools."});
+      await p.locator(".t-usage-chip",{hasText:"ChatGPT plan"}).waitFor({timeout:30000});
+      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && v.window?.messages?.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text)));},{runner,id:sub.sessionId},{timeout:90000});
       assert(await p.locator(".t-paid-badge").count()===0,"new Codex subscription retained API colour");
     }
     console.log(`ok real ${source}: harness-confirmed browser label, failure stops without fallback, unset restores subscription or refuses cross-source continuation`);
