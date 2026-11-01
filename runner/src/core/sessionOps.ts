@@ -34,7 +34,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("fullPart", async (a) => core.fullPart(await core.open(str(a.sessionId, "sessionId")), str(a.msgId, "msgId"), optNum(a.part) ?? -1, optNum(a.offset)));
   ops.register("listModels", (a) => live.listModels(harness(a.harness), optStr(a.sessionId)));
   ops.register("newSession", (a) =>
-    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true, createFolder: a.createFolder === true }),
+    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true, createFolder: a.createFolder === true, source: a.source }),
   );
   ops.register("checkFolder", (a) => checkFolder(str(a.projectPath, "A folder")));
   const text = (v: unknown) => (typeof v === "string" ? v : "");

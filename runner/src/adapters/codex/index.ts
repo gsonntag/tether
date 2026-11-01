@@ -11,7 +11,7 @@ import { CodexDriver, createThread } from "./driver";
 import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
-import { sourceHome, sourceProvider, sourceSocket } from "./sources";
+import { assertThreadSource, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -45,6 +45,14 @@ export const codexAdapter: Adapter = {
   id: "codex",
   capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", move: { import: "native" } },
   move: codexMove,
+  billing: {
+    keys: ["openai", "azure"],
+    label: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
+    // Asked of the shared daemon, whose login a subscription session uses.
+    loggedIn: async () => (await call("account/read", { refreshToken: false }, 10_000))?.account?.type === "chatgpt",
+    // A private thread lives with its source. Any other is on the shared daemon: its login.
+    recorded: (nativeId) => remembered(nativeId)?.source?.source ?? "subscription",
+  },
 
   async available() {
     return !!Bun.which(HARNESS_BINS.codex);
@@ -114,7 +122,7 @@ export const codexAdapter: Adapter = {
   // prompt: it would block the TUI.
   terminalCommand(nativeId, _projectPath, opts) {
     const source = remembered(nativeId)?.source;
-    if (opts.credential && (source?.source ?? "subscription") !== opts.credential.source) throw new Error("This Codex session belongs to another billing source. Start a new session to use the configured source.");
+    assertThreadSource(source, opts.credential);
     const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false"];
     argv.push("-c", `model_provider=${toml(source ? sourceProvider(source.source) : "openai")}`);

@@ -108,16 +108,14 @@ process.stdout.write('verified');\n`);
   expect(await new Response(stale.stderr).text()).toContain("billing could not be confirmed");
 });
 
-test("subscription launcher rejects a key set after preflight and otherwise clears inherited auth", async () => {
+test("a subscription launch never reads the key beside it, and clears inherited auth", async () => {
   const c = credential();
   const { launcher } = claudeTerminalScripts(c.file!);
+  expect(readFileSync(launcher, "utf8")).toContain('source !== "subscription"');
   const argv = [process.execPath, launcher, c.file!, "subscription", "subscription", process.execPath, "-e", "if(process.env.ANTHROPIC_API_KEY||process.env.TETHER_CLAUDE_API_KEY)process.exit(5);console.log('subscription')", "--settings", JSON.stringify(claudeAuthSettings())];
-  const blocked = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  expect(await blocked.exited).toBe(1);
-  writeFileSync(c.file!, '{"version":1}', { mode: 0o600 });
-  const restored = Bun.spawn(argv, { env: { ...process.env, ANTHROPIC_API_KEY: c.key!, TETHER_CLAUDE_API_KEY: c.key! }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  expect(await restored.exited).toBe(0);
-  expect(await new Response(restored.stdout).text()).toContain("subscription");
+  const plan = Bun.spawn(argv, { env: { ...process.env, ANTHROPIC_API_KEY: c.key!, TETHER_CLAUDE_API_KEY: c.key! }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  expect(await plan.exited).toBe(0);
+  expect(await new Response(plan.stdout).text()).toContain("subscription");
 });
 
 test("read-only TUI preflight confirms helper auth and refuses an unconfirmed source", async () => {

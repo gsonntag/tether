@@ -12,7 +12,7 @@ describe("private credentials", () => {
     store.set("azure", fake("blank"), "https://example.azure.com/openai/v1", "");
     expect(store.status().azure.set).toBe(true);
     expect(store.status().azure.deployment).toBeUndefined();
-    expect(store.snapshot("codex").deployment).toBeUndefined();
+    expect(store.snapshot("azure")!.deployment).toBeUndefined();
     expect(() => store.set("azure", fake("bad"), "https://example.azure.com/openai/v1", "has space")).toThrow("valid deployment");
   });
   test("loaded Azure metadata fails closed too, and unsupported file fields never enter snapshots", () => {
@@ -26,7 +26,7 @@ describe("private credentials", () => {
     writeFileSync(file, JSON.stringify({ version: 1, anthropic: { key, revision: "two", endpoint: key, arbitrary: key } }), { mode: 0o600 });
     const store = new CredentialStore(file);
     expect(store.status().anthropic).toEqual({ set: true, last4: key.slice(-4) });
-    expect(store.snapshot("claude")).toEqual({ key, revision: "two", file, source: "anthropic" });
+    expect(store.snapshot("anthropic")).toEqual({ key, revision: "two", file, source: "anthropic" });
   });
   test("a key accidentally pasted into public Azure metadata cannot reach argv or status", () => {
     const store = new CredentialStore(join(dir(), "credentials.json")), key = fake("metadata");
@@ -55,35 +55,66 @@ describe("private credentials", () => {
   test("only status leaves the store; keys persist solely in a private atomic file", () => {
     const root = dir(), file = join(root, "credentials.json"), key = fake("anthropic");
     const store = new CredentialStore(file);
-    expect(store.snapshot("claude").source).toBe("subscription");
+    expect(store.snapshot("anthropic")).toBeUndefined();
     const status = store.set("anthropic", key);
     expect(status.anthropic).toEqual({ set: true, last4: key.slice(-4) });
     expect(JSON.stringify(status)).not.toContain(key);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(readdirSync(root)).toEqual(["credentials.json"]);
-    expect(new CredentialStore(file).snapshot("claude").key).toBe(key);
+    expect(new CredentialStore(file).snapshot("anthropic")!.key).toBe(key);
     expect(redact(`provider echoed ${key}`)).toBe("provider echoed [redacted]");
     expect(redactValue({ error: [key] })).toEqual({ error: ["[redacted]"] });
     store.unset("anthropic");
     expect(readFileSync(file, "utf8")).not.toContain(key);
-    expect(store.snapshot("claude").source).toBe("subscription");
+    expect(store.snapshot("anthropic")).toBeUndefined();
+    expect(store.snapshot("subscription")).toMatchObject({ source: "subscription", revision: "subscription" });
     // A process running the retired key may still emit an error.
     expect(redact(key)).toBe("[redacted]");
   });
-  test("Codex slots replace each other; unsetting never reactivates an old key", () => {
+  test("all three keys stay set together; setting or unsetting one touches no other", () => {
     const store = new CredentialStore(join(dir(), "credentials.json"));
-    const first = fake("openai"), second = fake("azure");
+    const first = fake("openai"), second = fake("azure"), third = fake("anthropic");
     store.set("openai", first);
-    const before = store.snapshot("codex").revision;
+    const before = store.snapshot("openai")!.revision;
     store.set("azure", second, "https://example.openai.azure.com/openai/v1", "deploy");
-    expect(store.status()).toMatchObject({ openai: { set: false }, azure: { set: true, deployment: "deploy" } });
-    expect(store.snapshot("codex").revision).not.toBe(before);
-    expect(readFileSync(store.file, "utf8")).not.toContain(first);
-    store.unset("openai");
-    expect(store.snapshot("codex").source).toBe("azure");
+    store.set("anthropic", third);
+    expect(store.status()).toMatchObject({ openai: { set: true }, azure: { set: true, deployment: "deploy" }, anthropic: { set: true } });
+    expect(store.snapshot("openai")).toMatchObject({ key: first, revision: before });
     store.unset("azure");
-    expect(store.snapshot("codex")).toMatchObject({ source: "subscription", revision: "subscription" });
-    expect(new CredentialStore(store.file).status().openai.set).toBe(false);
+    expect(store.snapshot("openai")).toMatchObject({ key: first, revision: before });
+    expect(store.snapshot("azure")).toBeUndefined();
+    expect(readFileSync(store.file, "utf8")).not.toContain(second);
+    const again = new CredentialStore(store.file);
+    expect(again.status()).toMatchObject({ openai: { set: true }, azure: { set: false }, anthropic: { set: true } });
+    expect(again.snapshot("openai")!.revision).toBe(before);
+  });
+  test("a replaced key is the same slot under a new revision", () => {
+    const store = new CredentialStore(join(dir(), "credentials.json"));
+    store.set("openai", fake("old"));
+    const before = store.snapshot("openai")!.revision;
+    store.set("openai", fake("new"));
+    expect(store.snapshot("openai")!.revision).not.toBe(before);
+  });
+  test("the file as it was written before per-session sources still reads, and migrates on its next change", () => {
+    const file = join(dir(), "credentials.json"), openai = fake("v1-openai"), anthropic = fake("v1-anthropic");
+    writeFileSync(file, JSON.stringify({ version: 1, anthropic: { key: anthropic, revision: "a1" }, codex: { key: openai, revision: "c1", source: "openai" } }) + "\n", { mode: 0o600 });
+    const store = new CredentialStore(file);
+    expect(store.snapshot("openai")).toMatchObject({ key: openai, revision: "c1", source: "openai" });
+    expect(store.snapshot("anthropic")).toMatchObject({ key: anthropic, revision: "a1" });
+    expect(store.snapshot("azure")).toBeUndefined();
+    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(1); // reading rewrites nothing
+    store.set("azure", fake("v1-azure"), "https://example.azure.com/openai/v1");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    expect(saved.version).toBe(2);
+    expect(saved.codex).toBeUndefined();
+    expect(saved.openai).toEqual({ key: openai, revision: "c1" });
+    expect(new CredentialStore(file).snapshot("openai")!.revision).toBe("c1");
+    writeFileSync(file, JSON.stringify({ version: 1, codex: { key: openai, revision: "c1", source: "azure", endpoint: "https://example.azure.com/openai/v1", deployment: "d" } }), { mode: 0o600 });
+    expect(new CredentialStore(file).snapshot("azure")).toMatchObject({ key: openai, deployment: "d" });
+    writeFileSync(file, JSON.stringify({ version: 1, codex: { key: openai, revision: "c1", source: "other" } }), { mode: 0o600 });
+    expect(() => new CredentialStore(file)).toThrow("Sending is disabled");
+    writeFileSync(file, JSON.stringify({ version: 3 }), { mode: 0o600 });
+    expect(() => new CredentialStore(file)).toThrow("Sending is disabled");
   });
   test("invalid input and file errors never echo key text; corrupt and public files fail closed", () => {
     const root = dir(), file = join(root, "credentials.json");

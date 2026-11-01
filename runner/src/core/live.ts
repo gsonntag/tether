@@ -8,7 +8,8 @@
 // sessions (SPEC §6a).
 
 import { randomUUID } from "node:crypto";
-import { CredentialStore, redact, redactValue } from "../credentials";
+import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
+import { isBillingSource, type BillingSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
@@ -106,13 +107,12 @@ export class LiveControl {
 
   // ---------------- ops ----------------
 
-  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean } & StartOpts): Promise<{ sessionId: string }> {
-    const a = this.core.adapter(args.harness);
+  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts): Promise<{ sessionId: string }> {
+    this.core.adapter(args.harness); // throws for a harness this runner can't drive, before anything is made
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
     const folder = this.core.folder(args.projectPath, args.createFolder === true);
     const opts: StartOpts = { model: args.model, effort: args.effort, permissionMode: args.permissionMode };
-    const credential = this.opts.credentials?.snapshot(args.harness);
-    const s = this.core.create(args.harness, await a.newId(folder, { ...opts, ...(credential ? { credential } : {}) }), folder, opts);
+    const s = await this.createSession(args.harness, folder, opts, await this.sourceForNew(args.harness, args.source));
     this.core.touch(s);
     if (args.terminal) {
       // Its TUI creates it (SPEC §8): for a handoff harness, no SDK process at all; a shared TUI
@@ -270,9 +270,11 @@ export class LiveControl {
     try {
       const folder = this.core.folder(s.summary.projectPath);
       const { model, effort, permissionMode } = s.state;
-      const credential = this.opts.credentials?.snapshot(s.summary.harness);
+      const source = this.sourceOf(s);
+      const credential = this.credentialFor(s.summary.harness, source);
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
+      this.core.o.prefs.set(n.id, { source });
       this.core.touch(n);
       try {
         await this.ensureDriver(n);
@@ -843,10 +845,10 @@ export class LiveControl {
   private ensureDriver(s: Session, observe = false): Promise<Driver> {
     if (s.driver) {
       if (observe) return Promise.resolve(s.driver);
-      const revision = this.opts.credentials?.snapshot(s.summary.harness).revision;
-      if (revision === undefined || revision === s.credentialRevision) return Promise.resolve(s.driver);
+      if (!this.opts.credentials || this.opts.credentials.snapshot(this.sourceOf(s))?.revision === s.credentialRevision) return Promise.resolve(s.driver);
       // A running turn finishes on its original process and source. No new message can go to it
-      // after a change; idle processes are closed before resuming with the new snapshot.
+      // after a change; idle processes are closed before starting again, on the session's source
+      // with its key as it is now. With its key unset that start stops, saying so.
       if (s.driver.busy() || s.driver.turnRunning?.() || s.state.terminal) return Promise.reject(new Error("Credentials changed. Wait for this process to finish and close its terminal before sending."));
       s.starting ??= this.release(s, true).then(() => this.startDriver(s)).finally(() => { s.starting = undefined; this.core.scheduleEvict(s); });
       return s.starting;
@@ -865,9 +867,96 @@ export class LiveControl {
    * What you set in Tether. The rest is the harness's own (its config, or the session's settings it
    * keeps itself), never overwritten by what Tether merely showed.
    */
-  chosen(s: Session): StartOpts {
-    const credential = this.opts.credentials?.snapshot(s.summary.harness);
+  chosen(s: Session, observe = false): StartOpts {
+    const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s));
     return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
+  }
+
+  /**
+   * What a session draws from: what's saved with it, else what its harness has on record, which is
+   * then saved. A subagent draws from its main session. Keys set later never change the answer.
+   */
+  sourceOf(s: Session): BillingSource {
+    const main = s.summary.parentSessionId;
+    const id = main ?? s.id;
+    const saved = this.core.o.prefs.get(id).source;
+    if (saved) return saved;
+    const nativeId = main ? parseSessionId(main)?.nativeId : s.summary.nativeId;
+    const recorded = (nativeId ? this.core.adapter(s.summary.harness).billing?.recorded?.(nativeId, s.summary.projectPath) : undefined) ?? "subscription";
+    this.core.o.prefs.set(id, { source: recorded });
+    return recorded;
+  }
+
+  private labelOf(harness: HarnessId, source: BillingSource): string {
+    return this.core.adapter(harness).billing?.label(source).label ?? source;
+  }
+
+  /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
+  credentialFor(harness: HarnessId, source: BillingSource): CredentialSnapshot | undefined {
+    if (!this.opts.credentials) return undefined;
+    const credential = this.opts.credentials.snapshot(source);
+    if (credential) return credential;
+    const change = this.core.adapter(harness).capabilities.sourceSwitch ? "change the session's Source" : "use Move to continue on another source";
+    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in Credentials, or ${change}. Nothing was sent.`);
+  }
+
+  /** The sources that exist for a harness now: its login, if it reports one, and keys that are set. */
+  async sources(harness: HarnessId): Promise<SourceChoices> {
+    const billing = this.core.adapter(harness).billing;
+    if (!billing || !this.opts.credentials) return { options: [] };
+    const status = this.opts.credentials.status();
+    const login = await billing.loggedIn().catch(() => false);
+    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter((k) => status[k].set)].map((source) => {
+      const deployment = source === "subscription" ? undefined : status[source].deployment;
+      return { source, billing: billing.label(source), ...(deployment ? { deployment } : {}) };
+    });
+    const last = this.core.o.prefs.lastSource(harness);
+    const fallback = login ? "subscription" : options[0]?.source;
+    return { options, ...(last && options.some((o) => o.source === last) ? { default: last } : fallback ? { default: fallback } : {}) };
+  }
+
+  /**
+   * The source a new session gets. None asked for: the subscription, never a key by surprise. An
+   * asked-for source becomes the harness's default when there was a choice to make.
+   */
+  async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
+    if (asked === undefined) return "subscription";
+    const a = this.core.adapter(harness);
+    if (!isBillingSource(asked) || (asked !== "subscription" && !a.billing?.keys.includes(asked))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
+    if ((await this.sources(harness)).options.length > 1) this.core.o.prefs.setLastSource(harness, asked);
+    return asked;
+  }
+
+  /** A new native id on a source: a key's thread is made on its own private process. */
+  async newNativeId(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<string> {
+    const credential = this.credentialFor(harness, source);
+    return this.core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) });
+  }
+
+  /** A new session, its source saved with it before anything can start it. */
+  async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
+    const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
+    this.core.o.prefs.set(s.id, { source });
+    return s;
+  }
+
+  /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
+  async setSource(id: string, asked: unknown) {
+    const s = await this.core.open(id);
+    const harness = s.summary.harness;
+    if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
+    if (!isBillingSource(asked)) throw new Error("That isn't a source.");
+    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
+    if (s.state.status !== "idle" || s.sending || s.starting) throw new Error("Wait for the turn to end.");
+    if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
+    if (asked === this.sourceOf(s)) return;
+    const next = this.core.adapter(harness).billing!.label(asked);
+    const confirmed = s.state.billing?.label === next.label;
+    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next });
+    this.core.o.prefs.flush();
+    s.setState({ nextBilling: confirmed ? undefined : next });
+    this.core.touch(s);
   }
 
   /**
@@ -875,30 +964,31 @@ export class LiveControl {
    * its model and effort (Adapter.unset) what the session's store says now, else `unset`. The session
    * shows it; a setting changed while this looked stands. The permission mode isn't filled in.
    */
-  async startOpts(s: Session): Promise<StartOpts> {
+  async startOpts(s: Session, observe = false): Promise<StartOpts> {
     const a = this.core.adapter(s.summary.harness);
-    if (!a.unset) return this.chosen(s);
+    if (!a.unset) return this.chosen(s, observe);
+    const opts = this.chosen(s, observe);
     const known = await a.defaults(s.summary.projectPath, s.summary.nativeId).catch(() => ({}) as StartOpts);
-    const opts = this.chosen(s);
     const filled = { model: known.model ?? a.unset.model, effort: known.effort ?? a.unset.effort };
     s.setState({ ...(opts.model ? {} : { model: filled.model }), ...(opts.effort ? {} : { effort: filled.effort }) });
     return { ...filled, ...opts };
   }
 
   private checkCredential(s: Session) {
-    if (this.opts.credentials && this.opts.credentials.snapshot(s.summary.harness).revision !== s.credentialRevision) throw new Error("Credentials changed while the process was starting. Send again to use the new source.");
+    if (this.opts.credentials && this.opts.credentials.snapshot(this.sourceOf(s))?.revision !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
   }
 
   private async startDriver(s: Session, observe = false): Promise<Driver> {
     const a = this.core.adapter(s.summary.harness);
-    const opts = await this.startOpts(s);
-    if (observe) opts.observe = true;
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
     const sink = this.sink(s);
     let d: Driver;
+    let opts: StartOpts;
     try {
+      opts = await this.startOpts(s, observe);
+      if (observe) opts.observe = true;
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
       const error = redact(e?.message ?? String(e));
@@ -914,6 +1004,10 @@ export class LiveControl {
     }
     s.driver = d;
     s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
+    if (s.state.nextBilling) {
+      this.core.o.prefs.set(s.id, { nextBilling: undefined });
+      s.setState({ nextBilling: undefined });
+    }
     d.onExit = (error) => {
       if (s.driver !== d) return;
       if (error) s.apply({ type: "msg", msg: notice(error, "error") });

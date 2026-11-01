@@ -56,6 +56,8 @@ export interface HarnessCapabilities {
    * running turn's own values show beside the change (LiveState.turnSettings).
    */
   settingsApply?: "now" | "nextTurn";
+  /** An existing session can change source on its next process start. Absent: only Move does it. */
+  sourceSwitch?: boolean;
   /**
    * Moving a session between harnesses (SPEC §15). `import`: "native", the harness takes a history
    * itself (Adapter.move.importHistory); "context", a new session gets the whole history as a file
@@ -279,6 +281,8 @@ export interface LiveState {
   context?: ContextUse;
   /** what it draws from. Absent: a runner that doesn't say, or a session that hasn't started */
   billing?: Billing;
+  /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
+  nextBilling?: Billing;
   /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
   cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */

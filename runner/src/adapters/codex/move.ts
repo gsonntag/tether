@@ -20,7 +20,7 @@ import type { AdapterMove } from "../../core/adapter";
 import { codexHistory, readThread, threadTurns } from "./discovery";
 import { dropPending } from "./driver";
 import { knownMode } from "./modes";
-import { sourceBilling, threadCall } from "./sources";
+import { threadCall } from "./sources";
 import { CODEX_HOME } from "./rpc";
 import { remember, remembered } from "./remember";
 
@@ -199,8 +199,6 @@ export const codexMove: AdapterMove = {
   },
 
   setTitle: async (nativeId, _projectPath, title) => void (await threadCall(nativeId, "thread/name/set", { threadId: nativeId, name: title })),
-
-  billingOf: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
 
   async contextWindow(model) {
     const w = await windows();

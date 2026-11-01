@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { QueuedMessage } from "../../shared/transcript";
+import type { BillingSource } from "../../shared/credentials";
+import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
@@ -25,6 +26,8 @@ export interface RunnerConfig {
   requests?: SavedRequest[];
   /** recently closed request ids, so an answer arriving after a restart is still told "Already answered." */
   closedRequests?: ClosedRequest[];
+  /** the billing source last chosen for each harness: what its next new session offers first */
+  lastSources?: Partial<Record<HarnessId, BillingSource>>;
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
@@ -39,6 +42,10 @@ export interface SessionPrefs {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /** what the session draws from, on every start, whatever keys are set later. Never a key itself */
+  source?: BillingSource;
+  /** a source picked for the next process start, until the harness confirms it */
+  nextBilling?: Billing;
   /** a turn was running: still set at start means it was cut off (a runner restart, a crash); through the quiet wait too */
   running?: boolean;
   /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */

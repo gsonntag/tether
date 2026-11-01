@@ -9,7 +9,7 @@ import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../cor
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
-import { claudeAuthSettings, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
+import { claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { CLAUDE_UNSET } from "../../../../shared/transcript";
@@ -148,8 +148,15 @@ function watchFile(path: () => string | undefined, onChange: () => void): () => 
 
 export const claudeAdapter: Adapter = {
   id: "claude",
-  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, move: { import: "native" } },
   move: claudeMove,
+  billing: {
+    keys: ["anthropic"],
+    label: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
+    loggedIn: () => claudeLoggedIn(CLAUDE_BIN ?? "claude"),
+    // What it last ran on, as Claude Code confirmed. Nothing recorded: not a key by surprise.
+    recorded: (nativeId) => (keptBilling(splitNative(nativeId).session).label === "Anthropic API key" ? "anthropic" : "subscription"),
+  },
 
   async available() {
     return !!CLAUDE_BIN;

@@ -1,5 +1,24 @@
 # API credentials acceptance
 
+## Per-session sources (2026-11-01)
+
+Real Claude/Haiku and Codex/gpt-6-luna at Low, in a browser, with random fake keys, on a private stack:
+
+- With a fake key set, a Claude plan and a ChatGPT plan session each started, confirmed its label and
+  replied. Their processes (and their TUIs) had no key variable with a value in `/proc/<pid>/environ`.
+- A session on each fake key (made through the picker) showed the badge and stopped with no reply from
+  anywhere. A Codex key's process had no key value and its private home no login. A Claude key's process
+  had no key variable. Side by side in the Sidebar at desktop and in the phone's menu.
+- After a dev runner restart with the key set, the plan session resumed and replied. A stored Codex
+  thread with no record, the kind that was refused, ran on the plan in place, with the key set.
+- A replaced key carried on in the same session. An unset key stopped with the source named in chat and
+  in the op, the badge unchanged, nothing sent.
+- Claude's Source went from plan to key and back at the next start, the label following the harness; an
+  open TUI refused it. Codex has no Source item. Move changed source on the same harness for both,
+  with the old session unchanged (`scripts/e2e-move.mjs sourceChange`).
+- A file in the version 1 shape read, offered its key and migrated on the next change, its revision
+  kept. The new web on a runner from before this change showed no picker and worked.
+
 ## Verification record (2026-10-31–2026-11-01)
 
 - All four packages typecheck; 851 unit tests pass.
@@ -37,35 +56,52 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 ## Credentials page
 
 - [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; Credentials is its only subpage. Exactly Claude/Anthropic,
-  Codex/Azure and Codex/OpenAI slots appear. Multiple runners have a runner selector.
+  Codex/Azure and Codex/OpenAI slots appear, and only keys: nothing says which is in use. Multiple
+  runners have a runner selector.
 - [ ] Save a random fake Anthropic key. The password field clears immediately; status becomes Set,
   optionally with last four characters. Reload: only status is returned, never the key.
-- [ ] Save OpenAI, then Azure with HTTPS endpoint and optional deployment. OpenAI becomes Not set.
-  Reverse them: Azure becomes Not set. There is no separate enable switch or session picker.
-- [ ] Unset an inactive slot: the active slot remains. Unset the active slot: both Codex slots are
-  Not set, including after reconnect and runner restart. Neither old key returns.
+- [ ] Save OpenAI, then Azure with HTTPS endpoint and optional deployment, then Anthropic. All three
+  stay Set, including after reconnect and runner restart. There is no enable switch.
+- [ ] Unset one: the others stay Set, and no session changes source. An unset key doesn't return.
 - [ ] Invalid endpoint/key and unavailable runner show terse inline errors; no key is repeated.
+
+## Source picker
+
+- [ ] New session, desktop and 375 px: Source lists only what exists for the harness. A key that isn't
+  set isn't listed; a harness with no login has no plan. One source shows without a picker. A key in
+  the picker has the API colour, and Create is reachable on a phone.
+- [ ] It starts on the subscription, even with keys set. Choose a key and create: the next New session
+  starts on that key, on this runner, and the picker shows it. Unset it: back to the subscription.
+- [ ] `newSession` with no source (an older web) is the subscription, with keys set.
+- [ ] A web ahead of its runner shows no picker, and New session and Move still work.
+- [ ] A version 1 `credentials.json` reads; its key is offered, and the next change rewrites it.
 
 ## Harness and process boundaries
 
-- [ ] Start a subscription session and confirm the harness reports Claude plan / ChatGPT plan.
-  No API indicator appears. Plan usage, when reported, is early enough to see on a phone.
-- [ ] Set a fake key while a turn runs. Its label stays on the original source and that turn ends.
-  The next queued or manually sent message restarts an idle live process first.
+- [ ] With a key set, start a subscription session and confirm the harness reports Claude plan /
+  ChatGPT plan. No API indicator appears. Plan usage, when reported, is early enough to see on a phone.
+  `/proc/<pid>/environ` of what it starts has no key variable with a value.
+- [ ] Set a fake key while a subscription session is idle or running: nothing changes for it, and its
+  process isn't restarted. Replace a key while a turn runs on it: that turn ends on the old key, and
+  the next queued or manually sent message restarts the idle process with the new key first.
 - [ ] Anthropic: the new process confirms Anthropic API key before sending. A rejected fake key
   stops with an error; it never calls the subscription. An Unknown/mismatched report refuses send.
 - [ ] OpenAI: a private Codex process confirms the key provider; its fake-key turn fails on that
   source. The shared subscription daemon's PID, environment, login and configuration remain intact.
 - [ ] Azure: supply an endpoint and optional deployment. Its private process confirms Azure; a
   fake-key/invalid-endpoint turn stops there, without trying OpenAI or the subscription.
-- [ ] Unset Anthropic; send again in the same idle session. A fresh process confirms the
-  subscription, with no inherited API/provider variables. Confirm it can answer on Haiku.
-- [ ] Unset a Codex key. Existing sessions belonging to another source refuse continuation rather
-  than moving. A new gpt-6-luna/Low session confirms the ChatGPT subscription.
+- [ ] Unset a key; send again in a session on it. A chat error names the source, nothing is sent, the
+  badge stays, and no process starts. Set it again: that session carries on.
+- [ ] An existing subscription session resumes with keys set, and a stored Codex thread with no record
+  runs on the ChatGPT plan in place.
+- [ ] Claude: session menu → Source. A chip says what's next, the label stays what's confirmed until
+  the next start confirms it. An open TUI and a running turn refuse it. Codex has no such item: Move.
+- [ ] Move to the same harness with another source: a new session with the context, confirmed before
+  anything is typed; the old session stays as it was.
 - [ ] Rotate a key while another session uses the previous revision. That turn finishes; rotation
   never restarts a daemon serving another session's active turn.
-- [ ] Runner restart: key sessions list with their history and correct source. Resume the same
-  source and confirm it again before send. Existing subscription sessions remain unchanged.
+- [ ] Runner restart: both kinds list with their history and correct source. Each resumes on its own
+  source and confirms it again before send.
 
 ## Terminal and indicators
 
@@ -106,11 +142,11 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 Enter keys only in Tether's Credentials page, never in chat.
 
 - [ ] Anthropic: a short Haiku turn and its TUI show Anthropic API key; the Anthropic usage record
-  records it. Unset; the next process confirms Claude plan and uses the subscription.
-- [ ] OpenAI: a new gpt-6-luna/Low thread and TUI show OpenAI API key; Platform usage records it.
-  Reload/restart and resume. Unset; a new subscription thread confirms ChatGPT plan.
+  records it. A plan session beside it uses the subscription.
+- [ ] OpenAI: a new gpt-6-luna/Low thread and TUI on it show OpenAI API key; Platform usage records it.
+  Reload/restart and resume. A ChatGPT plan thread beside it records nothing on Platform.
 - [ ] Azure: use the actual Foundry endpoint/deployment. A new thread and TUI show Azure and usage
-  reaches that resource. Replacing Azure with OpenAI never reactivates Azure when OpenAI is unset.
+  reaches that resource, with the OpenAI key set too.
 - [ ] Compare the session estimate after two turns and a reload/resume with the provider's usage
   record. Enter the resource's Azure rates. Claude's TUI intentionally makes cost coverage unknown.
 - [ ] Temporarily invalidate/revoke each key: the next turn fails on the named source with no

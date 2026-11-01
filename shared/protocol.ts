@@ -25,7 +25,7 @@
 
 import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
-import type { CredentialSource, CredentialStatus } from "./credentials";
+import type { BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { PartChunk } from "./limits";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
@@ -73,6 +73,10 @@ export interface Ops {
   credentials: { args: Record<string, never>; result: CredentialStatus };
   setCredential: { args: { source: CredentialSource; key: string; endpoint?: string; deployment?: string; rates?: TokenRates }; result: CredentialStatus };
   unsetCredential: { args: { source: CredentialSource }; result: CredentialStatus };
+  /** the sources a harness can use now, and which to show first. A runner without it hides the picker */
+  billingSources: { args: { harness: HarnessId }; result: SourceChoices };
+  /** a session's source from its next process start (only with capabilities.sourceSwitch) */
+  setSessionSource: { args: { sessionId: string; source: BillingSource }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
@@ -109,7 +113,7 @@ export interface Ops {
   /** where a session can move, and whether it can now (SPEC §15) */
   moveOptions: { args: { sessionId: string }; result: MoveOptions };
   /** moves a session to another harness: a new session there; the old one stays as it is */
-  moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string }; result: { sessionId: string } };
+  moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
 
   // ---------- driving ----------
 
@@ -123,7 +127,7 @@ export interface Ops {
    * folder that doesn't exist is made first, parents too; without it the runner never makes one.
    */
   newSession: {
-    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; createFolder?: boolean };
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource };
     result: { sessionId: string };
   };
   /** What newSession would find at a path on the runner. Read-only. */

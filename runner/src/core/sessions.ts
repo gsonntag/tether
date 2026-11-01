@@ -253,7 +253,7 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;

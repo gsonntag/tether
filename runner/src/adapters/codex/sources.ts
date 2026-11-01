@@ -4,8 +4,9 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { BillingSource } from "../../../../shared/credentials";
 import type { Billing } from "../../../../shared/transcript";
-import { configuredCredential, CredentialStore, DATA_DIR, type CredentialSnapshot } from "../../credentials";
+import { CredentialStore, DATA_DIR, type CredentialSnapshot } from "../../credentials";
 import { HARNESS_BINS } from "../detect";
 import { connect } from "./daemon";
 import { remember, remembered, rememberedThreads } from "./remember";
@@ -17,6 +18,12 @@ interface ProcessRecord { pid: number; birth: string; revision: string; unit?: s
 const inFlight = new Map<string, Promise<CodexRpc>>();
 export const sourceProvider = (source: ApiSource) => source === "azure" ? "tether_azure" : "tether_openai";
 export const sourceBilling = (source: ApiSource): Billing => source === "azure" ? { kind: "provider", label: "Azure" } : { kind: "apiKey", label: "OpenAI API key" };
+const sourceName = (source: BillingSource) => source === "openai" || source === "azure" ? sourceBilling(source).label : "ChatGPT plan";
+/** Threads don't cross app-servers. A record that disagrees with the session stops; it never reroutes. */
+export function assertThreadSource(thread: PrivateSource | undefined, credential?: CredentialSnapshot) {
+  const on = thread?.source ?? "subscription";
+  if (credential && on !== credential.source) throw new Error(`This Codex thread is on ${sourceName(on)}, not this session's ${sourceName(credential.source)}. Nothing was sent.`);
+}
 export const sourceHome = (source: PrivateSource) => join(DATA_DIR, "codex-keys", source.id);
 export const sourceSocket = (source: PrivateSource) => join(sourceHome(source), "s");
 const recordFile = (source: PrivateSource) => join(sourceHome(source), "daemon.json");
@@ -54,9 +61,9 @@ export function privateEnvironment(home: string, key?: string): Record<string, s
   return env;
 }
 
-/** No stale driver can send after Credentials changes, including a change during settings RPCs. */
+/** No stale driver can send after its key changes, including a change during settings RPCs. */
 export function assertCredentialCurrent(credential?: CredentialSnapshot) {
-  if (credential && CredentialStore.current && configuredCredential("codex").revision !== credential.revision) throw new Error("Credentials changed. Send again to start with the configured source. Nothing was sent.");
+  if (credential && CredentialStore.current && CredentialStore.current.snapshot(credential.source)?.revision !== credential.revision) throw new Error(`${sourceName(credential.source)} changed. Send again. Nothing was sent.`);
 }
 
 export const sourceCredentialRevision = (source: PrivateSource) => processRecord(source)?.revision;
@@ -69,10 +76,6 @@ export function privateThreadBusy(nativeId: string, thread: any, terminals: any)
   return thread.thread.status.type !== "idle" || terminals.data.length > 0;
 }
 
-function configuredFor(source: PrivateSource): CredentialSnapshot | undefined {
-  const c = configuredCredential("codex");
-  return c.source === source.source && c.key ? c : undefined;
-}
 
 async function stopPrivate(source: PrivateSource, record: ProcessRecord) {
   // Record and Linux start time identify only the private process Tether itself started.
@@ -109,11 +112,11 @@ async function ensurePrivate(source: PrivateSource, credential?: CredentialSnaps
     // A live process with an unavailable socket is never replaced or silently bypassed.
     throw new Error("This session's private Codex process isn't reachable. Nothing was sent.");
   }
-  const use = credential ?? configuredFor(source);
+  const use = credential ?? CredentialStore.current?.snapshot(source.source);
   const home = sourceHome(source);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  if (!use?.key) throw new Error("Set this session's API source in Credentials before continuing. Nothing was sent.");
+  if (!use?.key) throw new Error(`Set ${sourceName(source.source)} in Credentials before continuing. Nothing was sent.`);
   const endpoint = source.source === "openai" ? "https://api.openai.com/v1" : use.endpoint;
   if (!endpoint) throw new Error("Set an Azure endpoint in Credentials.");
   try { unlinkSync(socket); } catch {}
@@ -211,7 +214,7 @@ export async function newConnection(projectPath: string, credential?: Credential
 export async function threadConnection(nativeId: string, credential?: CredentialSnapshot, observe = false): Promise<CodexRpc> {
   const source = remembered(nativeId)?.source;
   if (observe) return source ? existingPrivateConnection(source) : connect();
-  if (credential && (source?.source ?? "subscription") !== credential.source) throw new Error("This Codex session belongs to another billing source. Start a new session to use the configured source. Nothing was sent.");
+  assertThreadSource(source, credential);
   return source ? privateConnection(source, credential, nativeId) : connect();
 }
 export function observedCredential(nativeId: string): CredentialSnapshot {

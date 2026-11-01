@@ -3,16 +3,19 @@ import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { effortLabel, findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
+import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { MoveOptions } from "../../../shared/move";
-import { CLAUDE_UNSET, type HarnessId, type SessionSummary } from "../../../shared/transcript";
+import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { loadModels, modelListKey, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
+import { SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Move to… and its dialog (SPEC §15). */
-export function SessionMenu({ runnerId, session }: { runnerId: string; session: SessionSummary }) {
+/** The session's menu, in the header: Move to… and its dialog (SPEC §15), and its Source where a process start can change that. */
+export function SessionMenu({ runnerId, session, state, capabilities }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities }) {
   const [open, setOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
   return (
     <>
       <DropdownMenu
@@ -23,13 +26,61 @@ export function SessionMenu({ runnerId, session }: { runnerId: string; session: 
         )}
       >
         <DropdownMenuItem label="Move to…" onClick={() => setOpen(true)} />
+        {capabilities?.sourceSwitch && !session.parentSessionId ? <DropdownMenuItem label="Source…" onClick={() => setSourceOpen(true)} /> : null}
       </DropdownMenu>
-      {open && <MoveDialog runnerId={runnerId} session={session} onClose={() => setOpen(false)} />}
+      {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
+      {sourceOpen && <SourceDialog runnerId={runnerId} session={session} state={state} onClose={() => setSourceOpen(false)} />}
     </>
   );
 }
 
-function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session: SessionSummary; onClose: () => void }) {
+/** A session's source from its next process start. A terminal blocks it; the runner says so too. */
+function SourceDialog({ runnerId, session, state, onClose }: { runnerId: string; session: SessionSummary; state: LiveState; onClose: () => void }) {
+  const [choices, setChoices] = useState<SourceChoices>();
+  const [picked, setPicked] = useState<BillingSource>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const current = choices?.options.find((o) => o.billing.label === (state.nextBilling ?? state.billing)?.label)?.source;
+  const value = picked ?? current ?? choices?.default;
+  const blocked = state.mode === "terminal" || state.terminal ? "Close the terminal first." : state.status !== "idle" ? "Wait for the turn to end." : undefined;
+
+  useEffect(() => {
+    rpc(runnerId, "billingSources", { harness: session.harness }).then(setChoices, () => setError("Update and restart the runner to change source."));
+  }, [runnerId, session.harness]);
+
+  const apply = async () => {
+    if (!value || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await rpc(runnerId, "setSessionSource", { sessionId: session.id, source: value });
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog isOpen onOpenChange={(o) => !o && !busy && onClose()} width={360} purpose="form">
+      <DialogHeader title="Source" onOpenChange={(o) => !o && !busy && onClose()} />
+      <div className="t-form" style={{ padding: 16 }}>
+        <SourcePicker choices={choices} value={value} onChange={setPicked} />
+        {choices && !choices.options.length && <div className="t-inline-status">No source available.</div>}
+        <div className="t-inline-status">Applies on the next start.</div>
+        {blocked && <div className="t-form-error">{blocked}</div>}
+        {error && <div className="t-form-error">{error}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />
+          <Button label="Apply" variant="primary" isDisabled={!value || !!blocked || busy} onClick={() => void apply()} />
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; session: SessionSummary; state: LiveState; onClose: () => void }) {
   const [options, setOptions] = useState<MoveOptions>();
   const [picked, setPicked] = useState<HarnessId>();
   const [model, setModel] = useState("");
@@ -45,9 +96,14 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
   const target = targets.find((t) => t.harness === picked) ?? targets[0];
   const harness = target?.harness;
   const models = useStore((s) => (harness ? s.modelLists[modelListKey(runnerId, harness)] : undefined));
+  const [sources, setSources] = useState<Partial<Record<HarnessId, BillingSource>>>({});
+  const source = harness ? (sources[harness] ?? target?.sources?.default) : undefined;
+  const option = target?.sources?.options.find((o) => o.source === source);
+  const deployment = option?.deployment ?? target?.deployment;
   useEffect(() => {
-    setModel("");
-    setEffort("");
+    // The same harness carries on with what the session runs.
+    setModel(target?.sameHarness ? (state.model ?? "") : "");
+    setEffort(target?.sameHarness ? (state.effort ?? "") : "");
     if (harness) void loadModels(runnerId, harness);
   }, [runnerId, harness]);
 
@@ -55,7 +111,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
   const isClaude = harness === "claude";
   const listed = models?.models.length ? models.models : isClaude ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
   const unpicked = isClaude ? (findModel(listed, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default";
-  const shownModel = model || unpicked;
+  const shownModel = findModel(listed, model)?.id ?? unpicked;
   const efforts = findModel(listed, shownModel)?.efforts ?? [];
   const unsetEffort = isClaude && efforts.includes(CLAUDE_UNSET.effort) ? CLAUDE_UNSET.effort : "";
   const validEffort = efforts.includes(effort) ? effort : "";
@@ -65,7 +121,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
     setBusy(true);
     setError(undefined);
     try {
-      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(model && model !== "default" && !target?.deployment ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
+      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(source ? { source } : {}), ...(model && model !== "default" && !deployment && findModel(listed, model) ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
       onClose();
       focusComposerOf(runnerId, sessionId);
       openSession(runnerId, sessionId);
@@ -91,13 +147,14 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
           </div>
         )}
         {targets.length === 1 && <div className="t-move-to">{target!.label}</div>}
-        {options && !targets.length && <div className="t-form-error">No other agent on this runner.</div>}
+        {options && !targets.length && <div className="t-form-error">No other agent or source on this runner.</div>}
         {target && (
           <>
-            {target.deployment ? (
+            <SourcePicker choices={target.sources} value={source} onChange={(s) => setSources((x) => ({ ...x, [target.harness]: s }))} />
+            {deployment ? (
               <div>
                 <span className="t-field-label">Deployment</span>
-                <div>{target.deployment}</div>
+                <div>{deployment}</div>
               </div>
             ) : (<label>
               <span className="t-field-label">Model</span>
@@ -109,7 +166,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
                 ))}
               </select>
             </label>)}
-            {efforts.length > 0 && !target.deployment && (
+            {efforts.length > 0 && !deployment && (
               <label>
                 <span className="t-field-label">Effort</span>
                 <select className="t-select" value={validEffort || unsetEffort} onChange={(e) => setEffort(e.target.value)}>
@@ -125,7 +182,7 @@ function MoveDialog({ runnerId, session, onClose }: { runnerId: string; session:
             <dl className="t-move-facts">
               <dt>Mode</dt>
               <dd>{permissionModeLabel(target.permissionMode)}</dd>
-              {target.billing && (
+              {!target.sources && target.billing && (
                 <>
                   <dt>Billing</dt>
                   <dd>{isApiBilling(target.billing) ? <span className="t-move-api">{target.billing.label}</span> : target.billing.label}</dd>

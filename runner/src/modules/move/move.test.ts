@@ -48,10 +48,10 @@ class Neutral extends FakeAdapter {
           }
         : {}),
       contextWindow: async () => window,
-      billingOf: (source) => (source === "subscription" ? { kind: "plan", label: "Plan" } : { kind: "apiKey", label: "Key" }),
     };
   }
   move: Adapter["move"];
+  override billing: NonNullable<Adapter["billing"]> = { keys: ["anthropic"], label: (source) => (source === "subscription" ? { kind: "plan", label: "Plan" } : { kind: "apiKey", label: "Key" }), loggedIn: async () => true };
   newId(): string {
     return `n${this.drivers.length}-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -151,17 +151,18 @@ describe("N-way: three harnesses, every direction, one code path", () => {
   });
 });
 
-describe("the target's configured source", () => {
+describe("the source a move goes to", () => {
   function keyed(adapters: Adapter[], source: "subscription" | "anthropic", deployment?: string) {
     const dir = mkdtempSync(join(tmpdir(), "tether-move-keys-"));
     const prefsFile = join(dir, "runner.json");
     saveConfig({ runnerId: "t" }, prefsFile);
-    const credentials = { snapshot: () => ({ source, revision: "r1", key: "never-in-prefs-000", ...(deployment ? { deployment } : {}) }) };
+    const snapshot = (asked: string) => (asked === "subscription" ? { source: asked, revision: "subscription" } : { source: asked, revision: "r1", key: "never-in-prefs-000", ...(deployment ? { deployment } : {}) });
+    const credentials = { snapshot, status: () => ({ anthropic: { set: source === "anthropic", ...(deployment ? { deployment } : {}) }, openai: { set: false }, azure: { set: false } }) };
     const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters, prefsFile, credentials: credentials as any } as any);
     stops.push(() => runner.core.stop());
     return { runner, prefsFile, mover: new Mover({ sessions: runner.look.sessions as any, dataDir: join(dir, "m"), log: () => {} }) };
   }
-  test("the dialog shows it, and a new session gets it; prefs never hold it", async () => {
+  test("the dialog lists what exists, and the session gets the one chosen; prefs never hold a key", async () => {
     const pi = new Neutral("pi", true);
     const omp = new Neutral("omp", true);
     const seen: any[] = [];
@@ -170,12 +171,58 @@ describe("the target's configured source", () => {
     const { mover, runner, prefsFile } = keyed([pi, omp], "anthropic");
     pi.stored_("s1", convo);
     await runner.core.open("pi:s1");
-    expect((await mover.options("pi:s1")).targets[0]!.billing).toEqual({ kind: "apiKey", label: "Key" });
-    const r = await mover.move("pi:s1", "omp", {});
+    const options = await mover.options("pi:s1");
+    const omps = options.targets.find((t) => (t.harness as string) === "omp")!;
+    expect(omps.sources?.options.map((o) => o.billing.label)).toEqual(["Plan", "Key"]);
+    expect(omps.sources?.default).toBe("subscription");
+    const r = await mover.move("pi:s1", "omp", { source: "anthropic" });
     expect(seen[0].credential.revision).toBe("r1");
     expect(runner.core.sessions.get(r.sessionId)!.driver).toBeDefined();
+    expect(runner.core.o.prefs.get(r.sessionId).source).toBe("anthropic");
+    expect((await runner.look.sessions.sources("omp" as any)).default).toBe("anthropic");
     runner.core.o.prefs.flush();
     expect(readFileSync(prefsFile, "utf8")).not.toContain("never-in-prefs");
+  });
+  test("no source asked for is the subscription, whatever keys are set", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const { mover, runner } = keyed([pi, omp], "anthropic");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    const r = await mover.move("pi:s1", "omp", {});
+    expect((omp.drivers[0]!.opts as any).credential.source).toBe("subscription");
+    expect(runner.core.o.prefs.get(r.sessionId).source).toBe("subscription");
+  });
+  test("the same harness offers only another source, keeps the mode, and leaves the old session", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const { mover, runner } = keyed([pi, omp], "anthropic");
+    pi.stored_("s1", convo);
+    const look = await runner.core.open("pi:s1");
+    look.setState({ permissionMode: pi.move!.modes.at(-1)!.mode });
+    const same = (await mover.options("pi:s1")).targets.find((t) => (t.harness as string) === "pi")!;
+    expect(same.sameHarness).toBe(true);
+    expect(same.sources?.options.map((o) => o.source)).toEqual(["anthropic"]);
+    expect(same.sources?.default).toBe("anthropic");
+    expect(same.permissionMode).toBe(pi.move!.modes.at(-1)!.mode);
+    await expect(mover.move("pi:s1", "pi", {})).rejects.toThrow("already");
+    await expect(mover.move("pi:s1", "pi", { source: "subscription" })).rejects.toThrow("already");
+    const r = await mover.move("pi:s1", "pi", { source: "anthropic" });
+    expect(r.sessionId).not.toBe("pi:s1");
+    expect(pi.imports).toHaveLength(1);
+    expect(runner.core.o.prefs.get(r.sessionId).source).toBe("anthropic");
+    expect(runner.core.o.prefs.get("pi:s1").source).toBe("subscription");
+    const old = await runner.core.open("pi:s1");
+    await runner.core.load(old);
+    expect(JSON.stringify(old.transcript!.messages)).toContain("Moved to Key.");
+  });
+  test("the same harness isn't offered when it has no other source", async () => {
+    const pi = new Neutral("pi", true);
+    const omp = new Neutral("omp", true);
+    const { mover, runner } = keyed([pi, omp], "subscription");
+    pi.stored_("s1", convo);
+    await runner.core.open("pi:s1");
+    expect((await mover.options("pi:s1")).targets.map((t) => t.harness as string)).toEqual(["omp"]);
   });
   test("the moved session starts with a fresh snapshot, so the harness confirms the source now", async () => {
     const pi = new Neutral("pi", true);
@@ -194,7 +241,7 @@ describe("the target's configured source", () => {
     const { mover, runner } = keyed([pi, omp], "anthropic");
     pi.stored_("s1", convo);
     await runner.core.open("pi:s1");
-    const r = await mover.move("pi:s1", "omp", {});
+    const r = await mover.move("pi:s1", "omp", { source: "anthropic" });
     expect(omp.imports.length).toBe(1);
     expect(runner.core.sessions.get(r.sessionId)!.state.error).toContain("key failed");
   });
@@ -204,16 +251,16 @@ describe("the target's configured source", () => {
     const { mover, runner } = keyed([pi, omp], "anthropic", "my-deploy");
     pi.stored_("s1", convo);
     await runner.core.open("pi:s1");
-    expect((await mover.options("pi:s1")).targets[0]!.deployment).toBe("my-deploy");
-    const r = await mover.move("pi:s1", "omp", { model: "picked" });
+    expect((await mover.options("pi:s1")).targets[0]!.sources?.options.find((o) => o.source === "anthropic")?.deployment).toBe("my-deploy");
+    const r = await mover.move("pi:s1", "omp", { model: "picked", source: "anthropic" });
     expect(runner.core.o.prefs.get(r.sessionId).model).toBeUndefined();
   });
   test("what a source is called, on the real adapters", () => {
-    expect(claudeAdapter.move!.billingOf("anthropic")).toEqual({ kind: "apiKey", label: "Anthropic API key" });
-    expect(claudeAdapter.move!.billingOf("subscription").kind).toBe("plan");
-    expect(codexAdapter.move!.billingOf("azure")).toEqual({ kind: "provider", label: "Azure" });
-    expect(codexAdapter.move!.billingOf("openai").label).toBe("OpenAI API key");
-    expect(codexAdapter.move!.billingOf("subscription")).toEqual({ kind: "plan", label: "ChatGPT plan" });
+    expect(claudeAdapter.billing!.label("anthropic")).toEqual({ kind: "apiKey", label: "Anthropic API key" });
+    expect(claudeAdapter.billing!.label("subscription")).toEqual({ kind: "plan", label: "Claude plan" });
+    expect(codexAdapter.billing!.label("azure")).toEqual({ kind: "provider", label: "Azure" });
+    expect(codexAdapter.billing!.label("openai").label).toBe("OpenAI API key");
+    expect(codexAdapter.billing!.label("subscription")).toEqual({ kind: "plan", label: "ChatGPT plan" });
   });
 });
 

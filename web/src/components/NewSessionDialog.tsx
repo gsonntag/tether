@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
+import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { FolderCheck } from "../../../shared/protocol";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -10,6 +11,7 @@ import { openSession } from "../route";
 import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
+import { SourcePicker } from "./SourcePicker";
 
 const MODE_KEY = "tether.newSessionMode";
 const HARNESS_KEY = "tether.newSessionHarness";
@@ -58,12 +60,25 @@ export function NewSessionDialog() {
   const [inTerminal, setInTerminal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  /** what's there to bill to. Nothing from an older runner: no picker, and the runner decides */
+  const [sources, setSources] = useState<SourceChoices>();
+  const sourcesAsked = useRef<Promise<SourceChoices | undefined>>(undefined);
+  const [source, setSource] = useState<BillingSource>();
 
   useEffect(() => {
     if (!open || !rid) return;
     setError(undefined);
     void loadProjects(rid);
     if (!models) void loadModels(rid, harness);
+    setSources(undefined);
+    setSource(undefined);
+    const asked = rpc(rid, "billingSources", { harness }).catch(() => undefined);
+    sourcesAsked.current = asked;
+    void asked.then((s) => {
+      if (sourcesAsked.current !== asked) return;
+      setSources(s);
+      setSource(s?.default);
+    });
   }, [open, rid, harness]);
 
   const checkPath = async (id: number) => {
@@ -95,7 +110,9 @@ export function NewSessionDialog() {
     try {
       // Enter before the check came back: wait for it, so a missing folder still asks first.
       if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
-      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
+      // Enter before the sources came back: what's shown first is what starts.
+      const billTo = source ?? (await sourcesAsked.current)?.default;
+      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(modelOk && model !== "default" && !deployment ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
@@ -119,6 +136,8 @@ export function NewSessionDialog() {
   // Claude with nothing picked: what the runner starts it on, by that name.
   const listed = models?.models.length ? models.models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
   const unpicked = harness === "claude" ? (findModel(listed, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default";
+  // An Azure deployment is the model on that source.
+  const deployment = sources?.options.find((o) => o.source === source)?.deployment;
   return (
     <Dialog isOpen={open} onOpenChange={(o) => !o && close()} width={520} purpose="form">
       <DialogHeader title="New session" subtitle={HARNESS_LABELS[harness]} onOpenChange={(o) => !o && close()} />
@@ -188,16 +207,24 @@ export function NewSessionDialog() {
             ))}
           </div>
         )}
-        <label>
-          <span className="t-field-label">Model</span>
-          <select className="t-select" value={modelOk && model !== "default" ? model : unpicked} onChange={(e) => setModel(e.target.value)}>
-            {listed.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id === "default" ? modelLabel("default", models?.models) : m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <SourcePicker choices={sources} value={source} onChange={setSource} />
+        {deployment ? (
+          <div>
+            <span className="t-field-label">Deployment</span>
+            <div>{deployment}</div>
+          </div>
+        ) : (
+          <label>
+            <span className="t-field-label">Model</span>
+            <select className="t-select" value={modelOk && model !== "default" ? model : unpicked} onChange={(e) => setModel(e.target.value)}>
+              {listed.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id === "default" ? modelLabel("default", models?.models) : m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span className="t-field-label">Permissions</span>
           <select className="t-select" value={validMode} onChange={(e) => setMode(e.target.value)}>

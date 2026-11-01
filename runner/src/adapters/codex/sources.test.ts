@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { privateThreadBusy, providerConfig, privateEnvironment, retirePrivateSource, sourceBilling, threadConnection } from "./sources";
 import { remember, remembered, rememberIn } from "./remember";
+import { codexAdapter } from ".";
 
 let dir: string | undefined;
 afterEach(() => { rememberIn(undefined); if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });
@@ -46,11 +47,18 @@ test("remembering launch settings cannot put a credential into the session store
   expect(remembered("id")?.start).toEqual({ model: "gpt-6-luna" });
 });
 
-test("existing sessions refuse another source before connecting to any daemon", async () => {
+test("a thread on another app-server than the session's source stops before connecting, naming both", async () => {
   rememberIn(undefined);
   remember("api", { source: { id: "private", source: "openai", projectPath: "/tmp" } });
-  await expect(threadConnection("api", { source: "subscription", revision: "subscription" })).rejects.toThrow("another billing source");
-  await expect(threadConnection("subscription", { source: "azure", revision: "a", key: randomUUID(), endpoint: "https://example.com" })).rejects.toThrow("another billing source");
+  await expect(threadConnection("api", { source: "subscription", revision: "subscription" })).rejects.toThrow("on OpenAI API key, not this session's ChatGPT plan");
+  await expect(threadConnection("subscription", { source: "azure", revision: "a", key: randomUUID(), endpoint: "https://example.com" })).rejects.toThrow("on ChatGPT plan, not this session's Azure");
+});
+
+test("what a Codex thread has on record: its private source, else the shared daemon's login", () => {
+  rememberIn(undefined);
+  remember("api", { source: { id: "private", source: "azure", projectPath: "/tmp" } });
+  expect(codexAdapter.billing!.recorded!("api", "/tmp")).toBe("azure");
+  expect(codexAdapter.billing!.recorded!("no-record", "/tmp")).toBe("subscription");
 });
 
 test("private retirement only considers a confirmed idle thread with no background terminals", () => {

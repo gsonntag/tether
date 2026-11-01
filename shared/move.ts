@@ -10,6 +10,7 @@
 // never as a tool call with an id the target would have to honor.
 
 import { FROM_TETHER } from "./fromTether";
+import type { SourceChoices } from "./credentials";
 import type { Billing, HarnessId, Msg, Part, ToolPart } from "./transcript";
 
 export const PORTABLE_VERSION = 1;
@@ -350,8 +351,12 @@ export interface MoveTarget {
   route: "native" | "context";
   /** the mode the session would start in there */
   permissionMode: string;
-  /** what it would draw from: the harness's configured source (Credentials), confirmed when it starts */
+  /** a runner from before per-session sources: what the new session would draw from */
   billing?: Billing;
+  /** the sources it can go to; the session's own harness offers only sources other than its own */
+  sources?: SourceChoices;
+  /** the session's own harness: the move changes only the source */
+  sameHarness?: boolean;
   /** the source fixes the model (an Azure deployment) */
   deployment?: string;
 }

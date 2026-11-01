@@ -3,6 +3,7 @@
 // branches only on `capabilities`, never on the harness id.
 
 import type { Attachment } from "../../../shared/attachments";
+import type { BillingSource, CredentialSource } from "../../../shared/credentials";
 import type { CredentialSnapshot } from "../credentials";
 import type { SessionCost } from "../../../shared/costs";
 import type { Level, PortableItem } from "../../../shared/move";
@@ -170,13 +171,25 @@ export interface AdapterMove {
   contextWindow?(model: string | undefined): Promise<number | undefined>;
   /** A client outside Tether is running a turn on it. */
   busy?(nativeId: string): Promise<boolean>;
-  /** What a configured source is called on this harness, before anything confirms it. */
-  billingOf(source: CredentialSnapshot["source"]): Billing;
+}
+
+/** The billing sources a harness can run on (SPEC "Credentials and billing safety"). */
+export interface AdapterBilling {
+  /** the keys it can use */
+  keys: CredentialSource[];
+  /** what a source is called on this harness, before anything confirms it */
+  label(source: BillingSource): Billing;
+  /** the harness reports a subscription login. Read-only */
+  loggedIn(): Promise<boolean>;
+  /** what its own records say a session with nothing saved draws from */
+  recorded?(nativeId: string, projectPath: string): BillingSource | undefined;
 }
 
 export interface Adapter {
   id: HarnessId;
   capabilities: HarnessCapabilities;
+  /** Absent: it has no choice of source, and its sessions are on its own login. */
+  billing?: AdapterBilling;
   available(): Promise<boolean>;
   // discovery and history: read-only, no process
   listProjects(): Promise<ProjectInfo[]>;

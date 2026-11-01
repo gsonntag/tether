@@ -60,6 +60,10 @@ export function claudeKeyLease(credential?: CredentialSnapshot): { helper: strin
 
 /** auth status is read-only: no turn and no trust prompt. Async so its helper can reach the lease. */
 export async function confirmClaudeTerminal(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string): Promise<Billing> {
+  return confirmClaudeBilling(await claudeAuthStatus(binary, credential, settings, cwd), credential);
+}
+
+async function claudeAuthStatus(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string): Promise<any> {
   let output = "";
   const decoder = new TextDecoder();
   // The native CLI loses auth-status stdout when it is launched with Bun pipe handles.
@@ -77,7 +81,17 @@ export async function confirmClaudeTerminal(binary: string, credential: Credenti
     if (status === 0) try { account = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1)); } catch {}
   } finally { clearTimeout(timer); result.terminal?.close(); }
   if (account?.authMethod === "claude.ai" && account.loggedIn === true) account.subscriptionType ||= "Claude plan";
-  return confirmClaudeBilling(account, credential);
+  return account;
+}
+
+const LOGIN_MS = 30_000;
+let login: { at: number; yes: Promise<boolean> } | undefined;
+/** Whether Claude Code has a subscription login, with no key in reach. Starts a read-only status command. */
+export function claudeLoggedIn(binary: string): Promise<boolean> {
+  if (login && Date.now() - login.at < LOGIN_MS) return login.yes;
+  const yes = claudeAuthStatus(binary, undefined, claudeAuthSettings()).then((a) => { try { return confirmClaudeBilling(a).kind === "plan"; } catch { return false; } }, () => false);
+  login = { at: Date.now(), yes };
+  return yes;
 }
 
 export async function prepareClaudeTerminal(binary: string, credential?: CredentialSnapshot, cwd?: string): Promise<Billing> {
@@ -118,11 +132,7 @@ try {
     if (Buffer.byteLength(socket) > 103) throw new Error();
     server = Bun.serve({ unix: socket, fetch: (r) => new URL(r.url).pathname === "/key" ? new Response(key, { headers: { "cache-control": "no-store" } }) : new Response("", { status: 404 }) });
     chmodSync(socket, 0o600);
-  } else if (source === "subscription") {
-    let selected;
-    try { selected = JSON.parse(readFileSync(file, "utf8")).anthropic; } catch (e) { if (e.code !== "ENOENT") throw e; }
-    if (selected) throw new Error();
-  } else throw new Error();
+  } else if (source !== "subscription") throw new Error();
   const at = argv.indexOf("--settings");
   if (at < 0) throw new Error();
   const settings = JSON.parse(argv[at + 1]);

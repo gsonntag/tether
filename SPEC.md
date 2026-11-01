@@ -675,11 +675,38 @@ Only the owner can run one (the same auth as sending).
 
 ### Credentials and billing safety
 
-The **Credentials** page belongs to a runner. Claude has one slot, **Anthropic API key**. Codex
-has **Azure** (Foundry) and **OpenAI API key** slots. Setting either Codex slot replaces the other;
-unsetting the active slot returns to the **ChatGPT subscription**, never to an older key. Claude
-returns to its **Claude subscription** when unset. There is no enable toggle, session source picker,
+The **Credentials** page belongs to a runner and holds keys only: **Anthropic API key** for Claude,
+**OpenAI API key** and **Azure** (Foundry) for Codex. All can be set together. Setting, replacing or
+unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
 fallback chain or automatic source migration. AWS for either harness is backlog only.
+
+**Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
+which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
+really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
+on the shared daemon, Claude's read-only `auth status`), a key when it's set, labelled "ChatGPT plan",
+"OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
+picker; a key in the picker has the API colour. It starts on the last source explicitly chosen for
+that harness on this runner (`lastSources` in `runner.json`, kept when there was a choice to make),
+else the subscription. `newSession` or `moveSession` with no source (an older web) is the subscription,
+never a key by surprise.
+
+The source is used on every start, resume, restart and TUI launch of that session, whatever keys are
+set later. A session with nothing saved uses what its harness has on record, which is then saved: a
+Codex thread's private app-server, a Claude session's last confirmed label. No record is the
+subscription: a Codex thread with none belongs to the shared daemon. Subagents use their main session's
+source; a TUI's `/clear` carries it on. A session whose key is unset fails with a chat error naming the
+source and nothing is sent; there's never a fallback. A key replaced in the same slot carries on with
+the new key.
+
+An existing session's source changes in two ways. **Move** (§15) accepts the same harness with another
+source: a new session with the context, the old one intact. On a harness with `capabilities.sourceSwitch`
+(Claude, not Codex: its threads don't cross app-servers) the session menu has **Source**, which applies
+on the next process start. A TUI or a running turn refuses it. Until the harness confirms it, the label
+stays what's confirmed and a chip beside it says what's next (`LiveState.nextBilling`).
+
+`credentials.json` is version 2, one slot per key. A version 1 file (one `codex` slot) still reads, its
+key in the slot it was for and its revision kept, and is rewritten by the next change. A web deployed
+ahead of its runner gets no `billingSources` answer and hides the picker.
 
 Keys are written only to `credentials.json`, mode 600, under the runner's data directory
 (`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
@@ -689,13 +716,16 @@ transcripts, notifications, logs or argv. Subprocesses receive them by private f
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
 and retired keys; terminal output is redacted before it is encoded for transport.
 
-A credential change applies at the next process start. A running turn finishes using its original
-source and label. Before an idle live session's next send, Tether closes the old process and starts
-with a new credential snapshot. A change racing startup refuses the send. The harness must confirm
-the configured source before any message is sent: unknown or mismatched billing refuses, rather
-than being treated as a subscription. Invalid credentials, exhausted quota and network failures
-stop on that source. Removing a key removes its environment from future processes. A Codex session
-bound to a different source refuses continuation and asks for a new session; no conversion occurs.
+A change to a session's key or source applies at the next process start. A running turn finishes
+using its original source and label. Before an idle live session's next send, Tether closes the old
+process and starts with a new snapshot of the session's own source. A change racing startup refuses
+the send. The harness must confirm the session's source before any message is sent: unknown or
+mismatched billing refuses, rather than being treated as a subscription. Invalid credentials,
+exhausted quota and network failures stop on that source. Removing a key removes its environment from
+future processes. A subscription session carries no key: its process never sees one, and a Claude
+terminal launch doesn't read the file's key. A key session never uses the login: Claude's goes through
+its private helper, and each Codex key thread has a private app-server and `CODEX_HOME` with no login.
+A Codex thread whose record disagrees with its session's source stops, naming both; no conversion occurs.
 
 The session label changes only after harness confirmation. API billing has one accessible colour
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
@@ -847,8 +877,8 @@ Still to verify by experiment (not decisions): Codex approval fan-out and cross-
 
 ## 15. Moving a session to another harness
 
-**Move to…** in a session's header menu makes a new session on another harness with all of the old
-one's context. The old session stays as it was, its store untouched. It is a module
+**Move to…** in a session's header menu makes a new session on another harness, or on the same
+harness with another billing source, with all of the old one's context. The old session stays as it was, its store untouched. It is a module
 (`runner/src/modules/move/`) and only ever an explicit choice: moving copies the history, secrets
 included, to another provider, and nothing scans it or does it automatically.
 
@@ -924,16 +954,20 @@ Claude `acceptEdits` (Claude has no sandbox, so commands ask), Claude `auto` bec
 command can touch, Claude what's run without asking.
 
 **Model and effort** are chosen in the dialog. Claude unset is `CLAUDE_UNSET`, as for any session;
-Codex keeps its Default. An Azure source with a deployment fixes the model: the dialog shows it.
+Codex keeps its Default. An Azure source with a deployment fixes the model: the dialog shows it, and so
+does New session.
 
-**Billing.** A move has no source of its own and no fallback. The new session is a new session on the
-target's configured source (Credentials): its id comes with the same credential snapshot as
-`newSession`, a key's Codex thread is made on its private app-server and imported there, and each
-process start gets a fresh snapshot, as for any session. The dialog shows that configured source,
-with API sources in the API colour (`Adapter.move.billingOf`). A native import starts the session at
-once, so the harness confirms the source and the loud badge shows before anything is typed. If it
-can't confirm, the session opens with the error and refuses to send; it never goes to another source.
-Thus a move can cross from a subscription to a key: the dialog is where that's seen.
+**Billing.** The dialog's Source picks the new session's source, as in New session, with no fallback.
+Its id comes with a snapshot of that source, a key's Codex thread is made on its private app-server
+and imported there, and the source is saved with the session before anything starts it. A native
+import starts the session at once, so the harness confirms the source and the loud badge shows before
+anything is typed. If it can't confirm, the session opens with the error and refuses to send; it never
+goes to another source. Thus a move can cross from a subscription to a key: the dialog is where
+that's seen.
+
+**The same harness** is a target when it has another source; the session's own isn't offered, and with
+no other the harness isn't listed. The mode and, by default, the model and effort stay. The notices name
+the sources ("Moved from ChatGPT plan."). This is how a Codex session changes source.
 
 **Reading the history.** Codex reads anywhere in every sandbox. Claude would ask, so a moved
 session's driver and TUI get one read rule for exactly its folder (`Read(//…/**)`), and nothing else;

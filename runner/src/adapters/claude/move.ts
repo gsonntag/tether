@@ -103,7 +103,6 @@ export const claudeMove: AdapterMove = {
     return ok;
   },
 
-  billingOf: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
 
   setTitle: (nativeId, projectPath, title) => renameSession(nativeId, title, { dir: projectPath }),
 

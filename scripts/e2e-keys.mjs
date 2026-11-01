@@ -2,16 +2,19 @@
 //   flock -o /tmp/claude-1001/e2e.lock env BASE=http://127.0.0.1:5261 \
 //     CREDENTIAL_FILE=/tmp/claude-1001/keys/dev/credentials.json node scripts/e2e-keys.mjs
 // Source badges below use synthetic confirmed reports in the dev browser store: UI checks only.
-// REAL_HARNESSES=1 adds actual fake-key rejection/source checks and a tiny Haiku subscription
-// turn after unset. It uses only the owner's explicitly trusted scratch folders. Valid API-key
-// billing remains an owner check; keys must never be pasted into chat.
+// REAL_HARNESSES=1 adds real sessions on each source, side by side with a plan session while a key
+// is set: picker, label, a tiny plan turn, a fake key stopping with no fallback, resume, a replaced
+// and an unset key, Source, TUIs and /proc environment names. Needs RUNNER_PID_FILE, TMUX_SOCKET and
+// RESTART_RUNNER from the stack. KEYS_ROOT moves the artifact root. It uses only the owner's
+// explicitly trusted scratch folders. Valid API-key billing remains an owner check; keys must never
+// be pasted into chat.
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
 const BASE = process.env.BASE ?? "http://127.0.0.1:5261";
-const ROOT = "/tmp/claude-1001/keys";
+const ROOT = process.env.KEYS_ROOT ?? "/tmp/claude-1001/keys";
 assertLocal();
 function assertLocal() { if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(BASE).hostname)) throw new Error("Use an isolated loopback dev stack"); }
 const FILE = resolve(process.env.CREDENTIAL_FILE ?? "");
@@ -87,47 +90,263 @@ function argvAudit() {
     for(const key of secrets) assert(!argv.includes(Buffer.from(key)),`key found in the argv of pid ${pid}`);
   }
 }
-async function realSources(p) {
+// Names only: a value is never read into a message. Reading /proc/<pid>/environ is limited to what
+// this test stack started.
+const KEY_VARS=["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","OPENAI_API_KEY","CODEX_API_KEY","AZURE_OPENAI_API_KEY","TETHER_CODEX_API_KEY","TETHER_GATEWAY_KEY"];
+function descendants(roots) {
+  const kids=new Map();
+  for(const pid of readdirSync("/proc").filter((n)=>/^\d+$/.test(n))) {
+    try { const stat=readFileSync(`/proc/${pid}/stat`,"utf8"); const ppid=stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]; (kids.get(ppid) ?? kids.set(ppid,[]).get(ppid)).push(pid); } catch {}
+  }
+  const all=[]; const queue=roots.map(String);
+  while(queue.length) { const pid=queue.shift(); all.push(pid); queue.push(...(kids.get(pid) ?? [])); }
+  return all;
+}
+const runnerPid=()=>readFileSync(process.env.RUNNER_PID_FILE,"utf8").trim();
+const panePids=()=>{ try { return execFileSync("tmux",["-L",process.env.TMUX_SOCKET,"list-panes","-a","-F","#{pane_pid}"],{encoding:"utf8"}).split("\n").filter(Boolean); } catch { return []; } };
+const started=()=>[...descendants([runnerPid()]).slice(1),...descendants(panePids())];
+function keyVars(pid) {
+  let env;
+  try { env=readFileSync(`/proc/${pid}/environ`); } catch { return undefined; }
+  // Claude's settings blank its auth variables for what it starts: an empty one carries nothing.
+  const names=env.toString("latin1").split("\0").filter((e)=>!e.endsWith("=")).map((e)=>e.split("=")[0]);
+  return { names:KEY_VARS.filter((n)=>names.includes(n)), secret:secrets.some((key)=>env.includes(Buffer.from(key))) };
+}
+/** Nothing here carries a key: no variable by that name, and no test key under any name. */
+function noKeyIn(pids,what) {
+  let read=0;
+  for(const pid of pids) {
+    const r=keyVars(pid);
+    if(!r) continue;
+    read++;
+    assert(!r.names.length,`${what}: pid ${pid} has ${r.names.join(", ")}`);
+    assert(!r.secret,`${what}: pid ${pid} has a key in its environment`);
+  }
+  assert(read>0,`${what}: no process to read`);
+  console.log(`ok ${what}: no key variable in ${read} processes`);
+}
+const privateHosts=()=>{ try { return readdirSync(`${dirname(FILE)}/codex-keys`).flatMap((id)=>{ try { return [JSON.parse(readFileSync(`${dirname(FILE)}/codex-keys/${id}/daemon.json`,"utf8")).pid]; } catch { return []; } }); } catch { return []; } };
+const viewOf=(p,id)=>p.evaluate(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?{state:v.state,messages:v.window?.messages??[]}:null;},{runner,id});
+const open=(p,id)=>p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(id)}`);
+/** No turn runs on anything but the cheap model at Low. */
+async function confirmModel(p,id,model,harness) {
+  await p.waitForFunction(({runner,id,model,harness})=>{const s=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`]?.state;return s&&s.model===model&&(harness==="claude"||s.effort==="low");},{runner,id,model,harness},{timeout:60000});
+}
+const SAY="Reply exactly OK. Do not use tools.";
+const replied=(m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text));
+/** A turn on a plan: its reply, or the plan's own limit, which is that plan answering. */
+async function planTurn(p,id,model,harness) {
+  await confirmModel(p,id,model,harness);
+  const before=(await viewOf(p,id)).messages.filter(replied).length;
+  await call(p,"send",{sessionId:id,text:SAY});
+  const ending=await p.waitForFunction(({runner,id,before})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];if(v?.state?.status!=="idle")return false;const msgs=v.window?.messages??[];if(msgs.filter((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text))).length>before)return "replied";return /usage limit/i.test(JSON.stringify(msgs))&&"limit";},{runner,id,before},{timeout:120000}).then((h)=>h.jsonValue());
+  if(ending==="limit") console.log("NOT VERIFIED: the plan is at its usage limit, so a reply wasn't seen; its label and its own limit error were");
+  return ending;
+}
+/** A turn on a fake key: it stops, on that source, with no answer from anywhere. */
+async function keyTurn(p,id,label) {
+  const errorsBefore=(await viewOf(p,id)).messages.filter((m)=>m.error||(m.role==="notice"&&m.level==="error")).length;
+  await call(p,"send",{sessionId:id,text:SAY});
+  await p.waitForFunction(({runner,id,errorsBefore})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle"&&v.window?.messages?.filter((m)=>m.error||(m.role==="notice"&&m.level==="error")).length>errorsBefore;},{runner,id,errorsBefore},{timeout:90000});
+  const after=await viewOf(p,id);
+  assert(!after.messages.some(replied),"a fake key answered: something fell back");
+  assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"a failed key changed the source");
+}
+async function pickerShots(p,phone,cfg) {
+  for(const [name,q] of [["desktop",p],["phone",phone]]) {
+    await q.evaluate(()=>{location.hash="#/";globalThis.__tetherStore.setState({newSessionOpen:true});});
+    const d=q.getByRole("dialog");
+    await d.getByRole("radio",{name:cfg.harnessLabel,exact:true}).click();
+    const source=d.getByLabel("Source",{exact:true});
+    await source.waitFor({timeout:30000});
+    assert((await source.locator("option:checked").innerText())===cfg.plan,"the picker doesn't start on the subscription");
+    const offered=await source.locator("option").allInnerTexts();
+    assert(offered.includes(cfg.plan)&&offered.includes(cfg.label),`picker offers ${offered.join(", ")}`);
+    await noOverflow(q);
+    await screenshot(q,`picker-${cfg.source}-${name}`);
+    await source.selectOption({label:cfg.label});
+    await q.locator(".t-source-api").waitFor();
+    await screenshot(q,`picker-${cfg.source}-${name}-key`);
+    await d.getByRole("button",{name:"Create",exact:true}).scrollIntoViewIfNeeded();
+    await screenshot(q,`picker-${cfg.source}-${name}-bottom`);
+    await d.getByRole("button",{name:"Cancel",exact:true}).click();
+  }
+}
+/** The picker, the way a person does it: a key session, remembered as the choice. */
+async function keyByDialog(p,cfg) {
+  await p.evaluate(()=>{location.hash="#/";globalThis.__tetherStore.setState({newSessionOpen:true});});
+  const d=p.getByRole("dialog");
+  await d.getByRole("radio",{name:cfg.harnessLabel,exact:true}).click();
+  await d.getByLabel("Source",{exact:true}).selectOption({label:cfg.label});
+  await d.locator("#t-new-path").fill(cfg.path);
+  const models=d.locator("label",{hasText:"Model"}).locator("select");
+  const value=await p.waitForFunction((m)=>[...document.querySelectorAll("dialog option, [role=dialog] option")].find((o)=>o.value.includes(m))?.value,cfg.model,{timeout:60000});
+  await models.selectOption(await value.jsonValue());
+  await d.locator("label",{hasText:"Permissions"}).locator("select").selectOption(cfg.harness==="codex"?"read-only":"default");
+  await d.getByRole("button",{name:"Create",exact:true}).click();
+  await p.waitForFunction(()=>location.hash.startsWith("#/s/"),null,{timeout:90000});
+  return decodeURIComponent(p.url().split("/").pop());
+}
+async function sideBySide(p,phone,cfg,planId,keyId) {
+  const rows=await p.evaluate(({runner})=>Object.values(globalThis.__tetherStore.getState().summaries[runner].sessions).map((s)=>({id:s.id,billing:s.billing?.label})),{runner});
+  assert(rows.find((r)=>r.id===planId)?.billing===cfg.plan,`list has ${JSON.stringify(rows.find((r)=>r.id===planId))} for the plan session`);
+  assert(rows.find((r)=>r.id===keyId)?.billing===cfg.label,`list has ${JSON.stringify(rows.find((r)=>r.id===keyId))} for the key session`);
+  await p.evaluate(()=>{location.hash="#/";});
+  await p.locator(".t-rows .t-api-marker").first().waitFor({timeout:15000});
+  await noOverflow(p);
+  await screenshot(p,`side-${cfg.source}-desktop`);
+  await phone.reload();
+  await phone.getByRole("button",{name:/navigation|menu/i}).first().tap();
+  await phone.locator(".t-rows .t-api-marker").first().waitFor({timeout:15000});
+  await screenshot(phone,`side-${cfg.source}-phone`);
+  await phone.keyboard.press("Escape");
+}
+async function tuiStarts(p,id,cfg) {
+  const opened=await call(p,"openTerminal",{sessionId:id,cols:80,rows:24});
+  await new Promise((r)=>setTimeout(r,1500));
+  let captured;
+  try { captured=await call(p,"terminalText",{attachId:opened.attachId}); }
+  catch(e) {
+    const text=incoming.map((frame)=>{try{const m=JSON.parse(frame);return m.t==="term" && m.attachId===opened.attachId ? Buffer.from(m.data,"base64").toString("utf8") : "";}catch{return "";}}).join("");
+    assert(!secrets.some((key)=>text.includes(key)),"key found in terminal output");
+    console.error(`native ${cfg.source} TUI exited before capture:`,text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,""));
+    throw e;
+  }
+  await call(p,"closeTerminal",{attachId:opened.attachId});
+  return /trust this folder|Yes, I trust|Do you trust/i.test(captured.text);
+}
+async function realSources(p,phone) {
   const cl=process.env.CLAUDE_SCRATCH ?? "/home/ubuntu/.local/share/tether-dev-p3/projects/scratch";
   const cx=process.env.CODEX_SCRATCH ?? "/home/ubuntu/tether-scratch/p4/projects/scratch";
-  for(const [source,label,harness,path,model] of [["anthropic","Anthropic API key","claude",cl,"haiku"],["openai","OpenAI API key","codex",cx,"gpt-6-luna"],["azure","Azure","codex",cx,"gpt-6-luna"]]) {
+  const sources=[
+    {source:"anthropic",label:"Anthropic API key",plan:"Claude plan",harness:"claude",harnessLabel:"Claude Code",path:cl,model:"haiku",mode:"default"},
+    {source:"openai",label:"OpenAI API key",plan:"ChatGPT plan",harness:"codex",harnessLabel:"Codex",path:cx,model:"gpt-6-luna",mode:"read-only"},
+    {source:"azure",label:"Azure",plan:"ChatGPT plan",harness:"codex",harnessLabel:"Codex",path:cx,model:"gpt-6-luna",mode:"read-only"},
+  ];
+  for(const cfg of sources.filter((c)=>!process.env.ONLY_SOURCE||c.source===process.env.ONLY_SOURCE)) {
+    const {source,label,plan,harness,path,model,mode}=cfg;
     await p.goto(`${BASE}/#/credentials`);
     await slot(p,label).waitFor();
     if(source==="azure") await slot(p,label).getByLabel("Endpoint",{exact:true}).fill("https://example.invalid/openai/v1");
     await save(p,label,newKey());
-    const made=await call(p,"newSession",{harness,projectPath:path,model,effort:"low",permissionMode:harness==="codex"?"read-only":"default"});
-    const id=made.sessionId;
-    await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(id)}`);
+    const choices=await call(p,"billingSources",{harness});
+    const names=choices.options.map((o)=>o.billing.label);
+    assert(names.includes(plan)&&names.includes(label),`sources: ${names.join(", ")}`);
+    assert(choices.default==="subscription","a set key changed the default");
+    await pickerShots(p,phone,cfg);
+    let planId;
+    if(source!=="azure") {
+      // The key is set, and a plan session starts on the plan, as nothing changed.
+      planId=(await call(p,"newSession",{harness,projectPath:path,model,effort:"low",permissionMode:mode,source:"subscription"})).sessionId;
+      await open(p,planId);
+      await p.locator(".t-usage-chip",{hasText:plan}).waitFor({timeout:60000});
+      await planTurn(p,planId,model,harness);
+      assert((await viewOf(p,planId)).state.billing?.label===plan,"the plan session's label changed");
+      assert(await p.locator(".t-paid-badge").count()===0,"a plan session has the API badge");
+      await screenshot(p,`real-${source}-plan-desktop`);
+      noKeyIn(started(),`${plan} session beside a set key`);
+      assert(privateHosts().length===0||source!=="openai","a plan session started a private process");
+      console.log(`ok real ${source}: ${plan} session with the key set: label confirmed, a reply, no key anywhere`);
+    }
+    const id=await keyByDialog(p,cfg);
     await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:90000});
-    await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
-    await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
-    assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"failed key changed billing source");
+    await call(p,"setEffort",{sessionId:id,effort:"low"});
+    if(harness==="codex") await confirmModel(p,id,model,harness);
+    assert((await call(p,"billingSources",{harness})).default===source,"an explicit choice wasn't remembered");
+    if(harness==="codex") {
+      const hosts=privateHosts();
+      assert(hosts.length>0,"no private process for the key session");
+      // The key stops at the private host's gateway: its Codex child has a placeholder, and no login.
+      for(const pid of descendants(hosts).filter((pid)=>!hosts.map(String).includes(pid))) { const r=keyVars(pid); if(r) assert(!r.secret,`pid ${pid}: the key reached a Codex process`); }
+      for(const home of readdirSync(`${dirname(FILE)}/codex-keys`)) assert(!readdirSync(`${dirname(FILE)}/codex-keys/${home}`).includes("auth.json"),"a key session's private home has a login");
+    } else noKeyIn(descendants([runnerPid()]).slice(1),`${label} session's process`);
+    await keyTurn(p,id,label);
     await screenshot(p,`real-${source}-failure`);
+    await p.setViewportSize({width:375,height:812});
+    await screenshot(p,`real-${source}-failure-phone`);
+    await p.setViewportSize({width:1280,height:900});
     argvAudit();
+    if(planId) {
+      await sideBySide(p,phone,cfg,planId,id);
+      console.log(`ok real ${source}: both sessions side by side, each with its own label`);
+    }
     if(process.env.RESTART_RUNNER) {
       // The command belongs to the isolated test stack, never the production runner.
       execFileSync("sh",["-c",process.env.RESTART_RUNNER],{stdio:"inherit"});
+      await open(p,id);
       await p.reload();
       await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:90000});
-      await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
-      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.status==="idle" && (v.state.error || v.window?.messages?.some((m)=>m.error || (m.role==="notice"&&m.level==="error")));},{runner,id},{timeout:90000});
-      assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"runner restart changed the key session's billing source");
+      await keyTurn(p,id,label);
       console.log(`ok real ${source} runner restart: history resumed on the same source; rejected key stopped again`);
-    }
-    // Native TUI startup is tested without typing or accepting any trust/auth prompt.
-    try {
-      const opened=await call(p,"openTerminal",{sessionId:id,cols:80,rows:24});
-      await new Promise((r)=>setTimeout(r,1500));
-      let captured;
-      try { captured=await call(p,"terminalText",{attachId:opened.attachId}); }
-      catch(e) {
-        const text=incoming.map((frame)=>{try{const m=JSON.parse(frame);return m.t==="term" && m.attachId===opened.attachId ? Buffer.from(m.data,"base64").toString("utf8") : "";}catch{return "";}}).join("");
-        assert(!secrets.some((key)=>text.includes(key)),"key found in terminal output");
-        console.error(`native ${source} TUI exited before capture:`,text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,""));
-        throw e;
+      if(planId) {
+        await open(p,planId);
+        await p.reload();
+        await confirmModel(p,planId,model,harness);
+        await planTurn(p,planId,model,harness);
+        assert((await viewOf(p,planId)).state.billing?.label===plan,"resuming changed the plan session's source");
+        assert(await p.locator(".t-paid-badge").count()===0,"a resumed plan session has the API badge");
+        noKeyIn(started().filter((pid)=>!descendants(privateHosts()).includes(pid)),`resumed ${plan} session`);
+        console.log(`ok real ${source}: an existing subscription session resumed after a restart, with the key still set`);
       }
-      const trust=/trust this folder|Yes, I trust|Do you trust/i.test(captured.text);
-      await call(p,"closeTerminal",{attachId:opened.attachId});
+    }
+    if(source==="openai") {
+      // A thread with no record here, which is what was refused before: it belongs to the shared daemon.
+      const listed=(await call(p,"listSessions",{projectPath:cx})).sessions;
+      const stored=listed.find((s)=>s.harness==="codex"&&!s.parentSessionId&&s.id!==planId&&s.id!==id&&s.status==="idle"&&!s.billing);
+      assert(stored,"no stored Codex thread without a record");
+      await open(p,stored.id);
+      await p.locator("textarea.t-input[aria-label=Message]").waitFor({timeout:30000});
+      await call(p,"setModel",{sessionId:stored.id,model});
+      await call(p,"setEffort",{sessionId:stored.id,effort:"low"});
+      await planTurn(p,stored.id,model,harness);
+      await p.locator(".t-usage-chip",{hasText:plan}).waitFor({timeout:30000});
+      await screenshot(p,"real-openai-stored-plan");
+      console.log("ok real openai: a thread with no record, which used to be refused, ran on the plan with the key set, in place");
+      const menu=p.getByRole("button",{name:"Session menu"});
+      await menu.click();
+      assert(await p.getByRole("menuitem",{name:"Source…"}).count()===0,"Codex offers Source; its threads don't cross app-servers");
+      await p.keyboard.press("Escape");
+    }
+    if(source==="anthropic") {
+      await open(p,planId);
+      await p.getByRole("button",{name:"Session menu"}).click();
+      await p.getByRole("menuitem",{name:"Source…"}).click();
+      const d=p.getByRole("dialog");
+      await d.getByLabel("Source",{exact:true}).selectOption({label});
+      await screenshot(p,"real-source-dialog");
+      await d.getByRole("button",{name:"Apply",exact:true}).click();
+      await p.locator(".t-next-source",{hasText:label}).waitFor();
+      assert((await viewOf(p,planId)).state.billing?.label===plan,"the label moved before the harness confirmed");
+      await screenshot(p,"real-source-next-desktop");
+      await p.setViewportSize({width:375,height:812});
+      await noOverflow(p);
+      await screenshot(p,"real-source-next-phone");
+      await p.setViewportSize({width:1280,height:900});
+      await call(p,"send",{sessionId:planId,text:SAY});
+      await p.locator(".t-paid-badge > span:first-child",{hasText:label}).waitFor({timeout:60000});
+      await p.getByText("Anthropic API key failed",{exact:false}).first().waitFor({timeout:90000});
+      assert(await p.locator(".t-next-source").count()===0,"the next-source chip stayed after the start confirmed");
+      await p.locator(`[role=status], .t-chip-term`).first().waitFor({timeout:5000}).catch(()=>{});
+      await call(p,"setSessionSource",{sessionId:planId,source:"subscription"});
+      await planTurn(p,planId,model,harness);
+      await p.locator(".t-usage-chip",{hasText:plan}).waitFor({timeout:30000});
+      console.log("ok real anthropic: Source changes at the next start, the label follows the harness, both ways");
+    }
+    // The session's TUI, on its source. Nothing is typed in it; no trust prompt is accepted.
+    if(planId) {
+      const trust=await tuiStarts(p,planId,cfg);
+      noKeyIn(descendants(panePids()),`${plan} TUI`);
+      if(harness==="claude") {
+        const refused=await call(p,"setSessionSource",{sessionId:planId,source}).then(()=>undefined,(e)=>String(e));
+        assert(/Close the terminal first/.test(refused ?? ""),`a TUI didn't block Source: ${refused}`);
+      }
+      await call(p,"endTerminal",{sessionId:planId});
+      console.log(`ok real ${source}: ${plan} TUI started with no key; ${trust?"trust prompt left unaccepted":"no trust prompt"}`);
+    }
+    try {
+      await open(p,id);
+      await p.locator(".t-paid-badge").waitFor({timeout:30000});
+      const trust=await tuiStarts(p,id,cfg);
       await p.locator(".t-chip-term").click();
       await p.locator(".t-term-agent").waitFor();
       await p.locator(".t-term-agent").click();
@@ -147,25 +366,26 @@ async function realSources(p) {
       if(!/could not confirm|cannot confirm/i.test(String(e))) throw e;
       console.log(`ok real ${source} TUI refused an unconfirmed source before send`);
     }
+    // A replaced key: the same session carries on with it, and it's the new key that's refused.
+    await p.goto(`${BASE}/#/credentials`);
+    await slot(p,label).waitFor();
+    if(source==="azure") await slot(p,label).getByLabel("Endpoint",{exact:true}).fill("https://example.invalid/openai/v1");
+    await save(p,label,newKey());
+    await open(p,id);
+    await p.locator(".t-paid-badge").waitFor({timeout:30000});
+    await keyTurn(p,id,label);
+    console.log(`ok real ${source}: a replaced key carries on in the same session`);
     await call(p,"unsetCredential",{source});
-    if(harness==="claude") {
-      await call(p,"send",{sessionId:id,text:"Reply exactly OK. Do not use tools."});
-      await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];return v?.state?.billing?.kind==="plan" && v?.window?.messages?.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text)));},{runner,id},{timeout:120000});
-      assert(await p.locator(".t-paid-badge").count()===0,"unset Claude retained API indicator");
-    } else {
-      let refused=false;
-      try {await call(p,"send",{sessionId:id,text:"Reply OK."});} catch(e) {refused=String(e).includes("another billing source");}
-      assert(refused,"unset converted an existing Codex source");
-      const sub=await call(p,"newSession",{harness:"codex",projectPath:cx,model:"gpt-6-luna",effort:"low",permissionMode:"read-only"});
-      await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(sub.sessionId)}`);
-      await call(p,"send",{sessionId:sub.sessionId,text:"Reply exactly OK. Do not use tools."});
-      await p.locator(".t-usage-chip",{hasText:"ChatGPT plan"}).waitFor({timeout:30000});
-      // An exhausted plan is ChatGPT itself answering, so the source is still proved; the reply isn't.
-      const ending=await p.waitForFunction(({runner,id})=>{const v=globalThis.__tetherStore.getState().views[`${runner}\u0000${id}`];if(v?.state?.status!=="idle")return false;const msgs=v.window?.messages??[];if(msgs.some((m)=>m.role==="assistant"&&m.parts?.some((part)=>part.type==="text"&&/\bOK\b/.test(part.text))))return "replied";return /usage limit/i.test(JSON.stringify(msgs))&&"limit";},{runner,id:sub.sessionId},{timeout:90000}).then((h)=>h.jsonValue());
-      if(ending==="limit") console.log("NOT VERIFIED: ChatGPT plan is at its usage limit, so the subscription reply wasn't seen; the label and the plan's own limit error were");
-      assert(await p.locator(".t-paid-badge").count()===0,"new Codex subscription retained API colour");
-    }
-    console.log(`ok real ${source}: harness-confirmed browser label, failure stops without fallback, unset restores subscription or refuses cross-source continuation`);
+    const refused=await call(p,"send",{sessionId:id,text:SAY}).then(()=>undefined,(e)=>String(e));
+    assert(refused?.includes(`uses ${label}, which isn't set`),`unset key: ${refused}`);
+    await p.getByText(`uses ${label}, which isn't set`,{exact:false}).first().waitFor({timeout:15000});
+    assert(await p.locator(".t-paid-badge > span").first().innerText()===label,"unset changed the session's label");
+    assert(!(await viewOf(p,id)).messages.some(replied),"an unset key's session answered");
+    await screenshot(p,`real-${source}-unset`);
+    await p.setViewportSize({width:375,height:812});
+    await screenshot(p,`real-${source}-unset-phone`);
+    await p.setViewportSize({width:1280,height:900});
+    console.log(`ok real ${source}: unset stops with the source named, nothing sent, no fallback`);
   }
 }
 function contrast(a, b) {
@@ -187,9 +407,13 @@ try {
   await slot(desktop, "Azure").getByLabel("Endpoint", { exact: true }).fill("https://example.invalid/openai/v1");
   await slot(desktop, "Azure").getByLabel("Deployment", { exact: true }).fill("gpt-6-luna");
   await save(desktop, "Azure", newKey());
-  await isSet(desktop, "OpenAI API key", false);
+  await save(desktop, "Anthropic API key", newKey());
+  await isSet(desktop, "OpenAI API key", true);
+  await screenshot(desktop, "credentials-desktop-all-set");
   await unset(desktop, "Azure");
-  await isSet(desktop, "OpenAI API key", false);
+  await isSet(desktop, "OpenAI API key", true);
+  await unset(desktop, "OpenAI API key");
+  await unset(desktop, "Anthropic API key");
   await desktop.reload();
   await desktop.getByRole("form", { name: "Anthropic API key", exact: true }).waitFor();
   for (const label of ["Anthropic API key", "OpenAI API key", "Azure"]) await isSet(desktop, label, false);
@@ -197,8 +421,8 @@ try {
   await phone.getByRole("form", { name: "Anthropic API key", exact: true }).waitFor();
   await noOverflow(phone);
   await screenshot(phone, "credentials-phone-unset");
-  console.log("ok credentials save, replace, exclusive Codex slots, unset, reload; inputs clear and file is private");
-  if(process.env.REAL_HARNESSES === "1") await realSources(desktop);
+  console.log("ok credentials save, replace, all three set together, unset one at a time, reload; inputs clear and file is private");
+  if(process.env.REAL_HARNESSES === "1") await realSources(desktop, phone);
   session = `claude:ui-keys-${randomBytes(8).toString("hex")}`;
   for (const [name, p] of [["desktop", desktop], ["phone", phone]]) {
     await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(session)}`);

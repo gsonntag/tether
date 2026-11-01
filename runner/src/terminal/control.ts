@@ -696,6 +696,7 @@ export class TerminalControl {
       // /clear: nothing of it is stored until something is typed.
       n = core.create(old.summary.harness, nativeId, old.summary.projectPath, { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode });
       n.transcript = new Transcript();
+      core.o.prefs.set(n.id, { source: this.o.live.sourceOf(old) });
     }
     core.pin(n);
     try {
@@ -705,7 +706,8 @@ export class TerminalControl {
       if (n.driver || n.starting) await this.o.live.release(n);
       // The TUI goes on with the model and mode it runs in, on any session it moves to.
       const { model, effort, permissionMode, modelResolved } = old.state;
-      n.setState({ model, effort, permissionMode, modelResolved });
+      // Whatever session the TUI opens, it runs on the source it was started with, and says so.
+      n.setState({ model, effort, permissionMode, modelResolved, ...(old.state.billing ? { billing: old.state.billing } : {}) });
       await this.markEntries(n);
       if (this.modeShown.delete(old.id)) this.modeShown.add(n.id);
       this.modeEntries.delete(old.id);

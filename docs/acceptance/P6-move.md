@@ -17,7 +17,7 @@ cd server && env -u TETHER_URL -u TETHER_TOKEN -u PORT PORT=8871 bun src/index.t
 cd runner && env -u TETHER_URL -u TETHER_TOKEN TETHER_DEV=1 TETHER_URL=http://localhost:8871 TETHER_TOKEN=dev \
   TETHER_CONFIG_DIR=$D TETHER_TMUX_SOCKET=tether-dev-move bun src/index.ts
 cd web && TETHER_SERVER=http://127.0.0.1:8871 bunx vite --port 5271 --strictPort
-CONFIG_DIR=$D node scripts/e2e-move.mjs errors keyRefused stored long round codexFirst
+CONFIG_DIR=$D node scripts/e2e-move.mjs errors keyRefused sourceChange stored long round codexFirst
 # The file route: a runner with TETHER_MOVE_ROUTE=context, then
 CONFIG_DIR=$D node scripts/e2e-move.mjs fallback
 # Codex asked about a cut history: a runner with TETHER_MOVE_BUDGET=12000, so its turns stay small, then
@@ -29,7 +29,7 @@ Compare `sha256sum ~/.codex/config.toml` before and after: a move must not chang
 ## Checks
 
 1. **The action** [e2e: errors] Session header ⋯ → Move to… opens a small dialog: harness (a choice
-   when there are several), Model, Effort, Mode, Billing when known. Not on a subagent.
+   when there are several), Source when known, Model, Effort, Mode. Not on a subagent.
 2. **Cancel** [e2e: errors] Cancel, ✕ or Esc: nothing is made, the session stays open.
 3. **Refused** [e2e: errors for a turn; unit for the rest] A running turn, an open request, a
    terminal, waiting messages or a `!` command: the dialog says what to do and Move is disabled. The
@@ -54,7 +54,12 @@ Compare `sha256sum ~/.codex/config.toml` before and after: a move must not chang
 13. **Modes** [unit, e2e: round for two] The table in SPEC §15: never looser, unknown the safest.
 14. **Background work** [unit] A stored Codex thread with a background command: the dialog says
     "Background work stays here", and the agent and the notice say it too.
-15. **Billing** [unit, for the source; by hand with a real key] With a key set for the target, the
-    dialog shows it in the API colour; the moved session starts at once, with the loud badge. A
-    refused key shows its error and nothing is sent. Without a key: the plan's label, quiet.
+15. **Billing** [e2e: keyRefused; by hand with a real key] With a key set for the target, Source offers
+    it beside the plan and starts on the plan. Chosen, it has the API colour; the moved session starts
+    at once, with the loud badge. A refused key shows its error and nothing is sent. Without a key:
+    the plan's label, quiet.
 16. **Title and folder** [e2e: stored] The moved session has the old title and folder.
+17. **The same harness** [e2e: sourceChange; unit] Codex and Claude: with another source available the
+    session's own harness is offered, and its source isn't. The moved session has the context and the
+    badge before anything is typed. The old session is left as it was, with "Moved to OpenAI API
+    key." With no other source, the harness isn't listed. The mode stays.

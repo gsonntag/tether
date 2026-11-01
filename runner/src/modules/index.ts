@@ -6,7 +6,8 @@ import type { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
-import type { Billing, HarnessId, LiveState, Msg, RunStatus, SessionSummary } from "../../../shared/transcript";
+import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import type { HarnessId, LiveState, Msg, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { moveModule } from "./move";
 import { pushModule } from "./push";
 
@@ -30,13 +31,17 @@ export interface SessionActions {
   /** a session, brought into memory if it's stored; throws when there's none */
   open(id: string): Promise<SessionLook>;
   /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed */
-  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts): Promise<string>;
+  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource): Promise<string>;
   /** a new session; its first send starts it */
-  create(args: { harness: HarnessId; projectPath: string } & StartOpts): Promise<string>;
-  /** a new native id, on the harness's configured source */
-  newId(harness: HarnessId, projectPath: string, opts: StartOpts): Promise<string>;
-  /** what the harness's new sessions draw from now (Credentials). Undefined: this runner has no credentials */
-  configured(harness: HarnessId): { billing: Billing; deployment?: string } | undefined;
+  create(args: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts): Promise<string>;
+  /** a new native id, on that source */
+  newId(harness: HarnessId, projectPath: string, opts: StartOpts, source: BillingSource): Promise<string>;
+  /** the sources that exist for a harness now */
+  sources(harness: HarnessId): Promise<SourceChoices>;
+  /** what a session draws from */
+  sourceOf(id: string): Promise<BillingSource>;
+  /** the source a new session gets from what was asked for, remembered as that harness's choice */
+  sourceForNew(harness: HarnessId, source: unknown): Promise<BillingSource>;
   /** a message from Tether, sent as a turn */
   send(id: string, text: string): Promise<void>;
   /** a Tether notice, kept with the session */

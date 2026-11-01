@@ -147,7 +147,7 @@ add({ id: "claude:short-1", title: "Rename the settings page", projectPath: "/ho
 add({ id: "claude:short-2", title: "Rename the settings page", projectPath: "/home/me/code/api", updatedAt: now - 2 * 86_400_000 }, [user("Rename the settings page to Preferences."), asst([{ type: "text", text: "Done: renamed in 3 files." }])]);
 // A session that can't start: the same error kept many times (an older runner), with and without its
 // prefix and across a message that failed. `send` here fails the same way.
-const FAILS = "This session belongs to another billing source. Start a new session to use the configured source. Nothing was sent.";
+const FAILS = "This session uses OpenAI API key, which isn't set. Set it in Credentials, or use Move to continue on another source. Nothing was sent.";
 const failure = (text: string, ts = now): Msg => ({ id: `n-${id("e")}`, role: "notice", level: "error", ts, parts: [{ type: "text", text }] });
 add({ id: "claude:fail-1", title: "Can't start", projectPath: P, updatedAt: now - 40_000 }, [
   user("Fix the build."),

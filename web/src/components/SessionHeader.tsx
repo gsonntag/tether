@@ -95,6 +95,7 @@ export function SessionHeader({
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         {paid && <span className="t-chip t-paid-badge" title={billing.label}><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></span>}
         {!paid && <span className="t-chip t-chip-info t-usage-chip" title={usage.detail}>{usage.text}</span>}
+        {state.nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(state.nextBilling) ? " t-next-api" : ""}`} title={`${state.nextBilling.label} from the next start`}>Next: {state.nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (
           <button type="button" className="t-chip" onClick={() => openSession(runnerId, session.parentSessionId!)}>

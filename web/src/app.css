@@ -2192,6 +2192,12 @@
 .t-move-facts dd {
   margin: 0;
 }
+.t-chips > .t-chip.t-next-source { flex: none; cursor: default; }
+.t-chips > .t-chip.t-next-api { color: var(--t-api); border-color: var(--t-api); font-weight: 700; }
+.t-select.t-source-api {
+  border-color: var(--t-api);
+  box-shadow: 0 0 0 1px var(--t-api);
+}
 .t-move-api {
   display: inline-block;
   padding: 1px 8px;

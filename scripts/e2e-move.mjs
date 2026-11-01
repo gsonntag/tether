@@ -12,6 +12,7 @@
 //   errors    a running turn is refused, Cancel does nothing, phone and desktop dialogs (Claude only)
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
 //   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
+//   sourceChange the same harness on another source, on both harnesses, with made-up keys
 //   long      a session bigger than the window moves twice; its first line is only in the file.
 //             CODEX_TURNS=1 asks Codex instead of moving on (run the runner with a small
 //             TETHER_MOVE_BUDGET: every request resends what's in context)
@@ -113,6 +114,7 @@ const newSession = async (p, harness, mode) => {
   await rpcVia(p, "setEffort", { sessionId: id, effort: "low" });
   await p.goto(sessionUrl(id));
   await composer(p).waitFor({ timeout: 30_000 });
+  await confirmModel(p, harness === "codex" ? CODEX_MODEL : CLAUDE_MODEL);
   return id;
 };
 const openMenu = async (p, tap) => {
@@ -123,20 +125,34 @@ const openMenu = async (p, tap) => {
   await (tap ? item.tap() : item.click());
   await p.getByRole("dialog").waitFor();
 };
+/** Only the cheap model ever runs: said by the session itself, before any turn. */
+const confirmModel = async (p, model) => {
+  const word = model.startsWith("claude-") ? model.split("-")[1] : model;
+  const st = await waitState(p, (s) => !!s.model, "a model", 30_000);
+  if (![model, word].includes(st.model)) fail(`it would run ${st.model}, not ${model}`);
+};
 /** Moves through the dialog; returns the new session's id. */
-async function move(p, label, model, { tap = false, name } = {}) {
+async function move(p, label, model, { tap = false, name, source } = {}) {
   const was = idOf(p);
   await openMenu(p, tap);
   const d = p.getByRole("dialog");
-  await d.locator("select.t-select").first().waitFor({ timeout: 30_000 });
+  const modelSelect = d.locator("label", { hasText: "Model" }).locator("select");
+  await modelSelect.waitFor({ timeout: 30_000 });
+  const seg = d.getByRole("radio", { name: label, exact: true });
+  if (await seg.count()) await seg.click();
+  if (source) {
+    const picker = d.getByLabel("Source", { exact: true });
+    if (await picker.count()) await picker.selectOption({ label: source });
+    else if (!(await d.innerText()).includes(source)) fail(`the dialog doesn't offer ${source}`);
+  }
   // Claude lists aliases ("haiku"): the one that resolves to this model, by its family name.
   const word = model.startsWith("claude-") ? model.split("-")[1] : model;
   const value = await p.waitForFunction(([m, w]) => {
     const all = [...document.querySelectorAll("dialog select option, [role=dialog] select option")];
     return (all.find((o) => o.value === m) ?? all.find((o) => o.value === w))?.value;
   }, [model, word], { timeout: 40_000 });
-  await d.locator("select.t-select").first().selectOption(await value.jsonValue());
-  const eff = d.locator("select.t-select").nth(1);
+  await modelSelect.selectOption(await value.jsonValue());
+  const eff = d.locator("label", { hasText: "Effort" }).locator("select");
   if ((await eff.count()) && (await eff.locator('option[value="low"]').count())) await eff.selectOption("low");
   if (!(await d.innerText()).includes(label)) fail(`the dialog doesn't offer ${label}`);
   await shot(p, `${name ?? `move-${label}`}-dialog`);
@@ -149,9 +165,7 @@ async function move(p, label, model, { tap = false, name } = {}) {
   await p.locator(".t-msg.notice", { hasText: "Moved from" }).first().waitFor({ timeout: 30_000 });
   const id = idOf(p);
   if (id === was) fail("the new session didn't open");
-  // Only the cheap model ever runs here: said by the session itself, before any turn.
-  const st = await waitState(p, (s) => !!s.model, "a model", 30_000);
-  if (![model, word].includes(st.model)) fail(`it would run ${st.model}, not ${model}`);
+  await confirmModel(p, model);
   return id;
 }
 const storeFile = (nativeId) => `${HOME}/.claude/projects/${SCRATCH.replace(/[^a-zA-Z0-9]/g, "-")}/${nativeId}.jsonl`;
@@ -243,14 +257,19 @@ const steps = {
     try {
       await p.goto(sessionUrl(src.id));
       await openMenu(p);
-      await p.locator(".t-move-api", { hasText: "Anthropic API key" }).waitFor({ timeout: 30_000 });
-      if ((await p.locator(".t-move-api").evaluate((e) => getComputedStyle(e).borderRadius)) === "0px") fail("the API colour isn't styled");
+      const d = p.getByRole("dialog");
+      await d.getByRole("radio", { name: "Claude Code", exact: true }).click().catch(() => {});
+      const picker = d.getByLabel("Source", { exact: true });
+      await picker.waitFor({ timeout: 30_000 });
+      if ((await picker.locator("option:checked").innerText()) !== "Claude plan") fail("the dialog doesn't start on the plan");
+      await picker.selectOption({ label: "Anthropic API key" });
+      if ((await p.locator(".t-source-api").evaluate((e) => getComputedStyle(e).borderColor)) === "rgba(0, 0, 0, 0)") fail("the API colour isn't styled");
       await shot(p, "key-dialog");
-      await button(p.getByRole("dialog"), "Cancel").click();
-      await move(p, "Claude Code", CLAUDE_MODEL, { name: "key" });
+      await button(d, "Cancel").click();
+      await move(p, "Claude Code", CLAUDE_MODEL, { name: "key", source: "Anthropic API key" });
       await p.locator(".t-paid-badge").waitFor({ timeout: 60_000 });
       await shot(p, "key-moved");
-      ok("the configured key shows in the dialog and, confirmed, as the loud badge before anything is sent");
+      ok("the key is offered in the dialog and, chosen and confirmed, is the loud badge before anything is sent");
       await composer(p).fill("Reply OK.");
       await composer(p).press("Enter");
       await p.getByText("Anthropic API key failed", { exact: false }).first().waitFor({ timeout: 120_000 });
@@ -260,6 +279,43 @@ const steps = {
       ok("a refused key stops on that source: nothing goes to the plan");
     } finally {
       await rpcVia(p, "unsetCredential", { source: "anthropic" });
+      await p.close();
+    }
+  },
+
+  /** The same harness, another source: a new session with the context, the old one as it was. Fake keys only. */
+  async sourceChange() {
+    const p = await page(desktop);
+    const keys = { anthropic: `sk-ant-not-a-real-key-${"y".repeat(24)}`, openai: `sk-not-a-real-key-${"z".repeat(24)}` };
+    for (const [source, key] of Object.entries(keys)) if ((await rpcVia(p, "setCredential", { source, key })).error) fail("no key");
+    try {
+      const folder = process.env.CODEX_SCRATCH ?? `${HOME}/tether-scratch/p4/projects/scratch`;
+      const cases = [
+        { harness: "codex", label: "Codex", plan: "ChatGPT plan", key: "OpenAI API key", id: (await rpcVia(p, "listSessions", { projectPath: folder })).ok?.sessions.find((s) => s.harness === "codex" && !s.parentSessionId)?.id, model: CODEX_MODEL },
+        { harness: "claude", label: "Claude Code", plan: "Claude plan", key: "Anthropic API key", model: CLAUDE_MODEL },
+      ];
+      for (const c of cases) {
+        if (!c.id) {
+          c.id = await newSession(p, c.harness, "default");
+          if (!(await turn(p, "Reply with the single word ready. Do not use tools."))) fail("no reply");
+        }
+        await p.goto(sessionUrl(c.id));
+        await composer(p).waitFor({ timeout: 30_000 });
+        const before = await stateOf(p);
+        const to = await move(p, c.label, c.model, { name: `source-${c.harness}`, source: c.key });
+        await p.locator(".t-paid-badge", { hasText: c.key }).waitFor({ timeout: 60_000 });
+        await shot(p, `source-${c.harness}-moved`);
+        const sessions = (await rpcVia(p, "listSessions", {})).ok.sessions;
+        if (sessions.find((s) => s.id === to)?.billing?.label !== c.key) fail("the list has another label");
+        await p.goto(sessionUrl(c.id));
+        await p.locator(".t-msg.notice", { hasText: `Moved to ${c.key}` }).first().waitFor({ timeout: 30_000 });
+        const after = await stateOf(p);
+        if (after.billing?.label && after.billing.label === c.key) fail("the old session changed source");
+        if (after.model !== before.model) fail("the old session changed");
+        ok(`${c.label}: moved to ${c.key} with its context, confirmed before anything is sent; the old session is as it was`);
+      }
+    } finally {
+      for (const source of Object.keys(keys)) await rpcVia(p, "unsetCredential", { source });
       await p.close();
     }
   },

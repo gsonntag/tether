@@ -6,6 +6,7 @@ import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
+import type { BillingSource } from "../../../shared/credentials";
 import type { HarnessId, Msg } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
@@ -115,6 +116,8 @@ export function createRunner(o: RunnerOptions) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates));
     ops.register("unsetCredential", (a) => o.credentials!.unset(a.source));
+    ops.register("billingSources", (a) => live.sources(a.harness));
+    ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
@@ -175,9 +178,9 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource) => {
           const id = sessionId(harness, nativeId);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts) });
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source });
           const s = await core.open(id);
           core.book.upsert([s.summary]);
           // A failure (a key refused, a source it can't confirm) stays on the session: nothing falls back.
@@ -185,22 +188,15 @@ export function createRunner(o: RunnerOptions) {
           return id;
         },
         // Not started: its first send does that, after whatever the module sets up for it.
-        create: async ({ harness, projectPath, ...opts }: { harness: HarnessId; projectPath: string } & StartOpts) => {
-          const folder = core.folder(projectPath);
-          const credential = o.credentials?.snapshot(harness);
-          const s = core.create(harness, await core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) }), folder, opts);
+        create: async ({ harness, projectPath, source, ...opts }: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts) => {
+          const s = await live.createSession(harness, core.folder(projectPath), opts, source);
           core.touch(s);
           return s.id;
         },
-        newId: async (harness: HarnessId, projectPath: string, opts: StartOpts) => {
-          const credential = o.credentials?.snapshot(harness);
-          return core.adapter(harness).newId(projectPath, { ...opts, ...(credential ? { credential } : {}) });
-        },
-        configured: (harness: HarnessId) => {
-          const c = o.credentials?.snapshot(harness);
-          const a = core.adapter(harness);
-          return c && a.move ? { billing: a.move.billingOf(c.source), ...(c.deployment ? { deployment: c.deployment } : {}) } : undefined;
-        },
+        newId: (harness: HarnessId, projectPath: string, opts: StartOpts, source: BillingSource) => live.newNativeId(harness, projectPath, opts, source),
+        sources: (harness: HarnessId) => live.sources(harness),
+        sourceOf: async (id: string) => live.sourceOf(await core.open(id)),
+        sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);

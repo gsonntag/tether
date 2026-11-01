@@ -2,7 +2,7 @@
 // stream of sink calls on each send, so sync, paging and subagent tests are deterministic.
 
 import type { HarnessCapabilities, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
-import type { Adapter, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
+import type { Adapter, AdapterBilling, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
 
 /** One step of a scripted turn: called with the session's sink. */
 export type Step = (sink: Sink, d: FakeDriver) => void | Promise<void>;
@@ -123,6 +123,12 @@ export const subagentEnds = (nativeId: string): Step => (_s, d) => d.children.ge
 export class FakeAdapter implements Adapter {
   id = "claude" as const;
   capabilities = FAKE_CAPS;
+  loggedIn = true;
+  billing: AdapterBilling = {
+    keys: ["anthropic"],
+    label: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
+    loggedIn: async () => this.loggedIn,
+  };
   stored = new Map<string, { summary: SessionSummary; msgs: Msg[] }>();
   watchers = new Map<string, (msgs: Msg[]) => void>();
   drivers: FakeDriver[] = [];
