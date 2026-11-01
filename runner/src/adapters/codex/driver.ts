@@ -22,9 +22,9 @@ import { type CredentialSnapshot } from "../../credentials";
 import { agentName } from "./items";
 import { codexBilling, dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
 import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
-import { customProfile, knownMode, looser, modeOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
+import { collaborationMode, customProfile, knownMode, looser, modeOf, planningOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
-import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, DECLINE_ELICITATION } from "./requests";
+import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE_ELICITATION } from "./requests";
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
@@ -122,6 +122,10 @@ export class CodexDriver implements Driver {
     this.stream.onSettings = (s) => this.settingsChanged(s);
     this.stream.onSpawn = (child, toolId) => this.rememberChild(child, toolId);
     this.stream.onInteracted = (child) => sink.relayed?.(child);
+    // Plan mode has no review step in the app-server (its TUI asks "Implement this plan?" itself):
+    // the plan goes up as a request Tether answers (Request.planFollowUp). Nothing here waits on it;
+    // a turn starting passes it by (core/requests.ts).
+    this.stream.onPlan = (p) => void sink.request(codexPlanAsk(p)).catch(() => {});
     rpc.onNotify((m, p) => this.notify(m, p));
     rpc.onRequest = (m, p, id) => this.request(m, p, id);
     rpc.onClose((reason) => {
@@ -249,7 +253,7 @@ export class CodexDriver implements Driver {
     if (!opts.observe && opts.credential?.source === "azure" && opts.credential.deployment) opts = { ...opts, model: opts.credential.deployment };
     // Rejoining a TUI only observes its settings; stored Tether choices must not change it.
     const want: StartOpts = opts.observe ? {} : { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
-    const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined };
+    const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined, plan: planningOf(r.collaborationMode) };
     // Default picked here (now, or before a restart): shown as Default while it runs the default model.
     if (want.model === "default" || (!want.model && remembered(this.nativeId)?.modelAlias === "default")) {
       this.setAlias("default");
@@ -267,7 +271,11 @@ export class CodexDriver implements Driver {
     const differs = extras || mode?.approvalPolicy !== cur.approvalPolicy || mode?.sandbox !== cur.sandbox || (mode?.reviewer ?? "user") !== (cur.reviewer ?? "user");
     if (mode && differs && (!floorOnly || extras || looser(cur, mode)))
       Object.assign(patch, { approvalPolicy: mode.approvalPolicy, sandboxPolicy: sandboxPolicy(mode.sandbox), approvalsReviewer: mode.reviewer ?? "user" });
-    let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer, activePermissionProfile: r.activePermissionProfile ?? null };
+    // Plan mode is Codex's collaboration mode, beside the permissions. Only a mode picked in Tether
+    // (not a remembered floor) changes it, so a plan mode set in Codex's TUI isn't undone.
+    const planModel = (patch.model as string | undefined) ?? cur.model;
+    if (mode && !floorOnly && !!mode.plan !== cur.plan && planModel) patch.collaborationMode = collaborationMode(!!mode.plan, planModel, (patch.effort as string | undefined) ?? cur.effort);
+    let now: any = { model: cur.model, effort: cur.effort, approvalPolicy: cur.approvalPolicy, sandboxPolicy: r.sandbox, approvalsReviewer: cur.reviewer, activePermissionProfile: r.activePermissionProfile ?? null, collaborationMode: r.collaborationMode ?? null };
     if (Object.keys(patch).length) {
       const seen = this.nextSettings(CONFIRM_MS);
       try {
@@ -282,6 +290,7 @@ export class CodexDriver implements Driver {
         patch.model && s.model !== patch.model ? `model ${patch.model}` : "",
         patch.effort && s.effort !== patch.effort ? `effort ${patch.effort}` : "",
         patch.approvalPolicy && (s.approvalPolicy !== mode!.approvalPolicy || sandboxOf(s.sandboxPolicy) !== mode!.sandbox) ? "permissions" : "",
+        patch.collaborationMode && planningOf(s.collaborationMode) !== !!mode!.plan ? "plan mode" : "",
       ].filter(Boolean);
       if (missed.length) throw new Error(`Codex didn't apply your ${missed.join(", ")}. Nothing was sent.`);
     }
@@ -576,11 +585,11 @@ export class CodexDriver implements Driver {
   /** Settings changed on the thread (here, or /model and /permissions in Codex's TUI). */
   private settingsChanged(s: any) {
     this.current = { ...this.current, ...s };
-    const mode = modeOf(this.current.approvalPolicy, this.current.sandboxPolicy, this.current.approvalsReviewer, this.current.activePermissionProfile);
+    const mode = modeOf(this.current.approvalPolicy, this.current.sandboxPolicy, this.current.approvalsReviewer, this.current.activePermissionProfile, this.current.collaborationMode);
     void this.pollCommands();
     // Kept for when the session is stored: a change with no turn after it isn't in the rollout.
     const c = this.current;
-    const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy, c.approvalsReviewer, c.activePermissionProfile);
+    const cmode = modeOf(c.approvalPolicy, c.sandboxPolicy, c.approvalsReviewer, c.activePermissionProfile, c.collaborationMode);
     remember(this.nativeId, { applied: { ...(c.model ? { model: c.model } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(cmode ? { permissionMode: cmode } : {}), at: Date.now() } });
     const waiters = this.settingsWaiters.splice(0);
     for (const w of waiters) w(s);
@@ -830,6 +839,9 @@ export class CodexDriver implements Driver {
     if (m) {
       Object.assign(params, { approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: m.reviewer ?? "user" });
       Object.assign(eff, { approvalPolicy: m.approvalPolicy, sandbox: m.sandbox, reviewer: m.reviewer ?? "user", mode: shown.permissionMode });
+      // Plan mode goes with the turn too (it takes the turn's model).
+      const planModel = model ?? this.current?.model;
+      if (m.plan && planModel) params.collaborationMode = collaborationMode(true, planModel, shown.effort ?? this.current?.effort);
     }
     return { params, eff };
   }
@@ -931,19 +943,29 @@ export class CodexDriver implements Driver {
       if (!id) throw new Error("Codex didn't say which model is its default.");
     }
     this.setAlias(model === "default" ? "default" : undefined);
-    await this.update({ model: id }, this.current?.model === id);
+    await this.update({ model: id, ...this.planWith(id, this.current?.effort) }, this.current?.model === id);
   }
 
   async setEffort(effort: string) {
-    await this.update({ effort }, this.current?.effort === effort);
+    await this.update({ effort, ...this.planWith(this.current?.model, effort) }, this.current?.effort === effort);
+  }
+
+  /** In plan mode, a new model or effort goes into the collaboration mode too (it carries its own). */
+  private planWith(model: string | undefined, effort: string | undefined) {
+    return planningOf(this.current?.collaborationMode) && model ? { collaborationMode: collaborationMode(true, model, effort) } : {};
   }
 
   async setPermissionMode(mode: string) {
     const m = knownMode(mode);
     if (!m) throw new Error(`Codex has no permission mode ${mode}.`);
     const reviewer = m.reviewer ?? "user";
-    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && !sandboxExtras(this.current?.sandboxPolicy) && !customProfile(this.current?.activePermissionProfile, this.current?.sandboxPolicy) && (this.current?.approvalsReviewer ?? "user") === reviewer;
-    await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: reviewer }, same);
+    const planning = planningOf(this.current?.collaborationMode);
+    const same = this.current?.approvalPolicy === m.approvalPolicy && sandboxOf(this.current?.sandboxPolicy) === m.sandbox && !sandboxExtras(this.current?.sandboxPolicy) && !customProfile(this.current?.activePermissionProfile, this.current?.sandboxPolicy) && (this.current?.approvalsReviewer ?? "user") === reviewer && planning === !!m.plan;
+    // Into or out of plan mode: Codex's collaboration mode changes with the permissions.
+    const model = this.current?.model;
+    const collab = planning !== !!m.plan && model ? { collaborationMode: collaborationMode(!!m.plan, model, this.current?.effort) } : {};
+    if (planning !== !!m.plan && !model) throw new Error("Codex hasn't said which model this thread runs, so plan mode can't change yet.");
+    await this.update({ approvalPolicy: m.approvalPolicy, sandboxPolicy: sandboxPolicy(m.sandbox), approvalsReviewer: reviewer, ...collab }, same);
   }
 
   /** The thread's settings as the daemon last confirmed them (start, resume, thread/settings/updated). */

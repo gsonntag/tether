@@ -963,3 +963,67 @@ describe("commands", () => {
     expect(sink.states.filter((x) => x.status).at(-1)?.status).toBe("idle");
   });
 });
+
+describe("plan mode (Codex's collaboration mode)", () => {
+  const PLAN = { mode: "plan", settings: { model: "gpt-6-luna", reasoning_effort: "low", developer_instructions: null } };
+
+  test("into plan mode: read-only permissions and the plan collaboration mode, together; shown as Plan once confirmed", async () => {
+    useDaemon();
+    const sink = new TestSink();
+    const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+    await d.setPermissionMode("plan");
+    expect(daemon.calls("thread/settings/update").at(-1)).toEqual({ threadId: MAIN, approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user", collaborationMode: PLAN });
+    await Bun.sleep(0);
+    expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "plan" });
+    // A send pins plan mode on the turn too.
+    await d.send("plan it", [], { model: "gpt-6-luna", effort: "low", permissionMode: "plan" });
+    expect(daemon.calls("turn/start")[0]).toMatchObject({ approvalPolicy: "on-request", collaborationMode: PLAN });
+    // A model change keeps plan mode, on the new model.
+    await d.setModel("gpt-6-sol");
+    expect(daemon.calls("thread/settings/update").at(-1)).toEqual({ threadId: MAIN, model: "gpt-6-sol", collaborationMode: { ...PLAN, settings: { ...PLAN.settings, model: "gpt-6-sol" } } });
+    await Bun.sleep(0);
+    // Out of it: the default collaboration mode with the new permissions.
+    await d.setPermissionMode("auto");
+    expect(daemon.calls("thread/settings/update").at(-1)).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite" }, collaborationMode: { mode: "default" } });
+    await Bun.sleep(0);
+    expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "auto" });
+  });
+
+  test("read-only isn't plan, and plan with other permissions (set in Codex's TUI) shows as those permissions", async () => {
+    useDaemon();
+    const sink = new TestSink();
+    await CodexDriver.open(MAIN, CWD, {}, sink, true);
+    daemon.say({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { model: "gpt-6-luna", approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" }, collaborationMode: { mode: "default", settings: {} } } } });
+    expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "read-only" });
+    daemon.say({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite" }, collaborationMode: PLAN } } });
+    expect(sink.lastWith("permissionMode")).toMatchObject({ permissionMode: "auto" });
+  });
+
+  test("a resumed session picked as Plan in Tether gets plan mode applied and confirmed before anything runs", async () => {
+    useDaemon();
+    await CodexDriver.open(MAIN, CWD, { permissionMode: "plan" }, new TestSink(), true);
+    expect(daemon.calls("thread/settings/update")[0]).toMatchObject({ approvalPolicy: "on-request", collaborationMode: PLAN });
+    // Codex ignores the collaboration mode: the start fails, nothing runs outside plan mode.
+    useDaemon();
+    daemon.ignore.add("collaborationMode");
+    await expect(CodexDriver.open(MAIN, CWD, { permissionMode: "plan" }, new TestSink(), true)).rejects.toThrow("plan mode");
+  });
+
+  test("a turn that ends with a plan puts it up for review; a turn stopped, or with no plan, doesn't", async () => {
+    useDaemon();
+    const sink = new TestSink();
+    await CodexDriver.open(MAIN, CWD, {}, sink, true);
+    const turn = (id: string, items: any[], status = "completed") => {
+      daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id } } });
+      for (const item of items) daemon.say({ method: "item/completed", params: { threadId: MAIN, item } });
+      daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id, status } } });
+    };
+    turn("t1", [{ type: "agentMessage", id: "m1", text: "Hi." }]);
+    turn("t2", [{ type: "plan", id: "p2", text: "# Plan\n\n1. Stop" }], "interrupted");
+    expect(sink.asks).toEqual([]);
+    turn("t3", [{ type: "agentMessage", id: "m3", text: "Here it is." }, { type: "plan", id: "p3", text: "# Plan\n\n1. Do it" }]);
+    expect(sink.asks.map((a) => a.ask)).toEqual([{ kind: "approval", tool: "plan", input: { id: "p3" }, toolId: "p3", title: "Codex's plan is ready", plan: "# Plan\n\n1. Do it", approveMode: "auto", planFollowUp: true }]);
+    // The plan shows in the transcript as the turn's text.
+    expect(sink.t.messages.at(-1)!.parts).toEqual([{ type: "text", text: "Here it is." }, { type: "text", text: "# Plan\n\n1. Do it" }]);
+  });
+});

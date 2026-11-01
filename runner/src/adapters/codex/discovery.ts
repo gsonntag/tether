@@ -280,7 +280,7 @@ export function rolloutSettings(text: string): RolloutSettings {
       if (m?.type !== "turn_context") continue;
       const p = m.payload ?? {};
       const at = Date.parse(m.timestamp ?? "");
-      const mode = modeOf(p.approval_policy, p.sandbox_policy, p.approvals_reviewer, p.active_permission_profile);
+      const mode = modeOf(p.approval_policy, p.sandbox_policy, p.approvals_reviewer, p.active_permission_profile, p.collaboration_mode);
       return {
         found: true,
         ...(Number.isFinite(at) ? { at } : {}),

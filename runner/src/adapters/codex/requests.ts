@@ -7,6 +7,7 @@ import type { RequestQuestion } from "../../../../shared/transcript";
 import type { Decision, RequestAsk } from "../../core/adapter";
 import { classifyTool } from "../toolKind";
 import { patchInput, unwrapShell } from "./items";
+import { DEFAULT_MODE } from "./modes";
 
 /** A tool's kind and its command or path, as a request carries them. */
 function tags(tool: string, input: unknown) {
@@ -18,6 +19,14 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
 
 /** The server requests Tether answers. */
 export const ASKS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "item/tool/requestUserInput", "mcpServer/elicitation/request"]);
+
+/**
+ * A plan mode turn's plan, for review. The turn has ended, so Tether answers it (planFollowUp):
+ * approved, plan mode ends (for the mode before it, else Auto) and Codex is told to implement it.
+ */
+export function codexPlanAsk(p: { id: string; text: string }): RequestAsk {
+  return { kind: "approval", tool: "plan", input: { id: p.id }, toolId: p.id, title: "Codex's plan is ready", plan: p.text, approveMode: DEFAULT_MODE, planFollowUp: true };
+}
 
 /** The tool name a MCP approval is about (`mcp__server__tool`, as on the tool card). */
 export function mcpApprovalTool(p: any): string {
