@@ -1,11 +1,15 @@
 /** The keys a runner can hold. All can be set at once: a session picks one, or its subscription. */
 import type { TokenRates } from "./costs";
+import type { AzureType } from "./azureRates";
 import type { Billing, HarnessId } from "./transcript";
 export type CredentialSource = "anthropic" | "openai" | "azure";
 /** The keys each harness can use. */
 export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic"], codex: ["openai", "azure"] };
-/** One Azure deployment: the name requests use as their model, the model it runs, and its prices. */
-export interface AzureDeployment { name: string; model?: string; rates?: TokenRates }
+/**
+ * One Azure deployment: the name requests use as their model, the model it runs and its type, which
+ * find its rates in Tether's Azure table, and `rates`: the owner's own, used instead (Override).
+ */
+export interface AzureDeployment { name: string; model?: string; type?: AzureType; rates?: TokenRates }
 /** Azure's settings are public metadata, kept apart from its key: either can be set first. */
 export interface CredentialSlot { set: boolean; last4?: string; endpoint?: string; deployments?: AzureDeployment[] }
 export type CredentialStatus = Record<CredentialSource, CredentialSlot>;

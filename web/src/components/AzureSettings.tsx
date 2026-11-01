@@ -2,11 +2,26 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { rpc } from "../connection";
-import { blankRow, deploymentsOf, resourceOf, rowsOf, unchanged, type Row } from "../azureForm";
+import { blankRow, deploymentsOf, manual, resourceOf, rowsOf, tableOf, unchanged, type Row } from "../azureForm";
+import { AZURE_RATES_DATE, AZURE_RATES_SOURCE, type AzureBand, type AzureType } from "../../../shared/azureRates";
 import { loadModels, modelListKey, useStore } from "../store";
 import { KeySlot, useCredentials } from "./Credentials";
 
-const RATES = [["input", "Input"], ["cached", "Cached"], ["output", "Output"]] as const;
+const RATES = [["input", "Input"], ["cached", "Cached"], ["cacheWrite", "Cache write"], ["output", "Output"]] as const;
+const TYPES: [AzureType, string][] = [["global", "Global"], ["dataZone", "Data Zone"], ["regional", "Regional"]];
+const TABLE_NOTE = `${AZURE_RATES_SOURCE}, ${AZURE_RATES_DATE}`;
+const cell = (n?: number) => (n === undefined ? "—" : String(n));
+
+/** The table's rates for a row, read-only: short context, and long where listed. */
+function TableRates({ short, long }: { short: AzureBand; long?: AzureBand }) {
+  const line = (label: string, b?: AzureBand) => <tr><th scope="row">{label}</th>{RATES.map(([k]) => <td key={k}>{b ? cell(b[k]) : "—"}</td>)}</tr>;
+  return (
+    <table className="t-azure-table" title={TABLE_NOTE} aria-label="Table rates, USD / 1M tokens">
+      <thead><tr><th scope="col">USD/1M</th>{RATES.map(([k, label]) => <th scope="col" key={k}>{k === "cacheWrite" ? "Write" : label}</th>)}</tr></thead>
+      <tbody>{line("≤272K", short)}{line(">272K", long)}</tbody>
+    </table>
+  );
+}
 
 /** Azure for Codex: its key, the resource requests go to, and the deployments sessions can run on. */
 export function AzureSettings({ runnerId }: { runnerId: string }) {
@@ -52,19 +67,29 @@ export function AzureSettings({ runnerId }: { runnerId: string }) {
         <Heading level={3}>Deployments</Heading>
         {rows.map((row, n) => {
           const result = tests[row.id];
+          const table = tableOf(row);
+          const own = manual(row);
           const rated = RATES.filter(([k]) => row[k].trim() !== "");
+          const whole = [row.input, row.cached, row.output].every((v) => v.trim() !== "");
+          const fields = (
+            <div className="t-rate-fields">
+              {RATES.map(([k, label]) => <label className="t-field" key={k}>{label}<input className="t-search" type="number" min="0" max="1000000" step="any" inputMode="decimal" value={row[k]} placeholder={k === "cacheWrite" || !table ? "Optional" : undefined} disabled={disabled} onChange={(e) => edit(row.id, { [k]: e.target.value, override: true })} /></label>)}
+            </div>
+          );
           return (
             <div className="t-azure-row" role="group" aria-label={`Deployment ${row.name.trim() || n + 1}`} key={row.id}>
               <div className="t-azure-names">
                 <label className="t-field">Deployment<input className="t-search" value={row.name} autoCapitalize="off" autoCorrect="off" spellCheck={false} disabled={disabled} onChange={(e) => edit(row.id, { name: e.target.value })} /></label>
                 <label className="t-field">Model<input className="t-search" list="t-azure-models" value={row.model} placeholder="Optional" autoCapitalize="off" autoCorrect="off" spellCheck={false} disabled={disabled} onChange={(e) => edit(row.id, { model: e.target.value })} /></label>
+                <label className="t-field">Type<select className="t-select" aria-label="Type" value={row.type} disabled={disabled} onChange={(e) => edit(row.id, { type: e.target.value as AzureType })}>{TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}</select></label>
               </div>
-              <details className="t-credential-rates" open={rated.length > 0 && rated.length < 3 ? true : undefined}>
-                <summary>{rated.length === 3 ? `USD / 1M · ${row.input} · ${row.cached} · ${row.output}` : "USD / 1M tokens"}</summary>
-                <div className="t-rate-fields">
-                  {RATES.map(([k, label]) => <label className="t-field" key={k}>{label}<input className="t-search" type="number" min="0" max="1000000" step="any" inputMode="decimal" value={row[k]} placeholder="Optional" disabled={disabled} onChange={(e) => edit(row.id, { [k]: e.target.value })} /></label>)}
-                </div>
-              </details>
+              {table && <label className="t-check t-azure-override"><input type="checkbox" checked={row.override} disabled={disabled} onChange={(e) => edit(row.id, { override: e.target.checked })} /><span>Override</span></label>}
+              {table && !own ? <TableRates short={table.short} long={table.long} /> : table ? fields : (
+                <details className="t-credential-rates" open={rated.length > 0 && !whole ? true : undefined}>
+                  <summary>{whole ? `USD / 1M · ${RATES.map(([k]) => row[k].trim() || "—").join(" · ")}` : "USD / 1M tokens"}</summary>
+                  {fields}
+                </details>
+              )}
               <div className="t-azure-actions">
                 <Button label="Test" variant="secondary" isDisabled={disabled || dirty || !azure.set || !row.name.trim() || result?.text === "Testing…"} onClick={() => void test(row)} />
                 {result && <span className={`t-azure-result${result.ok === true ? " ok" : result.ok === false ? " fail" : ""}`} role="status">{result.text}</span>}

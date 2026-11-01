@@ -401,13 +401,17 @@ const fakeRequests=()=>{ try { return readFileSync(process.env.FAKE_LOG,"utf8").
 const azureStatus=async(p)=>(await call(p,"credentials",{})).azure;
 const until=async(what,check,ms=30000)=>{ const end=Date.now()+ms; for(;;) { const v=await check(); if(v) return v; if(Date.now()>end) throw new Error(`timed out: ${what}`); await new Promise((r)=>setTimeout(r,250)); } };
 const row=(p,n)=>p.locator(".t-azure-row").nth(n);
-async function fillRow(p,n,{name,model,rates}) {
+async function fillRow(p,n,{name,model,type,rates}) {
   const r=row(p,n);
   await r.getByLabel("Deployment",{exact:true}).fill(name);
   await r.getByLabel("Model",{exact:true}).fill(model??"");
+  if(type) await r.getByLabel("Type",{exact:true}).selectOption({label:type});
   if(rates) {
-    if(!(await r.locator("details").getAttribute("open")!==null)) await r.locator("summary").click();
-    for(const [k,label] of [["input","Input"],["cached","Cached"],["output","Output"]]) await r.getByLabel(label,{exact:true}).fill(String(rates[k]));
+    // On the table: Override; off it, the fields are behind the rates line.
+    const override=r.getByLabel("Override",{exact:true});
+    if(await override.count()) { if(!(await override.isChecked())) await override.check(); }
+    else if(!(await r.locator("details").getAttribute("open")!==null)) await r.locator("summary").click();
+    for(const [k,label] of [["input","Input"],["cached","Cached"],["cacheWrite","Cache write"],["output","Output"]]) if(rates[k]!==undefined) await r.getByLabel(label,{exact:true}).fill(String(rates[k]));
   }
 }
 async function saveAzure(p,check) {
@@ -429,6 +433,63 @@ async function fakeTurn(p,id,text) {
   await until("the fake Azure reply",async()=>((await viewOf(p,id))?.messages.filter(reply).length??0)>before,90000);
 }
 const prefsOf=(id)=>JSON.parse(readFileSync(`${dirname(FILE)}/runner.json`,"utf8")).sessions?.[id] ?? {};
+/**
+ * Azure's prices through the fake, whose usage the deployment's name sets (scripts/fake-responses.ts):
+ * short, long and cache writes from the table, Data Zone, no table write rate, an unlisted model on
+ * Regional, an Override with a write rate, and Priority. The rows are made in the form, then removed.
+ */
+async function azurePrices(p,phone,cx) {
+  const cases=[
+    // gpt-6.1-sol Global, short: (60k × 2 + 100k × 0.10 + 40k × 2.50 + 1k × 10) / 1M
+    {name:"short-in200000-ca100000-wr40000-out1000",model:"gpt-6.1-sol",text:"est. $0.24",title:"dated 2026-11-01"},
+    // long, over 272k: (300k × 4 + 2k × 15) / 1M
+    {name:"long-in300000-out2000",model:"gpt-6.1-sol",text:"est. $1.23",title:"dated 2026-11-01"},
+    // Data Zone: (100k × 2.20 + 1k × 11) / 1M
+    {name:"zone-in100000-out1000",model:"gpt-6.1-sol",type:"Data Zone",text:"est. $0.23",title:"dated 2026-11-01"},
+    {name:"nowrite-in100000-wr1000-out10",model:"gpt-5.5",text:"Cost unknown",title:"cache writes have no rate for this model"},
+    {name:"deep-in100",model:"DeepSeek-V4",type:"Regional",text:"Cost unknown",title:"deepseek-v4 has no published price"},
+    // Override with a write rate: (50 × 2000 + 50 × 3000) / 1M
+    {name:"own-in100-wr50-out0",model:"gpt-6-luna",rates:{input:2000,cached:0,cacheWrite:3000,output:2000},text:"est. $0.25",title:"Estimated session API cost"},
+    {name:"prio-tierpriority",model:"gpt-6-luna",text:"Cost unknown",title:"service tier priority isn't confirmed as Standard"},
+  ];
+  await p.goto(`${BASE}/#/settings/azure`);
+  await until("rows",async()=>(await p.locator(".t-azure-row").count())===2);
+  const form=p.getByRole("form",{name:"Azure settings"});
+  for(const [n,c] of cases.entries()) {
+    await form.getByRole("button",{name:"Add deployment",exact:true}).click();
+    await fillRow(p,2+n,c);
+  }
+  const deep=row(p,2+4);
+  assert(await deep.getByLabel("Override",{exact:true}).count()===0&&await deep.locator(".t-azure-table").count()===0,"an unlisted model shows table rates");
+  assert(await row(p,2+2).locator(".t-azure-table").innerText().then((t)=>t.includes("2.2")),"Data Zone rates aren't shown");
+  await saveAzure(p,(a)=>a.deployments.length===2+cases.length);
+  const saved=(await azureStatus(p)).deployments;
+  assert(saved.find((d)=>d.name.startsWith("zone-")).type==="dataZone"&&saved.find((d)=>d.name.startsWith("deep-")).type==="regional"&&saved.find((d)=>d.name.startsWith("short-")).type==="global"&&!saved.find((d)=>d.name.startsWith("short-")).rates,`saved: ${JSON.stringify(saved)}`);
+  assert(JSON.stringify(saved.find((d)=>d.name.startsWith("own-")).rates)===JSON.stringify({input:2000,output:2000,cached:0,cacheWrite:3000}),"the override's write rate wasn't saved");
+  await noOverflow(p);
+  await p.locator(".t-azure-row").nth(4).scrollIntoViewIfNeeded();
+  await screenshot(p,"azure-types-desktop");
+  await phone.goto(`${BASE}/#/settings/azure`);
+  await until("phone rows",async()=>(await phone.locator(".t-azure-row").count())===2+cases.length);
+  await noOverflow(phone);
+  await screenshot(phone,"azure-types-phone");
+  await phone.locator(".t-azure-row").nth(2+5).scrollIntoViewIfNeeded();
+  await screenshot(phone,"azure-types-phone-override");
+  for(const c of cases) {
+    const id=(await call(p,"newSession",{harness:"codex",projectPath:cx,source:"azure",model:c.name,permissionMode:"read-only"})).sessionId;
+    await open(p,id);
+    await fakeTurn(p,id,"Say anything.");
+    assert(fakeRequests().at(-1).model===c.name,`${c.name}'s request`);
+    const cost=p.locator(".t-api-cost");
+    await until(`${c.name}'s cost`,async()=>(await cost.innerText().catch(()=>""))===c.text&&((await cost.getAttribute("title").catch(()=>""))??"").includes(c.title)).catch(async(e)=>{ throw new Error(`${e.message}: "${await cost.innerText().catch(()=>"")}" ${await cost.getAttribute("title").catch(()=>"")}`); });
+    const title=await cost.getAttribute("title");
+    if(c.text!=="Cost unknown"&&!c.rates) assert(title.includes("your agreement may differ"),`${c.name}: no table note`);
+    console.log(`ok azure price ${c.name}: ${c.text}`);
+  }
+  await screenshot(p,"azure-session-priority");
+  await call(p,"setAzure",{endpoint:process.env.FAKE_ENDPOINT,deployments:saved.slice(0,2)});
+  console.log("ok azure prices: short, long and writes from the table, Data Zone, no write rate, unlisted model, Override with a write rate, Priority");
+}
 /**
  * Settings, Azure: the resource, its key and its deployments; Test through a fake Azure; and Codex
  * sessions on a deployment from New session and the Move dialog, kept over a restart, stopped when
@@ -459,7 +520,13 @@ async function azurePage(p,phone) {
   await until("rows after reload",async()=>(await p.locator(".t-azure-row").count())===2);
   assert(await form.getByLabel("Resource",{exact:true}).inputValue()==="e2e-res","the resource didn't come back as its name");
   assert(await row(p,0).getByLabel("Deployment",{exact:true}).inputValue()==="luna-a","a deployment didn't come back");
-  assert((await row(p,0).locator("summary").innerText()).includes("2000"),"rates aren't shown");
+  assert(await row(p,0).getByLabel("Override",{exact:true}).isChecked()&&await row(p,0).getByLabel("Input",{exact:true}).inputValue()==="2000","the override's rates aren't shown");
+  // luna-b is on the table: its rates read-only, the table's date in the tooltip, Global by default.
+  assert(await row(p,1).getByLabel("Type",{exact:true}).inputValue()==="global","Type isn't Global by default");
+  assert(!(await row(p,1).getByLabel("Override",{exact:true}).isChecked())&&await row(p,1).getByLabel("Input",{exact:true}).count()===0,"a table row shows editable rates");
+  const tableText=await row(p,1).locator(".t-azure-table").innerText();
+  assert(tableText.includes("0.125")&&tableText.includes("0.75"),`table rates: ${tableText}`);
+  assert((await row(p,1).locator(".t-azure-table").getAttribute("title")).includes("2026-11-01"),"no table date in the tooltip");
   const status=await azureStatus(p);
   assert(status.set&&status.deployments[0].rates?.input===2000&&!JSON.stringify(status).includes("test-"),"status");
   const sources=(await call(p,"billingSources",{harness:"codex"})).options.find((o)=>o.source==="azure");
@@ -468,9 +535,10 @@ async function azurePage(p,phone) {
   await screenshot(p,"azure-desktop");
   await phone.goto(`${BASE}/#/settings/azure`);
   await phone.locator(".t-azure-row").nth(1).waitFor();
-  await phone.locator(".t-azure-row").first().locator("summary").click();
   await noOverflow(phone);
   await screenshot(phone,"azure-phone");
+  await phone.locator(".t-azure-row").nth(1).locator(".t-azure-table").scrollIntoViewIfNeeded();
+  await screenshot(phone,"azure-table-phone");
   console.log("ok azure page: resource name to v1 endpoint, key apart, two deployments with rates, reload, phone width");
   if(!process.env.FAKE_ENDPOINT) { console.log("skip azure sessions: no FAKE_ENDPOINT"); return; }
   // A full URL instead of a name: the fake Azure. Test sends one request where a session's go.
@@ -517,9 +585,10 @@ async function azurePage(p,phone) {
   await p.locator(".t-paid-badge > span:first-child",{hasText:"Azure"}).waitFor({timeout:90000});
   await fakeTurn(p,b,"Say anything.");
   assert(fakeRequests().at(-1).model==="luna-b","the session's request didn't name its deployment");
-  await until("luna-b's cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="Cost unknown");
-  assert((await p.locator(".t-api-cost").getAttribute("title")).includes("luna-b has no published price"),"no reason for the unknown cost");
-  await screenshot(p,"azure-session-unpriced");
+  // From the table: gpt-6-luna Global, (10 × 0.10 + 2 × 0.50) / 1M.
+  await until("luna-b's table cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="est. <$0.0001");
+  assert((await p.locator(".t-api-cost").getAttribute("title")).includes("dated 2026-11-01; your agreement may differ"),"no table note on the cost");
+  await screenshot(p,"azure-session-table");
   // The other, from its rates: (10 × 2000 + 2 × 2000) / 1M.
   const a=(await call(p,"newSession",{harness:"codex",projectPath:cx,source:"azure",model:"luna-a",permissionMode:"read-only"})).sessionId;
   await open(p,a);
@@ -527,7 +596,8 @@ async function azurePage(p,phone) {
   assert(fakeRequests().at(-1).model==="luna-a","luna-a's request");
   await until("luna-a's priced cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="est. $0.02");
   await screenshot(p,"azure-session-priced");
-  console.log("ok azure sessions: New session lists deployments with their model; each session names its deployment and is priced by its rates, or unknown with the reason");
+  console.log("ok azure sessions: New session lists deployments with their model; each session names its deployment and is priced from the table or its Override");
+  await azurePrices(p,phone,cx);
   if(process.env.RESTART_RUNNER) {
     execFileSync("sh",["-c",process.env.RESTART_RUNNER],{stdio:"inherit"});
     await open(p,b);

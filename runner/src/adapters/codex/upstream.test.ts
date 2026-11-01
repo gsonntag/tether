@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { deploymentRates } from "./privateHost";
+import { deploymentPricing } from "./privateHost";
 import { testAzure, upstreamHeaders, upstreamUrl } from "./upstream";
 
 const key = `fake-azure-${crypto.randomUUID()}`;
@@ -40,11 +40,11 @@ test("the gateway's URL and headers are the session path's", () => {
   expect(upstreamHeaders("openai", key).get("authorization")).toBe(`Bearer ${key}`);
 });
 
-test("a deployment's rates price only requests to it", () => {
-  const rates = { input: 1, output: 2, cached: 0.5 };
-  expect(deploymentRates(rates, "d-one", JSON.stringify({ model: "d-one" }))).toEqual(rates);
-  expect(deploymentRates(rates, "d-one", JSON.stringify({ model: "other" }))).toBeUndefined();
-  expect(deploymentRates(rates, "d-one", undefined)).toBeUndefined();
-  expect(deploymentRates(rates, undefined, JSON.stringify({ model: "other" }))).toEqual(rates);
-  expect(deploymentRates(undefined, "d-one", JSON.stringify({ model: "d-one" }))).toBeUndefined();
+test("a deployment's pricing prices only requests to it", () => {
+  const rates = { model: "gpt-6-luna", type: "global" as const };
+  expect(deploymentPricing(rates, "d-one", JSON.stringify({ model: "d-one" }))).toEqual(rates);
+  expect(deploymentPricing(rates, "d-one", JSON.stringify({ model: "other" }))).toBeUndefined();
+  expect(deploymentPricing(rates, "d-one", undefined)).toBeUndefined();
+  expect(deploymentPricing(rates, undefined, JSON.stringify({ model: "other" }))).toEqual(rates);
+  expect(deploymentPricing(undefined, "d-one", JSON.stringify({ model: "d-one" }))).toBeUndefined();
 });

@@ -123,7 +123,7 @@ async function ensurePrivate(source: PrivateSource, credential?: CredentialSnaps
   const argv = [process.execPath, join(import.meta.dir, "privateHost.ts"), home, source.projectPath, source.source, endpoint, source.id, HARNESS_BINS.codex];
   const unit = process.env.INVOCATION_ID && Bun.which("systemd-run") ? `tether-key-${source.id}.scope` : undefined;
   const command = unit ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, ...argv] : argv;
-  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home), TETHER_GATEWAY_KEY: use.key, ...(use.rates ? { TETHER_GATEWAY_RATES: JSON.stringify(use.rates) } : {}), ...(use.deployment ? { TETHER_GATEWAY_DEPLOYMENT: use.deployment } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
+  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home), TETHER_GATEWAY_KEY: use.key, ...(use.pricing ? { TETHER_GATEWAY_PRICING: JSON.stringify(use.pricing) } : {}), ...(use.deployment ? { TETHER_GATEWAY_DEPLOYMENT: use.deployment } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
   let failed = false;
   p.on("error", () => { failed = true; });
   p.unref();

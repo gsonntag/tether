@@ -2113,20 +2113,28 @@
 .t-credential-entry > input { flex: 1 1 140px; min-width: 0; }
 .t-credentials .t-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .t-credential-rates summary { font-size: 13px; color: var(--t-muted); cursor: pointer; }
-.t-rate-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
+.t-rate-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
+.t-azure-row > .t-rate-fields { padding-top: 0; }
 .t-rate-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
 .t-azure { display: flex; flex-direction: column; gap: 12px; }
 .t-azure .t-field input { min-width: 0; width: 100%; box-sizing: border-box; }
 .t-azure-endpoint { margin-top: -6px; font-size: 12px; color: var(--t-muted); overflow-wrap: anywhere; }
 .t-azure-row { border: 1px solid var(--t-border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.t-azure-names { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.t-azure-names { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 9em); gap: 8px; }
+.t-azure-override { font-size: 13px; align-self: flex-start; }
+.t-azure-table { border-collapse: collapse; font-size: 12px; color: var(--t-muted); font-variant-numeric: tabular-nums; width: 100%; table-layout: fixed; cursor: default; }
+.t-azure-table th, .t-azure-table td { text-align: right; padding: 2px 4px; font-weight: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-azure-table th:first-child { text-align: left; width: 5.5em; }
 .t-azure-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .t-azure-actions > :last-child { margin-left: auto; }
 .t-azure-result { font-size: 13px; color: var(--t-muted); overflow-wrap: anywhere; min-width: 0; }
 .t-azure-result.ok { color: var(--color-text-green, var(--color-success)); }
 .t-azure-result.fail { color: var(--color-text-red, var(--color-error)); }
 .t-azure-foot { display: flex; justify-content: space-between; gap: 8px; }
-@media (max-width: 520px) { .t-azure-names { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 520px) {
+  .t-azure-names { grid-template-columns: minmax(0, 1fr); }
+  .t-rate-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 767px), (pointer: coarse) {
   /* The source stays outside the scrollable choices, including on small phones. */
   .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }

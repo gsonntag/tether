@@ -835,7 +835,8 @@ the transcript, and aren't listed under the new one.
 apart from Azure's key, so either can be set first and unsetting the key keeps them. A version 2 file
 (Azure's endpoint, one optional deployment and its rates in the key's slot) and a version 1 file (one
 `codex` slot) still read, their revisions kept: the one deployment becomes a list of one with its rates,
-and rates with no deployment are dropped (they priced whatever model was picked). The file is rewritten
+and rates with no deployment are dropped (they priced whatever model was picked). A deployment saved
+before types is Global; its rates, if it had any, become its Override with the same numbers. The file is rewritten
 by the next change. A runner from before version 3 can't read it, and disables sending. A web deployed
 ahead of its runner gets no `billingSources` answer and hides the picker.
 
@@ -877,8 +878,20 @@ The Azure page has Azure's **API key** (write-only, as any key), the **Resource*
 that URL and the page shows it under the field. A full HTTPS URL is taken instead (a Foundry resource's
 `https://<name>.services.ai.azure.com`), with `/openai/v1` added when it has no path. Each deployment
 row has its name (what requests send as `model`), the model it runs (free text, suggested from Codex's
-model list; it's shown, never used for prices) and optional USD rates per 1M tokens: input, cached and
-output, all three or none. Names are unique, at most 50 rows. Endpoint, names and models are public
+model list), its **Type** (Global, the default, as the owner's deployments are all Global Standard; Data
+Zone; Regional) and its rates. Names are unique, at most 50 rows.
+
+**Rates come from a dated table** (`shared/azureRates.ts`): Azure OpenAI's Standard (on-demand) rates,
+West US, USD per 1M tokens, as on the pricing page the owner pasted on 2026-11-01, for Global and Data
+Zone, short and long context, with a cache-write rate where the page lists one (not for gpt-5.5 or
+gpt-5.4). Nothing else is in it: no Regional, Priority, Flex, Batch or Provisioned, no other region or
+model. A row whose model and type are in the table shows its rates read-only and greyed, the table's
+source and date in a tooltip. Its model matches when it's the table's id after lowercasing; a model
+field ending in Azure's dated version (`gpt-5.4-2026-03-05`) has that `-YYYY-MM-DD` removed first.
+Nothing else is mapped. **Override** keeps the owner's own USD rates per 1M tokens instead: input,
+cached and output, all three or none, and an optional cache write. A row the table has nothing for
+(a Regional one, DeepSeek, a model not listed, no model) shows those fields directly, optional; without
+them its turns are unknown, `type:regional` or `model:<id>` (`model:none` with no model). Endpoint, names and models are public
 metadata and may reach argv and status; a key in any of them is refused.
 
 **Test**, per saved row, sends one tiny request (`max_output_tokens` 16, not stored) where a session's
@@ -895,8 +908,8 @@ models, not deployments.
 
 **A session on Azure has one deployment** (`SessionPrefs.deployment`), chosen as its Model in New
 session or Move, kept across restarts and used on every start: Codex is told it as the model, the
-private host prices with its rates (`TETHER_GATEWAY_RATES`, `TETHER_GATEWAY_DEPLOYMENT`), and a change
-to its rates, the endpoint or the key restarts an idle session's private process at the next send, as a
+private host prices with its model, type and Override (`TETHER_GATEWAY_PRICING`, `TETHER_GATEWAY_DEPLOYMENT`), and a change
+to its model, type, rates, the table's date, the endpoint or the key restarts an idle session's private process at the next send, as a
 replaced key does; other deployments' changes don't. A source change onto Azure (the chip) takes the
 deployment matching the session's model, else the first. A session from before deployment lists takes
 its model if that's a deployment, else the first, and keeps it. A deployment removed later stops its
@@ -955,9 +968,19 @@ decreasing baseline leaves that process's spend unknown (`no-baseline`). `/clear
 incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
 pending requests before inference so a crash cannot leave a false complete total. Reports are
 idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported
-models and tiers. Azure uses the session's deployment's optional rates, entered on the Azure page,
-and only for requests naming that deployment; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
-unknown. These estimates are not provider invoices.
+models and tiers. Azure prices only requests naming the session's deployment, from the table or its
+Override (§10 **Azure**). A request is short context when its input tokens are ≤ 272,000, otherwise
+long, at the table's long rates; the page states that cutoff only for GPT-5.4 and it's assumed for the
+others. A model with no long rates for its type (gpt-5.4 on Data Zone) leaves a long request unknown,
+`long-context`, and so does an Override, whose one set of rates says nothing of long context. Cache
+writes are priced at the one write rate Azure lists, by their total (`cache_write_tokens`, else the
+lifetime breakdown's sum), with or without a breakdown; with no write rate (gpt-5.5, gpt-5.4, an
+Override without one) a request that wrote is unknown, `no-write-rate`. A response whose service tier
+is anything but default, standard, auto or missing (Priority, Flex, Batch) is unknown, `tier:<value>`.
+A table-priced report carries the note `azure-table`: the cost's tooltip says Azure's rates come from
+Tether's dated table and the owner's agreement may differ. It still reads "est. $x". Missing rates,
+hosted tool fees and unknown pricing remain unknown, and a partial total is never complete. These
+estimates are not provider invoices.
 
 The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
 browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is

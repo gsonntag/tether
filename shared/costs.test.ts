@@ -76,3 +76,16 @@ test("only fixed codes and plain ids count as reasons", () => {
   expect(reasonValue("gpt-6-luna")).toBe("gpt-6-luna");
   expect(reasonValue("sk [redacted]")).toBe("other");
 });
+
+test("Azure's table is named, with its date, whole or partial", () => {
+  const whole = costChip({ usd: 0.02, estimated: true, complete: true, notes: ["azure-table"] });
+  expect(whole.text).toBe("est. $0.02");
+  expect(whole.detail).toContain("dated 2026-11-01");
+  expect(whole.detail).toContain("your agreement may differ");
+  const partial = costChip({ usd: 0.02, estimated: true, complete: false, reasons: ["no-write-rate"], notes: ["azure-table"] });
+  expect(partial.text).toBe("est. $0.02");
+  expect(partial.detail).toContain("cache writes have no rate");
+  expect(partial.detail).toContain("dated 2026-11-01");
+  expect(costChip({ estimated: true, complete: false, reasons: ["type:regional"] }).detail).toContain("Regional deployments");
+  expect(costReasons(["no-write-rate", "azure-table", "type:regional", "model:none"])).toEqual(["no-write-rate", "azure-table", "type:regional", "model:none"]);
+});

@@ -6,6 +6,7 @@ import { constants, closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readF
 import { dirname, join } from "node:path";
 import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
 import { validRates, type TokenRates } from "../../shared/costs";
+import { AZURE_RATES_DATE, isAzureType, type AzurePricing } from "../../shared/azureRates";
 import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
@@ -18,6 +19,8 @@ export interface CredentialSnapshot {
   endpoint?: string;
   /** Azure: the session's deployment, which is the model its requests name */
   deployment?: string;
+  /** Azure: how the deployment's requests are priced */
+  pricing?: AzurePricing;
 }
 interface Secret { key: string; revision: string }
 /** Public metadata, kept apart from Azure's key, so either can be set or changed first. */
@@ -113,7 +116,10 @@ function azureSettings(raw: any, knownKeys: Iterable<string>, typed = false): Az
     const model = typeof d?.model === "string" ? d.model.trim() : undefined;
     if (model && !MODEL.test(model)) throw new Error("Enter a valid model id.");
     if (d?.rates !== undefined && d.rates !== null && !validRates(d.rates)) throw new Error("Enter valid USD rates per million tokens.");
-    return { name, ...(model ? { model } : {}), ...(d?.rates ? { rates: { input: d.rates.input, output: d.rates.output, cached: d.rates.cached } } : {}) };
+    // A row from before types is Global, as the owner's deployments are; its rates, if any, are its Override.
+    if (d?.type !== undefined && !isAzureType(d.type)) throw new Error("Enter a valid deployment type.");
+    const type = d?.type ?? "global";
+    return { name, ...(model ? { model } : {}), type, ...(d?.rates ? { rates: { input: d.rates.input, output: d.rates.output, cached: d.rates.cached, ...(d.rates.cacheWrite !== undefined ? { cacheWrite: d.rates.cacheWrite } : {}) } } : {}) };
   });
   const settings: AzureSettings = { ...(endpoint ? { endpoint } : {}), deployments };
   if (carriesKey(settings, knownKeys)) throw new Error("Azure settings must not contain a key.");
@@ -190,7 +196,9 @@ export class CredentialStore {
     if (deployment === undefined) return { key: secret.key, source, file: this.file, endpoint, revision: `${secret.revision}:${azureDigest(endpoint)}` };
     const d = this.saved.azureSettings!.deployments.find((x) => x.name === deployment);
     if (!d) return undefined;
-    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), revision: `${secret.revision}:${azureDigest(endpoint, d.name, d.rates ?? null)}` };
+    const pricing: AzurePricing = { ...(d.model ? { model: d.model } : {}), type: d.type ?? "global", ...(d.rates ? { rates: d.rates } : {}) };
+    // The table's date too: new rates restart an idle session's private process, as changed ones do.
+    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), pricing, revision: `${secret.revision}:${azureDigest(endpoint, d.name, d.rates ?? null, d.model ?? null, pricing.type, AZURE_RATES_DATE)}` };
   }
   /** A key. Azure's settings come separately (`setAzure`); a browser from before sends them along. */
   set(source: CredentialSource, key: string, endpoint?: string, deployment?: string, rates?: TokenRates): CredentialStatus {

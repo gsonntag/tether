@@ -15,7 +15,7 @@ describe("private credentials", () => {
     for (const bad of ["http://x.openai.azure.com", "https://u:p@x.openai.azure.com", "https://x.openai.azure.com/openai/v1?api-version=1", "has space"]) expect(() => store.setAzure({ endpoint: bad, deployments: [] })).toThrow("resource name or HTTPS endpoint");
     const rates = { input: 1.25, output: 10, cached: 0.125 };
     store.setAzure({ endpoint: "my-res", deployments: [{ name: " d-one ", model: "gpt-6-luna", rates }, { name: "d-two" }] });
-    expect(store.status().azure.deployments).toEqual([{ name: "d-one", model: "gpt-6-luna", rates }, { name: "d-two" }]);
+    expect(store.status().azure.deployments).toEqual([{ name: "d-one", model: "gpt-6-luna", type: "global", rates }, { name: "d-two", type: "global" }]);
     // No key yet: settings without a source.
     expect(store.snapshot("azure", "d-one")).toBeUndefined();
     const key = fake("azure");
@@ -36,6 +36,8 @@ describe("private credentials", () => {
     expect(() => store.setAzure({ endpoint: "r", deployments: [{ name: "has space" }] })).toThrow("valid deployment");
     expect(() => store.setAzure({ endpoint: "r", deployments: [{ name: "a", model: "a b" }] })).toThrow("valid model");
     expect(() => store.setAzure({ endpoint: "r", deployments: [{ name: "a", rates: { input: -1, output: 0, cached: 0 } }] })).toThrow("USD rates");
+    expect(() => store.setAzure({ endpoint: "r", deployments: [{ name: "a", type: "provisioned" }] })).toThrow("deployment type");
+    expect(() => store.setAzure({ endpoint: "r", deployments: [{ name: "a", rates: { input: 1, output: 1, cached: 1, cacheWrite: -1 } }] })).toThrow("USD rates");
     expect(() => store.setAzure({ endpoint: "r", deployments: Array.from({ length: 51 }, (_, n) => ({ name: `d${n}` })) })).toThrow("valid Azure deployments");
   });
   test("loaded Azure metadata fails closed too, and unsupported file fields never enter snapshots", () => {
@@ -147,12 +149,39 @@ describe("private credentials", () => {
     writeFileSync(file, JSON.stringify({ version: 4 }), { mode: 0o600 });
     expect(() => new CredentialStore(file)).toThrow("Sending is disabled");
   });
+  test("types and Override: a row's pricing reaches its snapshot, and its model, type or rates restart only its process", () => {
+    const store = new CredentialStore(join(dir(), "credentials.json"));
+    store.set("azure", fake("azure"));
+    const over = { input: 3, output: 7, cached: 1, cacheWrite: 4 };
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "a", model: "gpt-6-luna", type: "dataZone" }, { name: "b", model: "DeepSeek-V4", type: "regional", rates: over }, { name: "c" }] });
+    expect(store.status().azure.deployments).toEqual([{ name: "a", model: "gpt-6-luna", type: "dataZone" }, { name: "b", model: "DeepSeek-V4", type: "regional", rates: over }, { name: "c", type: "global" }]);
+    expect(store.snapshot("azure", "a")!.pricing).toEqual({ model: "gpt-6-luna", type: "dataZone" });
+    expect(store.snapshot("azure", "b")!.pricing).toEqual({ model: "DeepSeek-V4", type: "regional", rates: over });
+    expect(store.snapshot("azure", "c")!.pricing).toEqual({ type: "global" });
+    const [a, b] = [store.snapshot("azure", "a")!.revision, store.snapshot("azure", "b")!.revision];
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "a", model: "gpt-6-luna", type: "global" }, { name: "b", model: "DeepSeek-V4", type: "regional", rates: over }, { name: "c" }] });
+    expect(store.snapshot("azure", "a")!.revision).not.toBe(a);
+    expect(store.snapshot("azure", "b")!.revision).toBe(b);
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "a", model: "gpt-6.1-sol", type: "global" }, { name: "b", model: "DeepSeek-V4", type: "regional", rates: over }] });
+    expect(store.snapshot("azure", "b")!.revision).toBe(b);
+  });
+  test("migration: version 3 rows from before types are Global; saved rates become their Override", () => {
+    const file = join(dir(), "credentials.json"), azure = fake("v3-azure");
+    const rates = { input: 1.1, output: 4.4, cached: 0.275 };
+    writeFileSync(file, JSON.stringify({ version: 3, azure: { key: azure, revision: "z3" }, azureSettings: { endpoint: "https://east-res.openai.azure.com/openai/v1", deployments: [{ name: "manual", model: "gpt-6-luna", rates }, { name: "table", model: "gpt-6-luna" }] } }) + "\n", { mode: 0o600 });
+    const store = new CredentialStore(file);
+    expect(store.status().azure.deployments).toEqual([{ name: "manual", model: "gpt-6-luna", type: "global", rates }, { name: "table", model: "gpt-6-luna", type: "global" }]);
+    expect(store.snapshot("azure", "manual")!.pricing).toEqual({ model: "gpt-6-luna", type: "global", rates });
+    expect(store.snapshot("azure", "table")!.pricing).toEqual({ model: "gpt-6-luna", type: "global" });
+    store.set("anthropic", fake("v3-anthropic"));
+    expect(JSON.parse(readFileSync(file, "utf8")).azureSettings.deployments[1]).toEqual({ name: "table", model: "gpt-6-luna", type: "global" });
+  });
   test("version 2's Azure slot becomes its key and a list of one deployment with its rates, rewritten at the next change", () => {
     const file = join(dir(), "credentials.json"), azure = fake("v2-azure"), openai = fake("v2-openai");
     const rates = { input: 1.1, output: 4.4, cached: 0.275 };
     writeFileSync(file, JSON.stringify({ version: 2, openai: { key: openai, revision: "o2" }, azure: { key: azure, revision: "z2", endpoint: "https://east-res.openai.azure.com/openai/v1", deployment: "luna-prod", rates } }) + "\n", { mode: 0o600 });
     const store = new CredentialStore(file);
-    expect(store.status().azure).toEqual({ set: true, last4: azure.slice(-4), endpoint: "https://east-res.openai.azure.com/openai/v1", deployments: [{ name: "luna-prod", rates }] });
+    expect(store.status().azure).toEqual({ set: true, last4: azure.slice(-4), endpoint: "https://east-res.openai.azure.com/openai/v1", deployments: [{ name: "luna-prod", type: "global", rates }] });
     const snap = store.snapshot("azure", "luna-prod")!;
     expect(snap).toMatchObject({ key: azure, deployment: "luna-prod", rates, endpoint: "https://east-res.openai.azure.com/openai/v1" });
     expect(snap.revision.startsWith("z2:")).toBe(true);
@@ -161,7 +190,7 @@ describe("private credentials", () => {
     const saved = JSON.parse(readFileSync(file, "utf8"));
     expect(saved.version).toBe(3);
     expect(saved.azure).toEqual({ key: azure, revision: "z2" });
-    expect(saved.azureSettings).toEqual({ endpoint: "https://east-res.openai.azure.com/openai/v1", deployments: [{ name: "luna-prod", rates }] });
+    expect(saved.azureSettings).toEqual({ endpoint: "https://east-res.openai.azure.com/openai/v1", deployments: [{ name: "luna-prod", type: "global", rates }] });
     expect(saved.openai).toEqual({ key: openai, revision: "o2" });
     // The same process stays current across the rewrite.
     expect(new CredentialStore(file).snapshot("azure", "luna-prod")!.revision).toBe(snap.revision);

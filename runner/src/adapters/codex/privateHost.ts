@@ -1,7 +1,7 @@
 // A private process, outside the runner lifetime: sanitize the provider boundary before any
 // upstream error or stream can reach Codex's rollout, logs or tool environment.
 import { randomUUID } from "node:crypto";
-import type { TokenRates } from "../../../../shared/costs";
+import type { AzurePricing } from "../../../../shared/azureRates";
 import { CostLedger, priceResponse } from "../../costs";
 import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
@@ -58,10 +58,10 @@ export function meterStream(report: (response: any) => void, incomplete: () => v
   });
 }
 
-/** A deployment's rates price only requests to that deployment. */
-export function deploymentRates(rates: TokenRates | undefined, deployment: string | undefined, request?: string): TokenRates | undefined {
-  if (!rates || !deployment) return rates;
-  try { return JSON.parse(request ?? "").model === deployment ? rates : undefined; } catch { return undefined; }
+/** A deployment's pricing applies only to requests naming that deployment. */
+export function deploymentPricing(pricing: AzurePricing | undefined, deployment: string | undefined, request?: string): AzurePricing | undefined {
+  if (!pricing || !deployment) return pricing;
+  try { return JSON.parse(request ?? "").model === deployment ? pricing : undefined; } catch { return undefined; }
 }
 
 export async function servePrivateHost(args = process.argv.slice(2)) {
@@ -70,9 +70,9 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   const source: ApiSource = sourceArg;
   const key = process.env.TETHER_GATEWAY_KEY;
   if (!key) throw new Error("No configured API key for private Codex.");
-  let rates: TokenRates | undefined;
-  try { rates = JSON.parse(process.env.TETHER_GATEWAY_RATES ?? "null") ?? undefined; } catch {}
-  // Azure: the deployment the rates are for. A request naming another isn't priced with them.
+  let pricing: AzurePricing | undefined;
+  try { pricing = JSON.parse(process.env.TETHER_GATEWAY_PRICING ?? "null") ?? undefined; } catch {}
+  // Azure: the deployment the pricing is for. A request naming another isn't priced with it.
   const deployment = process.env.TETHER_GATEWAY_DEPLOYMENT || undefined;
   const ledger = new CostLedger(join(home, "costs.json"));
   ledger.begin(id, true);
@@ -109,7 +109,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         let body = upstream.body?.pipeThrough(redactStream(key));
         if (inference && upstream.ok && body) body = body.pipeThrough(meterStream((response) => {
           const request = sent && new TextDecoder().decode(sent);
-          const cost = priceResponse(source, response, { rates: deploymentRates(rates, deployment, request), request });
+          const cost = priceResponse(source, response, { pricing: deploymentPricing(pricing, deployment, request), request });
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         }, unknown));
@@ -131,10 +131,10 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   ];
   writeFileSync(join(home, "config.toml"), lines.join("\n") + "\n", { mode: 0o600 });
   chmodSync(join(home, "config.toml"), 0o600);
-  writeFileSync(join(home, "source.json"), JSON.stringify({ endpoint, proxyBase, ...(rates ? { rates } : {}) }), { mode: 0o600 });
+  writeFileSync(join(home, "source.json"), JSON.stringify({ endpoint, proxyBase, ...(pricing ? { pricing } : {}) }), { mode: 0o600 });
   const env = privateEnvironment(home, bearer);
   delete env.TETHER_GATEWAY_KEY;
-  delete env.TETHER_GATEWAY_RATES;
+  delete env.TETHER_GATEWAY_PRICING;
   delete env.TETHER_GATEWAY_DEPLOYMENT;
   const codex = spawn(bin, ["app-server", "--listen", `unix://${join(home, "s")}`], { env, stdio: "ignore", cwd: projectPath });
   let ending = false;
