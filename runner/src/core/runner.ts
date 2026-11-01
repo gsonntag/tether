@@ -5,7 +5,9 @@ import { hostname } from "node:os";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
-import type { Adapter } from "./adapter";
+import { sessionId } from "../../../shared/ids";
+import type { HarnessId, Msg } from "../../../shared/transcript";
+import type { Adapter, StartOpts } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
 import { Connection, type ConnectionOptions } from "./connection";
@@ -16,7 +18,8 @@ import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { registerSessionOps } from "./sessionOps";
 import { registerShellOps, ShellRuns } from "./shellRuns";
-import { SessionCore } from "./sessions";
+import type { Session } from "./session";
+import { chosenOf, SessionCore } from "./sessions";
 import type { SpawnPty } from "../terminal/attach";
 import { TerminalControl } from "../terminal/control";
 import { registerTerminalOps } from "../terminal/ops";
@@ -135,6 +138,15 @@ export function createRunner(o: RunnerOptions) {
       : undefined;
   registerTerminalOps(ops, terminal);
 
+  const lookAt = (s: Session) => ({
+    summary: s.summary,
+    status: s.state.status,
+    requests: s.state.requests.map((r) => r.id),
+    state: s.state,
+    busy: s.shellsRunning > 0 || s.childRunning || !!s.sending || !!s.starting || !!s.state.backgroundSubagents,
+    background: !!s.driver?.busy(),
+  });
+
   const timer = setInterval(async () => {
     const before = JSON.stringify(await harnesses);
     harnesses = o.detectHarnesses();
@@ -157,10 +169,43 @@ export function createRunner(o: RunnerOptions) {
     look: {
       session: (id: string) => {
         const s = core.sessions.get(id);
-        if (!s) return undefined;
-        return { summary: s.summary, status: s.state.status, requests: s.state.requests.map((r) => r.id) };
+        return s ? lookAt(s) : undefined;
       },
       viewersOf: (id: string) => live.read.viewersOf(id),
+      sessions: {
+        adapters: () => o.adapters ?? [],
+        open: async (id: string) => lookAt(await core.open(id)),
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts) => {
+          const id = sessionId(harness, nativeId);
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts) });
+          core.book.upsert([(await core.open(id)).summary]);
+          return id;
+        },
+        // Not started: its first send does that, after whatever the module sets up for it.
+        create: async ({ harness, projectPath, ...opts }: { harness: HarnessId; projectPath: string } & StartOpts) => {
+          const folder = core.folder(projectPath);
+          const s = core.create(harness, await core.adapter(harness).newId(folder, opts), folder, opts);
+          core.touch(s);
+          return s.id;
+        },
+        send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
+        notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
+          const s = core.sessions.get(id);
+          // Not read yet: it joins what the store has when it's read.
+          if (!s?.transcript) {
+            core.notices.add(id, { msg, ...where });
+            if (s) s.overlay = core.notices.get(id);
+            return;
+          }
+          s.apply({ type: "msg", msg });
+          const n = s.overlay.find((x) => x.msg.id === msg.id);
+          if (n && (where.first || where.after)) {
+            n.first = where.first;
+            n.after = where.after;
+            core.notices.set(id, s.overlay);
+          }
+        },
+      },
     },
     start: async () => {
       core.startDiscovery();

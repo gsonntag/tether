@@ -31,10 +31,11 @@ harness's real terminal UI for anything Tether doesn't show.
 
 ### Non-goals for the core
 
-Fallback chains and cross-harness handoff, the judge, master context (shared memory),
-the MCP registry, cross-harness subagents, `/goal` `/loop` `/schedule` `/review`, plan review,
-forks, and libraries (hooks, commands, subagent definitions). Each may come back later as a
-module (§3). None of them may require editing the session core.
+Fallback chains, the judge, master context (shared memory), the MCP registry, cross-harness
+subagents, `/goal` `/loop` `/schedule` `/review`, plan review, forks, and libraries (hooks,
+commands, subagent definitions). Each may come back later as a module (§3). None of them may
+require editing the session core. Cross-harness handoff came back this way, as an explicit move a
+person starts (§15); an automatic one stays a non-goal.
 
 ## 2. Principles
 
@@ -215,7 +216,8 @@ browser drops a window past its `resetsAt`. Nothing reported means absent, and n
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `deleteSession`, `openTerminal`, `closeTerminal`,
-`terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands).
+`terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
+adds `moveOptions` and `moveSession` (§15).
 
 ## 6. Adapters
 
@@ -842,3 +844,95 @@ Still to verify by experiment (not decisions): Codex approval fan-out and cross-
 - Allowed without asking: commit, push to `main` (which deploys once the app follows it), the cutover
   at the end of P1, real test turns on cheap models, an isolated dev runner and tmux socket.
 - Ask first: anything that spends notable quota on expensive models; anything outside this project.
+
+## 15. Moving a session to another harness
+
+**Move to…** in a session's header menu makes a new session on another harness with all of the old
+one's context. The old session stays as it was, its store untouched. It is a module
+(`runner/src/modules/move/`) and only ever an explicit choice: moving copies the history, secrets
+included, to another provider, and nothing scans it or does it automatically.
+
+**Neutral format.** No code knows a pair of harnesses. `shared/move.ts` has the format and everything
+done with it. A source exports `Msg[]` (`Adapter.move.exportHistory`, else `readHistory`) plus its
+subagents' transcripts (`listSubagents`); a target imports plain turns (`PortableItem`: a role, text,
+images). A new harness declares `capabilities.move` and `Adapter.move`, once, and works with all the
+others; `move.test.ts` proves it with a third and fourth harness that are only those declarations.
+Only one field was added to `Msg`: `compactSummary`, on an exported compaction's notice.
+
+**Two routes**, by `capabilities.move.import`:
+
+| Route | What happens |
+|---|---|
+| `native` | The turns go into the new session's own store (`importHistory`) and are checked (`imported`). The newest that fit go in; the session's first send resumes it as usual. A failure anywhere falls back to `context`, and leaves no session |
+| `context` | For a harness with no import: a new session whose first turn is Tether's message with a summary, the last reply and where the history is. The agent replies "Ready." `TETHER_MOVE_ROUTE=context` forces it for tests |
+
+Either way the **whole history** is written first to a private file: `<config dir>/modules/move/<new
+session>/history.md`, folder 700 and file 600, outside any project, with `images/` and `attachments/`
+(files are copied, as the old session's are swept). It names images by path. A session moved twice
+carries on the earlier file under "Before that", so what didn't fit then stays reachable. These files
+stay until removed by hand: deleting a session doesn't remove them.
+
+| Direction | Route used, and why |
+|---|---|
+| Into Codex | `thread/inject_items`, the daemon's own call for model-visible history, as `message` items with `input_text`, `input_image`, `output_text`. It persists in the rollout and survives `thread/resume` (daemon 0.166). The daemon's turn lists don't show them, so `importedFrom` reads them back from the rollout (a thread marked in `codex-threads.json`), and the transcript starts with them. `thread/resume { history }` is marked "FOR CODEX CLOUD - DO NOT USE"; writing a rollout is private. Not used |
+| Into Claude Code | Writing `~/.claude/projects/<folder>/<id>.jsonl`, a private format, as there's no import call. The SDK's `SessionStore` takes the same private entries, through an alpha API and a temporary copy, and `claude --resume` wouldn't find the session, so it adds risk and removes nothing. The risk is limited: a plain chain of `user` and `assistant` entries, the smallest shape `resume` reads (2.1.316), read back with the SDK's public `getSessionMessages`, every entry counted, and a mismatch deletes the file and takes the `context` route. Images are real image blocks. The title goes through the SDK's `renameSession`. Replies are model `<moved>`: readers skip it for the session's model and context |
+| From Claude Code | The store's transcript plus each `isCompactSummary` entry's text |
+| From Codex | The turns (via `thread/turns/list`), what was imported into it, and images a TUI attached by path. Codex's compaction summaries are encrypted, so they can't move; the turns before them stay readable, so nothing is lost |
+
+**Tool calls** don't exist on another harness. They travel as text in their turn, with name, input,
+status and output, and never as a tool call: no id for the target to honor. Thinking travels as text
+where it's stored. A subagent's work is whole in the file; in context it's its report on the call
+that started it and a line saying where the rest is. A conversation that ends on the user gets a line
+from Tether, so the target isn't left mid-turn.
+
+**A history bigger than the target's window** (`planImport`) doesn't fail or drop anything silently.
+The budget is half the window (`Adapter.move.contextWindow`), at most 200k tokens, 80k when the window
+isn't known, estimated at 4 characters a token and 2k an image. The newest messages that fit go in;
+one tool's text is cut at 12k characters, saying where the rest is; the newest 16 images go as images
+and the others stay files. Tether's opening then says what was left out, with a digest made without a
+model: the last compaction summary, what you asked in order, files changed, the last commands,
+subagents. The notice on the new session says it too: "17 of 32 messages in context; the agent can
+read the rest."
+
+**When.** Refused, with the reason in the dialog and from the op: a running turn, an open request, a
+terminal in use, waiting messages, a `!` command or a subagent running, a turn another Codex client
+runs (`Adapter.move.busy`), a store written in the last 3 s while it isn't live, an empty session, a
+subagent itself. Background work the harness keeps running (`backgroundRuns`, `Driver.busy`) doesn't
+stop a move and doesn't move: the dialog says so, the agent is told, and the notice says "Background
+work stayed there."
+
+**Links.** Tether's own notices (§5), which are in no store: "Moved from Codex." on the new session,
+under what came across (at the top for the `context` route) and "Moved to Claude Code." on the old,
+each with Open it. `continuedIn` isn't set: the old session stays usable and views don't follow.
+
+**Permissions.** A target never starts looser. Each harness places its modes on one scale
+(`LEVELS`), and the target gets its loosest mode at or under the source's level. Unknown, none or
+custom is the safest. Combinations go by their tighter side.
+
+| Level | Means | Claude Code | Codex |
+|---|---|---|---|
+| 0 read only | changes nothing | `plan` | `read-only`, or any policy with a read-only sandbox |
+| 1 ask | asks before edits and commands | `default`; `dontAsk` (source only) | `untrusted` |
+| 2 edits | edits go ahead, commands ask | `acceptEdits` | none |
+| 3 sandboxed | edits and commands go ahead, inside the folder, no network | none | `auto` (reviewer or not); `on-request+danger-full-access` |
+| 4 judged | no sandbox; the harness judges what needs asking | `auto` (source only: it depends on the model) | none |
+| 5 full | everything goes ahead | `bypassPermissions` | `full-access` |
+
+So Claude `acceptEdits` becomes Codex `untrusted` (Codex has no edits-only mode), Codex `auto` becomes
+Claude `acceptEdits` (Claude has no sandbox, so commands ask), Claude `auto` becomes Codex `auto`, and
+`full-access` and `bypassPermissions` map to each other. The semantics differ: Codex limits what a
+command can touch, Claude what's run without asking.
+
+**Model and effort** are chosen in the dialog. Claude unset is `CLAUDE_UNSET`, as for any session;
+Codex keeps its Default. **Billing** on the moved session is what the harness reports, as for any
+session. The dialog shows the target's newest known report (`storedBilling` of its recent sessions),
+and nothing when there is none.
+
+**Reading the history.** Codex reads anywhere in every sandbox. Claude would ask, so a moved
+session's driver and TUI get one read rule for exactly its folder (`Read(//…/**)`), and nothing else;
+it works in plan mode too.
+
+**Core hooks.** The module needs the session core only through `ModuleContext.sessions`
+(`SessionActions`, `core/runner.ts`), which is thin wrappers over what's already there, and
+`SessionLook` says a bit more. Beyond those: `Adapter.move`, `capabilities.move`,
+`OverlayNotice.first`, and `core/moved.ts` for the folder's path. No session lifecycle code changed.

@@ -158,7 +158,7 @@ function catalogWindows(): Record<string, number> {
 }
 
 /** A model's window: as this session reported it, as the model last reported it, else the catalog's. */
-function windowOf(model: string, sessionId: string): number | undefined {
+export function windowOf(model: string, sessionId: string): number | undefined {
   const w = load();
   const own = w.sessions[sessionId];
   if (own?.model === model) return own.window;

@@ -11,7 +11,9 @@ import { redact, type CredentialSnapshot } from "../../credentials";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
+import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
+import { movedReadRule } from "./move";
 import { canonicalCommand } from "./content";
 import { keepBilling } from "./context";
 import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } from "./credentials";
@@ -99,6 +101,8 @@ export class ClaudeDriver implements Driver {
         forwardSubagentText: true,
         // Each subagent has its own Stop, so Stop on the main turn leaves background ones running.
         perTaskStopAffordance: true,
+        // A moved session reads its own history without asking (SPEC §15).
+        ...(existsSync(movedDir(`claude:${this.nativeId}`)) ? { allowedTools: [movedReadRule(this.nativeId)] } : {}),
         settingSources: ["user", "project", "local"],
         settings: claudeAuthSettings(this.lease.helper),
         systemPrompt: { type: "preset", preset: "claude_code" },

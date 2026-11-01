@@ -20,6 +20,8 @@ export interface OverlayNotice {
   msg: Msg;
   after?: string;
   turnOf?: string;
+  /** at the very top (where a session came from) */
+  first?: boolean;
 }
 
 const PER_SESSION = 50;
@@ -206,10 +208,11 @@ export function withOverlay(store: Msg[], overlay: OverlayNotice[]): Msg[] {
   const out = [...store];
   const have = new Set(out.map((m) => m.id));
   const typed = (m: Msg) => m.role === "user" && !m.origin;
-  for (const { msg, after, turnOf } of overlay) {
+  for (const { msg, after, turnOf, first } of overlay) {
     if (have.has(msg.id)) continue;
     let at = out.length;
-    if (turnOf) {
+    if (first) at = 0;
+    else if (turnOf) {
       const i = out.findIndex((m) => m.id === turnOf);
       if (i >= 0) {
         const next = out.findIndex((m, j) => j > i && typed(m) && !m.id.startsWith("n-"));

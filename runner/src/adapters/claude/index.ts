@@ -3,9 +3,10 @@
 
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
+import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
 import { claudeAuthSettings, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
@@ -13,6 +14,7 @@ import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, 
 import { ClaudeDriver } from "./driver";
 import { CLAUDE_UNSET } from "../../../../shared/transcript";
 import { readHistory, storedSettings } from "./history";
+import { claudeMove, movedReadRule } from "./move";
 import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
@@ -146,7 +148,8 @@ function watchFile(path: () => string | undefined, onChange: () => void): () => 
 
 export const claudeAdapter: Adapter = {
   id: "claude",
-  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true } },
+  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, move: { import: "native" } },
+  move: claudeMove,
 
   async available() {
     return !!CLAUDE_BIN;
@@ -249,6 +252,7 @@ export const claudeAdapter: Adapter = {
     if (opts.model && opts.model !== "default") argv.push("--model", opts.model);
     if (opts.effort) argv.push("--effort", opts.effort);
     if (opts.permissionMode) argv.push("--permission-mode", opts.permissionMode);
+    if (existsSync(movedDir(`claude:${nativeId}`))) argv.push("--allowedTools", movedReadRule(nativeId));
     const settings = { ...claudeAuthSettings(), ...(opts.report ? JSON.parse(hookSettings(opts.report.socketPath, opts.report.sessionId, undefined, opts.report.tui)) : {}) };
     argv.push("--settings", JSON.stringify(settings));
     const credential = opts.credential;

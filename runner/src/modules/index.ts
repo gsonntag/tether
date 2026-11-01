@@ -5,7 +5,9 @@
 import type { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
-import type { RunStatus, SessionSummary } from "../../../shared/transcript";
+import type { Adapter, StartOpts } from "../core/adapter";
+import type { HarnessId, LiveState, Msg, RunStatus, SessionSummary } from "../../../shared/transcript";
+import { moveModule } from "./move";
 import { pushModule } from "./push";
 
 /** What a module may know about a session (read-only). */
@@ -14,6 +16,27 @@ export interface SessionLook {
   status: RunStatus;
   /** ids of its open requests */
   requests: string[];
+  /** the rest of what it's doing and how it's set, for a module that acts on a session */
+  state: LiveState;
+  /** work outside its turn: `!` commands, a starting or sending harness, a running subagent */
+  busy: boolean;
+  /** work the harness keeps running after its turn (shells, background subagents) */
+  background: boolean;
+}
+
+/** What a module may do with sessions, through the core's own paths (SPEC §2.1). */
+export interface SessionActions {
+  adapters(): Adapter[];
+  /** a session, brought into memory if it's stored; throws when there's none */
+  open(id: string): Promise<SessionLook>;
+  /** a session whose store exists (a harness took a history): its settings, so its first send resumes it */
+  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts): Promise<string>;
+  /** a new session; its first send starts it */
+  create(args: { harness: HarnessId; projectPath: string } & StartOpts): Promise<string>;
+  /** a message from Tether, sent as a turn */
+  send(id: string, text: string): Promise<void>;
+  /** a Tether notice, kept with the session */
+  notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
 }
 
 export interface ModuleContext {
@@ -25,10 +48,14 @@ export interface ModuleContext {
   runnerId: string;
   /** a session the runner has in memory */
   session(id: string): SessionLook | undefined;
+  /** acting on sessions */
+  sessions: SessionActions;
   /** devices looking at a session (or one of its subagents) right now */
   viewersOf(id: string): string[];
   /** the app's URL (TETHER_URL) */
   appUrl: string;
+  /** where attachments are kept (CONFIG_DIR/attachments) */
+  attachmentsDir?: string;
 }
 
 export interface Module {
@@ -38,7 +65,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule];
+export const MODULES: Module[] = [pushModule, moveModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

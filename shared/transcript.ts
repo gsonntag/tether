@@ -56,6 +56,12 @@ export interface HarnessCapabilities {
    * running turn's own values show beside the change (LiveState.turnSettings).
    */
   settingsApply?: "now" | "nextTurn";
+  /**
+   * Moving a session between harnesses (SPEC §15). `import`: "native", the harness takes a history
+   * itself (Adapter.move.importHistory); "context", a new session gets the whole history as a file
+   * and a summary. Absent: it can't be moved to or from.
+   */
+  move?: { import: "native" | "context" };
 }
 
 // ---------- transcript ----------
@@ -139,6 +145,8 @@ export interface Msg {
    * first ones, and parts[parts.length …] can be fetched one by one with `fullPart`.
    */
   partsOmitted?: number;
+  /** notice, on a session being exported (shared/move.ts): the summary a compaction left */
+  compactSummary?: string;
 }
 
 // ---------- live state ----------

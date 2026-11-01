@@ -85,6 +85,15 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   }
 }
 
+/** A thread made for a move: its history is on disk, so it's joined like any stored thread. */
+export function dropPending(id: string) {
+  const p = pending.get(id);
+  if (!p) return;
+  pending.delete(id);
+  clearTimeout(p.timer);
+  p.rpc.close();
+}
+
 export class CodexDriver implements Driver {
   readonly stream: CodexStream;
   private closed = false;

@@ -26,6 +26,8 @@ export interface Remembered {
   children?: Record<string, string>;
   /** what its latest start drew from, as the daemon said */
   billing?: Billing;
+  /** a moved session's history was injected into it (move.ts): the transcript starts with that */
+  imported?: boolean;
   at: number;
 }
 

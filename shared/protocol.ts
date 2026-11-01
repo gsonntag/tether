@@ -23,6 +23,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
+import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
 import type { CredentialSource, CredentialStatus } from "./credentials";
 import type { TokenRates } from "./costs";
@@ -105,6 +106,10 @@ export interface Ops {
   };
   /** the models, effort levels and permission modes a harness offers (for a session: as it runs now) */
   listModels: { args: { harness: HarnessId; sessionId?: string }; result: ModelList };
+  /** where a session can move, and whether it can now (SPEC §15) */
+  moveOptions: { args: { sessionId: string }; result: MoveOptions };
+  /** moves a session to another harness: a new session there; the old one stays as it is */
+  moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string }; result: { sessionId: string } };
 
   // ---------- driving ----------
 

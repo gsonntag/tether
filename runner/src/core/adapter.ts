@@ -5,6 +5,7 @@
 import type { Attachment } from "../../../shared/attachments";
 import type { CredentialSnapshot } from "../credentials";
 import type { SessionCost } from "../../../shared/costs";
+import type { Level, PortableItem } from "../../../shared/move";
 import type { Billing, ContextUse, PlanUsage, HarnessCapabilities, HarnessId, LiveState, ModelList, Msg, ProjectInfo, Request, SessionEvent, SessionSummary, ToolPart } from "../../../shared/transcript";
 
 /** Transcript events a driver reports. The core numbers them (seq) and keeps the transcript. */
@@ -138,6 +139,39 @@ export interface Driver {
   onExit?: (error?: string) => void;
 }
 
+/** One move into a new session (SPEC §15): `nativeId` is empty, from `newId`. */
+export interface ImportRequest {
+  nativeId: string;
+  projectPath: string;
+  title: string;
+  /** the conversation, oldest first; the first is Tether's own opening */
+  items: PortableItem[];
+}
+
+/**
+ * What a harness does to move sessions (SPEC §15): written once, it works with every other harness,
+ * as all of them go through the neutral format in shared/move.ts. `capabilities.move` says which
+ * route it has.
+ */
+export interface AdapterMove {
+  /** The whole transcript with what `readHistory` leaves out (compaction summaries). Absent: readHistory. */
+  exportHistory?(nativeId: string, projectPath: string): Promise<Msg[]>;
+  /** Puts the items in the new session's history, and its title. Throws, leaving nothing, when it can't. */
+  importHistory?(r: ImportRequest): Promise<void>;
+  /** Whether the imported history is really there (the check after `importHistory`). */
+  imported?(r: ImportRequest): Promise<boolean>;
+  /** Names a session started by the context route. */
+  setTitle?(nativeId: string, projectPath: string, title: string): Promise<void>;
+  /** The harness's own modes, each with its level. */
+  modes: { mode: string; level: Level }[];
+  /** A mode's level, for one not in `modes` (a combination); undefined: unknown, which is the safest. */
+  levelOf?(mode: string): Level | undefined;
+  /** The model's context window in tokens, when known. */
+  contextWindow?(model: string | undefined): Promise<number | undefined>;
+  /** A client outside Tether is running a turn on it. */
+  busy?(nativeId: string): Promise<boolean>;
+}
+
 export interface Adapter {
   id: HarnessId;
   capabilities: HarnessCapabilities;
@@ -211,6 +245,8 @@ export interface Adapter {
   terminalCommand(nativeId: string, projectPath: string, opts: TerminalOpts): TerminalLaunch;
   /** Async, read-only source preflight, only when a TUI is actually about to start. */
   prepareTerminal?(nativeId: string, projectPath: string, opts: TerminalOpts): Promise<Billing>;
+  /** moving sessions to and from this harness (SPEC §15); with `capabilities.move` */
+  move?: AdapterMove;
 }
 
 export interface TerminalOpts extends StartOpts {

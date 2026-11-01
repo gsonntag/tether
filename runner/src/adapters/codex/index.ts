@@ -8,6 +8,7 @@ import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { CodexDriver, createThread } from "./driver";
+import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
 import { sourceHome, sourceProvider, sourceSocket } from "./sources";
@@ -37,9 +38,13 @@ async function fetchModels(): Promise<CodexModel[]> {
 
 const toml = (v: string) => JSON.stringify(v);
 
+/** The stored turns, after what a move imported (not turns, so the daemon doesn't list it). */
+const fullHistory = async (nativeId: string, projectPath: string) => [...(await importedMsgs(nativeId)), ...(await codexHistory(nativeId, projectPath))];
+
 export const codexAdapter: Adapter = {
   id: "codex",
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn" },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", move: { import: "native" } },
+  move: codexMove,
 
   async available() {
     return !!Bun.which(HARNESS_BINS.codex);
@@ -50,11 +55,11 @@ export const codexAdapter: Adapter = {
   sessionInfo: (nativeId) => codexSessionInfo(nativeId),
   listSubagents: (nativeId) => codexSubagents(nativeId),
   backgroundRuns: codexBackgroundRuns,
-  readHistory: codexHistory,
+  readHistory: fullHistory,
   storedContext: (nativeId) => codexStoredContext(nativeId),
   planUsage: codexPlan,
   storedBilling: (nativeId) => codexStoredBilling(nativeId),
-  watchHistory: watchThread,
+  watchHistory: (nativeId, projectPath, onChange) => watchThread(nativeId, projectPath, onChange, fullHistory),
 
   /**
    * A thread's own settings (what it last ran with); for a folder, Codex's config. Shown before the

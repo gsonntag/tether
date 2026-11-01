@@ -222,7 +222,7 @@ export async function codexHistory(nativeId: string, projectPath: string): Promi
 const WATCH_MS = 1000;
 
 /** Calls onChange with the whole transcript when the thread's rollout file changes. */
-export function watchThread(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void {
+export function watchThread(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void, read = codexHistory): () => void {
   let stopped = false;
   let path: string | undefined;
   let last: string | undefined;
@@ -235,7 +235,7 @@ export function watchThread(nativeId: string, projectPath: string, onChange: (ms
       const s = path ? await stat(path).catch(() => undefined) : undefined;
       const stamp = s ? `${s.size}:${s.mtimeMs}` : "";
       if (last !== undefined && stamp !== last) {
-        const msgs = await codexHistory(nativeId, projectPath).catch(() => undefined);
+        const msgs = await read(nativeId, projectPath).catch(() => undefined);
         if (msgs && !stopped) onChange(msgs);
       }
       last = stamp;
