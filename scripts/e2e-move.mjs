@@ -84,6 +84,8 @@ const waitState = async (p, pred, what, ms = 120_000) => {
 };
 /** Approves what the agent asks until its turn ends; then its last reply. */
 async function turn(p, text, { approve = false, ms = 240_000 } = {}) {
+  await sleep(1000);
+  await waitState(p, (s) => s.status === "idle", "idle before the turn");
   const n = await p.locator(".t-msg.assistant").count();
   await composer(p).fill(text);
   await composer(p).press("Enter");

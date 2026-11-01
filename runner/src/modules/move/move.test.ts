@@ -227,6 +227,19 @@ test("attachments are copied with the history, images are files", async () => {
   expect(readFileSync(join(d, "history.md"), "utf8")).toContain(`${d}/attachments/0-spec.pdf`);
 });
 
+test("a session moved twice keeps what didn't fit the first time in its file", async () => {
+  const pi = new Neutral("pi", true);
+  const omp = new Neutral("omp", true);
+  const { dir, mover, runner } = setup([pi, omp]);
+  pi.stored_("s1", convo);
+  await runner.core.open("pi:s1");
+  const r1 = await mover.move("pi:s1", "omp", {});
+  const r2 = await mover.move(r1.sessionId, "pi", {});
+  const md = readFileSync(join(movedDir(r2.sessionId, join(dir, "modules/move")), "history.md"), "utf8");
+  expect(md).toContain("# Before that");
+  expect(md).toContain("vault-4417.txt");
+});
+
 describe("permissions never loosen (the table in SPEC §15)", () => {
   const go = (from: Adapter, mode: string | undefined, to: Adapter) => targetMode(from, mode, to);
   test.each([
