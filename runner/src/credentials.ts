@@ -63,6 +63,22 @@ export class SecretStream {
 const validSource = (v: unknown): v is CredentialSource => v === "anthropic" || v === "openai" || v === "azure";
 const validSecret = (v: any) => v && typeof v.key === "string" && v.key.length >= 16 && v.key.length <= 8192 && !/\s|[\x00-\x1f\x7f]/.test(v.key) && typeof v.revision === "string" && v.revision.length > 0;
 
+function azureFields(key: string, endpoint?: string, deployment?: string, rates?: TokenRates, knownKeys: Iterable<string> = secrets): Pick<Secret, "endpoint" | "deployment" | "rates"> {
+  try {
+    const url = new URL(endpoint ?? "");
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error();
+    endpoint = url.href.replace(/\/$/, "");
+  } catch { throw new Error("Enter an HTTPS Azure endpoint."); }
+  if (deployment !== undefined && (typeof deployment !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(deployment))) throw new Error("Enter a valid deployment name.");
+  if (rates !== undefined && !validRates(rates)) throw new Error("Enter valid USD rates per million tokens.");
+  // Endpoint/deployment values are public metadata and can enter argv. Reject a key pasted
+  // into either field rather than leaking it through status or a native model argument.
+  const tokens = [key, ...knownKeys].map((value) => value.toLowerCase());
+  const metadata = [endpoint, deployment].filter((value): value is string => !!value).map((value) => { try { return decodeURIComponent(value).toLowerCase(); } catch { throw new Error("Enter a valid Azure endpoint."); } });
+  if (metadata.some((value) => tokens.some((token) => value.includes(token)))) throw new Error("Endpoint and deployment must not contain a key.");
+  return { endpoint, ...(deployment ? { deployment } : {}), ...(rates ? { rates: { input: rates.input, output: rates.output, cached: rates.cached } } : {}) };
+}
+
 export class CredentialStore {
   static current?: CredentialStore;
   private saved: Saved = { version: 1 };
@@ -74,8 +90,16 @@ export class CredentialStore {
       if (!stat.isFile() || (stat.mode & 0o077) || stat.uid !== process.getuid?.()) throw new Error("private file required");
       const saved = JSON.parse(readFileSync(fd, "utf8"));
       if (saved.version !== 1 || (saved.anthropic && !validSecret(saved.anthropic)) || (saved.codex && (!validSecret(saved.codex) || !["openai", "azure"].includes(saved.codex.source)))) throw new Error("invalid credentials");
-      this.saved = saved;
-      for (const s of [saved.anthropic, saved.codex]) if (s?.key) secrets.add(s.key);
+      const loadedKeys = [saved.anthropic, saved.codex].filter(Boolean).map((s) => s.key as string);
+      if ([saved.anthropic, saved.codex].filter(Boolean).some((s) => loadedKeys.some((key) => s.revision.toLowerCase().includes(key.toLowerCase())))) throw new Error("invalid revision");
+      // Loaded public metadata must satisfy the same rules as an entry from the browser.
+      // Only supported fields enter snapshots/status; arbitrary file properties cannot escape.
+      this.saved = { version: 1,
+        ...(saved.anthropic ? { anthropic: { key: saved.anthropic.key, revision: saved.anthropic.revision } } : {}),
+        ...(saved.codex ? { codex: { key: saved.codex.key, revision: saved.codex.revision, source: saved.codex.source,
+          ...(saved.codex.source === "azure" ? azureFields(saved.codex.key, saved.codex.endpoint, saved.codex.deployment, saved.codex.rates, loadedKeys) : {}) } } : {}),
+      };
+      for (const key of loadedKeys) secrets.add(key);
     } catch (e: any) {
       if (e?.code !== "ENOENT") throw new Error("Can't read the runner's private credentials file. Sending is disabled.");
     } finally { if (fd !== undefined) closeSync(fd); }
@@ -92,22 +116,9 @@ export class CredentialStore {
     // Validation errors are fixed text. Never register short invalid input as a redaction token:
     // doing so would replace ordinary letters in every subsequent protocol frame.
     if (!validSource(source) || typeof key !== "string" || key.length < 16 || key.length > 8192 || /\s|[\x00-\x1f\x7f]/.test(key)) throw new Error("Enter a valid key.");
-    if (source === "azure") {
-      try {
-        const url = new URL(endpoint ?? "");
-        if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error();
-        endpoint = url.href.replace(/\/$/, "");
-      } catch { throw new Error("Enter an HTTPS Azure endpoint."); }
-      if (deployment && (!/^[A-Za-z0-9._-]{1,128}$/.test(deployment))) throw new Error("Enter a valid deployment name.");
-      if (rates !== undefined && !validRates(rates)) throw new Error("Enter valid USD rates per million tokens.");
-      // Endpoint/deployment values are public metadata and can enter argv. Reject a key pasted
-      // into either field rather than leaking it through status or a native model argument.
-      const tokens = [key, ...secrets].map((value) => value.toLowerCase());
-      const metadata = [endpoint, deployment].filter((value): value is string => !!value).map((value) => { try { return decodeURIComponent(value).toLowerCase(); } catch { throw new Error("Enter a valid Azure endpoint."); } });
-      if (metadata.some((value) => tokens.some((token) => value.includes(token)))) throw new Error("Endpoint and deployment must not contain a key.");
-    }
+    const metadata = source === "azure" ? azureFields(key, endpoint, deployment, rates) : {};
     secrets.add(key);
-    const secret: Secret = { key, revision: randomUUID(), ...(source === "azure" ? { endpoint, ...(deployment ? { deployment } : {}), ...(rates ? { rates: { input: rates.input, output: rates.output, cached: rates.cached } } : {}) } : {}) };
+    const secret: Secret = { key, revision: randomUUID(), ...metadata };
     const next = source === "anthropic" ? { ...this.saved, anthropic: secret } : { ...this.saved, codex: { ...secret, source } as Saved["codex"] };
     this.save(next);
     return this.status();

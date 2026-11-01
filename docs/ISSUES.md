@@ -21,8 +21,11 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## Tests
 
-- `scripts/e2e-p4.mjs`: `tuiReadOnly`, `tuiSteer` and `tuiAnswerAway` were written but never run, and are in the default list. A full run may fail on them. `tuiAnswerAway` needs `STOP_RUNNER` and `START_RUNNER`.
-- `scripts/e2e-p4.mjs`: no full run on the final code. Stream, approve, steer, midturn, restart, settings, the sub* steps and `bgStop` didn't run on it.
+- `scripts/e2e-p4.mjs`: the complete default suite passed during the keys build (2026-11-01),
+  including `tuiReadOnly`, `tuiSteer` and `tuiAnswerAway`. Luna once replied without attempting the
+  write in `tuiReadOnly`; its fixture now explicitly requests the tool and retries a model no-op.
+- `scripts/e2e-p1.mjs`: `reopen` once timed out waiting for Send on the phone during the keys build;
+  the next complete run passed. Cause unconfirmed; failure screens/DOM are now captured.
 - `tuiPermissions` (`e2e-p4.mjs:928`): 2 of 2 since the fix, was 7 of 10; the 10-run check is still open.
 - `subMessage`: the "no Deny with reason" check skipped because the subagent didn't ask. Covered by unit test and daemon probe, not in a browser.
 - `copymode` Enter race in `e2e-p5b.mjs` failed once and hasn't since `closeShells` was added. Cause unconfirmed; check shell leftovers from `copy` first.
@@ -33,6 +36,11 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## P3 (terminal, Claude)
 
+- Extra full P3 run during the keys build: in `shell`, after the dev runner restarted, the phone's
+  Ctrl-C key did not stop its HTTP server. The TUI handoff/rejoin and `/clear` steps passed. Cause
+  unconfirmed: its screen check can match retained output before the fresh attach is ready.
+  Screenshots/logs are under `/tmp/claude-1001/keys/v-01jkh6vb/`. The specified P3
+  push gate is `node scripts/e2e-p3.mjs fresh`, which does not exercise this shell case.
 - Historical/external sessions through `ANTHROPIC_BASE_URL` cannot be reconstructed reliably from
   Claude's account/store reports. Old recorded labels may predate proxy detection. Managed new
   subscription processes scrub proxy/provider overrides before confirming their source; historical

@@ -1,8 +1,11 @@
 # API credentials acceptance
 
-## Verification record (2026-10-31)
+## Verification record (2026-10-31–2026-11-01)
 
-- All four packages typecheck; 847 unit tests pass.
+- All four packages typecheck; 848 unit tests pass.
+- The complete default P1 and P4 browser suites passed. Optional P1 stored paging/compacted-history
+  fixtures were not supplied. P4's conditional subagent approval branch was skipped because the
+  subagent did not request approval; its permission behavior has unit coverage.
 - Real Claude/Haiku with a random fake key confirmed Anthropic API key, stopped on the SDK's
   authentication retry event, and emitted no fallback answer. After unset, a fresh process
   confirmed Claude plan and answered. Descendant argv/environment, transcripts and temporary
@@ -104,5 +107,7 @@ Enter keys only in Tether's Credentials page, never in chat.
   Reload/restart and resume. Unset; a new subscription thread confirms ChatGPT plan.
 - [ ] Azure: use the actual Foundry endpoint/deployment. A new thread and TUI show Azure and usage
   reaches that resource. Replacing Azure with OpenAI never reactivates Azure when OpenAI is unset.
+- [ ] Compare the session estimate after two turns and a reload/resume with the provider's usage
+  record. Enter the resource's Azure rates. Claude's TUI intentionally makes cost coverage unknown.
 - [ ] Temporarily invalidate/revoke each key: the next turn fails on the named source with no
   subscription usage. Restore/unset through Credentials. Check all three provider usage records.

@@ -7,6 +7,19 @@ const dir = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, {
 const fake = (tag: string) => `fake-${tag}-${crypto.randomUUID()}`;
 
 describe("private credentials", () => {
+  test("loaded Azure metadata fails closed too, and unsupported file fields never enter snapshots", () => {
+    const file = join(dir(), "credentials.json"), key = fake("loaded");
+    for (const endpoint of [`https://example.azure.com/${key}`, "http://example.azure.com/v1"]) {
+      writeFileSync(file, JSON.stringify({ version: 1, codex: { key, revision: "one", source: "azure", endpoint } }), { mode: 0o600 });
+      expect(() => new CredentialStore(file)).toThrow("Sending is disabled");
+    }
+    writeFileSync(file, JSON.stringify({ version: 1, anthropic: { key, revision: key } }), { mode: 0o600 });
+    expect(() => new CredentialStore(file)).toThrow("Sending is disabled");
+    writeFileSync(file, JSON.stringify({ version: 1, anthropic: { key, revision: "two", endpoint: key, arbitrary: key } }), { mode: 0o600 });
+    const store = new CredentialStore(file);
+    expect(store.status().anthropic).toEqual({ set: true, last4: key.slice(-4) });
+    expect(store.snapshot("claude")).toEqual({ key, revision: "two", file, source: "anthropic" });
+  });
   test("a key accidentally pasted into public Azure metadata cannot reach argv or status", () => {
     const store = new CredentialStore(join(dir(), "credentials.json")), key = fake("metadata");
     expect(() => store.set("azure", key, `https://example.azure.com/${key}`)).toThrow("must not contain a key");
