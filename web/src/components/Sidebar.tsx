@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { NavIcon } from "@astryxdesign/core/NavIcon";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
-import { HomeIcon, KeyIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/24/outline";
+import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
@@ -117,11 +117,26 @@ export function Sidebar() {
     <SideNav
       header={<SideNavHeading heading="Tether" icon={<NavIcon icon={<Icon icon={LinkIcon} size="sm" />} />} />}
       footer={
-        user && (
-          <SideNavSection title="Account" isHeaderHidden>
-            <SideNavItem label={user.name || user.email} icon={UserCircleIcon} />
-          </SideNavSection>
-        )
+        <div className="t-side-foot">
+          {user && (
+            <SideNavSection title="Account" isHeaderHidden>
+              <SideNavItem label={user.name || user.email} icon={UserCircleIcon} />
+            </SideNavSection>
+          )}
+          <button
+            type="button"
+            className={route.page === "credentials" ? "t-settings selected" : "t-settings"}
+            aria-label="Credentials"
+            title="Credentials"
+            aria-current={route.page === "credentials" ? "page" : undefined}
+            onClick={() => {
+              navigate({ page: "credentials" });
+              close();
+            }}
+          >
+            <Icon icon={Cog6ToothIcon} size="sm" />
+          </button>
+        </div>
       }
     >
       <div className="t-side-tools">
@@ -138,7 +153,6 @@ export function Sidebar() {
         <input className="t-search" type="search" placeholder="Search sessions" aria-label="Search sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
       <SideNavSection title="Menu" isHeaderHidden>
-        <SideNavItem label="Credentials" icon={KeyIcon} isSelected={route.page === "credentials"} onClick={() => { navigate({ page: "credentials" }); close(); }} />
         <SideNavItem
           label="Home"
           icon={HomeIcon}

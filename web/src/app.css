@@ -1447,15 +1447,19 @@
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  color: var(--t-muted);
+  color: var(--color-text-primary);
   cursor: pointer;
   touch-action: manipulation;
+}
+.t-shell-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .t-shell-toggle svg {
   width: 20px;
   height: 20px;
 }
-.t-shell-toggle:hover {
+.t-shell-toggle:hover:not(:disabled) {
   background: var(--color-overlay-hover);
 }
 .t-shell-toggle:focus-visible {
@@ -2099,4 +2103,45 @@
   .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
   .t-header > .t-header-top { flex: 1; max-width: none; }
   .t-credentials { padding: 16px; }
+}
+
+.t-side-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.t-side-foot > :first-child:not(.t-settings) {
+  flex: 1;
+  min-width: 0;
+}
+.t-settings {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--t-muted);
+  cursor: pointer;
+}
+.t-settings:hover {
+  background: var(--color-overlay-hover);
+}
+.t-settings.selected {
+  background: var(--color-overlay-pressed, var(--color-overlay-hover));
+  color: inherit;
+}
+.t-settings:focus-visible {
+  outline: 2px solid var(--color-border-focus, currentColor);
+  outline-offset: 1px;
+}
+@media (pointer: coarse) {
+  .t-settings {
+    width: 44px;
+    height: 44px;
+  }
 }

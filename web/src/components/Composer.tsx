@@ -362,7 +362,18 @@ export const Composer = forwardRef<
             </DropdownMenu>
           ) : (
             <>
-              {uploadTo && !phone && <IconButton label="Attach files" tooltip="Attach files (or paste, or drop)" variant="ghost" icon={<Icon icon={PaperClipIcon} />} isDisabled={!!disabled || shellOn} onClick={() => picker.current?.click()} />}
+              {uploadTo && !phone && (
+                <button
+                  type="button"
+                  className="t-shell-toggle"
+                  aria-label="Attach files"
+                  title="Attach files (or paste, or drop)"
+                  disabled={!!disabled || shellOn}
+                  onClick={() => picker.current?.click()}
+                >
+                  <PaperClipIcon aria-hidden />
+                </button>
+              )}
               {shell && !steerOnly && (
                 <button
                   type="button"
