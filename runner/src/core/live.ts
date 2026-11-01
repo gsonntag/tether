@@ -18,6 +18,7 @@ import { FROM_TETHER } from "../../../shared/fromTether";
 import { reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
+import { PLAN_MODE } from "../../../shared/plan";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
@@ -94,7 +95,12 @@ export class LiveControl {
     private opts: { idleMs?: number; attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
-    this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
+    this.desk = new RequestDesk(core, broker, {
+      send: (id, text) => this.send(id, text, [], { tether: true }),
+      setPermissionMode: (id, mode) => this.setPermissionMode(id, mode),
+      tell: (id, text) => this.tell(id, text),
+      beforePlan: (id) => core.o.prefs.get(id).beforePlan,
+    });
     this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
@@ -406,6 +412,22 @@ export class LiveControl {
     } finally {
       this.core.unpin(s);
     }
+  }
+
+  /**
+   * The person's words to the agent, sent for them (a plan's notes or feedback): into the running
+   * turn when the harness takes that, else as a new message.
+   */
+  async tell(id: string, text: string) {
+    const s = await this.core.open(id);
+    if (s.state.status !== "idle" && s.capabilities.canSteer && s.driver?.steer && s.state.mode !== "terminal") return this.steer(id, text);
+    return this.send(id, text);
+  }
+
+  /** Going into plan mode: the mode it leaves is kept, so approving a plan goes back to it. */
+  private notePlanEntry(s: Session, mode: string | undefined) {
+    const was = s.state.permissionMode;
+    if (mode === PLAN_MODE && was && was !== PLAN_MODE && !s.summary.parentSessionId) this.core.o.prefs.set(s.id, { beforePlan: was });
   }
 
   /**
@@ -827,6 +849,7 @@ export class LiveControl {
     this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
+    if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
     s.setState(patch);
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
@@ -1383,6 +1406,7 @@ export class LiveControl {
           if (Object.keys(done).length) core.o.prefs.set(s.id, done);
         }
         const wasBackground = s.state.turnSettings?.who === "background";
+        if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
         const changed = s.setState(patch);
         if (!changed) return;
         // Commands with more access than shown: a restart joins the session again to say so.
