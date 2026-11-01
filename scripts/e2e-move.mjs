@@ -126,7 +126,7 @@ const openMenu = async (p, tap) => {
   const m = p.getByRole("button", { name: "Session menu" });
   await m.waitFor({ timeout: 30_000 });
   await (tap ? m.tap() : m.click());
-  const item = p.getByRole("menuitem", { name: "Move to…" });
+  const item = p.getByRole("menuitem", { name: "Change session harness" });
   await (tap ? item.tap() : item.click());
   await p.getByRole("dialog").waitFor();
 };
@@ -161,7 +161,7 @@ async function move(p, label, model, { tap = false, name, source } = {}) {
   if ((await eff.count()) && (await eff.locator('option[value="low"]').count())) await eff.selectOption("low");
   if (!(await d.innerText()).includes(label)) fail(`the dialog doesn't offer ${label}`);
   await shot(p, `${name ?? `move-${label}`}-dialog`);
-  await button(d, "Move").click();
+  await button(d, "Change").click();
   await Promise.race([
     p.waitForFunction((was) => !decodeURIComponent(location.hash).includes(was), was, { timeout: 90_000 }),
     d.locator(".t-form-error").waitFor({ timeout: 90_000 }).then(async () => fail(`the move failed: ${await d.locator(".t-form-error").innerText()}`)),
@@ -204,7 +204,7 @@ const steps = {
     if (!/Wait for the turn/.test(r.error ?? "")) fail(`a running turn moved: ${JSON.stringify(r)}`);
     await openMenu(p);
     await p.locator(".t-form-error", { hasText: "Wait for the turn" }).waitFor();
-    if (await button(p.getByRole("dialog"), "Move").isEnabled()) fail("Move is enabled while a turn runs");
+    if (await button(p.getByRole("dialog"), "Change").isEnabled()) fail("Move is enabled while a turn runs");
     await shot(p, "refused");
     await button(p.getByRole("dialog"), "Cancel").click();
     ok("a running turn is refused, in the op and the dialog");

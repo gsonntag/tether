@@ -759,7 +759,7 @@ next (`LiveState.nextBilling`). Picking the session's own again calls it off. A 
 refuses it: the items are disabled with the reason as their description, and the op refuses too. When
 one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
 on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
-no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Move to….
+no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Change session harness.
 
 The menu opens with the **plan's usage**, whether the session is on the plan or a key, so you see it
 before switching: under the plan's name, each window the harness reported, "Week 64% · resets Nov 5,
@@ -1037,7 +1037,7 @@ Still to verify by experiment (not decisions): Codex approval fan-out and cross-
 
 ## 15. Moving a session to another harness
 
-**Move to…** in a session's header menu makes a new session on another harness, or on the same
+**Change session harness** in a session's header menu makes a new session on another harness, or on the same
 harness with another billing source, with all of the old one's context. The old session stays as it was, its store untouched. It is a module
 (`runner/src/modules/move/`) and only ever an explicit choice: moving copies the history, secrets
 included, to another provider, and nothing scans it or does it automatically.

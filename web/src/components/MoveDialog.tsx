@@ -12,7 +12,7 @@ import { loadModels, modelListKey, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Move to… and its dialog (SPEC §15). */
+/** The session's menu, in the header: Change session harness and its dialog (SPEC §15). */
 export function SessionMenu({ runnerId, session, state }: { runnerId: string; session: SessionSummary; state: LiveState }) {
   const [open, setOpen] = useState(false);
   return (
@@ -24,7 +24,7 @@ export function SessionMenu({ runnerId, session, state }: { runnerId: string; se
           </button>
         )}
       >
-        <DropdownMenuItem label="Move to…" onClick={() => setOpen(true)} />
+        <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
     </>
@@ -86,7 +86,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
   const blocked = options?.blocked;
   return (
     <Dialog isOpen onOpenChange={(o) => !o && !busy && onClose()} width={420} purpose="form">
-      <DialogHeader title="Move to…" onOpenChange={(o) => !o && !busy && onClose()} />
+      <DialogHeader title="Change session harness" onOpenChange={(o) => !o && !busy && onClose()} />
       <div className="t-form" style={{ padding: 16 }}>
         {targets.length > 1 && (
           <div className="t-seg" role="radiogroup" aria-label="Agent">
@@ -147,7 +147,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
         {error && <div className="t-form-error">{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />
-          <Button label={busy ? "Moving…" : "Move"} variant="primary" isDisabled={!target || !!blocked || busy} onClick={() => void move()} />
+          <Button label={busy ? "Changing…" : "Change"} variant="primary" isDisabled={!target || !!blocked || busy} onClick={() => void move()} />
         </div>
       </div>
     </Dialog>
