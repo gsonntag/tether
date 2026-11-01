@@ -525,7 +525,7 @@ async function azurePage(p,phone) {
   await open(p,a);
   await fakeTurn(p,a,"Say anything.");
   assert(fakeRequests().at(-1).model==="luna-a","luna-a's request");
-  await until("luna-a's priced cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="$0.02 est.");
+  await until("luna-a's priced cost",async()=>(await p.locator(".t-api-cost").innerText().catch(()=>""))==="est. $0.02");
   await screenshot(p,"azure-session-priced");
   console.log("ok azure sessions: New session lists deployments with their model; each session names its deployment and is priced by its rates, or unknown with the reason");
   if(process.env.RESTART_RUNNER) {
@@ -544,7 +544,7 @@ async function azurePage(p,phone) {
     for(const [name,q] of [["phone",phone],["desktop",p]]) {
       await open(q,stored.id);
       await q.getByRole("button",{name:"Session menu"}).click();
-      await q.getByRole("menuitem",{name:"Move to…"}).click();
+      await q.getByRole("menuitem",{name:"Change session harness"}).click();
       const d=q.getByRole("dialog");
       const seg=d.getByRole("radio",{name:"Codex",exact:true});
       await seg.waitFor({timeout:30000}).catch(()=>{});
@@ -560,7 +560,7 @@ async function azurePage(p,phone) {
       if(name==="phone") { await d.getByRole("button",{name:"Cancel",exact:true}).click(); continue; }
       await models.selectOption("luna-b");
       const was=q.url();
-      await d.getByRole("button",{name:"Move",exact:true}).click();
+      await d.getByRole("button",{name:"Change",exact:true}).click();
       await q.waitForFunction((was)=>location.href!==was,was,{timeout:90000});
     }
     const moved=decodeURIComponent(p.url().split("/").pop());
@@ -649,7 +649,7 @@ try {
         assert(after.x === bounds.x, "billing badge moved with scrolling chips");
       }
       await inject(p, { kind: "apiKey", label: "Anthropic API key" }, theme, { usd: 1, estimated: true, complete: false });
-      assert(await p.locator(".t-api-cost").innerText() === "~$1.00+", "partial subtotal shown as full total");
+      assert(await p.locator(".t-api-cost").innerText() === "est. $1.00" && (await p.locator(".t-api-cost").getAttribute("title")).includes("not the session's whole cost"), "partial subtotal shown as full total");
       await screenshot(p, `${name}-${theme}-partial-cost`);
       await inject(p, { kind: "unknown", label: "Unknown" }, theme);
       assert(await p.locator(".t-paid-badge, .t-api-composer").count() === 0, "unknown shown as API");
