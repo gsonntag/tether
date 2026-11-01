@@ -1,5 +1,26 @@
 import { expect, test } from "bun:test";
-import { codexMode, modelList, modeOf, sandboxPolicy } from "./modes";
+import { codexMode, collaborationMode, knownMode, modeChoices, modelList, modeOf, sandboxPolicy } from "./modes";
+import { codexMove } from "./move";
+import { rolloutSettings as readRollout } from "./discovery";
+
+test("plan mode: Codex's collaboration mode with read-only permissions, first (strictest) in the menu", () => {
+  expect(modeChoices().map((m) => m.id)).toEqual(["plan", "read-only", "untrusted", "auto", "full-access"]);
+  expect(knownMode("plan")).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", plan: true });
+  expect(knownMode("read-only")).toEqual({ approvalPolicy: "on-request", sandbox: "read-only" });
+  // Read back: plan only with the collaboration mode; plan's permissions without it are Read only.
+  expect(modeOf("on-request", { type: "readOnly" }, "user", null, { mode: "plan" })).toBe("plan");
+  expect(modeOf("on-request", { type: "readOnly" }, "user", null, { mode: "default" })).toBe("read-only");
+  expect(modeOf("on-request", { type: "readOnly" })).toBe("read-only");
+  // Plan mode with other permissions (Codex's TUI): those permissions, as they are.
+  expect(modeOf("on-request", { type: "workspaceWrite" }, "user", null, { mode: "plan" })).toBe("auto");
+  expect(collaborationMode(true, "gpt-6", "high")).toEqual({ mode: "plan", settings: { model: "gpt-6", reasoning_effort: "high", developer_instructions: null } });
+  expect(collaborationMode(false, "gpt-6")).toEqual({ mode: "default", settings: { model: "gpt-6", reasoning_effort: null, developer_instructions: null } });
+  // A stored thread's last turn says it planned.
+  const line = JSON.stringify({ type: "turn_context", payload: { approval_policy: "on-request", sandbox_policy: { type: "read-only" }, collaboration_mode: { mode: "plan" } } });
+  expect(readRollout(line).mode).toBe("plan");
+  // Moving: plan counts as read only.
+  expect(codexMove.levelOf!("plan")).toBe(codexMove.levelOf!("read-only"));
+});
 
 test("permission presets: human labels, and a thread's settings read back as one", () => {
   expect(modeOf("untrusted", { type: "workspaceWrite" })).toBe("untrusted");
@@ -36,7 +57,7 @@ test("model/list as the picker: the default first, efforts in order with labels"
     { id: "medium", label: "Medium" },
     { id: "xhigh", label: "Extra high" },
   ]);
-  expect(l.permissionModes.map((m) => m.label)).toEqual(["Read only", "Ask first", "Auto", "Full access"]);
+  expect(l.permissionModes.map((m) => m.label)).toEqual(["Plan", "Read only", "Ask first", "Auto", "Full access"]);
 });
 
 test("a stored thread's settings from its rollout: the newest turn_context", async () => {

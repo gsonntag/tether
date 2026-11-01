@@ -317,6 +317,10 @@ relay directly.
   A thread with no turns yet can't be resumed ("no rollout found").
 - **Permissions:** native approval policy and sandbox. `item/commandExecution/requestApproval`,
   `item/fileChange/requestApproval` and `item/tool/requestUserInput` go to the request broker.
+  **Plan** mode is Codex's own (experimental) collaboration mode `plan`, set with
+  `thread/settings/update` and pinned on `turn/start`, in a read-only sandbox. The app-server has
+  no review step (its TUI's "Implement this plan?" is client-side), so a turn that completes with a
+  `plan` item raises a plan request (`planFollowUp`, §7) that Tether answers itself.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
 - **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
   same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
@@ -433,6 +437,15 @@ driver ─► broker.decide(request) ─► [policy steps] ─► person (any de
 - **UI:** open requests sit just above the composer and never scroll away. Approve, Deny, and
   "Deny with reason". Questions show their options as buttons and also allow free text.
 - **Permission modes** are each harness's own, picked from a menu per session with human labels.
+- **Plans** (Claude's `ExitPlanMode`, Codex's plan item) open as a document (`PlanReview.tsx`).
+  Select text or click a paragraph to comment; comments sit beside their text (a sheet on phones)
+  and stay in the browser until sent. **Send feedback** sends one block per comment in plan order,
+  the quote as a `>` blockquote then the comment, then a general comment (`shared/plan.ts`): Claude
+  gets it as the denial's reason and keeps planning; Codex gets it as a message, still in plan mode.
+  **Approve** goes back to the mode the session had before Plan (`SessionPrefs.beforePlan`, else
+  the harness's own choice), and any comments follow as notes: steered into Claude's turn, or after
+  "Implement the plan." for Codex. A plan whose harness isn't waiting in a turn (`planFollowUp`) is
+  answered by the runner and passed by when another turn starts.
 
 ## 8. Terminal mode
 

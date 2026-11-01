@@ -2,6 +2,7 @@
 // the wire: each handler checks what it reads.
 
 import { defang } from "../../../shared/fromTether";
+import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import type { HarnessId } from "../../../shared/transcript";
 import type { LiveControl } from "./live";
 import type { OpRegistry } from "./ops";
@@ -87,9 +88,12 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("setPermissionMode", async (a) => (await live.setPermissionMode(str(a.sessionId, "sessionId"), str(a.mode, "mode")), null));
   ops.register("answerRequest", async (args) => {
     const a = args as Record<string, unknown>;
-    const reason = typeof a.reason === "string" ? a.reason.slice(0, 8000) : undefined;
+    // A plan's feedback (a reason) and notes can be long: as long as a message.
+    const long = (v: unknown) => (typeof v === "string" ? defang(v.slice(0, MESSAGE_TEXT_MAX)) : undefined);
+    const reason = long(a.reason);
+    const notes = long(a.notes);
     const answers = Array.isArray(a.answers) ? (a.answers as unknown[]).slice(0, 20).map((x) => (typeof x === "string" ? x.slice(0, 8000) : "")) : undefined;
-    const answer = a.allow === true ? { allow: true as const, ...(answers ? { answers } : {}), ...(optStr(a.mode) ? { mode: optStr(a.mode) } : {}) } : { allow: false as const, ...(reason ? { reason } : {}) };
+    const answer = a.allow === true ? { allow: true as const, ...(answers ? { answers } : {}), ...(optStr(a.mode) ? { mode: optStr(a.mode) } : {}), ...(notes?.trim() ? { notes } : {}) } : { allow: false as const, ...(reason ? { reason } : {}) };
     await live.answerRequest(str(a.sessionId, "sessionId"), str(a.requestId, "requestId"), answer);
     return null;
   });

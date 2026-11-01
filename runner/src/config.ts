@@ -40,6 +40,8 @@ export interface SessionPrefs {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /** the mode the session left for plan mode: approving a plan goes back to it */
+  beforePlan?: string;
   /** what the session draws from, on every start, whatever keys are set later. Never a key itself */
   source?: BillingSource;
   /** on Azure: the deployment it runs on, kept across restarts. Removed from Settings, the session stops */

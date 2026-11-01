@@ -36,6 +36,8 @@ interface ThreadView {
   /** a subagent: the spawn call in its parent, and whether it runs */
   parentToolId?: string;
   running?: boolean;
+  /** the plan this turn proposed (plan mode's `plan` item) */
+  plan?: { id: string; text: string };
 }
 
 const firstLine = (s: string, n = 80) => s.trim().split("\n")[0]!.slice(0, n);
@@ -195,6 +197,10 @@ export class CodexStream {
   onSpawn?: (threadId: string, toolId: string) => void;
   /** An agent sent a subagent something (Codex reports that it did, never what: the text is encrypted). */
   onInteracted?: (threadId: string) => void;
+  /** A turn of the main thread ended with a plan proposed (plan mode): it's for review. */
+  onPlan?: (plan: { id: string; text: string }) => void;
+  /** A turn of the main thread started (a plan waiting for review is passed by). */
+  onTurnStarted?: () => void;
 
   /**
    * A subagent found running when joining the thread (a runner restart): opened as if its spawn had
@@ -216,8 +222,11 @@ export class CodexStream {
     v.msg = undefined;
     v.msgs.clear();
     v.parts.clear();
-    if (v === this.main) this.state(v, { status: "running", error: undefined });
-    else this.childRunning(v);
+    v.plan = undefined;
+    if (v === this.main) {
+      this.onTurnStarted?.();
+      this.state(v, { status: "running", error: undefined });
+    } else this.childRunning(v);
   }
 
   private turnCompleted(v: ThreadView, turn: any) {
@@ -235,7 +244,11 @@ export class CodexStream {
     if (error && v === this.main && usageLimitHit(turn.error)) v.sink.limitReached?.({});
     v.turnId = undefined;
     v.msg = undefined;
+    // A plan proposed by a turn that finished (not one stopped or failed): it goes up for review.
+    const plan = v === this.main && turn?.status === "completed" ? v.plan : undefined;
+    v.plan = undefined;
     if (v === this.main) this.state(v, { status: "idle", ...(error ? {} : { error: undefined }) });
+    if (plan) this.onPlan?.(plan);
     else if (v.running) {
       v.running = false;
       v.sink.ended?.();
@@ -306,6 +319,7 @@ export class CodexStream {
     if (part && (shown(part) || v.parts.has(item.id))) this.setPart(v, item.id, part);
     this.spawned(v, item);
     this.reports(item);
+    if (item.type === "plan" && v === this.main && typeof item.text === "string" && item.text.trim()) v.plan = { id: item.id, text: item.text };
   }
 
   /** A subagent's spawn call: its threads become child sessions. */

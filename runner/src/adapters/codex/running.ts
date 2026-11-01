@@ -31,7 +31,7 @@ export function effOfSettings(s: any): Eff {
     ...(typeof s?.approvalPolicy === "string" ? { approvalPolicy: s.approvalPolicy } : {}),
     ...(sandboxOf(s?.sandboxPolicy) ? { sandbox: sandboxOf(s.sandboxPolicy) } : {}),
     ...(typeof s?.approvalsReviewer === "string" ? { reviewer: s.approvalsReviewer } : {}),
-    ...(modeOf(s?.approvalPolicy, s?.sandboxPolicy, s?.approvalsReviewer, s?.activePermissionProfile) ? { mode: modeOf(s.approvalPolicy, s.sandboxPolicy, s.approvalsReviewer, s.activePermissionProfile) } : {}),
+    ...(modeOf(s?.approvalPolicy, s?.sandboxPolicy, s?.approvalsReviewer, s?.activePermissionProfile, s?.collaborationMode) ? { mode: modeOf(s.approvalPolicy, s.sandboxPolicy, s.approvalsReviewer, s.activePermissionProfile, s.collaborationMode) } : {}),
   };
 }
 

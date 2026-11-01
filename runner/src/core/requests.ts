@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { parseSessionId } from "../../../shared/ids";
+import { approveMessage, notesMessage, PLAN_MODE } from "../../../shared/plan";
 import { HARNESS_LABELS, type Msg, type Request, type RequestAnswer } from "../../../shared/transcript";
 import type { Decision, RequestAsk } from "./adapter";
 import type { RequestBroker } from "./broker";
@@ -42,7 +43,8 @@ export function restoredMessage(r: Request, a: RequestAnswer): string | undefine
       return lines.length === 1 ? `The user answered "${lines[0]![0]}": ${lines[0]![1]}` : `The user answered:\n${lines.map(([q, x]) => `- ${q} ${x}`).join("\n")}`;
     }
     if (!a.allow) return a.reason?.trim() ? `The user denied your request to ${describeRequest(r)} and said: ${a.reason.trim()}` : undefined;
-    return r.plan !== undefined ? "The user approved your plan. Go ahead." : `The user approved your request to ${describeRequest(r)}. Go ahead.`;
+    if (r.plan !== undefined) return `The user approved your plan. Go ahead.${a.notes?.trim() ? `\n\n${notesMessage(a.notes)}` : ""}`;
+    return `The user approved your request to ${describeRequest(r)}. Go ahead.`;
   })();
   return text && FROM_TETHER + text;
 }
@@ -54,6 +56,10 @@ export interface DeskHooks {
   /** sends a message as the person would (a session resuming after a restored answer) */
   send(sessionId: string, text: string): Promise<void>;
   setPermissionMode(sessionId: string, mode: string): Promise<void>;
+  /** the person's own words to the agent: into the running turn when one runs, else a new turn */
+  tell(sessionId: string, text: string): Promise<void>;
+  /** the mode the session was in before it went into plan mode, if known */
+  beforePlan(sessionId: string): string | undefined;
 }
 
 export class RequestDesk {
@@ -74,6 +80,14 @@ export class RequestDesk {
           const s = core.sessions.get(r.sessionId);
           s?.apply({ type: "msg", msg: notice(`${sourceLabel(how.source)} ${outcome} ${this.harness(r.sessionId)}'s request to ${describeRequest(r)}${how.reason ? `: ${how.reason}` : "."}`, outcome === "denied" ? "warning" : "info") });
         }
+        // A plan answered by a person: what follows the answer (shared/plan.ts).
+        if (r.plan !== undefined && how.answer && how.source === "person") {
+          // Nobody waits inside a turn (Codex): Tether answers, restored or not.
+          if (r.planFollowUp) return void this.planFollowUp(r, how.answer, how.chain.at(-1)!);
+          // Approved with notes: they follow the approval into the turn it lets go on.
+          const notes = how.answer.allow ? how.answer.notes?.trim() : undefined;
+          if (notes && !how.restored) setTimeout(() => void this.tell(how.chain.at(-1)!, notesMessage(notes)), 0);
+        }
         // A harness that keeps turns going itself (capabilities.persistent) asks again when the
         // runner rejoins: the answer waits for that (the broker keeps it), and is never sent on as a
         // message, which could run something twice.
@@ -91,6 +105,8 @@ export class RequestDesk {
     // other turn starting means you moved on.
     bus.on("turnStarted", ({ sessionId }) => {
       if (!this.resuming.delete(sessionId)) broker.forgetPredecided(sessionId, this.heldIds(sessionId));
+      // A plan waiting for review after its turn (planFollowUp) is passed by: you went on without it.
+      broker.cancel((r, chain) => !!r.planFollowUp && chain.at(-1) === sessionId);
     });
     // A turn that ran and ended without the harness asking again: what was restored is stale.
     // Answers held for a turn to end go out now, one per turn.
@@ -156,6 +172,13 @@ export class RequestDesk {
   async ask(s: Session, r: RequestAsk, signal?: AbortSignal): Promise<Decision> {
     const chain = this.chain(s);
     const root = this.core.sessions.get(chain.at(-1)!) ?? s;
+    // Approving a plan goes back to the mode the session had before plan mode, when that's known.
+    const back = r.plan !== undefined ? this.hooks.beforePlan(root.id) : undefined;
+    if (back && back !== PLAN_MODE) {
+      const { approveAs, ...rest } = r;
+      const others = approveAs?.filter((m) => m.id !== back);
+      r = { ...rest, approveMode: back, ...(others?.length ? { approveAs: others } : {}) };
+    }
     const request: Request = { ...r, id: randomUUID(), sessionId: s.id, openedAt: this.core.now(), ...(s.summary.parentSessionId ? { agent: s.summary.title } : {}) };
     const { source: _s, requestId: _r, ...d } = await this.broker.decide(request, chain, { projectPath: root.summary.projectPath, permissionMode: root.state.turnSettings?.permissionMode ?? root.state.permissionMode }, signal);
     return d;
@@ -211,6 +234,32 @@ export class RequestDesk {
     list.push({ requestId: r.id, text, ...(mode ? { mode } : {}) });
     this.held.set(root, list);
     await this.drain(root);
+  }
+
+  /** The person's words to the agent; a failure says so in the session. */
+  private async tell(root: string, text: string) {
+    try {
+      await this.hooks.tell(root, text);
+    } catch (e: any) {
+      await this.say(root, notice(`Couldn't send your notes to ${this.harness(root)}: ${e?.message ?? e}`, "warning"));
+    }
+  }
+
+  /**
+   * A plan answered where the harness isn't waiting on it (Request.planFollowUp): approved, the
+   * session leaves plan mode and is told to go ahead (with the notes); sent back with a reason, the
+   * reason goes as a message and the agent stays in plan mode to revise. A plain deny sends nothing.
+   */
+  private async planFollowUp(r: Request, a: RequestAnswer, root: string) {
+    try {
+      if (a.allow) {
+        const mode = a.mode ?? r.approveMode;
+        if (mode) await this.hooks.setPermissionMode(root, mode);
+        await this.hooks.tell(root, approveMessage(a.notes));
+      } else if (a.reason?.trim()) await this.hooks.tell(root, a.reason.trim());
+    } catch (e: any) {
+      await this.say(root, notice(`Couldn't pass your answer on to ${this.harness(root)}: ${e?.message ?? e} Tell it in a message instead.`, "warning"));
+    }
   }
 
   /**
