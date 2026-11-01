@@ -36,7 +36,7 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 
 ## Credentials page
 
-- [ ] Desktop and 375 px phone: open Credentials with the settings button beside the user's name. Exactly Claude/Anthropic,
+- [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; Credentials is its only subpage. Exactly Claude/Anthropic,
   Codex/Azure and Codex/OpenAI slots appear. Multiple runners have a runner selector.
 - [ ] Save a random fake Anthropic key. The password field clears immediately; status becomes Set,
   optionally with last four characters. Reload: only status is returned, never the key.

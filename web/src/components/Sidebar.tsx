@@ -126,8 +126,8 @@ export function Sidebar() {
           <button
             type="button"
             className={route.page === "credentials" ? "t-settings selected" : "t-settings"}
-            aria-label="Credentials"
-            title="Credentials"
+            aria-label="Settings"
+            title="Settings"
             aria-current={route.page === "credentials" ? "page" : undefined}
             onClick={() => {
               navigate({ page: "credentials" });

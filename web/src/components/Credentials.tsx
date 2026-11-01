@@ -15,10 +15,18 @@ export function Credentials() {
   const [chosen, setChosen] = useState("");
   const runner = runners.find((r) => r.id === chosen) ?? runners.find((r) => r.online) ?? runners[0];
   return (
-    <main className="t-credentials">
-      <Heading level={1}>Credentials</Heading>
+    <main className="t-settings-page">
+      <Heading level={1}>Settings</Heading>
+      <div className="t-settings-body">
+      <nav className="t-settings-nav" aria-label="Settings">
+        <a href="#/settings/credentials" aria-current="page">Credentials</a>
+      </nav>
+      <div className="t-credentials">
+      <Heading level={2}>Credentials</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}</select></label>}
       {!runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
+      </div>
+      </div>
     </main>
   );
 }
@@ -42,8 +50,8 @@ function RunnerCredentials({ runnerId }: { runnerId: string }) {
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     {!status ? !error && <div className="t-inline-status">Loading…</div> : <>
-      <section className="t-credential-harness"><Heading level={2}>Claude</Heading><CredentialSlot source="anthropic" status={status.anthropic} disabled={busy || link !== "open"} save={(a) => change(rpc(runnerId, "setCredential", a))} unset={() => change(rpc(runnerId, "unsetCredential", { source: "anthropic" }))} /></section>
-      <section className="t-credential-harness"><Heading level={2}>Codex</Heading>{(["azure", "openai"] as const).map((source) => <CredentialSlot key={source} source={source} status={status[source]} disabled={busy || link !== "open"} save={(a) => change(rpc(runnerId, "setCredential", a))} unset={() => change(rpc(runnerId, "unsetCredential", { source }))} />)}</section>
+      <section className="t-credential-harness"><Heading level={3}>Claude</Heading><CredentialSlot source="anthropic" status={status.anthropic} disabled={busy || link !== "open"} save={(a) => change(rpc(runnerId, "setCredential", a))} unset={() => change(rpc(runnerId, "unsetCredential", { source: "anthropic" }))} /></section>
+      <section className="t-credential-harness"><Heading level={3}>Codex</Heading>{(["azure", "openai"] as const).map((source) => <CredentialSlot key={source} source={source} status={status[source]} disabled={busy || link !== "open"} save={(a) => change(rpc(runnerId, "setCredential", a))} unset={() => change(rpc(runnerId, "unsetCredential", { source }))} />)}</section>
     </>}
   </>;
 }

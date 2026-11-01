@@ -2084,7 +2084,19 @@
 }
 .t-title-button:focus-visible { outline: 2px solid var(--color-accent); border-radius: 3px; }
 .t-title-input { min-width: 0; width: 100%; font: inherit; color: inherit; background: var(--t-soft); border: 1px solid var(--t-border); border-radius: 4px; padding: 3px; }
-.t-credentials { box-sizing: border-box; max-width: 720px; width: 100%; margin: 0 auto; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; }
+.t-settings-page { box-sizing: border-box; width: 100%; max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+.t-settings-body { display: flex; gap: 32px; align-items: flex-start; }
+.t-settings-nav { flex: none; width: 160px; display: flex; flex-direction: column; gap: 2px; }
+.t-settings-nav a { padding: 8px 12px; border-radius: 8px; color: var(--color-text-primary); text-decoration: none; }
+.t-settings-nav a[aria-current="page"] { background: var(--color-overlay-pressed, var(--color-overlay-hover)); }
+.t-settings-nav a:focus-visible { outline: 2px solid var(--color-accent); }
+.t-credentials { box-sizing: border-box; flex: 1; min-width: 0; max-width: 720px; display: flex; flex-direction: column; gap: 20px; }
+@media (max-width: 767px) {
+  .t-settings-body { flex-direction: column; gap: 16px; }
+  .t-settings-nav { width: 100%; flex-direction: row; }
+  .t-settings-nav a { padding: 10px 12px; }
+  .t-credentials { width: 100%; }
+}
 .t-credential-harness { display: flex; flex-direction: column; gap: 16px; }
 .t-credential-slot { border: 1px solid var(--t-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .t-credential-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-weight: 600; }
@@ -2102,7 +2114,6 @@
   .t-chip-options::-webkit-scrollbar { display: none; }
   .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
   .t-header > .t-header-top { flex: 1; max-width: none; }
-  .t-credentials { padding: 16px; }
 }
 
 .t-side-foot {
