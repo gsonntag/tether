@@ -203,7 +203,7 @@ const steps = {
     const folder = process.env.CODEX_SCRATCH ?? `${HOME}/tether-scratch/p4/projects/scratch`;
     const list = (await rpcVia(p, "listSessions", { projectPath: folder })).ok?.sessions.filter((s) => s.harness === "codex" && !/probe/i.test(s.title)) ?? [];
     let picked;
-    for (const s of list.slice(0, 30)) {
+    for (const s of list.slice(0, 120)) {
       const snap = (await rpcVia(p, "subscribe", { sessionId: s.id, limit: 200 })).ok;
       const tool = snap?.messages.flatMap((m) => m.parts).find((x) => x.type === "tool" && x.command && (x.output ?? "").trim().length > 8 && (x.output ?? "").length < 2000);
       if (tool && snap.state.status === "idle") {
