@@ -46,6 +46,8 @@ export interface SessionPrefs {
   source?: BillingSource;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
+  /** a start for nextBilling failed; shown until a retry succeeds or the source is cancelled */
+  sourceSwitchFailed?: boolean;
   /** with capabilities.sourceCarry: the source the next message goes to, in a new thread */
   nextSource?: BillingSource;
   /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */

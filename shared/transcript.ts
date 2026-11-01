@@ -302,6 +302,8 @@ export interface LiveState {
   billing?: Billing;
   /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
   nextBilling?: Billing;
+  /** the last process start for nextBilling failed; the confirmed source is still current */
+  sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
   /** the key this session last used or had picked: where `autoKey` goes */
@@ -358,6 +360,8 @@ export interface LiveState {
   };
   /** the main agent is free and this many of its subagents still run (never saved: it can't outlive them) */
   backgroundSubagents?: number;
+  /** Tether's `!` shell commands still running; ephemeral like backgroundSubagents */
+  shellsRunning?: number;
   /** why the session can't run right now (the harness failed to start, isn't signed in, …); the chat shows it as a notice */
   error?: string;
 }

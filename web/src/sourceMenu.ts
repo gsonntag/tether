@@ -1,5 +1,8 @@
 import { HARNESS_KEYS, type BillingSource, type SourceChoices } from "../../shared/credentials";
+import { billingForDisplay, sourceSwitchBlocker, sourceSwitchBlockMessage, visibleNextBilling } from "../../shared/sourceSwitch";
 import type { HarnessId, LiveState } from "../../shared/transcript";
+
+export { billingForDisplay, visibleNextBilling };
 
 export interface SourceMenuItem {
   /** a source, or CURRENT_SOURCE */
@@ -14,16 +17,14 @@ export const CURRENT_SOURCE = "current";
 
 /** Why a process start can't change source now. The runner refuses these too. */
 export function switchBlocked(state: LiveState): string | undefined {
-  if (state.mode === "terminal" || state.terminal) return "Close the terminal first.";
-  return state.status !== "idle" ? "Wait for the turn to end." : undefined;
+  const blocker = sourceSwitchBlocker(state);
+  return blocker ? sourceSwitchBlockMessage(blocker) : undefined;
 }
 
-/**
- * The billing chip's menu: the harness's sources, the session's own marked (what's next, if one is
- * waiting for the harness to confirm it).
- */
+/** The billing chip's menu: the harness's sources, the displayed session source, and why others are unavailable. */
 export function sourceMenu(harness: HarnessId, state: LiveState, choices: SourceChoices): { items: SourceMenuItem[]; value?: string; addKey: boolean } {
-  const shown = state.nextBilling ?? state.billing;
+  // A failed start leaves the target queued, so keep it selected in the menu for cancellation.
+  const shown = state.sourceSwitchFailed ? state.nextBilling ?? billingForDisplay(state) : billingForDisplay(state);
   const own = choices.options.find((o) => o.billing.label === shown?.label);
   const reason = switchBlocked(state);
   const items: SourceMenuItem[] = choices.options.map((o) => ({ value: o.source, label: o.billing.label, ...(o !== own && reason ? { reason } : {}) }));
