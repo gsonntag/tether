@@ -377,6 +377,8 @@ export interface SessionSummary {
   cost?: SessionCost;
   /** The latest source confirmed by the harness; never inferred from configured credentials. */
   billing?: Billing;
+  /** Kept out of Recent; still available from session search. */
+  archived?: boolean;
   /** `${harness}:${nativeId}` */
   id: string;
   harness: HarnessId;

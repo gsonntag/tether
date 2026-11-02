@@ -71,7 +71,7 @@ export class SummaryBook {
     const cutoff = this.now() - RECENT_MS;
     const byId = new Map(discovered.map((s) => [s.id, s]));
     const recent = discovered
-      .filter((s) => s.updatedAt >= cutoff && !s.parentSessionId)
+      .filter((s) => s.updatedAt >= cutoff && !s.parentSessionId && !s.archived)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, RECENT_MAX);
     const want = new Map(recent.map((s) => [s.id, s]));

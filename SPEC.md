@@ -218,7 +218,7 @@ is dropped, so `plan` is always the plan's.
 
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
-`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `openTerminal`, `closeTerminal`,
+`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15).
 
@@ -727,7 +727,8 @@ Only the owner can run one (the same auth as sending).
 ## 10. UI
 
 - **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long
-  ago, status dot), with projects below. Search. New session (pick a project, harness, model).
+  ago, status dot), with projects below. Search. New session (pick a project, harness, model). Archive
+  (Archiving below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
   permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
@@ -737,7 +738,8 @@ Only the owner can run one (the same auth as sending).
   their resets) and the **Terminal** button. Those two
   chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
-- **Home** (P5): one ranked inbox: requests, then finished-unread, then working.
+- **Home** (P5): one ranked inbox: requests, then finished-unread, then working. An archived session
+  stays while it needs you or is working.
 - **Responsive:** one layout that works at 375 px. Every action reachable by touch.
 
 ### Credentials and billing safety
@@ -976,6 +978,15 @@ source change switches in place, so there is nothing to wait for.
 Clicking a session title opens an inline editor. Enter saves, Escape cancels, and leaving the editor
 saves a nonempty change. Names chosen in Tether persist through rediscovery and runner restarts,
 and update on every connected device. Renaming starts no harness process.
+
+### Archiving
+
+Each main session row in the Sidebar has an archive button, and the session's ⋯ menu has Archive;
+both become Unarchive on an archived session. Archived sessions leave Recent and the project lists,
+search still finds them (marked Archived), and Home still shows one while it needs you or is working.
+The flag is saved in the runner's prefs (`setSessionArchived`), so it survives restarts and the
+90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
+the row from the Sidebar until the next click or key or a few seconds.
 
 ### API session dollars and retry times
 

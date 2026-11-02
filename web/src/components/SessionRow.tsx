@@ -1,10 +1,12 @@
-import { isApiBilling } from "../../../shared/labels";
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "@astryxdesign/core/Icon";
+import { ArchiveBoxIcon, ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
+import { isApiBilling } from "../../../shared/labels";
 import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
-import { useStore } from "../store";
+import { setArchived as saveArchived, useStore } from "../store";
 
 /** "now", "5m", "3h", "2d", "Oct 3" */
 export function shortAgo(ts: number, now = Date.now()): string {
@@ -45,14 +47,33 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const [renameError, setRenameError] = useState<string>();
+  const [archived, setArchived] = useState(!!row.archived);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string>();
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
+
   useEffect(() => {
     if (editingTitle) {
       titleInput.current?.focus();
       titleInput.current?.select();
     }
   }, [editingTitle]);
+  useEffect(() => setArchived(!!row.archived), [row.archived]);
+  // The error is shown once: gone after a few seconds or at the next click or key.
+  useEffect(() => {
+    if (!archiveError) return;
+    const clear = () => setArchiveError(undefined);
+    const t = setTimeout(clear, 5000);
+    document.addEventListener("pointerdown", clear, true);
+    document.addEventListener("keydown", clear, true);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("pointerdown", clear, true);
+      document.removeEventListener("keydown", clear, true);
+    };
+  }, [archiveError]);
+
   const finishTitle = (save: boolean) => {
     if (!editing.current) return;
     editing.current = false;
@@ -71,6 +92,19 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     setRenameError(undefined);
     editing.current = true;
     setEditingTitle(true);
+  };
+  const toggleArchive = async () => {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    setArchiveError(undefined);
+    try {
+      await saveArchived(row.runnerId, row.id, !archived);
+      setArchived(!archived);
+    } catch (e) {
+      setArchiveError((e as Error).message);
+    } finally {
+      setArchiveBusy(false);
+    }
   };
 
   return (
@@ -126,11 +160,28 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           {!child && <span className="t-proj">{folderName(row.projectPath)}</span>}
           {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
+          {archived && <span className="t-archived">· Archived</span>}
           {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
         </span>
+        {!child && (
+          <button
+            type="button"
+            className="t-row-archive"
+            aria-label={`${archived ? "Unarchive" : "Archive"} session: ${row.title || "Untitled"}`}
+            title={`${archived ? "Unarchive" : "Archive"} session`}
+            disabled={archiveBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              void toggleArchive();
+            }}
+          >
+            <Icon icon={archived ? ArrowUturnLeftIcon : ArchiveBoxIcon} size="sm" />
+          </button>
+        )}
         {renameError && <span className="t-row-rename-error" role="status">Rename failed: {renameError}</span>}
+        {archiveError && <span className="t-row-archive-error" role="status">Archive failed: {archiveError}</span>}
       </div>
     </div>
   );

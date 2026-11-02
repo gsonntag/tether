@@ -32,6 +32,8 @@ export interface RunnerConfig {
 export interface SessionPrefs {
   /** A title chosen in Tether, kept across harness discovery and process restarts. */
   title?: string;
+  /** Kept out of Recent while remaining available through explicit search. */
+  archived?: boolean;
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;

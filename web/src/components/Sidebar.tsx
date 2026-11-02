@@ -60,11 +60,18 @@ export function Sidebar() {
       clearTimeout(t);
     };
   }, [extraKey, linkOpen, onlineKey]);
+  // An archive change made here: the cached copy takes it, so the row leaves (or comes back) at once.
+  const archiveEdit = useStore((s) => s.archiveEdit);
+  useEffect(() => {
+    if (!archiveEdit) return;
+    const { runnerId, sessionId, archived } = archiveEdit;
+    setExtra((e) => ({ ...e, rows: e.rows.map((r) => (r.runnerId === runnerId && r.id === sessionId ? { ...r, archived: archived || undefined } : r)) }));
+  }, [archiveEdit]);
 
   const rows = useMemo(() => {
     let list = recentSessions(summaries, q);
     if (filter) list = list.filter((r) => r.projectPath === filter);
-    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => !r.parentSessionId), list);
+    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => !r.parentSessionId && (!r.archived || !!q)), list);
     return list;
   }, [summaries, q, filter, extra, extraKey]);
 

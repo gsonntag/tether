@@ -2,6 +2,7 @@
 // (every tool kind, markdown, thinking, notices, a subagent, a 300-message session to page), and a
 // scripted streamed reply to every `send`. Dials a dev server like the real runner does.
 //   TETHER_URL=http://127.0.0.1:8791 bun scripts/fake-runner.ts [runnerId]
+// ASK=1 adds a session that needs you; NO_ARCHIVE=1 answers setSessionArchived as a runner from before it.
 
 import { Connection } from "../runner/src/core/connection";
 import { newestPage, partChunk } from "../shared/limits";
@@ -158,6 +159,7 @@ add({ id: "claude:fail-1", title: "Can't start", projectPath: P, updatedAt: now 
   failure(`Couldn't start Claude Code: ${FAILS}`),
   failure(`Couldn't start Claude Code: ${FAILS}`),
 ], { error: FAILS });
+if (process.env.ASK) add({ id: "claude:ask-1", title: "Needs an answer", projectPath: P, updatedAt: now - 30_000, requests: 1, status: "waiting" }, [user("Delete the old build folder?")], { status: "waiting" });
 add({ id: "claude:empty-1", title: "A session with a very long title that must be cut with an ellipsis on a phone screen", projectPath: "/home/me/scratch", updatedAt: now - 20 * 86_400_000 }, []);
 
 // ---------- wire ----------
@@ -176,7 +178,10 @@ const conn = new Connection({
   onState: (c) => c && summary({ kind: "all", epoch, seq: summarySeq, sessions: summaries() }),
 });
 
-const summaries = () => [...sessions.values()].map((s) => s.summary);
+const all = () => [...sessions.values()].map((s) => s.summary);
+// As the real runner's list: archived sessions only while they need you, work or are open (search finds the rest).
+const watched = new Set<string>();
+const summaries = () => all().filter((s) => !s.archived || s.status !== "idle" || !!s.requests || watched.has(s.id));
 function summary(u: SummaryUpdate) {
   conn.send({ t: "summary", summary: u });
 }
@@ -238,7 +243,8 @@ async function handle(op: string, a: any): Promise<unknown> {
       return { projects: [...by.values()].sort((x, y) => y.updatedAt - x.updatedAt) };
     }
     case "listSessions": {
-      let list = summaries();
+      let list = a.parentSessionId || a.projectPath || a.query ? all() : summaries();
+      if (a.projectPath && !a.query) list = list.filter((s) => !s.archived);
       if (a.parentSessionId) list = list.filter((s) => s.parentSessionId === a.parentSessionId);
       if (a.projectPath) list = list.filter((s) => s.projectPath === a.projectPath && !s.parentSessionId);
       if (a.query) list = list.filter((s) => s.title.toLowerCase().includes(String(a.query).toLowerCase()));
@@ -247,6 +253,7 @@ async function handle(op: string, a: any): Promise<unknown> {
     }
     case "subscribe": {
       const s = get(a.sessionId);
+      watched.add(s.summary.id);
       const page = newestPage(s.messages, a.limit ?? 50);
       return { session: s.summary, capabilities: caps, messages: page.messages, hasOlder: page.hasOlder, state: s.state, seq: s.seq };
     }
@@ -284,6 +291,16 @@ async function handle(op: string, a: any): Promise<unknown> {
       emit(s, { type: "msg", isNew: true, msg: { id: id("n"), role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: "Interrupted" }] } });
       emit(s, { type: "state", state: { status: "idle" } });
       upsert(s);
+      return null;
+    }
+    case "setSessionArchived": {
+      if (process.env.NO_ARCHIVE) throw new Error(`This runner doesn't know "${op}". Update and restart it.`);
+      if (typeof a.archived !== "boolean") throw new Error("archived must be true or false.");
+      const s = get(a.sessionId);
+      if (!!s.summary.archived === a.archived) return null;
+      s.summary = { ...s.summary, archived: a.archived || undefined };
+      if (summaries().includes(s.summary)) summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
+      else summary({ kind: "remove", epoch, seq: ++summarySeq, ids: [s.summary.id] });
       return null;
     }
     case "setModel":

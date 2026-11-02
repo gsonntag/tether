@@ -8,13 +8,26 @@ import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
-import { loadModels, modelListKey, useStore } from "../store";
+import { failedSend, loadModels, modelListKey, setArchived, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 /** The session's menu, in the header: Change session harness and its dialog (SPEC §15). */
-export function SessionMenu({ runnerId, session, state }: { runnerId: string; session: SessionSummary; state: LiveState }) {
+export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean }) {
   const [open, setOpen] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const archive = async () => {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    try {
+      await setArchived(runnerId, session.id, !session.archived);
+    } catch (e) {
+      // Shown once, in the chat, like the session's other errors.
+      failedSend(runnerId, session.id, `Archive failed: ${(e as Error).message}`);
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
   return (
     <>
       <DropdownMenu
@@ -24,7 +37,8 @@ export function SessionMenu({ runnerId, session, state }: { runnerId: string; se
           </button>
         )}
       >
-        <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />
+        {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
+        <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
     </>

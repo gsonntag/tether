@@ -26,6 +26,17 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     core.touch(s, { title });
     return null;
   });
+  ops.register("setSessionArchived", async (a) => {
+    if (typeof a.archived !== "boolean") throw new Error("archived must be true or false.");
+    const s = await core.open(str(a.sessionId, "sessionId"));
+    const archived = a.archived;
+    if ((core.o.prefs.get(s.id).archived === true) === archived) return null;
+    core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined });
+    core.o.prefs.flush();
+    core.touch(s);
+    await core.discover();
+    return null;
+  });
   ops.register("listProjects", async () => ({ projects: await core.listProjects() }));
   ops.register("listSessions", (a) =>
     core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), query: optStr(a.query), limit: optNum(a.limit) }),
