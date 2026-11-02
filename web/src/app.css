@@ -116,20 +116,12 @@
   align-items: center;
   min-width: 0;
 }
-.t-row-title-button {
-  all: unset;
-  box-sizing: border-box;
+.t-row-title-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: text;
-  pointer-events: auto;
-}
-.t-row-title-button:focus-visible {
-  outline: 2px solid var(--color-accent);
-  border-radius: 3px;
 }
 .t-row-title-editor .t-row-title-input {
   flex: 1;

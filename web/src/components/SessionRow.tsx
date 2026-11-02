@@ -67,16 +67,32 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
         .finally(() => setTitleBusy(false));
     }
   };
+  const beginRename = () => {
+    if (child || editing.current || titleBusy) return;
+    setRenameError(undefined);
+    editing.current = true;
+    setEditingTitle(true);
+  };
 
   return (
     <div
       className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest("input, .t-row-archive")) return;
+        beginRename();
+      }}
     >
       <button
         type="button"
         className="t-row-open"
         aria-label={`Open session: ${row.title || "Untitled"}`}
         aria-current={selected ? "page" : undefined}
+        onKeyDown={(e) => {
+          if (e.key === "F2" && !child) {
+            e.preventDefault();
+            beginRename();
+          }
+        }}
         onClick={() => {
           openSession(row.runnerId, row.id);
           close();
@@ -101,20 +117,9 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
               }}
             />
           ) : (
-            <button
-              type="button"
-              className="t-row-title-button"
-              title={row.title}
-              aria-label={`Rename session: ${row.title || "Untitled"}`}
-              disabled={titleBusy}
-              onClick={() => {
-                setRenameError(undefined);
-                editing.current = true;
-                setEditingTitle(true);
-              }}
-            >
+            <span className="t-row-title-text" title={row.title}>
               {row.title || "Untitled"}
-            </button>
+            </span>
           )}
         </span>
         <span className="t-row-meta">
