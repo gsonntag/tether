@@ -53,6 +53,8 @@ interface State {
   projectFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
   pushKey?: string;
+  /** the last archive change made here: the sidebar patches its listSessions copies with it */
+  archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
 }
 
 export const useStore = create<State>(() => ({
@@ -250,10 +252,16 @@ export async function loadOlder(runnerId: string, sessionId: string): Promise<bo
   }
 }
 
-/** A send that failed: shown in the chat of the session it was for, if that's still open. */
+/** A send (or an archive) that failed: shown in the chat of the session it was for, if that's still open. */
 export function failedSend(runnerId: string, sessionId: string, text: string) {
   models.get(key(runnerId, sessionId))?.model.addNotice(text);
   publish(runnerId, sessionId);
+}
+
+/** Archives or unarchives a session (SPEC §10); throws the runner's error. */
+export async function setArchived(runnerId: string, sessionId: string, archived: boolean) {
+  await rpc(runnerId, "setSessionArchived", { sessionId, archived });
+  set({ archiveEdit: { runnerId, sessionId, archived } });
 }
 
 /** Drops a disconnected runner from this browser's list. */

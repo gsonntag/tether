@@ -40,3 +40,12 @@ test("background subagents running: the session reads as working, and not as fin
   expect(at({})).toBeUndefined();
   expect(recentSessions({ r1: { seq: 1, sessions: { a: row({ backgroundSubagents: 1 }) } } } as any)[0]!.status).toBe("running");
 });
+
+test("archived sessions: out of Recent unless searching, still on Home while they need you or work", () => {
+  const sums = {
+    a: { epoch: "e", seq: 1, sessions: { x: s("x", 3, { archived: true, title: "Old fix" }), y: s("y", 5), w: s("w", 6, { archived: true, requests: 1 }), r: s("r", 7, { archived: true, status: "running" }) } },
+  };
+  expect(recentSessions(sums).map((r) => r.id)).toEqual(["y"]);
+  expect(recentSessions(sums, "old").map((r) => r.id)).toEqual(["x"]);
+  expect(inbox(sums).map((r) => `${r.id}:${r.inbox}`)).toEqual(["w:needs", "r:working"]);
+});

@@ -6,7 +6,7 @@ import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "..
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
-import { useStore } from "../store";
+import { setArchived as saveArchived, useStore } from "../store";
 
 /** "now", "5m", "3h", "2d", "Oct 3" */
 export function shortAgo(ts: number, now = Date.now()): string {
@@ -60,6 +60,19 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     }
   }, [editingTitle]);
   useEffect(() => setArchived(!!row.archived), [row.archived]);
+  // The error is shown once: gone after a few seconds or at the next click or key.
+  useEffect(() => {
+    if (!archiveError) return;
+    const clear = () => setArchiveError(undefined);
+    const t = setTimeout(clear, 5000);
+    document.addEventListener("pointerdown", clear, true);
+    document.addEventListener("keydown", clear, true);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("pointerdown", clear, true);
+      document.removeEventListener("keydown", clear, true);
+    };
+  }, [archiveError]);
 
   const finishTitle = (save: boolean) => {
     if (!editing.current) return;
@@ -85,7 +98,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     setArchiveBusy(true);
     setArchiveError(undefined);
     try {
-      await rpc(row.runnerId, "setSessionArchived", { sessionId: row.id, archived: !archived });
+      await saveArchived(row.runnerId, row.id, !archived);
       setArchived(!archived);
     } catch (e) {
       setArchiveError((e as Error).message);
@@ -97,7 +110,6 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   return (
     <div
       className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}
-      aria-current={selected ? "page" : undefined}
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest("input, .t-row-archive")) return;
         beginRename();
@@ -148,7 +160,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           {!child && <span className="t-proj">{folderName(row.projectPath)}</span>}
           {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
-          {archived && <span className="t-archived">Archived</span>}
+          {archived && <span className="t-archived">· Archived</span>}
           {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
