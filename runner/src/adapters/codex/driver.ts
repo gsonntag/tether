@@ -44,10 +44,10 @@ const NO_ROLLOUT = /no rollout found/i;
  * trust_level = "trusted" for it into ~/.codex/config.toml. The mode you chose is applied right
  * after, and confirmed, before anything runs (CodexDriver.started); that writes nothing.
  */
-function startSettings(opts: StartOpts) {
+export function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
-  if (opts.credential?.source === "azure" && opts.credential.deployment) out.model = opts.credential.deployment;
-  else if (opts.model && opts.model !== "default") out.model = opts.model;
+  if (opts.model && opts.model !== "default") out.model = opts.model;
+  else if (opts.credential?.source === "azure" && opts.credential.deployment) out.model = opts.credential.deployment;
   const m = knownMode(opts.permissionMode);
   if (m) {
     out.approvalPolicy = m.approvalPolicy;
@@ -250,7 +250,6 @@ export class CodexDriver implements Driver {
     const had = remembered(this.nativeId);
     const start = !opts.observe && had?.start && !(await hasTurnContext(r.thread)) ? had.start : undefined;
     const since = start && had?.applied;
-    if (!opts.observe && opts.credential?.source === "azure" && opts.credential.deployment) opts = { ...opts, model: opts.credential.deployment };
     // Rejoining a TUI only observes its settings; stored Tether choices must not change it.
     const want: StartOpts = opts.observe ? {} : { ...start, ...(since ? { ...(since.model ? { model: had?.modelAlias === "default" ? "default" : since.model } : {}), ...(since.effort ? { effort: since.effort } : {}), permissionMode: since.permissionMode } : {}), ...opts };
     const cur = { model: r.model as string | undefined, effort: (r.reasoningEffort ?? undefined) as string | undefined, approvalPolicy: r.approvalPolicy as string | undefined, sandbox: sandboxOf(r.sandbox), reviewer: r.approvalsReviewer as string | undefined, plan: planningOf(r.collaborationMode) };
@@ -829,7 +828,6 @@ export class CodexDriver implements Driver {
 
   /** turn/start's settings for what's shown (a mode Tether can't express isn't pinned: it shows as Unknown). */
   private async pins(shown: StartOpts): Promise<{ params: Record<string, unknown>; eff: Eff }> {
-    if (this.credential?.source === "azure" && this.credential.deployment) shown = { ...shown, model: this.credential.deployment };
     const params: Record<string, unknown> = {};
     const eff: Eff = {};
     const model = shown.model === "default" ? await this.defaultId() : shown.model;
@@ -936,7 +934,6 @@ export class CodexDriver implements Driver {
   }
 
   async setModel(model: string) {
-    if (this.credential?.source === "azure" && this.credential.deployment && model !== this.credential.deployment) throw new Error("An Azure session keeps its deployment. Use Move to run on another.");
     let id = model;
     if (model === "default") {
       id = (await this.defaultId()) ?? "";

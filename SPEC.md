@@ -731,7 +731,9 @@ Only the owner can run one (the same auth as sending).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
   permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
-  draws from, and on a plan its fuller window, "Claude plan · Week 63%"; tooltip the windows and
+  draws from, and on a plan its 5-hour window when known, "ChatGPT plan · 5h 10%"; its weekly window,
+  "Claude plan · Week 63%", when there's no 5-hour figure or the week is at 100% or reported exhausted
+  (a Claude `rate_limit_event` rejected on `seven_day`); tooltip the windows and
   their resets) and the **Terminal** button. Those two
   chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
@@ -784,11 +786,21 @@ before switching: under the plan's name, each window the harness reported, "Week
 `account/rateLimits/read`, at most once a minute; Claude has only its latest report. The chip itself
 keeps its rule: plan % only on a plan session.
 
-**When the plan runs out.** The menu has a checkbox, "Switch to API key when plan runs out"
-(`SessionPrefs.autoKey`, off by default, per session; it doesn't close the menu), shown on a plan
-session when a key is set for that harness. With two keys it names its target: the session's last-used
-key (`SessionPrefs.lastKey`, set by anything picked on the chip), else OpenAI. This is the only
-automatic source change there is, and it exists because you ticked it for that session.
+**When the plan runs out.** The menu has a checkbox (`SessionPrefs.autoKey`, off by default, per
+session; it doesn't close the menu), shown on a plan session when a key is set for that harness, or
+when it's already on, so it can be turned off. Its label names its target, "Switch to OpenAI API key
+when plan runs out"; with no allowed key set it reads "No allowed key". No description under it.
+Below it, only where the checkbox shows and only for a harness with more than one key (Codex: OpenAI
+and Azure; not Claude), "Fallback keys…" opens a dialog to rank and exclude the harness's keys for that
+session (`SessionPrefs.fallbackKeys`): the switch goes to the first key in that order that's set, never
+an excluded one. An empty list excludes all. With nothing saved, the target is the session's last-used
+key (`SessionPrefs.lastKey`), then the harness's other set keys, and the dialog opens on all the
+harness's keys in that order, all ticked, keys not set included, so Save without edits excludes
+nothing. Saving the order sends only `fallbackKeys` (`setAutoKey` with no `on`): it never flips the
+switch, and the switch never changes the order. The order and exclusions survive reopening, restarts,
+toggling and source carries. Unsetting a preferred key only falls through to another allowed key; no
+allowed key set means no switch and a notice. This is the only automatic source change, and exists
+because you ticked it for that session.
 
 When a turn on the plan ends on the harness's own exhausted signal (`Sink.limitReached`,
 `LiveControl.planOut`), the source changes as from the chip, one chat notice says so ("Plan limit
@@ -926,8 +938,38 @@ to its model, type, rates, the table's date, the endpoint or the key restarts an
 replaced key does; other deployments' changes don't. A source change onto Azure (the chip) takes the
 deployment matching the session's model, else the first. A session from before deployment lists takes
 its model if that's a deployment, else the first, and keeps it. A deployment removed later stops its
-session with a chat error naming it, and nothing is sent; no other deployment stands in. The header's
-model menu can't change it: Move does.
+session with a chat error naming it, and nothing is sent; no other deployment stands in.
+
+The header's Model menu lists the configured deployments and changes the session's deployment on the
+same thread. Idle, the saved deployment and the model change together (a rejected change rolls both
+back), and the next send restarts the idle private process on the same thread, priced for the new one.
+While a turn runs (or is starting, or one started elsewhere runs) nothing reaches the process: it is
+priced for the deployment it started on, and a change there would leave the turn's later requests
+unpriced. The pick is held instead (`SessionPrefs.nextDeployment`, kept across restarts) and shown as a
+"Next: <deployment>" chip beside the Model chip; the turn finishes on its deployment, and the next send
+makes it the session's deployment and model, which restarts the process priced for it. Picking the
+current deployment cancels it, as does a source change. A name that isn't a configured deployment is
+refused before anything is held or sent. Close a shared terminal before switching.
+
+**Other model or deployment…** is the last item of a Codex session's Model menu, on every source. It
+opens a small dialog with one field, "Name", for a model id the list doesn't have (a ChatGPT or OpenAI
+model) or, on Azure, a deployment name. The name is trimmed and must be at most 128 characters of
+letters, digits and `. _ - : / @ + [ ]`, starting with a letter or digit; no spaces or control
+characters (`modelIdProblem`, checked by the browser, which disables Apply and says why, and again by
+the runner). It then goes the way a menu pick does: a name the harness refuses, or the runner refuses,
+shows as an error in the chat and the model stays as it was; on Azure a name that isn't a configured
+deployment is refused before anything is sent, and mid-turn it is held as above. It changes the model
+only: the source, the billing labels and the plan % are unaffected.
+
+**The model while a source change waits.** On a harness that carries a source change to a new thread
+(Codex), the current thread starts on its confirmed source until the next message carries it over, so
+the Model menu lists that source's models (deployments only when the confirmed source is Azure), and the
+runner decides by the same source. While a change is pending (`nextBilling` with `sourceCarry`) the
+Model chip is disabled, "Pick the model after the source change.", and `setModel` refuses: a pick then
+would go to the source being left, a deployment name to the shared ChatGPT daemon or a model id to an
+Azure process. The carry itself drops an Azure deployment name leaving Azure and takes the deployment
+matching the model (else the first) arriving there; the model can be changed once it's done. On Claude a
+source change switches in place, so there is nothing to wait for.
 
 ### Session names
 

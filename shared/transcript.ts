@@ -3,7 +3,7 @@
 
 import type { Attachment } from "./attachments";
 import type { SessionCost } from "./costs";
-import type { BillingSource } from "./credentials";
+import type { BillingSource, CredentialSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
 
 export type HarnessId = "claude" | "codex";
@@ -269,6 +269,8 @@ export interface PlanWindow {
   resetsAt?: number;
   /** when the harness reported it (ms). Absent: not known */
   at?: number;
+  /** the harness said this window refused a request (it's out, whatever the %) */
+  exhausted?: boolean;
 }
 
 /** The account's plan limits as the harness last reported them, the same for all its sessions (SPEC §5). */
@@ -302,12 +304,16 @@ export interface LiveState {
   billing?: Billing;
   /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
   nextBilling?: Billing;
+  /** on Azure: a deployment picked while a turn ran, the model from the next send ("Next: <deployment>") */
+  nextDeployment?: string;
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
-  /** the key this session last used or had picked: where `autoKey` goes */
+  /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
+  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
+  fallbackKeys?: CredentialSource[];
   /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
   cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */

@@ -255,3 +255,91 @@ describe("the plan runs out", () => {
     expect((await t.core.open("claude:one")).state.plan?.week?.at).toBeGreaterThan(Date.now() - 5000);
   });
 });
+
+
+describe("allowed fallback keys", () => {
+  function multiKey() {
+    const t = setup();
+    t.adapter.billing = {
+      keys: ["openai", "azure"], loggedIn: async () => true,
+      label: (source) => source === "subscription" ? PLAN : source === "azure" ? { kind: "provider", label: "Azure" } : { kind: "apiKey", label: "OpenAI API key" },
+    };
+    t.credentials.set("openai", `fake-${crypto.randomUUID()}`);
+    t.credentials.set("azure", `fake-${crypto.randomUUID()}`, "https://fake.invalid", "default-deploy");
+    t.adapter.script = () => {
+      const source = t.adapter.drivers.at(-1)!.opts.credential?.source ?? "subscription";
+      return source === "subscription" ? [(s) => at(s), limit()] : [(s) => s.state({ billing: t.adapter.billing.label(source) }), reply];
+    };
+    return t;
+  }
+
+  test("Azure ranked first beats OpenAI and the last-used key; the policy persists", async () => {
+    const t = multiKey();
+    t.prefs.set("claude:one", { lastKey: "openai" });
+    await t.live.setAutoKey("claude:one", true, ["azure", "openai"]);
+    expect(new Prefs(t.file).get("claude:one").fallbackKeys).toEqual(["azure", "openai"]);
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => s.state.billing?.label === "Azure");
+    expect(sentOn(t)).toEqual([["subscription", ["fix it"]], ["azure", ["fix it"]]]);
+    expect(s.state.fallbackKeys).toEqual(["azure", "openai"]);
+    expect(t.live.keptPrefs(s).fallbackKeys).toEqual(["azure", "openai"]);
+    const reopened = new SessionCore({ adapters: [t.adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs(t.file), epoch: "reload", log: () => {} });
+    cleanups.push(() => reopened.stop());
+    const state = (await reopened.open("claude:one")).state;
+    expect(state.fallbackKeys).toEqual(["azure", "openai"]);
+  });
+
+  test("an unset preferred key falls through only to the next allowed key", async () => {
+    const t = multiKey();
+    await t.live.setAutoKey("claude:one", true, ["azure", "openai"]);
+    t.credentials.unset("azure");
+    await t.live.send("claude:one", "fix it");
+    await settled(t, (s) => s.state.billing?.label === "OpenAI API key");
+    expect(sentOn(t)).toEqual([["subscription", ["fix it"]], ["openai", ["fix it"]]]);
+  });
+
+  test("excluded keys stay excluded when the only allowed key is unset", async () => {
+    const t = multiKey();
+    await t.live.setAutoKey("claude:one", true, ["azure"]);
+    t.credentials.unset("azure");
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => notices(s).length > 0);
+    expect(t.sends()).toBe(1);
+    expect(t.prefs.get(s.id).source).toBe("subscription");
+    expect(notices(s)).toEqual(["Plan limit reached. No allowed fallback key is available, so nothing switched."]);
+  });
+
+  test("all keys can be excluded, even the last-used key", async () => {
+    const t = multiKey();
+    t.prefs.set("claude:one", { lastKey: "openai" });
+    await t.live.setAutoKey("claude:one", true, []);
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => notices(s).length > 0);
+    expect(t.sends()).toBe(1);
+    expect(s.state.fallbackKeys).toEqual([]);
+    expect(t.live.keptPrefs(s).fallbackKeys).toEqual([]);
+  });
+
+  test("toggling preserves the policy and rejects unsupported or duplicate keys", async () => {
+    const t = setup({ ticked: false });
+    await t.live.setAutoKey("claude:one", true, ["anthropic"]);
+    await t.live.setAutoKey("claude:one", false);
+    expect(t.prefs.get("claude:one").fallbackKeys).toEqual(["anthropic"]);
+    await expect(t.live.setAutoKey("claude:one", true, ["openai"])).rejects.toThrow("supported fallback key");
+    await expect(t.live.setAutoKey("claude:one", true, ["anthropic", "anthropic"])).rejects.toThrow("at most once");
+    await expect(t.live.setAutoKey("claude:one", true, null as any)).rejects.toThrow("supported fallback key");
+  });
+
+  test("saving the order alone never flips the switch, either way", async () => {
+    const t = setup({ ticked: false });
+    await t.live.setAutoKey("claude:one", true);
+    await t.live.setAutoKey("claude:one", undefined, []);
+    expect(t.prefs.get("claude:one")).toMatchObject({ autoKey: true, fallbackKeys: [] });
+    expect((await t.core.open("claude:one")).state.autoKey).toBe(true);
+    await t.live.setAutoKey("claude:one", false);
+    await t.live.setAutoKey("claude:one", undefined, ["anthropic"]);
+    expect(t.prefs.get("claude:one").autoKey).toBeUndefined();
+    expect(t.prefs.get("claude:one").fallbackKeys).toEqual(["anthropic"]);
+    await expect(t.live.setAutoKey("claude:one", undefined)).rejects.toThrow("Nothing to change");
+  });
+});

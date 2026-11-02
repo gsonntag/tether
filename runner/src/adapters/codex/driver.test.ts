@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { FROM_TETHER } from "../../../../shared/fromTether";
 import { RESOLVED_ELSEWHERE, SendCancelled } from "../../core/adapter";
 import { setConnector } from "./daemon";
-import { CodexDriver, createThread } from "./driver";
+import { CodexDriver, createThread, startSettings } from "./driver";
 import { codexAdapter } from "./index";
 import { UNKNOWN_MODE } from "./modes";
 import { CodexRpc } from "./rpc";
@@ -1026,4 +1026,27 @@ describe("plan mode (Codex's collaboration mode)", () => {
     // The plan shows in the transcript as the turn's text.
     expect(sink.t.messages.at(-1)!.parts).toEqual([{ type: "text", text: "Here it is." }, { type: "text", text: "# Plan\n\n1. Do it" }]);
   });
+});
+
+test("an Azure deployment is a startup default; model changes stay on the same thread", async () => {
+  useDaemon();
+  const credential = { source: "azure" as const, revision: "azure-test", deployment: "default-deploy" };
+  expect(startSettings({ credential }).model).toBe("default-deploy");
+  expect(startSettings({ credential, model: "chosen-deploy" }).model).toBe("chosen-deploy");
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  // Isolate model handling from private-process authentication, which has its own source tests.
+  (d as any).noteBilling = async () => {};
+  await (d as any).started(daemon.answers["thread/resume"]!({}), { credential, model: "chosen-deploy" });
+  expect(sink.lastWith("model")).toMatchObject({ model: "chosen-deploy" });
+  await d.setModel("another-deploy");
+  await d.send("first", [], { model: "another-deploy" });
+  daemon.say({ method: "turn/completed", params: { threadId: MAIN, turn: { id: "t9", status: "completed", items: [] } } });
+  await d.setModel("third-deploy");
+  await d.send("second", [], { model: "third-deploy" });
+  expect(daemon.calls("turn/start").map((p) => [p.threadId, p.model])).toEqual([[MAIN, "another-deploy"], [MAIN, "third-deploy"]]);
+  expect(daemon.calls("thread/start")).toEqual([]);
+  remember(MAIN, { source: { id: "azure-test", source: "azure", projectPath: CWD } });
+  const launch = codexAdapter.terminalCommand!(MAIN, CWD, { credential, model: "third-deploy" });
+  expect(launch.argv[launch.argv.indexOf("-m") + 1]).toBe("third-deploy");
 });

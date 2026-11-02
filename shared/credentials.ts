@@ -28,10 +28,16 @@ export interface SourceOption {
   /** a runner from before deployment lists: its one deployment */
   deployment?: string;
 }
-/** Where a plan session goes when its plan runs out: the session's last-used key, else the harness's first set. */
-export function keyTarget(options: SourceOption[], lastKey?: BillingSource): SourceOption | undefined {
+/** Available fallback keys, in the user's order. An explicit list excludes every omitted key. */
+export function keyTargets(options: SourceOption[], lastKey?: BillingSource, order?: CredentialSource[]): SourceOption[] {
   const keys = options.filter((o) => o.source !== "subscription");
-  return keys.find((o) => o.source === lastKey) ?? keys[0];
+  if (order !== undefined) return [...new Set(order)].flatMap((source) => keys.filter((o) => o.source === source));
+  const last = keys.find((o) => o.source === lastKey);
+  return last ? [last, ...keys.filter((o) => o !== last)] : keys;
+}
+/** The first available, allowed key. Unset or excluded keys never become a fallback. */
+export function keyTarget(options: SourceOption[], lastKey?: BillingSource, order?: CredentialSource[]): SourceOption | undefined {
+  return keyTargets(options, lastKey, order)[0];
 }
 export interface SourceChoices {
   options: SourceOption[];

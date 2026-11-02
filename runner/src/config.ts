@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { BillingSource } from "../../shared/credentials";
+import type { BillingSource, CredentialSource } from "../../shared/credentials";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
 
@@ -46,6 +46,8 @@ export interface SessionPrefs {
   source?: BillingSource;
   /** on Azure: the deployment it runs on, kept across restarts. Removed from Settings, the session stops */
   deployment?: string;
+  /** on Azure: a deployment picked while a turn ran, applied at the next send (its process restarts priced for it) */
+  nextDeployment?: string;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
   /** a start for nextBilling failed; shown until a retry succeeds or the source is cancelled */
@@ -56,6 +58,8 @@ export interface SessionPrefs {
   autoKey?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
+  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
+  fallbackKeys?: CredentialSource[];
   /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
   metered?: boolean;
   /** a thread being made for a source change: nobody's until its first message has an answer */

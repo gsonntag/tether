@@ -15,11 +15,11 @@ import type { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
-import { reportedAt } from "../../../shared/labels";
+import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { PLAN_MODE } from "../../../shared/plan";
-import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
+import { MODEL_AFTER_SOURCE, sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
@@ -204,7 +204,8 @@ export class LiveControl {
     const next = this.core.o.prefs.get(id).nextSource;
     if (next && s.state.status === "idle" && !s.sending) return this.carry(s, next, text, attachments, o);
     // Only background work runs: the main agent is free, and a steer starts its next turn.
-    if (!s.sending && s.driver?.steer && s.driver.onlyBackground?.()) {
+    // (Not with a deployment waiting: that goes with the next process start.)
+    if (!s.sending && s.driver?.steer && s.driver.onlyBackground?.() && !this.core.o.prefs.get(id).nextDeployment) {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
       s.limitHit = s.lastSend = undefined;
       return s.driver.steer(withAttachments(text, attachments), attachments);
@@ -222,6 +223,7 @@ export class LiveControl {
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
     this.status(s, "running");
     try {
+      this.applyNextDeployment(s);
       await this.core.load(s);
       const d = await this.ensureDriver(s);
       // A credential change racing process startup is never allowed to send on the old source.
@@ -589,11 +591,29 @@ export class LiveControl {
     await s.driver?.interrupt();
   }
 
+  /**
+   * A model from the menu or typed (SPEC §10 "Other model or deployment…"). Refused: the chat says
+   * why and the model stays as it was. While a source change waits for the next message, the model
+   * can't change: it would go to the source being left (a deployment name to the ChatGPT daemon, or a
+   * model id to an Azure process). Pick it once the session is on the new source.
+   */
   async setModel(id: string, model: string) {
     const parsed = parseSessionId(id);
     // From a page that still lists it.
     if (model === "default" && parsed) model = this.core.adapter(parsed.harness).unset?.model ?? model;
-    await this.setting(id, { model }, (d) => d.setModel(model));
+    try {
+      const problem = modelIdProblem(model);
+      if (problem) throw new Error(`That model name won't do. ${problem}`);
+      if (this.core.o.prefs.get(id).nextSource) throw new Error(MODEL_AFTER_SOURCE);
+      await this.setting(id, { model }, (d) => d.setModel(model));
+    } catch (e) {
+      const s = await this.core.open(id).catch(() => undefined);
+      if (s && !s.summary.parentSessionId) {
+        await this.core.load(s).catch(() => {});
+        s.apply({ type: "msg", msg: notice(redact((e as Error)?.message ?? String(e)), "error") });
+      }
+      throw e;
+    }
   }
 
   async setEffort(id: string, effort: string) {
@@ -849,8 +869,18 @@ export class LiveControl {
   private async applySetting(s: Session, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const id = s.id;
     const before = this.core.o.prefs.get(id);
+    const azureModel = patch.model !== undefined && this.sourceOf(s) === "azure";
+    if (azureModel) {
+      const deployment = this.opts.credentials?.azure().deployments.find((d) => d.name === patch.model);
+      if (!deployment) throw new Error(`${patch.model} isn't a deployment in Settings, Azure. The model is unchanged.`);
+      if (s.state.terminal || s.state.mode === "terminal") throw new Error("Close the terminal before changing the Azure deployment.");
+      // Its process is priced for the deployment it started on: a turn running there keeps it, and
+      // the new one waits for the next send, which restarts the process priced for that one.
+      if (this.turnBusy(s)) return this.holdDeployment(s, patch.model!);
+      this.holdDeployment(s, undefined);
+    }
     const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
-    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
+    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(azureModel ? { deployment: patch.model } : {}) });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
     if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
@@ -873,12 +903,42 @@ export class LiveControl {
       // were, so nothing runs with settings other than those shown. A late confirmation still
       // counts (the sink says so).
       const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
-      this.core.o.prefs.set(id, undo);
+      this.core.o.prefs.set(id, { ...undo, ...(azureModel ? { deployment: before.deployment } : {}) });
       s.rolledBack = patch;
       this.rollBackTurnSettings(s, shown);
       s.setState(shown);
       throw new Error(`${HARNESS_LABELS[s.summary.harness]} didn't take that setting (${e?.message ?? e}). It's unchanged.`);
     }
+  }
+
+  /** A turn runs, or is being started: its process and settings are in use. */
+  private turnBusy(s: Session): boolean {
+    return !!(s.sending || s.starting || s.carrying || s.state.status !== "idle" || s.driver?.turnRunning?.());
+  }
+
+  /**
+   * An Azure deployment picked while a turn ran, kept (across restarts too) until the next send
+   * applies it. The one it runs on now, or undefined, cancels it.
+   */
+  private holdDeployment(s: Session, deployment: string | undefined) {
+    const next = deployment && deployment !== this.deploymentOf(s) ? deployment : undefined;
+    if (next === this.core.o.prefs.get(s.id).nextDeployment) return;
+    this.core.o.prefs.set(s.id, { nextDeployment: next });
+    this.core.o.prefs.flush();
+    s.setState({ nextDeployment: next });
+  }
+
+  /**
+   * At a send, before the process is checked: a held deployment becomes the session's deployment and
+   * model. Its credential revision differs, so ensureDriver restarts the idle process priced for it.
+   */
+  private applyNextDeployment(s: Session) {
+    const next = this.core.o.prefs.get(s.id).nextDeployment;
+    if (!next) return;
+    const go = this.sourceOf(s) === "azure" ? { deployment: next, model: next } : {};
+    this.core.o.prefs.set(s.id, { ...go, nextDeployment: undefined });
+    this.core.o.prefs.flush();
+    s.setState({ ...(go.model ? { model: go.model } : {}), nextDeployment: undefined });
   }
 
   /**
@@ -1036,7 +1096,7 @@ export class LiveControl {
 
   /**
    * An Azure session's deployment: what's saved with it, else (a session from before deployment
-   * lists) its model if that's a deployment, else the first, which is then saved. Kept from then on:
+   * lists) its model if that's a deployment, else the first, which is then saved. Model changes update it:
    * one that's removed later stops the session, saying so, and nothing stands in for it.
    */
   deploymentOf(s: Session): string | undefined {
@@ -1166,6 +1226,11 @@ export class LiveControl {
       }
       return;
     }
+    // A deployment held for the next send belongs to the source being left.
+    if (this.core.o.prefs.get(id).nextDeployment) {
+      this.core.o.prefs.set(id, { nextDeployment: undefined });
+      s.setState({ nextDeployment: undefined });
+    }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
       this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, sourceSwitchFailed: undefined });
@@ -1214,19 +1279,28 @@ export class LiveControl {
     return cost;
   }
 
-  /** The box in the billing chip's menu, saved with the session. Nothing checks keys here: the menu shows it, the switch looks. */
-  async setAutoKey(id: string, on: boolean) {
+  /**
+   * The fallback switch (`on`) and the allowed key order (`fallbackKeys`), saved with this session.
+   * Either may come alone: saving the order never touches the switch, nor the switch the order.
+   */
+  async setAutoKey(id: string, on: boolean | undefined, fallbackKeys?: CredentialSource[]) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
-    this.core.o.prefs.set(id, { autoKey: on || undefined });
+    if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
+    if (on === undefined && fallbackKeys === undefined) throw new Error("Nothing to change.");
+    const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
+    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) || fallbackKeys.some((key) => !supported.includes(key)) || new Set(fallbackKeys).size !== fallbackKeys.length))
+      throw new Error("Choose each supported fallback key at most once.");
+    const patch = { ...(on !== undefined ? { autoKey: on || undefined } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
+    this.core.o.prefs.set(id, patch);
     this.core.o.prefs.flush();
-    s.setState({ autoKey: on || undefined });
+    s.setState(patch);
   }
 
   /** What a session's successor on another id keeps. */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey } = this.core.o.prefs.get(s.id);
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}) };
+    const { autoKey, lastKey, fallbackKeys } = this.core.o.prefs.get(s.id);
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
   }
 
   /**
@@ -1246,8 +1320,8 @@ export class LiveControl {
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       const resetsAt = await this.planReset(harness, s, hit);
       const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey);
-      if (!target) return void say("Plan limit reached. No API key is set, so nothing switched.", "warning");
+      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
+      if (!target) return void say(prefs.fallbackKeys !== undefined ? "Plan limit reached. No allowed fallback key is available, so nothing switched." : "Plan limit reached. No API key is set, so nothing switched.", "warning");
       try {
         await this.setSource(s.id, target.source);
       } catch (e) {
