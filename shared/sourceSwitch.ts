@@ -32,3 +32,6 @@ export function billingForDisplay(state: LiveState): Billing | undefined {
 export function visibleNextBilling(state: LiveState): Billing | undefined {
   return sourceSwitchBlocker(state) || state.sourceSwitchFailed ? state.nextBilling : undefined;
 }
+
+/** Why the model can't change while a source change waits for the next message (SPEC §10). */
+export const MODEL_AFTER_SOURCE = "Pick the model after the source change.";

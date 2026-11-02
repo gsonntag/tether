@@ -187,6 +187,8 @@ test("plan limits: what the event says, windows it doesn't name left out", () =>
   expect(planOf({ status: "allowed", rateLimitType: "five_hour", utilization: 0.5 })).toEqual({ fiveHour: { percent: 50 } });
   // A status with no number is no number.
   expect(planOf({ status: "allowed", resetsAt: 1, rateLimitType: "five_hour" })).toBeUndefined();
+  expect(planOf({ status: "rejected", resetsAt: 7, rateLimitType: "seven_day" })).toEqual({ week: { percent: 100, resetsAt: 7000, exhausted: true } });
+  expect(planOf({ status: "rejected", rateLimitType: "seven_day", utilization: 0.97 })).toEqual({ week: { percent: 97, exhausted: true } });
 });
 
 test("a rate_limit_event reports to the sink and is kept for stored sessions, merged", () => {

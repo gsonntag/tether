@@ -80,12 +80,16 @@ export function noteWindows(modelUsage: unknown, sessionId: string, model: strin
 /**
  * A rate_limit_event's plan limits. Each may name one window (rateLimitType) and, on newer CLIs, all
  * it knows (unifiedWindows): utilization 0 to 1, resets in seconds. Windows it doesn't name are
- * left out: most reports here have only the week. Undefined: no number in it.
+ * left out: most reports here have only the week. A rejected one marks its window exhausted.
+ * Undefined: no number in it.
  */
 export function planOf(info: any): PlanUsage | undefined {
   const window = (w: any): PlanWindow | undefined =>
     typeof w?.utilization === "number" ? { percent: Math.round(w.utilization * 100), ...(typeof w.resetsAt === "number" ? { resetsAt: w.resetsAt * 1000 } : {}) } : undefined;
-  const pick = (type: string) => window(info?.unifiedWindows?.[type]) ?? (info?.rateLimitType === type ? window(info) : undefined);
+  // A rejection names the window that's out: exhausted, at 100% if it gave no figure.
+  const out = (type: string, w: PlanWindow | undefined): PlanWindow | undefined =>
+    info?.status !== "rejected" || info?.rateLimitType !== type ? w : { percent: 100, ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt * 1000 } : {}), ...w, exhausted: true };
+  const pick = (type: string) => out(type, window(info?.unifiedWindows?.[type]) ?? (info?.rateLimitType === type ? window(info) : undefined));
   const [fiveHour, week] = [pick("five_hour"), pick("seven_day")];
   return fiveHour || week ? { ...(fiveHour ? { fiveHour } : {}), ...(week ? { week } : {}) } : undefined;
 }

@@ -269,6 +269,8 @@ export interface PlanWindow {
   resetsAt?: number;
   /** when the harness reported it (ms). Absent: not known */
   at?: number;
+  /** the harness said this window refused a request (it's out, whatever the %) */
+  exhausted?: boolean;
 }
 
 /** The account's plan limits as the harness last reported them, the same for all its sessions (SPEC §5). */
@@ -302,6 +304,8 @@ export interface LiveState {
   billing?: Billing;
   /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
   nextBilling?: Billing;
+  /** on Azure: a deployment picked while a turn ran, the model from the next send ("Next: <deployment>") */
+  nextDeployment?: string;
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */

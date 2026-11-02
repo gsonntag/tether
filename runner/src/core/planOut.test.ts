@@ -329,4 +329,17 @@ describe("allowed fallback keys", () => {
     await expect(t.live.setAutoKey("claude:one", true, ["anthropic", "anthropic"])).rejects.toThrow("at most once");
     await expect(t.live.setAutoKey("claude:one", true, null as any)).rejects.toThrow("supported fallback key");
   });
+
+  test("saving the order alone never flips the switch, either way", async () => {
+    const t = setup({ ticked: false });
+    await t.live.setAutoKey("claude:one", true);
+    await t.live.setAutoKey("claude:one", undefined, []);
+    expect(t.prefs.get("claude:one")).toMatchObject({ autoKey: true, fallbackKeys: [] });
+    expect((await t.core.open("claude:one")).state.autoKey).toBe(true);
+    await t.live.setAutoKey("claude:one", false);
+    await t.live.setAutoKey("claude:one", undefined, ["anthropic"]);
+    expect(t.prefs.get("claude:one").autoKey).toBeUndefined();
+    expect(t.prefs.get("claude:one").fallbackKeys).toEqual(["anthropic"]);
+    await expect(t.live.setAutoKey("claude:one", undefined)).rejects.toThrow("Nothing to change");
+  });
 });

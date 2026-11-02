@@ -33,7 +33,8 @@ const send = async (p, text) => {
   await p.locator('button[aria-label="Send"]').click();
 };
 const until = async (p, text, ms = 15000) => p.getByText(text).first().waitFor({ timeout: ms });
-const lines = (p) => p.locator(".t-plan-line").allTextContents();
+// The plan's windows only (the API cost group's lines, "Cost unknown", share the class).
+const lines = async (p) => (await p.locator(".t-plan-line").allTextContents()).filter((l) => /^(Week|5 hours) /.test(l));
 
 const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
@@ -99,7 +100,9 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await until(p, "Tools had already run in that turn");
   await p.waitForTimeout(800);
   want(await p.locator(".t-msg.user", { hasText: "tools limit" }).count() === 1, "tools ran: not resent");
-  await p.locator(".t-next-source").waitFor();
+  // Idle, the header shows the source the next turn uses (a Next chip only while work runs).
+  await p.locator(".t-paid-badge").first().waitFor();
+  want(await p.locator(".t-next-source").count() === 0, "idle: the key is the badge, no Next chip");
   await shot(p, "desktop-tools-ran");
   await p.close();
 }
@@ -133,7 +136,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await p.getByRole("menuitemradio", { name: /Azure/ }).tap();
   await p.waitForTimeout(600);
   await close(p).catch(() => {});
-  await p.locator(".t-next-source").waitFor();
+  await p.locator(".t-paid-badge", { hasText: "Azure" }).first().waitFor();
   await p.waitForTimeout(300);
   await chip(p).tap();
   await p.waitForTimeout(500);

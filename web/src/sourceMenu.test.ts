@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import type { SourceChoices } from "../../shared/credentials";
 import { isApiBilling } from "../../shared/labels";
 import type { LiveState } from "../../shared/transcript";
-import { billingForDisplay, CURRENT_SOURCE, sourceMenu, switchBlocked, visibleNextBilling } from "./sourceMenu";
+import { autoKeyItem, billingForDisplay, CURRENT_SOURCE, sourceMenu, switchBlocked, visibleNextBilling } from "./sourceMenu";
+import { defaultFallbackOrder } from "./components/FallbackKeysDialog";
 
 const state = (o: Partial<LiveState> = {}): LiveState => ({ mode: "live", status: "idle", requests: [], queue: [], ...o });
 const plan = { kind: "plan", label: "Claude plan" } as const;
@@ -118,4 +119,29 @@ test("refused with a reason on the others, whatever the harness", () => {
     expect(m.items[0]!.reason).toBeUndefined();
     expect(m.items[1]!.reason).toBe(why);
   }
+});
+
+test("the switch when the plan runs out: named for its target, on a plan with a key; Fallback keys only with two keys", () => {
+  const gpt = { kind: "plan", label: "ChatGPT plan" } as const;
+  const openai = { kind: "apiKey", label: "OpenAI API key" } as const;
+  const azure = { kind: "provider", label: "Azure" } as const;
+  const codex: SourceChoices = { options: [{ source: "subscription", billing: gpt }, { source: "openai", billing: openai }, { source: "azure", billing: azure }] };
+  expect(autoKeyItem("codex", state({ billing: gpt }), codex)).toEqual({ label: "Switch to OpenAI API key when plan runs out", order: true });
+  expect(autoKeyItem("codex", state({ billing: gpt, lastKey: "azure" }), codex)?.label).toBe("Switch to Azure when plan runs out");
+  expect(autoKeyItem("codex", state({ billing: gpt, lastKey: "azure", fallbackKeys: ["openai"] }), codex)?.label).toBe("Switch to OpenAI API key when plan runs out");
+  expect(autoKeyItem("codex", state({ billing: gpt, fallbackKeys: [] }), codex)?.label).toBe("No allowed key");
+  // Claude has one key: no ranking.
+  expect(autoKeyItem("claude", state({ billing: plan }), both)).toEqual({ label: "Switch to Anthropic API key when plan runs out", order: false });
+  // Not on a key session, nor on a plan with no key, unless it's on (so it can be turned off).
+  expect(autoKeyItem("codex", state({ billing: openai }), codex)).toBeUndefined();
+  const planOnly: SourceChoices = { options: [{ source: "subscription", billing: gpt }] };
+  expect(autoKeyItem("codex", state({ billing: gpt }), planOnly)).toBeUndefined();
+  expect(autoKeyItem("codex", state({ billing: gpt, autoKey: true }), planOnly)).toEqual({ label: "No allowed key", order: true });
+});
+
+test("Fallback keys starts from every key of the harness, its last-used first, all allowed", () => {
+  expect(defaultFallbackOrder("codex")).toEqual(["openai", "azure"]);
+  expect(defaultFallbackOrder("codex", "azure")).toEqual(["azure", "openai"]);
+  expect(defaultFallbackOrder("codex", "subscription")).toEqual(["openai", "azure"]);
+  expect(defaultFallbackOrder("claude", "anthropic")).toEqual(["anthropic"]);
 });

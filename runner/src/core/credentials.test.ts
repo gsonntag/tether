@@ -467,7 +467,8 @@ describe("Azure model changes on the same session", () => {
 
   test("an unknown deployment or open terminal leaves the saved selection unchanged", async () => {
     const t = await azureSession();
-    await expect(t.live.setModel(t.sessionId, "missing")).rejects.toThrow("configured in Settings");
+    await expect(t.live.setModel(t.sessionId, "missing")).rejects.toThrow("isn't a deployment in Settings, Azure");
+    expect(t.s.state.model).toBe("one");
     expect(t.prefs.get(t.sessionId).deployment).toBe("one");
     t.s.setState({ terminal: { kind: "shared" } as any });
     await expect(t.live.setModel(t.sessionId, "two")).rejects.toThrow("Close the terminal");
@@ -481,5 +482,136 @@ describe("Azure model changes on the same session", () => {
     await t.live.send(t.sessionId, "next start");
     expect(t.adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("two");
     expect(t.live.deploymentOf(t.s)).toBe("two");
+  });
+
+  /** A turn that keeps running until `end()`. */
+  async function midTurn() {
+    const t = await azureSession();
+    t.adapter.script = () => [];
+    await t.live.send(t.sessionId, "long turn");
+    const running = t.adapter.drivers.at(-1)!;
+    expect(t.s.state.status).toBe("running");
+    const setUpdates = () => Object.keys(running.settings).length;
+    return { ...t, running, setUpdates, end: () => running.sink.state({ status: "idle" }) };
+  }
+
+  test("picked mid-turn: held as Next, the driver and the running turn's deployment untouched", async () => {
+    const t = await midTurn();
+    t.running.settings = {};
+    await t.live.setModel(t.sessionId, "two");
+    expect(t.setUpdates()).toBe(0);
+    expect(t.running.closed).toBe(false);
+    expect(t.s.state.model).toBe("one");
+    expect(t.s.state.nextDeployment).toBe("two");
+    expect(t.prefs.get(t.sessionId)).toMatchObject({ deployment: "one", nextDeployment: "two" });
+    expect(t.prefs.get(t.sessionId).model).not.toBe("two");
+    expect(t.live.chosen(t.s).credential?.deployment).toBe("one");
+    // A turn another client started counts as running too.
+    t.end();
+    t.running.runningElsewhere = true;
+    await t.live.setModel(t.sessionId, "two");
+    expect(t.setUpdates()).toBe(0);
+    expect(t.s.state.nextDeployment).toBe("two");
+  });
+
+  test("a held deployment is applied at the next send: the process restarts priced for it, on the same thread", async () => {
+    const t = await midTurn();
+    await t.live.setModel(t.sessionId, "two");
+    t.end();
+    t.adapter.script = () => [(sink) => sink.state({ status: "idle" })];
+    await t.live.send(t.sessionId, "next turn");
+    const next = t.adapter.drivers.at(-1)!;
+    expect(t.running.closed).toBe(true);
+    expect(next).not.toBe(t.running);
+    expect(next.nativeId).toBe(t.running.nativeId);
+    expect(next.opts.credential).toMatchObject({ source: "azure", deployment: "two", rates: { input: 2, output: 8, cached: 0.5 } });
+    expect(next.opts.model).toBe("two");
+    expect(t.s.state).toMatchObject({ model: "two" });
+    expect(t.s.state.nextDeployment).toBeUndefined();
+    expect(t.prefs.get(t.sessionId)).toMatchObject({ deployment: "two" });
+    expect(t.prefs.get(t.sessionId).nextDeployment).toBeUndefined();
+  });
+
+  test("picking the current deployment again cancels a held one", async () => {
+    const t = await midTurn();
+    await t.live.setModel(t.sessionId, "two");
+    expect(t.s.state.nextDeployment).toBe("two");
+    await t.live.setModel(t.sessionId, "one");
+    expect(t.s.state.nextDeployment).toBeUndefined();
+    expect(t.prefs.get(t.sessionId).nextDeployment).toBeUndefined();
+    t.end();
+    t.adapter.script = () => [(sink) => sink.state({ status: "idle" })];
+    await t.live.send(t.sessionId, "next turn");
+    expect(t.adapter.drivers.at(-1)).toBe(t.running);
+    expect(t.live.deploymentOf(t.s)).toBe("one");
+  });
+
+  test("a held deployment survives a runner restart and is applied at the first send after it", async () => {
+    const t = await midTurn();
+    await t.live.setModel(t.sessionId, "two");
+    // The harness's store has it by now.
+    t.adapter.addStored(t.s.summary.nativeId, [], { projectPath: t.dir });
+    const reopened = new SessionCore({ adapters: [t.adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs(t.file, 0), epoch: "restart", log: () => {} });
+    cleanups.push(() => reopened.stop());
+    const live = new LiveControl(reopened, new RequestBroker(), { credentials: t.credentials, idleMs: 60_000 });
+    const s = await reopened.open(t.sessionId);
+    expect(s.state.nextDeployment).toBe("two");
+    expect(s.state.model).toBe("one");
+    t.adapter.script = () => [(sink) => sink.state({ status: "idle" })];
+    await live.send(t.sessionId, "after restart");
+    expect(t.adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("two");
+    expect(s.state.nextDeployment).toBeUndefined();
+  });
+
+  test("a typed name that isn't a deployment is refused mid-turn too, before anything is held or sent", async () => {
+    const t = await midTurn();
+    await expect(t.live.setModel(t.sessionId, "gpt-6-luna")).rejects.toThrow("isn't a deployment");
+    expect(t.s.state.nextDeployment).toBeUndefined();
+    expect(t.s.state.model).toBe("one");
+  });
+});
+
+describe("the model while a source change waits, and typed model names", () => {
+  test("a pending source change blocks model changes: nothing reaches the process being left", async () => {
+    const t = setup();
+    t.adapter.capabilities = { ...t.adapter.capabilities, sourceSwitch: true, sourceCarry: true };
+    t.adapter.billing = { ...t.adapter.billing, keys: ["azure"] };
+    t.credentials.set("azure", `fake-${crypto.randomUUID()}`);
+    t.credentials.setAzure({ endpoint: "test-resource", deployments: [{ name: "one" }] });
+    t.live.carrier = async () => { throw new Error("not in this test"); };
+    await t.live.send("claude:one", "on the plan");
+    const d = t.adapter.drivers.at(-1)!;
+    const s = await t.core.open("claude:one");
+    await t.live.setSource("claude:one", "azure");
+    expect(t.prefs.get("claude:one").nextSource).toBe("azure");
+    d.settings = {};
+    await expect(t.live.setModel("claude:one", "one")).rejects.toThrow("after the source change");
+    expect(d.settings).toEqual({});
+    expect(s.state.model).not.toBe("one");
+    expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
+    // Back on its own source: the model changes again.
+    await t.live.setSource("claude:one", "subscription");
+    await t.live.setModel("claude:one", "haiku");
+    expect(d.settings.model).toBe("haiku");
+  });
+
+  test("a typed model name is checked: refused with a chat error, the model kept", async () => {
+    const t = setup();
+    await t.live.send("claude:one", "hi");
+    const s = await t.core.open("claude:one");
+    const d = t.adapter.drivers.at(-1)!;
+    const before = s.state.model;
+    d.settings = {};
+    for (const bad of [" haiku", "a b", "x\u0007y", "-x", "x".repeat(200)]) await expect(t.live.setModel("claude:one", bad)).rejects.toThrow("won't do");
+    expect(d.settings).toEqual({});
+    expect(s.state.model).toBe(before);
+    expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
+    // One the harness refuses: the chat says so and the model is as it was.
+    d.onSetting = async () => { throw new Error("unknown model"); };
+    await expect(t.live.setModel("claude:one", "made-up-model-9")).rejects.toThrow("unknown model");
+    expect(s.state.model).toBe(before);
+    const last = s.transcript!.messages.at(-1)!;
+    expect(last).toMatchObject({ role: "notice", level: "error" });
+    expect(JSON.stringify(last.parts)).toContain("unknown model");
   });
 });

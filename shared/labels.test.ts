@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planLines, reportedAt, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
 import { keyTarget, keyTargets } from "./credentials";
 
 test("model ids read as people say them", () => {
@@ -36,7 +36,7 @@ test("the context chip and its tooltip", () => {
   expect(contextDetail({ used: 800, total: 258_400 })).toBe("800 of 258k context");
 });
 
-test("the plan chip: 5-hour preferred, both in the tooltip, a window past its reset gone", () => {
+test("the plan chip: 5-hour preferred, Week once it's out, both in the tooltip, a window past its reset gone", () => {
   const at = Date.UTC(2026, 10, 1);
   const fiveHour = { percent: 5, resetsAt: at + 3_600_000 };
   const week = { percent: 63, resetsAt: at + 86_400_000 };
@@ -50,6 +50,10 @@ test("the plan chip: 5-hour preferred, both in the tooltip, a window past its re
   expect(planChip({})).toBeUndefined();
   expect(planChip({ fiveHour: { percent: 0 }, week }, at)?.text).toBe("5h 0%");
   expect(planChip({ fiveHour: { ...fiveHour, resetsAt: at - 1 }, week }, at)?.text).toBe("Week 63%");
+  // The week shows instead once it's the one that's out.
+  expect(planChip({ fiveHour, week: { ...week, percent: 100 } }, at)?.text).toBe("Week 100%");
+  expect(planChip({ fiveHour, week: { ...week, percent: 97, exhausted: true } }, at)?.text).toBe("Week 97%");
+  expect(planChip({ fiveHour: { ...fiveHour, percent: 100 }, week: { ...week, percent: 99 } }, at)?.text).toBe("5h 100%");
 });
 
 test("the usage chip says what the session draws from; limits only on a plan", () => {
@@ -115,4 +119,10 @@ test("the key a plan session goes to: its last used, else the first set", () => 
   expect(keyTarget([plan, openai, azure], "azure", [])).toBeUndefined();
   expect(keyTarget([plan, openai], undefined, ["azure", "openai"])).toBe(openai);
 
+});
+
+test("a typed model or deployment name: trimmed, short, a model id's characters, no control characters", () => {
+  for (const ok of ["gpt-6-luna", "my-deploy_2", "claude-opus-5-5[1m]", "org/model:v1", "a"]) expect(modelIdProblem(ok)).toBeUndefined();
+  for (const bad of ["", " gpt", "gpt ", "gpt 6", "gpt\u0000x", "gpt\nx", "-flag", "x;rm", "a\u202eb", "é", "x".repeat(MODEL_ID_MAX + 1), undefined, 7]) expect(modelIdProblem(bad)).toBeString();
+  expect(modelIdProblem("x".repeat(MODEL_ID_MAX))).toBeUndefined();
 });

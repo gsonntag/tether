@@ -4,10 +4,17 @@ Settings › Azure (`#/settings/azure`, SPEC §10 **Azure**): Azure's key, its r
 deployments, each with the model it runs, its type, and rates from Tether's dated table or its Override. Codex sessions on Azure pick a deployment
 as their Model and can change it between turns on the same thread.
 
-- [ ] In an Azure session, the Model chip lists configured deployments. Switch, send another turn,
-  and reload: the id and history stay, the new deployment persists, and its pricing snapshot is used.
-- [ ] A rejected change restores both model and saved deployment. A removed or unknown deployment
-  cannot silently select another; choose one explicitly. Close a shared terminal before switching.
+- [ ] In an Azure session, the Model chip lists configured deployments. Switch while idle, send another
+  turn, and reload: the id and history stay, the new deployment persists, and its pricing snapshot is used.
+- [ ] Switch while a turn runs: nothing reaches the process, the Model chip keeps the running
+  deployment and a "Next: <deployment>" chip shows beside it, also after a runner restart. The turn's
+  cost is priced for its own deployment. The next send restarts the process on the new one, on the same
+  thread, and the chip goes. Picking the current deployment instead removes the Next chip.
+- [ ] A rejected change restores both model and saved deployment, with the error in the chat. A removed
+  or unknown deployment cannot silently select another; choose one explicitly. Close a shared terminal
+  before switching.
+- [ ] Other model or deployment… on Azure: a configured deployment's name applies as from the list; any
+  other name is refused with a chat error before anything is sent, and the model stays.
 
 ## Setup
 

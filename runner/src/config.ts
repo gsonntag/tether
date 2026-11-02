@@ -44,8 +44,10 @@ export interface SessionPrefs {
   beforePlan?: string;
   /** what the session draws from, on every start, whatever keys are set later. Never a key itself */
   source?: BillingSource;
-  /** on Azure: the selected deployment, changeable between turns and kept across restarts */
+  /** on Azure: the deployment it runs on, kept across restarts. Removed from Settings, the session stops */
   deployment?: string;
+  /** on Azure: a deployment picked while a turn ran, applied at the next send (its process restarts priced for it) */
+  nextDeployment?: string;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
   /** a start for nextBilling failed; shown until a retry succeeds or the source is cancelled */

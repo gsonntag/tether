@@ -1,13 +1,23 @@
 import { useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { HARNESS_KEYS, keyTargets, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { HARNESS_KEYS, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import type { HarnessId, LiveState } from "../../../shared/transcript";
 
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "Azure" };
 
+/**
+ * Where an unsaved session goes, as an order: every key of the harness, its last-used first, all
+ * allowed (what keyTarget does with no saved order). Saving it unchanged excludes nothing.
+ */
+export function defaultFallbackOrder(harness: HarnessId, lastKey?: BillingSource): CredentialSource[] {
+  const keys = HARNESS_KEYS[harness];
+  const last = keys.find((k) => k === lastKey);
+  return last ? [last, ...keys.filter((k) => k !== last)] : [...keys];
+}
+
 export function FallbackKeysDialog({ harness, state, choices, onSave, onClose }: { harness: HarnessId; state: LiveState; choices: SourceChoices; onSave: (keys: CredentialSource[]) => Promise<void>; onClose: () => void }) {
-  const [order, setOrder] = useState<CredentialSource[]>(() => state.fallbackKeys ?? keyTargets(choices.options, state.lastKey).map((o) => o.source as CredentialSource));
+  const [order, setOrder] = useState<CredentialSource[]>(() => state.fallbackKeys ?? defaultFallbackOrder(harness, state.lastKey));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const move = (index: number, by: number) => setOrder((old) => {
@@ -26,7 +36,6 @@ export function FallbackKeysDialog({ harness, state, choices, onSave, onClose }:
   return <Dialog isOpen onOpenChange={(open) => !open && !busy && onClose()} width={420} purpose="form">
     <DialogHeader title="Fallback keys" onOpenChange={(open) => !open && !busy && onClose()} />
     <div className="t-form" style={{ padding: 16 }}>
-      <p className="t-inline-status">When the plan runs out, use the first available checked key in this order. Unchecked keys are excluded.</p>
       {keys.map((key) => {
         const index = order.indexOf(key);
         const available = choices.options.some((o) => o.source === key);
@@ -38,7 +47,6 @@ export function FallbackKeysDialog({ harness, state, choices, onSave, onClose }:
           </div>}
         </div>;
       })}
-      {order.length === 0 && <span className="t-inline-status">All keys excluded. This session will stay on the plan.</span>}
       {error && <div className="t-form-error">{error}</div>}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />

@@ -3,7 +3,8 @@
 // and CodexStream, so each limit signal is parsed as the real thing would be. Keys are made up and
 // nothing is called.
 //   TETHER_CONFIG_DIR=<private dir> TETHER_URL=http://127.0.0.1:8899 bun scripts/limit-runner.ts [runnerId]
-// What a message does depends on its words: "limit", "tools limit", "short 429", anything else answers.
+// What a message does depends on its words: "limit", "tools limit", "short 429", "slow" (a Codex turn
+// that runs for SLOW_MS), anything else answers. Codex refuses a model whose name starts "refuse-".
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -85,8 +86,15 @@ const uniqueUsers = (sink: Sink): Sink => {
   return { ...sink, event: (event) => sink.event(event.type === "msg" && event.msg.role === "user" ? { ...event, msg: { ...event.msg, id: `${prefix}-${event.msg.id}` } } : event) };
 };
 const startCodex = codex.start.bind(codex), resumeCodex = codex.resume.bind(codex);
-codex.start = (path, id, opts, sink) => startCodex(path, id, opts, uniqueUsers(sink));
-codex.resume = (id, path, opts, sink) => resumeCodex(id, path, opts, uniqueUsers(sink));
+// As Codex does with a model it doesn't have: the setting is refused.
+const refusing = async (d: Promise<FakeDriver>) => {
+  const driver = await d;
+  driver.onSetting = (key, value) => { if (key === "model" && value.startsWith("refuse-")) throw new Error(`model ${value} is not supported`); };
+  return driver;
+};
+codex.start = (path, id, opts, sink) => refusing(startCodex(path, id, opts, uniqueUsers(sink)) as Promise<FakeDriver>);
+codex.resume = (id, path, opts, sink) => refusing(resumeCodex(id, path, opts, uniqueUsers(sink)) as Promise<FakeDriver>);
+const SLOW_MS = Number(process.env.SLOW_MS) || 6000;
 const codexStreams = new WeakMap<FakeDriver, CodexStream>();
 codex.script = (text) => [
   (sink, d) => {
@@ -97,8 +105,13 @@ codex.script = (text) => [
     sink.state({ billing });
     st.handle("turn/started", { turn: { id: turn } });
     if (!onKey(d) && /limit/.test(text)) return st.handle("turn/completed", { turn: { id: turn, status: "failed", error: { message: LIMIT, codexErrorInfo: "usageLimitExceeded", additionalDetails: null }, items: [] } });
-    st.handle("item/completed", { item: { type: "agentMessage", id: `i${n}`, text: `Fake reply ${n} on ${billing.label}.` } });
-    st.handle("turn/completed", { turn: { id: turn, status: "completed", items: [] } });
+    const reply = `Fake reply ${n} on ${billing.label}${d.opts.credential?.source === "azure" ? ` (${d.opts.credential.deployment})` : ""}.`;
+    const end = () => {
+      st!.handle("item/completed", { item: { type: "agentMessage", id: `i${turn}`, text: reply } });
+      st!.handle("turn/completed", { turn: { id: turn, status: "completed", items: [] } });
+    };
+    if (/slow/.test(text)) return void setTimeout(end, SLOW_MS);
+    end();
   },
 ];
 
@@ -108,7 +121,7 @@ stored(claude, "claude", "plan-b", "Claude plan: tools ran");
 stored(claude, "claude", "plan-c", "Claude plan: short 429");
 stored(claude, "claude", "key-a", "Claude on a key");
 stored(codex, "codex", "codex-a", "Codex plan: carried");
-saveConfig({ runnerId, sessions: { "claude:key-a": { source: "anthropic", projectPath: P } } } as any, prefsFile);
+saveConfig({ runnerId, sessions: { "claude:key-a": { source: "anthropic", projectPath: P, at: Date.now() } } } as any, prefsFile);
 
 const runner = createRunner({
   url: process.env.TETHER_URL!,
