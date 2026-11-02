@@ -66,8 +66,9 @@ export const contextDetail = (c: { used: number; total: number }) => `${tokens(c
 export const resetTime = (ms: number, week = true) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
 
 /**
- * The header's plan chip: the fuller window ("Week 63%"), and both in the tooltip. A window past its
- * reset is no longer known. Nothing known: undefined.
+ * The header's plan chip: the 5-hour window when known ("5h 10%"), the weekly one ("Week 63%") when
+ * there's no 5-hour figure or the week is at 100% or reported exhausted; both in the tooltip. A window
+ * past its reset is no longer known. Nothing known: undefined.
  */
 export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text: string; detail: string } | undefined {
   const known = (w?: PlanWindow) => (w && (w.resetsAt === undefined || w.resetsAt > now) ? w : undefined);
@@ -76,7 +77,9 @@ export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text:
     { short: "Week", long: "Weekly", w: known(plan?.week), week: true },
   ].filter((r) => r.w);
   if (!rows.length) return undefined;
-  const top = rows.reduce((a, b) => (b.w!.percent >= a.w!.percent ? b : a));
+  // The 5-hour window, unless the week is the one that's out.
+  const weekOut = rows.find((r) => r.week && (r.w!.percent >= 100 || r.w!.exhausted));
+  const top = weekOut ?? rows[0]!;
   const detail = rows.map((r) => `${r.long} ${r.w!.percent}%${r.w!.resetsAt ? `, resets ${resetTime(r.w!.resetsAt, r.week)}` : ""}`).join(" · ");
   return { text: `${top.short} ${top.w!.percent}%`, detail };
 }
@@ -111,4 +114,16 @@ export function usageChip(billing: Billing, plan: PlanUsage | undefined, now = D
 /** Only confirmed metered sources use the API colour. Unknown stays neutral. */
 export function isApiBilling(billing: Billing | undefined): boolean {
   return billing?.kind === "apiKey" || billing?.kind === "provider";
+}
+
+/** The longest model or deployment name a session takes. */
+export const MODEL_ID_MAX = 128;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]*$/;
+/** Why a typed model or deployment name can't be used, or undefined. Checked in the browser and by the runner. */
+export function modelIdProblem(id: unknown): string | undefined {
+  if (typeof id !== "string" || !id) return "Type a model name.";
+  if (id !== id.trim()) return "No spaces around the name.";
+  if (id.length > MODEL_ID_MAX) return `At most ${MODEL_ID_MAX} characters.`;
+  if (!MODEL_ID.test(id)) return "Letters, digits and . _ - : / @ + [ ] only.";
+  return undefined;
 }

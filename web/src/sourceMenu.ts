@@ -1,4 +1,4 @@
-import { HARNESS_KEYS, type BillingSource, type SourceChoices } from "../../shared/credentials";
+import { HARNESS_KEYS, keyTarget, type BillingSource, type SourceChoices } from "../../shared/credentials";
 import { billingForDisplay, sourceSwitchBlocker, sourceSwitchBlockMessage, visibleNextBilling } from "../../shared/sourceSwitch";
 import type { HarnessId, LiveState } from "../../shared/transcript";
 
@@ -32,4 +32,17 @@ export function sourceMenu(harness: HarnessId, state: LiveState, choices: Source
   if (gone) items.unshift({ value: CURRENT_SOURCE, label: shown.label });
   const set = new Set<BillingSource>(choices.options.map((o) => o.source));
   return { items, value: own?.source ?? (gone ? CURRENT_SOURCE : undefined), addKey: HARNESS_KEYS[harness].some((k) => !set.has(k)) };
+}
+
+/**
+ * The billing menu's switch for when the plan runs out (SPEC §10): on a plan session with a key to go
+ * to, or already on so it can be turned off. Its label names the target. `order`: Fallback keys…,
+ * for a harness with more than one key. Not shown: undefined.
+ */
+export function autoKeyItem(harness: HarnessId, state: LiveState, choices: SourceChoices): { label: string; order: boolean } | undefined {
+  if (billingForDisplay(state)?.kind !== "plan") return undefined;
+  const keys = choices.options.filter((o) => o.source !== "subscription");
+  if (!keys.length && !state.autoKey) return undefined;
+  const target = keyTarget(choices.options, state.lastKey, state.fallbackKeys);
+  return { label: target ? `Switch to ${target.billing.label} when plan runs out` : "No allowed key", order: HARNESS_KEYS[harness].length > 1 };
 }

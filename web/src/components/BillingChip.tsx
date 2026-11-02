@@ -2,19 +2,20 @@ import { useEffect, useState } from "react";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuGroup, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@astryxdesign/core/DropdownMenu";
 import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { costChip } from "../../../shared/costs";
-import { keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
+import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import { isApiBilling, planLines, usageChip } from "../../../shared/labels";
 import { UNKNOWN_BILLING, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate } from "../route";
-import { billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
+import { autoKeyItem, billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
 import { useStore } from "../store";
+import { FallbackKeysDialog } from "./FallbackKeysDialog";
 import { SessionApiCostGroup } from "./SessionApiCostGroup";
 
 const known = new Map<string, SourceChoices>();
 
 /** The runner's answer, kept between sessions so the chip doesn't change shape. None: a plain chip. */
-function useSources(runnerId: string, harness: HarnessId, wanted: boolean) {
+export function useSources(runnerId: string, harness: HarnessId, wanted: boolean) {
   const key = `${runnerId}\0${harness}`;
   const [, loaded] = useState(0);
   const refresh = () => {
@@ -31,6 +32,7 @@ function useSources(runnerId: string, harness: HarnessId, wanted: boolean) {
 
 /** What the session draws from, loud on a key, and the way to change it. */
 export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey: (on: boolean) => void }) {
+  const [editingFallback, setEditingFallback] = useState(false);
   const changeable = !session.parentSessionId && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
@@ -46,10 +48,9 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   // The plan's figures whatever the session draws from, by the plan's own name, so a key session sees them before switching.
   const planName = choices.options.find((o) => o.source === "subscription")?.billing.label;
   const plan = planName ? planLines(state.plan) : [];
-  const keys = choices.options.filter((o) => o.source !== "subscription");
-  const target = keyTarget(choices.options, state.lastKey);
-  const onPlan = billing.kind === "plan";
+  const autoKey = autoKeyItem(session.harness, state, choices);
   return (
+    <>
       <DropdownMenu
         menuMaxHeight={420}
         onOpenChange={(open) => {
@@ -77,10 +78,13 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
           {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
         </DropdownMenuRadioGroup>
-        {onPlan && target && <DropdownMenuDivider />}
-        {onPlan && target && <DropdownMenuCheckboxItem label={`Switch to ${keys.length > 1 ? target.billing.label : "API key"} when plan runs out`} value={!!state.autoKey} onChange={onAutoKey} />}
+        {autoKey && <DropdownMenuDivider />}
+        {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={onAutoKey} />}
+        {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
         {menu.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
         {menu.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
       </DropdownMenu>
+      {editingFallback && <FallbackKeysDialog harness={session.harness} state={state} choices={choices} onClose={() => setEditingFallback(false)} onSave={async (fallbackKeys) => { await rpc(runnerId, "setAutoKey", { sessionId: session.id, fallbackKeys }); }} />}
+    </>
   );
 }

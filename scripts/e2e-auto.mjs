@@ -33,7 +33,8 @@ const send = async (p, text) => {
   await p.locator('button[aria-label="Send"]').click();
 };
 const until = async (p, text, ms = 15000) => p.getByText(text).first().waitFor({ timeout: ms });
-const lines = (p) => p.locator(".t-plan-line").allTextContents();
+// The plan's windows only (the API cost group's lines, "Cost unknown", share the class).
+const lines = async (p) => (await p.locator(".t-plan-line").allTextContents()).filter((l) => /^(Week|5 hours) /.test(l));
 
 const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
@@ -62,7 +63,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await menu(p);
   want((await box(p).getAttribute("aria-checked")) === "true", "still ticked after a reload (saved in prefs)");
   await close(p);
-  want(/Week 64%/.test(await chip(p).textContent()), "the chip keeps its plan %");
+  want(/5h 12%/.test(await chip(p).textContent()), "the chip keeps its plan %");
 
   await send(p, "please limit me");
   await until(p, "Plan limit reached. Switched to Anthropic API key.");
@@ -99,7 +100,9 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await until(p, "Tools had already run in that turn");
   await p.waitForTimeout(800);
   want(await p.locator(".t-msg.user", { hasText: "tools limit" }).count() === 1, "tools ran: not resent");
-  await p.locator(".t-next-source").waitFor();
+  // Idle, the header shows the source the next turn uses (a Next chip only while work runs).
+  await p.locator(".t-paid-badge").first().waitFor();
+  want(await p.locator(".t-next-source").count() === 0, "idle: the key is the badge, no Next chip");
   await shot(p, "desktop-tools-ran");
   await p.close();
 }
@@ -133,7 +136,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await p.getByRole("menuitemradio", { name: /Azure/ }).tap();
   await p.waitForTimeout(600);
   await close(p).catch(() => {});
-  await p.locator(".t-next-source").waitFor();
+  await p.locator(".t-paid-badge", { hasText: "Azure" }).first().waitFor();
   await p.waitForTimeout(300);
   await chip(p).tap();
   await p.waitForTimeout(500);
@@ -162,7 +165,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await p.close();
 }
 
-// No key: no box.
+// Removing a key keeps an enabled switch visible so it can be turned off.
 {
   const p = await open(desktop, "claude:plan-c");
   const unset = await p.evaluate(async (r) => {
@@ -172,7 +175,10 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
     return true;
   }, RUNNER);
   await menu(p);
-  want(unset && await box(p).count() === 0, "no key set: no box");
+  want(unset && await box(p).count() === 1 && await box(p).getAttribute("aria-checked") === "true", "removed key: enabled switch can still be turned off");
+  await box(p).click();
+  await p.waitForTimeout(300);
+  want(await box(p).count() === 0, "no key set and switch off: no box");
   await shot(p, "desktop-no-key");
   await p.close();
 }

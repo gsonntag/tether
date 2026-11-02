@@ -2145,6 +2145,7 @@
 :root { --t-api: light-dark(#733395, #d9a5f5); }
 .t-chip-options { display: contents; }
 .t-chips > .t-chip.t-paid-badge {
+  position: relative;
   color: light-dark(#fff, #21152a);
   background: var(--t-api);
   border-color: var(--t-api);
@@ -2553,3 +2554,20 @@
 ::highlight(tether-plan-active) {
   background-color: color-mix(in srgb, var(--color-warning, #facc15) 55%, transparent);
 }
+
+.t-fallback-row, .t-fallback-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.t-fallback-row { justify-content: space-between; }
+.t-fallback-actions button {
+  min-width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--t-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.t-fallback-actions button:disabled { opacity: .4; cursor: default; }

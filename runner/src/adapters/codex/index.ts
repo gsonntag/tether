@@ -139,7 +139,7 @@ export const codexAdapter: Adapter = {
     const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false"];
     argv.push("-c", `model_provider=${toml(source ? sourceProvider(source.source) : "openai")}`);
-    const model = opts.credential?.source === "azure" && opts.credential.deployment ? opts.credential.deployment : opts.model;
+    const model = opts.model && opts.model !== "default" ? opts.model : opts.credential?.source === "azure" ? opts.credential.deployment : undefined;
     if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
     // tmux may have inherited provider keys long before this runner started.
