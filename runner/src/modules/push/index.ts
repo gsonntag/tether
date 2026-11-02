@@ -131,7 +131,7 @@ export class Notifier {
     const look = this.ctx.session(sessionId);
     if (!look || look.summary.parentSessionId) return;
     // The queue sent the next message, or the session waits on a request (that notifies itself).
-    if (look.status !== "idle" || look.requests.length) return;
+    if (look.status !== "idle" || look.requests.length || look.state?.retry) return;
     // Why it needs you, not what the agent said (lock screens show notifications).
     if (error) await this.notify({ kind: "failed", sessionId, title: this.title(sessionId), body: `Failed: ${failureKind(error)}.`, tag: `end-${sessionId}` });
     else await this.notify({ kind: "finished", sessionId, title: this.title(sessionId), body: `Finished.`, tag: `end-${sessionId}` });
@@ -149,7 +149,7 @@ export const pushModule: Module = {
       ctx.bus.on("connected", ({ push }) => sender.setKeys(push)),
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => n.request(request))),
       ctx.bus.on("attention", ({ sessionId, message }) => void later(0, () => n.attention(sessionId, message))),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void (!stopped && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
     ];
     const str = (v: unknown, what: string) => {
       if (typeof v !== "string" || !v || v.length > 2000) throw new Error(`${what} is required.`);

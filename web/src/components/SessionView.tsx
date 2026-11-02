@@ -21,6 +21,7 @@ import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
 import { billingForDisplay } from "../sourceMenu";
+import { RateLimitRetry } from "./RateLimitRetry";
 
 /** A session to focus the composer of once it opens (a new session just created). */
 let focusNext: string | undefined;
@@ -141,6 +142,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }
 
   const state = view.state;
+  const retry = state.retry;
   const billing = billingForDisplay(state);
   const inTerminal = state.mode === "terminal";
   const agent = AGENT_NAMES[summary.harness];
@@ -265,6 +267,15 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         )}
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
         {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} messages={view.window.messages} />}
+        {!isChild && retry && (
+          <RateLimitRetry
+            retry={retry}
+            offline={offline}
+            onRetryNow={() => rpc(runnerId, "retryNow", { sessionId })}
+            onCancel={() => rpc(runnerId, "cancelRetry", { sessionId })}
+            onFailed={(message) => failedSend(runnerId, sessionId, message)}
+          />
+        )}
         {isChild && view.capabilities?.subagents.steer && state.mode === "live" ? (
           // A running subagent you can message (SPEC §6a): directly into its turn, or passed on by the
           // main agent ("via-parent"); either way it shows here as yours.

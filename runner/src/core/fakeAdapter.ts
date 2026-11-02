@@ -3,6 +3,7 @@
 
 import type { HarnessCapabilities, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
 import type { Adapter, AdapterBilling, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
+import { createHash } from "node:crypto";
 
 /** One step of a scripted turn: called with the session's sink. */
 export type Step = (sink: Sink, d: FakeDriver) => void | Promise<void>;
@@ -132,6 +133,10 @@ export class FakeAdapter implements Adapter {
     loggedIn: async () => this.loggedIn,
   };
   stored = new Map<string, { summary: SessionSummary; msgs: Msg[] }>();
+  storeRevision(nativeId: string) {
+    const stored = this.stored.get(nativeId);
+    return stored ? createHash("sha256").update(JSON.stringify(stored.msgs)).digest("hex") : undefined;
+  }
   watchers = new Map<string, (msgs: Msg[]) => void>();
   drivers: FakeDriver[] = [];
   backgroundRuns?: (nativeId: string) => Promise<boolean>;

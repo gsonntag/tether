@@ -83,6 +83,8 @@ export interface Sink {
    * short rate limit or any other failure. `resetsAt` (ms) if the signal says.
    */
   limitReached?(hit: { resetsAt?: number }): void;
+  /** A terminal transient throttle, after the harness's own retries finished. */
+  rateLimited?(hit: { retryAt?: number }): void;
   /** the native id became known or changed (a new session's id comes with the harness's first answer) */
   nativeId?(id: string): void;
   /** a subagent started under this session: its sink */
@@ -214,6 +216,8 @@ export interface Adapter {
    * (a crash): Tether waits for it to go quiet before continuing a cut-off turn (SPEC §4).
    */
   storeChangedAt?(nativeId: string, projectPath: string): number | undefined;
+  /** A read-only store revision for refusing a saved retry after another client changed history. */
+  storeRevision?(nativeId: string, projectPath: string): string | undefined;
   /** whether a stored session left something running in its harness (read-only: joins nothing) */
   backgroundRuns?(nativeId: string): Promise<boolean>;
   /** a session's stored subagents, as child summaries */

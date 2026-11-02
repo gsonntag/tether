@@ -14,6 +14,7 @@ export class TestSink implements Sink {
   starts: SubagentStart[] = [];
   endedCount = 0;
   relays: string[] = [];
+  rateLimits: { retryAt?: number }[] = [];
 
   event(e: Parameters<Sink["event"]>[0]) {
     this.t.apply(e);
@@ -51,6 +52,9 @@ export class TestSink implements Sink {
   }
   ended() {
     this.endedCount++;
+  }
+  rateLimited(hit: { retryAt?: number }) {
+    this.rateLimits.push(hit);
   }
 }
 

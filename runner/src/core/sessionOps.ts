@@ -92,6 +92,8 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   });
   ops.register("setRead", async (a) => (live.read.set(str(a.sessionId, "sessionId"), a.read === false), null));
   ops.register("interrupt", async (a) => (await live.interrupt(str(a.sessionId, "sessionId")), null));
+  ops.register("retryNow", async (a) => (await live.retryNow(str(a.sessionId, "sessionId")), null));
+  ops.register("cancelRetry", async (a) => (await live.cancelRetry(str(a.sessionId, "sessionId")), null));
   ops.register("backgroundSubagent", async (a) => (await live.backgroundSubagent(str(a.sessionId, "sessionId"), str(a.toolId, "toolId")), null));
   ops.register("stopBackground", async (a) => (await live.stopBackground(str(a.sessionId, "sessionId")), null));
   ops.register("setModel", async (a) => (await live.setModel(str(a.sessionId, "sessionId"), str(a.model, "model")), null));

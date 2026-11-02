@@ -71,6 +71,8 @@ export interface User {
 
 /** Op name -> its args and result. Later phases add the rest of the core ops (SPEC §5). */
 export interface Ops {
+  retryNow: { args: { sessionId: string }; result: null };
+  cancelRetry: { args: { sessionId: string }; result: null };
   credentials: { args: Record<string, never>; result: CredentialStatus };
   setCredential: { args: { source: CredentialSource; key: string; endpoint?: string; deployment?: string; rates?: TokenRates }; result: CredentialStatus };
   unsetCredential: { args: { source: CredentialSource }; result: CredentialStatus };

@@ -336,8 +336,10 @@ export class ClaudeStream {
     const interrupted = m.subtype === "error_during_execution" || m.terminal_reason === "aborted_streaming" || m.terminal_reason === "aborted_tools";
     const failed = m.is_error || (m.subtype && m.subtype !== "success");
     const limit = failed && !interrupted && !this.host.interrupted?.() ? this.planLimit(m) : undefined;
+    const throttled = failed && !interrupted && !this.host.interrupted?.() && !limit && !this.rejected && this.apiError?.code === "rate_limit" && m.api_error_status === 429;
     this.rejected = this.apiError = undefined;
     if (limit) sink.limitReached?.(limit);
+    else if (throttled) sink.rateLimited?.({});
     if (failed) {
       const safe = !this.host.interrupted?.() && this.host.failed?.();
       if (safe) {

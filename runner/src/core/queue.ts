@@ -7,6 +7,7 @@
 // message yourself, or Resume, releases it; nothing is ever sent on your behalf while it is held.
 // During the quiet wait after a restart (live.ts autoContinue) it stays held whatever you do: the
 // wait's end releases it.
+// A transient rate limit recovery blocks draining until the original message recovers or fails.
 
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
@@ -51,9 +52,9 @@ export class MessageQueue {
   ) {
     this.cutOff = new Set(core.o.prefs.running());
     const bus = core.o.bus;
-    bus.on("turnEnded", ({ sessionId, error, stopped }) => {
+    bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
       const s = core.sessions.get(sessionId);
-      if (!s || s.summary.parentSessionId || !s.state.queue.length) return;
+      if (!s || s.summary.parentSessionId || !s.state.queue.length || recovering) return;
       // A failed turn holds what waits: the next message would most likely fail the same way.
       if (error && !stopped) return this.hold(s, "failed");
       this.later(sessionId);
@@ -141,6 +142,7 @@ export class MessageQueue {
     const s = await this.root(id);
     if (s.state.mode === "terminal") throw new Error("The terminal is driving. Go back to Tether to send what waits.");
     if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
+    if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
     this.release(s);
     this.later(s.id);
   }
@@ -197,7 +199,7 @@ export class MessageQueue {
 
   private async drain(id: string) {
     const s = this.core.sessions.get(id);
-    if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld) return;
+    if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld || s.retry || this.core.o.prefs.get(id).retry) return;
     // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
     const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
     if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id)) return;
