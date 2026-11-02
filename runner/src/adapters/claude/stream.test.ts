@@ -18,6 +18,9 @@ class TestSink implements Sink {
   st: Partial<LiveState> = {};
   events: TranscriptEvent[] = [];
   statuses: string[] = [];
+  rateLimits: { retryAt?: number }[] = [];
+  limits: { resetsAt?: number }[] = [];
+  timeline: string[] = [];
   children = new Map<string, { start: SubagentStart; sink: TestSink; opened: number }>();
   ended_ = false;
   event(e: TranscriptEvent) {
@@ -29,6 +32,7 @@ class TestSink implements Sink {
   }
   state(p: Partial<LiveState>) {
     if (p.status && p.status !== this.st.status) this.statuses.push(p.status);
+    if (p.status) this.timeline.push(`status:${p.status}`);
     this.st = { ...this.st, ...p };
   }
   async request() {
@@ -42,6 +46,14 @@ class TestSink implements Sink {
   }
   ended() {
     this.ended_ = true;
+  }
+  rateLimited(hit: { retryAt?: number }) {
+    this.timeline.push("rateLimited");
+    this.rateLimits.push(hit);
+  }
+  limitReached(hit: { resetsAt?: number }) {
+    this.timeline.push("limitReached");
+    this.limits.push(hit);
   }
   mainFree?: () => void;
   mainChanged?: () => void;
@@ -208,4 +220,33 @@ test("not signed in: what to do goes in the chat as one error, not only in the s
   const hint = "Claude Code isn't signed in on the runner machine. Run `claude` there and log in, then send again.";
   expect(sink.t.messages.map((m) => [m.role, m.level, m.parts])).toEqual([["notice", "error", [{ type: "text", text: hint }]]]);
   expect(sink.st.error).toBe(hint);
+});
+
+test("a terminal short API throttle signals before idle, while plan limits and interruptions keep their meaning", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  const apiError = (text = "Temporary throttle") => s.handle({
+    type: "assistant", uuid: "api-error", parent_tool_use_id: null, error: "rate_limit",
+    message: { id: "api-error", model: "claude-sonnet", content: [{ type: "text", text }] },
+  });
+  const result = (extra: Record<string, unknown> = {}) => s.handle({ type: "result", subtype: "error_api", is_error: true, api_error_status: 429, uuid: "end", ...extra });
+
+  s.mainStarts();
+  apiError();
+  result();
+  expect(sink.rateLimits).toEqual([{}]);
+  expect(sink.timeline.slice(-2)).toEqual(["rateLimited", "status:idle"]);
+  expect(sink.limits).toEqual([]);
+
+  s.mainStarts();
+  s.handle({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 123 } });
+  apiError();
+  result();
+  expect(sink.limits).toEqual([{ resetsAt: 123000 }]);
+  expect(sink.rateLimits).toHaveLength(1);
+
+  s.mainStarts();
+  apiError();
+  result({ subtype: "error_during_execution" });
+  expect(sink.rateLimits).toHaveLength(1);
 });

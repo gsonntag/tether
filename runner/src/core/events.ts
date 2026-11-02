@@ -8,8 +8,8 @@ export type RequestOutcome = "allowed" | "denied" | "answered" | "cancelled" | "
 
 export interface CoreEvents {
   turnStarted: { sessionId: string };
-  /** `stopped`: the person stopped it (Stop, or Stop and send now) */
-  turnEnded: { sessionId: string; error?: string; stopped?: boolean };
+  /** `stopped`: a person stopped it. `recovering`: an intermediate failure, with no final notification. */
+  turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean };
   message: { sessionId: string; msg: Msg };
   toolCall: { sessionId: string; msgId: string; tool: ToolPart };
   requestOpened: { request: Request };

@@ -84,6 +84,10 @@ export class Prefs {
       .map(([id]) => id);
   }
 
+  retrying(): string[] {
+    return Object.entries(this.map).filter(([, p]) => p.retry !== undefined).map(([id]) => id);
+  }
+
   set(id: string, patch: SessionPrefs) {
     patch = redactValue(patch);
     this.map[id] = { ...this.map[id], ...patch, at: Date.now() };

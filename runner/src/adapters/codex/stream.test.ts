@@ -105,6 +105,22 @@ test("a failed turn says why on its last message; a stopped one leaves no call r
   expect(sink.t.messages.at(-1)).toMatchObject({ role: "assistant", error: "Rate limited" });
 });
 
+test("only a terminal transient rate limit signals before idle", () => {
+  const sink = new TestSink();
+  const s = new CodexStream(sink, CWD, "T");
+  s.handle("turn/started", { threadId: "T", turn: { id: "rate" } });
+  s.handle("turn/completed", { threadId: "T", turn: { id: "rate", status: "failed", error: { codexErrorInfo: "rateLimitExceeded", retryAt: Date.now() + 5000 } } });
+  expect(sink.rateLimits).toHaveLength(1);
+  expect(sink.rateLimits[0]!.retryAt).toBeGreaterThan(Date.now());
+  expect(sink.states.at(-1)?.status).toBe("idle");
+
+  s.handle("turn/started", { threadId: "T", turn: { id: "quota" } });
+  s.handle("turn/completed", { threadId: "T", turn: { id: "quota", status: "failed", error: { codexErrorInfo: "usageLimitExceeded", status: 429 } } });
+  s.handle("turn/started", { threadId: "T", turn: { id: "complete" } });
+  s.handle("turn/completed", { threadId: "T", turn: { id: "complete", status: "completed", error: { codexErrorInfo: "rateLimitExceeded" } } });
+  expect(sink.rateLimits).toHaveLength(1);
+});
+
 test("reasoning streams as thinking (summary first); text streams by delta", () => {
   const sink = new TestSink();
   const s = new CodexStream(sink, CWD, "T");

@@ -47,7 +47,7 @@ class FakeDaemon {
             try {
               reply = { id: m.id, result: this.answers[m.method]?.(m.params) ?? {} };
             } catch (e: any) {
-              reply = { id: m.id, error: { code: -32600, message: e.message } };
+              reply = { id: m.id, error: { code: -32600, message: e.message, ...(e.data ? { data: e.data } : {}) } };
             }
             this.rpc.receive(JSON.stringify(reply));
           });
@@ -75,6 +75,20 @@ function useDaemon(fresh = true) {
   daemon = new FakeDaemon();
   setConnector(async () => daemon.rpc);
 }
+
+test("a rejected token-limited send preserves timing and defers idle until core recovery", async () => {
+  useDaemon();
+  const sink = new TestSink();
+  const driver = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  const message = "rate limit exceeded: Your requests to gpt-6-luna for gpt-6-luna in eastus have exceeded token rate limit.";
+  daemon.answers["turn/start"] = () => { throw Object.assign(new Error(message), { data: { retryAfter: 30 } }); };
+  const before = Date.now();
+  let error: any;
+  try { await driver.send("hello"); } catch (e) { error = e; }
+  expect(error?.rateLimit?.retryAt).toBeGreaterThanOrEqual(before + 30_000);
+  expect(sink.states.at(-1)?.status).toBe("running");
+  await driver.close();
+});
 
 test("resume keeps the thread's own settings: nothing sent; the state is the thread's", async () => {
   useDaemon();

@@ -175,6 +175,14 @@ export const claudeAdapter: Adapter = {
       return undefined;
     }
   },
+  storeRevision(nativeId, projectPath) {
+    const f = sessionFile(splitNative(nativeId).session, projectPath);
+    try {
+      if (!f) return undefined;
+      const stat = statSync(f);
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch { return undefined; }
+  },
   async listSubagents(nativeId, projectPath) {
     return claudeSubagents(splitNative(nativeId).session, projectPath);
   },

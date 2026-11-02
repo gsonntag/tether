@@ -27,11 +27,11 @@ export class ReadState {
     bus.on("turnStarted", ({ sessionId }) => {
       if (this.core.o.prefs.get(sessionId).unread) this.set(sessionId, false);
     });
-    bus.on("turnEnded", ({ sessionId, error, stopped }) => {
+    bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
       const s = core.sessions.get(sessionId);
       if (!s || s.summary.parentSessionId) return;
       // You stopped it, or you're looking at it: nothing to catch up on.
-      if (stopped || this.viewed(sessionId)) return;
+      if (stopped || recovering || this.viewed(sessionId)) return;
       this.set(sessionId, error ? { failure: error } : true);
     });
   }

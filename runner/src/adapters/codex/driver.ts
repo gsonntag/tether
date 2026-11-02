@@ -28,6 +28,7 @@ import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
+import { rateLimitHit } from "../../rateLimit";
 
 /** A message as Codex's input: its text, and the attached images Codex reads from disk. */
 const input = (text: string, attachments: Attachment[] = []) => [
@@ -723,8 +724,13 @@ export class CodexDriver implements Driver {
       // Stop pressed while turn/start was on its way: the turn id it needed is here now.
       if (this.stopAsked && turnId) await this.stopThread(this.nativeId, turnId).catch(() => {});
     } catch (e: any) {
-      this.sink.state({ status: "idle" });
-      throw new Error(this.credential?.source !== "subscription" && this.credential ? "Codex API request failed. Check the configured key, quota and connection. Nothing was sent through another source." : `Codex didn't start the turn: ${e?.message ?? e}`);
+      const safe = new Error(this.credential?.source !== "subscription" && this.credential ? "Codex API request failed. Check the configured key, quota and connection. Nothing was sent through another source." : `Codex didn't start the turn: ${e?.message ?? e}`) as Error & { rateLimit?: { retryAt?: number } };
+      const hit = rateLimitHit(e);
+      if (hit) safe.rateLimit = hit;
+      // Keep the turn open until LiveControl receives the rejection and its rateLimit metadata.
+      // An idle transition here can race the send catch and lose the retry signal.
+      if (!hit) this.sink.state({ status: "idle" });
+      throw safe;
     } finally {
       this.sendOnWay = false;
       this.stopAsked = false;
