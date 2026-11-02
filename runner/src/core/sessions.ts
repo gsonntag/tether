@@ -160,10 +160,13 @@ export class SessionCore {
         const found = (await Promise.all(this.o.adapters.map((a) => a.listSessions({ since }).catch(() => [] as SessionSummary[])))).flat();
         for (const f of found) {
           const s = this.sessions.get(f.id);
-          if (s && !s.live && !s.childRunning) s.summary = { ...f, ...(this.o.prefs.get(f.id).title ? { title: this.o.prefs.get(f.id).title! } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+          if (s && !s.live && !s.childRunning) {
+            const prefs = this.o.prefs.get(f.id);
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+          }
         }
         this.book.refresh(
-          found.filter((f) => this.shown(f)),
+          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}) })),
           (id) => this.owned(id),
           (id) => this.watched.has(id),
         );
@@ -210,8 +213,8 @@ export class SessionCore {
   private overlay(list: SessionSummary[]): SessionSummary[] {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
-      const title = this.o.prefs.get(row.id).title;
-      return title ? { ...row, title } : row;
+      const prefs = this.o.prefs.get(row.id);
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }) };
     });
   }
 
@@ -231,7 +234,7 @@ export class SessionCore {
     for (const s of this.sessions.values())
       if (s.live && !s.summary.parentSessionId && (!args.projectPath || s.summary.projectPath === expandPath(args.projectPath))) byId.set(s.id, s.summary);
     const q = args.query?.trim().toLowerCase();
-    const rows = [...byId.values()].filter((s) => this.shown(s) && (!q || s.title.toLowerCase().includes(q)));
+    const rows = [...byId.values()].filter((s) => this.shown(s) && (!s.archived || !!q) && (!q || s.title.toLowerCase().includes(q)));
     return { sessions: rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, q ? Math.min(limit, 100) : limit) };
   }
 
@@ -265,7 +268,7 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -532,12 +535,12 @@ export class SessionCore {
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
     const q = s.state.queue.length;
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(title ? { title } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

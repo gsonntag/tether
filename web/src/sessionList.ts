@@ -19,7 +19,7 @@ const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.locale
 export function recentSessions(summaries: Record<string, SummaryState>, query = ""): Row[] {
   const q = query.trim().toLowerCase();
   return rows(summaries)
-    .filter((r) => !r.parentSessionId && (!q || r.title.toLowerCase().includes(q)))
+    .filter((r) => !r.parentSessionId && (!r.archived || !!q) && (!q || r.title.toLowerCase().includes(q)))
     .sort(newestFirst);
 }
 

@@ -245,7 +245,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && view.capabilities?.move && <SessionMenu runnerId={runnerId} session={summary} state={state} />}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>

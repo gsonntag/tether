@@ -83,6 +83,8 @@ export interface Ops {
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };
+  /** Keeps a session out of Recent; archived sessions remain searchable. */
+  setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

@@ -62,7 +62,7 @@ export class ReadState {
   decorate(s: SessionSummary): SessionSummary {
     const p = this.core.o.prefs.get(s.id);
     const live = this.core.sessions.get(s.id);
-    s = { ...s, ...(p.title ? { title: p.title } : {}), ...(live?.state.billing ? { billing: live.state.billing } : {}), ...(live?.state.cost ? { cost: live.state.cost } : this.core.o.costs ? { cost: this.core.o.costs.get(s.id) } : {}) };
+    s = { ...s, ...(p.title ? { title: p.title } : {}), ...(p.archived ? { archived: true } : { archived: undefined }), ...(live?.state.billing ? { billing: live.state.billing } : {}), ...(live?.state.cost ? { cost: live.state.cost } : this.core.o.costs ? { cost: this.core.o.costs.get(s.id) } : {}) };
     if (!p.unread && !s.unread && !s.failure) return s;
     const { unread: _, failure: __, ...rest } = s;
     return { ...rest, ...(p.unread ? { unread: p.unread } : {}), ...(p.unread === "failed" && p.failure ? { failure: p.failure } : {}) };

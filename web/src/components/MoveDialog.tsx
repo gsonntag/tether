@@ -12,9 +12,23 @@ import { loadModels, modelListKey, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Move to… and its dialog (SPEC §15). */
-export function SessionMenu({ runnerId, session, state }: { runnerId: string; session: SessionSummary; state: LiveState }) {
+/** The session's menu, in the header: Change session harness and its dialog (SPEC §15). */
+export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean }) {
   const [open, setOpen] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string>();
+  const archive = async () => {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    setArchiveError(undefined);
+    try {
+      await rpc(runnerId, "setSessionArchived", { sessionId: session.id, archived: !session.archived });
+    } catch (e) {
+      setArchiveError((e as Error).message);
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
   return (
     <>
       <DropdownMenu
@@ -24,7 +38,9 @@ export function SessionMenu({ runnerId, session, state }: { runnerId: string; se
           </button>
         )}
       >
-        <DropdownMenuItem label="Move to…" onClick={() => setOpen(true)} />
+        {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
+        <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />
+        {archiveError && <DropdownMenuItem label={`Archive failed: ${archiveError}`} isDisabled />}
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
     </>
