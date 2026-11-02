@@ -13,6 +13,7 @@ import { ChoiceMenu } from "./ChoiceMenu";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
 import { SubagentChips } from "./SubagentChips";
+import { billingForDisplay, visibleNextBilling } from "../sourceMenu";
 
 export function SessionHeader({
   runnerId,
@@ -33,7 +34,8 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
-  const paid = isApiBilling(state.billing);
+  const paid = isApiBilling(billingForDisplay(state));
+  const nextBilling = visibleNextBilling(state);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
@@ -91,7 +93,7 @@ export function SessionHeader({
       </div>
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
-        {state.nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(state.nextBilling) ? " t-next-api" : ""}`} title={`${state.nextBilling.label} from the next start`}>Next: {state.nextBilling.label}</span>}
+        {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (
           <button type="button" className="t-chip" onClick={() => openSession(runnerId, session.parentSessionId!)}>

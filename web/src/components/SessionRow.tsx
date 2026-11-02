@@ -1,7 +1,6 @@
 import { isApiBilling } from "../../../shared/labels";
 import { useEffect, useRef, useState } from "react";
-import type { Billing, HarnessId, RunStatus } from "../../../shared/transcript";
-import { HARNESS_LABELS } from "../../../shared/transcript";
+import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";

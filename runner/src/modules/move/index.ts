@@ -210,10 +210,9 @@ export class Mover {
       if (!portable.messages.some((m) => m.role !== "notice")) throw new Error("Nothing to move yet.");
       const background = await this.background(from, look);
       // Never looser than it was (shared/move.ts LEVELS).
-      // A deployment is the model on such a source, set in Credentials.
+      // On Azure the model is one of its deployments: the session core holds it to that.
       const source = await this.ctx.sessions.sourceForNew(target.id, choice.source);
-      const deployment = (await this.ctx.sessions.sources(target.id)).options.find((o) => o.source === source)?.deployment;
-      const opts: StartOpts = { ...(choice.model && !deployment ? { model: choice.model } : {}), ...(choice.effort ? { effort: choice.effort } : {}), permissionMode: moveMode(from, look.state.permissionMode, target) };
+      const opts: StartOpts = { ...(choice.model ? { model: choice.model } : {}), ...(choice.effort ? { effort: choice.effort } : {}), permissionMode: moveMode(from, look.state.permissionMode, target) };
       const route = this.forceRoute ?? target.capabilities.move.import;
       let moved = route === "native" ? await this.native(target, portable, opts, background, source).catch((e) => void this.ctx.log(`native import into ${target.id} failed, using the file: ${e?.message ?? e}`)) : undefined;
       moved ??= await this.fallback(target, portable, opts, background, source);
@@ -243,9 +242,10 @@ export class Mover {
     this.moving.add(id);
     try {
       const portable = await exportSession(adapter, look);
-      const deployment = (await this.ctx.sessions.sources(adapter.id)).options.find((o) => o.source === source)?.deployment;
-      const { model, effort, permissionMode } = look.state;
-      const opts: StartOpts = { ...(model && model !== "default" && !deployment ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
+      const { effort, permissionMode } = look.state;
+      // An Azure deployment's name means nothing on another source: there, the default model.
+      const model = (await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model;
+      const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
       const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
       const note = contextNote(moved.kept, moved.total);
       if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});

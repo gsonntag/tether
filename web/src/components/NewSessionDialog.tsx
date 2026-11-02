@@ -11,7 +11,7 @@ import { openSession } from "../route";
 import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
-import { SourcePicker } from "./SourcePicker";
+import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 const MODE_KEY = "tether.newSessionMode";
 const HARNESS_KEY = "tether.newSessionHarness";
@@ -112,7 +112,7 @@ export function NewSessionDialog() {
       if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
       // Enter before the sources came back: what's shown first is what starts.
       const billTo = source ?? (await sourcesAsked.current)?.default;
-      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(modelOk && model !== "default" && !deployment ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
+      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
@@ -136,8 +136,9 @@ export function NewSessionDialog() {
   // Claude with nothing picked: what the runner starts it on, by that name.
   const listed = models?.models.length ? models.models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
   const unpicked = harness === "claude" ? (findModel(listed, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default";
-  // An Azure deployment is the model on that source.
-  const deployment = sources?.options.find((o) => o.source === source)?.deployment;
+  // On Azure the model is one of its deployments.
+  const deployments = azureDeployments(sources?.options.find((o) => o.source === source));
+  const deployment = deployments && (deployments.find((d) => d.name === model) ?? deployments[0])?.name;
   return (
     <Dialog isOpen={open} onOpenChange={(o) => !o && close()} width={520} purpose="form">
       <DialogHeader title="New session" subtitle={HARNESS_LABELS[harness]} onOpenChange={(o) => !o && close()} />
@@ -208,11 +209,8 @@ export function NewSessionDialog() {
           </div>
         )}
         <SourcePicker choices={sources} value={source} onChange={setSource} />
-        {deployment ? (
-          <div>
-            <span className="t-field-label">Deployment</span>
-            <div>{deployment}</div>
-          </div>
+        {deployments ? (
+          <DeploymentPicker deployments={deployments} value={deployment} onChange={setModel} />
         ) : (
           <label>
             <span className="t-field-label">Model</span>

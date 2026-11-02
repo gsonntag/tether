@@ -13,6 +13,8 @@
 //   stored    a real Codex thread from the store to Claude: a real tool result, answered (no Codex usage)
 //   keyRefused a made-up Anthropic key: the API colour, the loud badge, and no fallback to the plan
 //   sourceChange the same harness on another source, on both harnesses, with made-up keys
+//   costSwitch a Claude session's plan turns, then a made-up Anthropic key from the chip: the key's
+//             cost starts whole and the plan's native estimate isn't API spend (CONFIG_DIR's costs.json)
 //   sourceCarry a Codex session changes source from the chip: a refused key stays put, a thread on
 //             FAKE_ENDPOINT (scripts/fake-responses.ts, logging to FAKE_LOG) gets the history and takes
 //             over, and the real plan answers from it on the way back. Needs both variables
@@ -124,7 +126,7 @@ const openMenu = async (p, tap) => {
   const m = p.getByRole("button", { name: "Session menu" });
   await m.waitFor({ timeout: 30_000 });
   await (tap ? m.tap() : m.click());
-  const item = p.getByRole("menuitem", { name: "Move to…" });
+  const item = p.getByRole("menuitem", { name: "Change session harness" });
   await (tap ? item.tap() : item.click());
   await p.getByRole("dialog").waitFor();
 };
@@ -159,7 +161,7 @@ async function move(p, label, model, { tap = false, name, source } = {}) {
   if ((await eff.count()) && (await eff.locator('option[value="low"]').count())) await eff.selectOption("low");
   if (!(await d.innerText()).includes(label)) fail(`the dialog doesn't offer ${label}`);
   await shot(p, `${name ?? `move-${label}`}-dialog`);
-  await button(d, "Move").click();
+  await button(d, "Change").click();
   await Promise.race([
     p.waitForFunction((was) => !decodeURIComponent(location.hash).includes(was), was, { timeout: 90_000 }),
     d.locator(".t-form-error").waitFor({ timeout: 90_000 }).then(async () => fail(`the move failed: ${await d.locator(".t-form-error").innerText()}`)),
@@ -202,7 +204,7 @@ const steps = {
     if (!/Wait for the turn/.test(r.error ?? "")) fail(`a running turn moved: ${JSON.stringify(r)}`);
     await openMenu(p);
     await p.locator(".t-form-error", { hasText: "Wait for the turn" }).waitFor();
-    if (await button(p.getByRole("dialog"), "Move").isEnabled()) fail("Move is enabled while a turn runs");
+    if (await button(p.getByRole("dialog"), "Change").isEnabled()) fail("Move is enabled while a turn runs");
     await shot(p, "refused");
     await button(p.getByRole("dialog"), "Cancel").click();
     ok("a running turn is refused, in the op and the dialog");
@@ -286,6 +288,49 @@ const steps = {
     }
   },
 
+  /**
+   * A Claude session with plan turns switches to a key from the chip: its API cost starts whole,
+   * the plan turns' native estimate is the baseline and never API spend, and the chip never says a
+   * bare Cost unknown. A made-up key, so the key's turn is refused and costs nothing.
+   */
+  async costSwitch() {
+    const p = await page(desktop);
+    const id = await newSession(p, "claude", "default");
+    for (const word of ["ready", "done"]) if (!(await turn(p, `Reply with the single word ${word}. Do not use tools.`))) fail("no reply on the plan");
+    if ((await stateOf(p)).billing?.kind !== "plan") fail("the plan turns weren't on the plan");
+    const set = await rpcVia(p, "setCredential", { source: "anthropic", key: `sk-ant-not-a-real-key-${"w".repeat(24)}` });
+    if (set.error) fail(set.error);
+    try {
+      await p.reload();
+      await composer(p).waitFor({ timeout: 30_000 });
+      await p.locator(".t-source-chip").click();
+      await p.getByRole("menuitemradio", { name: "Anthropic API key", exact: true }).click();
+      const switched = await waitState(p, (s) => s.cost?.complete === true, "cost begun at the switch", 30_000);
+      if (switched.cost.usd !== 0 || switched.cost.reasons) fail(`at the switch: ${JSON.stringify(switched.cost)}`);
+      const ledger = () => JSON.parse(readFileSync(`${CONFIG_DIR}/costs.json`, "utf8")).sessions[id];
+      if (ledger()?.complete !== true) fail(`costs.json at the switch: ${JSON.stringify(ledger())}`);
+      ok(`switched on the chip: ${JSON.stringify(switched.cost)}, costs.json ${JSON.stringify(ledger())}`);
+      await composer(p).fill("Reply OK.");
+      await composer(p).press("Enter");
+      await p.getByText("Anthropic API key failed", { exact: false }).first().waitFor({ timeout: 120_000 });
+      const after = await waitState(p, (s) => s.status === "idle" && s.billing?.kind === "apiKey", "stopped on the key");
+      await sleep(1500);
+      const entry = ledger();
+      await shot(p, "cost-switch");
+      const chip = (await p.locator(".t-api-cost").first().innerText()).trim();
+      const detail = await p.locator(".t-api-cost").first().getAttribute("title");
+      ok(`on the key: state ${JSON.stringify((await stateOf(p)).cost)}, costs.json ${JSON.stringify(entry)}, chip "${chip}" (${detail})`);
+      if (!entry || entry.complete !== true) fail("the entry isn't whole: plan turns made it partial");
+      if (Object.values(entry.reports).some((r) => (r.usd ?? 0) > 0)) fail("plan turns' native estimate was counted as API spend");
+      if (JSON.stringify(after.cost ?? {}).includes("earlier-usage")) fail("earlier usage marked unknown after plan turns");
+      if (chip === "Cost unknown" && !detail?.includes("Missing:")) fail("a bare Cost unknown");
+      ok("the plan period is not API spend, and the key's cost started whole");
+    } finally {
+      await rpcVia(p, "unsetCredential", { source: "anthropic" });
+      await p.close();
+    }
+  },
+
   /** The same harness, another source: a new session with the context, the old one as it was. Fake keys only. */
   async sourceCarry() {
     const endpoint = process.env.FAKE_ENDPOINT, log = process.env.FAKE_LOG;
@@ -293,8 +338,11 @@ const steps = {
     const p = await page(desktop);
     if ((await rpcVia(p, "setCredential", { source: "openai", key: `sk-not-a-real-key-${"z".repeat(24)}` })).error) fail("no key");
     // Rates that make the fake's 12 tokens visible, to follow the amount across thread changes.
-    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}`, endpoint, rates: { input: 2000, output: 2000, cached: 0 } });
+    const azure = await rpcVia(p, "setCredential", { source: "azure", key: `fake-azure-${"w".repeat(24)}` });
     if (azure.error) fail(azure.error);
+    // One deployment, named for the model, so the session's model stays what it was.
+    const settings = await rpcVia(p, "setAzure", { endpoint, deployments: [{ name: CODEX_MODEL, model: CODEX_MODEL, rates: { input: 2000, output: 2000, cached: 0 } }] });
+    if (settings.error) fail(settings.error);
     const amount = async () => {
       const cost = (await stateOf(p))?.cost;
       if (!cost?.complete || typeof cost.usd !== "number") fail(`no whole API amount: ${JSON.stringify(cost)}`);

@@ -17,6 +17,8 @@ export interface CodexMode {
   sandbox: SandboxMode;
   /** who answers approvals: absent or "user" (the person, through Tether or the TUI); else Codex's own reviewer */
   reviewer?: string;
+  /** Codex's plan mode (its "collaboration mode"): it plans and proposes, and changes nothing */
+  plan?: boolean;
 }
 
 /** A mode whose approvals Codex's own reviewer answers ("Approve for me"): "<mode>@codex-reviews". */
@@ -25,6 +27,8 @@ export const REVIEWS = "@codex-reviews";
 export const CUSTOM_MODE = "custom";
 
 export const CODEX_MODES: Record<string, CodexMode & Choice> = {
+  // Codex's own plan mode, in a read-only sandbox so nothing changes even if it tried.
+  plan: { id: "plan", label: "Plan", description: "Codex plans without changing anything; you review the plan", approvalPolicy: "on-request", sandbox: "read-only", plan: true },
   "read-only": { id: "read-only", label: "Read only", description: "Codex reads files; it asks before editing or running anything else", approvalPolicy: "on-request", sandbox: "read-only" },
   untrusted: { id: "untrusted", label: "Ask first", description: "Codex asks before any edit and any command outside its list of safe ones", approvalPolicy: "untrusted", sandbox: "workspace-write" },
   auto: { id: "auto", label: "Auto", description: "Codex edits and runs commands in this folder; it asks to go outside it or online", approvalPolicy: "on-request", sandbox: "workspace-write" },
@@ -42,7 +46,7 @@ export function knownMode(id: string | undefined): CodexMode | undefined {
   const base = reviews ? id.slice(0, -REVIEWS.length) : id;
   const withReviewer = (m: CodexMode): CodexMode => (reviews ? { ...m, reviewer: "auto_review" } : m);
   const preset = CODEX_MODES[base];
-  if (preset) return withReviewer({ approvalPolicy: preset.approvalPolicy, sandbox: preset.sandbox });
+  if (preset) return withReviewer({ approvalPolicy: preset.approvalPolicy, sandbox: preset.sandbox, ...(preset.plan ? { plan: true } : {}) });
   const [a, s] = base.split("+");
   return a && s && POLICIES.has(a) && SANDBOXES.has(s) ? withReviewer({ approvalPolicy: a as ApprovalPolicy, sandbox: s as SandboxMode }) : undefined;
 }
@@ -105,15 +109,31 @@ export function sandboxOf(p: any): SandboxMode | undefined {
 /**
  * The mode a thread's settings are: one of the presets, or their own combination as
  * "<policy>+<sandbox>" (shown as it is, and never loosened to a preset). Undefined when unknown.
+ * Plan mode (`collab`, the thread's collaboration mode) is "plan" with plan's own permissions;
+ * with any others it shows as those permissions are.
  */
-export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unknown, profile?: unknown): string | undefined {
+export function modeOf(approvalPolicy: unknown, sandbox: unknown, reviewer?: unknown, profile?: unknown, collab?: unknown): string | undefined {
   if (approvalPolicy === undefined || approvalPolicy === null || sandbox === undefined || sandbox === null) return undefined;
   const sb = sandboxOf(sandbox);
   // Settings Tether can't express exactly (a granular policy, an external sandbox, network or extra
   // writable roots in the sandbox, a permission profile): custom, never passed off as a preset.
   if (typeof approvalPolicy !== "string" || !POLICIES.has(approvalPolicy) || !sb || sandboxExtras(sandbox) || customProfile(profile, sandbox)) return CUSTOM_MODE;
-  const base = Object.values(CODEX_MODES).find((m) => m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id ?? `${approvalPolicy}+${sb}`;
+  const planning = planningOf(collab);
+  const base = Object.values(CODEX_MODES).find((m) => !!m.plan === planning && m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id
+    ?? Object.values(CODEX_MODES).find((m) => !m.plan && m.approvalPolicy === approvalPolicy && m.sandbox === sb)?.id
+    ?? `${approvalPolicy}+${sb}`;
   return typeof reviewer === "string" && reviewer !== "user" ? `${base}${REVIEWS}` : base;
+}
+
+/** Whether a thread's collaboration mode (as the daemon or a rollout says it) is plan mode. */
+export const planningOf = (collab: unknown): boolean => (typeof collab === "string" ? collab : (collab as any)?.mode) === "plan";
+
+/**
+ * The collaboration mode for turn/start and thread/settings/update (experimental in the app-server):
+ * plan or default, on the thread's model. `developer_instructions: null` is Codex's own text for it.
+ */
+export function collaborationMode(plan: boolean, model: string, effort?: string) {
+  return { mode: plan ? "plan" : "default", settings: { model, reasoning_effort: effort ?? null, developer_instructions: null } };
 }
 
 /** The permission profiles built into Codex (what the TUI's /permissions sets) and the sandbox each is. */

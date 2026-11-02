@@ -40,16 +40,24 @@ export interface SessionPrefs {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /** the mode the session left for plan mode: approving a plan goes back to it */
+  beforePlan?: string;
   /** what the session draws from, on every start, whatever keys are set later. Never a key itself */
   source?: BillingSource;
+  /** on Azure: the deployment it runs on, kept across restarts. Removed from Settings, the session stops */
+  deployment?: string;
   /** a source picked for the next process start, until the harness confirms it */
   nextBilling?: Billing;
+  /** a start for nextBilling failed; shown until a retry succeeds or the source is cancelled */
+  sourceSwitchFailed?: boolean;
   /** with capabilities.sourceCarry: the source the next message goes to, in a new thread */
   nextSource?: BillingSource;
   /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
   autoKey?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
+  /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
+  metered?: boolean;
   /** a thread being made for a source change: nobody's until its first message has an answer */
   carrying?: boolean;
   /** with movedTo: replaced by a thread on another source, so it isn't anyone's to see */

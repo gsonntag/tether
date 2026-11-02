@@ -9,7 +9,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { agentOf, type Request, type RequestAnswer, type RequestQuestion, type ToolPart } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
-import { Markdown } from "./Markdown";
+import { PlanRequest } from "./PlanReview";
 import { shortPath, ToolDetails } from "./ToolCard";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -74,17 +74,20 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState("");
 
-  const answer = async (a: RequestAnswer) => {
-    if (busy) return;
+  /** True once the answer is in. */
+  const answer = async (a: RequestAnswer): Promise<boolean> => {
+    if (busy) return false;
     setBusy(true);
     setError(undefined);
     try {
       await rpc(runnerId, "answerRequest", { sessionId, requestId: r.id, ...a });
+      return true;
     } catch (e) {
       const m = (e as Error).message;
       // Someone else was first: the card is about to go; say so where it was.
       if (/already answered|no longer open/i.test(m)) onNote(m);
       else setError(m);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -106,6 +109,8 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
             <Spinner size="sm" /> Checking…
           </div>
         </>
+      ) : r.plan !== undefined ? (
+        <PlanRequest r={r} runnerId={runnerId} sessionId={sessionId} title={requestTitle(r, root, agentOf(sessionId))} busy={busy} answer={answer} onNote={onNote} />
       ) : isQuestion ? (
         <Questions r={r} busy={busy} onAnswer={(answers) => void answer({ allow: true, answers })} onDismiss={() => void answer({ allow: false })} />
       ) : (
@@ -158,16 +163,8 @@ function RequestCard({ r, runnerId, sessionId, root, onNote }: { r: Request; run
   );
 }
 
-/** What is being approved: the plan, or the tool call as its card would draw it. */
+/** What is being approved: the tool call as its card would draw it (a plan is PlanRequest's). */
 function ApprovalBody({ r, root }: { r: Request; root?: string }) {
-  if (r.plan !== undefined)
-    return (
-      <div className="t-req-plan">
-        <Markdown density="compact" contentWidth="100%">
-          {r.plan || "(No plan text.)"}
-        </Markdown>
-      </div>
-    );
   if (!r.toolKind && r.input === undefined) return null;
   const part: ToolPart = { type: "tool", id: r.toolId ?? r.id, name: r.tool ?? "Tool", kind: r.toolKind ?? "other", input: r.input, status: "running", ...(r.command ? { command: r.command } : {}), ...(r.path ? { path: r.path } : {}) };
   return (

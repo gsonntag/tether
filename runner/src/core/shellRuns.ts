@@ -183,6 +183,7 @@ export class ShellRuns {
     };
     this.runs.set(id, run);
     s.shellsRunning++;
+    s.setState({ shellsRunning: s.shellsRunning });
     const shell = this.o.shell ?? process.env.SHELL ?? "/bin/bash";
     let proc: ChildProcess | undefined;
     let error: string | undefined;
@@ -420,6 +421,7 @@ export class ShellRuns {
     this.runs.delete(r.id);
     this.release(r.s.id);
     r.s.shellsRunning = Math.max(0, r.s.shellsRunning - 1);
+    r.s.setState({ shellsRunning: r.s.shellsRunning || undefined });
     // Back to the usual: it may leave memory once nothing else holds it.
     this.core.scheduleEvict(r.s);
     const card = this.current(r.s, r.id);

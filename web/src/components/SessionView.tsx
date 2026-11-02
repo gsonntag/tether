@@ -20,6 +20,7 @@ import { useChildren } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
+import { billingForDisplay } from "../sourceMenu";
 
 /** A session to focus the composer of once it opens (a new session just created). */
 let focusNext: string | undefined;
@@ -140,6 +141,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }
 
   const state = view.state;
+  const billing = billingForDisplay(state);
   const inTerminal = state.mode === "terminal";
   const agent = AGENT_NAMES[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
@@ -269,7 +271,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={state.billing}
+            billing={billing}
             running
             steerOnly
             agent="The subagent"
@@ -291,7 +293,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={state.billing}
+            billing={billing}
             running={running}
             mainFree={beside > 0}
             waiting={waiting && state.status !== "running"}

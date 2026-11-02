@@ -11,7 +11,7 @@ import { RESOLVED_ELSEWHERE } from "./adapter";
 import { ALREADY_ANSWERED, DENIED, RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
-import { ask, askQuestion, FakeAdapter, idle, say, subagent, subagentEnds, toolCall } from "./fakeAdapter";
+import { ask, askQuestion, FakeAdapter, idle, say, subagent, subagentEnds, toolCall, type Step } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { restoredMessage } from "./requests";
@@ -177,6 +177,118 @@ describe("requests in sessions", () => {
     await sending;
     expect(s.state.permissionMode).toBe("acceptEdits");
     expect(core.o.prefs.get("claude:s1").permissionMode).toBe("acceptEdits");
+  });
+
+  /** A plan to approve as Claude Code asks it (ExitPlanMode): Ask first by default, or Accept edits. */
+  const askPlan: Step = async (s, d) => {
+    d.lastDecision = await s.request({ kind: "approval", tool: "ExitPlanMode", input: { plan: "x" }, plan: "x", approveMode: "default", approveAs: [{ id: "acceptEdits", label: "Approve and accept edits" }] });
+    d.decisions.push(d.lastDecision);
+  };
+
+  test("approving a plan goes back to the mode the session had before plan mode", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    await live.setPermissionMode("claude:s1", "acceptEdits");
+    await live.setPermissionMode("claude:s1", "plan");
+    expect(core.o.prefs.get("claude:s1").beforePlan).toBe("acceptEdits");
+    adapter.script = () => [askPlan, idle];
+    const sending = live.send("claude:s1", "plan it");
+    await tick();
+    const s = await core.open("claude:s1");
+    const r = s.state.requests[0]!;
+    // The way back is the plain Approve; the same mode isn't offered twice.
+    expect(r.approveMode).toBe("acceptEdits");
+    expect(r.approveAs).toBeUndefined();
+    await live.answerRequest("claude:s1", r.id, { allow: true });
+    await sending;
+    expect(adapter.drivers[0]!.decisions).toEqual([{ allow: true, mode: "acceptEdits" }]);
+  });
+
+  test("never in another mode first: a plain approval leaves plan mode for the harness's own choice", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.script = () => [askPlan, idle];
+    const sending = live.send("claude:s1", "plan it");
+    await tick();
+    const r = (await core.open("claude:s1")).state.requests[0]!;
+    expect(r.approveMode).toBe("default");
+    await live.answerRequest("claude:s1", r.id, { allow: true });
+    await sending;
+    expect(adapter.drivers[0]!.decisions).toEqual([{ allow: true, mode: "default" }]);
+  });
+
+  test("approved with notes: the notes follow into the turn; sent back, the feedback is the denial's reason", async () => {
+    const adapter = new FakeAdapter();
+    adapter.capabilities = { ...adapter.capabilities, canSteer: true };
+    const { core, live } = setup({ adapter });
+    adapter.addStored("s1", []);
+    adapter.script = () => [askPlan, askPlan, () => Bun.sleep(30), idle];
+    const sending = live.send("claude:s1", "plan it");
+    await tick();
+    const s = await core.open("claude:s1");
+    await live.answerRequest("claude:s1", s.state.requests[0]!.id, { allow: false, reason: "> Step 1\n\nNo." });
+    await tick();
+    await live.answerRequest("claude:s1", s.state.requests[0]!.id, { allow: true, notes: "> Step 2\n\nKeep it short." });
+    await sending;
+    await tick();
+    const d = adapter.drivers[0]!;
+    expect(d.decisions[0]).toMatchObject({ allow: false, reason: "The user denied this request and said: > Step 1\n\nNo." });
+    expect((d.decisions[0] as any).interrupt).toBeUndefined();
+    expect(d.steered).toEqual(["Notes on the plan:\n\n> Step 2\n\nKeep it short."]);
+  });
+
+  describe("a plan whose turn has ended (planFollowUp, as Codex's)", () => {
+    const proposes: Step = (s) => {
+      s.state({ status: "idle" });
+      void s.request({ kind: "approval", tool: "plan", input: { id: "p1" }, plan: "1. Do it", approveMode: "auto", planFollowUp: true });
+    };
+
+    async function proposed() {
+      const t = setup();
+      t.adapter.addStored("s1", []);
+      await t.live.setPermissionMode("claude:s1", "full-access");
+      await t.live.setPermissionMode("claude:s1", "plan");
+      t.adapter.script = (text) => (text === "plan it" ? [proposes] : [idle]);
+      await t.live.send("claude:s1", "plan it");
+      await tick();
+      const s = await t.core.open("claude:s1");
+      return { ...t, s, r: s.state.requests[0]! };
+    }
+
+    test("approved: plan mode ends for the mode before it, and Tether says to go ahead, with the notes", async () => {
+      const { live, adapter, s, r } = await proposed();
+      expect(r.approveMode).toBe("full-access");
+      await live.answerRequest("claude:s1", r.id, { allow: true, notes: "> 1. Do it\n\nCarefully." });
+      await tick();
+      const d = adapter.drivers[0]!;
+      expect(d.settings.permissionMode).toBe("full-access");
+      expect(s.state.permissionMode).toBe("full-access");
+      expect(d.sent).toEqual(["plan it", "Implement the plan.\n\nNotes on the plan:\n\n> 1. Do it\n\nCarefully."]);
+    });
+
+    test("sent back: the feedback goes as a message, and plan mode stays", async () => {
+      const { live, adapter, s, r } = await proposed();
+      await live.answerRequest("claude:s1", r.id, { allow: false, reason: "> 1. Do it\n\nHow?" });
+      await tick();
+      expect(adapter.drivers[0]!.sent).toEqual(["plan it", "> 1. Do it\n\nHow?"]);
+      expect(s.state.permissionMode).toBe("plan");
+    });
+
+    test("a message sent instead passes the plan by: it closes, and nothing else is sent", async () => {
+      const { live, adapter, s, closed } = await proposed();
+      await live.send("claude:s1", "actually, wait");
+      await tick();
+      expect(s.state.requests).toEqual([]);
+      expect(closed.at(-1)).toMatchObject({ outcome: "cancelled" });
+      expect(adapter.drivers[0]!.sent).toEqual(["plan it", "actually, wait"]);
+    });
+
+    test("a plain deny sends nothing", async () => {
+      const { live, adapter, r } = await proposed();
+      await live.answerRequest("claude:s1", r.id, { allow: false });
+      await tick();
+      expect(adapter.drivers[0]!.sent).toEqual(["plan it"]);
+    });
   });
 
   test("a driver that exits takes its requests with it", async () => {
@@ -440,6 +552,7 @@ describe("requests across a runner restart", () => {
     expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false, reason: "use dir" })).toBe("[From Tether] The user denied your request to run `ls` and said: use dir");
     expect(restoredMessage({ ...base, kind: "approval", tool: "Bash", command: "ls" }, { allow: false })).toBeUndefined();
     expect(restoredMessage({ ...base, kind: "approval", tool: "ExitPlanMode", plan: "x" }, { allow: true })).toBe("[From Tether] The user approved your plan. Go ahead.");
+    expect(restoredMessage({ ...base, kind: "approval", tool: "ExitPlanMode", plan: "x" }, { allow: true, notes: "> x\n\ny" })).toBe("[From Tether] The user approved your plan. Go ahead.\n\nNotes on the plan:\n\n> x\n\ny");
     expect(restoredMessage({ ...base, kind: "question", question: "Color?", questions: [{ question: "Color?", options: [] }] }, { allow: true, answers: ["Blue"] })).toBe('[From Tether] The user answered "Color?": Blue');
     expect(
       restoredMessage({ ...base, kind: "question", questions: [{ question: "A?", options: [] }, { question: "B?", options: [] }] }, { allow: true, answers: ["1", "2"] }),

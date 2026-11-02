@@ -357,7 +357,7 @@ export interface MoveTarget {
   sources?: SourceChoices;
   /** the session's own harness: the move changes only the source */
   sameHarness?: boolean;
-  /** the source fixes the model (an Azure deployment) */
+  /** a runner from before deployment lists: its one Azure deployment fixes the model */
   deployment?: string;
 }
 

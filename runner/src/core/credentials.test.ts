@@ -92,6 +92,52 @@ describe("credential process boundaries", () => {
     expect(JSON.stringify((await core.open("claude:one")).snapshot(50))).not.toContain(key);
     expect(JSON.stringify(frames)).not.toContain(key);
   });
+  test("Azure: a session keeps its deployment; a rates change restarts it with them; a removed one stops it in the chat, nothing sent", async () => {
+    const { live, adapter, credentials, core, prefs, dir } = setup();
+    adapter.billing = { ...adapter.billing!, keys: ["azure"] };
+    credentials.set("azure", `fake-azure-${crypto.randomUUID()}`);
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }, { name: "d-two", model: "gpt-6-luna" }] });
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: dir, source: "azure", model: "d-two" });
+    expect(prefs.get(sessionId).deployment).toBe("d-two");
+    await live.send(sessionId, "first");
+    const first = adapter.drivers.at(-1)!;
+    expect(first.opts.credential).toMatchObject({ source: "azure", deployment: "d-two" });
+    // Another deployment's change leaves this process be.
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one", rates: { input: 1, output: 1, cached: 1 } }, { name: "d-two", model: "gpt-6-luna" }] });
+    await live.send(sessionId, "same process");
+    expect(first.closed).toBe(false);
+    const rates = { input: 2, output: 8, cached: 0.5 };
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }, { name: "d-two", rates }] });
+    await live.send(sessionId, "new rates");
+    expect(first.closed).toBe(true);
+    const second = adapter.drivers.at(-1)!;
+    expect(second.opts.credential).toMatchObject({ deployment: "d-two", rates });
+    credentials.setAzure({ endpoint: "my-res", deployments: [{ name: "d-one" }] });
+    const sent = second.sent.length, count = adapter.drivers.length;
+    await expect(live.send(sessionId, "nothing")).rejects.toThrow("Azure deployment d-two was removed");
+    expect(second.sent).toHaveLength(sent);
+    expect(adapter.drivers).toHaveLength(count);
+    const s = await core.open(sessionId);
+    expect(JSON.stringify(s.transcript?.messages)).toContain("Azure deployment d-two was removed");
+    expect(prefs.get(sessionId).deployment).toBe("d-two");
+    // No deployment at all.
+    credentials.setAzure({ endpoint: "my-res", deployments: [] });
+    await expect(live.send(sessionId, "nothing")).rejects.toThrow("Azure deployment d-two was removed");
+    expect((await live.sources("claude")).options.map((o) => o.source)).not.toContain("azure");
+  });
+  test("Azure: a session from before deployment lists runs on the one deployment it had, which is then kept", async () => {
+    const { live, adapter, credentials, prefs } = setup();
+    adapter.billing = { ...adapter.billing!, keys: ["azure"] };
+    credentials.set("azure", `fake-azure-${crypto.randomUUID()}`, "https://old-res.openai.azure.com/openai/v1", "legacy");
+    prefs.set("claude:one", { source: "azure" });
+    await live.send("claude:one", "go on");
+    expect(adapter.drivers.at(-1)!.opts.credential).toMatchObject({ deployment: "legacy", endpoint: "https://old-res.openai.azure.com/openai/v1" });
+    expect(prefs.get("claude:one").deployment).toBe("legacy");
+    // Added later, ahead of it: the session stays where it was.
+    credentials.setAzure({ endpoint: "old-res", deployments: [{ name: "newer" }, { name: "legacy" }] });
+    await live.send("claude:one", "still");
+    expect(adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("legacy");
+  });
   test("a running turn and its label finish on the old key before a queued send starts on the new one", async () => {
     const { live, adapter, credentials, core, prefs } = setup();
     adapter.script = () => [];
@@ -242,6 +288,8 @@ describe("credential process boundaries", () => {
       expect(first.closed).toBe(false);
       expect(t.adapter.drivers.at(-1)!.closed).toBe(true);
       expect(t.prefs.get(s.id)).toMatchObject({ source: "subscription", nextSource: "anthropic" });
+      expect(s.state.sourceSwitchFailed).toBe(true);
+      expect(t.prefs.get(s.id).sourceSwitchFailed).toBe(true);
       expect(s.state.continuedIn).toBeUndefined();
       expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
       expect(rows(t)).not.toContain("claude:carried-1");
@@ -250,6 +298,8 @@ describe("credential process boundaries", () => {
       // Picking the source it's on calls it off.
       await t.live.setSource(s.id, "subscription");
       expect(s.state.nextBilling).toBeUndefined();
+      expect(s.state.sourceSwitchFailed).toBeUndefined();
+      expect(t.prefs.get(s.id).sourceSwitchFailed).toBeUndefined();
       t.adapter.script = () => [answers];
       await t.live.send(s.id, "back on the plan");
       expect(first.sent).toEqual(["plan", "back on the plan"]);
@@ -297,6 +347,48 @@ describe("credential process boundaries", () => {
     expect(s.state.nextBilling).toBeUndefined();
     expect(prefs.get(s.id).nextBilling).toBeUndefined();
   });
+  test("a failed source start stays pending until a retry succeeds", async () => {
+    const { live, adapter, credentials, core, prefs, file } = setup();
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    credentials.set("anthropic", `fake-switch-failure-${crypto.randomUUID()}`);
+    await live.send("claude:one", "plan");
+    const s = await core.open("claude:one");
+    const plan = { kind: "plan", label: "Claude plan" } as const;
+    const key = { kind: "apiKey", label: "Anthropic API key" } as const;
+    s.setState({ billing: plan });
+    await live.setSource(s.id, "anthropic");
+
+    adapter.startError = "Key process failed to start.";
+    await expect(live.send(s.id, "try the key")).rejects.toThrow("failed to start");
+    expect(s.state).toMatchObject({ billing: plan, nextBilling: key, sourceSwitchFailed: true });
+    expect(prefs.get(s.id).sourceSwitchFailed).toBe(true);
+    prefs.flush();
+    expect(new Prefs(file, 0).get(s.id).sourceSwitchFailed).toBe(true);
+    adapter.stored.get("one")!.summary.billing = plan;
+    const restored = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs(file, 0), epoch: "restored", log: () => {} });
+    cleanups.push(() => restored.stop());
+    expect((await restored.open(s.id)).state).toMatchObject({ billing: plan, nextBilling: key, sourceSwitchFailed: true });
+
+    adapter.startError = undefined;
+    await live.send(s.id, "retry the key");
+    expect(s.state.sourceSwitchFailed).toBeUndefined();
+    expect(s.state.nextBilling).toBeUndefined();
+    expect(prefs.get(s.id).sourceSwitchFailed).toBeUndefined();
+    expect(adapter.drivers.at(-1)!.opts.credential?.source).toBe("anthropic");
+  });
+  test("an idle source change is allowed while its queue is paused", async () => {
+    const { live, adapter, credentials, core } = setup();
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    credentials.set("anthropic", `fake-paused-queue-${crypto.randomUUID()}`);
+    adapter.addStored("two", []);
+    const s = await core.open("claude:two");
+    s.setState({ queue: [{ id: "q1", text: "queued", queuedAt: 1 }], queueHeld: true, queueHeldBy: "failed" });
+
+    await live.setSource(s.id, "anthropic");
+
+    expect(s.state.queueHeld).toBe(true);
+    expect(s.state.nextBilling?.label).toBe("Anthropic API key");
+  });
   test("Source is refused with a terminal open, during a turn, off the capability, or for a key that isn't set", async () => {
     const { live, adapter, credentials, core } = setup();
     await expect(live.setSource("claude:one", "subscription")).rejects.toThrow("Use Move");
@@ -310,6 +402,14 @@ describe("credential process boundaries", () => {
     await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Close the terminal first");
     s.setState({ terminal: undefined, status: "running" });
     await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the turn");
+    s.setState({ status: "idle", requests: [{} as never] });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the turn");
+    s.setState({ requests: [], backgroundSubagents: 1 });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for background work");
+    s.setState({ backgroundSubagents: undefined, queue: [{ id: "q1", text: "queued", queuedAt: 1 }] });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for queued messages");
+    s.setState({ queue: [], restartWait: true });
+    await expect(live.setSource(s.id, "anthropic")).rejects.toThrow("Wait for the session to reconnect");
   });
   test("rename persists and survives discovery and reopening", async () => {
     const { ops, core, adapter, prefs, file } = setup();

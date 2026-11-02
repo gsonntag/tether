@@ -17,7 +17,7 @@ test("private OpenAI and Azure providers require only the isolated environment k
   expect(openai["model_providers.tether_openai.base_url"]).toBe("https://api.openai.com/v1");
   expect(azure["model_providers.tether_azure.requires_openai_auth"]).toBe(false);
   expect(azure["model_providers.tether_azure.base_url"]).toBe("https://example.openai.azure.com/openai/v1");
-  expect(() => providerConfig("azure")).toThrow("endpoint");
+  expect(() => providerConfig("azure")).toThrow("Azure resource");
   expect(sourceBilling("azure")).toEqual({ kind: "provider", label: "Azure" });
   expect(sourceBilling("openai")).toEqual({ kind: "apiKey", label: "OpenAI API key" });
 });

@@ -26,7 +26,7 @@
 import type { HarnessCommand } from "./commands";
 import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
-import type { BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
+import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { PartChunk } from "./limits";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
@@ -74,6 +74,10 @@ export interface Ops {
   credentials: { args: Record<string, never>; result: CredentialStatus };
   setCredential: { args: { source: CredentialSource; key: string; endpoint?: string; deployment?: string; rates?: TokenRates }; result: CredentialStatus };
   unsetCredential: { args: { source: CredentialSource }; result: CredentialStatus };
+  /** Azure's endpoint (a resource name or a URL) and its deployments, replacing what was there. Its key is untouched */
+  setAzure: { args: { endpoint: string; deployments: AzureDeployment[] }; result: CredentialStatus };
+  /** one tiny request to a saved deployment, the way a session's requests go: real Azure usage, only when asked */
+  testAzure: { args: { deployment: string }; result: { ok: boolean; text: string } };
   /** the sources a harness can use now, and which to show first. A runner without it hides the picker */
   billingSources: { args: { harness: HarnessId }; result: SourceChoices };
   /** a session's source from its next process start (only with capabilities.sourceSwitch) */

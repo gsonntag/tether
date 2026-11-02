@@ -1,13 +1,15 @@
 // The page's place in the URL hash, so reload and the phone's back button work:
 //   #/                                 Home (runners)
 //   #/s/<runnerId>/<sessionId>          a session (both URI-encoded)
+//   #/settings/credentials, #/settings/azure   Settings' subpages
 
 import { useSyncExternalStore } from "react";
 
-export type Route = { page: "home" } | { page: "credentials" } | { page: "session"; runnerId: string; sessionId: string };
+export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "session"; runnerId: string; sessionId: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "settings" && parts[1] === "azure") return { page: "azure" };
   if (parts[0] === "credentials" || parts[0] === "settings") return { page: "credentials" };
   if (parts[0] === "s" && parts[1] && parts[2]) {
     try {
@@ -26,7 +28,7 @@ export function presenceFor(hash: string, visible: boolean): { runnerId?: string
 }
 
 export function formatRoute(r: Route): string {
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : "#/";
 }
 
 export function navigate(r: Route) {

@@ -10,14 +10,17 @@
 import { Commands } from "./commands";
 import { randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTarget, type BillingSource, type SourceChoices } from "../../../shared/credentials";
+import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
+import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
-import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
+import { PLAN_MODE } from "../../../shared/plan";
+import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
+import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
@@ -93,7 +96,12 @@ export class LiveControl {
     private opts: { idleMs?: number; attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
-    this.desk = new RequestDesk(core, broker, { send: (id, text) => this.send(id, text, [], { tether: true }), setPermissionMode: (id, mode) => this.setPermissionMode(id, mode) });
+    this.desk = new RequestDesk(core, broker, {
+      send: (id, text) => this.send(id, text, [], { tether: true }),
+      setPermissionMode: (id, mode) => this.setPermissionMode(id, mode),
+      tell: (id, text) => this.tell(id, text),
+      beforePlan: (id) => core.o.prefs.get(id).beforePlan,
+    });
     this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
@@ -253,6 +261,7 @@ export class LiveControl {
     } catch (e) {
       if (s.sending === me) s.lastSend = undefined;
       if (s.sending === me && !(e instanceof SendCancelled)) {
+        this.markSourceSwitchFailed(s);
         s.turnError = redact((e as Error)?.message ?? String(e));
         // Errors show in the chat. A failed start has said this already, and repeats don't add a row.
         s.apply({ type: "msg", msg: notice(s.turnError, "error") });
@@ -300,6 +309,7 @@ export class LiveControl {
       }
       await this.replaceWith(s, n);
     } catch (e) {
+      this.markSourceSwitchFailed(s);
       s.apply({ type: "msg", msg: notice(redact((e as Error)?.message ?? String(e)), "error") });
       throw e;
     } finally {
@@ -326,11 +336,18 @@ export class LiveControl {
 
   private carryCost(s: Session, n: Session) {
     const paid = n.state.billing?.kind === "apiKey" || n.state.billing?.kind === "provider";
+    const costs = this.opts.costs;
+    if (!costs) return;
     try {
-      const cost = this.opts.costs?.carry(s.id, n.id);
+      // Nothing in the ledger to carry: nothing was spent, unless it was and Tether can't say what.
+      let cost = costs.carry(s.id, n.id);
+      if (!cost && !s.fresh && !this.spendKnown(s)) {
+        cost = costs.markUnknown(n.id, "earlier-usage");
+        this.core.o.prefs.set(n.id, { metered: true });
+      }
       if (cost && paid) n.setState({ cost });
     } catch {
-      if (paid) n.setState({ cost: { estimated: true, complete: false } });
+      if (paid) n.setState({ cost: { estimated: true, complete: false, reasons: ["unsaved"] } });
       this.core.log("Couldn't carry this session's API cost to its new thread. Its total is unknown.");
     }
   }
@@ -341,7 +358,7 @@ export class LiveControl {
     const kept = this.keptPrefs(s);
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
     n.setState(kept);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
@@ -349,7 +366,7 @@ export class LiveControl {
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
     await this.close(s, true);
-    s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined });
+    s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
 
   /**
@@ -378,11 +395,12 @@ export class LiveControl {
       const folder = this.core.folder(s.summary.projectPath);
       const { model, effort, permissionMode } = s.state;
       const source = this.sourceOf(s);
-      const credential = this.credentialFor(s.summary.harness, source);
+      const deployment = this.deploymentOf(s);
+      const credential = this.credentialFor(s.summary.harness, source, deployment);
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
-      this.core.o.prefs.set(n.id, { source, ...kept });
+      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
       n.setState(kept);
       this.core.touch(n);
       try {
@@ -398,6 +416,22 @@ export class LiveControl {
     } finally {
       this.core.unpin(s);
     }
+  }
+
+  /**
+   * The person's words to the agent, sent for them (a plan's notes or feedback): into the running
+   * turn when the harness takes that, else as a new message.
+   */
+  async tell(id: string, text: string) {
+    const s = await this.core.open(id);
+    if (s.state.status !== "idle" && s.capabilities.canSteer && s.driver?.steer && s.state.mode !== "terminal") return this.steer(id, text);
+    return this.send(id, text);
+  }
+
+  /** Going into plan mode: the mode it leaves is kept, so approving a plan goes back to it. */
+  private notePlanEntry(s: Session, mode: string | undefined) {
+    const was = s.state.permissionMode;
+    if (mode === PLAN_MODE && was && was !== PLAN_MODE && !s.summary.parentSessionId) this.core.o.prefs.set(s.id, { beforePlan: was });
   }
 
   /**
@@ -819,6 +853,7 @@ export class LiveControl {
     this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
+    if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
     s.setState(patch);
     // Starting with the old settings right now: applied as soon as it's up.
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
@@ -957,7 +992,7 @@ export class LiveControl {
   private ensureDriver(s: Session, observe = false): Promise<Driver> {
     if (s.driver) {
       if (observe) return Promise.resolve(s.driver);
-      if (!this.opts.credentials || this.opts.credentials.snapshot(this.sourceOf(s))?.revision === s.credentialRevision) return Promise.resolve(s.driver);
+      if (!this.opts.credentials || this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
       // A running turn finishes on its original process and source. No new message can go to it
       // after a change; idle processes are closed before starting again, on the session's source
       // with its key as it is now. With its key unset that start stops, saying so.
@@ -980,7 +1015,7 @@ export class LiveControl {
    * keeps itself), never overwritten by what Tether merely showed.
    */
   chosen(s: Session, observe = false): StartOpts {
-    const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s));
+    const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
     return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
   }
 
@@ -999,17 +1034,56 @@ export class LiveControl {
     return recorded;
   }
 
+  /**
+   * An Azure session's deployment: what's saved with it, else (a session from before deployment
+   * lists) its model if that's a deployment, else the first, which is then saved. Kept from then on:
+   * one that's removed later stops the session, saying so, and nothing stands in for it.
+   */
+  deploymentOf(s: Session): string | undefined {
+    if (!this.opts.credentials || this.sourceOf(s) !== "azure") return undefined;
+    const id = s.summary.parentSessionId ?? s.id;
+    const prefs = this.core.o.prefs.get(id);
+    if (prefs.deployment) return prefs.deployment;
+    const deployment = this.pickDeployment(prefs.model ?? s.state.model);
+    if (deployment) this.core.o.prefs.set(id, { deployment });
+    return deployment;
+  }
+
+  /** The deployment a model names, else Azure's first. None when there are none. */
+  private pickDeployment(model?: string): string | undefined {
+    const list = this.opts.credentials?.azure().deployments ?? [];
+    return (list.find((d) => d.name === model) ?? list[0])?.name;
+  }
+
+  /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
+  forSource(source: BillingSource, opts: StartOpts): StartOpts {
+    if (source !== "azure" || !this.opts.credentials) return opts;
+    const deployment = this.pickDeployment(opts.model);
+    return { ...opts, model: deployment };
+  }
+
+  /** What a session's process must have been started with to be current. */
+  private revisionOf(s: Session): string | undefined {
+    return this.opts.credentials?.snapshot(this.sourceOf(s), this.deploymentOf(s))?.revision;
+  }
+
   private labelOf(harness: HarnessId, source: BillingSource): string {
     return this.core.adapter(harness).billing?.label(source).label ?? source;
   }
 
   /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
-  credentialFor(harness: HarnessId, source: BillingSource): CredentialSnapshot | undefined {
-    if (!this.opts.credentials) return undefined;
-    const credential = this.opts.credentials.snapshot(source);
+  credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
+    const store = this.opts.credentials;
+    if (!store) return undefined;
+    const credential = store.snapshot(source, source === "azure" ? deployment ?? "" : undefined);
     if (credential) return credential;
     const change = this.core.adapter(harness).capabilities.sourceSwitch ? "change the session's Source" : "use Move to continue on another source";
-    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in Credentials, or ${change}. Nothing was sent.`);
+    if (source === "azure" && store.snapshot("azure")) {
+      if (!deployment) throw new Error("Azure has no deployment. Add one in Settings, Azure. Nothing was sent.");
+      throw new Error(`This session's Azure deployment ${deployment} was removed. Add it again in Settings, Azure, or ${change}. Nothing was sent.`);
+    }
+    if (source === "azure" && store.status().azure.set) throw new Error("Azure has no resource set. Set it in Settings, Azure. Nothing was sent.");
+    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : "Credentials"}, or ${change}. Nothing was sent.`);
   }
 
   /** The sources that exist for a harness now: its login, if it reports one, and keys that are set. */
@@ -1018,9 +1092,11 @@ export class LiveControl {
     if (!billing || !this.opts.credentials) return { options: [] };
     const status = this.opts.credentials.status();
     const login = await billing.loggedIn().catch(() => false);
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter((k) => status[k].set)].map((source) => {
-      const deployment = source === "subscription" ? undefined : status[source].deployment;
-      return { source, billing: billing.label(source), ...(deployment ? { deployment } : {}) };
+    // Azure is there with its key, its resource and a deployment to run on.
+    const ready = (k: CredentialSource) => status[k].set && (k !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
+    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => {
+      const deployments = source === "azure" ? status.azure.deployments!.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) : undefined;
+      return { source, billing: billing.label(source), ...(deployments ? { deployments } : {}) };
     });
     const fallback = login ? "subscription" : options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
@@ -1038,19 +1114,29 @@ export class LiveControl {
 
   /** A new native id on a source: a key's thread is made on its own private process. */
   async newNativeId(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<string> {
-    const credential = this.credentialFor(harness, source);
+    opts = this.forSource(source, opts);
+    const credential = this.credentialFor(harness, source, opts.model);
     return this.core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) });
   }
 
   /** A new session, its source saved with it before anything can start it. */
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
+    opts = this.forSource(source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source });
+    this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
     return s;
   }
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
   carrier?: (id: string, source: BillingSource) => Promise<string>;
+
+  /** A queued source remains pending after its first start fails, across views and runner restarts. */
+  private markSourceSwitchFailed(s: Session) {
+    if (!s.state.nextBilling || s.state.sourceSwitchFailed) return;
+    this.core.o.prefs.set(s.id, { sourceSwitchFailed: true });
+    this.core.o.prefs.flush();
+    s.setState({ sourceSwitchFailed: true });
+  }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown) {
@@ -1059,8 +1145,10 @@ export class LiveControl {
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
-    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
-    if (s.state.status !== "idle" || s.sending || s.starting || s.carrying) throw new Error("Wait for the turn to end.");
+    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
+    const blocker = sourceSwitchBlocker(s.state);
+    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
+    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
     if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
     const carries = !!s.capabilities.sourceCarry;
     const own = this.sourceOf(s);
@@ -1072,23 +1160,58 @@ export class LiveControl {
     if (asked === own) {
       // Thought better of it: the thread never left.
       if (carries) {
-        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined });
-        s.setState({ nextBilling: undefined });
+        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+        this.core.o.prefs.flush();
+        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
       }
       return;
     }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
-      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next });
+      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next });
+      s.setState({ nextBilling: next, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next });
+    // Where its API cost starts is decided now, while what it was on until now is still what's confirmed.
+    let cost: SessionCost | undefined;
+    if (asked !== "subscription") {
+      try { cost = this.startCost(s); }
+      catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
+    }
+    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(cost ? { cost } : {}) });
     this.core.touch(s);
+  }
+
+  /**
+   * Whether Tether knows what a session spent on an API so far: what the ledger holds, or nothing,
+   * because until now its confirmed source was the plan and it never had an entry that's gone since.
+   */
+  private spendKnown(s: Session, before: Billing | undefined = s.state.billing): boolean {
+    if (this.opts.costs?.has(s.id)) return true;
+    return !this.core.o.prefs.get(s.id).metered && before?.kind === "plan";
+  }
+
+  /**
+   * A session's API cost from its first time on a key (SPEC "API session dollars"): whole when its
+   * earlier API spend is known (spendKnown, or a new session's nothing), else partial, `earlier-usage`.
+   * `before` is the source confirmed until now. Once it has an entry, that stands.
+   */
+  startCost(s: Session, before: Billing | undefined = s.state.billing): SessionCost | undefined {
+    const costs = this.opts.costs;
+    if (!costs || s.summary.parentSessionId) return undefined;
+    if (costs.has(s.id)) return costs.get(s.id);
+    return this.beginCost(s.id, s.fresh || this.spendKnown(s, before));
+  }
+
+  /** A new entry, and a note in the session's prefs that it had one. */
+  beginCost(id: string, known: boolean): SessionCost | undefined {
+    const cost = this.opts.costs?.begin(id, known);
+    if (cost) this.core.o.prefs.set(id, { metered: true });
+    return cost;
   }
 
   /** The box in the billing chip's menu, saved with the session. Nothing checks keys here: the menu shows it, the switch looks. */
@@ -1169,7 +1292,7 @@ export class LiveControl {
   }
 
   private checkCredential(s: Session) {
-    if (this.opts.credentials && this.opts.credentials.snapshot(this.sourceOf(s))?.revision !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
+    if (this.opts.credentials && this.revisionOf(s) !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
   }
 
   private async startDriver(s: Session, observe = false): Promise<Driver> {
@@ -1186,6 +1309,7 @@ export class LiveControl {
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
     } catch (e: any) {
       const error = redact(e?.message ?? String(e));
+      this.markSourceSwitchFailed(s);
       s.rebuilt = s.fresh;
       s.apply({ type: "msg", msg: notice(`Couldn't start ${HARNESS_LABELS[s.summary.harness]}: ${error}`, "error") });
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
@@ -1200,8 +1324,8 @@ export class LiveControl {
     s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
     // Waiting for a new thread to confirm it (carry), not this one.
     if (s.state.nextBilling && !this.core.o.prefs.get(s.id).nextSource) {
-      this.core.o.prefs.set(s.id, { nextBilling: undefined });
-      s.setState({ nextBilling: undefined });
+      this.core.o.prefs.set(s.id, { nextBilling: undefined, sourceSwitchFailed: undefined });
+      s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
     }
     d.onExit = (error) => {
       if (s.driver !== d) return;
@@ -1286,10 +1410,10 @@ export class LiveControl {
         const billing = s.state.billing;
         if (billing?.kind !== "apiKey" && billing?.kind !== "provider") return;
         try {
-          this.opts.costs.begin(s.id, s.fresh);
+          this.startCost(s);
           const cost = this.opts.costs.report(s.id, report.id, { usd: report.usd, estimated: report.estimated, complete: report.complete, reasons: report.reasons, notes: report.notes });
           s.setState({ cost });
-        } catch { s.setState({ cost: { estimated: true, complete: false } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
+        } catch { s.setState({ cost: { ...(s.state.cost?.usd !== undefined ? { usd: s.state.cost.usd } : {}), estimated: true, complete: false, reasons: ["unsaved"] } }); core.log("Couldn't persist this session's API cost. Its total is unknown."); }
         core.touch(s);
       },
       event: (e) => {
@@ -1315,8 +1439,9 @@ export class LiveControl {
       state: (patch) => {
         patch = redactValue(patch);
         if (this.opts.costs && (patch.billing?.kind === "apiKey" || patch.billing?.kind === "provider") && !s.summary.parentSessionId) {
-          try { patch.cost = this.opts.costs.begin(s.id, s.fresh); }
-          catch { patch.cost = { estimated: true, complete: false }; }
+          // What it was on until now: the billing this patch replaces.
+          try { patch.cost = this.startCost(s, s.state.billing); }
+          catch { patch.cost = { estimated: true, complete: false, reasons: ["unsaved"] }; }
         }
         const before = s.state.status;
         // A harness that keeps the session's settings itself (capabilities.persistent) reports them.
@@ -1340,6 +1465,7 @@ export class LiveControl {
           if (Object.keys(done).length) core.o.prefs.set(s.id, done);
         }
         const wasBackground = s.state.turnSettings?.who === "background";
+        if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
         const changed = s.setState(patch);
         if (!changed) return;
         // Commands with more access than shown: a restart joins the session again to say so.

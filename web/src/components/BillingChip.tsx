@@ -7,8 +7,9 @@ import { isApiBilling, planLines, usageChip } from "../../../shared/labels";
 import { UNKNOWN_BILLING, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate } from "../route";
-import { CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
+import { billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
 import { useStore } from "../store";
+import { SessionApiCostGroup } from "./SessionApiCostGroup";
 
 const known = new Map<string, SourceChoices>();
 
@@ -32,10 +33,11 @@ function useSources(runnerId: string, harness: HarnessId, wanted: boolean) {
 export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey: (on: boolean) => void }) {
   const changeable = !session.parentSessionId && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
-  const billing = state.billing ?? UNKNOWN_BILLING;
+  const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
   const cost = costChip(state.cost);
   const paid = isApiBilling(billing);
+  const showSessionCost = paid || !!state.cost;
   const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
   const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : usage.text;
   if (!choices) return <span {...chip}>{body}</span>;
@@ -46,7 +48,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const plan = planName ? planLines(state.plan) : [];
   const keys = choices.options.filter((o) => o.source !== "subscription");
   const target = keyTarget(choices.options, state.lastKey);
-  const onPlan = (state.nextBilling ?? billing).kind === "plan";
+  const onPlan = billing.kind === "plan";
   return (
       <DropdownMenu
         menuMaxHeight={420}
@@ -68,6 +70,10 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
           </DropdownMenuGroup>
         )}
         {plan.length > 0 && <DropdownMenuDivider />}
+        {showSessionCost && <>
+          <SessionApiCostGroup billing={billing} cost={state.cost} />
+          <DropdownMenuDivider />
+        </>}
         <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
           {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
         </DropdownMenuRadioGroup>

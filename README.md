@@ -95,6 +95,8 @@ P1: `bun scripts/smoke-p1.ts` (scripted browsers through the relay) and `node sc
 P2: `node scripts/e2e-p2.mjs` (Playwright, desktop and phone, real Claude on Haiku) checks requests:
 approvals on two devices, "Already answered", deny with reason, questions, a subagent's request, a
 runner restart with a request open, and plan approval. See its header and `docs/acceptance/P2.md`.
+`node scripts/e2e-plan.mjs [claude] [codex]` reviews a real plan on each harness: comments on a
+selection and a paragraph, Send feedback, then Approve with notes from the phone.
 
 `scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
 local stack (vite on :5180; it starts and stops the server and runners itself):
