@@ -28,7 +28,8 @@ CredentialStore.current = credentials;
 const fake = () => `fake-${crypto.randomUUID()}`;
 credentials.set("anthropic", fake());
 credentials.set("openai", fake());
-credentials.set("azure", fake(), "https://fake.invalid", "fake-deployment");
+credentials.set("azure", fake());
+credentials.setAzure({ endpoint: "https://fake.invalid", deployments: [{ name: "fake-deployment" }] });
 
 const LIMIT = "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:56 AM.";
 const H = 3_600_000;

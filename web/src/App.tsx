@@ -4,7 +4,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { LockClosedIcon } from "@heroicons/react/24/outline";
-import { Credentials } from "./components/Credentials";
+import { Settings } from "./components/Credentials";
 import { Home } from "./components/Home";
 import { NewSessionDialog } from "./components/NewSessionDialog";
 import { SessionView } from "./components/SessionView";
@@ -36,8 +36,8 @@ export function App() {
     >
       {auth !== "ok" ? (
         <Blocked auth={auth} />
-      ) : route.page === "credentials" ? (
-        <Credentials />
+      ) : route.page === "credentials" || route.page === "azure" ? (
+        <Settings page={route.page} />
       ) : route.page === "session" ? (
         <SessionView key={`${route.runnerId}\u0000${route.sessionId}`} runnerId={route.runnerId} sessionId={route.sessionId} />
       ) : (

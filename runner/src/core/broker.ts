@@ -259,7 +259,9 @@ export class RequestBroker {
       const answers = (a.answers ?? []).map((x) => String(x ?? "").trim());
       if (r.kind === "question" && !answers.some(Boolean)) throw new Error("Pick or type an answer first.");
       if (a.mode && !r.approveAs?.some((m) => m.id === a.mode)) throw new Error("That isn't one of the ways to approve this.");
-      decision = { allow: true, ...(r.kind === "question" ? { answers } : {}), ...(a.mode ? { mode: a.mode } : {}) };
+      // An approved plan leaves plan mode: for the mode picked, else the one the request says.
+      const mode = a.mode ?? (r.plan !== undefined ? r.approveMode : undefined);
+      decision = { allow: true, ...(r.kind === "question" ? { answers } : {}), ...(mode ? { mode } : {}) };
     } else {
       const reason = a.reason?.trim();
       if (r.kind === "question") decision = { allow: false, reason: reason ? deniedBecause(reason) : DISMISSED };

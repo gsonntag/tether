@@ -25,6 +25,27 @@ No real key: `scripts/e2e-cost.ts` ran every response shape through the real pri
 upstream, and `sourceCarry` followed the amount over takeovers with Azure rates on a fake endpoint.
 Neither is a real OpenAI response: see Real-key checks.
 
+## Where API cost starts (2026-11-01)
+
+A Claude session switched from the plan to a key on the chip showed Cost unknown: its entry began
+partial because the session wasn't new, and with no reason the chip had no subtotal to show.
+
+- Unit: `runner/src/core/costStart.test.ts` on the real core and a real ledger file: the chip after
+  plan turns, a stored plan session after a restart, earlier source Unknown, a lost entry, a last
+  start on a key before the ledger, key/plan/key, a new key session, a stray report, `planOut`, and
+  a Codex source change from the plan, from a key with an entry and from one whose entry was lost.
+  `runner/src/modules/move/move.test.ts`: a Move into a key starts whole. `runner/src/costs.test.ts`:
+  entry reasons, the old file shapes (the prod entry's among them), an unreadable ledger.
+  `runner/src/adapters/claude/cost.test.ts`: the plan period's restored total is the baseline.
+- Browser, private stack, real Claude on Haiku (`scripts/e2e-move.mjs costSwitch`): two plan turns,
+  a made-up Anthropic key picked on the chip. `costs.json` had the entry whole at the switch; the
+  refused key turn left it whole with one `no-usage` report and no amount, and the chip read Cost
+  unknown with that reason. With logging added for the run only, the key process's pre-send read
+  returned the plan process's last cumulative total (0.00988): the baseline Tether subtracts. A plan
+  session's `/clear` took the cumulative total from 0.0036 to 0.
+- Not run: a key that really works, so `total - baseline` on a real paid turn isn't seen live (unit
+  only). The prod session's entry stays partial (no repair): it shows `est. $x` with `earlier-usage`.
+
 ## When the plan runs out (2026-11-01)
 
 No source ever changes by itself, with one exception: the checkbox in the billing chip's menu, ticked
@@ -64,7 +85,7 @@ by you, for that session (SPEC §10 has the signals). Without it, an exhausted p
   anywhere under the artifact root but the private file.
 - Valid API-key inference, provider invoice/usage reconciliation and real-device touch behavior
   remain owner checks. A Claude TUI's unobserved spend, missing Azure rates and incomplete pricing
-  metadata deliberately show Cost unknown.
+  metadata deliberately leave the total partial: `est. $x` with the reason, or Cost unknown with no figure.
 
 Artifacts are under `/tmp/claude-1001/keys/`. The shared Codex configuration SHA-256 remained
 `8b73d3941d6f02f411b3baedff3d4a936b5543a2b69a0d047bf123d201740493`.
@@ -88,13 +109,13 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
 
 ## Credentials page
 
-- [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; Credentials is its only subpage. Exactly Claude/Anthropic,
-  Codex/Azure and Codex/OpenAI slots appear, and only keys: nothing says which is in use. Multiple
-  runners have a runner selector.
+- [ ] Desktop and 375 px phone: open Settings with the button beside the user's name; its nav has
+  Credentials and Azure (AZURE.md). Credentials has exactly Claude/Anthropic and Codex/OpenAI slots,
+  and only keys: nothing says which is in use. Multiple runners have a runner selector.
 - [ ] Save a random fake Anthropic key. The password field clears immediately; status becomes Set,
   optionally with last four characters. Reload: only status is returned, never the key.
-- [ ] Save OpenAI, then Azure with HTTPS endpoint and optional deployment, then Anthropic. All three
-  stay Set, including after reconnect and runner restart. There is no enable switch.
+- [ ] Save OpenAI, then Anthropic, and Azure's key on its page. All three stay Set, including after
+  reconnect and runner restart. There is no enable switch.
 - [ ] Unset one: the others stay Set, and no session changes source. An unset key doesn't return.
 - [ ] Invalid endpoint/key and unavailable runner show terse inline errors; no key is repeated.
 
@@ -159,14 +180,15 @@ immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6
   browser; Escape cancels. Refresh and rediscover preserve the title. Renaming runs no harness.
 - [ ] API badge shows cumulative USD with `est.` for estimates. Repeated usage events do not
   double-count; restart/resume does not add restored earlier totals again. Subscription-equivalent
-  spend is excluded. Unknown prior usage or Azure rates says Cost unknown, its reason in the tooltip.
-  A report that can't be priced beside ones that are reads `~$0.02+`; without a figure, Cost unknown.
+  spend is excluded. A session switched from the plan to a key starts whole; unknown prior usage
+  reads `est. $0.02` with `earlier-usage` in the tooltip. Any gap with a subtotal above zero reads
+  `est. $0.02`; without a figure, Cost unknown, its reason in the tooltip.
 - [ ] `NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-cost.ts <dir> <port>`: the real private host
   in front of `scripts/fake-responses.ts`, each response shape; `costs.json` holds only numbers, ids
   and codes. A source change carries the amount, there and back (`scripts/e2e-move.mjs sourceCarry`).
 - [ ] Azure optional USD / 1M rates persist beside the key. Cached reads are priced once; writes
   without sufficient rates remain unknown. A pending request/crash never leaves a false complete
-  total. Opening a Claude key TUI marks its unobserved cost incomplete.
+  total. Opening a Claude key TUI marks its unobserved cost incomplete (`terminal`).
 - [ ] With browser timezone America/Los_Angeles, a usage-limit retry at `Nov 1st, 2026 2:33 AM`
   (runner UTC) displays `Oct 31, 2026, 7:33 PM PDT`. Raw transcript text is unchanged; UTC and DST
   boundary tests cover conversion.

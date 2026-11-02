@@ -10,7 +10,7 @@ import { rpc } from "../connection";
 import { openSession } from "../route";
 import { loadModels, modelListKey, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
-import { SourcePicker } from "./SourcePicker";
+import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 /** The session's menu, in the header: Change session harness and its dialog (SPEC §15). */
 export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean }) {
@@ -66,7 +66,9 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
   const [sources, setSources] = useState<Partial<Record<HarnessId, BillingSource>>>({});
   const source = harness ? (sources[harness] ?? target?.sources?.default) : undefined;
   const option = target?.sources?.options.find((o) => o.source === source);
-  const deployment = option?.deployment ?? target?.deployment;
+  // On Azure the model is one of its deployments.
+  const deployments = azureDeployments(option) ?? (target?.deployment ? [{ name: target.deployment }] : undefined);
+  const deployment = deployments && (deployments.find((d) => d.name === model) ?? deployments[0])?.name;
   useEffect(() => {
     // The same harness carries on with what the session runs.
     setModel(target?.sameHarness ? (state.model ?? "") : "");
@@ -88,7 +90,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
     setBusy(true);
     setError(undefined);
     try {
-      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(source ? { source } : {}), ...(model && model !== "default" && !deployment && findModel(listed, model) ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
+      const { sessionId } = await rpc(runnerId, "moveSession", { sessionId: session.id, harness, ...(source ? { source } : {}), ...(deployments ? { model: deployment } : model && model !== "default" && findModel(listed, model) ? { model } : {}), ...(validEffort ? { effort: validEffort } : {}) });
       onClose();
       focusComposerOf(runnerId, sessionId);
       openSession(runnerId, sessionId);
@@ -102,7 +104,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
   const blocked = options?.blocked;
   return (
     <Dialog isOpen onOpenChange={(o) => !o && !busy && onClose()} width={420} purpose="form">
-      <DialogHeader title="Move to…" onOpenChange={(o) => !o && !busy && onClose()} />
+      <DialogHeader title="Change session harness" onOpenChange={(o) => !o && !busy && onClose()} />
       <div className="t-form" style={{ padding: 16 }}>
         {targets.length > 1 && (
           <div className="t-seg" role="radiogroup" aria-label="Agent">
@@ -118,11 +120,8 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
         {target && (
           <>
             <SourcePicker choices={target.sources} value={source} onChange={(s) => setSources((x) => ({ ...x, [target.harness]: s }))} />
-            {deployment ? (
-              <div>
-                <span className="t-field-label">Deployment</span>
-                <div>{deployment}</div>
-              </div>
+            {deployments ? (
+              <DeploymentPicker deployments={deployments} value={deployment} onChange={setModel} />
             ) : (<label>
               <span className="t-field-label">Model</span>
               <select className="t-select" value={shownModel} onChange={(e) => setModel(e.target.value)}>
@@ -133,7 +132,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
                 ))}
               </select>
             </label>)}
-            {efforts.length > 0 && !deployment && (
+            {efforts.length > 0 && !deployments && (
               <label>
                 <span className="t-field-label">Effort</span>
                 <select className="t-select" value={validEffort || unsetEffort} onChange={(e) => setEffort(e.target.value)}>
@@ -163,7 +162,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
         {error && <div className="t-form-error">{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />
-          <Button label={busy ? "Moving…" : "Move"} variant="primary" isDisabled={!target || !!blocked || busy} onClick={() => void move()} />
+          <Button label={busy ? "Changing…" : "Change"} variant="primary" isDisabled={!target || !!blocked || busy} onClick={() => void move()} />
         </div>
       </div>
     </Dialog>

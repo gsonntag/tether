@@ -7,7 +7,7 @@ const file = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, 
 describe("session API dollars", () => {
   test("cumulative process reports replace replayed totals and add across processes and restart", () => {
     const path = file(), ledger = new CostLedger(path);
-    expect(ledger.get("s")).toEqual({ estimated: true, complete: false });
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
     expect(ledger.begin("s", true)).toEqual({ usd: 0, estimated: false, complete: true });
     ledger.report("s", "first-process", { usd: 0.1, estimated: true, complete: true });
     ledger.report("s", "first-process", { usd: 0.3, estimated: true, complete: true });
@@ -19,13 +19,13 @@ describe("session API dollars", () => {
   });
   test("unknown history/rates remain unknown, never a complete partial subtotal", () => {
     const ledger = new CostLedger();
-    expect(ledger.report("older", "new", { usd: 2, estimated: true, complete: true })).toEqual({ usd: 2, estimated: true, complete: false });
+    expect(ledger.report("older", "new", { usd: 2, estimated: true, complete: true })).toEqual({ usd: 2, estimated: true, complete: false, reasons: ["earlier-usage"] });
     ledger.begin("new", true);
     ledger.report("new", "priced", { usd: 1, estimated: true, complete: true });
-    expect(ledger.report("new", "unpriced", { estimated: true, complete: false })).toEqual({ usd: 1, estimated: true, complete: false });
+    expect(ledger.report("new", "unpriced", { estimated: true, complete: false })).toEqual({ usd: 1, estimated: true, complete: false, reasons: ["no-usage"] });
     expect(ledger.report("new", "unpriced", { usd: 0.5, estimated: true, complete: true })).toEqual({ usd: 1.5, estimated: true, complete: true });
     ledger.markUnknown("new");
-    expect(ledger.get("new").complete).toBe(false);
+    expect(ledger.get("new")).toMatchObject({ usd: 1.5, complete: false, reasons: ["terminal"] });
     ledger.begin("new", true);
     expect(ledger.get("new").complete).toBe(false);
   });
@@ -33,7 +33,7 @@ describe("session API dollars", () => {
     const ledger = new CostLedger();
     ledger.begin("s", true);
     ledger.report("s", "query", { usd: 0.2, estimated: true, complete: true });
-    expect(ledger.report("s", "query", { estimated: true, complete: false })).toEqual({ usd: 0.2, estimated: true, complete: false });
+    expect(ledger.report("s", "query", { estimated: true, complete: false })).toEqual({ usd: 0.2, estimated: true, complete: false, reasons: ["no-usage"] });
   });
   test("special report ids are safe and lower cumulative totals cannot reduce prior totals", () => {
     const ledger = new CostLedger();
@@ -47,7 +47,8 @@ describe("session API dollars", () => {
     mkdirSync(path, { recursive: true });
     const ledger = new CostLedger(path);
     expect(() => ledger.report("s", "r", { usd: 1, estimated: true, complete: true })).toThrow("Couldn't save");
-    expect(ledger.get("s")).toEqual({ estimated: true, complete: false });
+    expect(ledger.has("s")).toBe(false);
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
   });
   test("a corrupt saved ledger cannot turn lost costs into a new zero total", () => {
     const path = file(); writeFileSync(path, '{broken', { mode: 0o600 });
@@ -58,34 +59,30 @@ describe("session API dollars", () => {
     expect(() => ledger.report("s", "missing", { estimated: true, complete: true })).toThrow("Invalid");
   });
   test("OpenAI standard estimates subtract cached input instead of double billing it", () => {
-    const value = estimateTokenCost("openai", "gpt-6-luna", { input: 100_000, cached: 50_000, output: 10_000, write30m: 0, write12h: 0 }, { tier: "default" });
+    const value = estimateTokenCost("gpt-6-luna", { input: 100_000, cached: 50_000, output: 10_000, write30m: 0, write12h: 0 }, { tier: "default" });
     expect(value.complete).toBe(true);
     expect(value.estimated).toBe(true);
     expect(value.usd).toBeCloseTo(0.0105, 10);
-    expect(estimateTokenCost("openai", "gpt-6.1-sol", { input: 100_000, cached: 0, output: 1_000, write30m: 0, write12h: 0 }, { tier: "standard" }).usd).toBeCloseTo(0.21, 10);
+    expect(estimateTokenCost("gpt-6.1-sol", { input: 100_000, cached: 0, output: 1_000, write30m: 0, write12h: 0 }, { tier: "standard" }).usd).toBeCloseTo(0.21, 10);
   });
   test("OpenAI cache write tiers use their published multipliers and require a full breakdown", () => {
     const base = { input: 100_000, output: 0, cached: 10_000 };
-    const priced = estimateTokenCost("openai", "gpt-6-luna", { ...base, write30m: 20_000, write12h: 30_000 }, { tier: "standard" });
+    const priced = estimateTokenCost("gpt-6-luna", { ...base, write30m: 20_000, write12h: 30_000 }, { tier: "standard" });
     expect(priced.usd).toBeCloseTo((40_000 * 0.1 + 10_000 * 0.01 + 20_000 * 0.125 + 30_000 * 0.25) / 1_000_000, 12);
     for (const usage of [base, { ...base, write30m: 20_000 }, { ...base, write30m: 90_001, write12h: 0 }, { ...base, write30m: -1, write12h: 0 }]) {
-      expect(estimateTokenCost("openai", "gpt-6-luna", usage, { tier: "standard" })).toMatchObject({ estimated: true, complete: false });
+      expect(estimateTokenCost("gpt-6-luna", usage, { tier: "standard" })).toMatchObject({ estimated: true, complete: false });
     }
   });
-  test("unknown models, tiers, long context, invalid usage and missing Azure rates are not guessed", () => {
+  test("unknown models, tiers, long context and invalid usage are not guessed", () => {
     const usage = { input: 1000, output: 100, cached: 0 };
     for (const result of [
-      estimateTokenCost("azure", "gpt-6-luna", usage, { tier: "default" }),
-      estimateTokenCost("openai", "unknown", { ...usage, write30m: 0, write12h: 0 }, { tier: "default" }),
-      estimateTokenCost("openai", "gpt-6-luna", { ...usage, write30m: 0, write12h: 0 }),
-      estimateTokenCost("openai", "gpt-6-luna", { ...usage, write30m: 0, write12h: 0 }, { tier: "priority" }),
-      estimateTokenCost("openai", "gpt-6-luna", { ...usage, write30m: 0, write12h: 0, input: 272_001 }, { tier: "default" }),
-      estimateTokenCost("openai", "gpt-6-luna", { ...usage, write30m: 0, write12h: 0, cached: 1001 }, { tier: "default" }),
-      estimateTokenCost("openai", "gpt-6-luna", { ...usage, write30m: 0, write12h: 0, input: -1 }, { tier: "default" }),
+      estimateTokenCost("unknown", { ...usage, write30m: 0, write12h: 0 }, { tier: "default" }),
+      estimateTokenCost("gpt-6-luna", { ...usage, write30m: 0, write12h: 0 }),
+      estimateTokenCost("gpt-6-luna", { ...usage, write30m: 0, write12h: 0 }, { tier: "priority" }),
+      estimateTokenCost("gpt-6-luna", { ...usage, write30m: 0, write12h: 0, input: 272_001 }, { tier: "default" }),
+      estimateTokenCost("gpt-6-luna", { ...usage, write30m: 0, write12h: 0, cached: 1001 }, { tier: "default" }),
+      estimateTokenCost("gpt-6-luna", { ...usage, write30m: 0, write12h: 0, input: -1 }, { tier: "default" }),
     ]) expect(result.usd === undefined && !result.complete && result.reasons?.length).toBe(1);
-    expect(estimateTokenCost("azure", "deployment-alias", usage, { rates: { input: 3, output: 7, cached: 0 } })).toEqual({ usd: 0.0037, estimated: true, complete: true });
-    expect(estimateTokenCost("azure", "deployment-alias", { ...usage, write30m: 0, write12h: 0 }, { rates: { input: 3, output: 7, cached: 0 } }).complete).toBe(true);
-    expect(estimateTokenCost("azure", "deployment-alias", { ...usage, write30m: 1, write12h: 0 }, { rates: { input: 3, output: 7, cached: 0 } })).toEqual({ estimated: true, complete: false, reasons: ["no-cache-ttl"] });
   });
 });
 
@@ -163,13 +160,82 @@ describe("pricing a finished response", () => {
     expect(cost.usd).toBeGreaterThan(0);
     expect(cost).toMatchObject({ complete: false, reasons: ["tool-fee"] });
   });
-  test("Azure is as it was: rates price, and any write or a missing count is unknown", () => {
-    const rates = { input: 3, output: 7, cached: 0 };
-    const zero = { cache_write_tokens: 0 };
-    expect(priceResponse("azure", response(zero, { service_tier: undefined }), { rates }).complete).toBe(true);
-    expect(priceResponse("azure", response(zero))).toEqual({ estimated: true, complete: false, reasons: ["model:gpt-6-luna"] });
-    expect(priceResponse("azure", response({}), { rates })).toEqual({ estimated: true, complete: false, reasons: ["no-cache-ttl"] });
-    expect(priceResponse("azure", response(breakdown), { rates })).toEqual({ estimated: true, complete: false, reasons: ["no-cache-ttl"] });
+});
+
+// Azure, from Tether's dated table or the owner's Override. The fake's shapes: Codex sends no tier.
+describe("pricing an Azure response", () => {
+  const usage = (input_tokens: number, details: object = {}, more: object = {}) => ({
+    id: "r", model: "whatever-azure-says", output: [],
+    usage: { input_tokens, output_tokens: 1_000, input_tokens_details: { cached_tokens: 40_000, ...details } }, ...more,
+  });
+  const luna = { model: "gpt-6-luna", type: "global" as const };
+  const per = (n: number, rate: number) => (n * rate) / 1e6;
+  test("short context from the table, with its note, whatever model the response names", () => {
+    const cost = priceResponse("azure", usage(100_000, { cache_write_tokens: 0 }), { pricing: luna });
+    expect(cost).toMatchObject({ estimated: true, complete: true, notes: ["azure-table"] });
+    expect(cost.usd).toBeCloseTo(per(60_000, 0.10) + per(40_000, 0.01) + per(1_000, 0.50), 12);
+    // No write count at all: none written.
+    expect(priceResponse("azure", usage(100_000), { pricing: luna }).complete).toBe(true);
+  });
+  test("long context over 272,000 input tokens uses the long rates; the boundary is short", () => {
+    expect(priceResponse("azure", usage(272_000), { pricing: luna }).usd).toBeCloseTo(per(232_000, 0.10) + per(40_000, 0.01) + per(1_000, 0.50), 12);
+    expect(priceResponse("azure", usage(272_001), { pricing: luna }).usd).toBeCloseTo(per(232_001, 0.20) + per(40_000, 0.02) + per(1_000, 0.75), 12);
+  });
+  test("cache writes at the table's one write rate, with or without a lifetime breakdown", () => {
+    const total = priceResponse("azure", usage(100_000, { cache_write_tokens: 50_000 }), { pricing: luna });
+    const expected = per(10_000, 0.10) + per(40_000, 0.01) + per(50_000, 0.125) + per(1_000, 0.50);
+    expect(total).toMatchObject({ complete: true, notes: ["azure-table"] });
+    expect(total.usd).toBeCloseTo(expected, 12);
+    const split = { cache_write_tokens_details: { ttl_30m_tokens: 20_000, ttl_12h_tokens: 30_000 } };
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 50_000, ...split }), { pricing: luna }).usd).toBeCloseTo(expected, 12);
+    expect(priceResponse("azure", usage(100_000, split), { pricing: luna }).usd).toBeCloseTo(expected, 12);
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 70_000 }), { pricing: luna }).reasons).toEqual(["no-usage"]);
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens_details: { ttl_30m_tokens: 1 } }), { pricing: luna }).reasons).toEqual(["no-usage"]);
+  });
+  test("no table write rate (gpt-5.5, gpt-5.4): writes are unknown, no writes are priced", () => {
+    for (const model of ["gpt-5.5", "gpt-5.4"]) {
+      expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 1 }), { pricing: { model, type: "global" } })).toEqual({ estimated: true, complete: false, reasons: ["no-write-rate"] });
+    }
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 0 }), { pricing: { model: "gpt-5.5", type: "global" } }).usd).toBeCloseTo(per(60_000, 5) + per(40_000, 0.5) + per(1_000, 30), 12);
+  });
+  test("Data Zone has its own rates; gpt-5.4 there has no long rates; Regional isn't in the table", () => {
+    expect(priceResponse("azure", usage(100_000), { pricing: { model: "gpt-6-luna", type: "dataZone" } }).usd).toBeCloseTo(per(60_000, 0.11) + per(40_000, 0.011) + per(1_000, 0.55), 12);
+    expect(priceResponse("azure", usage(100_000), { pricing: { model: "gpt-5.4", type: "dataZone" } }).usd).toBeCloseTo(per(60_000, 2.75) + per(40_000, 0.28) + per(1_000, 16.5), 12);
+    expect(priceResponse("azure", usage(300_000), { pricing: { model: "gpt-5.4", type: "dataZone" } })).toEqual({ estimated: true, complete: false, reasons: ["long-context"] });
+    expect(priceResponse("azure", usage(300_000), { pricing: { model: "gpt-5.4", type: "global" } }).complete).toBe(true);
+    expect(priceResponse("azure", usage(100_000), { pricing: { model: "gpt-6-luna", type: "regional" } })).toEqual({ estimated: true, complete: false, reasons: ["type:regional"] });
+  });
+  test("models: lowercased exact ids, a dated version suffix, and nothing else", () => {
+    expect(priceResponse("azure", usage(100_000), { pricing: { model: "GPT-6-Luna", type: "global" } }).complete).toBe(true);
+    expect(priceResponse("azure", usage(100_000), { pricing: { model: "gpt-5.4-2026-03-05", type: "global" } }).complete).toBe(true);
+    for (const [model, reason] of [["DeepSeek-V4", "model:deepseek-v4"], ["gpt-6-luna-mini", "model:gpt-6-luna-mini"], ["gpt-6-luna-0315", "model:gpt-6-luna-0315"], ["", "model:none"], [undefined, "model:none"]] as const) {
+      expect(priceResponse("azure", usage(100_000), { pricing: { model, type: "global" } })).toEqual({ estimated: true, complete: false, reasons: [reason] });
+    }
+    // A request to another deployment gets no pricing at all.
+    expect(priceResponse("azure", usage(100_000))).toEqual({ estimated: true, complete: false, reasons: ["model:none"] });
+  });
+  test("Override: the owner's rates, short only, writes only with a write rate", () => {
+    const rates = { input: 3, output: 7, cached: 1 };
+    const cost = priceResponse("azure", usage(100_000, { cache_write_tokens: 0 }), { pricing: { model: "DeepSeek-V4", type: "regional", rates } });
+    expect(cost).toEqual({ usd: per(60_000, 3) + per(40_000, 1) + per(1_000, 7), estimated: true, complete: true });
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 10_000 }), { pricing: { ...luna, rates } })).toEqual({ estimated: true, complete: false, reasons: ["no-write-rate"] });
+    expect(priceResponse("azure", usage(100_000, { cache_write_tokens: 10_000 }), { pricing: { ...luna, rates: { ...rates, cacheWrite: 4 } } }).usd).toBeCloseTo(per(50_000, 3) + per(40_000, 1) + per(10_000, 4) + per(1_000, 7), 12);
+    expect(priceResponse("azure", usage(272_001), { pricing: { ...luna, rates } })).toEqual({ estimated: true, complete: false, reasons: ["long-context"] });
+  });
+  test("tiers: default, standard, auto or none price; Priority, Flex, Batch and the rest don't", () => {
+    for (const service_tier of [undefined, null, "", "default", "standard", "auto"]) expect(priceResponse("azure", usage(100_000, {}, { service_tier }), { pricing: luna }).complete).toBe(true);
+    for (const service_tier of ["priority", "flex", "batch", "scale"]) expect(priceResponse("azure", usage(100_000, {}, { service_tier }), { pricing: luna })).toEqual({ estimated: true, complete: false, reasons: [`tier:${service_tier}`] });
+    expect(priceResponse("azure", usage(100_000, {}, { service_tier: "priority" }), { pricing: { ...luna, rates: { input: 1, output: 1, cached: 1 } } }).reasons).toEqual(["tier:priority"]);
+  });
+  test("a partial total is never complete: hosted tool fees keep the subtotal", () => {
+    const cost = priceResponse("azure", usage(100_000, {}, { output: [{ type: "web_search_call" }] }), { pricing: luna });
+    expect(cost.usd).toBeGreaterThan(0);
+    expect(cost).toMatchObject({ complete: false, reasons: ["tool-fee"], notes: ["azure-table"] });
+    const ledger = new CostLedger();
+    ledger.begin("s", true);
+    ledger.report("s", "a", priceResponse("azure", usage(100_000), { pricing: luna }));
+    ledger.report("s", "b", priceResponse("azure", usage(100_000, { cache_write_tokens: 5 }), { pricing: { model: "gpt-5.5", type: "global" } }));
+    expect(ledger.get("s")).toMatchObject({ complete: false, reasons: ["no-write-rate"], notes: ["azure-table"] });
   });
 });
 
@@ -190,10 +256,35 @@ describe("reasons and carrying", () => {
     ledger.report("s", "b", { estimated: true, complete: false, reasons: ["tool-fee"] });
     expect(ledger.get("s")).toMatchObject({ complete: false, reasons: ["tool-fee"], notes: ["no-cache-ttl", "tier:missing"] });
   });
-  test("a file from before reasons reads unchanged", () => {
+  test("a file from before reasons reads with a code for every gap", () => {
     const path = file();
-    writeFileSync(path, JSON.stringify({ version: 1, sessions: { s: { complete: true, reports: { r: { estimated: true, complete: false } } } } }));
-    expect(new CostLedger(path).get("s")).toEqual({ estimated: true, complete: false });
+    writeFileSync(path, JSON.stringify({ version: 1, sessions: {
+      s: { complete: true, reports: { r: { estimated: true, complete: false } } },
+      // The prod shape: coverage begun partial on a switch, one whole report, no reasons anywhere.
+      switched: { complete: false, reports: { p: { usd: 2.28, estimated: true, complete: true } } },
+    } }));
+    const ledger = new CostLedger(path);
+    expect(ledger.get("s")).toEqual({ estimated: true, complete: false, reasons: ["no-usage"] });
+    expect(ledger.get("switched")).toEqual({ usd: 2.28, estimated: true, complete: false, reasons: ["earlier-usage"] });
+    // Read, not rewritten: the file keeps its shape until something reports.
+    expect(JSON.parse(readFileSync(path, "utf8")).sessions.switched).toEqual({ complete: false, reports: { p: { usd: 2.28, estimated: true, complete: true } } });
+  });
+  test("why coverage isn't whole is kept with the entry, saved, and never makes it whole again", () => {
+    const path = file(), ledger = new CostLedger(path);
+    expect(ledger.begin("resumed", false)).toEqual({ estimated: false, complete: false, reasons: ["earlier-usage"] });
+    ledger.report("resumed", "p", { usd: 0.4, estimated: true, complete: true });
+    expect(new CostLedger(path).get("resumed")).toEqual({ usd: 0.4, estimated: true, complete: false, reasons: ["earlier-usage"] });
+    ledger.markUnknown("resumed");
+    expect(new CostLedger(path).get("resumed").reasons).toEqual(["earlier-usage", "terminal"]);
+    expect(ledger.begin("resumed", true).complete).toBe(false);
+    ledger.begin("whole", true);
+    expect(ledger.markUnknown("whole", "earlier-usage")).toEqual({ estimated: false, complete: false, reasons: ["earlier-usage"] });
+    writeFileSync(path, JSON.stringify({ version: 1, sessions: { x: { complete: false, reasons: ["Bearer sk-x", "terminal"], reports: {} } } }));
+    expect(new CostLedger(path).get("x").reasons).toEqual(["terminal"]);
+  });
+  test("an unreadable ledger begins nothing whole, and says why", () => {
+    const path = file(); writeFileSync(path, "{broken", { mode: 0o600 });
+    expect(new CostLedger(path).begin("new", true)).toMatchObject({ complete: false, reasons: ["earlier-usage"] });
   });
   test("a takeover carries the total once, there and back, and a plan brings nothing", () => {
     const ledger = new CostLedger();

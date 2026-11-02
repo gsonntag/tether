@@ -2203,8 +2203,28 @@
 .t-credential-entry > input { flex: 1 1 140px; min-width: 0; }
 .t-credentials .t-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .t-credential-rates summary { font-size: 13px; color: var(--t-muted); cursor: pointer; }
-.t-rate-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
+.t-rate-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-top: 10px; }
+.t-azure-row > .t-rate-fields { padding-top: 0; }
 .t-rate-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
+.t-azure { display: flex; flex-direction: column; gap: 12px; }
+.t-azure .t-field input { min-width: 0; width: 100%; box-sizing: border-box; }
+.t-azure-endpoint { margin-top: -6px; font-size: 12px; color: var(--t-muted); overflow-wrap: anywhere; }
+.t-azure-row { border: 1px solid var(--t-border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.t-azure-names { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 9em); gap: 8px; }
+.t-azure-override { font-size: 13px; align-self: flex-start; }
+.t-azure-table { border-collapse: collapse; font-size: 12px; color: var(--t-muted); font-variant-numeric: tabular-nums; width: 100%; table-layout: fixed; cursor: default; }
+.t-azure-table th, .t-azure-table td { text-align: right; padding: 2px 4px; font-weight: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-azure-table th:first-child { text-align: left; width: 5.5em; }
+.t-azure-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.t-azure-actions > :last-child { margin-left: auto; }
+.t-azure-result { font-size: 13px; color: var(--t-muted); overflow-wrap: anywhere; min-width: 0; }
+.t-azure-result.ok { color: var(--color-text-green, var(--color-success)); }
+.t-azure-result.fail { color: var(--color-text-red, var(--color-error)); }
+.t-azure-foot { display: flex; justify-content: space-between; gap: 8px; }
+@media (max-width: 520px) {
+  .t-azure-names { grid-template-columns: minmax(0, 1fr); }
+  .t-rate-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 767px), (pointer: coarse) {
   /* The source stays outside the scrollable choices, including on small phones. */
   .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }
@@ -2388,4 +2408,148 @@
   .t-command-desc {
     flex-basis: 100%;
   }
+}
+
+/* ---------- plan review (PlanReview.tsx) ---------- */
+
+.t-plan-preview {
+  display: block;
+  width: 100%;
+  text-align: start;
+  font: inherit;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+}
+.t-plan {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+.t-plan-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 4px 16px;
+}
+.t-plan-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+.t-plan-doc {
+  flex: 1;
+  min-width: 0;
+  max-width: 760px;
+  cursor: text;
+}
+.t-plan-margin {
+  position: relative;
+  flex: none;
+  width: 300px;
+}
+.t-plan-margin > .t-plan-card,
+.t-plan-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  transition: top 120ms ease;
+}
+.t-plan-card {
+  border: 1px solid var(--t-border);
+  border-radius: 10px;
+  background: var(--t-card);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+}
+.t-plan-card.active,
+.t-plan-composer {
+  border-color: var(--color-accent, var(--color-border-emphasized));
+}
+.t-plan-quote {
+  margin: 0;
+  padding-inline-start: 8px;
+  border-inline-start: 2px solid var(--t-border);
+  color: var(--t-muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.t-plan-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.t-plan-gone {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-plan-card .t-input {
+  font-size: 14px;
+}
+.t-plan-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.t-plan-foot {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--t-border);
+  padding-top: 10px;
+}
+.t-plan-general {
+  flex: none;
+  width: 100%;
+}
+.t-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.t-plan-fill {
+  flex: 1;
+}
+/* Phone: the comments are a sheet over the document, above the actions. */
+.t-plan-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  max-height: 60dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  background: var(--color-background-surface, var(--t-card));
+  border-top: 1px solid var(--t-border);
+  box-shadow: 0 -8px 24px rgb(0 0 0 / 12%);
+}
+.t-plan[data-phone] .t-plan-fill {
+  display: none;
+}
+.t-plan[data-phone] .t-plan-actions > * {
+  flex: 1 1 auto;
+}
+::highlight(tether-plan-comment) {
+  background-color: color-mix(in srgb, var(--color-warning, #facc15) 30%, transparent);
+}
+::highlight(tether-plan-active) {
+  background-color: color-mix(in srgb, var(--color-warning, #facc15) 55%, transparent);
 }

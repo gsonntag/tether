@@ -89,6 +89,17 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 - `reset` events replace the window and lose the reader's place, by design for a rewind. Not exercised for a runner restart.
 - Selection autoscroll stops at the top of the mounted slice (`scrollKeep.ts:158`).
 
+## Plan review
+
+- Codex's plan mode is an experimental app-server field (`collaborationMode`); a Codex that drops
+  it fails the start ("didn't apply your plan mode") rather than running outside plan mode.
+- Plan mode set in Codex's own TUI with writable permissions shows as those permissions, not Plan;
+  its plans still go up for review.
+- A Codex plan open across a runner restart is answered by the runner (no re-ask needed); only
+  covered by unit tests. Claude's is re-asked as before.
+- Draft comments live in one browser (localStorage); another device doesn't see them.
+- iOS long-press selection in the plan document: emulation only.
+
 ## Needs real devices
 
 - iPhone: finger swipes in terminals, momentum, keyboard, rubber-banding, focus. WebKit touch here is synthetic. P1 G3b, G3d-G3k; P5b I5d, F3, I6.

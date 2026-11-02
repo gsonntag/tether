@@ -317,6 +317,10 @@ relay directly.
   A thread with no turns yet can't be resumed ("no rollout found").
 - **Permissions:** native approval policy and sandbox. `item/commandExecution/requestApproval`,
   `item/fileChange/requestApproval` and `item/tool/requestUserInput` go to the request broker.
+  **Plan** mode is Codex's own (experimental) collaboration mode `plan`, set with
+  `thread/settings/update` and pinned on `turn/start`, in a read-only sandbox. The app-server has
+  no review step (its TUI's "Implement this plan?" is client-side), so a turn that completes with a
+  `plan` item raises a plan request (`planFollowUp`, §7) that Tether answers itself.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
 - **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
   same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
@@ -433,6 +437,15 @@ driver ─► broker.decide(request) ─► [policy steps] ─► person (any de
 - **UI:** open requests sit just above the composer and never scroll away. Approve, Deny, and
   "Deny with reason". Questions show their options as buttons and also allow free text.
 - **Permission modes** are each harness's own, picked from a menu per session with human labels.
+- **Plans** (Claude's `ExitPlanMode`, Codex's plan item) open as a document (`PlanReview.tsx`).
+  Select text or click a paragraph to comment; comments sit beside their text (a sheet on phones)
+  and stay in the browser until sent. **Send feedback** sends one block per comment in plan order,
+  the quote as a `>` blockquote then the comment, then a general comment (`shared/plan.ts`): Claude
+  gets it as the denial's reason and keeps planning; Codex gets it as a message, still in plan mode.
+  **Approve** goes back to the mode the session had before Plan (`SessionPrefs.beforePlan`, else
+  the harness's own choice), and any comments follow as notes: steered into Claude's turn, or after
+  "Implement the plan." for Codex. A plan whose harness isn't waiting in a turn (`planFollowUp`) is
+  answered by the runner and passed by when another turn starts.
 
 ## 8. Terminal mode
 
@@ -727,8 +740,10 @@ Only the owner can run one (the same auth as sending).
 
 ### Credentials and billing safety
 
-The **Credentials** page belongs to a runner and holds keys only: **Anthropic API key** for Claude,
-**OpenAI API key** and **Azure** (Foundry) for Codex. All can be set together. Setting, replacing or
+Settings belongs to a runner and has two subpages in one nav. **Credentials** (`#/settings/credentials`)
+holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
+(`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
+set together. Setting, replacing or
 unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
 fallback chain or automatic source migration, with one exception you tick per session (**When the
 plan runs out**, below). AWS for either harness is backlog only.
@@ -736,7 +751,8 @@ plan runs out**, below). AWS for either harness is backlog only.
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
 really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
-on the shared daemon, Claude's read-only `auth status`), a key when it's set, labelled "ChatGPT plan",
+on the shared daemon, Claude's read-only `auth status`), a key when it's set (Azure: its key, its
+resource and at least one deployment), labelled "ChatGPT plan",
 "OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
 picker; a key in the picker has the API colour. It always starts on the subscription when there's
 a login, and on the first key only when there isn't. `newSession` or `moveSession` with no source (an older web) is the subscription,
@@ -759,7 +775,7 @@ next (`LiveState.nextBilling`). Picking the session's own again calls it off. A 
 refuses it: the items are disabled with the reason as their description, and the op refuses too. When
 one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
 on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
-no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Move to….
+no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Change session harness.
 
 The menu opens with the **plan's usage**, whether the session is on the plan or a key, so you see it
 before switching: under the plan's name, each window the harness reported, "Week 64% · resets Nov 5,
@@ -828,13 +844,18 @@ of a Codex compaction: it's encrypted for its account, so a new source couldn't 
 themselves are carried instead, as far as they fit. Subagents of the old thread stay viewable from
 the transcript, and aren't listed under the new one.
 
-`credentials.json` is version 2, one slot per key. A version 1 file (one `codex` slot) still reads, its
-key in the slot it was for and its revision kept, and is rewritten by the next change. A web deployed
+`credentials.json` is version 3: one slot per key, and `azureSettings` (`endpoint`, `deployments`)
+apart from Azure's key, so either can be set first and unsetting the key keeps them. A version 2 file
+(Azure's endpoint, one optional deployment and its rates in the key's slot) and a version 1 file (one
+`codex` slot) still read, their revisions kept: the one deployment becomes a list of one with its rates,
+and rates with no deployment are dropped (they priced whatever model was picked). A deployment saved
+before types is Global; its rates, if it had any, become its Override with the same numbers. The file is rewritten
+by the next change. A runner from before version 3 can't read it, and disables sending. A web deployed
 ahead of its runner gets no `billingSources` answer and hides the picker.
 
 Keys are written only to `credentials.json`, mode 600, under the runner's data directory
 (`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
-set/unset status and optional last four characters, plus Azure's endpoint and deployment. The
+set/unset status and optional last four characters, plus Azure's endpoint and deployments. The
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
@@ -861,6 +882,53 @@ confirmed source, or refuse to open. No terminal launch may edit the user's harn
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
 passes no CLI permission overrides, which remote resume rejects.
 
+### Azure
+
+The Azure page has Azure's **API key** (write-only, as any key), the **Resource** and the
+**Deployments**, saved together. Codex's Azure provider uses the v1 API: base URL
+`https://<resource>.openai.azure.com/openai/v1`, `api-key` header, `wire_api = "responses"`, no
+`api-version` (the owner's own `[model_providers.azure]` has that shape). A resource name is made into
+that URL and the page shows it under the field. A full HTTPS URL is taken instead (a Foundry resource's
+`https://<name>.services.ai.azure.com`), with `/openai/v1` added when it has no path. Each deployment
+row has its name (what requests send as `model`), the model it runs (free text, suggested from Codex's
+model list), its **Type** (Global, the default, as the owner's deployments are all Global Standard; Data
+Zone; Regional) and its rates. Names are unique, at most 50 rows.
+
+**Rates come from a dated table** (`shared/azureRates.ts`): Azure OpenAI's Standard (on-demand) rates,
+West US, USD per 1M tokens, as on the pricing page the owner pasted on 2026-11-01, for Global and Data
+Zone, short and long context, with a cache-write rate where the page lists one (not for gpt-5.5 or
+gpt-5.4). Nothing else is in it: no Regional, Priority, Flex, Batch or Provisioned, no other region or
+model. A row whose model and type are in the table shows its rates read-only and greyed, the table's
+source and date in a tooltip. Its model matches when it's the table's id after lowercasing; a model
+field ending in Azure's dated version (`gpt-5.4-2026-03-05`) has that `-YYYY-MM-DD` removed first.
+Nothing else is mapped. **Override** keeps the owner's own USD rates per 1M tokens instead: input,
+cached and output, all three or none, and an optional cache write. A row the table has nothing for
+(a Regional one, DeepSeek, a model not listed, no model) shows those fields directly, optional; without
+them its turns are unknown, `type:regional` or `model:<id>` (`model:none` with no model). Endpoint, names and models are public
+metadata and may reach argv and status; a key in any of them is refused.
+
+**Test**, per saved row, sends one tiny request (`max_output_tokens` 16, not stored) where a session's
+go: the endpoint plus `/responses`, the same `api-key` header (`adapters/codex/upstream.ts`, shared
+with the private host's gateway). It costs a little real Azure usage and runs only when clicked, never
+by itself. It answers in a few words: "OK · <model Azure names>", "Key rejected", "Deployment not
+found", "Rate limited", "HTTP 400 · <code>", "Can't reach the endpoint". No response text or header is
+shown. It's disabled with unsaved changes or no key.
+
+There is no "Load deployments": Azure lists deployments only through the management plane (ARM,
+`Microsoft.CognitiveServices/accounts/deployments`), which needs an Entra login, not the API key. The
+data plane's `/openai/deployments` was retired after `2023-03-15-preview`, and v1's `/models` lists
+models, not deployments.
+
+**A session on Azure has one deployment** (`SessionPrefs.deployment`), chosen as its Model in New
+session or Move, kept across restarts and used on every start: Codex is told it as the model, the
+private host prices with its model, type and Override (`TETHER_GATEWAY_PRICING`, `TETHER_GATEWAY_DEPLOYMENT`), and a change
+to its model, type, rates, the table's date, the endpoint or the key restarts an idle session's private process at the next send, as a
+replaced key does; other deployments' changes don't. A source change onto Azure (the chip) takes the
+deployment matching the session's model, else the first. A session from before deployment lists takes
+its model if that's a deployment, else the first, and keeps it. A deployment removed later stops its
+session with a chat error naming it, and nothing is sent; no other deployment stands in. The header's
+model menu can't change it: Move does.
+
 ### Session names
 
 Clicking a session title opens an inline editor. Enter saves, Escape cancels, and leaving the editor
@@ -869,15 +937,18 @@ and update on every connected device. Renaming starts no harness process.
 
 ### API session dollars and retry times
 
-An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**;
-unpriced or missing usage says **Cost unknown**, with any known subtotal in its tooltip. Where the
-gap is a report with a known reason, and something is priced, the chip reads **~$0.02+** and its
-tooltip says what's missing (**~$0.02+ est.** for a lower bound on cache writes). A partial subtotal
-is never presented as the whole session amount; a coverage gap with no reason (a TUI's unobserved
-spend, lost history) can be any size and stays Cost unknown.
+An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**. A total
+that isn't whole but has a known subtotal above zero reads **est. $0.02**, its tooltip saying what's
+missing (the same, with the cache-write lower bound named in the tooltip); with no subtotal, or a zero one, it says
+**Cost unknown**, with what's known and missing in its tooltip. A partial subtotal is never presented
+as the whole session amount, and a known subtotal is never a bare Cost unknown.
 
-Each report keeps why it isn't whole, as a fixed code in `reasons`, in `costs.json` and the tooltip:
-`no-usage`, `no-cache-ttl`, `tier:<value>`, `model:<id>`, `tool-fee`, `long-context`; and in `notes`
+Every gap has a reason, as a fixed code in `reasons`, in `costs.json` and the tooltip. A report's:
+`no-usage`, `no-cache-ttl`, `tier:<value>`, `model:<id>`, `tool-fee`, `long-context`, and Claude's
+`no-baseline` (its earlier native total couldn't be read). The session's coverage: `earlier-usage`
+(API usage from before Tether tracked it), `terminal` (a handoff TUI's unobserved spend). `unsaved`
+is a total that couldn't be written. A file from before these codes reads with one for every gap:
+coverage that wasn't whole is `earlier-usage`, a report that wasn't whole `no-usage`. `notes` keep
 what a priced report left to a rule. Only those strings, the tier and the model id, never response
 text, keys or headers. An OpenAI response prices from its own usage. A request that set no tier
 (Codex's) is Standard, unless the response names another. Cache writes without a lifetime breakdown
@@ -886,15 +957,43 @@ add up, or there's no write count, they're at the cheaper rate, a lower bound an
 model ids aren't priced, because OpenAI publishes none. Over 272K input, other tiers and tool fees
 stay unpriced. A thread that takes a session's place (a source change) starts from what the session
 had spent, and plan turns add nothing to it. Subscription sessions show no dollars.
+
+**Where a session's API cost starts.** The first time a session's source is a key, its cost is whole
+when Tether knows what it spent on an API before; otherwise it's partial, `earlier-usage`, and stays
+so. Known means: a new session (nothing before), a session whose confirmed source until now was the
+plan (`state.billing` from the harness, kept across restarts as Claude's `keptBilling` and Codex's
+remembered thread), or what the ledger already holds. The chip's switch and the plan running out
+(`planOut`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
+start that confirms a key decides it from what that start replaced. A Move into a key, on any harness,
+is a new session that starts whole: what came across was spent in the old one, which keeps its total.
+A Codex source change's new thread starts whole and adds what the old thread's entry holds. Unknown
+stays partial: an earlier source Unknown, a last start on a key with no entry (before the ledger), an
+entry that was lost (`SessionPrefs.metered` says the session had one), and a handoff TUI on a key.
+Entries made partial before this rule (a plan-to-key switch on an existing session) aren't repaired:
+nothing kept says whether an earlier key period came before, so they show their subtotal as
+**est. $x** with `earlier-usage`.
 Claude's native cumulative cost is itself an estimate and resumes restore earlier, potentially
-subscription-equivalent spend. Tether subtracts a confirmed read-only pre-send baseline; missing or
-unstable baseline data leaves cost unknown. A handoff TUI has no cost stream and marks coverage
+subscription-equivalent spend: a key process resumed after plan turns starts at the plan turns'
+estimate (seen with Haiku: the pre-send read returned exactly the plan process's last total). Tether
+subtracts that read-only pre-send baseline, so plan turns never count as API spend; a missing or
+decreasing baseline leaves that process's spend unknown (`no-baseline`). `/clear` (and any
+`conversation_reset` or new session id) zeroes Claude Code's total, so the baseline is zero from there. A handoff TUI has no cost stream and marks coverage
 incomplete. Codex's gateway meters response usage before forwarding it to the harness, recording
 pending requests before inference so a crash cannot leave a false complete total. Reports are
 idempotent across replays and restarts. Published, dated OpenAI rates cover only exact supported
-models and tiers. Azure uses optional deployment rates entered in
-Credentials; missing rates, unsupported write charges, hosted tool fees and unknown pricing remain
-unknown. These estimates are not provider invoices.
+models and tiers. Azure prices only requests naming the session's deployment, from the table or its
+Override (§10 **Azure**). A request is short context when its input tokens are ≤ 272,000, otherwise
+long, at the table's long rates; the page states that cutoff only for GPT-5.4 and it's assumed for the
+others. A model with no long rates for its type (gpt-5.4 on Data Zone) leaves a long request unknown,
+`long-context`, and so does an Override, whose one set of rates says nothing of long context. Cache
+writes are priced at the one write rate Azure lists, by their total (`cache_write_tokens`, else the
+lifetime breakdown's sum), with or without a breakdown; with no write rate (gpt-5.5, gpt-5.4, an
+Override without one) a request that wrote is unknown, `no-write-rate`. A response whose service tier
+is anything but default, standard, auto or missing (Priority, Flex, Batch) is unknown, `tier:<value>`.
+A table-priced report carries the note `azure-table`: the cost's tooltip says Azure's rates come from
+Tether's dated table and the owner's agreement may differ. It still reads "est. $x". Missing rates,
+hosted tool fees and unknown pricing remain unknown, and a partial total is never complete. These
+estimates are not provider invoices.
 
 The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
 browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
@@ -1016,7 +1115,7 @@ Still to verify by experiment (not decisions): Codex approval fan-out and cross-
 
 ## 15. Moving a session to another harness
 
-**Move to…** in a session's header menu makes a new session on another harness, or on the same
+**Change session harness** in a session's header menu makes a new session on another harness, or on the same
 harness with another billing source, with all of the old one's context. The old session stays as it was, its store untouched. It is a module
 (`runner/src/modules/move/`) and only ever an explicit choice: moving copies the history, secrets
 included, to another provider, and nothing scans it or does it automatically.
@@ -1093,8 +1192,8 @@ Claude `acceptEdits` (Claude has no sandbox, so commands ask), Claude `auto` bec
 command can touch, Claude what's run without asking.
 
 **Model and effort** are chosen in the dialog. Claude unset is `CLAUDE_UNSET`, as for any session;
-Codex keeps its Default. An Azure source with a deployment fixes the model: the dialog shows it, and so
-does New session.
+Codex keeps its Default. On Azure the Model lists its deployments, each with the model it runs ("luna-a ·
+gpt-6-luna"), here and in New session; there is no Effort choice.
 
 **Billing.** The dialog's Source picks the new session's source, as in New session, with no fallback.
 Its id comes with a snapshot of that source, a key's Codex thread is made on its private app-server

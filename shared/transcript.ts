@@ -213,6 +213,12 @@ export interface Request {
   approveAs?: Choice[];
   /** the mode a plain approval leaves the session in (approving a plan leaves plan mode) */
   approveMode?: string;
+  /**
+   * A plan whose harness isn't waiting inside a turn (Codex: its plan-mode turn has ended). Tether
+   * answers it: approving leaves plan mode and sends "Implement the plan."; a denial's reason goes as
+   * a message, and the agent stays in plan mode.
+   */
+  planFollowUp?: boolean;
   /** a policy step is still deciding it: shown, but there is nothing to answer yet */
   checking?: boolean;
   /** asked by a subagent: its title, for the parent's view */
@@ -223,9 +229,10 @@ export interface Request {
  * How a person answers a request (the `answerRequest` op). Approve: `allow`, optionally switching to
  * one of the request's `approveAs` modes. A question: `allow` with one answer per question (several
  * picks joined by ", "). Deny: `allow: false`, with a reason Claude reads, or none (which stops the
- * turn, as declining in the harness's own UI does).
+ * turn, as declining in the harness's own UI does). An approved plan can carry `notes` (the person's
+ * comments), sent to the agent as a message after the approval.
  */
-export type RequestAnswer = { allow: true; answers?: string[]; mode?: string } | { allow: false; reason?: string };
+export type RequestAnswer = { allow: true; answers?: string[]; mode?: string; notes?: string } | { allow: false; reason?: string };
 
 /** A message waiting to go out after the running turn (SPEC §9). */
 export interface QueuedMessage {
@@ -295,6 +302,8 @@ export interface LiveState {
   billing?: Billing;
   /** a source picked for the next process start, until the harness confirms it (`billing` stays what's confirmed) */
   nextBilling?: Billing;
+  /** the last process start for nextBilling failed; the confirmed source is still current */
+  sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
   /** the key this session last used or had picked: where `autoKey` goes */
@@ -351,6 +360,8 @@ export interface LiveState {
   };
   /** the main agent is free and this many of its subagents still run (never saved: it can't outlive them) */
   backgroundSubagents?: number;
+  /** Tether's `!` shell commands still running; ephemeral like backgroundSubagents */
+  shellsRunning?: number;
   /** why the session can't run right now (the harness failed to start, isn't signed in, …); the chat shows it as a notice */
   error?: string;
 }

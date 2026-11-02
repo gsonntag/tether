@@ -28,7 +28,7 @@ Compare `sha256sum ~/.codex/config.toml` before and after: a move must not chang
 
 ## Checks
 
-1. **The action** [e2e: errors] Session header ⋯ → Move to… opens a small dialog: harness (a choice
+1. **The action** [e2e: errors] Session header ⋯ → Change session harness opens a small dialog: harness (a choice
    when there are several), Source when known, Model, Effort, Mode. Not on a subagent.
 2. **Cancel** [e2e: errors] Cancel, ✕ or Esc: nothing is made, the session stays open.
 3. **Refused** [e2e: errors for a turn; unit for the rest] A running turn, an open request, a
