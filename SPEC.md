@@ -1302,12 +1302,30 @@ with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
 1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
    session (a request's text answers only that request, #66), and a `[home]` text goes to the Home
    agent.
-2. `home: …`, `home, …`, `@home …` or `[home] …` goes to the Home agent. Just `home` sends a held
-   text there, or aims the next one.
+2. `home` or `h` as the first word, in any case, followed by a space, `:`, `,` or nothing (`home …`,
+   `Home, …`, `H: …`, `h …`), or `@home`/`@h`/`[home]`/`[h]`, goes to the Home agent, prefix and
+   separator taken off. Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`).
+   Just `home` (or `h`) sends a held text there, or aims the next one.
 3. `n text` (and just `n`) goes to session n, as before.
 4. Plain text goes to the Home agent when Tether's last text was a Home text or no session is open.
    Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
    `home:` row.
+
+*Replies about what was just texted.* A `[home]` text can say which session it's about (the Texts
+tab's answer to a text or report about one; `text_person`'s `session_id`). A text to the Home agent
+within 30 minutes (`router.ts` REPLY_MS) of such a text, or a threaded reply to it at any age,
+arrives with a line naming that session first: `[From iMessage] (replying to your text about
+session <id>, "<title>" in <project>) merge it`, and the Home agent takes it as being about that
+session (relays it there) unless the words name another. A number, or a session's own text since,
+turns away from it. The router's state (texting.json) keeps it across restarts.
+
+*Images.* Photon carries iMessage attachments both ways. Images the person texts (PNG, JPEG, GIF,
+WebP, HEIC by their bytes, up to 10 MB, at most 10) go with their words to whoever the text goes to,
+stored as that session's attachments (§9: the agent sees them as images and by path); an image alone
+is "(image)"; other files are left out and the person is told once. `text_person` takes an optional
+`image`: an absolute path to a .png/.jpg/.gif/.webp/.heic file whose first bytes match, at most
+10 MB, sent after the words (the bytes checked are the bytes sent); anything else is the tool's
+error and nothing goes. A relayed session's image path goes to the Home agent in its report.
 
 A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
 to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It

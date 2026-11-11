@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, Router, emptyState } from "./router";
+import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, REPLY_MS, Router, emptyState, toHomeWords } from "./router";
 import { TEXTS } from "./texts";
 
 function setup() {
@@ -161,7 +161,8 @@ describe("the Home agent", () => {
     // Words that only start with "home" aren't addressed to it.
     const { r } = busy();
     expect(r.route("homework is done", undefined, true)).toMatchObject({ kind: "reply" });
-    expect(r.route("home is where the tests are", undefined, true)).toMatchObject({ kind: "reply" });
+    // "home" as its own first word is addressed to it, whatever follows.
+    expect(r.route("home is where the tests are", undefined, true)).toEqual({ kind: "home", text: "is where the tests are" });
     expect(r.route("@homer hi", undefined, true)).toMatchObject({ kind: "reply" });
   });
 
@@ -219,4 +220,133 @@ describe("the Home agent", () => {
     expect(r.route("yes", undefined, true)).toMatchObject({ kind: "deliver", sessionId: "a" });
   });
 
+});
+
+describe("Home/H prefix", () => {
+  test("home or h, in any case, as its own first word", () => {
+    const yes: [string, string][] = [
+      ["home do x", "do x"],
+      ["Home do x", "do x"],
+      ["HOME do x", "do x"],
+      ["hOmE do x", "do x"],
+      ["home: do x", "do x"],
+      ["Home, do x", "do x"],
+      ["home:do x", "do x"],
+      ["home , do x", "do x"],
+      ["h do x", "do x"],
+      ["H do x", "do x"],
+      ["H: do x", "do x"],
+      ["h:do x", "do x"],
+      ["H, do x", "do x"],
+      ["h\ndo x", "do x"],
+      ["  H   do x", "do x"],
+      ["@h do x", "do x"],
+      ["[H] do x", "do x"],
+      ["@home do x", "do x"],
+      ["[home] do x", "do x"],
+      ["Home", ""],
+      ["home", ""],
+      ["HOME", ""],
+      ["H", ""],
+      ["h", ""],
+      ["h:", ""],
+      ["Home,", ""],
+      [" home ", ""],
+    ];
+    for (const [text, words] of yes) expect([text, toHomeWords(text)]).toEqual([text, words]);
+    const no = ["hey", "hello there", "how's it going", "Homer", "homework is done", "homes", "Hi", "hmm", "h-bomb", "h.", "h/w", "hh do x", "@homer hi", "@hey", "the home page", "oh home", "2 home", "Home-made", "home's fine", "Homepage broke"];
+    for (const text of no) expect([text, toHomeWords(text)]).toEqual([text, undefined]);
+  });
+
+  test("routes to the Home agent with the prefix and separator taken off", () => {
+    for (const [text, words] of [["H: merge it", "merge it"], ["h merge it", "merge it"], ["HOME, merge it", "merge it"]]) {
+      const s = setup();
+      s.r.stamp("a", "finished", ".");
+      s.r.stamp("b", "finished", ".");
+      expect(s.r.route(text!, undefined, true)).toEqual({ kind: "home", text: words! });
+    }
+    // Words that only start with h are plain text: the one open session takes them.
+    const { r } = setup();
+    r.stamp("a", "finished", ".");
+    for (const text of ["hey are you done", "how's it going", "Homer says hi"]) expect(r.route(text, undefined, true)).toMatchObject({ kind: "deliver", sessionId: "a", text });
+  });
+
+  test("just H aims the next text at the Home agent; without one it says so", () => {
+    const s = setup();
+    s.r.stamp("a", "finished", ".");
+    s.r.stamp("b", "finished", ".");
+    expect(s.r.route("H", undefined, true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
+    expect(s.r.route("start the docs fix", undefined, true)).toEqual({ kind: "home", text: "start the docs fix" });
+    expect(s.r.route("h do x", undefined, false)).toEqual({ kind: "reply", text: TEXTS.noHome });
+  });
+});
+
+describe("replying to what was just texted", () => {
+  test("a reply soon after a Home text about a session carries that session", () => {
+    const { r, clock } = setup();
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    clock.tick(5 * 60_000);
+    expect(r.route("yes merge it", undefined, true)).toEqual({ kind: "home", text: "yes merge it", about: { sessionId: "claude:x", byHome: true } });
+    // Addressed to the Home agent explicitly: still its text being answered.
+    expect(r.route("h and deploy", undefined, true)).toEqual({ kind: "home", text: "and deploy", about: { sessionId: "claude:x", byHome: true } });
+  });
+
+  test("outside the window: no session goes with it", () => {
+    const { r, clock } = setup();
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    clock.tick(REPLY_MS);
+    expect(r.route("yes merge it", undefined, true)).toEqual({ kind: "home", text: "yes merge it" });
+  });
+
+  test("no earlier text, or a Home text about nothing in particular: as before", () => {
+    const { r } = setup();
+    expect(r.route("start a fix", undefined, true)).toEqual({ kind: "home", text: "start a fix" });
+    r.stampHome("PR #4 is up", "claude:x");
+    r.stampHome("ok, on it");
+    expect(r.route("thanks", undefined, true)).toEqual({ kind: "home", text: "thanks" });
+  });
+
+  test("a number names its own target: the session text goes straight there, nothing carried", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    clock.tick(1000);
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    expect(r.route("1 run the tests too", undefined, true)).toEqual({ kind: "deliver", sessionId: "a", n: 1, text: "run the tests too" });
+  });
+
+  test("a session texting since turns the reply to it; Home addressed after that carries nothing", () => {
+    const { r, clock } = setup();
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    clock.tick(1000);
+    r.stamp("a", "wants to run a command", ".", "r1");
+    expect(r.route("y", undefined, true)).toMatchObject({ kind: "deliver", sessionId: "a" });
+    expect(r.route("home: what's running?", undefined, true)).toEqual({ kind: "home", text: "what's running?" });
+  });
+
+  test("a threaded reply to a Home text carries its session however old it is", () => {
+    const { r, clock } = setup();
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    r.noteSent("h1", HOME, undefined, "claude:x");
+    clock.tick(REPLY_MS * 3);
+    r.stampHome("ok, on it");
+    r.noteSent("h2", HOME);
+    expect(r.route("merge it", "h1", true)).toEqual({ kind: "home", text: "merge it", about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("thanks", "h2", true)).toEqual({ kind: "home", text: "thanks" });
+  });
+
+  test("the held text goes to the Home agent with the session it answers", () => {
+    const { r } = setup();
+    r.stamp("a", "finished", ".");
+    r.stamp("b", "finished", ".");
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    // Plain text after a Home text answers the Home agent anyway.
+    expect(r.route("go", undefined, true)).toEqual({ kind: "home", text: "go", about: { sessionId: "claude:x", byHome: true } });
+  });
+
+  test("kept in the state, so it outlives a restart", () => {
+    const { r, clock } = setup();
+    r.stampHome("PR #4 is up, merge it?", "claude:x");
+    const again = new Router(JSON.parse(JSON.stringify(r.state)), () => clock.now() + 60_000);
+    expect(again.route("merge", undefined, true)).toEqual({ kind: "home", text: "merge", about: { sessionId: "claude:x", byHome: true } });
+  });
 });

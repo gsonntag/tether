@@ -12,7 +12,14 @@
 // texts (homeAgent/index.ts decides which replies).
 //
 // An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
-// number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
+// number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps), and
+// optionally an image after it (images.ts checks the file: a real image, not too big).
+//
+// Images the person texts go along with their words to whoever the text goes to, stored as that
+// session's attachments (the agent sees them as images, and their paths); other files are left out.
+//
+// A reply right after one of Tether's texts about a session is about that session (router.ts
+// REPLY_MS): to the Home agent it goes with a line saying which (homeLine.ts replyContext).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
@@ -26,8 +33,9 @@ import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
-import { HOME, Router } from "./router";
-import { PERSON_TEXT_MAX } from "../homeLine";
+import { HOME, Router, type About } from "./router";
+import { PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
+import { incomingImage, pickIncoming, readOutgoingImage, type InboundFile, type OutImage } from "./images";
 import { TextingStore } from "./store";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
@@ -45,7 +53,9 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links"> & {
+  sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue">>;
+};
 
 /** How long an agent's answer may be in a text. */
 const SAID_MAX = 1500;
@@ -83,6 +93,11 @@ export class AgentTextCaps {
   }
 }
 
+/** What an image the person texted with no words says to the agent. */
+export const IMAGE_ONLY = "(image)";
+/** What the images the person texted with an answer to a request say, when they follow it. */
+export const TEXTED_WITH_ANSWER = "(images the person texted with their answer)";
+
 /** A session's link goes in a text at most this often. */
 export const LINK_EVERY_MS = 5 * 60_000;
 
@@ -104,6 +119,8 @@ export class Texter {
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
   private heardIds: string[] = [];
+  /** images that came with a text the router holds (waiting for the person to pick a session) */
+  private heldFiles?: { text: string; files: TextedFile[] };
   readonly caps: AgentTextCaps;
 
   constructor(
@@ -194,14 +211,36 @@ export class Texter {
     }
   }
 
-  /** The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it goes back to the Home agent. */
-  async homeText(body: string): Promise<boolean> {
+  /**
+   * The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it
+   * goes back to the Home agent; `about`: the session it's about, which a reply goes with.
+   */
+  async homeText(body: string, about?: string): Promise<boolean> {
+    return (await this.homeSend(body, about)).sent;
+  }
+
+  private async homeSend(body: string, about?: string, image?: OutImage): Promise<{ sent: boolean; imageSent?: boolean }> {
     const words = clip(body, HOME_MAX);
-    if (!this.link || !words) return false;
-    const { sent, id } = await this.send(this.router.stampHome(words));
-    if (id) this.router.noteSent(id, HOME);
+    if (!this.link || !words) return { sent: false };
+    const { sent, id } = await this.send(this.router.stampHome(words, about));
+    if (id) this.router.noteSent(id, HOME, undefined, about);
+    const imageSent = sent && image ? await this.sendImage(image, HOME, about) : undefined;
     this.store.save();
-    return sent;
+    return { sent, ...(imageSent !== undefined ? { imageSent } : {}) };
+  }
+
+  /** An image after a text, threaded like it (a reply to the image goes where a reply to the text would). */
+  private async sendImage(image: OutImage, sessionId: string, about?: string, requestId?: string): Promise<boolean> {
+    if (!this.link?.sendFile) return false;
+    try {
+      const id = await this.link.sendFile(image);
+      if (id) this.router.noteSent(id, sessionId, requestId, about);
+      return true;
+    } catch (e: any) {
+      this.lastError = `Couldn't send an image: ${e?.message ?? e}`;
+      this.ctx.log(`texting: ${this.lastError}`);
+      return false;
+    }
   }
 
   async test() {
@@ -225,23 +264,31 @@ export class Texter {
    * session's number (or [home]) so a reply goes back to it. Sent even while the session is open in
    * Tether: the agent was asked to text. What the tool answers the agent.
    */
-  async personText(from: string, body: string): Promise<{ text: string; isError?: boolean }> {
+  async personText(from: string, body: string, o: { image?: string; about?: string } = {}): Promise<{ text: string; isError?: boolean }> {
     const words = clip(body, PERSON_TEXT_MAX);
     if (!words) return { text: "The message is empty.", isError: true };
     if (!this.link) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
+    let image: OutImage | undefined;
+    if (o.image !== undefined && o.image !== "") {
+      if (!this.link.sendFile) return { text: "Images can't be texted on this connection. Nothing was sent.", isError: true };
+      const r = readOutgoingImage(o.image);
+      if ("problem" in r) return { text: `${r.problem} Nothing was sent.`, isError: true };
+      image = r;
+    }
     const why = this.caps.take(from);
     if (why) return { text: why, isError: true };
-    const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, { always: true })).sent;
+    const { sent, imageSent } = from === HOME ? await this.homeSend(words, o.about, image) : await this.tell(from, TEXTED_YOU, words, { always: true, image });
     if (!sent) {
       this.caps.undo(from);
       return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
     }
     const cut = words.length < body.trim().length ? ` It was cut to ${PERSON_TEXT_MAX} characters.` : "";
-    return { text: `Texted the person.${cut} If they reply, their reply comes to you as a message.` };
+    const pic = image ? (imageSent ? " The image went with it." : ` The image didn't go (${this.lastError ?? "not connected"}).`) : "";
+    return { text: `Texted the person.${cut}${pic} If they reply, their reply comes to you as a message.` };
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
-  async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean } = {}): Promise<{ sent: boolean }> {
+  async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean; image?: OutImage } = {}): Promise<{ sent: boolean; imageSent?: boolean }> {
     const { also = [], quick = false, requestId, always = false } = o;
     if (!this.link) return { sent: false };
     if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
@@ -253,8 +300,9 @@ export class Texter {
     const { text } = this.router.stamp(sessionId, status, link ? `${body}\n${this.url(sessionId)}` : body, requestId);
     const { sent, id } = await this.send(text);
     if (id) this.router.noteSent(id, sessionId, requestId);
+    const imageSent = sent && o.image ? await this.sendImage(o.image, sessionId, undefined, requestId) : undefined;
     this.store.save();
-    return { sent };
+    return { sent, ...(imageSent !== undefined ? { imageSent } : {}) };
   }
 
   async request(r: Request) {
@@ -316,15 +364,50 @@ export class Texter {
     return this.inbox;
   }
 
+  /** The images among what the person texted, downloaded and checked, and how many files were left out. */
+  private async download(list: InboundFile[]): Promise<{ files: TextedFile[]; left: number }> {
+    const { take, left } = pickIncoming(list);
+    const files: TextedFile[] = [];
+    let out = left;
+    for (const f of take) {
+      try {
+        const img = incomingImage(f, await f.read());
+        if (img) files.push(img);
+        else out++;
+      } catch (e: any) {
+        this.ctx.log(`texting: couldn't download an image: ${e?.message ?? e}`);
+        out++;
+      }
+    }
+    return { files, left: out };
+  }
+
+  /** What a reply to the Home agent is about, with the session's title and folder. */
+  private aboutText(a: About): string {
+    const look = this.ctx.session(a.sessionId);
+    return replyContext({ ...a, ...(look?.summary.title ? { title: look.summary.title } : {}), ...(look ? { project: look.summary.projectPath } : {}) });
+  }
+
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
-    const d = this.router.route(m.text, m.replyTo, !!home);
+    const got = m.files?.length ? await this.download(m.files) : { files: [], left: 0 };
+    if (got.left) await this.say(TEXTS.onlyImages);
+    const words = m.text.trim();
+    const text = words || (got.files.length ? IMAGE_ONLY : "");
+    const d = this.router.route(text, m.replyTo, !!home);
     this.store.save();
+    // Images go with their words: now, or when the text the router held goes (a number picks it).
+    let files = got.files;
+    const held = this.heldFiles;
+    if (d.kind === "deliver" || d.kind === "home") {
+      if (held && d.text === held.text) files = [...held.files, ...files];
+      this.heldFiles = undefined;
+    } else if (files.length && this.router.state.held?.text === text) this.heldFiles = { text, files };
     if (d.kind === "none") return;
     if (d.kind === "reply") return void (await this.say(d.text));
     if (d.kind === "home") {
       try {
-        await home!.take(d.text);
+        await home!.take((d.about ? this.aboutText(d.about) : "") + d.text, files.length ? files : undefined);
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
         await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)));
@@ -345,15 +428,22 @@ export class Texter {
         this.store.save();
         return void (await this.say(TEXTS.alreadyAnswered(d.n)));
       }
-      if (open) {
+      if (open && d.text === IMAGE_ONLY && files.length) {
+        // Just an image while a request waits: it isn't a y or an n, so it goes after the turn.
+        if (!this.ctx.sessions.queue) throw new Error("this session can't take images now");
+        await this.ctx.sessions.queue(d.sessionId, d.text, files);
+        this.talking.add(d.sessionId);
+      } else if (open) {
         const r = readReply(open, d.text);
         if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
+        // Images with the answer: the agent gets them after its turn.
+        if (files.length) await this.ctx.sessions.queue?.(d.sessionId, TEXTED_WITH_ANSWER, files);
         this.talking.add(d.sessionId);
       } else {
-        await this.ctx.sessions.tell(d.sessionId, d.text);
+        await this.ctx.sessions.tell(d.sessionId, d.text, files.length ? files : undefined);
         this.talking.add(d.sessionId);
       }
       // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
@@ -370,7 +460,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text), text: (from, body) => t.personText(from, body) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about) => t.homeText(text, about), text: (from, body, o) => t.personText(from, body, o) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

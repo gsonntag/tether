@@ -47,7 +47,7 @@ import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/prot
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
-import { HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd } from "../homeLine";
+import { aboutOf, HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd, type TextedFile } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
@@ -153,7 +153,12 @@ interface TextTurn {
   nudged?: boolean;
   /** it texted the person itself this turn (text_person): its answer isn't texted again */
   texted?: boolean;
+  /** the session this turn is about (the person's reply to a text about it, or a report from it): its texts are about it too */
+  about?: string;
 }
+
+/** The session a report starts with (describe: "Session <id> (…"). */
+const REPORT_ABOUT = /^Session (\S+) \(/;
 
 /** A report whose answer goes back by text carries this line, for the agent and to tell it apart. */
 export const TEXTED = "(Your reply to this report is texted to the person.)";
@@ -204,8 +209,9 @@ How to work:
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
-- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
-- You're the person's PM over text: text_person texts their phone, and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started over iMessage), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session.
+- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered.
+- Replies to texts: when the person answers soon after a text about a session, their message starts with "(replying to your text about session <id>, ...)" (or "Tether's text", for one Tether sent itself). Assume they mean that same session: relay instructions there with send_to_session ("merge it", "yes do that", "try again") without asking which session, unless their words clearly name a different one. Images they text come as attachments (listed with their paths): forward the paths in your message when a session needs them. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- You're the person's PM over text: text_person texts their phone, and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started over iMessage), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -421,18 +427,19 @@ export class HomeAgent implements HomeEnd {
   }
 
   /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */
-  async relay(sessionId: string, message: string): Promise<string | undefined> {
+  async relay(sessionId: string, message: string, image?: string): Promise<string | undefined> {
     const c = this.state.children[sessionId];
     if (!c || c.released) return undefined;
     const words = message.trim().slice(0, PERSON_TEXT_MAX * 4);
-    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person:\n<<<\n${words}\n>>>\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person, condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
+    const pic = image ? `\n\nWith an image: ${image.replace(/[\r\n]+/g, " ").slice(0, 500)} (text_person's image sends it on).` : "";
+    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person:\n<<<\n${words}\n>>>${pic}\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person (session_id ${sessionId}), condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
     return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
-  /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs. */
-  async take(text: string): Promise<void> {
+  /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs (with the images they texted). */
+  async take(text: string, files?: TextedFile[]): Promise<void> {
     const chat = await this.textsChat();
-    await this.ctx.sessions.queue(chat, FROM_IMESSAGE + text);
+    await this.ctx.sessions.queue(chat, FROM_IMESSAGE + text, files?.length ? files : undefined);
   }
 
   /** The Texts tab: the one texts went to, else a new one (current once a text lands in it). */
@@ -466,9 +473,13 @@ export class HomeAgent implements HomeEnd {
     if (msg.role !== "user") return;
     const raw = text(msg);
     const texted = msg.origin?.kind === "imessage" || (!msg.origin && raw.startsWith(FROM_IMESSAGE));
-    const report = (msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined)) && raw.includes(TEXTED);
+    const tether = msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined);
+    const report = tether && raw.includes(TEXTED);
     if (texted) t.kind = "text";
     else if (report && t.kind === "quiet") t.kind = "report";
+    // What this turn is about: the session the person's reply or the report names (the newest wins).
+    const about = texted ? aboutOf(raw.startsWith(FROM_IMESSAGE) ? raw.slice(FROM_IMESSAGE.length) : raw) : tether ? REPORT_ABOUT.exec(fromTether(raw) ?? raw)?.[1] : undefined;
+    if (about) t.about = about;
   }
 
   /** The Texts chat's turn ended: its answer goes back by text when the turn was a text's or a texted-work report's. */
@@ -481,7 +492,7 @@ export class HomeAgent implements HomeEnd {
     if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
     if (!words) return;
-    await phone.send(words).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+    await phone.send(words, t.about).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
   /**
@@ -945,12 +956,17 @@ export class HomeAgent implements HomeEnd {
       },
       {
         name: "text_person",
-        description: `Texts the person an iMessage on their phone, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Not for answering their texts: those replies are texted already.`,
-        input: { message: z.string().min(1).describe("The text: one short sentence.") },
-        run: async (a: { message: string }) => {
+        description: `Texts the person an iMessage on their phone, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Pass session_id when the text is about one session: a reply right after it comes to you marked as about that session. Optionally send one image after the text (image: its absolute path; PNG, JPEG, GIF, WebP or HEIC, at most 10 MB). Not for answering their texts: those replies are texted already.`,
+        input: {
+          message: z.string().min(1).describe("The text: one short sentence."),
+          session_id: z.string().optional().describe("The session the text is about, if it's about one."),
+          image: z.string().optional().describe("The absolute path of an image file to send after the text."),
+        },
+        run: async (a: { message: string; session_id?: string; image?: string }) => {
           const phone = this.ctx.homeLine?.phone;
           if (!phone) throw new Error("Texting is off in Tether, so nothing was sent. Say it in your reply instead.");
-          const r = await phone.text(HOME_SENDER, a.message);
+          const about = a.session_id?.trim() || (this.isTextsChat(chat) ? this.textTurn?.about : undefined);
+          const r = await phone.text(HOME_SENDER, a.message, { ...(about ? { about } : {}), ...(a.image?.trim() ? { image: a.image.trim() } : {}) });
           if (r.isError) throw new Error(r.text);
           if (this.isTextsChat(chat)) (this.textTurn ??= { kind: "quiet" }).texted = true;
           return r.text;

@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
-import { HomeLine } from "../homeLine";
+import { HomeLine, replyContext } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
@@ -35,7 +35,7 @@ async function until(f: () => boolean, ms = 3000) {
   }
 }
 
-async function setup(o: { anthropicKey?: boolean; homeLine?: HomeLine } = {}) {
+async function setup(o: { anthropicKey?: boolean; homeLine?: HomeLine; attachments?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tether-home-"));
   stops.push(() => rmSync(dir, { recursive: true, force: true }));
   const homeFolder = join(dir, "home");
@@ -48,7 +48,7 @@ async function setup(o: { anthropicKey?: boolean; homeLine?: HomeLine } = {}) {
   (fake as Adapter).agentSetup = (folder, make) => (setups.set(folder, make), () => void setups.delete(folder));
   const credentials = new CredentialStore(join(dir, "credentials.json"));
   if (o.anthropicKey) credentials.set("anthropic", "sk-ant-test-0000000000000000");
-  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [fake], prefsFile: join(dir, "runner.json"), homeFolder, core: { evictMs: 60_000 }, credentials });
+  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [fake], prefsFile: join(dir, "runner.json"), homeFolder, core: { evictMs: 60_000 }, credentials, ...(o.attachments ? { attachmentsDir: join(dir, "attachments") } : {}) });
   stops.push(() => runner.core.stop());
   mkdirSync(join(dir, "data"));
   const announced: HomeChatUpdate[] = [];
@@ -968,14 +968,20 @@ test("the iMessage marker: the person's own words, shown as texted", () => {
 });
 
 /** A Home agent on a line whose phone end keeps what it texts. */
-async function texting() {
+async function texting(o: { attachments?: boolean } = {}) {
   const line = new HomeLine();
   const sent: string[] = [];
   const personTexts: [string, string][] = [];
-  line.phone = { send: async (t) => (sent.push(t), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
-  const t = await setup({ homeLine: line });
+  /** what each text was about (send's `about`), and text_person's options */
+  const abouts: (string | undefined)[] = [];
+  const personOpts: ({ image?: string; about?: string } | undefined)[] = [];
+  line.phone = {
+    send: async (t, about) => (sent.push(t), abouts.push(about), true),
+    text: async (from, body, o) => (personTexts.push([from, body]), personOpts.push(o), { text: "Texted the person." }),
+  };
+  const t = await setup({ homeLine: line, ...o });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, personTexts, textsTab };
+  return { ...t, line, sent, abouts, personTexts, personOpts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1177,4 +1183,56 @@ test("the Home agent's instructions make it the PM over text", () => {
   expect(INSTRUCTIONS).toContain("Batch several sessions' news into one text");
   expect(INSTRUCTIONS).toContain("never text routine progress");
   expect(INSTRUCTIONS).toContain("relay any instruction to the right session with send_to_session");
+});
+
+test("replies tied to a session: the Texts tab's texts say which session they're about, and text_person passes it on", async () => {
+  const { line, sent, abouts, personOpts, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  // A text answering one about a session: the reply to it is about that session too.
+  await line.home!.take(`${replyContext({ sessionId: "claude:abc", byHome: true, title: "login fix", project: "/p" })}merge it`);
+  await until(() => sent.length === 1);
+  expect(abouts).toEqual(["claude:abc"]);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  // A report from a session it started: its texted outcome is about that session.
+  const child = /session (\S+) in/.exec(await tools(texts).start_session!({ project_path: project, prompt: "Fix it." }))![1]!;
+  await until(() => sent.length === 2);
+  expect(abouts[1]).toBe(child);
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  // text_person in that turn: the session goes with it unless the agent names another; an image goes too.
+  const plain = fake.script;
+  fake.script = (text) => (text.includes("and send the chart") ? [async () => void (await tools(texts).text_person!({ message: "here", image: "/tmp/chart.png" })), ...plain(text)] : plain(text));
+  await line.home!.take(`${replyContext({ sessionId: child, byHome: true })}and send the chart`);
+  await until(() => personOpts.length === 1);
+  expect(personOpts[0]).toEqual({ about: child, image: "/tmp/chart.png" });
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  expect(await tools(texts).text_person!({ message: "other news", session_id: "codex:zz" })).toContain("Texted");
+  expect(personOpts[1]).toEqual({ about: "codex:zz" });
+  void driverOf;
+});
+
+test("the person's texted images reach the Texts tab as attachments", async () => {
+  const { line, runner, driverOf, textsTab } = await texting({ attachments: true });
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
+  await line.home!.take("what's this?", [{ name: "IMG_1.png", mimeType: "image/png", data: png }]);
+  const texts = await textsTab();
+  await until(() => !!driverOf(texts)?.sent.length);
+  const got = driverOf(texts)!.sent[0]!;
+  expect(got).toStartWith(`${FROM_IMESSAGE}what's this?`);
+  expect(got).toContain("Attached files:");
+  const path = /- (\/\S+IMG_1\.png) \(image\/png/.exec(got)?.[1];
+  expect(path).toBeDefined();
+  expect(readFileSync(path!).equals(png)).toBe(true);
+  void runner;
+});
+
+test("a relayed text_person with an image tells the Home agent the image's path", async () => {
+  const { line, runner, driverOf, tools, project, chat, op } = await texting();
+  await op("send", { sessionId: chat, text: "hi" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && !!driverOf(chat));
+  const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  await until(() => driverOf(chat)!.sent.length === 2 && runner.core.sessions.get(chat)?.state.status === "idle");
+  expect(await line.home!.relay!(child, "new header", "/tmp/header.png")).toContain("Not texted");
+  await until(() => driverOf(chat)!.sent.length === 3);
+  expect(driverOf(chat)!.sent[2]).toContain("With an image: /tmp/header.png");
+  expect(driverOf(chat)!.sent[2]).toContain(`session_id ${child}`);
 });

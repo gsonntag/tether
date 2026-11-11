@@ -409,3 +409,31 @@ describe("the stdio MCP server", () => {
     }
   });
 });
+
+describe("text_person with an image", () => {
+  test("a path that isn't a real image is refused before anything goes (or is relayed)", async () => {
+    const { peers } = setup([row("claude:a", "A")]);
+    const dir = mkdtempSync(join(tmpdir(), "tether-peer-img-"));
+    writeFileSync(join(dir, "key.png"), "-----BEGIN OPENSSH PRIVATE KEY-----");
+    writeFileSync(join(dir, "ok.png"), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8)]));
+    const sent: unknown[] = [];
+    const relayed: unknown[] = [];
+    (peers as any).ctx.homeLine = {
+      home: { relay: async (...a: unknown[]) => void relayed.push(a) },
+      phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) },
+    };
+    const call = (args: Record<string, unknown>) => peers.call({ from: "claude:a", tool: "text_person", args } as any);
+    for (const image of [join(dir, "key.png"), "/etc/passwd", "relative.png"]) {
+      const r = await call({ message: "look", image });
+      expect([image, r.isError]).toEqual([image, true]);
+    }
+    expect(sent).toEqual([]);
+    expect(relayed).toEqual([]);
+    expect((await call({ message: "look", image: join(dir, "ok.png") })).text).toBe("Texted the person.");
+    expect(sent).toEqual([["claude:a", "look", { image: join(dir, "ok.png") }]]);
+    expect(relayed).toEqual([["claude:a", "look", join(dir, "ok.png")]]);
+    expect((await call({ message: "plain" })).text).toBe("Texted the person.");
+    expect(sent.at(-1)).toEqual(["claude:a", "plain", {}]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

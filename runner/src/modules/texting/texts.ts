@@ -57,5 +57,7 @@ export const TEXTS = {
   /** the Home agent's chat failed on something the person texted */
   homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
+  /** the person texted a file that isn't an image (or one too big): it's left out */
+  onlyImages: "Only images come through by text, so I left the other file out.",
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };
