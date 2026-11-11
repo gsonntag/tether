@@ -197,8 +197,35 @@ export interface AdapterBilling {
   recorded?(nativeId: string, projectPath: string): BillingSource | undefined;
 }
 
+/** A tool Tether gives an agent: `input` is a zod shape; `run` answers with text for the model. */
+export interface AgentTool {
+  name: string;
+  description: string;
+  input: Record<string, unknown>;
+  run(args: any): Promise<string>;
+}
+
+/**
+ * What sessions in one folder get on top of the harness's own setup (the Home agent's folder):
+ * Tether's tools, instructions added to the system prompt, tools allowed without asking and tools
+ * taken away.
+ */
+export interface AgentSetup {
+  /** the tools' server name: the model sees them as mcp__<server>__<tool> */
+  server: string;
+  tools: AgentTool[];
+  instructions: string;
+  allow?: string[];
+  deny?: string[];
+}
+
 export interface Adapter {
   id: HarnessId;
+  /**
+   * Gives every session this harness runs in `folder` the setup `make` returns for it (by native
+   * id), from its next process start. Returns the function that takes it away.
+   */
+  agentSetup?(folder: string, make: (nativeId: string) => AgentSetup): () => void;
   capabilities: HarnessCapabilities;
   /** Absent: it has no choice of source, and its sessions are on its own login. */
   billing?: AdapterBilling;

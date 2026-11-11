@@ -23,6 +23,7 @@ import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } f
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 import { ClaudeCostCounter } from "./cost";
+import { claudeSetupFor } from "./setup";
 
 /** User messages for the SDK, pushed as they're sent; the iterator waits between them. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -90,6 +91,9 @@ export class ClaudeDriver implements Driver {
       const ask = claudeAsk(tool, input, o);
       return claudeResult(ask, input, await sink.request(ask, o.signal));
     };
+    // The Home agent's folder: Tether's tools and instructions (setup.ts).
+    const extra = claudeSetupFor(this.projectPath, this.nativeId);
+    const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? [])];
     this.q = query({
       prompt: this.input,
       options: {
@@ -105,10 +109,11 @@ export class ClaudeDriver implements Driver {
         // Each subagent has its own Stop, so Stop on the main turn leaves background ones running.
         perTaskStopAffordance: true,
         // A moved session reads its own history without asking (SPEC §15).
-        ...(existsSync(movedDir(`claude:${this.nativeId}`)) ? { allowedTools: [movedReadRule(this.nativeId)] } : {}),
+        ...(allowed.length ? { allowedTools: allowed } : {}),
+        ...(extra ? { mcpServers: extra.mcpServers, ...(extra.deny.length ? { disallowedTools: extra.deny } : {}) } : {}),
         settingSources: ["user", "project", "local"],
         settings: claudeAuthSettings(this.lease.helper),
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : {}) },
         canUseTool,
         env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,

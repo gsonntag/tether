@@ -57,6 +57,8 @@ export interface RunnerOptions {
    * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
    * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
    */
+  /** the Home agent's folder: sent with hello so browsers leave its chats out of their lists */
+  homeFolder?: string;
   terminal?: false | { tmux?: Tmux; hookSocket?: string | null; spawn?: SpawnPty; pollMs?: number; quitTimeoutMs?: number; shell?: string };
 }
 
@@ -78,6 +80,7 @@ export function createRunner(o: RunnerOptions) {
     version: o.version,
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
+    ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
   });
 
   const conn = new Connection({
@@ -108,7 +111,8 @@ export function createRunner(o: RunnerOptions) {
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,
-    hideProjects: o.core?.hideProjects,
+    // The Home agent's chats show on Home, not in the lists.
+    hideProjects: [o.core?.hideProjects, o.homeFolder?.replace(/\*/g, "")].filter(Boolean).join(","),
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
@@ -180,6 +184,7 @@ export function createRunner(o: RunnerOptions) {
         return s ? lookAt(s) : undefined;
       },
       viewersOf: (id: string) => live.read.viewersOf(id),
+      homeFolder: o.homeFolder,
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
@@ -218,6 +223,20 @@ export function createRunner(o: RunnerOptions) {
         sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
+        projects: () => core.listProjects(),
+        folder: (path: string) => core.folder(path),
+        queue: async (id: string, text: string) => void (await live.queue.add(id, text, [])),
+        recent: async (id: string, limit: number) => {
+          const s = await core.open(id);
+          return (await core.load(s)).newest(limit).messages;
+        },
+        rename: async (id: string, title: string) => {
+          const s = await core.open(id);
+          core.o.prefs.set(s.id, { title });
+          core.o.prefs.flush();
+          core.touch(s, { title });
+        },
+        interrupt: (id: string) => live.interrupt(id),
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);
           // Not read yet: it joins what the store has when it's read.

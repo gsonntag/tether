@@ -60,6 +60,8 @@ export interface RunnerInfo {
   harnesses: HarnessInfo[];
   /** set by the server: when this connection said hello */
   connectedAt?: number;
+  /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
+  homeFolder?: string;
 }
 
 export interface User {
@@ -89,6 +91,10 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
+  /** the Home agent's current chat (none before the first message) and the folder its chats run in */
+  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string } };
+  /** a new Home agent chat, current from now; its first send starts it */
+  homeAgentNew: { args: Record<string, never>; result: { sessionId: string } };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

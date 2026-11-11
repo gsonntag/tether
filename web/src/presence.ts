@@ -6,10 +6,19 @@
 
 import { sendFrame } from "./connection";
 import { deviceId } from "./device";
-import { presenceFor } from "./route";
+import { parseRoute, presenceFor } from "./route";
+
+const homePage = (hash: string) => parseRoute(hash).page === "home";
 
 let last = "";
 let covered = false;
+/** the Home agent's chat while Home shows it: Home looks at it */
+let homeChat: { runnerId: string; sessionId: string } | undefined;
+
+export function setHomeChat(chat: { runnerId: string; sessionId: string } | undefined) {
+  homeChat = chat;
+  tellPresence();
+}
 
 /** The terminal panel covers the session on this device (a phone), or no longer does. */
 export function setSessionCovered(on: boolean) {
@@ -20,7 +29,9 @@ export function setSessionCovered(on: boolean) {
 
 /** Says what this device looks at now (only when it changed, unless `force`). */
 export function tellPresence(force = false) {
-  const p = presenceFor(location.hash, document.visibilityState === "visible" && !covered);
+  const visible = document.visibilityState === "visible";
+  let p = presenceFor(location.hash, visible && !covered);
+  if (!p.sessionId && visible && homeChat && homePage(location.hash)) p = homeChat;
   const key = JSON.stringify(p);
   if (!force && key === last) return;
   if (sendFrame({ t: "presence", deviceId: deviceId(), ...p })) last = key;

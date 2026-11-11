@@ -23,6 +23,9 @@ if (!url || !token) {
 }
 
 const config = loadConfig();
+// Where the Home agent's chats run (modules/homeAgent): made here, so the core can hide it.
+const homeFolder = join(CONFIG_DIR, "modules", "homeAgent", "workspace");
+mkdirSync(homeFolder, { recursive: true, mode: 0o700 });
 const credentials = new CredentialStore();
 CredentialStore.current = credentials;
 const runner = createRunner({
@@ -37,6 +40,7 @@ const runner = createRunner({
   adapters: [claudeAdapter, codexAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
   attachmentsDir: join(CONFIG_DIR, "attachments"),
+  homeFolder,
   core: {
     hideProjects: process.env.TETHER_HIDE_PROJECTS,
     // Dev stacks shorten these to see what comes after.

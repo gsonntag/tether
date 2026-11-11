@@ -9,6 +9,7 @@ import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState }
 import { startPresence, tellPresence } from "./presence";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
+import { setHomeFolders } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 
@@ -57,12 +58,15 @@ interface State {
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
 }
 
+const known = loadKnown();
+setHomeFolders(known);
+
 export const useStore = create<State>(() => ({
   link: "connecting",
   everOpen: false,
   auth: "ok",
   stale: false,
-  runners: loadKnown(),
+  runners: known,
   sidebarOpen: false,
   summaries: {},
   projects: {},
@@ -102,6 +106,7 @@ export function start() {
     for (const r of runners) if (r.online && (afterHello || back.includes(r.id))) refreshRunner(r.id);
     afterHello = false;
     saveKnown(runners);
+    setHomeFolders(runners);
     set({ runners });
     // A runner that connected (or came back) hears of this device's subscription.
     void syncPush(get().pushKey, runners.filter((r) => r.online && (back.includes(r.id) || !before.find((b) => b.id === r.id)?.online)).map((r) => r.id));

@@ -21,6 +21,7 @@ import { claudeModels } from "./models";
 import { claudeCommandRoute, claudeCommands } from "./commands";
 import { sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
+import { setClaudeSetup } from "./setup";
 
 /**
  * Quitting Claude's TUI whatever it shows: Esc closes a dialog (denying a permission prompt) or stops
@@ -235,6 +236,8 @@ export const claudeAdapter: Adapter = {
     const mode = r?.effective?.permissions?.defaultMode;
     return { ...(nativeId ? await storedSettings(nativeId, projectPath).catch(() => ({})) : {}), ...(typeof mode === "string" ? { permissionMode: mode } : {}) };
   },
+
+  agentSetup: setClaudeSetup,
 
   start: (projectPath, nativeId, opts, sink) => ClaudeDriver.open(nativeId, projectPath, opts, sink, false),
   resume: (nativeId, projectPath, opts, sink) => ClaudeDriver.open(nativeId, projectPath, opts, sink, true),

@@ -10,8 +10,20 @@ export interface Row extends SessionSummary {
 /** Background subagents still running: the session is working, whatever its main agent does. */
 export const shownStatus = <S extends { status: RunStatus; backgroundSubagents?: number }>(s: S): RunStatus => (s.backgroundSubagents && s.status === "idle" ? "running" : s.status);
 
+/** Each runner's Home agent folder (RunnerInfo.homeFolder): its chats show on Home, never in the lists. */
+const homeFolders = new Map<string, string>();
+export function setHomeFolders(runners: { id: string; homeFolder?: string }[]) {
+  homeFolders.clear();
+  for (const r of runners) if (r.homeFolder) homeFolders.set(r.id, r.homeFolder);
+}
+export const isHomeChat = (runnerId: string, projectPath: string) => homeFolders.get(runnerId) === projectPath;
+
 const rows = (summaries: Record<string, SummaryState>): Row[] =>
-  Object.entries(summaries).flatMap(([runnerId, s]) => Object.values(s.sessions).map((x) => ({ ...x, status: shownStatus(x), runnerId })));
+  Object.entries(summaries).flatMap(([runnerId, s]) =>
+    Object.values(s.sessions)
+      .filter((x) => !isHomeChat(runnerId, x.projectPath))
+      .map((x) => ({ ...x, status: shownStatus(x), runnerId })),
+  );
 
 const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
