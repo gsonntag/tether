@@ -3,10 +3,10 @@
 import { memo, type ReactNode } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ArrowTopRightOnSquareIcon, CheckIcon, StopIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { peerAction, peerTarget } from "../../../shared/peers";
 import { peerHead } from "../peerCard";
-import type { ToolPart } from "../../../shared/transcript";
+import type { LiveState, ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -215,6 +215,14 @@ function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?
   );
 }
 
+/**
+ * A command the agent is waiting on, in a turn Tether drives: Stop on its card ends the turn, as
+ * Esc in the composer does. Not while it waits on your answer (the dock answers that).
+ */
+export function stoppable(p: ToolPart, state: Pick<LiveState, "mode" | "status"> | undefined, waiting = false): boolean {
+  return p.kind === "shell" && p.status === "running" && !waiting && state?.mode === "live" && state.status === "running";
+}
+
 /** Open by default: diffs and todo lists (what you want to see), and failures. */
 const openByDefault = (p: ToolPart) => p.kind === "edit" || p.kind === "todo" || p.status === "error";
 
@@ -234,6 +242,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   const childLive = childStatus === "running" || childStatus === "waiting";
   const status = childLive ? "running" : part.status;
   // Foreground: the main agent is waiting on this very call, still unanswered.
+  const stop = useStore((s) => stoppable(part, s.views[viewKey(runnerId, sessionId)]?.state, waiting));
   const canBackground = useStore((s) => !!s.views[viewKey(runnerId, sessionId)]?.capabilities?.subagents.background);
   const background = part.kind === "task" && part.status === "running" && childLive && canBackground && (
     <button type="button" className="t-link t-tool-background" onClick={() => void rpc(runnerId, "backgroundSubagent", { sessionId, toolId: part.id }).catch(() => {})}>
@@ -242,13 +251,21 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   );
   return (
     <div className="t-tool" data-kind={part.kind}>
-      <button type="button" className="t-tool-head" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
-        <span className="t-tool-name">{head ? head.label : part.name}</span>
-        <span className="t-tool-sum" title={sum}>
-          {sum}
-        </span>
-        {waiting ? <span className="t-tool-waiting">Waiting for you</span> : <StatusIcon status={status} />}
-      </button>
+      <div className="t-tool-top">
+        <button type="button" className="t-tool-head" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
+          <span className="t-tool-name">{head ? head.label : part.name}</span>
+          <span className="t-tool-sum" title={sum}>
+            {sum}
+          </span>
+          {waiting ? <span className="t-tool-waiting">Waiting for you</span> : <StatusIcon status={status} />}
+        </button>
+        {stop && (
+          <button type="button" className="t-tool-stop" title="Stop the turn (Esc)" onClick={() => void rpc(runnerId, "interrupt", { sessionId }).catch(() => {})}>
+            <Icon icon={StopIcon} size="sm" />
+            Stop
+          </button>
+        )}
+      </div>
       {part.kind === "task" && part.childSessionId && !isOpen && (
         <div className="t-tool-body t-tool-row">
           <button type="button" className="t-link" onClick={() => openSession(runnerId, part.childSessionId!)}>
