@@ -296,7 +296,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
   const answerText = parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
   const checkIn = stripCheckIn(answerText).found ? parseAnswer(answerText) : null;
   const shown = checkIn === null ? parts : parts.map((p) => (p.type === "text" ? { ...p, text: stripCheckIn(p.text).text } : p));
-  const settled = !!checkIn && checkIn.done && checkIn.merged && checkIn.cleanedUp !== false;
+  const settled = !!checkIn && checkIn.done && (checkIn.merged || !!checkIn.nothingToMerge) && checkIn.cleanedUp !== false;
   return (
     <div className="t-msg assistant">
       <div className="t-parts">

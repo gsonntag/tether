@@ -17,7 +17,8 @@ test("the check-in message asks for the tagged line and a cleanup that spares ot
   expect(m).toContain("Don't start or continue any task work");
   expect(m).toContain('"cleaned_up": true');
   expect(m).toContain("git worktree remove <path>, without --force");
-  expect(m).toContain("git branch -d <branch>, never -D");
+  expect(m).toContain("git branch -d <branch>; -D only as above");
+  expect(m).toContain("git branch -D <branch> only for work the person asked you to discard");
   expect(m).toContain("the main checkout");
   expect(m).toContain("your own folder (/r/wt-a)");
   expect(m).toContain("other sessions are using:\n     /r/main\n     /r/wt-b\n");
@@ -52,6 +53,28 @@ test("judge archives only done, merged, cleaned-up work git agrees with", () => 
   expect(judge({ done: true, merged: true, cleanedUp: true }, { unmerged: [], leftover: ["/r/wt"] })).toEqual({ archive: false, reason: "done and merged, but its worktree is still there: /r/wt" });
   expect(judge({ done: true, merged: true, cleanedUp: false, note: "wt in use" }, none)).toEqual({ archive: false, reason: "done and merged, but it didn't clean up its worktrees: wt in use" });
   expect(judge({ done: true, merged: true }, none).reason).toContain("didn't say whether it cleaned up");
+});
+
+test("judge archives done, cleaned-up work with nothing to merge, unless git disagrees", () => {
+  const none = { unmerged: [], leftover: [] };
+  // Discarded at the person's request (the seeding session's answer).
+  const seeded = { done: true, merged: false, nothingToMerge: true, cleanedUp: true, branch: "seed-local-applications", note: "local data seeded; script discarded at user's request" };
+  expect(judge(seeded, none)).toEqual({ archive: true, reason: "local data seeded; script discarded at user's request" });
+  expect(judge({ done: true, merged: false, nothingToMerge: true, cleanedUp: true }, none)).toEqual({ archive: true, reason: "done, nothing to merge and cleaned up" });
+  // Still unmerged work somewhere, a worktree left, or no cleanup: kept.
+  expect(judge(seeded, { unmerged: ["branch seed-local-applications has commits not in main"], leftover: [] })).toEqual({ archive: false, reason: "says it's done and nothing to merge, but git disagrees: branch seed-local-applications has commits not in main" });
+  expect(judge(seeded, { unmerged: ["PR #7 for seed-local-applications is still open"], leftover: [] }).archive).toBe(false);
+  expect(judge(seeded, { unmerged: [], leftover: ["/r/wt"] }).archive).toBe(false);
+  expect(judge({ ...seeded, cleanedUp: false }, none).archive).toBe(false);
+  expect(judge({ ...seeded, done: false }, none).archive).toBe(false);
+  // Not merged and not "nothing to merge": kept as before.
+  expect(judge({ ...seeded, nothingToMerge: undefined }, none).reason).toContain("not merged or applied");
+});
+
+test("parseAnswer reads nothing_to_merge", () => {
+  expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": false, "nothing_to_merge": true, "cleaned_up": true}`)).toEqual({ done: true, merged: false, nothingToMerge: true, cleanedUp: true });
+  expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": false, "nothing_to_merge": "yes"}`)).toEqual({ done: true, merged: false });
+  expect(checkInMessage("/r/x")).toContain('"nothing_to_merge": false');
 });
 
 test("skipReason leaves busy sessions alone", () => {
@@ -97,6 +120,48 @@ test("verify: a merged branch passes, an unmerged one doesn't, a deleted one pas
   await sh(main, "git", "merge", "-q", "--no-ff", "-m", "merge", "feature");
   expect(await verify(main, { ...ok, branch: "feature" })).toEqual(clean);
   expect(await verify(main, { ...ok, branch: "gone-after-merge" })).toEqual(clean);
+});
+
+/** A repo with a bare origin, and branch `name` with a commit not in main, pushed. */
+async function withOrigin(name: string) {
+  const r = await repo();
+  const origin = join(r.dir, "origin.git");
+  await sh(r.dir, "git", "init", "-q", "--bare", origin);
+  await sh(r.main, "git", "remote", "add", "origin", origin);
+  await sh(r.main, "git", "push", "-q", "origin", "main");
+  await sh(r.main, "git", "checkout", "-qb", name);
+  writeFileSync(join(r.main, "seed.ts"), "seed\n");
+  await sh(r.main, "git", "add", ".");
+  await sh(r.main, "git", "commit", "-qm", "seed script");
+  await sh(r.main, "git", "push", "-q", "origin", name);
+  await sh(r.main, "git", "checkout", "-q", "main");
+  return { ...r, origin };
+}
+
+const nothing = { done: true, merged: false, nothingToMerge: true, cleanedUp: true };
+const noPrs = async () => [] as number[];
+
+test("verify, nothing to merge: discarded work whose branch is gone everywhere passes", async () => {
+  const { main, origin } = await withOrigin("seed-local");
+  // The session discarded it at the person's request: local and remote branch deleted (the remote
+  // one from elsewhere, so only the stale remote-tracking ref is left here until the fetch prunes it).
+  await sh(main, "git", "branch", "-qD", "seed-local");
+  await sh(origin, "git", "branch", "-qD", "seed-local");
+  expect(await verify(main, { ...nothing, branch: "seed-local" }, undefined, undefined, [], noPrs)).toEqual(clean);
+  // Local or research work with no branch at all.
+  expect(await verify(main, nothing, undefined, undefined, [], noPrs)).toEqual(clean);
+});
+
+test("verify, nothing to merge: a branch or an open PR with unmerged work still keeps it", async () => {
+  const { main } = await withOrigin("seed-local");
+  // Local branch deleted, but the remote one still has the commits.
+  await sh(main, "git", "branch", "-qD", "seed-local");
+  expect(await verify(main, { ...nothing, branch: "seed-local" }, undefined, undefined, [], noPrs)).toEqual({ unmerged: ["branch seed-local has commits not in main"], leftover: [] });
+  // An open PR for it, whatever git says.
+  const { main: other } = await repo();
+  expect(await verify(other, { ...nothing, branch: "gone" }, undefined, undefined, [], async (_cwd, b) => (b === "gone" ? [7] : []))).toEqual({ unmerged: ["PR #7 for gone is still open"], leftover: [] });
+  // No way to tell (no gh): git alone decides.
+  expect(await verify(other, { ...nothing, branch: "gone" }, undefined, undefined, [], async () => undefined)).toEqual(clean);
 });
 
 test("verify: a squash-merged branch counts as merged", async () => {

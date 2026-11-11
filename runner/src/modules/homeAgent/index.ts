@@ -1175,7 +1175,7 @@ export class HomeAgent implements HomeEnd {
     if (stopped) return Object.assign(e, { outcome: "kept", reason: "the person stopped it" });
     if (error) return Object.assign(e, { outcome: "kept", reason: `its turn failed: ${error}` });
     const answer = parseAnswer(lastRawReply(await this.ctx.sessions.recent(id, 10).catch(() => [] as Msg[])));
-    const found = answer?.done && answer.merged ? await verify(e.project, answer, this.git, new Set(), e.keep).catch(() => undefined) : undefined;
+    const found = answer?.done && (answer.merged || answer.nothingToMerge) ? await verify(e.project, answer, this.git, new Set(), e.keep).catch(() => undefined) : undefined;
     const v = judge(answer, found);
     if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
     try {

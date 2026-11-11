@@ -9,6 +9,8 @@ export const ANSWER_TAG = "TETHER-CHECK-IN:";
 export interface Answer {
   done: boolean;
   merged: boolean;
+  /** not merged because there was nothing to keep: discarded at the person's request, local or data-only work, research */
+  nothingToMerge?: boolean;
   /** no worktree it created is left; undefined: it didn't say */
   cleanedUp?: boolean;
   branch?: string;
@@ -30,7 +32,7 @@ export function parseAnswer(reply: string | undefined): Answer | undefined {
       const v = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
       if (typeof v?.done !== "boolean" || typeof v?.merged !== "boolean") return undefined;
       const s = (x: unknown) => (typeof x === "string" && x.trim() && x.trim() !== "null" ? x.trim().slice(0, 300) : undefined);
-      return { done: v.done, merged: v.merged, ...(typeof v.cleaned_up === "boolean" ? { cleanedUp: v.cleaned_up } : {}), branch: s(v.branch), worktree: s(v.worktree), note: s(v.note) };
+      return { done: v.done, merged: v.merged, ...(v.nothing_to_merge === true ? { nothingToMerge: true } : {}), ...(typeof v.cleaned_up === "boolean" ? { cleanedUp: v.cleaned_up } : {}), branch: s(v.branch), worktree: s(v.worktree), note: s(v.note) };
     } catch {
       return undefined;
     }
@@ -117,9 +119,10 @@ export function answerSummary(a: Answer | undefined): string {
   if (!a) return "answered";
   const note = a.note ? `: ${a.note}` : "";
   if (!a.done) return `not done${note}`;
-  if (!a.merged) return `done · not merged${note}`;
-  if (a.cleanedUp === false) return `done · merged · not cleaned up${note}`;
-  return `done · merged${a.cleanedUp ? " · cleaned up" : ""}`;
+  const what = a.merged ? "merged" : "nothing to merge";
+  if (!a.merged && !a.nothingToMerge) return `done · not merged${note}`;
+  if (a.cleanedUp === false) return `done · ${what} · not cleaned up${note}`;
+  return `done · ${what}${a.cleanedUp ? " · cleaned up" : ""}`;
 }
 
 /** The status shown in place of the tagged lines: `Check-in: done · merged · cleaned up`. */

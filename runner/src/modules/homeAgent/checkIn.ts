@@ -39,15 +39,16 @@ export function checkInMessage(ownFolder: string, keep: string[] = []): string {
 Don't start or continue any task work in this turn. From what you know and a quick look at git:
 1. Is the task you were given done (finished and verified, nothing left you meant to do)?
 2. Is all of your work merged or applied? That means: everything is committed and merged into the main branch, or your changes are in the project's own working tree (uncommitted is fine there). It is NOT merged if any of it is only on a separate branch or in a separate worktree, or a PR is still open.
-3. Only if both are yes: clean up before you answer. Remove each git worktree you created for this task (git worktree remove <path>, without --force) and delete its local branch if it's merged (git branch -d <branch>, never -D). If a worktree has uncommitted changes or its branch isn't merged, leave it and answer merged: false. Never remove or change:
+   Or is there nothing to merge? That is: the task never needed code kept (research, running a command, seeding local data, other local-only work), or the person asked you to discard the work. Then answer merged: false and nothing_to_merge: true, but only if no branch or PR with your unmerged work is left: delete a discarded branch (git branch -D <branch> only for work the person asked you to discard; also its remote branch if you pushed one) and close its PR.
+3. Only if the task is done and its work is merged or there's nothing to merge: clean up before you answer. Remove each git worktree you created for this task (git worktree remove <path>, without --force) and delete its local branch if it's merged (git branch -d <branch>; -D only as above). If a worktree has uncommitted changes or its branch isn't merged (and wasn't discarded), leave it and answer merged: false, nothing_to_merge: false. Never remove or change:
    - the main checkout (the first entry of git worktree list),
    - your own folder (${ownFolder}),
    - any worktree you didn't create yourself${others.length ? `, including these, which other sessions are using:\n${others.map((f) => `     ${f}`).join("\n")}` : "."}
    If you're done but don't clean up (for one of those reasons), say why.
 
 Give one or two sentences, then end your reply with exactly one line in this form (valid JSON after the tag, on one line):
-${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": "the branch you worked on, or null", "worktree": "the absolute path of a separate worktree you used (even if you removed it), or null", "note": "a few words on what's left, or what you did"}
-cleaned_up is true when no worktree you created is left (also when you never made one), false otherwise.`;
+${ANSWER_TAG} {"done": true, "merged": true, "nothing_to_merge": false, "cleaned_up": true, "branch": "the branch you worked on, or null", "worktree": "the absolute path of a separate worktree you used (even if you removed it), or null", "note": "a few words on what's left, or what you did"}
+cleaned_up is true when no worktree you created is left (also when you never made one), false otherwise. branch is the branch you worked on even if you deleted it.`;
 }
 
 /** Why a session isn't asked, or undefined when it can be. */
@@ -120,6 +121,26 @@ async function worktrees(git: Git, cwd: string): Promise<{ path: string; branch?
     .filter((w): w is { path: string; branch?: string } => !!w);
 }
 
+/** The open PRs for a branch (their numbers), or undefined when that can't be told (no gh, no remote). */
+export type OpenPrs = (cwd: string, branch: string) => Promise<number[] | undefined>;
+
+/** Open PRs by gh, with a time limit. */
+export const ghOpenPrs =
+  (ms = 15_000): OpenPrs =>
+  async (cwd, branch) => {
+    try {
+      const p = Bun.spawn(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "5"], { cwd, stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
+      const t = setTimeout(() => p.kill(), ms);
+      const s = await new Response(p.stdout).text();
+      clearTimeout(t);
+      if ((await p.exited) !== 0) return undefined;
+      const v = JSON.parse(s);
+      return Array.isArray(v) ? v.map((x) => Number(x?.number)).filter((n) => Number.isFinite(n)) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
 export interface Findings {
   /** work git says isn't merged or applied */
   unmerged: string[];
@@ -135,7 +156,7 @@ export interface Findings {
  * main checkout, its own folder and `keep` (other sessions' folders) are never counted as its
  * leftovers. No git: nothing found.
  */
-export async function verify(projectPath: string, a: Answer, git: Git = runGit(), fetched = new Set<string>(), keep: string[] = []): Promise<Findings> {
+export async function verify(projectPath: string, a: Answer, git: Git = runGit(), fetched = new Set<string>(), keep: string[] = [], prs: OpenPrs = ghOpenPrs()): Promise<Findings> {
   const found: Findings = { unmerged: [], leftover: [] };
   if (!existsSync(projectPath)) return found;
   const top = await git(projectPath, "rev-parse", "--show-toplevel");
@@ -144,7 +165,8 @@ export async function verify(projectPath: string, a: Answer, git: Git = runGit()
   // Remote branches as they are now (a PR merged on the website), once per repo per check-in.
   if (common && !fetched.has(common)) {
     fetched.add(common);
-    await runGit(15_000)(projectPath, "fetch", "--quiet", "--no-tags", "origin").catch(() => undefined);
+    // --prune: a branch deleted on the remote (merged, or discarded) is gone here too.
+    await runGit(15_000)(projectPath, "fetch", "--quiet", "--prune", "--no-tags", "origin").catch(() => undefined);
   }
   const mains = await mainRefs(git, projectPath);
   const own = resolve(top);
@@ -162,6 +184,11 @@ export async function verify(projectPath: string, a: Answer, git: Git = runGit()
     // A branch that's gone was usually deleted after its merge.
     if (ref && !(await inMain(git, projectPath, ref, mains))) found.unmerged.push(`branch ${a.branch} has commits not in ${mains[0]}`);
   }
+  // Nothing to merge: no PR may still be open for its branch.
+  if (a.nothingToMerge && !a.merged && a.branch && !MAIN_NAMES.includes(a.branch) && !mains.includes(a.branch)) {
+    const open = await prs(projectPath, a.branch).catch(() => undefined);
+    if (open?.length) found.unmerged.push(`PR ${open.map((n) => `#${n}`).join(", ")} for ${a.branch} is still open`);
+  }
   const named = a.worktree ? resolve(isAbsolute(a.worktree) ? a.worktree : join(top, a.worktree)) : undefined;
   const others = new Set(keep.map((f) => resolve(f)));
   for (const w of trees.slice(1))
@@ -173,9 +200,11 @@ export async function verify(projectPath: string, a: Answer, git: Git = runGit()
 export function judge(a: Answer | undefined, f: Findings = { unmerged: [], leftover: [] }): { archive: boolean; reason: string } {
   if (!a) return { archive: false, reason: "its reply had no check-in line to go by" };
   if (!a.done) return { archive: false, reason: `not done${a.note ? `: ${a.note}` : ""}` };
-  if (!a.merged) return { archive: false, reason: `done, but not merged or applied${a.note ? `: ${a.note}` : ""}${a.branch ? ` (branch ${a.branch})` : ""}` };
-  if (f.unmerged.length) return { archive: false, reason: `says it's done and merged, but git disagrees: ${f.unmerged.join("; ")}` };
-  if (f.leftover.length) return { archive: false, reason: `done and merged, but its worktree is still there: ${f.leftover.join(", ")}` };
-  if (a.cleanedUp !== true) return { archive: false, reason: `done and merged, but it ${a.cleanedUp === false ? "didn't clean up its worktrees" : "didn't say whether it cleaned up its worktrees"}${a.note ? `: ${a.note}` : ""}` };
-  return { archive: true, reason: a.note ?? "done, merged and cleaned up" };
+  if (!a.merged && !a.nothingToMerge) return { archive: false, reason: `done, but not merged or applied${a.note ? `: ${a.note}` : ""}${a.branch ? ` (branch ${a.branch})` : ""}` };
+  // Merged, or nothing to merge (discarded on request, local or data-only work, research): git must agree either way.
+  const what = a.merged ? "merged" : "nothing to merge";
+  if (f.unmerged.length) return { archive: false, reason: `says it's done and ${what}, but git disagrees: ${f.unmerged.join("; ")}` };
+  if (f.leftover.length) return { archive: false, reason: `done and ${what}, but its worktree is still there: ${f.leftover.join(", ")}` };
+  if (a.cleanedUp !== true) return { archive: false, reason: `done and ${what}, but it ${a.cleanedUp === false ? "didn't clean up its worktrees" : "didn't say whether it cleaned up its worktrees"}${a.note ? `: ${a.note}` : ""}` };
+  return { archive: true, reason: a.note ?? `done, ${what} and cleaned up` };
 }
