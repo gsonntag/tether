@@ -1,154 +1,231 @@
 # Tether
 
-Run coding agents (Claude Code, Codex) on your own machines and drive them from any browser,
-desktop or phone. Close the tab and the agent keeps working; open the same session on several
-devices and they stay in sync. The design is in [SPEC.md](SPEC.md).
+Run coding agents (Claude Code and Codex) on your own machines and drive them from any browser,
+desktop or phone. Close the tab and the agent keeps working. Open the same session on several
+devices and they stay in sync. A Home agent can start work across your projects and see it through,
+and Tether can text you when a session needs you. The design is in [SPEC.md](SPEC.md).
 
 ```
 browser ──wss──► server (Foliation app: UI + relay) ◄──wss── runner (your machine) ──► claude / codex
 ```
 
-The **runner** owns everything live. The **server** is a stateless relay, so redeploying it never
-interrupts an agent. Runners dial out, so your machines need no inbound port.
+- [Features](#features)
+- [Architecture](#architecture)
+- [Setup](#setup)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Production and deploys](#production-and-deploys)
+- [Testing](#testing)
 
-## Layout
+## Features
+
+**Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
+and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
+(the last 3 days plus every live session) and per-project lists, and search finds the rest. You can
+rename and archive sessions from the sidebar. A session goes live when you send and goes back to
+stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
+
+- **Composer** (SPEC §9): Enter sends, or steers a running turn. Tab queues the message and
+  ⌘/Ctrl+Enter stops the turn and sends now. Esc stops. The queue is kept on the runner, and any device can edit, reorder or cancel it. Typing `/` opens the
+  harness's own commands and skills. Text starting with `!` runs a shell command in the session's
+  folder right away, and its card has a Stop button. You can attach images and files by pasting,
+  dropping, the file picker or the camera.
+- **Requests** (SPEC §7): permission prompts, questions and plans go to every device watching the
+  session, and the first answer wins. A plan opens in a review view where you can comment on it.
+- **Stop a running command:** while the agent waits on a shell command, a Stop button on the
+  command's card ends the turn.
+- **Terminal** (SPEC §8): the ❯_ button opens a plain shell for the project, and the harness's own
+  TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
+  takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
+  Terminals outlive runner restarts.
+- **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
+  harness with another billing source. The old session stays as it was.
+
+**Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
+the runners and the **Home agent**, a chat that starts sessions in your projects and sees them
+through (SPEC §10):
+
+- **Tabs.** Several chats can be open and running at once, and each one is its own session. You can
+  rename a tab by double-clicking it. Closing a tab, or typing `/new` or `/clear` in it, archives that
+  chat. **Expand** puts the chat over the whole window, and Esc brings it back.
+- **Pickers:** the agent's harness, source, model and permission mode. The mode is **Auto** by
+  default. These settings are shared by all chats and remembered for new ones.
+- **Reports.** When a session the agent started or messaged ends a turn, its reply comes back to the
+  chat as a `[From Tether]` message. It's shown folded to one line, and you can open it to read the
+  rest. While those sessions are still working, a "Waiting for N sessions to finish…" row shows.
+  The agent can message any session, and following up in a session yourself makes it yours again.
+- **Watch all sessions** (on by default): the agent also hears when any other session finishes a
+  turn, fails or starts waiting for you.
+- **Archive done sessions** (also something you can ask the agent for): the agent asks each idle
+  session whether its work is done and merged, and tells finished sessions to remove the worktrees
+  they made. It checks each answer against git, then archives the finished sessions and reports on
+  the rest. Busy sessions are skipped, never interrupted.
+
+**Sessions talking to each other** (SPEC §9a): every live session gets a `tether` MCP server with
+four tools: `tether_sessions`, `tether_send`, `tether_ask` (waits for the answer) and
+`tether_broadcast` (within the sender's project by default). Messages go into the target's queue.
+A session can't message a session with looser permissions than its own, and loops are capped. You
+can turn this off with `TETHER_PEERS=0`.
+
+**Billing sources** (SPEC §10, *Credentials and billing safety*): each session uses one source, set
+when the session is made:
+
+- Claude: the Claude plan, or an Anthropic API key.
+- Codex: the ChatGPT plan, an OpenAI API key, or Azure.
+
+You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
+runner. New sessions start on the subscription. The header's billing chip shows the source and
+switches it, and API sessions show what they've cost in dollars.
+
+**Texting** (iMessage through [Photon Spectrum](https://photon.codes)): the runner can text you when
+a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
+is texted for a session you're looking at in Tether. Each text starts with its session's number.
+
+- **Answering a request:** reply `y` or `n` to a command, edit or plan, or an option's letter to a
+  question. Anything else goes to the agent as your words. A reply answers only the request its
+  text was about. If that request has already been answered, Tether says so instead of passing the
+  reply on.
+- **Choosing the session:** `2 do X`, `[2] do X` or a threaded reply goes to session 2. Plain text
+  goes to the only open session. If several are open, Tether texts you a numbered list to pick from.
+  A session takes replies for 30 minutes after its last text.
+- **Confirmation:** a reply that was passed on to its session gets a ✅ reaction, not another text.
+  The session's answer comes back by text.
+- **Sharing the thread:** the iMessage thread is shared with the `textme` CLI, and each reply goes to
+  exactly one of the two.
+- **Secrets:** your known keys are removed from texts, but anything else the agent writes can appear
+  in one.
+- **Setup:** add a Photon project's id and secret and your verified phone number under
+  **Settings → Texting** (or in `runner.env`). They're stored on the runner. The app server can't
+  send texts itself because a Foliation app has no internet access.
+
+**Settings** also has **Notifications** (Web Push on each device) and **Agents** (runner-wide agent
+settings).
+
+## Architecture
+
+The **runner** owns everything live: harness processes, the queue, requests, terminals and
+modules. The **server** is a stateless relay, so redeploying it never interrupts an agent. Runners
+dial out, so your machines need no inbound port. SPEC §3 has the details.
 
 | Dir | What |
 |---|---|
-| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), sync and parsing helpers. Used by all three |
-| `server/` | Bun relay: Foliation identity, rpc forwarding, session subscriptions, summary broadcast, per-browser terminal routing (`relay.ts`) |
-| `runner/` | Bun runner. `src/core/` connection, event bus, ops, the session core (`sessions.ts` registry and stored mode, `live.ts` driving, `transcript.ts`, `summaries.ts`, `broker.ts`, `prefs.ts`); `src/adapters/claude/` Claude Code (discovery, history, Agent SDK driver, stream); `src/terminal/` PTY and tmux; `src/modules/` features that subscribe to core events |
+| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, commands, plan, sync |
+| `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting`, `push`, `move` |
 | `web/` | React + Vite + Astryx UI |
-| `docs/` | `acceptance/P<n>.md` manual checks per phase, `notes/` findings |
+| `scripts/` | End-to-end checks, a fake runner, probes |
+| `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |
 
-## Local development
+## Setup
 
-Three processes, each in its own terminal. The ports and config directory keep the dev stack
-apart from a production runner on the same machine.
-
-```sh
-(cd server && bun install && bun --watch src/index.ts)   # :8790, dev mode
-
-mkdir -p ~/.local/share/tether-dev && echo '{"runnerId":"tether-dev","name":"tether-dev"}' > ~/.local/share/tether-dev/runner.json
-(cd runner && bun install && TETHER_URL=http://localhost:8790 TETHER_TOKEN=dev \
-  TETHER_CONFIG_DIR=~/.local/share/tether-dev bun src/index.ts)
-
-(cd web && bun install && bunx vite)                      # http://127.0.0.1:5180
-```
-
-Without `FOLIATION_ISSUER` the server runs in dev mode: it listens on loopback only, answers
-only requests addressed to `localhost`/`127.0.0.1`, treats every browser as the owner, and runners authenticate with `Authorization: Bearer dev`
-(`TETHER_DEV_RUNNER_TOKEN` changes it). Set `TETHER_URL` and `TETHER_TOKEN` explicitly for a
-dev runner: your shell may carry production values.
-
-Tests and type checks, per package:
+You need [Bun](https://bun.sh), `tmux` (for terminals), and `claude` and/or `codex` installed and
+logged in on the runner's machine. Install dependencies per package:
 
 ```sh
-for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
+for p in shared server runner web; do (cd $p && bun install); done
 ```
 
-## Production (Foliation)
+## Configuration
 
-1. Deploy the app from this directory (`foliation.json`; `.folignore` leaves out `runner/` and
-   `docs/`). The backend's build context is the repository root, not `server/`, because the
-   server imports `shared/` at runtime; its dependencies install from `server/`. Only the app's owners can use the UI, because it runs commands on their machines.
-2. Create a runner token (an app service token, `docs/foliation-app-service-tokens.md` in v1):
-   `fol tokens create tether --service runner --role editor`. Its name must be `runner` or
-   `runner-<name>`.
-3. On each machine, put `TETHER_URL=https://tether--<org>.foliation.dev` and `TETHER_TOKEN=...`
-   in `~/.config/tether/runner.env` and run the runner as a systemd user unit
-   (`bun src/index.ts` in `runner/`). On first start the runner writes `~/.config/tether/runner.json`
-   with a generated `runnerId`; set `"name"` there to change its label (default: the hostname).
-   Never copy a `runner.json` between machines: two runners with one id replace each other.
-
-## Runner environment
+Runner (`runner.env` in production, or the shell in dev):
 
 | Variable | Default | |
 |---|---|---|
 | `TETHER_URL` | required | the app's base URL |
 | `TETHER_TOKEN` | required | the runner's service token |
 | `TETHER_DEV` | | `1`: fall back to `http://localhost:8790` and token `dev` when the two above are unset |
-| `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
+| `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600), prefs, notices and module data live |
+| `TETHER_DATA_DIR` | `TETHER_CONFIG_DIR` | stored keys and private Codex hosts (keep the path short: it holds a Unix socket) |
 | `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
-| `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals live on (`tmux -L <socket>`); give a dev runner its own |
-| `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET` | | texting: the Photon project (else set in Settings → Texting) |
-| `TETHER_TEXT_PHONE` | | texting: the phone to text, e.g. `+13105551234` |
+| `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals use (`tmux -L <socket>`). Give a dev runner its own |
+| `TETHER_HIDE_PROJECTS` | | folders to leave out of the session lists |
+| `TETHER_PEERS` | | `0` turns off session-to-session messaging |
+| `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET`, `TETHER_TEXT_PHONE` | | texting, instead of Settings → Texting (these take precedence) |
 
-Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;
-by default only pages on the app's own host may open one.
+On first start the runner writes `runner.json` with a generated `runnerId`. Set `"name"` there to
+change its label (the default is the hostname). Never copy a `runner.json` between machines,
+because two runners with one id replace each other.
 
-## Texting
+Server:
 
-The runner can text you an iMessage (through [Photon Spectrum](https://photon.codes)) when a session
-has a request, needs you in the terminal, fails, or ends its turn by asking you something; and it
-texts back the agent's answer to anything you text it. A turn that just finishes doesn't text.
-Nothing is texted for a session you're looking at in Tether. Each text has a link to the session.
+| Variable | |
+|---|---|
+| `FOLIATION_ISSUER` | Set by Foliation in production. Without it the server runs in dev mode |
+| `TETHER_VAPID_PUBLIC_KEY`, `TETHER_VAPID_PRIVATE_KEY` | Web Push key pair (`bun server/scripts/vapid-keys.ts` makes one). Without them push is off |
+| `TETHER_PUSH_SUBJECT` | VAPID contact (an https URL or `mailto:`) |
+| `TETHER_ALLOWED_ORIGINS` | comma-separated extra origins allowed to open browser sockets. By default only the app's own host can |
+| `TETHER_DEV_RUNNER_TOKEN` | dev mode: the runner token (default `dev`) |
 
-Texts say what the agent wants: the command it wants to run, the file, the question and its
-options, the plan. Known secrets (your API keys) are redacted, but anything else the agent writes
-can be in a text.
+## Development
 
-- A command, an edit or a plan: reply `y` to allow, `n` to deny (the turn stops), or anything else
-  to tell the agent (it reads it and answers you by text).
-- A question: reply with an option's letter (`a`), or your own answer.
-- No request open: your reply is a message to the session, and its answer comes back by text.
+Run three processes, each in its own terminal. The ports and config directory keep the dev stack
+apart from a production runner on the same machine.
 
-Each text starts with its session's number, and a session takes replies for 30 minutes after its
-last text:
+```sh
+(cd server && bun --watch src/index.ts)                   # :8790, dev mode
 
-- `2 do X`, `[2] do X`, or a threaded reply to one of its texts: goes to session 2.
-- Plain text with one session open: goes to it.
-- Plain text with several open: Tether texts back a numbered list; answer with the number.
-- Just `2`: your next text goes to session 2.
+mkdir -p ~/.local/share/tether-dev && echo '{"runnerId":"tether-dev","name":"tether-dev"}' > ~/.local/share/tether-dev/runner.json
+(cd runner && TETHER_URL=http://localhost:8790 TETHER_TOKEN=dev \
+  TETHER_CONFIG_DIR=~/.local/share/tether-dev TETHER_TMUX_SOCKET=tether-dev bun src/index.ts)
 
-Setup: a Photon account with an iMessage project, and your phone added and verified on it. Put the
-project's id and secret and your phone in **Settings → Texting**, or in `runner.env` (table above)
-and restart the runner. They're kept on the runner (`texting.json`, mode 600), never on the app.
-The app's server can't text: a Foliation app has no internet egress.
+(cd web && bunx vite)                                      # http://127.0.0.1:5180
+```
 
-## Sessions (P1)
+In dev mode the server listens on loopback only and answers only requests addressed to
+`localhost`/`127.0.0.1`. It treats every browser as the owner, and runners authenticate with
+`Authorization: Bearer dev`. Set `TETHER_URL` and `TETHER_TOKEN` explicitly for a dev runner,
+because your shell may carry production values. For UI work without a model,
+`scripts/fake-runner.ts` serves canned sessions.
 
-The runner discovers Claude Code sessions in `~/.claude/projects` (read-only; nothing starts until
-you send). The sidebar lists sessions with a message in the last 3 days plus every live one;
-search finds the rest. Sending takes a session live through the Agent SDK; it goes back to stored
-after 5 idle minutes (not while subagents or background tasks run). Per-session model, effort and
-permission mode are kept in `runner.json` (`sessions`); Tether's own notices (denials, errors, a turn cut off) in `notices.json`. Subagents are child sessions
-(`claude:<session>/<agent>`). Permission prompts and questions
-(SPEC §7) go to every device watching the session, above the composer; the first answer wins, and
-open requests survive a runner restart (kept in `runner.json`).
+## Production and deploys
 
-## End-to-end check
+1. **App.** The Foliation app is defined in `foliation.json`, and `.folignore` leaves out `runner/`
+   and `docs/`. The backend's build context is the repository root, not `server/`, because the
+   server imports `shared/` at runtime. Its dependencies install from `server/`. Only the app's
+   owners can use the UI, because it runs commands on their machines. The app deploys from `main`,
+   so merging a PR deploys the web app and server.
+2. **Runner token.** Create an app service token named `runner` or `runner-<name>`, e.g.
+   `fol tokens create tether --service runner --role editor`.
+3. **Runner.** Run the runner as a systemd user unit, `tether-runner.service`, from a checkout of
+   its own that is pinned to `origin/main` (for example `~/tether-prod`), not from a working
+   checkout you edit. The unit uses:
+   - `WorkingDirectory=%h/tether-prod/runner` and `ExecStart=<bun> src/index.ts`
+   - `EnvironmentFile=%h/.config/tether/runner.env`, which holds `TETHER_URL` and `TETHER_TOKEN`
+   - `Environment=TETHER_CONFIG_DIR=...` if you keep runner data somewhere other than the default
+   - `Restart=always` and `KillMode=mixed`
 
-P1: `bun scripts/smoke-p1.ts` (scripted browsers through the relay) and `node scripts/e2e-p1.mjs`
-(Playwright, desktop and phone) drive real Claude on Haiku against the dev stack; see their headers.
-`scripts/fake-runner.ts` serves canned sessions for UI work without a model.
+   The tmux server and the Codex daemon start in systemd scopes of their own, so stopping the unit
+   leaves terminals and Codex running. A restarted runner picks them back up.
 
-P2: `node scripts/e2e-p2.mjs` (Playwright, desktop and phone, real Claude on Haiku) checks requests:
-approvals on two devices, "Already answered", deny with reason, questions, a subagent's request, a
-runner restart with a request open, and plan approval. See its header and `docs/acceptance/P2.md`.
-`node scripts/e2e-plan.mjs [claude] [codex]` reviews a real plan on each harness: comments on a
-selection and a paragraph, Send feedback, then Approve with notes from the phone.
+Updating the runner after a merge:
 
-`scripts/e2e-p0.mjs` drives the web UI with Playwright at desktop and phone sizes against a
-local stack (vite on :5180; it starts and stops the server and runners itself):
-`PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-p0.mjs`.
+```sh
+git -C ~/tether-prod fetch origin && git -C ~/tether-prod checkout --detach origin/main
+(cd ~/tether-prod/runner && bun install)    # when dependencies changed
+systemctl --user restart tether-runner
+```
 
-## Terminal mode (P3)
+A restart stops running turns and continues them when the runner is back. Open requests and queued
+messages survive it.
 
-The **Terminal** chip on a session opens the harness's own TUI in a panel (xterm.js), beside the
-transcript on desktop and full screen on a phone (with a key bar). Needs `tmux` on the runner's
-machine. For Claude it is a handoff: the SDK process closes, `claude --resume <id>` runs in tmux,
-and the transcript is read-only (tailed from the store) until **Back to Tether** quits the TUI and
-the session goes live again on the same id. The panel also holds plain shells per project (**+**).
+## Testing
 
-Every terminal is its own tmux session on the socket `TETHER_TMUX_SOCKET` (default `tether`),
-tagged with `@tether_*` options, so terminals and shells outlive the runner: a restarted runner
-readopts them. Under systemd the runner starts the tmux server in a scope of its own
-(`systemd-run --user --scope`), so stopping the unit (`KillMode=mixed`) leaves it running. The tmux
-server and everything in it get the runner's environment without `TETHER_*`.
+Unit tests and type checks, per package:
 
-Claude's TUI is launched with `--settings` adding hooks for this launch only (never your
-`~/.claude/settings.json`): they report prompts, "needs you" and turn ends to the runner over
-`<config dir>/hooks.sock`. Checks: [docs/acceptance/P3.md](docs/acceptance/P3.md); end to end:
-`scripts/e2e-p3.mjs`.
+```sh
+for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
+```
 
+End-to-end checks are in `scripts/`. Most run against the dev stack and drive real harnesses on cheap
+models (Claude on Haiku, Codex on its cheapest model) with Playwright at desktop and phone sizes.
+Each script's header says what it needs:
+
+- `e2e-p0.mjs` through `e2e-p5b.mjs`: one per phase
+- `e2e-plan.mjs`: plan review
+- `e2e-move.mjs`: change session harness
+- `e2e-keys.mjs`: the credentials and billing UI
+- `e2e-cost.ts`: API cost accounting against a fake API, with no model
+
+`smoke-p1.ts` is the scripted-browser smoke test. The `check-*.sh` scripts verify the systemd scope
+behaviour. Manual acceptance checks are in [`docs/acceptance/`](docs/acceptance/), one file per phase
+or feature.
