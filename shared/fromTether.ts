@@ -26,12 +26,23 @@ export interface TetherOrigin {
 const SESSION_MARK = /^\[From session "([^"\n]{0,200})" \(([a-z]+:[^\s()]{1,200})\)( to all)?\] /;
 const HINT = /\n\n\[Tether: [^\n]*\]$/;
 
-/** A title as it goes in the marker: one line, no quotes. */
-const markTitle = (title: string) => title.replace(/[\x00-\x1f\x7f"]+/g, " ").trim().slice(0, 120) || "Untitled";
+/** A title as it goes in the marker or a tool's answer: one line, no control characters, no quotes. */
+export const markTitle = (title: string) => title.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029"]+/g, " ").trim().slice(0, 120) || "Untitled";
 
-/** A message from session `from` to another, with the hint the receiving agent reads. */
-export function sessionMessage(from: { id: string; title: string }, text: string, hint?: string, all = false): string {
-  return `[From session "${markTitle(from.title)}" (${from.id})${all ? " to all" : ""}] ${text}${hint ? `\n\n[Tether: ${hint.replace(/[\n\]]+/g, " ")}]` : ""}`;
+/**
+ * A message from session `from` to another, with the hint the receiving agent reads. `hops`: how
+ * many sessions passed it on (caps.ts), kept in the hint so a queued message keeps it across a restart.
+ */
+export function sessionMessage(from: { id: string; title: string }, text: string, hint?: string, all = false, hops?: number): string {
+  const h = [hops ? `hop ${hops}.` : "", hint?.replace(/[\n\]]+/g, " ") ?? ""].filter(Boolean).join(" ");
+  return `[From session "${markTitle(from.title)}" (${from.id})${all ? " to all" : ""}] ${text}${h ? `\n\n[Tether: ${h}]` : ""}`;
+}
+
+/** The hops a message from another session carries (its hint's `hop N.`), else undefined. */
+export function peerHops(text: string): number | undefined {
+  if (!SESSION_MARK.test(text)) return undefined;
+  const m = /\n\n\[Tether: hop (\d+)\.[^\n]*\]$/.exec(text);
+  return m ? Number(m[1]) : undefined;
 }
 
 /** A message from another session: who sent it and its text without the marker and hint. */

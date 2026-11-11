@@ -727,10 +727,14 @@ Only the owner can run one (the same auth as sending).
 
 ## 9a. Sessions talking to each other
 
-An agent can message or ask any other non-archived session on its runner, Claude Code or Codex,
-and send a note to all. Agents can't start sessions. Nothing asks the person; loops are capped.
-A module (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the
-`queueGone` event and `SessionActions.list`.
+An agent can message or ask another session on its runner, Claude Code or Codex, and send a note
+to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
+(`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
+event and the queued message's id from `SessionActions.queue`.
+
+- **Reach.** `tether_sessions`, titles and broadcasts cover what the lists show (`SessionActions.list`:
+  the last 3 days and every live session); an explicit id reaches an older session too (opened
+  through `SessionActions.open`). Never archived sessions, subagents or the Home agent's chat.
 
 - **Tools.** Every live session (except the Home agent's folder) gets a stdio MCP server named
   `tether` (`mcp.ts`, run with the runner's `bun`) with `tether_sessions` (id, title, folder,

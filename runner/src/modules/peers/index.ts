@@ -6,7 +6,7 @@
 // capped instead (caps.ts). The person's own "Send to all" is the `broadcast` op.
 
 import { join } from "node:path";
-import { defang, sessionMessage } from "../../../../shared/fromTether";
+import { defang, markTitle, sessionMessage } from "../../../../shared/fromTether";
 import { MESSAGE_TEXT_MAX } from "../../../../shared/limits";
 import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord, type BroadcastFilter } from "../../../../shared/peers";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
@@ -60,7 +60,7 @@ export class Peers {
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log">,
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder">,
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
@@ -136,11 +136,17 @@ export class Peers {
 
   private name(id: string) {
     const t = this.ctx.session(id)?.summary.title;
-    return t ? `"${t}"` : id;
+    return t ? `"${markTitle(t)}"` : id;
   }
 
-  private async others(from: string): Promise<SessionSummary[]> {
-    return (await this.ctx.sessions.everySession()).filter((s) => reachable(s) && s.id !== from);
+  /** Whether a message can reach `s`: listed, not archived, not a subagent, not the Home agent's chat. */
+  private reaches(s: SessionSummary) {
+    return reachable(s) && !(this.ctx.homeFolder && s.projectPath === this.ctx.homeFolder);
+  }
+
+  /** The sessions the lists show (recent ones and every live one) that `from` can message. */
+  private others(from: string): SessionSummary[] {
+    return this.ctx.sessions.list().filter((s) => this.reaches(s) && s.id !== from);
   }
 
   private inProject(s: SessionSummary, project: string) {
@@ -150,28 +156,36 @@ export class Peers {
 
   private async list(from: string, project: string, query: string): Promise<string> {
     const q = query.trim().toLowerCase();
-    const rows = (await this.others(from)).filter((s) => this.inProject(s, project) && (!q || s.title.toLowerCase().includes(q)));
+    const rows = this.others(from).filter((s) => this.inProject(s, project) && (!q || s.title.toLowerCase().includes(q)));
     if (!rows.length) return project || q ? "No other session matches." : "There are no other sessions.";
     const now = this.now();
-    const shown = rows.slice(0, 50).map((s) => `- ${s.id} · "${s.title || "Untitled"}" · ${HARNESS_LABELS[s.harness] ?? s.harness} · ${s.projectPath} · ${s.mode === "terminal" ? "in its terminal" : statusWord(s)} · ${ago(s.updatedAt, now)}`);
+    const shown = rows.slice(0, 50).map((s) => `- ${s.id} · "${markTitle(s.title)}" · ${HARNESS_LABELS[s.harness] ?? s.harness} · ${s.projectPath} · ${s.mode === "terminal" ? "in its terminal" : statusWord(s)} · ${ago(s.updatedAt, now)}`);
     return [...shown, ...(rows.length > 50 ? [`… and ${rows.length - 50} more: narrow it with project or query.`] : [])].join("\n");
   }
 
-  /** The session `to` names: an id, or a title that only one session has. */
+  /**
+   * The session `to` names: an id (any session's, older than the lists too), or a title that only
+   * one listed session has.
+   */
   private async target(from: string, to: string): Promise<SessionSummary> {
     const t = to.trim();
     if (!t) throw new Error("Say which session: `to` is its id or title.");
-    const all = await this.others(from);
+    if (t === from) throw new Error("That's this session. Message another one.");
+    const all = this.others(from);
     const byId = all.find((s) => s.id === t);
     if (byId) return byId;
-    if (t === from) throw new Error("That's this session. Message another one.");
+    if (/^[a-z]+:[\w.-]+$/.test(t)) {
+      const s = (await this.ctx.sessions.open(t).catch(() => undefined))?.summary;
+      if (s && this.reaches(s)) return s;
+      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions, subagents and the Home agent can't be).`);
+    }
     const lower = t.toLowerCase();
     for (const pick of [(s: SessionSummary) => s.title.toLowerCase() === lower, (s: SessionSummary) => s.title.toLowerCase().includes(lower)]) {
       const found = all.filter(pick);
       if (found.length === 1) return found[0]!;
-      if (found.length > 1) throw new Error(`${found.length} sessions match "${t}": ${found.slice(0, 8).map((s) => `${s.id} ("${s.title}")`).join(", ")}. Use its id.`);
+      if (found.length > 1) throw new Error(`${found.length} sessions match "${t}": ${found.slice(0, 8).map((s) => `${s.id} ("${markTitle(s.title)}")`).join(", ")}. Use its id.`);
     }
-    throw new Error(`There's no session "${t}" to message (archived sessions and subagents can't be). tether_sessions lists them.`);
+    throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions and subagents can't be). tether_sessions lists them.`);
   }
 
   private async sender(from: string): Promise<{ id: string; title: string }> {
@@ -219,7 +233,7 @@ export class Peers {
     const hop = { hops: this.caps.hopsFrom(from) };
     this.caps.count(from);
     const d = await this.deliver(from, t, body, hop);
-    return { text: `Sent to "${t.title}" (${t.id}). ${d.where}` };
+    return { text: `Sent to "${markTitle(t.title)}" (${t.id}). ${d.where}` };
   }
 
   async ask(from: string, to: string, text: string, minutes: number, signal?: AbortSignal): Promise<PeerAnswer> {
@@ -235,7 +249,7 @@ export class Peers {
     const hop = { hops: this.caps.hopsFrom(from) };
     this.caps.count(from);
     const d = await this.deliver(from, t, sessionMessage(me, text, hint), hop);
-    if (d.terminal) return { text: `Queued for "${t.title}" (${t.id}), not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
+    if (d.terminal) return { text: `Queued for "${markTitle(t.title)}" (${t.id}), not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
     const close = this.caps.open(from, t.id);
     const wait = Math.min(Math.max(minutes, 1), ASK_MAX_MIN) * 60_000;
     return new Promise<PeerAnswer>((resolve) => {
@@ -253,7 +267,7 @@ export class Peers {
       this.asks.push(ask);
       const timer = setTimeout(() => {
         const still = ask.delivered ? "is still working on it" : "hasn't got to it yet (it waits in its queue)";
-        this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: "${t.title}" ${still}. Ask again later, or check with tether_sessions.`, isError: true });
+        this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: "${markTitle(t.title)}" ${still}. Ask again later, or check with tether_sessions.`, isError: true });
       }, wait);
       // The asking agent stopped waiting (its turn was stopped): the question stays queued.
       signal?.addEventListener("abort", () => this.asks.includes(ask) && this.finish(ask, { text: "Stopped waiting.", isError: true }));
@@ -265,7 +279,7 @@ export class Peers {
     const why = this.caps.checkBroadcast(from);
     if (why) return this.refused(from, why);
     const status = f.status === "idle" || f.status === "working" || f.status === "waiting" ? f.status : undefined;
-    const targets = matching(await this.others(from), { ...(status ? { status } : {}) }).filter((s) => this.inProject(s, f.project ?? ""));
+    const targets = matching(this.others(from), { ...(status ? { status } : {}) }).filter((s) => this.inProject(s, f.project ?? ""));
     if (!targets.length) return { text: "No other session matches, so nothing was sent." };
     if (targets.length > BROADCAST_MAX) return this.refused(from, `${targets.length} sessions match (at most ${BROADCAST_MAX} at once). Narrow it with project or status.`);
     const me = await this.sender(from);
@@ -277,9 +291,9 @@ export class Peers {
     for (const t of targets) {
       try {
         await this.deliver(from, t, body, hop);
-        sent.push(`- ${t.id} ("${t.title}")`);
+        sent.push(`- ${t.id} ("${markTitle(t.title)}")`);
       } catch (e) {
-        failed.push(`- ${t.id} ("${t.title}"): ${(e as Error).message}`);
+        failed.push(`- ${t.id} ("${markTitle(t.title)}"): ${(e as Error).message}`);
       }
     }
     return { text: [`Sent to ${sent.length} session${sent.length === 1 ? "" : "s"}:`, ...sent, ...(failed.length ? ["Couldn't send to:", ...failed] : [])].join("\n") };
@@ -289,7 +303,7 @@ export class Peers {
   async broadcast(text: string, filter: BroadcastFilter) {
     if (!text.trim()) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
-    const targets = matching(await this.ctx.sessions.everySession(), filter);
+    const targets = matching(this.ctx.sessions.list(), filter).filter((s) => this.reaches(s));
     const queued: { sessionId: string; title: string }[] = [];
     const failed: { sessionId: string; title: string; error: string }[] = [];
     for (const t of targets) {

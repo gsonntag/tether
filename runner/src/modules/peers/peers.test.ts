@@ -11,22 +11,23 @@ import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
 
 const row = (id: string, title: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.startsWith("codex") ? "codex" : "claude", nativeId: id.split(":")[1]!, projectPath: "/p/app", title, mode: "live", status: "idle", updatedAt: 0, ...o });
 
-/** Peers over a fake set of sessions; what it queues and notices is recorded. */
-function setup(rows: SessionSummary[]) {
+/** Peers over a fake set of sessions (`stored`: older ones the lists leave out); what it queues and notices is recorded. */
+function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string } = {}) {
   const queued: { to: string; text: string; id: string }[] = [];
   const notices: { id: string; text: string }[] = [];
   const recent = new Map<string, Msg[]>();
   let n = 0;
   let now = 1_000_000;
   const look = (id: string) => {
-    const s = rows.find((r) => r.id === id);
+    const s = [...rows, ...(o.stored ?? [])].find((r) => r.id === id);
     return s ? ({ summary: s, status: s.status, requests: [], state: { mode: s.mode, queue: [] } as any, busy: false, background: false }) : undefined;
   };
   const ctx: any = {
     log: () => {},
+    homeFolder: o.home,
     session: look,
     sessions: {
-      everySession: async () => rows,
+      list: () => rows,
       open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
       queue: async (to: string, text: string) => {
         const id = `q${++n}`;
@@ -193,6 +194,29 @@ describe("tools", () => {
     expect(r.queued.map((q) => q.sessionId)).toEqual(["claude:a", "codex:b"]);
     expect(tetherOrigin(queued[0]!.text)).toBeUndefined();
     expect((await peers.broadcast("x", { harness: "codex", status: "working" })).queued.map((q) => q.sessionId)).toEqual(["codex:b"]);
+  });
+  test("the Home agent's chat can't be reached; an older session can, by its id", async () => {
+    const home = "/cfg/modules/homeAgent/workspace";
+    const { peers, queued } = setup([row("claude:a", "A"), row("claude:h", "Home chat", { projectPath: home }), row("claude:b", "B")], { home, stored: [row("claude:old", "Old one"), row("claude:gone", "Archived", { archived: true })] });
+    const list = (await peers.call({ from: "claude:a", tool: "tether_sessions", args: {}, signal: new AbortController().signal })).text;
+    expect(list).not.toContain("claude:h");
+    expect(await peers.send("claude:a", "claude:h", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
+    expect(await peers.send("claude:a", "Home chat", "x").catch((e) => e.message)).toMatch(/no session/);
+    expect((await peers.broadcastFrom("claude:a", "hi", {})).text).not.toContain("claude:h");
+    expect((await peers.broadcast("hi", {})).queued.map((q) => q.sessionId)).toEqual(["claude:a", "claude:b"]);
+    expect(queued.some((q) => q.to === "claude:h")).toBe(false);
+    expect((await peers.send("claude:a", "claude:old", "still there?")).text).toMatch(/Sent to "Old one" \(claude:old\)/);
+    expect(await peers.send("claude:a", "Old one", "x").catch((e) => e.message)).toMatch(/no session/);
+    expect(await peers.send("claude:a", "claude:gone", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
+  });
+  test("titles in answers are one line, without control characters", async () => {
+    const { peers } = setup([row("claude:a", "A"), row("claude:b", 'Line one\nline "two"\x1b[31m'), row("claude:c", "Line three")]);
+    const list = (await peers.call({ from: "claude:a", tool: "tether_sessions", args: {}, signal: new AbortController().signal })).text;
+    expect(list.split("\n")).toHaveLength(2);
+    expect(list).not.toMatch(/[\x00-\x08\x0b-\x1f]/);
+    const many = await peers.send("claude:a", "line", "x").catch((e) => e.message);
+    expect(many).toMatch(/2 sessions match/);
+    expect(many).not.toMatch(/[\x00-\x1f]/);
   });
   test("answerIn takes the last reply after the question, cut short when long", () => {
     const q = (sessionId: string): Msg => ({ id: sessionId, role: "user", ts: 0, origin: { kind: "session", sessionId }, parts: [{ type: "text", text: "?" }] });
