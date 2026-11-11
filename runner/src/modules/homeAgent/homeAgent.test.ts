@@ -163,15 +163,15 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const { op, chat, tools, project, runner, driverOf, announced, dataDir } = await setup();
   const first = await op("homeAgent");
   expect(first.sessionId).toBe(chat);
-  expect(announced).toEqual([{ sessionId: chat, rev: first.rev }]);
+  expect(announced).toEqual([{ sessionId: chat, chats: [chat], rev: first.rev }]);
   const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
   const child = /session (\S+) in/.exec(said)![1]!;
   await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
 
   const { rev } = await op("homeAgentClear");
   expect(rev).toBeGreaterThan(first.rev);
-  expect(announced.at(-1)).toEqual({ rev });
-  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription", mode: "auto" }, harnesses: ["claude"] });
+  expect(announced.at(-1)).toEqual({ chats: [], rev });
+  expect(await op("homeAgent")).toEqual({ chats: [], folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription", mode: "auto" }, harnesses: ["claude"] });
   // Kept across a restart.
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ rev });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).current).toBeUndefined();
@@ -187,8 +187,102 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const next = await op("homeAgentNew");
   expect(next.sessionId).not.toBe(chat);
   expect(next.rev).toBeGreaterThan(rev);
-  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, rev: next.rev });
+  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, chats: [next.sessionId], rev: next.rev });
   expect((await op("homeAgent")).sessionId).toBe(next.sessionId);
+});
+
+test("tabs: each new chat is a tab, closing one archives it and keeps the rest, and they're kept across a restart", async () => {
+  const { op, chat, runner, driverOf, announced, dataDir } = await setup();
+  await op("send", { sessionId: chat, text: "hi" });
+  const b = (await op("homeAgentNew")).sessionId as string;
+  await op("send", { sessionId: b, text: "hi" });
+  const c = (await op("homeAgentNew")).sessionId as string;
+  await op("send", { sessionId: c, text: "hi" });
+  await until(() => [chat, b, c].every((id) => runner.core.sessions.get(id)?.state.status === "idle" && !!driverOf(id)));
+  expect(await op("homeAgent")).toMatchObject({ sessionId: c, chats: [chat, b, c] });
+  // Several run at once, each its own conversation.
+  expect([chat, b, c].map((id) => driverOf(id)!.sent)).toEqual([["hi"], ["hi"], ["hi"]]);
+
+  // Closing the middle one: the others stay, it's archived (history kept), every device is told.
+  const { rev } = await op("homeAgentClose", { sessionId: b });
+  expect(announced.at(-1)).toEqual({ sessionId: c, chats: [chat, c], rev });
+  expect(runner.core.sessions.get(b)?.summary.archived ?? runner.look.sessions.list().find((r) => r.id === b)?.archived).toBe(true);
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ tabs: [chat, c], current: c });
+  // Closing the current one: the newest tab left is current.
+  await op("homeAgentClose", { sessionId: c });
+  expect(await op("homeAgent")).toMatchObject({ sessionId: chat, chats: [chat] });
+  // Something that isn't a tab or a chat: nothing happens.
+  const r = await op("homeAgentClose", { sessionId: "claude:nope" });
+  expect(r.rev).toBe((await op("homeAgent")).rev);
+
+  // A restart: the same tabs, and the same current one.
+  const again = new HomeAgent({ ...runner.look, dataDir, log: () => {}, ops: runner.ops, bus: runner.bus } as any, runner.core.sessions.get(chat)!.summary.projectPath);
+  expect(again.state.tabs).toEqual([chat]);
+  expect(await again.current()).toBe(chat);
+});
+
+test("tabs: a state from before tabs has its one chat as the one tab, and a tab that can't open is dropped", async () => {
+  const { runner, dataDir, homeFolder } = await setup();
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(dataDir, "state.json"), JSON.stringify({ current: "claude:gone", rev: 5, children: {} }));
+  const agent = new HomeAgent({ ...runner.look, dataDir, log: () => {}, ops: runner.ops, bus: runner.bus, announceHomeChat: () => {} } as any, homeFolder);
+  expect(agent.state.tabs).toEqual(["claude:gone"]);
+  // Never stored, so it can't open: it's no tab any more.
+  expect(await agent.chats()).toEqual([]);
+  expect(agent.state.current).toBeUndefined();
+});
+
+test("tabs: a session's reports go to the tab that started it, and watch reports to the tab the person last wrote in, once", async () => {
+  WATCH.quietMs = 30;
+  WATCH.maxMs = 200;
+  const { op, chat, tools, project, runner, driverOf } = await setup();
+  await op("send", { sessionId: chat, text: "start something" });
+  const other = (await op("homeAgentNew")).sessionId as string;
+  await op("send", { sessionId: other, text: "and you too" });
+  await until(() => [chat, other].every((id) => runner.core.sessions.get(id)?.state.status === "idle" && !!driverOf(id)));
+
+  // Each tab's session reports to that tab.
+  const fromFirst = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "First." }))![1]!;
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain(`echo ${FROM_TETHER}First.`);
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  const fromOther = /session (\S+) in/.exec(await tools(other).start_session!({ project_path: project, prompt: "Second." }))![1]!;
+  await until(() => driverOf(other)!.sent.length === 2);
+  expect(driverOf(other)!.sent[1]).toContain(`echo ${FROM_TETHER}Second.`);
+  await Bun.sleep(50);
+  expect(driverOf(chat)!.sent.length).toBe(2);
+  expect([fromFirst, fromOther].every((id) => runner.core.sessions.get(id)?.summary.projectPath === project)).toBe(true);
+
+  // The person writes in the first tab again: it's current, and a watched session's news goes there only.
+  await until(() => runner.core.sessions.get(other)?.state.status === "idle" && runner.core.sessions.get(chat)?.state.status === "idle");
+  await op("send", { sessionId: chat, text: "thanks" });
+  await until(() => driverOf(chat)!.sent.length === 3 && runner.core.sessions.get(chat)?.state.status === "idle");
+  expect((await op("homeAgent")).sessionId).toBe(chat);
+  const watched = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+  await op("send", { sessionId: watched, text: "on my own" });
+  await until(() => driverOf(chat)!.sent.length === 4);
+  expect(driverOf(chat)!.sent[3]).toContain("Sessions you didn't start");
+  expect(driverOf(chat)!.sent[3]).toContain(watched);
+  await Bun.sleep(100);
+  expect(driverOf(other)!.sent.length).toBe(2);
+  expect(driverOf(other)!.sent.some((t) => t.includes("Sessions you didn't start"))).toBe(false);
+
+  // Closing a tab lets go of what it started: no report wakes it (it's only watched now, like any other).
+  await op("homeAgentClose", { sessionId: other });
+  await runner.look.sessions.send(fromOther, `${FROM_TETHER}more`);
+  await until(() => driverOf(fromOther)!.sent.length === 2 && runner.core.sessions.get(fromOther)?.state.status === "idle");
+  await Bun.sleep(100);
+  expect(driverOf(other)!.sent.length).toBe(2);
+  expect(driverOf(chat)!.sent.some((t) => t.includes("Report 1 of") && t.includes(fromOther))).toBe(false);
+});
+
+test("tabs: settings go to the tab in view, not the current one", async () => {
+  const { op, chat, runner } = await setup();
+  const other = (await op("homeAgentNew")).sessionId as string;
+  const r = await op("homeAgentSet", { harness: "claude", source: "subscription", model: "claude-haiku-5-5", sessionId: chat });
+  expect(r.sessionId).toBe(chat);
+  expect(runner.core.sessions.get(chat)!.state.model).toBe("claude-haiku-5-5");
+  expect(runner.core.sessions.get(other)!.state.model).not.toBe("claude-haiku-5-5");
 });
 
 test("clearing a chat that's working stops it", async () => {

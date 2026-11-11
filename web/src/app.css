@@ -2816,3 +2816,102 @@
 .t-home-chat.expanded > .t-home-chat-box.t-session { height: auto; flex: 1 1 0; min-height: 0; }
 /* No chat yet: the composer sits at the bottom, like a chat's. */
 .t-home-chat.expanded > .t-composer { margin-top: auto; }
+
+/* The Home agent's tabs (HomeChat.tsx HomeTabs): one row that scrolls sideways when they don't fit. */
+.t-home-tabbar {
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: -8px;
+  border-bottom: 1px solid var(--t-border);
+  flex: none;
+  min-width: 0;
+}
+.t-home-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.t-home-tabs::-webkit-scrollbar { display: none; }
+.t-home-tab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  max-width: 200px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-element, 8px) var(--radius-element, 8px) 0 0;
+  color: var(--t-muted);
+  font-size: 13px;
+}
+.t-home-tab:hover { background: var(--color-overlay-hover); }
+.t-home-tab.on {
+  color: var(--color-text-primary);
+  border-color: var(--t-border);
+  background: var(--color-background-body, var(--color-background-surface, var(--t-card)));
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+}
+.t-home-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 4px 6px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.t-home-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-home-tab.on .t-home-tab-label { font-weight: var(--font-weight-semibold, 600); }
+.t-home-tab-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--color-text-blue, var(--color-accent)); }
+.t-home-tab-mark.waiting { background: var(--color-warning); }
+.t-home-tab-mark.running { background: var(--color-success); animation: t-pulse 1.4s ease-in-out infinite; }
+.t-home-tab-mark.failed { background: var(--color-error); }
+.t-home-tab-close, .t-home-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--t-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.t-home-tab-close { width: 24px; height: 24px; margin-right: 3px; padding: 0; }
+.t-home-tab-new { width: 30px; height: 30px; padding: 0; margin: 0 0 1px 2px; }
+/* Fixed glyphs: a phone's buttons grow to a 44 px tap target, the icon doesn't. */
+.t-home-tab-close svg { width: 12px; height: 12px; }
+.t-home-tab-new svg { width: 16px; height: 16px; }
+@media (pointer: coarse) {
+  .t-home-tab-close { min-width: 34px; margin-right: 0; }
+}
+.t-home-tab-close:hover, .t-home-tab-new:hover:not(:disabled) { background: var(--color-overlay-hover); color: var(--color-text-primary); }
+.t-home-tab-new:disabled { opacity: .4; cursor: default; }
+/* On a pointer that hovers, a tab that isn't shown shows its × only on hover. */
+@media (hover: hover) {
+  .t-home-tab:not(.on):not(:hover):not(:focus-within) .t-home-tab-close { visibility: hidden; }
+}
+.t-home-tab-edit {
+  width: 140px;
+  margin: 3px 4px 3px 6px;
+  padding: 2px 4px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--t-border);
+  border-radius: 4px;
+}
+@media (max-width: 640px) {
+  .t-home-tab { max-width: 150px; }
+}
+/* The tab's top edge meets the box under it. */
+.t-home-tabbar + .t-home-chat-box.t-session { border-top-left-radius: 0; }

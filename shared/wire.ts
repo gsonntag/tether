@@ -73,7 +73,12 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
       return { t: "summary", summary: m.summary as unknown as SummaryUpdate };
     case "homeChat":
       if (!Number.isSafeInteger(m.rev) || (m.sessionId !== undefined && !isId(m.sessionId))) return null;
-      return { t: "homeChat", rev: m.rev as number, ...(m.sessionId !== undefined ? { sessionId: m.sessionId as string } : {}) };
+      return {
+        t: "homeChat",
+        rev: m.rev as number,
+        ...(m.sessionId !== undefined ? { sessionId: m.sessionId as string } : {}),
+        ...(Array.isArray(m.chats) && m.chats.length <= 200 && m.chats.every(isId) ? { chats: m.chats as string[] } : {}),
+      };
     case "term":
       return isId(m.attachId) && typeof m.data === "string" ? { t: "term", attachId: m.attachId, data: m.data } : null;
     case "termEnd":

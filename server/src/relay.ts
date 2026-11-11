@@ -212,7 +212,7 @@ export class Relay {
         return;
       }
       case "homeChat": {
-        const s = JSON.stringify({ t: "homeChat", runnerId, rev: m.rev, ...(m.sessionId ? { sessionId: m.sessionId } : {}) } satisfies ServerToBrowser);
+        const s = JSON.stringify({ t: "homeChat", runnerId, rev: m.rev, ...(m.sessionId ? { sessionId: m.sessionId } : {}), ...(m.chats ? { chats: m.chats } : {}) } satisfies ServerToBrowser);
         for (const b of [...this.browsers.keys()]) this.raw(b, s);
         return;
       }
