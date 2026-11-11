@@ -1166,6 +1166,51 @@
   align-items: center;
   font-size: 14px;
 }
+/* New session: the Folder label with Add project beside it. */
+.t-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.t-field-row .t-field-label {
+  margin-bottom: 0;
+}
+.t-add-proj {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius-element, 8px);
+}
+.t-add-proj-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.t-browse-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.t-browse-head .t-path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-browse-empty {
+  padding: 7px 10px;
+}
+.t-clone-url {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding-top: 4px;
+}
 .t-folder-missing {
   display: flex;
   flex-wrap: wrap;

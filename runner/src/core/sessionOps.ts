@@ -6,6 +6,7 @@ import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import type { HarnessId } from "../../../shared/transcript";
 import type { LiveControl } from "./live";
 import type { OpRegistry } from "./ops";
+import { cloneRepo, listFolders } from "./addProject";
 import { checkFolder, type SessionCore } from "./sessions";
 
 const str = (v: unknown, what: string): string => {
@@ -50,6 +51,8 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true, createFolder: a.createFolder === true, source: a.source }),
   );
   ops.register("checkFolder", (a) => checkFolder(str(a.projectPath, "A folder")));
+  ops.register("listFolders", (a) => listFolders(str(a.path, "A folder")));
+  ops.register("cloneRepo", (a) => cloneRepo(str(a.repo, "A repo"), str(a.path, "A folder")));
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   // What a person types never passes for one of Tether's own messages (shared/fromTether.ts).
   const typed = (v: unknown) => defang(text(v));
