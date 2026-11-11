@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
 import type { Request, RequestAnswer } from "../../../../shared/transcript";
-import { asksQuestion, Texter } from ".";
+import { asksQuestion, LINK_EVERY_MS, Texter } from ".";
+import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
 
@@ -13,6 +14,7 @@ const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "s
 const LINK = "https://tether.example/#/s/box/";
 
 function setup(viewers: Record<string, string[]> = {}) {
+  const clock = { t: 1_000_000 };
   const texts: string[] = [];
   let n = 0;
   const open: OpenLink = async () => {
@@ -35,6 +37,7 @@ function setup(viewers: Record<string, string[]> = {}) {
     },
     new TextingStore(undefined, ENV),
     open,
+    () => clock.t,
   );
   const say = (id: string, text: string) => t.said(id, { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text }] });
   const open1 = (id: string, r: Request) => {
@@ -42,7 +45,7 @@ function setup(viewers: Record<string, string[]> = {}) {
     sessions[id].state.requests = [r];
     return t.request(r);
   };
-  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m) };
+  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock };
 }
 
 const bash = (id = "r1"): Request => ({ id, sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "npm test -- --watch=false", openedAt: 1 });
@@ -58,8 +61,8 @@ describe("texting", () => {
     await t.turnEnded("claude:a");
     await t.turnEnded("codex:b", "429 rate_limit_error secret");
     expect(texts).toEqual([
-      `[1] web · Claude: Fixed the redirect.\n\nShould I also update the docs?\n\n${LINK}claude%3Aa`,
-      `[2] api · Codex: Failed: rate limited.\n\n${LINK}codex%3Ab`,
+      `[1] Fixed the redirect.\n\nShould I also update the docs?\n\n${LINK}claude%3Aa`,
+      `[2] Codex stopped: rate limited.\n\n${LINK}codex%3Ab`,
     ]);
   });
 
@@ -69,29 +72,32 @@ describe("texting", () => {
     await t.turnEnded("codex:b", "boom");
     await hear({ text: "what did you change?" });
     expect(told).toEqual([["codex:b", "what did you change?"]]);
-    expect(texts.at(-1)).toBe("→ [1] api · Codex: sent. Its answer will come here.");
+    // No "sent" back: the answer is what comes.
+    expect(texts.length).toBe(1);
     t.turnStarted("codex:b");
     say("codex:b", "I changed the router.");
     await t.turnEnded("codex:b");
-    expect(texts.at(-1)).toStartWith("[1] api · Codex: I changed the router.");
+    // The back-and-forth: no link.
+    expect(texts.at(-1)).toBe("[1] I changed the router.");
     // only once
     say("codex:b", "Done.");
     await t.turnEnded("codex:b");
-    expect(texts.at(-1)).toStartWith("[1] api · Codex: I changed the router.");
+    expect(texts.at(-1)).toBe("[1] I changed the router.");
   });
 
   test("a command: says what it is; y allows, n denies, words go to the agent", async () => {
     const s = setup();
     await s.t.start();
     await s.open("claude:a", bash());
-    expect(s.texts[0]).toBe(`[1] web · Claude: Claude wants to run:\nnpm test -- --watch=false\n\nReply y to allow, n to deny, or tell it what to do instead.\n\n${LINK}claude%3Aa`);
+    expect(s.texts[0]).toBe(`[1] Claude wants to run:\nnpm test -- --watch=false\n\nReply y to allow, n to deny, or tell it what to do instead.\n\n${LINK}claude%3Aa`);
     await s.hear({ text: "Y" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r1", { allow: true }]);
-    expect(s.texts.at(-1)).toBe("→ [1] web · Claude: allowed.");
+    expect(s.texts.length).toBe(1);
     await s.open("claude:a", bash("r2"));
     await s.hear({ text: "why do you need watch off?" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r2", { allow: false, reason: "why do you need watch off?" }]);
-    expect(s.texts.at(-1)).toBe("→ [1] web · Claude: sent. Its answer will come here.");
+    // The second request within LINK_EVERY_MS: no link again; and nothing back on the answer.
+    expect(s.texts.at(-1)).toBe("[1] Claude wants to run:\nnpm test -- --watch=false\n\nReply y to allow, n to deny, or tell it what to do instead.");
     await s.open("claude:a", bash("r3"));
     await s.hear({ text: "n" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r3", { allow: false }]);
@@ -101,7 +107,7 @@ describe("texting", () => {
     const s = setup();
     await s.t.start();
     await s.open("claude:a", { id: "p1", sessionId: "claude:a", kind: "approval", tool: "ExitPlanMode", plan: "# Plan\n1. Add a route\n2. Test it", openedAt: 1 });
-    expect(s.texts[0]).toStartWith("[1] web · Claude: Claude has a plan:\n\n# Plan\n1. Add a route\n2. Test it\n\nReply y to approve, or say what to change.");
+    expect(s.texts[0]).toStartWith("[1] Claude has a plan:\n\n# Plan\n1. Add a route\n2. Test it\n\nReply y to approve, or say what to change.");
     await s.hear({ text: "1 what is the plan" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "p1", { allow: false, reason: "what is the plan" }]);
     expect(s.texts.at(-1)).not.toContain("denied");
@@ -112,7 +118,7 @@ describe("texting", () => {
     await s.t.start();
     const q: Request = { id: "q1", sessionId: "claude:a", kind: "question", questions: [{ question: "Which color?", options: [{ label: "Blue" }, { label: "Red" }] }], openedAt: 1 };
     await s.open("claude:a", q);
-    expect(s.texts[0]).toStartWith("[1] web · Claude: Claude asks:\nWhich color?\na) Blue\nb) Red\n\nReply with a letter, or your own answer.");
+    expect(s.texts[0]).toStartWith("[1] Claude asks:\nWhich color?\na) Blue\nb) Red\n\nReply with a letter, or your own answer.");
     await s.hear({ text: "b" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "q1", { allow: true, answers: ["Red"] }]);
     await s.open("claude:a", { ...q, id: "q2" });
@@ -134,7 +140,59 @@ describe("texting", () => {
     await t.turnEnded("claude:a", "boom");
     (t as any).ctx.sessions.tell = async () => { throw new Error("This subagent has finished."); };
     await hear({ text: "hi" });
-    expect(texts.at(-1)).toBe("Couldn't send to [1] web · Claude: This subagent has finished.");
+    expect(texts.at(-1)).toBe("Couldn't send to [1]: This subagent has finished.");
+    (t as any).ctx.sessions.tell = async () => { throw new Error("It's gone. Start a new one.\nstack…"); };
+    await hear({ text: "hi" });
+    expect(texts.at(-1)).toBe("Couldn't send to [1]: It's gone.");
+  });
+
+  test("the link: at most every few minutes per session, never on the back-and-forth", async () => {
+    const { t, texts, say, hear, clock } = setup();
+    await t.start();
+    const asks = async (id: string) => (say(id, "Want me to commit?"), t.turnEnded(id));
+    await asks("claude:a");
+    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n\n${LINK}claude%3Aa`);
+    clock.t += 60_000;
+    await asks("claude:a");
+    expect(texts.at(-1)).toBe("[1] Want me to commit?");
+    // Another session gets its own.
+    await asks("codex:b");
+    expect(texts.at(-1)).toContain(`${LINK}codex%3Ab`);
+    // Talking back and forth: never, even once the time has passed.
+    clock.t += LINK_EVERY_MS;
+    await hear({ text: "1 ok" });
+    t.turnStarted("claude:a");
+    say("claude:a", "Committed.");
+    await t.turnEnded("claude:a");
+    expect(texts.at(-1)).toBe("[1] Committed.");
+    // Not talking, and the time has passed: the link again.
+    await asks("claude:a");
+    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n\n${LINK}claude%3Aa`);
+  });
+
+  test("Tether's own words: one casual sentence, never that something works, no acks", async () => {
+    const { t, texts, hear } = setup();
+    await t.start();
+    await t.test();
+    await t.attention("claude:a");
+    await t.turnEnded("codex:b", "overloaded 529");
+    await hear({ text: "ok" });
+    await hear({ text: "8 what?" });
+    await hear({ text: "1" });
+    await hear({ text: "go" });
+    expect(texts.length).toBeGreaterThan(5);
+    for (const text of texts) expect([text, casualText(text)]).toEqual([text, true]);
+    // Just the number and the message: no folder, no agent label.
+    for (const text of texts.filter((x) => x.startsWith("["))) expect(text).toMatch(/^\[\d\] (?!web\b|api\b)[^·]*$/m);
+    const all = [TEXTS.test, TEXTS.attention("Codex"), TEXTS.failed("Claude", "the conversation is too long"), TEXTS.couldNotSend("[1]", "a. b. c."), TEXTS.nothingOpen, TEXTS.which, TEXTS.notWaiting(3), TEXTS.whatToSend(1)];
+    for (const text of all) expect([text, casualText(text)]).toEqual([text, true]);
+    // The check itself.
+    expect(casualText("Done. Tests pass.")).toBe(false);
+    expect(casualText("[1] It works")).toBe(false);
+    expect(casualText("Fixed it. Opened a PR.")).toBe(false);
+    expect(casualText("Opened a PR, e.g. #12.")).toBe(true);
+    expect(casualText(OK)).toBe(true);
+    for (const ack of ["Sent", "→ [1]", "Got it, the session is fixing the tests.", "Forwarded to web."]) expect(casualText(ack)).toBe(false);
   });
 
   test("what counts as asking", () => {

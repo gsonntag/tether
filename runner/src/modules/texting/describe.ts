@@ -62,8 +62,8 @@ export function requestText(r: Request, agent: string): { status: string; body: 
 }
 
 export type ReplyMeaning =
-  /** an answer to the request; `ack` says what was done */
-  | { answer: RequestAnswer; ack: string }
+  /** an answer to the request (nothing is texted back: the agent answers for itself) */
+  | { answer: RequestAnswer }
   /** the person talking to the agent (it goes as a denial's reason: the agent reads it and goes on) */
   | { talk: string }
   | { problem: string };
@@ -85,17 +85,17 @@ export function readReply(r: Request, raw: string): ReplyMeaning {
     if (qs.length === 1) {
       const q = qs[0]!;
       const one = tokens.length === 1 ? pick(q, tokens[0]!) : q.multiSelect && tokens.every((t) => t.length === 1) ? pick(q, tokens.join("")) : undefined;
-      if (one !== undefined) return { answer: { allow: true, answers: [one] }, ack: `answered "${clip(one, 80)}"` };
-      return { answer: { allow: true, answers: [text] }, ack: "answered with your words" };
+      if (one !== undefined) return { answer: { allow: true, answers: [one] } };
+      return { answer: { allow: true, answers: [text] } };
     }
     if (tokens.length === qs.length) {
       const picks = qs.map((q, i) => pick(q, tokens[i]!));
-      if (picks.every((p) => p !== undefined)) return { answer: { allow: true, answers: picks as string[] }, ack: "answered" };
+      if (picks.every((p) => p !== undefined)) return { answer: { allow: true, answers: picks as string[] } };
     }
     return r.noReason ? { problem: `Reply with a letter for each question, like "a c".` } : { talk: text };
   }
-  if (YES.test(text)) return { answer: { allow: true }, ack: r.plan !== undefined ? "approved" : "allowed" };
-  if (NO.test(text)) return { answer: { allow: false }, ack: "denied (the turn stops)" };
+  if (YES.test(text)) return { answer: { allow: true } };
+  if (NO.test(text)) return { answer: { allow: false } };
   if (r.noReason) return { problem: "This one only takes y or n." };
   return { talk: text };
 }

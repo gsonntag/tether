@@ -57,6 +57,8 @@ export interface SessionActions {
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
   /** the folders with sessions (the lists' projects), newest activity first */
   projects(): Promise<ProjectInfo[]>;
+  /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first */
+  list(): SessionSummary[];
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
   /** a message from Tether through the session's queue: now when it's idle, else after its turn */

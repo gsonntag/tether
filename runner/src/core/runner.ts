@@ -233,6 +233,7 @@ export function createRunner(o: RunnerOptions) {
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
+        list: () => core.book.list(),
         folder: (path: string) => core.folder(path),
         queue: async (id: string, text: string) => void (await live.queue.add(id, text, [])),
         recent: async (id: string, limit: number) => {
