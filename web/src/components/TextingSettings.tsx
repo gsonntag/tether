@@ -51,7 +51,7 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     <p className="t-inline-status">
-      Get an iMessage when a session needs you, asks you something or fails (not while you're looking at it in Tether). Reply to send it a message. Each text starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether texts back a list to choose from.
+      Get an iMessage when a session needs you, asks you something or fails (not while you're looking at it in Tether), with what it wants and a link. Reply y or n to a request, or text the agent: its answer comes back by text. Each text starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether texts back a list to choose from.
     </p>
     <div className="t-credential-slot" aria-label="Texting">
       <div className="t-credential-title"><span>Texting</span><span className="t-credential-status">{state}{status.lastError ? ` · ${status.lastError}` : ""}</span></div>

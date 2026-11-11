@@ -9,7 +9,7 @@ import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
 import type { BillingSource } from "../../../shared/credentials";
-import type { HarnessId, Msg } from "../../../shared/transcript";
+import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
@@ -224,7 +224,8 @@ export function createRunner(o: RunnerOptions) {
         sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
         tell: (id: string, text: string) => live.tell(id, defang(text)),
-        deny: (id: string, requestId: string, reason?: string) => live.answerRequest(id, requestId, { allow: false, reason: reason ? defang(reason) : undefined }),
+        answer: (id: string, requestId: string, a: RequestAnswer) =>
+          live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
         folder: (path: string) => core.folder(path),

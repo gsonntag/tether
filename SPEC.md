@@ -1112,14 +1112,17 @@ clears on the other.
 finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 
 **Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum for a
-request, "needs you", a failed turn, or a turn whose last message asks the person something (a
-finished turn otherwise doesn't text); push's wording (no titles, commands or agent text), skipped
-while the session is viewed. Replies route by number: each text starts with its session's number (1-9, kept while the
-session is open, 30 minutes after its last text); `n text`, a threaded reply, or plain text when one
-session is open go straight there; plain text with several open is held and answered with a numbered
-picker. A reply is the person's own message (`live.tell`, defanged); on an open request it denies
-with the reply as the reason. One runner holds the link; keys live on it (`texting.json`, mode 600,
-or `runner.env`).
+request, "needs you", a failed turn, a turn whose last message asks the person something, and the
+agent's answer after the person texted it (a turn that just finishes doesn't text), each with a link
+to the session; skipped while the session is viewed. Texts carry what the agent wants (the command,
+file, question and options, plan) with known secrets redacted. Replies route by number: each text
+starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
+text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
+text with several open is held and answered with a numbered picker. On an open request, `y` allows
+(approves a plan), `n` denies, a letter answers a question, and anything else is the person's words
+to the agent (a denial's reason, which the agent reads and answers). Otherwise a reply is the
+person's own message (`live.tell`, defanged). One runner holds the link; keys live on it
+(`texting.json`, mode 600, or `runner.env`).
 
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
 runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
