@@ -820,6 +820,50 @@
   font-size: 13px;
 }
 
+/* The Home chat's "Waiting for N sessions to finish…" (HomeWaiting.tsx). */
+.t-home-waiting {
+  padding: 8px 0 12px;
+  font-size: 13px;
+  color: var(--t-muted);
+}
+.t-home-waiting-line {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border-radius: 6px;
+}
+.t-home-waiting-line:focus-visible {
+  outline: 2px solid var(--color-border-focus, currentColor);
+}
+.t-home-waiting-line[aria-expanded="true"] .t-home-report-chev {
+  transform: rotate(90deg);
+}
+.t-home-waiting-needs {
+  color: var(--color-text-yellow, inherit);
+}
+.t-home-waiting-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.t-home-waiting-list li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.t-home-waiting-list .t-link {
+  display: inline;
+  font-size: 13px;
+}
+
 /* ---------- requests dock (above the composer) ---------- */
 
 .t-dock {

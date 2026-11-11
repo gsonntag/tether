@@ -122,8 +122,8 @@ export interface Ops {
   homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
   /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */
   homeAgentClear: { args: Record<string, never>; result: { rev: number } };
-  /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers */
-  homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean } };
+  /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers. `following`: the sessions its chats follow (absent from a runner from before it was sent) */
+  homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean; following?: string[] } };
   /**
    * "Archive done sessions" on Home: the Home agent's check-in (check_in_sessions) without a chat.
    * `start` begins one unless one is running; `dismiss` forgets the last result. Always answers with

@@ -23,6 +23,7 @@ import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
+import { HomeWaiting } from "./HomeWaiting";
 import { Transcript } from "./Transcript";
 
 const PLACEHOLDER = "What should get done? e.g. “In tether, make the sidebar remember its width”";
@@ -175,7 +176,9 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
               <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
                 <Spinner size="sm" /> Working…
               </div>
-            ) : undefined
+            ) : running ? undefined : (
+              <HomeWaiting runnerId={runnerId} />
+            )
           }
         />
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={view.session?.projectPath} />

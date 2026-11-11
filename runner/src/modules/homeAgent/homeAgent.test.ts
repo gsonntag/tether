@@ -683,8 +683,8 @@ test("the Watch all sessions toggle is on by default, kept, and off means no wat
   WATCH.quietMs = 100;
   const t = await setup();
   const { op, runner, chat, driverOf, dataDir } = t;
-  expect(await op("homeAgentWatch", {})).toEqual({ watchAll: true });
-  expect(await op("homeAgentWatch", { on: false })).toEqual({ watchAll: false });
+  expect(await op("homeAgentWatch", {})).toMatchObject({ watchAll: true });
+  expect(await op("homeAgentWatch", { on: false })).toMatchObject({ watchAll: false });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).watchAll).toBe(false);
   await op("send", { sessionId: chat, text: "hello" });
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && driverOf(chat)?.sent.length === 1);
@@ -693,7 +693,7 @@ test("the Watch all sessions toggle is on by default, kept, and off means no wat
   await Bun.sleep(300);
   expect(driverOf(chat)!.sent.length).toBe(1);
   // On again: the next one is reported.
-  expect(await op("homeAgentWatch", { on: true })).toEqual({ watchAll: true });
+  expect(await op("homeAgentWatch", { on: true })).toMatchObject({ watchAll: true });
   await op("send", { sessionId: a, text: "more" });
   await until(() => driverOf(chat)!.sent.length === 2);
   expect(driverOf(chat)!.sent[1]).toContain(`- ${a} "task a"`);

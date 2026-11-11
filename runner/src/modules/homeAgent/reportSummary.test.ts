@@ -83,3 +83,16 @@ test("a watch report", async () => {
   await until(() => driverOf(chat)?.sent.length === 1);
   expect(homeReport(driverOf(chat)!.sent[0]!)).toEqual({ kind: "watch", summary: "2 sessions you didn't start updated · 1 failed", attention: true });
 });
+
+test("homeAgentWatch says which sessions the chats follow (the Home chat's waiting row)", async () => {
+  const { runner, op, chat, tools, driverOf, project } = await setup();
+  expect(await op("homeAgentWatch")).toEqual({ watchAll: true, following: [] });
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  expect(await op("homeAgentWatch", { on: false })).toEqual({ watchAll: false, following: [child] });
+  // The person typing into it makes it theirs: no longer followed.
+  await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(child)?.state.status === "idle");
+  await op("send", { sessionId: child, text: "mine now" });
+  await until(() => driverOf(child)!.sent.length === 2);
+  expect((await op("homeAgentWatch")).following).toEqual([]);
+});
