@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import type { ActiveClone, CloneStatus, FolderList } from "../../../shared/protocol";
 import { parseRepo } from "../../../shared/repo";
 import { expandPath } from "./sessions";
+import { childEnv } from "../childEnv";
 
 const MAX_FOLDERS = 500;
 
@@ -46,7 +47,7 @@ export function listFolders(path: string): FolderList {
 /** Whether `dir` is itself a clone of `url` (not just inside one). */
 function sameRepo(dir: string, url: string): boolean {
   if (!existsSync(join(dir, ".git"))) return false;
-  const origin = Bun.spawnSync(["git", "-C", dir, "remote", "get-url", "origin"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
+  const origin = Bun.spawnSync(["git", "-C", dir, "remote", "get-url", "origin"], { env: childEnv(), stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
   try {
     return parseRepo(origin).url === url;
   } catch {
@@ -61,7 +62,7 @@ function sameRepo(dir: string, url: string): boolean {
  */
 function finished(dir: string): boolean {
   if (!existsSync(join(dir, ".git", "index"))) return false;
-  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"], { env: childEnv(), stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 }
 
 /** How far a running `git clone --progress` is, from its stderr (`Receiving objects:  45% (450/1000)`). */
@@ -158,7 +159,7 @@ export class CloneJobs {
       // Its own process group, so stopping it stops ssh too (which would hold the pipe open).
       detached: true,
       env: {
-        ...process.env,
+        ...childEnv(),
         GIT_TERMINAL_PROMPT: "0",
         // Nobody can answer a passphrase prompt; a host seen for the first time is trusted.
         GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",

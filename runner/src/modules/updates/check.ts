@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { compareVersions, parseVersion, updateStatus, type HarnessReport, type HarnessVersion, type UpdateRun } from "../../../../shared/harnessUpdates";
 import { bundledPackageJson, commandLine, detectInstall, effectNote, updatePlan, type HarnessSpec, type Install, type UpdatePlan } from "./install";
+import { childEnv } from "../../childEnv";
 
 export const HARNESS_SPECS: HarnessSpec[] = [
   { id: "claude", name: "Claude Code", pkg: "@anthropic-ai/claude-code", bin: process.env.CLAUDE_BIN || "claude", brew: "claude-code" },
@@ -73,7 +74,7 @@ export const realDeps: CheckerDeps = {
 export async function runCommand(argv: string[], opts: { timeoutMs: number; env?: Record<string, string>; onOutput?: (chunk: string) => void }): Promise<RunResult> {
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, ...opts.env, NO_COLOR: "1", CI: "1" } });
+    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: childEnv({ ...opts.env, NO_COLOR: "1", CI: "1" }) });
   } catch (e) {
     return { code: null, output: (e as Error)?.message ?? String(e), timedOut: false };
   }

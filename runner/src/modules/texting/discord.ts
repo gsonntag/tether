@@ -10,8 +10,10 @@
 //
 // Settings: texting.json `connectors.discord` (mode 600): { enabled, token, ownerIds, channelId,
 // where }; runner.env wins: TETHER_DISCORD_TOKEN, TETHER_DISCORD_OWNER_IDS (comma-separated),
-// TETHER_DISCORD_CHANNEL_ID, taken out of the runner's environment when it loads so no agent it
-// starts can read the token. The token never leaves the runner (settings shows only "Set").
+// TETHER_DISCORD_CHANNEL_ID, taken out of process.env when it loads; with childEnv.ts (every
+// spawn passes a filtered env) the token isn't passed to agents' environments. Agents run as the same
+// user and can read files, texting.json included. The token never goes to the web (settings shows
+// only "Set").
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";

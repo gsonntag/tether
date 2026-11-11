@@ -19,6 +19,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { SessionLook } from "..";
 import type { SessionSummary } from "../../../../shared/transcript";
 import { ANSWER_TAG, parseAnswer, type Answer } from "../../../../shared/checkIn";
+import { childEnv } from "../../childEnv";
 
 // The answer line and its parsing are shared: the transcript and previews hide that line.
 export { ANSWER_TAG, parseAnswer, type Answer };
@@ -71,7 +72,7 @@ export const runGit =
   (ms = 5000): Git =>
   async (cwd, ...args) => {
     try {
-      const p = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } });
+      const p = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore", env: childEnv({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }) });
       const t = setTimeout(() => p.kill(), ms);
       const s = await new Response(p.stdout).text();
       clearTimeout(t);
@@ -138,7 +139,7 @@ export const ghPrs =
   (ms = 15_000): Prs =>
   async (cwd, branch) => {
     try {
-      const p = Bun.spawn(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,state,baseRefName", "--limit", "10"], { cwd, stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
+      const p = Bun.spawn(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,state,baseRefName", "--limit", "10"], { cwd, stdout: "pipe", stderr: "ignore", env: childEnv({ GH_PROMPT_DISABLED: "1" }) });
       const t = setTimeout(() => p.kill(), ms);
       const s = await new Response(p.stdout).text();
       clearTimeout(t);
@@ -246,7 +247,7 @@ export function listeningPorts(text: string): number[] {
 export const systemProbe: Probe = {
   async tmux(name) {
     try {
-      const p = Bun.spawn(["tmux", "has-session", "-t", `=${name}`], { stdout: "ignore", stderr: "ignore" });
+      const p = Bun.spawn(["tmux", "has-session", "-t", `=${name}`], { env: childEnv(), stdout: "ignore", stderr: "ignore" });
       const t = setTimeout(() => p.kill(), 3000);
       const code = await p.exited;
       clearTimeout(t);

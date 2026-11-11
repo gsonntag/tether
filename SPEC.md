@@ -1310,7 +1310,9 @@ their words. Discord: only the owner user ids set may drive it (in a DM or the o
 anyone else, bots, webhooks and the bot itself are ignored silently. Messages are split at 2000
 characters; mentions never ping. Its settings live in `texting.json` under `connectors.discord`
 (mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
-`TETHER_DISCORD_CHANNEL_ID`); it's off until set. The Home agent sees Discord's words marked
+`TETHER_DISCORD_CHANNEL_ID`); it's off until set. Tether's secrets (`TETHER_TOKEN`, the connectors'
+keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`
+(`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. The Home agent sees Discord's words marked
 `[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
 `setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
 stay for an older web).
