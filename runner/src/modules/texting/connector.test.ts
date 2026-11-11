@@ -352,3 +352,14 @@ describe("review fixes", () => {
     await ch.stop();
   });
 });
+
+test("a session's link in a Discord text is its short link, as on iMessage", async () => {
+  const s = setup();
+  (s.t as any).ctx.links = { url: (app: string, id: string) => `${app}#/l/${id === "claude:a" ? "abc123" : "x"}` };
+  await s.t.start();
+  s.dc.hear({ text: "hi" });
+  await tick();
+  s.store.lastVia = "discord";
+  await s.t.attention("claude:a");
+  expect(s.dc.sent.at(-1)!.text).toEndWith("\nhttps://tether.example/#/l/abc123");
+});
