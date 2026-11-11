@@ -75,6 +75,15 @@ const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", cod
  * (adapters/codex/setup.ts): the mode only decides what its remaining tools ask before using.
  */
 
+/** list_sessions' filters. */
+interface ListArgs {
+  state?: SessionState | "active";
+  project?: string;
+  query?: string;
+  archived?: boolean;
+  limit?: number;
+}
+
 interface Child {
   /** the chat that started it, or last messaged it */
   chat: string;
@@ -161,20 +170,32 @@ export function settingsOf(v: unknown): HomeAgentSettings | undefined {
   return { harness: o.harness as HarnessId, source: o.source as BillingSource, ...(model ? { model } : {}), ...(mode ? { mode } : {}) };
 }
 
+/** The end-goal question's options, as the person sees them (one line, fits a phone). */
+export const END_GOALS = "1) open a PR (you review and merge), 2) merge directly (and deploy/restart if it needs it), or 3) adversarial review first (subagents try to break it), then PR or merge?";
+
+/**
+ * What a brief says when the person picks adversarial review: one subagent implements, at least two
+ * independent ones try to break it, and it loops until they find nothing blocking.
+ */
+export const ADVERSARIAL_BRIEF = "Work as a team of subagents: one implementer subagent makes the change; then at least two independent reviewer subagents, each given the diff and the goal but not the implementer's reasoning, try to break it, looking for bugs, security problems and regressions (including running the tests and the build). Fix every blocking issue they find and have fresh reviewers check again; repeat until the reviewers find no blocking issues. Only then deliver: <the chosen delivery: open a PR / merge directly (and deploy/restart if needed)>. In your report, say what the reviewers found and what you fixed.";
+
 export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to you from Tether's home page. Your job is to turn what they ask for into a coding session in one of their projects, give it a strong first prompt, and see it through until the task is done.
 
 How to work:
 - Find the project with list_projects. Use project_overview when you need to know more about one. If more than one project could be meant, ask the person which in one short question. Never guess.
-- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously to completion without stopping to ask for confirmation, and to verify its work before finishing. The session runs with full permissions.
-- The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction earlier in this chat (for example "when any PR comes back, merge it and restart"), first ask one short question about the end goal, like "PR, merge + deploy, or just local changes?", then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it.
+- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously through to completion without stopping to ask for confirmation, to verify its work before finishing, and to end with a short report: what it delivered (the PR link, or the merged commit), and the worktree and branch it made, if any. The session runs with full permissions.
+- The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction (one earlier in this chat, for example "when any PR comes back, merge it and restart", or a project rule such as "gavinsonntag.com: only the foliation branch"), first ask one short question, offering these options on one line: "${END_GOALS}". Then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it. If they say it holds from now on ("always do X for jungle"), it's a standing instruction for that project for the rest of this chat: don't ask again there.
+- When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
 - For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status.
-- You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person, archived, or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
+- You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
+- Follow-ups on finished work ("tweak the site again", "one more fix on that PR"): revive the session that did it rather than starting a new one, since it has the context. Find it with list_sessions (archived: true finds archived ones; query searches titles and projects), then send_to_session: messaging an archived session unarchives it and sends. Start a new session only when no earlier one fits.
 - After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started or messaged finishes a turn or needs the person.
 - Tether also watches every other session on this machine for you (unless the person turned off "Watch all sessions"): when sessions you didn't start finish a turn, fail, or start waiting for the person, you get one short report ("[From Tether] Sessions you didn't start: ..."), several at once when they come close together. These aren't yours: don't message them unless the person asked you to. If one failed or is waiting for the person, tell them in one casual sentence which and what it needs. If one just finished, mention it only if the person was waiting on it or asked about it; otherwise reply with a few words at most. Sessions you started still get their own reports: keep those going until the task is done.
-- On a report: if the task is complete and verified, tell the person in one casual sentence only what's notable (where the work is, e.g. the PR or issue link), or nothing more than that it's done. If the session stopped early (it asked something you can answer from what the person said, stopped halfway, or says it's done but skipped verification), use send_to_session with a specific instruction to keep it going. If it needs a decision only the person can make, or it keeps failing, tell the person in one sentence and stop.
+- On a report: if the session stopped early (it asked something you can answer from what the person said, stopped halfway, or says it's done but skipped verification), use send_to_session with a specific instruction to keep it going. If it needs a decision only the person can make, or it keeps failing, tell the person in one sentence and stop.
+- Close the loop on sessions you started. When one reports its task done and verified, send it the wrap-up yourself, matching the end goal: merge (only if that was chosen, or a standing instruction authorizes it), then deploy or restart if the project needs it, then remove the worktree and branch it made (never the main checkout or another session's folder), and confirm each step. For "open a PR", tell the person the PR link and wait: the wrap-up comes once the person says it's merged (or tells you to merge it). Once the session confirms it's done, delivered and cleaned up, archive it with archive_session (why: "done") and tell the person in one casual sentence only what's notable (the PR link, or that it's merged and live). No separate check-in is needed for sessions you drove.
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
-- Use archive_session only when the person asks to archive a specific session (for example one the check-in kept). Never archive on your own judgment.
+- archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
 - Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
@@ -712,9 +733,9 @@ export class HomeAgent implements HomeEnd {
   }
 
   /**
-   * send_to_session: any session the lists show, but the agent's own chats and subagents. It's
-   * refused when it can't take a message from Tether now (archived, open in a terminal, waiting for
-   * the person); a turn that runs just means after it. The chat follows it from then on, as one
+   * send_to_session: any session the lists show (or an archived one, which it revives: unarchived,
+   * then sent), but the agent's own chats and subagents. It's refused when it can't take a message
+   * from Tether now (open in a terminal, waiting for the person); a turn that runs just means after it. The chat follows it from then on, as one
    * it started: a session the person had taken over, or another chat's, is this chat's again.
    */
   async message(chat: string, sessionId: unknown, message: string): Promise<string> {
@@ -728,26 +749,29 @@ export class HomeAgent implements HomeEnd {
     if (!look) throw new Error(`There's no session ${id}.`);
     if (resolve(look.summary.projectPath) === resolve(this.folder)) throw new Error("That's one of your own chats.");
     if (look.summary.parentSessionId) throw new Error("That's a subagent of another session: message its session instead.");
-    if (look.summary.archived) throw new Error("That session is archived. Ask the person to unarchive it first if it should go on.");
     if (look.summary.mode === "terminal" || look.state.mode === "terminal" || look.state.terminal) throw new Error("That session is open in a terminal: the person is working in it there. Leave it to them.");
     if (look.requests.length || look.state.requests.length) throw new Error(`That session is waiting for the person${look.state.requests[0] ? ` (${asks(look.state.requests[0])})` : ""}. Only they can answer it, in that session.`);
     if (look.summary.queuePaused || look.state.queueHeld) throw new Error("That session's queue is paused (after a Stop, a failure or a restart): it waits for the person.");
     // Its next turn's end would be read as its check-in answer.
     if (this.waiting(id)) throw new Error("That session is answering your check-in: wait for the check-in report.");
+    // An archived session is revived: back in the lists, then the message goes.
+    const revived = !!look.summary.archived;
+    if (revived) await s.setArchived(id, false);
     // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
     const behind = look.status !== "idle" || look.state.queue.length > 0;
     const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
     if (behind) next.queued = true;
     this.state.children[id] = next;
     this.save();
-    await s.queue(id, FROM_TETHER + message).catch((e) => {
+    await s.queue(id, FROM_TETHER + message).catch(async (e) => {
+      if (revived) await s.setArchived(id, true).catch(() => {});
       if (next === c) delete next.queued;
       else if (c) this.state.children[id] = c;
       else delete this.state.children[id];
       this.save();
       throw e;
     });
-    return behind ? "Queued: it goes after the session's current turn. You'll get a report when your message's turn finishes." : "Sent. You'll get a report when it finishes the turn.";
+    return (revived ? "Unarchived it. " : "") + (behind ? "Queued: it goes after the session's current turn. You'll get a report when your message's turn finishes." : "Sent. You'll get a report when it finishes the turn.");
   }
 
   /** The tools a chat (by its session id) gets. */
@@ -810,13 +834,15 @@ export class HomeAgent implements HomeEnd {
       {
         name: "list_sessions",
         description:
-          "Every coding session on this machine, whoever started it: active in the last 3 days, or running now. Newest activity first. Each line: id, title, project, agent, state (running, waiting on you, finished, failed), last active, and what it's on (its latest prompt or reply). Use for \"what's running?\", \"what's finished?\", \"is anything working on X?\".",
+          "Every coding session on this machine, whoever started it: active in the last 3 days, or running now (archived: true lists the archived ones instead, of any age). Newest activity first. Each line: id, title, project, agent, state (running, waiting on you, finished, failed), last active, and what it's on (its latest prompt or reply). Use for \"what's running?\", \"what's finished?\", \"is anything working on X?\", and to find a finished session to revive for a follow-up.",
         input: {
           state: z.enum(["running", "waiting", "finished", "failed", "active"]).optional().describe("Only sessions in this state. active = running or waiting on you."),
           project: z.string().optional().describe("Only this project: its folder (from list_projects) or the folder's name."),
+          query: z.string().optional().describe("Only sessions whose title or project name contains this (any case)."),
+          archived: z.boolean().optional().describe("true: only archived sessions (finished work you can revive with send_to_session)."),
           limit: z.number().int().min(1).max(LIST_MAX).optional().describe(`How many (default ${LIST_DEFAULT}, at most ${LIST_MAX}).`),
         },
-        run: async (a: { state?: SessionState | "active"; project?: string; limit?: number }) => this.listSessions(a),
+        run: async (a: ListArgs) => this.listSessions(a),
       },
       {
         name: "session_status",
@@ -869,19 +895,15 @@ export class HomeAgent implements HomeEnd {
       },
       {
         name: "archive_session",
-        description: "Archives a session (keeps it out of Recent; it stays searchable), as the archive button does. Only when the person asks for that session.",
-        input: { session_id: z.string() },
-        run: async (a: { session_id: string }) => {
-          if (typeof a.session_id !== "string" || !a.session_id) throw new Error("session_id is required.");
-          if (this.isChat(a.session_id)) throw new Error("That's one of your own chats.");
-          await s.setArchived(a.session_id, true);
-          return `Archived ${await this.describe(a.session_id)}.`;
-        },
+        description:
+          "Archives a session (keeps it out of Recent; it stays searchable, and send_to_session revives it), as the archive button does. why \"done\": a session you started that has confirmed it's done, delivered and cleaned up. why \"person_asked\": any session, only when the person asked to archive it.",
+        input: { session_id: z.string(), why: z.enum(["done", "person_asked"]).describe("done: your own finished session; person_asked: the person asked for this one.") },
+        run: async (a: { session_id: string; why: "done" | "person_asked" }) => this.archive(chat, a.session_id, a.why),
       },
       {
         name: "send_to_session",
         description:
-          "Sends a message to any session (an id from list_sessions or start_session), whoever started it: it goes now if the session is idle, else after its current turn. You get a report when that turn finishes, and you follow the session from then on. Refused for sessions that are archived, open in a terminal, or waiting for the person. Message a session you didn't start only when the person asks you to or their task needs it.",
+          "Sends a message to any session (an id from list_sessions or start_session), whoever started it: it goes now if the session is idle, else after its current turn. You get a report when that turn finishes, and you follow the session from then on. An archived session is unarchived and gets the message: use that to revive the session that did the work for a follow-up. Refused for sessions that are open in a terminal or waiting for the person. Message a session you didn't start only when the person asks you to or their task needs it.",
         input: { session_id: z.string(), message: z.string().min(1) },
         run: async (a: { session_id: string; message: string }) => {
           const said = await this.message(chat, a.session_id, a.message);
@@ -893,14 +915,15 @@ export class HomeAgent implements HomeEnd {
   }
 
   /** list_sessions: every listed session but the Home agent's own chats and subagents, filtered. */
-  async listSessions(a: { state?: SessionState | "active"; project?: string; limit?: number }): Promise<string> {
+  async listSessions(a: ListArgs): Promise<string> {
     const s = this.ctx.sessions;
-    const rows = s
-      .list()
+    const q = a.query?.trim().toLowerCase();
+    const rows = (a.archived ? await s.archived() : s.list().filter((r) => !r.archived))
       .filter((r) => !r.parentSessionId && resolve(r.projectPath) !== resolve(this.folder))
+      .filter((r) => !q || (r.title || "").toLowerCase().includes(q) || basename(r.projectPath).toLowerCase().includes(q))
       .map((r) => ({ r, st: stateOf(r, this.ctx.session(r.id)?.state.error) }))
       .filter(({ r, st }) => (!a.state || (a.state === "active" ? st === "running" || st === "waiting" : st === a.state)) && (!a.project || inProject(r.projectPath, a.project)));
-    if (!rows.length) return `No sessions${a.state ? ` ${a.state === "active" ? "running or waiting on you" : STATE_LABELS[a.state]}` : ""}${a.project ? ` in ${a.project}` : ""}.`;
+    if (!rows.length) return `No${a.archived ? " archived" : ""} sessions${a.state ? ` ${a.state === "active" ? "running or waiting on you" : STATE_LABELS[a.state]}` : ""}${a.project ? ` in ${a.project}` : ""}${q ? ` matching "${a.query!.trim()}"` : ""}.`;
     const limit = Math.min(Math.max(1, Math.floor(a.limit ?? LIST_DEFAULT)), LIST_MAX);
     const page = rows.slice(0, limit);
     const lines = await Promise.all(
@@ -913,12 +936,34 @@ export class HomeAgent implements HomeEnd {
         const promptIdx = msgs.findLastIndex((m) => m.role === "user" && m.origin?.kind !== "shell" && !!text(m));
         const on = reply && replyIdx > promptIdx ? `replied: ${reply}` : prompt ? `asked: ${prompt}` : "";
         const project = basename(r.projectPath) || r.projectPath;
-        const head = `${r.id} · "${oneLine(r.title || "Untitled", 60)}" · ${project} · ${AGENT_NAMES[r.harness] ?? r.harness} · ${STATE_LABELS[st]} · ${ago(r.updatedAt)}`;
+        const head = `${r.id} · "${oneLine(r.title || "Untitled", 60)}" · ${project} · ${AGENT_NAMES[r.harness] ?? r.harness} · ${r.archived ? "archived" : STATE_LABELS[st]} · ${ago(r.updatedAt)}`;
         return on ? `${head}\n  ${oneLine(on, LINE_MAX)}` : head;
       }),
     );
     const more = rows.length > page.length ? `\n(${page.length} of ${rows.length}: filter by state or project, or raise limit)` : "";
     return lines.join("\n") + more;
+  }
+
+  /**
+   * archive_session. "done": only a session this chat started (not one it took on by messaging it,
+   * nor one the person has taken over), and not while it's working or waiting for the person.
+   * "person_asked": any session but the agent's own chats.
+   */
+  async archive(chat: string, sessionId: unknown, why: unknown): Promise<string> {
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("session_id is required.");
+    const id = sessionId.trim();
+    if (this.isChat(id)) throw new Error("That's one of your own chats.");
+    if (why !== "done" && why !== "person_asked") throw new Error('why must be "done" or "person_asked".');
+    if (why === "done") {
+      const c = this.state.children[id];
+      if (!c || c.chat !== chat || c.messaged) throw new Error("You didn't start that session: archive it only if the person asks you to (why: person_asked).");
+      if (c.released === "person") throw new Error("The person has taken that session over: archive it only if they ask you to.");
+      const look = await this.ctx.sessions.open(id).catch(() => undefined);
+      if (!look) throw new Error(`There's no session ${id}.`);
+      if (look.status !== "idle" || look.requests.length || look.state.requests.length || look.state.queue.length) throw new Error("That session isn't finished: it's still working, has messages queued, or waits for the person.");
+    }
+    await this.ctx.sessions.setArchived(id, true);
+    return `Archived ${await this.describe(id)}. send_to_session revives it if it's needed again.`;
   }
 
   setup(chat: string): AgentSetup {
@@ -1180,7 +1225,7 @@ export class HomeAgent implements HomeEnd {
       reply ? `Its last reply:\n<<<\n${cut(reply, REPLY_MAX)}\n>>>` : "It said nothing.",
       last
         ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you've stopped following this session and can't message it any more. Tell the person where it stands in one casual sentence.`
-        : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done, or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,
+        : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done; if it is, send the wrap-up for its end goal (merge if chosen, deploy/restart if needed, remove its worktree and branch) and archive it once it confirms; or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,
       ...(this.texted(c.chat) ? [TEXTED] : []),
     ];
     await this.report(id, c, lines.join("\n\n"));
