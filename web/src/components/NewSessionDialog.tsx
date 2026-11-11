@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
-import type { FolderCheck } from "../../../shared/protocol";
+import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
@@ -61,6 +61,8 @@ export function NewSessionDialog() {
   const [inTerminal, setInTerminal] = useState(false);
   /** Add project's panel, in place of the project list */
   const [adding, setAdding] = useState(false);
+  /** a clone still running from before the dialog was closed: Add project opens on it */
+  const [resume, setResume] = useState<ActiveClone>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   /** what's there to bill to. Nothing from an older runner: no picker, and the runner decides */
@@ -84,6 +86,21 @@ export function NewSessionDialog() {
       setSource(s?.default);
     });
   }, [open, rid, harness]);
+
+  useEffect(() => {
+    setResume(undefined);
+    if (!open || !rid) return;
+    let gone = false;
+    // A runner too old to say: nothing to pick up.
+    void rpc(rid, "activeClones", {})
+      .then(({ clones }) => {
+        if (gone || !clones[0]) return;
+        setResume(clones[0]);
+        setAdding(true);
+      })
+      .catch(() => {});
+    return () => void (gone = true);
+  }, [open, rid]);
 
   const checkPath = async (id: number) => {
     const c = await rpc(rid!, "checkFolder", { projectPath: typed }).catch(() => undefined);
@@ -207,11 +224,17 @@ export function NewSessionDialog() {
         {check?.error && !(check.state === "relative" && shown.length > 0) && <div className="t-form-error">{check.error}</div>}
         {adding && rid && (
           <AddProject
+            key={resume?.cloneId ?? "new"}
             runnerId={rid}
-            onCancel={() => setAdding(false)}
+            resume={resume}
+            onCancel={() => {
+              setAdding(false);
+              setResume(undefined);
+            }}
             onPick={(p) => {
               setPath(p);
               setAdding(false);
+              setResume(undefined);
             }}
           />
         )}

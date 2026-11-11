@@ -174,6 +174,16 @@ describe("cloneRepo", () => {
     expect(existsSync(dest)).toBe(false);
   });
 
+  test("running clones are listed with their repo, finished ones aren't", async () => {
+    stalledGitHub();
+    const jobs = new CloneJobs();
+    const dest = join(scratch(), "widget");
+    const { cloneId } = jobs.start(" acme/widget ", dest);
+    expect(jobs.active()).toEqual([{ cloneId, repo: "acme/widget", status: expect.objectContaining({ state: "running", path: dest }) }]);
+    jobs.cancel(cloneId);
+    expect(jobs.active()).toEqual([]);
+  });
+
   test("refuses a relative path", () => {
     expect(() => new CloneJobs().start("acme/widget", "projects/widget")).toThrow("full path");
   });

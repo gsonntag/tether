@@ -55,6 +55,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   const clones = new CloneJobs();
   ops.register("cloneRepo", (a) => clones.start(str(a.repo, "A repo"), str(a.path, "A folder")));
   ops.register("cloneStatus", (a) => clones.status(str(a.cloneId, "cloneId")));
+  ops.register("activeClones", () => ({ clones: clones.active() }));
   ops.register("cancelClone", (a) => (clones.cancel(str(a.cloneId, "cloneId")), null));
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   // What a person types never passes for one of Tether's own messages (shared/fromTether.ts).

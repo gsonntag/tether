@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
-import type { CloneStatus, FolderList } from "../../../shared/protocol";
+import type { ActiveClone, CloneStatus, FolderList } from "../../../shared/protocol";
 import { defaultClonePath, parseRepo } from "../../../shared/repo";
 import { rpc } from "../connection";
 
@@ -11,8 +11,8 @@ type Tab = "folder" | "clone";
  * New session's Add project: choose a folder on the runner, or clone a GitHub repo into a new one.
  * Either way the chosen folder goes back to the dialog's Folder field.
  */
-export function AddProject({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (path: string) => void; onCancel: () => void }) {
-  const [tab, setTab] = useState<Tab>("folder");
+export function AddProject({ runnerId, resume, onPick, onCancel }: { runnerId: string; resume?: ActiveClone; onPick: (path: string) => void; onCancel: () => void }) {
+  const [tab, setTab] = useState<Tab>(resume ? "clone" : "folder");
   return (
     <div className="t-add-proj">
       <div className="t-seg" role="radiogroup" aria-label="Add project">
@@ -27,7 +27,7 @@ export function AddProject({ runnerId, onPick, onCancel }: { runnerId: string; o
           </button>
         ))}
       </div>
-      {tab === "folder" ? <FolderBrowser runnerId={runnerId} onPick={onPick} onCancel={onCancel} /> : <CloneForm runnerId={runnerId} onPick={onPick} onCancel={onCancel} />}
+      {tab === "folder" ? <FolderBrowser runnerId={runnerId} onPick={onPick} onCancel={onCancel} /> : <CloneForm runnerId={runnerId} resume={resume} onPick={onPick} onCancel={onCancel} />}
     </div>
   );
 }
@@ -71,17 +71,22 @@ function FolderBrowser({ runnerId, onPick, onCancel }: { runnerId: string; onPic
   );
 }
 
-function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (path: string) => void; onCancel: () => void }) {
-  const [repo, setRepo] = useState("");
+/** `resume`: a clone already running (started before the dialog was closed), followed from where it is. */
+function CloneForm({ runnerId, resume, onPick, onCancel }: { runnerId: string; resume?: ActiveClone; onPick: (path: string) => void; onCancel: () => void }) {
+  const [repo, setRepo] = useState(resume?.repo ?? "");
   /** what the owner typed for the folder; until then it follows the repo's name */
-  const [dest, setDest] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  const [dest, setDest] = useState<string | undefined>(resume?.status.path);
+  const [busy, setBusy] = useState(!!resume);
   const [error, setError] = useState<string>();
   /** the running clone and how it goes */
-  const [progress, setProgress] = useState<CloneStatus>();
+  const [progress, setProgress] = useState<CloneStatus | undefined>(resume?.status);
   const cloneId = useRef<string>(undefined);
   const live = useRef(true);
-  useEffect(() => () => void (live.current = false), []);
+  useEffect(() => {
+    live.current = true;
+    if (resume && cloneId.current !== resume.cloneId) void follow(resume.cloneId);
+    return () => void (live.current = false);
+  }, []);
   let parsed: ReturnType<typeof parseRepo> | undefined;
   try {
     parsed = repo.trim() ? parseRepo(repo) : undefined;
@@ -94,8 +99,16 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
     setProgress(undefined);
     try {
       const { cloneId: id } = await rpc(runnerId, "cloneRepo", { repo, path: path.trim() });
-      cloneId.current = id;
-      // The clone runs on the runner; its progress is asked for until it ends.
+      await follow(id);
+    } catch (e) {
+      if (live.current) setError((e as Error).message);
+      if (live.current) setBusy(false);
+    }
+  };
+  /** The clone runs on the runner; its progress is asked for until it ends. */
+  const follow = async (id: string) => {
+    cloneId.current = id;
+    try {
       for (;;) {
         const st = await rpc(runnerId, "cloneStatus", { cloneId: id });
         if (!live.current || cloneId.current !== id) return;
@@ -110,11 +123,13 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
     } catch (e) {
       if (live.current) setError((e as Error).message);
     } finally {
-      if (live.current) {
-        setBusy(false);
-        setProgress(undefined);
+      if (cloneId.current === id || cloneId.current === undefined) {
+        cloneId.current = undefined;
+        if (live.current) {
+          setBusy(false);
+          setProgress(undefined);
+        }
       }
-      cloneId.current = undefined;
     }
   };
   const cancel = () => {

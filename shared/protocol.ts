@@ -162,6 +162,8 @@ export interface Ops {
   cloneRepo: { args: { repo: string; path: string }; result: { cloneId: string } };
   /** How a clone is going (polled; kept a while after it ends). */
   cloneStatus: { args: { cloneId: string }; result: CloneStatus };
+  /** The clones still running (a New session dialog opened again picks one back up). */
+  activeClones: { args: Record<string, never>; result: { clones: ActiveClone[] } };
   /** Stops a running clone; what it wrote is removed. */
   cancelClone: { args: { cloneId: string }; result: null };
   /**
@@ -295,6 +297,13 @@ export interface FolderList {
   folders: string[];
   /** more folders than were listed */
   more?: boolean;
+}
+
+/** activeClones: a running clone, with the repo as it was typed. */
+export interface ActiveClone {
+  cloneId: string;
+  repo: string;
+  status: CloneStatus;
 }
 
 /** cloneStatus: a clone's progress. */
