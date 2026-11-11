@@ -1,8 +1,10 @@
 // Which session a text reply is for. Every text Tether sends starts with its session's number
-// ("[2] my-app · Claude: Finished."); a session stays open for replies for OPEN_MS after its last
+// ("[2] Claude has a question for you."); a session stays open for replies for OPEN_MS after its last
 // text. A reply that names a number, or answers one of Tether's texts in a thread, goes to that
 // session; plain text goes to the only open session, or is held while Tether asks which one with a
 // numbered picker. Pure: the clock is passed in and the state is plain data, saved by the caller.
+
+import { TEXTS } from "./texts";
 
 export const OPEN_MS = 30 * 60_000;
 export const HELD_MS = 10 * 60_000;
@@ -12,8 +14,6 @@ const MAX_SENT = 50;
 export interface Slot {
   n: number;
   sessionId: string;
-  /** "my-app · Claude" (pushTitle: never the session's own title) */
-  label: string;
   /** what the last text said, short: "finished", "wants to run a command" */
   status: string;
   /** when it was last texted or answered */
@@ -31,7 +31,7 @@ export interface RouterState {
 }
 
 export type Decision =
-  | { kind: "deliver"; sessionId: string; n: number; label: string; text: string }
+  | { kind: "deliver"; sessionId: string; n: number; text: string }
   | { kind: "reply"; text: string }
   | { kind: "none" };
 
@@ -60,7 +60,7 @@ export class Router {
   }
 
   /** A text about a session is going out: its number (kept, else the lowest free one) and the text. */
-  stamp(sessionId: string, label: string, status: string, body: string): { n: number; text: string } {
+  stamp(sessionId: string, status: string, body: string): { n: number; text: string } {
     this.prune();
     const s = this.state.slots;
     let slot = s.find((x) => x.sessionId === sessionId);
@@ -69,11 +69,12 @@ export class Router {
       const used = new Set(s.map((x) => x.n));
       let n = 1;
       while (used.has(n)) n++;
-      slot = { n, sessionId, label, status, at: 0 };
+      slot = { n, sessionId, status, at: 0 };
       s.push(slot);
     }
-    Object.assign(slot, { label, status, at: this.now() });
-    return { n: slot.n, text: `[${slot.n}] ${label}: ${body}` };
+    Object.assign(slot, { status, at: this.now() });
+    // Just the number and the message ("[6] ok"): no folder, no agent.
+    return { n: slot.n, text: `[${slot.n}] ${body}` };
   }
 
   /** Tether's text went out as message `id` (a threaded reply to it names it). */
@@ -100,13 +101,13 @@ export class Router {
       const slot = this.state.slots.find((x) => x.n === n);
       if (!slot) {
         if (rest) this.state.held = { text: rest, at: this.now() };
-        return { kind: "reply", text: this.open().length ? `[${n}] isn't waiting on a reply.\n${this.picker()}` : NOTHING_OPEN };
+        return { kind: "reply", text: this.open().length ? this.picker(TEXTS.notWaiting(n)) : NOTHING_OPEN };
       }
       if (rest) return this.deliver(slot, rest);
       const held = this.state.held;
       if (held) return this.deliver(slot, held.text);
       this.state.aimed = { n, at: this.now() };
-      return { kind: "reply", text: `What should I send to [${n}] ${slot.label}?` };
+      return { kind: "reply", text: TEXTS.whatToSend(n) };
     }
 
     const aimed = this.state.aimed && this.state.slots.find((x) => x.n === this.state.aimed!.n);
@@ -119,18 +120,18 @@ export class Router {
     return { kind: "reply", text: this.picker() };
   }
 
-  /** "Which session?" and a row per open session. */
-  picker(): string {
+  /** A one-sentence question ("Which session, by number?") and a row per open session. */
+  picker(head: string = TEXTS.which): string {
     const now = this.now();
-    const rows = this.open().map((s) => `[${s.n}] ${s.label}: ${s.status}, ${ago(now - s.at)}`);
-    return `Which session?\n${rows.join("\n")}\nReply with the number.`;
+    const rows = this.open().map((s) => `[${s.n}] ${s.status}, ${ago(now - s.at)}`);
+    return `${head}\n${rows.join("\n")}`;
   }
 
   private deliver(slot: Slot, text: string): Decision {
     this.state.held = undefined;
     this.state.aimed = undefined;
     slot.at = this.now();
-    return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, label: slot.label, text };
+    return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, text };
   }
 
   private prune() {
@@ -142,4 +143,4 @@ export class Router {
   }
 }
 
-export const NOTHING_OPEN = "Nothing is waiting on a reply. Open Tether to message a session.";
+export const NOTHING_OPEN = TEXTS.nothingOpen;

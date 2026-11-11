@@ -1,22 +1,26 @@
 // Texting (SPEC §11 Texting): a request, "needs you" in the terminal, a failed turn, a turn that ended
 // with the agent asking you something, and the agent's answer to anything you texted it go to the
-// person's phone as iMessages through Photon Spectrum, each with a link to the session in Tether. A
+// person's phone as iMessages through Photon Spectrum, with a link to the session in Tether now and
+// then (LINK_EVERY_MS; never on the back-and-forth of a texted conversation). A
 // turn that just finishes doesn't text. Replies go back to the session: y or n (or a letter) answers
 // a request, anything else is the person's words to the agent (describe.ts). Each text starts with
 // its session's number; a reply that isn't clear gets a numbered picker (router.ts). The runner sends
 // them, not the app: a Foliation app has no internet egress (server/src/push.ts).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
-// wording); known secrets are redacted.
+// wording); known secrets are redacted. Tether's own words read like a human's: "[6] ok", one
+// casual sentence at most, never that something works, and no acknowledgment after a reply is
+// passed on (texts.ts has the whole rule).
 
 import { join } from "node:path";
 import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript";
 import type { Module, ModuleContext } from "..";
-import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, pushTitle, REQUEST_DELAY_MS, requestStillOpen } from "../push";
+import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
 import { Router } from "./router";
 import { TextingStore } from "./store";
+import { TEXTS } from "./texts";
 
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
@@ -32,6 +36,8 @@ type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "a
 
 /** How long an agent's answer may be in a text. */
 const SAID_MAX = 1500;
+/** A session's link goes in a text at most this often. */
+export const LINK_EVERY_MS = 5 * 60_000;
 
 export class Texter {
   readonly router: Router;
@@ -47,12 +53,14 @@ export class Texter {
   private lastSaid = new Map<string, string>();
   /** sessions the person texted: the agent's answer goes back by text */
   private talking = new Set<string>();
+  /** when each session's link last went out */
+  private linked = new Map<string, number>();
 
   constructor(
     private ctx: Ctx,
     readonly store: TextingStore,
     private open: OpenLink = openSpectrum,
-    now: () => number = Date.now,
+    private now: () => number = Date.now,
   ) {
     this.router = new Router(store.router, now);
   }
@@ -132,18 +140,10 @@ export class Texter {
     if (!this.store.config()) throw new Error("Set the phone and the Photon project's id and secret first, and turn texting on.");
     await this.start();
     if (!this.link) throw new Error(this.lastError ?? "Not connected to Photon yet.");
-    await this.link.send("Tether texting works. Replies here go to your sessions.");
+    await this.link.send(TEXTS.test);
   }
 
   // ── out: what happened ──
-
-  /** "my-app · Claude", or "… · a subagent" (pushTitle: never the session's own title). */
-  label(id: string): string {
-    const s = this.ctx.session(id)?.summary;
-    if (!s) return "Tether";
-    const title = pushTitle(s.projectPath, agentOf(id));
-    return s.parentSessionId ? `${title} · a subagent` : title;
-  }
 
   /** The session in Tether. */
   url(sessionId: string): string {
@@ -151,10 +151,14 @@ export class Texter {
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now. */
-  async tell(sessionId: string, status: string, body: string, also: string[] = []) {
+  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false) {
     if (!this.link) return;
     if ([sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return;
-    const { text } = this.router.stamp(sessionId, this.label(sessionId), status, `${body}\n\n${this.url(sessionId)}`);
+    // The link only now and then, and never on a quick back-and-forth.
+    const at = this.now();
+    const link = !quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS;
+    if (link) this.linked.set(sessionId, at);
+    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body);
     const id = await this.say(text);
     if (id) this.router.noteSent(id, sessionId);
     this.store.save();
@@ -169,7 +173,7 @@ export class Texter {
   }
 
   async attention(sessionId: string) {
-    await this.tell(sessionId, "needs you in the terminal", `${agentOf(sessionId)} needs you in the terminal. A reply is typed into it.`);
+    await this.tell(sessionId, "needs you in the terminal", TEXTS.attention(agentOf(sessionId)));
   }
 
   /** The agent said something: kept until its turn ends (only the last message counts). */
@@ -192,8 +196,9 @@ export class Texter {
     this.lastSaid.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     const talking = this.talking.delete(sessionId);
-    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, `Failed: ${failureKind(error)}.`);
-    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX));
+    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)));
+    // An answer to something the person texted is the back-and-forth: no link.
+    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), [], talking);
   }
 
   // ── in: the person's replies, one at a time ──
@@ -208,25 +213,24 @@ export class Texter {
     this.store.save();
     if (d.kind === "none") return;
     if (d.kind === "reply") return void (await this.say(d.text));
-    const tag = `[${d.n}] ${d.label}`;
+    const tag = `[${d.n}]`;
     try {
       const look = this.ctx.session(d.sessionId);
       const open = look?.state?.requests?.find((r) => look.requests.includes(r.id));
       if (open) {
         const m = readReply(open, d.text);
-        if ("problem" in m) return void (await this.say(`${tag}: ${m.problem}`));
+        if ("problem" in m) return void (await this.say(`${tag} ${m.problem}`));
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in m ? m.answer : { allow: false, reason: m.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
         this.talking.add(d.sessionId);
-        await this.say("answer" in m ? `→ ${tag}: ${m.ack}.` : `→ ${tag}: sent. Its answer will come here.`);
       } else {
         await this.ctx.sessions.tell(d.sessionId, d.text);
         this.talking.add(d.sessionId);
-        await this.say(`→ ${tag}: sent. Its answer will come here.`);
       }
+      // No "sent" or "allowed" back (texts.ts): the session answers for itself.
     } catch (e: any) {
-      await this.say(`Couldn't send to ${tag}: ${e?.message ?? e}`);
+      await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
     }
   }
 }
