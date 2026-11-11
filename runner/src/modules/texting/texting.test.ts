@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { redact } from "../../credentials";
 import type { Request, RequestAnswer } from "../../../../shared/transcript";
 import { REQUEST_MAX } from "./describe";
-import { commandWords, flagWords } from "./summary";
+import { commandWords } from "./summary";
 import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
@@ -65,8 +65,8 @@ describe("texting", () => {
     await t.turnEnded("claude:a");
     await t.turnEnded("codex:b", "429 rate_limit_error secret");
     expect(texts).toEqual([
-      `[1] Fixed the redirect.\n\nShould I also update the docs?\n\n${LINK}claude%3Aa`,
-      `[2] Codex stopped: rate limited.\n\n${LINK}codex%3Ab`,
+      `[1] Fixed the redirect.\n\nShould I also update the docs?\n${LINK}claude%3Aa`,
+      `[2] Codex stopped: rate limited.\n${LINK}codex%3Ab`,
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("texting", () => {
     const s = setup();
     await s.t.start();
     await s.open("claude:a", bash());
-    expect(s.texts[0]).toBe(`[1] Claude wants to run the tests. Safe? y/n\n\n${LINK}claude%3Aa`);
+    expect(s.texts[0]).toBe(`[1] Can I run the tests? y/n\n${LINK}claude%3Aa`);
     await s.hear({ text: "Y" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r1", { allow: true }]);
     expect(s.texts.length).toBe(1);
@@ -101,7 +101,7 @@ describe("texting", () => {
     await s.hear({ text: "why do you need watch off?" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r2", { allow: false, reason: "why do you need watch off?" }]);
     // A request's text always has the link (the full command is there); nothing back on the answer.
-    expect(s.texts.at(-1)).toBe(`[1] Claude wants to run the tests. Safe? y/n\n\n${LINK}claude%3Aa`);
+    expect(s.texts.at(-1)).toBe(`[1] Can I run the tests? y/n\n${LINK}claude%3Aa`);
     await s.open("claude:a", bash("r3"));
     await s.hear({ text: "n" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "r3", { allow: false }]);
@@ -111,7 +111,7 @@ describe("texting", () => {
     const s = setup();
     await s.t.start();
     await s.open("claude:a", { id: "p1", sessionId: "claude:a", kind: "approval", tool: "ExitPlanMode", plan: "# Plan\n1. Add a route\n2. Test it", openedAt: 1 });
-    expect(s.texts[0]).toBe(`[1] Claude has a plan to approve: Add a route. Approve? y, or say what to change.\n\n${LINK}claude%3Aa`);
+    expect(s.texts[0]).toBe(`[1] Can I go ahead with the plan to add a route? y/n\n${LINK}claude%3Aa`);
     await s.hear({ text: "1 what is the plan" });
     expect(s.answered.at(-1)).toEqual(["claude:a", "p1", { allow: false, reason: "what is the plan" }]);
     expect(s.texts.at(-1)).not.toContain("denied");
@@ -184,7 +184,7 @@ describe("texting", () => {
     await t.start();
     const asks = async (id: string) => (say(id, "Want me to commit?"), t.turnEnded(id));
     await asks("claude:a");
-    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n\n${LINK}claude%3Aa`);
+    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n${LINK}claude%3Aa`);
     clock.t += 60_000;
     await asks("claude:a");
     expect(texts.at(-1)).toBe("[1] Want me to commit?");
@@ -200,7 +200,7 @@ describe("texting", () => {
     expect(texts.at(-1)).toBe("[1] Committed.");
     // Not talking, and the time has passed: the link again.
     await asks("claude:a");
-    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n\n${LINK}claude%3Aa`);
+    expect(texts.at(-1)).toBe(`[1] Want me to commit?\n${LINK}claude%3Aa`);
   });
 
   test("Tether's own words: one casual sentence, never that something works, no acks", async () => {
@@ -326,7 +326,7 @@ describe("a reply to a request has exactly one effect", () => {
     await s.t.start();
     await s.t.turnEnded("codex:b", "boom");
     await s.open("claude:a", s.read());
-    expect(s.texts.at(-1)).toStartWith("[2] Claude wants to read web/src");
+    expect(s.texts.at(-1)).toStartWith("[2] Can I read web/src");
     await s.heard("[2] y");
     expect(s.answered).toEqual([["claude:a", "r1", { allow: true }]]);
     expect(s.told).toEqual([]);
@@ -352,7 +352,7 @@ describe("a reply to a request has exactly one effect", () => {
     await s.t.start();
     await s.t.turnEnded("codex:b", "boom");
     await s.open("claude:home2", s.read("r9", "claude:home2"));
-    expect(s.texts.at(-1)).toStartWith("[2] Claude wants to read");
+    expect(s.texts.at(-1)).toStartWith("[2] Can I read");
     // Answered in Tether: the request closes, the session goes on.
     s.close("claude:home2");
     s.t.settled("claude:home2");
@@ -507,7 +507,7 @@ describe("an agent texting the person (text_person)", () => {
     await t.start();
     const r = await t.personText("claude:a", "PR is up: https://github.com/x/y/pull/1");
     expect(r.isError).toBeUndefined();
-    expect(texts).toEqual([`[1] PR is up: https://github.com/x/y/pull/1\n\n${LINK}claude%3Aa`]);
+    expect(texts).toEqual([`[1] PR is up: https://github.com/x/y/pull/1\n${LINK}claude%3Aa`]);
     // A threaded reply, and a plain one, go back to that session as the person's words.
     await hear({ text: "merge it", replyTo: "m1" });
     await hear({ text: "and deploy" });
@@ -579,33 +579,33 @@ describe("request texts a person can read", () => {
     return s.texts[0]!;
   };
 
-  test("the incident: no raw command, no pasted warning; what it does in words, why it was flagged, y/n, the link", async () => {
+  /** The text without its link line. */
+  const line = (t: string) => t.split("\n")[0]!;
+
+  test("the incident: one plain question in the agent's voice, no command, no warning; the link on its own line", async () => {
     const text = await body(req({ command: LONG_RM, reason: DANGER }));
-    const words = text.split("\n\n")[0]!;
-    expect(words).toBe("[1] Claude wants to delete folders and remove the hide-checkin worktree (a temporary copy of the code), flagged because it deletes files. Safe? y/n");
-    expect(words).toContain("delete folders");
-    expect(words).toContain("hide-checkin");
-    expect(words).toContain("flagged because it deletes files");
-    expect(words).toEndWith("Safe? y/n");
-    for (const raw of ["rm -rf", "$W", "Dangerous", "possibly-empty", "git -C"]) expect(text).not.toContain(raw);
-    expect(words.length).toBeLessThanOrEqual(REQUEST_MAX + 4);
-    expect(text).toEndWith(`${LINK}claude%3Aa`);
+    expect(text).toBe(`[1] Can I clean up the hide-checkin worktree? y/n\n${LINK}claude%3Aa`);
+    for (const raw of ["rm -rf", "$W", "Dangerous", "possibly-empty", "git -C", "flagged"]) expect(text).not.toContain(raw);
   });
 
-  test("Claude's Bash description is the summary", async () => {
-    const text = await body(req({ command: LONG_RM, reason: DANGER, input: { command: LONG_RM, description: "Remove the hide-checkin worktree and its node_modules" } }));
-    expect(text.split("\n\n")[0]).toBe("[1] Claude wants to remove the hide-checkin worktree and its node_modules, flagged because it deletes files. Safe? y/n");
+  test("Claude's Bash description is the question", async () => {
+    const text = await body(req({ command: LONG_RM, reason: DANGER, input: { command: LONG_RM, description: "Run the jungle test suite" } }));
+    expect(line(text)).toBe("[1] Can I run the jungle test suite? y/n");
   });
 
-  test("a long description is capped", async () => {
+  test(`at most ${REQUEST_MAX} characters`, async () => {
     const text = await body(req({ command: "ls", input: { command: "ls", description: "Look ".repeat(100) } }));
-    expect(text.split("\n\n")[0]!.length).toBeLessThanOrEqual(REQUEST_MAX + 4);
+    expect(line(text).length).toBeLessThanOrEqual(REQUEST_MAX + 4);
+    expect(line(text)).toEndWith("…? y/n");
   });
 
-  test("other tools read plainly", async () => {
-    expect((await body(req({ tool: "Edit", toolKind: "edit", command: undefined, path: "/home/me/web/src/app.css" }))).split("\n\n")[0]).toBe("[1] Claude wants to edit src/app.css. Safe? y/n");
-    expect((await body(req({ tool: "WebFetch", toolKind: "fetch", input: { url: "https://docs.example.com/a/b?c" } }))).split("\n\n")[0]).toBe("[1] Claude wants to open docs.example.com. Safe? y/n");
-    expect((await body(req({ tool: "mcp__github__create_issue", toolKind: "other", input: { title: "x" } }))).split("\n\n")[0]).toBe("[1] Claude wants to use create issue (github). Safe? y/n");
+  test("other tools and plans ask the same way", async () => {
+    expect(line(await body(req({ command: "bun install && bun test" })))).toBe("[1] Can I install packages and run the tests? y/n");
+    expect(line(await body(req({ tool: "Edit", toolKind: "edit", command: undefined, path: "/home/me/web/src/app.css" })))).toBe("[1] Can I edit src/app.css? y/n");
+    expect(line(await body(req({ tool: "WebFetch", toolKind: "fetch", input: { url: "https://docs.example.com/a/b?c" } })))).toBe("[1] Can I open docs.example.com? y/n");
+    expect(line(await body(req({ tool: "mcp__github__create_issue", toolKind: "other", input: { title: "x" } })))).toBe("[1] Can I use create issue (github)? y/n");
+    expect(line(await body(req({ network: true, toolKind: undefined, tool: undefined })))).toBe("[1] Can I use the internet? y/n");
+    expect(line(await body(req({ tool: "ExitPlanMode", toolKind: undefined, plan: "# Plan\n1. Add a login route\n2. Test it" })))).toBe("[1] Can I go ahead with the plan to add a login route? y/n");
   });
 });
 
@@ -617,13 +617,5 @@ describe("summary.ts", () => {
     expect(commandWords("FOO=1 mytool --x")).toBe("run mytool");
     expect(commandWords("echo 'rm -rf /' | cat")).toBe("look at files");
     expect(commandWords("sudo systemctl restart nginx")).toBe("run something as admin and restart a service");
-  });
-  test("flagWords: known warnings in plain words; anything else is left out, never pasted", () => {
-    expect(flagWords("Dangerous rm operation on possibly-empty variable path")).toBe("it deletes files");
-    expect(flagWords("This command uses shell operators that require approval")).toBe("it's a complex command");
-    expect(flagWords("Command contains command substitution $()")).toBe("it's a complex command");
-    expect(flagWords("Path is outside the allowed working directories")).toBe("it reaches outside the project folder");
-    expect(flagWords("Something we've never seen")).toBeUndefined();
-    expect(flagWords(undefined)).toBeUndefined();
   });
 });
