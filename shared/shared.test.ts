@@ -47,6 +47,10 @@ describe("wire", () => {
     const runner = { id: "u1", name: "box", hostname: "box.local", version: "0.2.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1" }, { id: "pi", version: "1" }, { id: "toString", version: "1" }] };
     expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner }))).toEqual({ t: "hello", runner: { ...runner, harnesses: [{ id: "claude", version: "2.1" }] } });
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, name: undefined } })) as any).runner.name).toBe("box.local");
+    // The Home agent's folder passes when it's an absolute path, and is dropped otherwise.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "/home/me/.config/tether/home" } })) as any).runner.homeFolder).toBe("/home/me/.config/tether/home");
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: 3 } })) as any).runner.homeFolder).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "rel" } })) as any).runner.homeFolder).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });

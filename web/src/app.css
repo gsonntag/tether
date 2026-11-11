@@ -2616,3 +2616,26 @@
   cursor: pointer;
 }
 .t-fallback-actions button:disabled { opacity: .4; cursor: default; }
+
+/* Home's chat with the Home agent (HomeChat.tsx). */
+.t-home-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.t-home-chat > .t-composer {
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius-element, 8px);
+  padding: 10px 12px;
+}
+.t-home-chat-box.t-session {
+  height: min(62vh, 640px);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius-element, 8px);
+  overflow: hidden;
+}
+.t-home-chat-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -4px;
+}

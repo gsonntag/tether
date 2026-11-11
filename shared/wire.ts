@@ -49,7 +49,8 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   // Unknown harnesses (a newer runner) are left out rather than refusing the runner.
   const harnesses = v.harnesses.map(parseHarness).filter((h): h is HarnessInfo => !!h);
   const name = typeof v.name === "string" && v.name.trim() ? v.name : v.hostname || v.id;
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses };
+  const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

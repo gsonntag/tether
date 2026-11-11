@@ -17,6 +17,7 @@ import { folderName, inbox, waitingOn, type InboxKind, type InboxRow } from "../
 import { disablePush, enablePush, pushState, testPush, type PushState } from "../push";
 import { BillingMarker, HarnessGlyph, shortAgo } from "./SessionRow";
 import { forgetRunner, useStore } from "../store";
+import { HomeChat } from "./HomeChat";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
 
@@ -31,6 +32,10 @@ export function Home() {
       content={
         <LayoutContent padding={6}>
           <VStack gap={6}>
+            <VStack gap={3}>
+              <Heading level={1}>Home</Heading>
+              <HomeChat />
+            </VStack>
             <Inbox />
             <VStack gap={4}>
               <Heading level={2}>Runners</Heading>
@@ -70,7 +75,7 @@ function Inbox() {
   return (
     <VStack gap={3}>
       <div className="t-inbox-head">
-        <Heading level={1}>Home</Heading>
+        <Heading level={2}>Sessions</Heading>
         {unread.length > 1 && <Button label="Mark all read" size="sm" variant="ghost" onClick={() => unread.forEach(markRead)} />}
       </div>
       {rows.length === 0 ? (

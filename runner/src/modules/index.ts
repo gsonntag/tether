@@ -7,7 +7,8 @@ import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
-import type { HarnessId, LiveState, Msg, RunStatus, SessionSummary } from "../../../shared/transcript";
+import type { HarnessId, LiveState, Msg, ProjectInfo, RunStatus, SessionSummary } from "../../../shared/transcript";
+import { homeAgentModule } from "./homeAgent";
 import { moveModule } from "./move";
 import { pushModule } from "./push";
 import { textingModule } from "./texting";
@@ -53,6 +54,17 @@ export interface SessionActions {
   deny(id: string, requestId: string, reason?: string): Promise<void>;
   /** a Tether notice, kept with the session */
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
+  /** the folders with sessions (the lists' projects), newest activity first */
+  projects(): Promise<ProjectInfo[]>;
+  /** an existing folder for a new session, expanded; throws when there's none */
+  folder(path: string): string;
+  /** a message from Tether through the session's queue: now when it's idle, else after its turn */
+  queue(id: string, text: string): Promise<void>;
+  /** the newest `limit` messages of its transcript */
+  recent(id: string, limit: number): Promise<Msg[]>;
+  rename(id: string, title: string): Promise<void>;
+  /** stops its running turn */
+  interrupt(id: string): Promise<void>;
 }
 
 export interface ModuleContext {
@@ -72,6 +84,8 @@ export interface ModuleContext {
   appUrl: string;
   /** where attachments are kept (CONFIG_DIR/attachments) */
   attachmentsDir?: string;
+  /** the Home agent's folder (RunnerOptions.homeFolder); its sessions are left out of the lists */
+  homeFolder?: string;
 }
 
 export interface Module {
@@ -81,7 +95,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

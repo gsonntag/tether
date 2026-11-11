@@ -7,7 +7,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, mergeRows, recentSessions, waitingOn, type Row } from "../sessionList";
+import { folderName, isHomeChat, mergeRows, recentSessions, waitingOn, type Row } from "../sessionList";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
@@ -71,7 +71,7 @@ export function Sidebar() {
   const rows = useMemo(() => {
     let list = recentSessions(summaries, q);
     if (filter) list = list.filter((r) => r.projectPath === filter);
-    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => !r.parentSessionId && (!r.archived || !!q)), list);
+    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => !r.parentSessionId && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath)), list);
     return list;
   }, [summaries, q, filter, extra, extraKey]);
 
