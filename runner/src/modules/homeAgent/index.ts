@@ -23,18 +23,27 @@
 // (homeAgentClose; `/new` or `/clear` in it) archives that chat: it's stopped if it runs and lets go
 // of the sessions it started (they keep going on their own, in the lists). Every change of the tabs
 // or of `current` is broadcast, so each device's Home follows. Settings are one for all chats.
+//
+// The person can text it over iMessage (texting module, through homeLine.ts): their texts go to one
+// tab, "Texts" (made when the first text comes, again if it was closed), marked as texted. Unless
+// they turn "Reply by text" off, that chat's answer to a text goes back as a short text, and so does
+// its answer to a finished-turn report from a session it started (the outcome: done with a link, or
+// what it needs); a turn that only kept a session going, a watch report, a "waiting for the person"
+// report (Tether texts the request itself) and tool calls aren't texted.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
-import { FROM_TETHER, fromTether } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, fromTether } from "../../../../shared/fromTether";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
+import type { HomeEnd } from "../homeLine";
+import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, verify, type Git } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
@@ -114,7 +123,26 @@ interface State {
   lastCheckIn?: CheckInStatus["last"];
   /** "Watch all sessions"; none: on */
   watchAll?: boolean;
+  /** the tab the person's texts go to ("Texts"), once one came */
+  texts?: string;
+  /** "Reply by text"; none: on */
+  replyByText?: boolean;
 }
+
+/** What started the Texts chat's turn, and so whether its answer is texted. */
+interface TextTurn {
+  /** text: the person texted; report: a texted-work report; quiet: anything else (not texted) */
+  kind: "text" | "report" | "quiet";
+  /** its last words this turn */
+  said?: string;
+  /** it messaged a session this turn (keeping it going): a report's answer then isn't texted */
+  nudged?: boolean;
+}
+
+/** A report whose answer goes back by text carries this line, for the agent and to tell it apart. */
+export const TEXTED = "(Your reply to this report is texted to the person.)";
+/** The Texts tab's title. */
+export const TEXTS_TITLE = "Texts";
 
 /** What a watched session did, for the next watch report. */
 interface Watched {
@@ -137,7 +165,8 @@ export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to yo
 
 How to work:
 - Find the project with list_projects. Use project_overview when you need to know more about one. If more than one project could be meant, ask the person which in one short question. Never guess.
-- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, etc. only if they asked for it). Tell it to work autonomously to completion without stopping to ask for confirmation, and to verify its work before finishing. The session runs with full permissions.
+- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously to completion without stopping to ask for confirmation, and to verify its work before finishing. The session runs with full permissions.
+- The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction earlier in this chat (for example "when any PR comes back, merge it and restart"), first ask one short question about the end goal, like "PR, merge + deploy, or just local changes?", then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it.
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
 - For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status.
 - You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person, archived, or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
@@ -147,6 +176,7 @@ How to work:
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - Use archive_session only when the person asks to archive a specific session (for example one the check-in kept). Never archive on your own judgment.
 - Never do the coding yourself. You have no shell and can't edit files.
+- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -259,8 +289,12 @@ async function overview(folder: string): Promise<string> {
   return out.join("\n\n");
 }
 
-export class HomeAgent {
+export class HomeAgent implements HomeEnd {
   state: State = { rev: 0, tabs: [], children: {} };
+  /** the Texts chat's turn now */
+  private textTurn?: TextTurn;
+  /** the Texts tab being made (two texts at once make one) */
+  private makingTexts?: Promise<string>;
   private file: string;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** a button check-in being started (it awaits git before it's saved): a second press waits for it */
@@ -294,6 +328,8 @@ export class HomeAgent {
           checkIns: v.checkIns && typeof v.checkIns === "object" ? v.checkIns : {},
           ...(v.lastCheckIn && typeof v.lastCheckIn === "object" ? { lastCheckIn: v.lastCheckIn } : {}),
           ...(v.watchAll === false ? { watchAll: false } : {}),
+          ...(typeof v.texts === "string" && v.texts ? { texts: v.texts } : {}),
+          ...(v.replyByText === false ? { replyByText: false } : {}),
         };
       }
     } catch {}
@@ -324,6 +360,76 @@ export class HomeAgent {
     }
     const following = Object.entries(this.state.children).flatMap(([id, c]) => (c.released ? [] : [id]));
     return { watchAll: this.state.watchAll !== false, following };
+  }
+
+  /** "Reply by text" (default on); `on` changes it. */
+  replyByText(on?: unknown): { replyByText: boolean } {
+    if (typeof on === "boolean") {
+      if (on) delete this.state.replyByText;
+      else this.state.replyByText = false;
+      this.save();
+    }
+    return { replyByText: this.state.replyByText !== false };
+  }
+
+  // ── texts (homeLine.ts) ──
+
+  isTextsChat(id: string): boolean {
+    return !!this.state.texts && this.state.texts === id;
+  }
+
+  /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs. */
+  async take(text: string): Promise<void> {
+    const chat = await this.textsChat();
+    await this.ctx.sessions.queue(chat, FROM_IMESSAGE + text);
+  }
+
+  /** The Texts tab: the one texts went to, else a new one (current once a text lands in it). */
+  private async textsChat(): Promise<string> {
+    const id = this.state.texts;
+    if (id && this.state.tabs.includes(id)) {
+      const at = await this.follow(id).catch(() => undefined);
+      if (at) return at;
+    }
+    this.makingTexts ??= (async () => {
+      const { harness, source, model, mode } = await this.settings();
+      const permissionMode = await this.modeFor(harness, mode);
+      const chat = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
+      await this.ctx.sessions.rename(chat, TEXTS_TITLE).catch(() => {});
+      this.state.texts = chat;
+      this.state.tabs.push(chat);
+      this.announce();
+      return chat;
+    })().finally(() => (this.makingTexts = undefined));
+    return this.makingTexts;
+  }
+
+  /** What the Texts chat hears and says this turn (the message event). */
+  private textsMessage(msg: Msg) {
+    const t = (this.textTurn ??= { kind: "quiet" });
+    if (msg.role === "assistant") {
+      const said = text(msg);
+      if (said) t.said = said;
+      return;
+    }
+    if (msg.role !== "user") return;
+    const raw = text(msg);
+    const texted = msg.origin?.kind === "imessage" || (!msg.origin && raw.startsWith(FROM_IMESSAGE));
+    const report = (msg.origin?.kind === "tether" || (!msg.origin && raw.startsWith(FROM_TETHER))) && raw.includes(TEXTED);
+    if (texted) t.kind = "text";
+    else if (report && t.kind === "quiet") t.kind = "report";
+  }
+
+  /** The Texts chat's turn ended: its answer goes back by text when the turn was a text's or a texted-work report's. */
+  private async textsTurnEnded(error?: string, stopped?: boolean) {
+    const t = this.textTurn;
+    this.textTurn = undefined;
+    const phone = this.ctx.homeLine?.phone;
+    if (!t || t.kind === "quiet" || stopped || !phone || this.state.replyByText === false) return;
+    if (t.kind === "report" && t.nudged && !error) return;
+    const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
+    if (!words) return;
+    await phone.send(words).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
   /**
@@ -469,6 +575,7 @@ export class HomeAgent {
     const tabs = this.state.tabs.map((t) => (t === from ? to : t));
     this.state.tabs = tabs.filter((t, i) => tabs.indexOf(t) === i);
     if (this.state.current === from) this.state.current = to;
+    if (this.state.texts === from) this.state.texts = to;
     this.announce();
   }
 
@@ -590,6 +697,8 @@ export class HomeAgent {
     if (look && look.status !== "idle") await this.ctx.sessions.interrupt(old).catch((e) => this.ctx.log(`couldn't stop ${old}: ${(e as Error).message}`));
     this.state.tabs = this.state.tabs.filter((t) => t !== old);
     if (this.state.current === old) this.state.current = this.state.tabs.at(-1);
+    // The next text makes a new Texts tab.
+    if (this.state.texts === old) delete this.state.texts;
     const rev = this.announce();
     // Nothing stored yet (never sent to): there's nothing to archive.
     if (look || (await this.ctx.sessions.open(old).catch(() => undefined))) await this.ctx.sessions.setArchived(old, true).catch((e) => this.ctx.log(`couldn't archive ${old}: ${(e as Error).message}`));
@@ -774,7 +883,11 @@ export class HomeAgent {
         description:
           "Sends a message to any session (an id from list_sessions or start_session), whoever started it: it goes now if the session is idle, else after its current turn. You get a report when that turn finishes, and you follow the session from then on. Refused for sessions that are archived, open in a terminal, or waiting for the person. Message a session you didn't start only when the person asks you to or their task needs it.",
         input: { session_id: z.string(), message: z.string().min(1) },
-        run: async (a: { session_id: string; message: string }) => this.message(chat, a.session_id, a.message),
+        run: async (a: { session_id: string; message: string }) => {
+          const said = await this.message(chat, a.session_id, a.message);
+          if (this.isTextsChat(chat) && this.textTurn) this.textTurn.nudged = true;
+          return said;
+        },
       },
     ];
   }
@@ -816,6 +929,11 @@ export class HomeAgent {
       // No shell, no edits, nothing from the network, no subagents: the sessions it starts do the work.
       deny: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
     };
+  }
+
+  /** Whether a chat's answers to its reports go back by text: it's the Texts tab and "Reply by text" is on. */
+  private texted(chat: string) {
+    return this.isTextsChat(chat) && this.state.replyByText !== false && !!this.ctx.homeLine?.phone;
   }
 
   /** Tells a chat about one of its sessions, through its queue (after its own turn, if one runs). */
@@ -1028,6 +1146,7 @@ export class HomeAgent {
       ...kept.map(line),
       ...(skipped.length ? [`Not asked (${skipped.length}):`, ...skipped.map(line)] : []),
       "Give the person a short summary: which were archived, and which weren't and why.",
+      ...(this.texted(b.chat) ? [TEXTED] : []),
     ].join("\n");
     try {
       await this.ctx.sessions.queue(b.chat, FROM_TETHER + body);
@@ -1037,6 +1156,7 @@ export class HomeAgent {
   }
 
   async turnEnded(id: string, error?: string, stopped?: boolean) {
+    if (this.isTextsChat(id)) return this.textsTurnEnded(error, stopped);
     // A check-in's answer isn't one of the session's reports.
     const w = this.waiting(id);
     if (w) return this.answered(w[0], id, error, stopped);
@@ -1061,6 +1181,7 @@ export class HomeAgent {
       last
         ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you've stopped following this session and can't message it any more. Tell the person where it stands in one casual sentence.`
         : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done, or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,
+      ...(this.texted(c.chat) ? [TEXTED] : []),
     ];
     await this.report(id, c, lines.join("\n\n"));
   }
@@ -1100,6 +1221,7 @@ export class HomeAgent {
    * in starts the agent's turn. The person writing in a chat makes it the one watch reports go to.
    */
   personSpoke(id: string, msg: Msg) {
+    if (this.isTextsChat(id)) this.textsMessage(msg);
     if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER)) && this.state.tabs.includes(id)) this.touched(id);
     const c = this.state.children[id];
     if (!c || c.released || msg.role !== "user") return;
@@ -1134,6 +1256,8 @@ export const homeAgentModule: Module = {
     });
     ctx.ops.register("homeAgentSet", (a) => agent.set(a));
     ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));
+    ctx.ops.register("homeAgentReplyByText", (a) => agent.replyByText((a as { on?: unknown } | undefined)?.on));
+    if (ctx.homeLine) ctx.homeLine.home = agent;
     ctx.ops.register("homeAgentCheckIn", (a) => agent.checkInFromHome((a ?? {}) as { start?: boolean; dismiss?: boolean }));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.close());
@@ -1148,6 +1272,7 @@ export const homeAgentModule: Module = {
       ctx.bus.on("attention", ({ sessionId, message }) => void agent.needsPerson(sessionId, message || "in its terminal")),
     ];
     return () => {
+      if (ctx.homeLine?.home === agent) ctx.homeLine.home = undefined;
       agent.stop();
       unset();
       offs.forEach((off) => off?.());

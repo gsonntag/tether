@@ -371,6 +371,14 @@
   padding: 10px 0;
   min-width: 0;
 }
+/* A message the person texted (iMessage) to the Home agent: their bubble, with a small label over it. */
+.t-msg.user .t-via {
+  margin-left: auto;
+  width: fit-content;
+  font-size: 11px;
+  color: var(--t-muted);
+  padding: 0 4px 3px;
+}
 .t-msg.user .t-bubble {
   background: var(--t-soft);
   border: 1px solid var(--t-border);

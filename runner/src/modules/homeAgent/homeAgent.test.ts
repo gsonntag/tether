@@ -5,14 +5,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_TETHER } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { HomeLine } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ago, HomeAgent, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
+import { ago, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
@@ -33,7 +34,7 @@ async function until(f: () => boolean, ms = 3000) {
   }
 }
 
-async function setup(o: { anthropicKey?: boolean } = {}) {
+async function setup(o: { anthropicKey?: boolean; homeLine?: HomeLine } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tether-home-"));
   stops.push(() => rmSync(dir, { recursive: true, force: true }));
   const homeFolder = join(dir, "home");
@@ -50,7 +51,7 @@ async function setup(o: { anthropicKey?: boolean } = {}) {
   stops.push(() => runner.core.stop());
   mkdirSync(join(dir, "data"));
   const announced: HomeChatUpdate[] = [];
-  const stop = await homeAgentModule.start({ bus: runner.bus, ops: runner.ops, dataDir: join(dir, "data"), log: () => {}, runnerId: "t", appUrl: "http://x", ...runner.look, announceHomeChat: (u: HomeChatUpdate) => announced.push(u) } as any);
+  const stop = await homeAgentModule.start({ bus: runner.bus, ops: runner.ops, dataDir: join(dir, "data"), log: () => {}, runnerId: "t", appUrl: "http://x", ...runner.look, homeLine: o.homeLine, announceHomeChat: (u: HomeChatUpdate) => announced.push(u) } as any);
   if (stop) stops.push(stop);
   const op = async (name: string, args: unknown = {}): Promise<any> => {
     const r = await runner.ops.handle(name, args);
@@ -791,4 +792,167 @@ test("the Watch all sessions toggle is on by default, kept, and off means no wat
   await op("send", { sessionId: a, text: "more" });
   await until(() => driverOf(chat)!.sent.length === 2);
   expect(driverOf(chat)!.sent[1]).toContain(`- ${a} "task a"`);
+});
+
+test("the prompt: one short end-goal question before a code change, unless done is already clear", () => {
+  expect(INSTRUCTIONS).toContain(`before starting a session that changes code, know what "done" means for it`);
+  expect(INSTRUCTIONS).toContain(`"PR, merge + deploy, or just local changes?"`);
+  // Not when the chat already says (a standing instruction) or it's clear from context.
+  expect(INSTRUCTIONS).toContain("it isn't clear from context or from a standing instruction earlier in this chat");
+  expect(INSTRUCTIONS).toContain(`"when any PR comes back, merge it and restart"`);
+  // One question, not a questionnaire; not for read-only work.
+  expect(INSTRUCTIONS).toContain("One quick question, never a list of them.");
+  expect(INSTRUCTIONS).toContain("Research, questions and other read-only tasks don't need it.");
+  // Before it starts: the rule comes ahead of the reply after starting one.
+  expect(INSTRUCTIONS.indexOf("The end goal:")).toBeLessThan(INSTRUCTIONS.indexOf("After starting a session"));
+  // Texts: a few words back, and a texted report's outcome only.
+  expect(INSTRUCTIONS).toContain(`a message starting with "[From iMessage]" is the person texting you`);
+  expect(INSTRUCTIONS).toContain(`"ok, on it"`);
+  expect(INSTRUCTIONS).toContain(TEXTED);
+});
+
+test("the iMessage marker: the person's own words, shown as texted", () => {
+  expect(tetherOrigin(`${FROM_IMESSAGE}start the login fix`)).toEqual({ origin: { kind: "imessage" }, text: "start the login fix" });
+  expect(titleText(`${FROM_IMESSAGE}start the login fix`)).toBe("start the login fix");
+});
+
+/** A Home agent on a line whose phone end keeps what it texts. */
+async function texting() {
+  const line = new HomeLine();
+  const sent: string[] = [];
+  line.phone = { send: async (t) => (sent.push(t), true) };
+  const t = await setup({ homeLine: line });
+  const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
+  return { ...t, line, sent, textsTab };
+}
+
+test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
+  const { line, sent, op, runner, driverOf, textsTab, chat } = await texting();
+  expect(line.home).toBeDefined();
+  await line.home!.take("start the login fix in project");
+  const texts = await textsTab();
+  expect(texts).toBeDefined();
+  expect(texts).not.toBe(chat);
+  expect(line.home!.isTextsChat(texts)).toBe(true);
+  expect(line.home!.isTextsChat(chat)).toBe(false);
+  await until(() => sent.length === 1);
+  expect(driverOf(texts)!.sent[0]).toBe(`${FROM_IMESSAGE}start the login fix in project`);
+  // The fake agent echoes what it got: that's its reply, texted back.
+  expect(sent[0]).toBe(`echo ${FROM_IMESSAGE}start the login fix in project`);
+  // The person wrote there: it's current, so its tab shows.
+  expect((await op("homeAgent")).sessionId).toBe(texts);
+  // The next text goes to the same tab.
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await line.home!.take("thanks");
+  await until(() => sent.length === 2);
+  expect(await textsTab()).toBe(texts);
+  expect(driverOf(texts)!.sent[1]).toBe(`${FROM_IMESSAGE}thanks`);
+  // Typed in Tether, in the same tab: the reply stays in Tether.
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await op("send", { sessionId: texts, text: "typed here" });
+  await until(() => driverOf(texts)!.sent.length === 3 && runner.core.sessions.get(texts)?.state.status === "idle");
+  await Bun.sleep(50);
+  expect(sent.length).toBe(2);
+});
+
+test("texted work: a finished-turn report's outcome goes back by text, a turn that only keeps it going doesn't", async () => {
+  const { line, sent, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  await line.home!.take("fix the tests in project");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  const child = /session (\S+) in/.exec(await tools(texts).start_session!({ project_path: project, prompt: "Fix the failing tests." }))![1]!;
+  // Report 1: marked as texted, and its answer is texted.
+  await until(() => sent.length === 2);
+  const report1 = driverOf(texts)!.sent[1]!;
+  expect(report1.startsWith(FROM_TETHER)).toBe(true);
+  expect(report1).toContain(TEXTED);
+  expect(sent[1]).toContain("Report 1 of");
+  // Report 2: the agent keeps the session going (send_to_session): not texted. Report 3 is.
+  let nudges = 0;
+  const plain = fake.script;
+  fake.script = (text) =>
+    text.includes(TEXTED) && text.includes("Report 2 of") && !nudges++
+      ? [async () => void (await tools(texts).send_to_session!({ session_id: child, message: "Run them again." })), ...plain(text)]
+      : plain(text);
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await tools(texts).send_to_session!({ session_id: child, message: "Once more." });
+  await until(() => driverOf(texts)!.sent.some((t) => t.includes("Report 3 of")) && runner.core.sessions.get(texts)?.state.status === "idle");
+  await until(() => sent.length === 3);
+  await Bun.sleep(50);
+  expect(nudges).toBe(1);
+  expect(sent.length).toBe(3);
+  expect(sent[2]).toContain("Report 3 of");
+  expect(sent.some((t) => t.includes("Report 2 of"))).toBe(false);
+});
+
+test("reports to another tab, and watch reports in the Texts tab, aren't texted", async () => {
+  WATCH.quietMs = 30;
+  WATCH.maxMs = 200;
+  const t = await texting();
+  const { line, sent, runner, driverOf, textsTab, tools, project, op, chat } = t;
+  // Another tab's session: its report isn't marked, and nothing is texted.
+  await op("send", { sessionId: chat, text: "hi" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && !!driverOf(chat));
+  await tools(chat).start_session!({ project_path: project, prompt: "Other work." });
+  await until(() => driverOf(chat)!.sent.length === 2 && runner.core.sessions.get(chat)?.state.status === "idle");
+  expect(driverOf(chat)!.sent[1]).toContain("Report 1 of");
+  expect(driverOf(chat)!.sent[1]).not.toContain(TEXTED);
+  // The person texts: the Texts tab is current, so a watched session's news goes there, untexted.
+  await line.home!.take("hi");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  const watched = await personSession(t, "my own work");
+  await op("send", { sessionId: watched, text: "on my own" });
+  await until(() => driverOf(texts)!.sent.length === 2 && runner.core.sessions.get(texts)?.state.status === "idle");
+  expect(driverOf(texts)!.sent[1]).toContain("Sessions you didn't start");
+  await Bun.sleep(50);
+  expect(sent).toEqual([`echo ${FROM_IMESSAGE}hi`]);
+});
+
+test("Reply by text: on by default, kept, and off means nothing is texted", async () => {
+  const { line, sent, op, runner, driverOf, textsTab, tools, project, dataDir } = await texting();
+  expect(await op("homeAgentReplyByText", {})).toEqual({ replyByText: true });
+  expect(await op("homeAgentReplyByText", { on: false })).toEqual({ replyByText: false });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).replyByText).toBe(false);
+  await line.home!.take("start x in project");
+  const texts = await textsTab();
+  await until(() => driverOf(texts)?.sent.length === 1 && runner.core.sessions.get(texts)?.state.status === "idle");
+  await tools(texts).start_session!({ project_path: project, prompt: "Do x." });
+  await until(() => driverOf(texts)!.sent.length === 2 && runner.core.sessions.get(texts)?.state.status === "idle");
+  // Its reports aren't marked either.
+  expect(driverOf(texts)!.sent[1]).not.toContain(TEXTED);
+  await Bun.sleep(50);
+  expect(sent).toEqual([]);
+  // On again: the next text's reply goes back.
+  expect(await op("homeAgentReplyByText", { on: true })).toEqual({ replyByText: true });
+  await line.home!.take("thanks");
+  await until(() => sent.length === 1);
+  expect(sent[0]).toBe(`echo ${FROM_IMESSAGE}thanks`);
+});
+
+test("closing the Texts tab: the next text makes a new one", async () => {
+  const { line, sent, op, runner, textsTab, dataDir } = await texting();
+  await line.home!.take("one");
+  await until(() => sent.length === 1);
+  const first = await textsTab();
+  await until(() => runner.core.sessions.get(first)?.state.status === "idle");
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).texts).toBe(first);
+  await op("homeAgentClose", { sessionId: first });
+  expect(line.home!.isTextsChat(first)).toBe(false);
+  await line.home!.take("two");
+  await until(() => sent.length === 2);
+  const second = await textsTab();
+  expect(second).not.toBe(first);
+  expect(line.home!.isTextsChat(second)).toBe(true);
+});
+
+test("a failed turn on a text is texted briefly", async () => {
+  const { line, sent, fake } = await texting();
+  const plain = fake.script;
+  fake.script = (text) => (text.includes("boom") ? [async (sink) => sink.state({ status: "idle", error: "429 rate_limit_error" } as any)] : plain(text));
+  await line.home!.take("boom");
+  await until(() => sent.length === 1);
+  expect(sent[0]).toBe("Couldn't do that: rate limited.");
 });

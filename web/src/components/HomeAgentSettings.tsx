@@ -13,7 +13,7 @@ import { rpc } from "../connection";
 import { loadModels, modelListKey, useStore } from "../store";
 import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
-import { WatchAllToggle } from "./HomeAgentWatch";
+import { ReplyByTextToggle, WatchAllToggle } from "./HomeAgentWatch";
 
 type Changed = { sessionId?: string; settings: HomeAgentSettings; rev: number };
 
@@ -84,6 +84,7 @@ export function HomeAgentPickers({ runnerId, sessionId, settings, harnesses, onC
       )}
       <ChoiceMenu name="Mode" value={mode} label={permissionModeLabel(mode)} disabled={disabled} choices={models?.permissionModes ?? []} onOpen={ensureModels} onPick={(m) => m !== mode && void apply({ mode: m })} />
       <WatchAllToggle runnerId={runnerId} />
+      <ReplyByTextToggle runnerId={runnerId} />
     </div>
   );
 }

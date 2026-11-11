@@ -1248,6 +1248,48 @@ person's own message (`live.tell`, defanged). A reply passed on gets a ✅ react
 person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
+*Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
+in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
+with `[home]`, like a session's `[n]`, and their ids are published with Tether's others, so textme
+leaves threaded replies to them alone. Who a reply belongs to, in order:
+1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
+   session (a request's text answers only that request, #66), a `[home]` text goes to the Home
+   agent, and a textme's text goes to that textme.
+2. A waiting textme's `[tag]` belongs to that textme.
+3. If a textme texted after Tether did, anything else (except `n text` for an open session) is
+   that textme's. This includes `home: …`, because textme's rule can't tell `home:` apart and a
+   reply must be taken exactly once.
+4. `home: …`, `home, …`, `@home …` or `[home] …` goes to the Home agent. Just `home` sends a held
+   text there, or aims the next one.
+5. `n text` (and just `n`) goes to session n, as before.
+6. Plain text goes to the Home agent when Tether's last text was a Home text or no session is open.
+   Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
+   `home:` row.
+
+A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
+to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It
+arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts`; the chat shows it
+as theirs, labelled "via iMessage") and becomes the current tab.
+
+With **Reply by text** on (a Home agent setting next to Watch all sessions, default on), the Texts
+tab's last words go back as a `[home]` text, at most 600 characters, after:
+- a turn started by a text: mostly an acknowledgement ("ok, on it", "started X in web-coder") or
+  the one question it needs answered;
+- a finished-turn report from a session that tab started or messaged: the outcome ("done: <PR
+  link>", or what it needs). The report carries a line telling the agent its reply is texted. A
+  report turn where it only kept the session going (send_to_session) isn't texted.
+
+A failed text turn is texted as "Couldn't do that: <kind>." Not texted: tool calls, watch reports,
+check-ins not from the Texts tab, "waiting for the person" reports (Tether already texts the
+session's request itself), and anything typed in Tether. The Texts tab's own turn ends aren't
+texted as a session's.
+
+*The Home agent's end goal.* Before it starts a session that changes code, the Home agent knows
+what "done" is: a PR, merge and deploy, or only local changes. If the person hasn't said, and
+neither the context nor a standing instruction earlier in the chat says it ("when any PR comes
+back, merge it and restart"), it asks one short question first. It never asks a list. Research and
+read-only tasks skip this.
+
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
 runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
 for a running turn, obeying holds and limits). The ❯_ button opens a project shell beside the live

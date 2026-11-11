@@ -10,6 +10,7 @@ import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
+import type { HomeLine } from "./homeLine";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
@@ -94,6 +95,8 @@ export interface ModuleContext {
   homeFolder?: string;
   /** tells every browser the Home agent's current chat changed (dropped while disconnected: browsers ask again on reconnect) */
   announceHomeChat?: (u: HomeChatUpdate) => void;
+  /** texting ↔ the Home agent (homeLine.ts): one for the whole runner */
+  homeLine?: HomeLine;
 }
 
 export interface Module {

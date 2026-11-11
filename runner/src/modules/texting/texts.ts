@@ -49,6 +49,13 @@ export const TEXTS = {
   which: "Which session, by number?",
   notWaiting: (n: number) => `[${n}] isn't waiting on a reply, which one did you mean?`,
   whatToSend: (n: number) => `What should I send to [${n}]?`,
+  whatToSendHome: "What should I send to the Home agent?",
+  /** a picker's last row: plain words can go to the Home agent */
+  homeRow: "home: the Home agent",
+  /** "home: ..." on a runner without a Home agent */
+  noHome: "The Home agent isn't running on this runner.",
+  /** the Home agent's chat failed on something the person texted */
+  homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

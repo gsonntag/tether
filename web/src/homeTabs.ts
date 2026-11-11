@@ -3,7 +3,7 @@
 // message starts one.
 
 import type { SessionSummary } from "../../shared/transcript";
-import { fromTether } from "../../shared/fromTether";
+import { fromImessage, fromTether } from "../../shared/fromTether";
 
 export const NEW = "new";
 
@@ -49,7 +49,7 @@ export function afterClose(chats: string[], closed: string): string {
 
 /** A tab's name: its chat's title (the first message, or as renamed), on one line. */
 export function tabLabel(title: string | undefined): string {
-  const t = (title ? (fromTether(title) ?? title) : "").replace(/\s+/g, " ").trim();
+  const t = (title ? (fromTether(title) ?? fromImessage(title) ?? title) : "").replace(/\s+/g, " ").trim();
   // A session's name before its first message gives it one.
   return t && t !== "Untitled" && t !== "New session" ? t : "New chat";
 }

@@ -11,7 +11,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { ChevronRightIcon, ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
-import { fromTether, undefang } from "../../../shared/fromTether";
+import { fromImessage, fromTether, undefang } from "../../../shared/fromTether";
 import { homeReport } from "../../../shared/homeReport";
 import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
@@ -175,7 +175,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
         ))}
       </HomeReportRow>
     );
-  if (msg.role === "user" && msg.origin) {
+  if (msg.role === "user" && msg.origin && msg.origin.kind !== "imessage") {
     // Not something you typed: another session's message, a channel, a report.
     // Another Tether session (SPEC §9a): by its title, with a way there.
     const from = msg.origin.kind === "session" ? msg.origin : undefined;
@@ -222,8 +222,11 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
     // the harness took as images show as images; the chips are for the other files.
     const files: Attachment[] = [];
     const hasImages = parts.some((p) => p.type === "image");
+    // Texted to the Home agent (shared/fromTether.ts FROM_IMESSAGE): the person's own words, marked.
+    const texted = msg.origin?.kind === "imessage" || parts.some((p) => p.type === "text" && fromImessage(p.text) !== undefined);
     const shownParts = parts.map((p) => {
       if (p.type !== "text") return p;
+      if (texted) return { ...p, text: fromImessage(p.text) ?? p.text };
       // What a person typed that began like one of Tether's own messages carries an invisible mark
       // (shared/fromTether.ts defang): never shown, never copied.
       const split = splitAttachments(undefang(p.text));
@@ -233,6 +236,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
     const chips = files.filter((f) => !(hasImages && isImageType(f.mimeType)));
     return (
       <div className="t-msg user">
+        {texted && <div className="t-via">via iMessage</div>}
         {shownParts.map((p, i) =>
           p.type === "text" ? (
             p.text ? (
