@@ -30,6 +30,7 @@ import { HOME, Router } from "./router";
 import { TextingStore } from "./store";
 import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
+import { replyForPeople } from "../../../../shared/checkIn";
 
 /** The reaction on a text Tether read and passed on to its session. */
 export const READ = "✅";
@@ -226,7 +227,8 @@ export class Texter {
   said(sessionId: string, msg: Msg) {
     if (msg.role !== "assistant") return;
     const text = msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n").trim();
-    if (text) this.lastSaid.set(sessionId, text);
+    // A check-in's answer line is Tether's to read, not the person's (shared/checkIn.ts).
+    if (text) this.lastSaid.set(sessionId, replyForPeople(text));
   }
 
   turnStarted(sessionId: string) {

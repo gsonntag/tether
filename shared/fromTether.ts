@@ -6,8 +6,29 @@ import { parseShellMessage } from "./shellRun";
 
 export const FROM_TETHER = "[From Tether] ";
 
+/**
+ * The Home agent's check-in (runner/src/modules/homeAgent/checkIn.ts) is marked with what it is:
+ * readers know it by this marker, not by its wording, and show it as one quiet line. It is one of
+ * Tether's messages like any other (fromTether reads it).
+ */
+export const FROM_TETHER_CHECKIN = "[From Tether: check-in] ";
+
+/** How check-ins began before they had their own marker: older history is known by its wording. */
+const OLD_CHECKIN = "Check-in from the Home agent:";
+
+/** What one of Tether's messages is for, when its marker says (or, in older history, its wording). */
+export type TetherPurpose = "checkIn";
+
 /** The text without the marker when it is one of Tether's messages, else undefined. */
-export const fromTether = (text: string): string | undefined => (text.startsWith(FROM_TETHER) ? text.slice(FROM_TETHER.length) : undefined);
+export const fromTether = (text: string): string | undefined =>
+  text.startsWith(FROM_TETHER) ? text.slice(FROM_TETHER.length) : text.startsWith(FROM_TETHER_CHECKIN) ? text.slice(FROM_TETHER_CHECKIN.length) : undefined;
+
+/** What one of Tether's messages is for: `checkIn` for the Home agent's check-in, else undefined. */
+export function tetherPurpose(text: string): TetherPurpose | undefined {
+  if (text.startsWith(FROM_TETHER_CHECKIN)) return "checkIn";
+  if (text.startsWith(FROM_TETHER) && text.slice(FROM_TETHER.length).startsWith(OLD_CHECKIN)) return "checkIn";
+  return undefined;
+}
 
 /**
  * The person's own words, texted to the Home agent over iMessage (runner/src/modules/texting), start
@@ -26,6 +47,8 @@ export interface TetherOrigin {
   sessionId?: string;
   /** a session's note to every session (tether_broadcast) */
   all?: boolean;
+  /** tether: what the message is for (shown as one quiet line, not as a message) */
+  purpose?: TetherPurpose;
 }
 
 /**
@@ -69,7 +92,10 @@ export function parseSessionMessage(text: string): { title: string; sessionId: s
  */
 export function tetherOrigin(text: string): { origin: TetherOrigin; text: string } | undefined {
   const t = fromTether(text);
-  if (t !== undefined) return { origin: { kind: "tether" }, text: t };
+  if (t !== undefined) {
+    const purpose = tetherPurpose(text);
+    return { origin: { kind: "tether", ...(purpose ? { purpose } : {}) }, text: t };
+  }
   const im = fromImessage(text);
   if (im !== undefined) return { origin: { kind: "imessage" }, text: im };
   const sh = parseShellMessage(text);

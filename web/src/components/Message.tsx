@@ -11,7 +11,8 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { ChevronRightIcon, ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
-import { fromImessage, fromTether, undefang } from "../../../shared/fromTether";
+import { FROM_TETHER, fromImessage, fromTether, tetherPurpose, undefang } from "../../../shared/fromTether";
+import { checkInStatus, parseAnswer, stripCheckIn } from "../../../shared/checkIn";
 import { homeReport } from "../../../shared/homeReport";
 import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
@@ -91,14 +92,15 @@ function Attached({ mimeType, data }: { mimeType: string; data: string }) {
 }
 
 /**
- * One of Tether's reports to the Home agent, in its chat: one quiet line, the full text (what the
- * agent got) when opened. Stays as left when the row is mounted again.
+ * One of Tether's reports to the Home agent, in its chat (or the Home agent's check-in, in the
+ * session it asks): one quiet line, the full text (what the agent got) when opened. Stays as left
+ * when the row is mounted again.
  */
-function HomeReportRow({ msg, summary, attention, children }: { msg: Msg; summary: string; attention: boolean; children: React.ReactNode }) {
+function HomeReportRow({ msg, summary, attention, what = "report", children }: { msg: Msg; summary: string; attention: boolean; what?: string; children: React.ReactNode }) {
   const [open, setOpen] = useRowState(`report:${msg.id}`, false);
   return (
     <div className={`t-msg t-home-report${attention ? " attention" : ""}`}>
-      <button type="button" className="t-home-report-line" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? "Hide the full report" : "Show the full report"}>
+      <button type="button" className="t-home-report-line" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? `Hide the full ${what}` : `Show the full ${what}`}>
         <span className="t-home-report-mark" aria-hidden>
           ↳
         </span>
@@ -117,6 +119,19 @@ function homeReportOf(msg: Msg) {
   if (msg.origin?.kind === "tether") return homeReport(text);
   if (!msg.origin && fromTether(text) !== undefined) return homeReport(text);
   return undefined;
+}
+
+/**
+ * The Home agent's check-in in the session it asks (shared/fromTether.ts FROM_TETHER_CHECKIN): by
+ * its origin, or by its marker or (older history) wording when it wasn't parsed into one.
+ */
+function isCheckIn(msg: Msg) {
+  if (msg.role !== "user") return false;
+  if (msg.origin?.purpose === "checkIn") return true;
+  if (msg.origin && msg.origin.kind !== "tether") return false;
+  const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+  // Not parsed: the marker is still there. Parsed (an older runner): the text is without it.
+  return tetherPurpose(text) === "checkIn" || (msg.origin?.kind === "tether" && tetherPurpose(FROM_TETHER + text) === "checkIn");
 }
 
 export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed?: boolean }) {
@@ -166,6 +181,14 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
   // A `!` command you ran, and the message that carried its output to the agent.
   if (msg.shell) return <ShellCard msg={msg} />;
   if (msg.role === "user" && msg.origin?.kind === "shell") return <ShellSent msg={msg} />;
+  if (isCheckIn(msg))
+    return (
+      <HomeReportRow msg={msg} summary="Home agent check-in" attention={false} what="check-in">
+        {parts.map((p, i) => (
+          <PartView key={i} rowKey={`${msg.id}:${i}`} part={p.type === "text" ? { ...p, text: fromTether(p.text) ?? p.text } : p} streaming={false} cut={cutFor(i)} root={projectPath} />
+        ))}
+      </HomeReportRow>
+    );
   const report = home ? homeReportOf(msg) : undefined;
   if (report)
     return (
@@ -269,12 +292,18 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
       </div>
     );
   }
+  // An answer to the Home agent's check-in: its machine line is Tether's to read; a status shows instead.
+  const answerText = parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+  const checkIn = stripCheckIn(answerText).found ? parseAnswer(answerText) : null;
+  const shown = checkIn === null ? parts : parts.map((p) => (p.type === "text" ? { ...p, text: stripCheckIn(p.text).text } : p));
+  const settled = !!checkIn && checkIn.done && (checkIn.merged || !!checkIn.nothingToMerge) && checkIn.cleanedUp !== false;
   return (
     <div className="t-msg assistant">
       <div className="t-parts">
-        {parts.map((p, i) => (
+        {shown.map((p, i) => (
           <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
+        {checkIn !== null && <div className={`t-checkin-status${settled ? " settled" : ""}`}>{checkInStatus(checkIn)}</div>}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
         {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
       </div>

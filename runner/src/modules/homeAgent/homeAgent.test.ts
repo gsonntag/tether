@@ -5,15 +5,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_IMESSAGE, FROM_TETHER, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import { HomeLine } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
-import type { SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import type { Msg, SessionSummary } from "../../../../shared/transcript";
+import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
@@ -299,6 +299,12 @@ test("clearing a chat that's working stops it", async () => {
   await until(() => runner.core.sessions.get(other)?.state.status === "idle" && !!driverOf(other));
   await op("homeAgentClear");
   expect(driverOf(other)!.interrupted).toBe(0);
+});
+
+test("lastReply shows a check-in answer as its status; lastRawReply keeps the line", () => {
+  const msgs: Msg[] = [{ id: "1", role: "assistant", ts: 1, parts: [{ type: "text", text: `All in.\n${ANSWER_TAG} {"done": true, "merged": false, "note": "PR #3 open"}` }] }];
+  expect(lastReply(msgs)).toBe("All in.\nCheck-in: done · not merged: PR #3 open");
+  expect(lastRawReply(msgs)).toContain(ANSWER_TAG);
 });
 
 test("lastReply is the newest assistant text", () => {
@@ -705,8 +711,18 @@ test("check_in_sessions asks idle sessions, archives the finished ones, skips bu
   expect(runner.core.sessions.get(finished)!.summary.archived).toBe(true);
   expect(runner.core.sessions.get(halfway)!.summary.archived).toBeUndefined();
   expect(runner.core.sessions.get(messy)!.summary.archived).toBeUndefined();
-  // Each asked session was told to clean up.
+  // Each asked session was told to clean up, under the check-in's own marker.
   expect(driverOf(finished)!.sent[1]).toContain("git worktree remove");
+  expect(driverOf(finished)!.sent[1]!.startsWith(FROM_TETHER_CHECKIN)).toBe(true);
+  // The answer line is Tether's: previews show its status, never the line.
+  const status = await tools(chat).session_status!({ session_id: halfway });
+  expect(status).toContain("Latest reply:\nCheck-in: not done: tests still failing");
+  expect(status).not.toContain(ANSWER_TAG);
+  expect(status).toContain("Latest prompt:\n(the Home agent's check-in: is the task done and merged?)");
+  expect(status).not.toContain("Don't start or continue any task work");
+  const listed = await tools(chat).list_sessions!({});
+  expect(listed).toContain("replied: Check-in: done · merged · not cleaned up: worktree has a stray build");
+  expect(listed).not.toContain(ANSWER_TAG);
   // Archived sessions aren't asked again.
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
   expect(await tools(chat).check_in_sessions!({ session_ids: [finished] })).toContain("No recent sessions");
@@ -786,18 +802,31 @@ test("Archive done sessions (homeAgentCheckIn) runs the check-in without a chat 
   };
   const done = await make("task a", `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "note": "PR merged"}`);
   const notDone = await make("task b", `${ANSWER_TAG} {"done": false, "merged": false, "note": "tests failing"}`);
+  // Still running something the person uses (a real listening port): kept for that, first. One whose
+  // port is closed now isn't running any more.
+  const live = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const gone = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const gonePort = gone.port;
+  gone.stop(true);
+  const serving = await make("task c", `${ANSWER_TAG} {"done": true, "merged": false, "running": "dev server (app :${live.port})", "note": "PR #377 still open"}`);
+  const stopped = await make("task d", `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "running": "dev server (app :${gonePort})", "note": "all in"}`);
 
   // Two presses at once start one check-in: each session is asked once.
   const [first] = await Promise.all([op("homeAgentCheckIn", { start: true }), op("homeAgentCheckIn", { start: true })]);
-  if (first.running) expect(first.running.asked).toBe(2);
-  await until(() => driverOf(done)!.sent.length === 2 && driverOf(notDone)!.sent.length === 2);
+  if (first.running) expect(first.running.asked).toBe(4);
+  await until(() => [done, notDone, serving, stopped].every((id) => driverOf(id)!.sent.length === 2));
   let status: any;
   await until(() => {
     void op("homeAgentCheckIn").then((r) => (status = r));
     return !!status && !status.running && status.last?.id !== empty.last.id;
   });
-  expect(status.last.archived).toEqual([{ id: done, title: "task a", project, reason: "PR merged" }]);
-  expect(status.last.kept).toEqual([{ id: notDone, title: "task b", project, reason: "not done: tests failing" }]);
+  live.stop(true);
+  expect(status.last.archived).toHaveLength(2);
+  expect(status.last.archived).toContainEqual({ id: done, title: "task a", project, reason: "PR merged" });
+  expect(status.last.archived).toContainEqual({ id: stopped, title: "task d", project, reason: "all in" });
+  expect(status.last.kept).toHaveLength(2);
+  expect(status.last.kept).toContainEqual({ id: notDone, title: "task b", project, reason: "not done: tests failing" });
+  expect(status.last.kept).toContainEqual({ id: serving, title: "task c", project, reason: `still running: dev server (app :${live.port}). Also done, but not merged or applied: PR #377 still open` });
   expect(runner.core.sessions.get(done)!.summary.archived).toBe(true);
   // The Home agent's chat isn't woken: the result is Home's to show.
   await Bun.sleep(50);
