@@ -10,6 +10,7 @@ import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HarnessId, LiveState, Msg, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { moveModule } from "./move";
 import { pushModule } from "./push";
+import { textingModule } from "./texting";
 
 /** What a module may know about a session (read-only). */
 export interface SessionLook {
@@ -46,6 +47,10 @@ export interface SessionActions {
   sourceForNew(harness: HarnessId, source: unknown): Promise<BillingSource>;
   /** a message from Tether, sent as a turn */
   send(id: string, text: string): Promise<void>;
+  /** the person's own words, as if typed in the composer: into the running turn when it takes that, else sent */
+  tell(id: string, text: string): Promise<void>;
+  /** the person denies an open request, with their note to the agent */
+  deny(id: string, requestId: string, reason?: string): Promise<void>;
   /** a Tether notice, kept with the session */
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
 }
@@ -76,7 +81,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, moveModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

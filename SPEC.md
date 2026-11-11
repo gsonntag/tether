@@ -1111,6 +1111,15 @@ clears on the other.
 **P5: Daily-driver features.** Steer and queue, attachments, web push notifications (requests,
 finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 
+**Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum at push's
+moments and with push's wording (no titles, commands or agent text), skipped while the session is
+viewed. Replies route by number: each text starts with its session's number (1-9, kept while the
+session is open, 30 minutes after its last text); `n text`, a threaded reply, or plain text when one
+session is open go straight there; plain text with several open is held and answered with a numbered
+picker. A reply is the person's own message (`live.tell`, defanged); on an open request it denies
+with the reply as the reason. One runner holds the link; keys live on it (`texting.json`, mode 600,
+or `runner.env`).
+
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
 runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
 for a running turn, obeying holds and limits). The ❯_ button opens a project shell beside the live
