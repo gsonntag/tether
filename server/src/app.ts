@@ -4,7 +4,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import { PROTOCOL_VERSION, type PushKeys } from "../../shared/protocol";
 import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
-import { DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
+import { browserUser, DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
 
 type Conn = { kind: "browser" | "runner"; viewer: Viewer };
@@ -91,7 +91,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       const viewer = await viewerFrom(req);
       if (url.pathname === "/api/me") {
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401 });
-        return Response.json({ name: viewer.name, email: viewer.email, allowed: isOwner(viewer), dev });
+        return Response.json({ ...browserUser(viewer), allowed: isOwner(viewer), dev });
       }
       if (url.pathname === "/api/ws") {
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin socket refused", { status: 403 });
@@ -113,7 +113,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       closeOnBackpressureLimit: true,
       maxPayloadLength: 16 * 1024 * 1024,
       open(ws) {
-        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, { name: ws.data.viewer.name, email: ws.data.viewer.email }, PROTOCOL_VERSION));
+        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, browserUser(ws.data.viewer), PROTOCOL_VERSION));
       },
       message(ws: ServerWebSocket<Conn>, raw) {
         if (ws.data.kind === "runner") {

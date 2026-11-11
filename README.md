@@ -155,6 +155,7 @@ Server:
 | `TETHER_PUSH_SUBJECT` | VAPID contact (an https URL or `mailto:`) |
 | `TETHER_ALLOWED_ORIGINS` | comma-separated extra origins allowed to open browser sockets. By default only the app's own host can |
 | `TETHER_DEV_RUNNER_TOKEN` | dev mode: the runner token (default `dev`) |
+| `TETHER_DEV_PICTURE` | dev mode: a profile picture URL for the fake owner (default none), to try the account avatar |
 
 ## Development
 

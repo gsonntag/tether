@@ -6,7 +6,7 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner } from "../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
 
 export interface Socket {
   /** Bun's convention: bytes sent, -1 queued under backpressure, 0 dropped */
@@ -93,7 +93,7 @@ export class Relay {
 
   // ---------------- browsers ----------------
 
-  addBrowser(sock: Socket, user: { name: string; email: string }, protocol: number) {
+  addBrowser(sock: Socket, user: User, protocol: number) {
     this.browsers.set(sock, { subs: new Map(), attaches: new Set() });
     this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
     this.out(sock, { t: "runners", runners: this.runnerList() });
