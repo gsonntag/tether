@@ -35,7 +35,8 @@ import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
-import { FROM_IMESSAGE, FROM_TETHER, fromTether } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, fromTether, tetherPurpose } from "../../../../shared/fromTether";
+import { replyForPeople } from "../../../../shared/checkIn";
 import { statusLabel, type HarnessReport, type HarnessVersion } from "../../../../shared/harnessUpdates";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
@@ -208,13 +209,19 @@ const text = (m: Msg) =>
     .join("\n")
     .trim();
 
-/** The newest assistant text in `msgs`. */
-export function lastReply(msgs: Msg[]): string | undefined {
+/** The newest assistant text in `msgs`, as the agent wrote it (a check-in's answer line and all). */
+export function lastRawReply(msgs: Msg[]): string | undefined {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]!;
     if (m.role === "assistant" && text(m)) return text(m);
   }
   return undefined;
+}
+
+/** The newest assistant text in `msgs` as people read it: a check-in's answer line as its status (shared/checkIn.ts). */
+export function lastReply(msgs: Msg[]): string | undefined {
+  const r = lastRawReply(msgs);
+  return r === undefined ? undefined : replyForPeople(r);
 }
 
 /** The newest prompt the session was given (the person's, or Tether's), without Tether's marker. */
@@ -223,10 +230,15 @@ export function lastPrompt(msgs: Msg[]): string | undefined {
     const m = msgs[i]!;
     if (m.role !== "user" || m.origin?.kind === "shell") continue;
     const t = text(m);
+    // The check-in's long machine prompt as what it is (shared/fromTether.ts).
+    if (t && (m.origin?.purpose === "checkIn" || tetherPurpose(t) === "checkIn" || (m.origin?.kind === "tether" && tetherPurpose(FROM_TETHER + t) === "checkIn"))) return CHECKIN_PROMPT;
     if (t) return fromTether(t) ?? t;
   }
   return undefined;
 }
+
+/** A check-in prompt, as lastPrompt gives it. */
+export const CHECKIN_PROMPT = "(the Home agent's check-in: is the task done and merged?)";
 
 /** What a session is doing, for the Home agent. */
 export type SessionState = "running" | "waiting" | "finished" | "failed";
@@ -431,13 +443,13 @@ export class HomeAgent implements HomeEnd {
     const t = (this.textTurn ??= { kind: "quiet" });
     if (msg.role === "assistant") {
       const said = text(msg);
-      if (said) t.said = said;
+      if (said) t.said = replyForPeople(said);
       return;
     }
     if (msg.role !== "user") return;
     const raw = text(msg);
     const texted = msg.origin?.kind === "imessage" || (!msg.origin && raw.startsWith(FROM_IMESSAGE));
-    const report = (msg.origin?.kind === "tether" || (!msg.origin && raw.startsWith(FROM_TETHER))) && raw.includes(TEXTED);
+    const report = (msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined)) && raw.includes(TEXTED);
     if (texted) t.kind = "text";
     else if (report && t.kind === "quiet") t.kind = "report";
   }
@@ -1117,7 +1129,7 @@ export class HomeAgent implements HomeEnd {
     this.save();
     for (const sid of asked) {
       try {
-        await s.queue(sid, FROM_TETHER + checkInMessage(entries[sid]!.project, entries[sid]!.keep));
+        await s.queue(sid, FROM_TETHER_CHECKIN + checkInMessage(entries[sid]!.project, entries[sid]!.keep));
       } catch (e) {
         entries[sid]!.outcome = "skipped";
         entries[sid]!.reason = `couldn't send to it: ${(e as Error).message}`;
@@ -1162,7 +1174,7 @@ export class HomeAgent implements HomeEnd {
   private async judge(e: Entry, id: string, error?: string, stopped?: boolean) {
     if (stopped) return Object.assign(e, { outcome: "kept", reason: "the person stopped it" });
     if (error) return Object.assign(e, { outcome: "kept", reason: `its turn failed: ${error}` });
-    const answer = parseAnswer(lastReply(await this.ctx.sessions.recent(id, 10).catch(() => [] as Msg[])));
+    const answer = parseAnswer(lastRawReply(await this.ctx.sessions.recent(id, 10).catch(() => [] as Msg[])));
     const found = answer?.done && answer.merged ? await verify(e.project, answer, this.git, new Set(), e.keep).catch(() => undefined) : undefined;
     const v = judge(answer, found);
     if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
@@ -1274,11 +1286,11 @@ export class HomeAgent implements HomeEnd {
    */
   personSpoke(id: string, msg: Msg) {
     if (this.isTextsChat(id)) this.textsMessage(msg);
-    if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER)) && this.state.tabs.includes(id)) this.touched(id);
+    if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && fromTether(p.text) !== undefined) && this.state.tabs.includes(id)) this.touched(id);
     const c = this.state.children[id];
     if (!c || c.released || msg.role !== "user") return;
     // A harness that hasn't parsed the marker yet shows Tether's own text as it was sent.
-    if (msg.origin?.kind === "tether" || msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER))) {
+    if (msg.origin?.kind === "tether" || msg.parts.some((p) => p.type === "text" && fromTether(p.text) !== undefined)) {
       if (c.queued) {
         delete c.queued;
         this.save();

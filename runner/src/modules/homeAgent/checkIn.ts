@@ -18,13 +18,15 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { SessionLook } from "..";
 import type { SessionSummary } from "../../../../shared/transcript";
+import { ANSWER_TAG, parseAnswer, type Answer } from "../../../../shared/checkIn";
+
+// The answer line and its parsing are shared: the transcript and previews hide that line.
+export { ANSWER_TAG, parseAnswer, type Answer };
 
 /** How long a check-in waits for answers before reporting the rest as unanswered. */
 export const CHECKIN_WAIT_MS = 10 * 60_000;
 /** The most sessions one check-in asks: each answer is a turn. */
 export const CHECKIN_MAX = 40;
-/** The line an answer ends with. */
-export const ANSWER_TAG = "TETHER-CHECK-IN:";
 
 /**
  * What a session is asked. `keep`: folders it must never remove (other sessions' folders in its
@@ -46,38 +48,6 @@ Don't start or continue any task work in this turn. From what you know and a qui
 Give one or two sentences, then end your reply with exactly one line in this form (valid JSON after the tag, on one line):
 ${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": "the branch you worked on, or null", "worktree": "the absolute path of a separate worktree you used (even if you removed it), or null", "note": "a few words on what's left, or what you did"}
 cleaned_up is true when no worktree you created is left (also when you never made one), false otherwise.`;
-}
-
-export interface Answer {
-  done: boolean;
-  merged: boolean;
-  /** no worktree it created is left; undefined: it didn't say */
-  cleanedUp?: boolean;
-  branch?: string;
-  worktree?: string;
-  note?: string;
-}
-
-/** The answer in a reply: its last tagged line, if that holds the fields. */
-export function parseAnswer(reply: string | undefined): Answer | undefined {
-  if (!reply) return undefined;
-  const lines = reply.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const at = lines[i]!.indexOf(ANSWER_TAG);
-    if (at < 0) continue;
-    let json = lines[i]!.slice(at + ANSWER_TAG.length).trim().replace(/`+$/, "").trim();
-    // A model sometimes puts the JSON on the following lines.
-    if (!json.startsWith("{")) json = lines.slice(i + 1).join("\n").replace(/```(json)?/g, "").trim();
-    try {
-      const v = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
-      if (typeof v?.done !== "boolean" || typeof v?.merged !== "boolean") return undefined;
-      const s = (x: unknown) => (typeof x === "string" && x.trim() && x.trim() !== "null" ? x.trim().slice(0, 300) : undefined);
-      return { done: v.done, merged: v.merged, ...(typeof v.cleaned_up === "boolean" ? { cleanedUp: v.cleaned_up } : {}), branch: s(v.branch), worktree: s(v.worktree), note: s(v.note) };
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
 }
 
 /** Why a session isn't asked, or undefined when it can be. */

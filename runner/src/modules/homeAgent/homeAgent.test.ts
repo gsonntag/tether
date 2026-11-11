@@ -5,15 +5,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_IMESSAGE, FROM_TETHER, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import { HomeLine } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
-import type { SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import type { Msg, SessionSummary } from "../../../../shared/transcript";
+import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
@@ -299,6 +299,12 @@ test("clearing a chat that's working stops it", async () => {
   await until(() => runner.core.sessions.get(other)?.state.status === "idle" && !!driverOf(other));
   await op("homeAgentClear");
   expect(driverOf(other)!.interrupted).toBe(0);
+});
+
+test("lastReply shows a check-in answer as its status; lastRawReply keeps the line", () => {
+  const msgs: Msg[] = [{ id: "1", role: "assistant", ts: 1, parts: [{ type: "text", text: `All in.\n${ANSWER_TAG} {"done": true, "merged": false, "note": "PR #3 open"}` }] }];
+  expect(lastReply(msgs)).toBe("All in.\nCheck-in: done · not merged: PR #3 open");
+  expect(lastRawReply(msgs)).toContain(ANSWER_TAG);
 });
 
 test("lastReply is the newest assistant text", () => {
@@ -705,8 +711,18 @@ test("check_in_sessions asks idle sessions, archives the finished ones, skips bu
   expect(runner.core.sessions.get(finished)!.summary.archived).toBe(true);
   expect(runner.core.sessions.get(halfway)!.summary.archived).toBeUndefined();
   expect(runner.core.sessions.get(messy)!.summary.archived).toBeUndefined();
-  // Each asked session was told to clean up.
+  // Each asked session was told to clean up, under the check-in's own marker.
   expect(driverOf(finished)!.sent[1]).toContain("git worktree remove");
+  expect(driverOf(finished)!.sent[1]!.startsWith(FROM_TETHER_CHECKIN)).toBe(true);
+  // The answer line is Tether's: previews show its status, never the line.
+  const status = await tools(chat).session_status!({ session_id: halfway });
+  expect(status).toContain("Latest reply:\nCheck-in: not done: tests still failing");
+  expect(status).not.toContain(ANSWER_TAG);
+  expect(status).toContain("Latest prompt:\n(the Home agent's check-in: is the task done and merged?)");
+  expect(status).not.toContain("Don't start or continue any task work");
+  const listed = await tools(chat).list_sessions!({});
+  expect(listed).toContain("replied: Merged. Check-in: done · merged · cleaned up");
+  expect(listed).not.toContain(ANSWER_TAG);
   // Archived sessions aren't asked again.
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
   expect(await tools(chat).check_in_sessions!({ session_ids: [finished] })).toContain("No recent sessions");
