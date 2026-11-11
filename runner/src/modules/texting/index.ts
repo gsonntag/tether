@@ -7,6 +7,10 @@
 // its session's number; a reply that isn't clear gets a numbered picker (router.ts). The runner sends
 // them, not the app: a Foliation app has no internet egress (server/src/push.ts).
 //
+// The thread is shared with the `textme` CLI (the text-me skill), which texts from the same Photon
+// number and hears the same replies: each says what it last sent in a shared folder (thread.ts), and
+// a reply that's answering a textme's text is left to it, with no picker.
+//
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording); known secrets are redacted. Tether's own words read like a human's: "[6] ok", one
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
@@ -20,6 +24,7 @@ import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
 import { Router } from "./router";
 import { TextingStore } from "./store";
+import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
 
 const RETRY_MIN_MS = 5_000;
@@ -61,6 +66,7 @@ export class Texter {
     readonly store: TextingStore,
     private open: OpenLink = openSpectrum,
     private now: () => number = Date.now,
+    private thread: Thread = new FileThread(),
   ) {
     this.router = new Router(store.router, now);
   }
@@ -81,6 +87,7 @@ export class Texter {
         this.connected = true;
         this.lastError = undefined;
         this.delay = RETRY_MIN_MS;
+        this.publish();
         void link.closed.then(() => this.dropped(link));
       } catch (e: any) {
         this.lastError = `Couldn't connect to Photon: ${e?.message ?? e}`;
@@ -100,6 +107,7 @@ export class Texter {
     const link = this.link;
     this.link = undefined;
     this.connected = false;
+    this.thread.clear();
     await link?.stop();
   }
 
@@ -125,10 +133,18 @@ export class Texter {
     this.delay = Math.min(this.delay * 2, RETRY_MAX_MS);
   }
 
+  /** Tells textme (thread.ts) what Tether last sent and which sessions are open. */
+  private publish() {
+    if (this.link) this.thread.publish(this.router.note());
+  }
+
   private async say(text: string): Promise<string | undefined> {
     if (!this.link) return undefined;
     try {
-      return await this.link.send(text);
+      const id = await this.link.send(text);
+      this.router.noteOut();
+      this.publish();
+      return id;
     } catch (e: any) {
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
       this.ctx.log(`texting: ${this.lastError}`);
@@ -162,6 +178,7 @@ export class Texter {
     const id = await this.say(text);
     if (id) this.router.noteSent(id, sessionId);
     this.store.save();
+    this.publish();
   }
 
   async request(r: Request) {
@@ -185,6 +202,14 @@ export class Texter {
 
   turnStarted(sessionId: string) {
     this.lastSaid.delete(sessionId);
+    this.settled(sessionId);
+  }
+
+  /** The person answered the session (a request, a new turn): it's out of the picker until it texts again. */
+  settled(sessionId: string) {
+    this.router.settle(sessionId);
+    this.store.save();
+    this.publish();
   }
 
   /**
@@ -209,8 +234,9 @@ export class Texter {
   }
 
   private async answer(m: Inbound) {
-    const d = this.router.route(m.text, m.replyTo);
+    const d = this.router.route(m.text, m.replyTo, this.thread.waiters(this.now()));
     this.store.save();
+    this.publish();
     if (d.kind === "none") return;
     if (d.kind === "reply") return void (await this.say(d.text));
     const tag = `[${d.n}]`;
@@ -246,6 +272,7 @@ export const textingModule: Module = {
       ctx.bus.on("attention", ({ sessionId }) => void later(0, () => t.attention(sessionId))),
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
+      ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void (!stopped && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
     ];
     const status = () => store.status(t);
