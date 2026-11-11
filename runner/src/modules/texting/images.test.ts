@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONVERT_MAX, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
+import { CONVERT_MAX, MAGICK, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { aboutOf, replyContext } from "../homeLine";
 
@@ -167,10 +167,18 @@ describe("scaling texted images down", () => {
   test("with ImageMagick here: really scaled to the edge, several at once, its temp folders removed", async () => {
     if (spawnSync("convert", ["-version"]).status !== 0) return;
     const big = spawnSync("convert", ["-size", "3000x1500", "gradient:red-blue", "png:-"]).stdout as Buffer;
-    const before = readdirSync(tmpdir()).filter((n) => n.startsWith("tether-magick-")).length;
-    const outs = await Promise.all([1, 2, 3].map(() => imagemagick(big, "png")));
-    for (const o of outs) expect(imageDims(o!)).toEqual({ w: 2048, h: 1024 });
-    expect(readdirSync(tmpdir()).filter((n) => n.startsWith("tether-magick-")).length).toBe(before);
+    // Its temp folders in a folder of this test's own (others' runs share /tmp).
+    const parent = mkdtempSync(join(tmpdir(), "tether-magick-test-"));
+    const was = MAGICK.parent;
+    MAGICK.parent = () => parent;
+    try {
+      const outs = await Promise.all([1, 2, 3].map(() => imagemagick(big, "png")));
+      for (const o of outs) expect(imageDims(o!)).toEqual({ w: 2048, h: 1024 });
+      expect(readdirSync(parent)).toEqual([]);
+    } finally {
+      MAGICK.parent = was;
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 });
 

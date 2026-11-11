@@ -8,7 +8,7 @@ import { REQUEST_MAX } from "./describe";
 import { commandWords } from "./summary";
 import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, HEIC_NOTE, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
-import { fromOwner, inboundOf, senderPhone, type Inbound, type OpenLink } from "./link";
+import { fromOwner, inboundOf, PHOTON, senderPhone, timed, type Inbound, type OpenLink } from "./link";
 import { HELD_MS } from "./router";
 import { normalPhone, TextingStore } from "./store";
 import { HomeLine, PERSON_TEXT_MAX, type Home, type HomeEnd, type TextedFile } from "../homeLine";
@@ -1095,5 +1095,55 @@ describe("round 4: held images expire once, failures say it once, deleted homes"
     expect(took).toEqual([["ship it", { n: 0 }]]);
     expect(s.texts.at(-1)).toBe(TEXTS.homeGoneSentToH);
     expect(casualText(TEXTS.homeGoneSentToH)).toBe(true);
+  });
+});
+
+describe("round 5: a stalled Photon, and restarts", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+
+  test("a send or a reaction that never answers doesn't freeze the queue: logged, and the next text goes on", async () => {
+    const was = PHOTON.ms;
+    PHOTON.ms = 20;
+    try {
+      const logs: string[] = [];
+      const told: [string, string][] = [];
+      const sessions: Record<string, any> = { "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } } };
+      const t = new Texter(
+        { log: (l) => void logs.push(l), runnerId: "box", appUrl: "https://x/", session: (id) => sessions[id], viewersOf: () => [], sessions: { tell: async (id, text) => void told.push([id, text]), answer: async () => {} } },
+        new TextingStore(undefined, ENV),
+        async () => ({ send: () => new Promise(() => {}), sendFile: () => new Promise(() => {}), closed: new Promise(() => {}), stop: async () => {} }),
+      );
+      await t.start();
+      // A text Tether sends: it times out, is logged, and says it didn't go.
+      expect((await t.tell("claude:a", "finished", "done", { always: true })).sent).toBe(false);
+      expect(t.lastError).toContain("Photon didn't answer");
+      const stuck = () => new Promise<void>(() => {});
+      await t.heard({ text: "first", react: stuck });
+      await t.heard({ text: "second", react: stuck });
+      expect(told).toEqual([["claude:a", "first"], ["claude:a", "second"]]);
+      expect(logs.filter((l) => l.includes("couldn't react")).length).toBe(2);
+    } finally {
+      PHOTON.ms = was;
+    }
+  });
+
+  test("timed: the answer when it comes in time, else an error naming the call", async () => {
+    expect(await timed(Promise.resolve(1), "x", 50)).toBe(1);
+    await expect(timed(new Promise(() => {}), "a reaction", 10)).rejects.toThrow("Photon didn't answer a reaction");
+  });
+
+  test("saving settings (a restart) keeps the held images' expiry timer running", async () => {
+    const s = setup();
+    await s.t.start();
+    s.say("claude:a", "Which?");
+    await s.t.turnEnded("claude:a");
+    s.say("codex:b", "Which?");
+    await s.t.turnEnded("codex:b");
+    await s.hear({ text: "", files: [{ name: "a.png", mimeType: "image/png", read: async () => PNG }] });
+    expect((s.t as any).heldTimer).toBeDefined();
+    await s.t.restart();
+    expect((s.t as any).heldFiles).toBeDefined();
+    expect((s.t as any).heldTimer).toBeDefined();
+    await s.t.stop();
   });
 });

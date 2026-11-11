@@ -260,11 +260,12 @@ export async function inSlot<T>(f: (leftMs: number) => Promise<T>, waitMs: numbe
   }
 }
 
-/** The prefix of ImageMagick's temporary folders. */
+/** The prefix of ImageMagick's temporary folders, and where they're made (tests use their own). */
 const MAGICK_TMP = "tether-magick-";
+export const MAGICK = { parent: () => tmpdir() };
 
 /** Removes ImageMagick temporary folders an earlier runner left (older than an hour). */
-export function sweepMagickTemp(dir = tmpdir(), now = Date.now()) {
+export function sweepMagickTemp(dir = MAGICK.parent(), now = Date.now()) {
   try {
     for (const name of readdirSync(dir)) {
       if (!name.startsWith(MAGICK_TMP)) continue;
@@ -288,7 +289,7 @@ export const imagemagick: Convert = (data, from) =>
     if (leftMs <= 0) return undefined;
     let tmp: string | undefined;
     try {
-      tmp = mkdtempSync(join(tmpdir(), MAGICK_TMP));
+      tmp = mkdtempSync(join(MAGICK.parent(), MAGICK_TMP));
     } catch {
       return undefined;
     }

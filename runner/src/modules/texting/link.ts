@@ -30,6 +30,19 @@ export interface TextLink {
   stop(): Promise<void>;
 }
 
+/** How long one call to Photon may take (a send, a reaction, opening the chat): a stalled Photon mustn't freeze the texts queue. Tests shorten it. */
+export const PHOTON = { ms: 30_000 };
+
+/** `p`, or a rejection after `ms` ("Photon didn't answer …"): the call itself is left to finish or fail on its own. */
+export function timed<T>(p: Promise<T>, what: string, ms = PHOTON.ms): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, no) => {
+    timer = setTimeout(() => no(new Error(`Photon didn't answer ${what} within ${Math.round(ms / 1000)}s`)), ms);
+  });
+  p.catch(() => {});
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 export type OpenLink = (cfg: LinkConfig, onInbound: (m: Inbound) => void, log: (line: string) => void) => Promise<TextLink>;
 
 /**
@@ -109,7 +122,7 @@ export const openSpectrum: OpenLink = async (cfg, onInbound, log) => {
         // happens to end in the same digits.
         if (!message.sender || !fromOwner(message.sender.id, cfg.phone)) continue;
         const m = inboundOf(message.content);
-        if (m) onInbound({ ...m, ...(typeof message.id === "string" ? { id: message.id } : {}), react: async (emoji) => void (await message.react(emoji)) });
+        if (m) onInbound({ ...m, ...(typeof message.id === "string" ? { id: message.id } : {}), react: async (emoji) => void (await timed(message.react(emoji), "a reaction")) });
       }
     } catch (e: any) {
       if (!stopped) log(`texting: listener ended: ${e?.message ?? e}`);
@@ -119,7 +132,10 @@ export const openSpectrum: OpenLink = async (cfg, onInbound, log) => {
   const im = imessage(app);
   let space: Promise<any> | undefined;
   const send = async (content: any): Promise<string | undefined> => {
-    space ??= im.user(cfg.phone).then((u: any) => im.space.create(u));
+    space ??= timed(
+      im.user(cfg.phone).then((u: any) => im.space.create(u)),
+      "opening the chat",
+    );
     try {
       const sent = await (await space).send(content);
       return typeof sent?.id === "string" ? sent.id : undefined;

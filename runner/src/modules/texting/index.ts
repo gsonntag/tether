@@ -32,7 +32,7 @@ import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript"
 import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
-import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
+import { openSpectrum, timed, type Inbound, type OpenLink, type TextLink } from "./link";
 import { HELD_MS, HOME, Router, type About } from "./router";
 import { homeLabel, homeList, PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
 import { download, imagemagick, incomingImage, sweepMagickTemp, pickIncoming, readOutgoingImage, type Convert, type InboundFile, type OutImage } from "./images";
@@ -152,6 +152,8 @@ export class Texter {
   /** Connects when texting is on and set; reconnects after a drop, backing off. */
   start() {
     this.stopped = false;
+    // A restart (settings saved) stopped the held images' timer: it runs again for what's left.
+    if (this.heldFiles && !this.heldTimer) this.holdFiles(this.heldFiles.id, this.heldFiles.files, this.heldFiles.at);
     if (this.link || this.connecting) return this.connecting ?? Promise.resolve();
     const cfg = this.store.config();
     if (!cfg) return Promise.resolve();
@@ -216,7 +218,7 @@ export class Texter {
   private async send(text: string): Promise<{ sent: boolean; id?: string }> {
     if (!this.link) return { sent: false };
     try {
-      const id = await this.link.send(text);
+      const id = await timed(this.link.send(text), "a send");
       this.router.noteOut();
         return { sent: true, ...(id ? { id } : {}) };
     } catch (e: any) {
@@ -262,7 +264,7 @@ export class Texter {
   private async sendImage(image: OutImage, sessionId: string, about?: string, requestId?: string, home?: string): Promise<boolean> {
     if (!this.link?.sendFile) return false;
     try {
-      const id = await this.link.sendFile(image);
+      const id = await timed(this.link.sendFile(image), "an image");
       if (id) this.router.noteSent(id, sessionId, requestId, about, home);
       return true;
     } catch (e: any) {
@@ -276,7 +278,7 @@ export class Texter {
     if (!this.store.config()) throw new Error("Set the phone and the Photon project's id and secret first, and turn texting on.");
     await this.start();
     if (!this.link) throw new Error(this.lastError ?? "Not connected to Photon yet.");
-    await this.link.send(TEXTS.test);
+    await timed(this.link.send(TEXTS.test), "a send");
   }
 
   // ── out: what happened ──
@@ -425,6 +427,12 @@ export class Texter {
   }
 
   /** The images held with the held text `id`, taken (and those of other held texts dropped). */
+  /** The ✅ on the person's text (at most PHOTON.ms: a stalled Photon is logged and passed by). */
+  private async read(m: Inbound) {
+    if (!m.react) return;
+    await timed(m.react(READ), "a reaction").catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+  }
+
   private takeHeld(id: number | undefined): TextedFile[] {
     const h = this.heldFiles;
     if (!h || h.id !== id) return [];
@@ -519,7 +527,7 @@ export class Texter {
         try {
           const n = await home!.newHome(withNote(d.text), files.length ? files : undefined);
           passed = true;
-          if (d.text) await m.react?.(READ).catch(() => {});
+          if (d.text) await this.read(m);
           else await this.say(TEXTS.homeStarted(homeLabel(n)));
         } catch (e: any) {
           await failed("a new home", e);
@@ -541,7 +549,7 @@ export class Texter {
           // By its chat: the number may belong to another tab by now.
           await home!.take(withNote((d.about ? this.aboutText(d.about) : "") + d.text), files.length ? files : undefined, d.chat ? { chat: d.chat } : { n: 0 });
           passed = true;
-          await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+          await this.read(m);
           if (d.gone) await this.say(TEXTS.homeGoneSentToH);
         } catch (e: any) {
           await failed(d.home ? label : "the Home agent", e);
@@ -589,7 +597,7 @@ export class Texter {
         }
         // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
         // person's text says Tether read it and passed it on.
-        await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+        await this.read(m);
       } catch (e: any) {
         await failed(tag, e);
       }

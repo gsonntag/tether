@@ -506,8 +506,10 @@ export class HomeAgent implements HomeEnd {
     const c = this.state.children[sessionId];
     if (!c || c.released) return undefined;
     const words = message.trim().slice(0, PERSON_TEXT_MAX * 4);
-    const pic = image ? `\n\nWith an image: ${image.replace(/[\r\n]+/g, " ").slice(0, 500)} (text_person's image sends it on).` : "";
-    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person:\n<<<\n${words}\n>>>${pic}\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person (session_id ${sessionId}), condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
+    // The image's path is the session's words like the rest: inside the fence, on one line, and
+    // unable to close it. (text_person checks the file again before anything goes.)
+    const pic = image ? `\n[image: ${image.replace(/[\x00-\x1f\x7f\u2028\u2029]+/g, " ").replace(/<<<|>>>/g, "").replace(/\]/g, ")").slice(0, 500)}]` : "";
+    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person${image ? " (with the image after [image: …], which text_person's image sends on)" : ""}:\n<<<\n${words.replace(/<<<|>>>/g, "")}${pic}\n>>>\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person (session_id ${sessionId}), condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
     return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
