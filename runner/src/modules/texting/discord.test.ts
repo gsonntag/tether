@@ -791,3 +791,47 @@ describe("round 4", () => {
     expect(imessageConnector(new TextingStore(undefined, {})).stopWaitMs).toBe(15_000);
   });
 });
+
+describe("round 5", () => {
+  /** A Discord whose REST is `handle` (url, body), on a fake gateway. */
+  async function withRest(env: Record<string, string>, handle: (url: string, body: any) => Response | Promise<Response>) {
+    const calls: string[] = [];
+    const fetcher = (async (u: string, init: RequestInit = {}) => {
+      calls.push(u.replace("https://discord.com/api/v10", ""));
+      return handle(u, init.body && !(init.body instanceof FormData) ? JSON.parse(String(init.body)) : undefined);
+    }) as unknown as typeof fetch;
+    const socks = sockets();
+    const c = discordConnector(new TextingStore(undefined, env), { fetch: fetcher, gateway: { socket: socks.open } });
+    const opening = c.open(() => {}, () => {});
+    await until(() => socks.all.length > 0);
+    socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    ready(socks.last());
+    return { link: await opening, calls };
+  }
+
+  test("N3: DMs are opened per owner, even at once", async () => {
+    const { link, calls } = await withRest({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: `${ME},${OTHER}` }, async (u, body) => {
+      if (u.endsWith("/users/@me/channels")) {
+        await tick(5);
+        return Response.json({ id: body.recipient_id === ME ? "700000000000000001" : "700000000000000002" });
+      }
+      return Response.json({ id: "m" });
+    });
+    // No DM yet, nothing written: Tether's own texts go to the first owner's DM; never another owner's by a shared promise.
+    await Promise.all([link.send({ text: "a" }), link.send({ text: "b" })]);
+    expect(calls.filter((c) => c === "/users/@me/channels").length).toBe(1);
+    expect(calls.filter((c) => c.endsWith("/messages"))).toEqual(["/channels/700000000000000001/messages", "/channels/700000000000000001/messages"]);
+    await link.stop();
+  });
+
+  test("N4: a channel answer Discord refuses goes to the owner's DM", async () => {
+    const { link, calls } = await withRest({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME, TETHER_DISCORD_CHANNEL_ID: CHAN }, (u) => {
+      if (u.endsWith(`/channels/${CHAN}/messages`)) return Response.json({ message: "Missing Access" }, { status: 403 });
+      if (u.endsWith("/users/@me/channels")) return Response.json({ id: DM });
+      return Response.json({ id: "dm-msg" });
+    });
+    expect(await link.send({ text: "[1] ok", place: CHAN, shared: true })).toEqual(["dm-msg"]);
+    expect(calls).toEqual([`/channels/${CHAN}/messages`, "/users/@me/channels", `/channels/${DM}/messages`]);
+    await link.stop();
+  });
+});

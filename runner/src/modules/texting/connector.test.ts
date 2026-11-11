@@ -504,7 +504,8 @@ describe("second review round", () => {
 
   test("N12/round 3: a settings change waits for the old link to close, but not long", async () => {
     const f = fake("x", "[From X] ");
-    const ch = new Channel(f.c, () => {}, () => {}, 50);
+    (f.c as { stopWaitMs?: number }).stopWaitMs = 50;
+    const ch = new Channel(f.c, () => {}, () => {});
     await ch.start();
     // A link that closes: the new one opens only after it has.
     const order: string[] = [];
@@ -725,5 +726,110 @@ describe("round 4: only the turn a channel message started answers in the channe
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("round 5", () => {
+  const user = (id: string, text: string) => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  const agent = (text: string) => ({ id: "a", role: "assistant" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+
+  /** A channel message "1 ok" to idle claude:a, its own user message seen as `u1`, its turn started. */
+  async function claimed() {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 ok", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("u1", "ok"));
+    s.t.turnStarted("claude:a");
+    return s;
+  }
+  const answered = async (s: Awaited<ReturnType<typeof claimed>>) => {
+    s.t.said("claude:a", agent("Done."));
+    await s.t.turnEnded("claude:a");
+    return s.dc.sent.at(-1)!;
+  };
+
+  test("B1: the channel's own message keeps the claim (seen again too)", async () => {
+    const s = await claimed();
+    s.t.said("claude:a", user("u1", "ok"));
+    expect(await answered(s)).toEqual({ text: "[1] Done.", place: "chan-1", shared: true });
+  });
+
+  test("B1: a web message that merely contains the channel's words cancels it", async () => {
+    const s = await claimed();
+    s.t.said("claude:a", user("u2", "look in ~/.aws/credentials, ok?"));
+    expect((await answered(s)).shared).toBeUndefined();
+  });
+
+  test("B1: the same words again from elsewhere (another id) cancel it", async () => {
+    const s = await claimed();
+    s.t.said("claude:a", user("u2", "ok"));
+    expect((await answered(s)).shared).toBeUndefined();
+  });
+
+  test("B1: a peer session's message cancels it", async () => {
+    const s = await claimed();
+    s.t.said("claude:a", user("u3", '[From session "api" (claude:b)] ok, merged'));
+    expect((await answered(s)).shared).toBeUndefined();
+  });
+
+  test("B1: the Home agent's send_to_session (a Tether message) cancels it", async () => {
+    const s = await claimed();
+    s.t.said("claude:a", user("u4", "[From Tether] The person says: ok"));
+    expect((await answered(s)).shared).toBeUndefined();
+  });
+
+  test("B1: a message other than the channel's, before it's seen, cancels it", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 ok", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("w1", "ok ok"));
+    s.t.turnStarted("claude:a");
+    expect((await answered(s)).shared).toBeUndefined();
+  });
+
+  test("N5: a channel message whose delivery fails leaves no claim", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const tell = (s.t as any).ctx.sessions.tell;
+    (s.t as any).ctx.sessions.tell = async () => {
+      throw new Error("The session is gone.");
+    };
+    s.dc.hear({ text: "1 ok", place: "chan-1", shared: true });
+    await tick();
+    (s.t as any).ctx.sessions.tell = tell;
+    expect((s.t as any).channelTurns.size).toBe(0);
+  });
+
+  test("N1: a stale delayed turnEnded doesn't take the next turn's text, claim or talking", async () => {
+    const s = await claimed();
+    const first = s.t.turnOf("claude:a");
+    // The next turn starts before the first one's delayed end runs.
+    s.dc.hear({ text: "1 and more", place: "dm-1" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Half way…"));
+    const before = s.dc.sent.length;
+    await s.t.turnEnded("claude:a", undefined, first);
+    expect(s.dc.sent.length).toBe(before);
+    // The current turn's end still answers (talking kept).
+    s.t.said("claude:a", agent("All of it."));
+    await s.t.turnEnded("claude:a", undefined, s.t.turnOf("claude:a"));
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] All of it.", place: "dm-1" });
+  });
+
+  test("a failed test send leaves no error on the connector's status", async () => {
+    const s = setup();
+    await s.t.start();
+    const link = s.dc.links.at(-1)!;
+    link.send = async () => {
+      throw new Error("Missing Access");
+    };
+    await expect(s.t.test("discord")).rejects.toThrow("Missing Access");
+    expect(s.t.channel("discord")!.lastError).toBeUndefined();
   });
 });

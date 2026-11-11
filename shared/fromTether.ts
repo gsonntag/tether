@@ -51,9 +51,6 @@ export const TEXTED_MARKS = Object.fromEntries(Object.keys(MESSAGING_APPS).map((
 export const FROM_IMESSAGE = TEXTED_MARKS.imessage;
 export const FROM_DISCORD = TEXTED_MARKS.discord;
 
-/** The text without the marker when the person texted it, else undefined. */
-export const fromImessage = (text: string): string | undefined => (text.startsWith(FROM_IMESSAGE) ? text.slice(FROM_IMESSAGE.length) : undefined);
-
 /** What the person sent by a connector: which one and their words, else undefined. */
 export function fromTexted(text: string): { kind: TextedKind; text: string } | undefined {
   for (const [kind, mark] of Object.entries(TEXTED_MARKS) as [TextedKind, string][]) if (text.startsWith(mark)) return { kind, text: text.slice(mark.length) };

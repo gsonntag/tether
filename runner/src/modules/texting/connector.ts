@@ -109,6 +109,8 @@ export class FatalError extends Error {
 
 export const isFatal = (e: unknown): boolean => !!(e && typeof e === "object" && (e as { fatal?: unknown }).fatal === true);
 
+/** How long a settings change waits for a connector's old link to close (Connector.stopWaitMs overrides). */
+const STOP_WAIT_MS = 3_000;
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
@@ -125,8 +127,6 @@ export class Channel {
     readonly connector: Connector,
     private onInbound: (m: Inbound) => void,
     private log: (line: string) => void,
-    /** how long a settings change waits for the old link to close before connecting again */
-    private stopWaitMs = 3_000,
   ) {}
 
   get id() {
@@ -182,7 +182,7 @@ export class Channel {
     // Two clients at once (Photon) can fight over the line: wait for the old one to close, but not long.
     if (old) {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([old.stop().catch(() => {}), new Promise((r) => (timer = setTimeout(r, this.connector.stopWaitMs ?? this.stopWaitMs)))]);
+      await Promise.race([old.stop().catch(() => {}), new Promise((r) => (timer = setTimeout(r, this.connector.stopWaitMs ?? STOP_WAIT_MS)))]);
       clearTimeout(timer);
     }
     this.lastError = undefined;

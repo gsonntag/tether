@@ -33,7 +33,8 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript";
-import { isImageType, safeName, type Attachment } from "../../../../shared/attachments";
+import { isImageType, safeName, splitAttachments, type Attachment } from "../../../../shared/attachments";
+import { fromTexted } from "../../../../shared/fromTether";
 import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
 import type { MessagingStatus } from "../../../../shared/protocol";
 import type { Module, ModuleContext } from "..";
@@ -61,6 +62,12 @@ export function asksQuestion(text: string): boolean {
 }
 
 type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+
+/** A user message's words as the transcript shows them, for telling the channel's own message apart: no defang mark, no texted marker, no attachments block. */
+const shown = (text: string) => {
+  const t = text.replaceAll("\u200b", "");
+  return splitAttachments(fromTexted(t)?.text ?? t).text.trim();
+};
 
 /** What the agent reads for a message with only files in it. */
 export const FILES_ONLY = "(sent a file)";
@@ -137,7 +144,9 @@ export class Texter {
    * starts, and goes on any other input (a DM, Tether's web, a report, another turn) and once used.
    * Kept in memory only: after a restart everything goes to the DM.
    */
-  private channelTurns = new Map<string, { via: string; place: string; words: string; phase: "armed" | "active" }>();
+  private channelTurns = new Map<string, { via: string; place: string; expect: string; msgId?: string; phase: "armed" | "active" }>();
+  /** each session's turns so far (turnStarted): a delayed turnEnded acts only for the turn that's still current */
+  private turns = new Map<string, number>();
   /** when each session's link last went out */
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
@@ -276,7 +285,14 @@ export class Texter {
     if (!c.enabled() || !c.configured()) throw new Error(c.notReady);
     await ch.start();
     if (!ch.connected) throw new Error(ch.lastError ?? `Not connected to ${c.service ?? c.label} yet.`);
-    await ch.send({ text: TEXTS.test });
+    // A test that didn't go says so to whoever pressed it; it leaves no error on the connector's status.
+    const was = ch.lastError;
+    try {
+      await ch.send({ text: TEXTS.test });
+    } catch (e) {
+      ch.lastError = was;
+      throw e;
+    }
   }
 
   /** Settings: every connector, never a secret. */
@@ -412,11 +428,17 @@ export class Texter {
   /** The agent said something: kept until its turn ends (only the last message counts). */
   said(sessionId: string, msg: Msg) {
     if (msg.role === "user") {
-      // Anything else put to a channel turn (typed in Tether, a report): its answer isn't the channel's.
+      // The channel message itself, seen once: its id is the claim's. Any other user message (typed in
+      // Tether, another session's, a report, send_to_session) ends the claim, whatever it says.
       const key = this.turnKey(sessionId);
       const ct = this.channelTurns.get(key);
-      const said = msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n").replaceAll("\u200b", "");
-      if (ct && !said.includes(ct.words)) this.channelTurns.delete(key);
+      if (!ct) return;
+      if (ct.msgId !== undefined) {
+        if (msg.id !== ct.msgId) this.channelTurns.delete(key);
+        return;
+      }
+      if (shown(msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) === ct.expect) ct.msgId = msg.id;
+      else this.channelTurns.delete(key);
       return;
     }
     if (msg.role !== "assistant") return;
@@ -425,7 +447,13 @@ export class Texter {
     if (text) this.lastSaid.set(sessionId, replyForPeople(text));
   }
 
+  /** The session's current turn number (turnStarted counts them). */
+  turnOf(sessionId: string): number {
+    return this.turns.get(sessionId) ?? 0;
+  }
+
   turnStarted(sessionId: string) {
+    this.turns.set(sessionId, this.turnOf(sessionId) + 1);
     // The turn a channel message started, or any other one (which ends the channel's claim).
     const key = this.turnKey(sessionId);
     const ct = this.channelTurns.get(key);
@@ -445,7 +473,10 @@ export class Texter {
    * A failed turn texts. A finished one texts the agent's last message when the person texted it
    * this turn (its answer) or when it ends by asking them something; otherwise nothing.
    */
-  async turnEnded(sessionId: string, error?: string) {
+  async turnEnded(sessionId: string, error?: string, turn?: number) {
+    // Delayed (FINISH_DELAY_MS): if another turn started since, this one's end is stale; the new turn
+    // has its own text, claim and talking.
+    if (turn !== undefined && turn !== this.turnOf(sessionId)) return;
     const last = this.lastSaid.get(sessionId);
     this.lastSaid.delete(sessionId);
     // The Home agent's Texts chat answers by its own texts (homeText).
@@ -551,7 +582,7 @@ export class Texter {
     }
     /** A channel message to an idle session (or Home): the turn it starts may answer in the channel. */
     const arm = () => {
-      if (back?.shared && back.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via: back.via, place: back.place, words: words.slice(0, 200), phase: "armed" });
+      if (back?.shared && back.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via: back.via, place: back.place, expect: shown(words), phase: "armed" });
     };
     if (d.kind === "home") {
       try {
@@ -560,6 +591,7 @@ export class Texter {
         await home!.take(words, { ...(mark ? { mark } : {}), ...(files.length ? { files: (chat) => this.stash(chat, files, back) } : {}) });
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
+        this.channelTurns.delete(key);
         await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)), back);
       }
       return;
@@ -604,6 +636,7 @@ export class Texter {
       // person's text says Tether read it and passed it on.
       await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
     } catch (e: any) {
+      this.channelTurns.delete(key);
       await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)), back);
     }
   }
@@ -622,7 +655,7 @@ export const textingModule: Module = {
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, ((turn) => () => t.turnEnded(sessionId, error, turn))(t.turnOf(sessionId))))),
     ];
     // iMessage's own ops, for a web from before connectors.
     const imessage = t.channel(IMESSAGE)!;

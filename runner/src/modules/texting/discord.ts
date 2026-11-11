@@ -7,7 +7,8 @@
 // to something written in the channel goes there (others in the channel can read it). The DM is kept
 // with the settings (`where`). Long messages are split at Discord's 2000 characters, and a masked link ([text](url)) is
 // spelled out so an agent can't disguise one. Files the person sends come in (fetched from
-// Discord's CDN only, when a session takes them); images go out as attachments.
+// Discord's CDN only, when a session takes them). The link can send images as attachments
+// (Outbound.images), though nothing in Tether sends one yet.
 //
 // Settings: texting.json `connectors.discord` (mode 600): { enabled, token, ownerIds, channelId,
 // where }; runner.env wins: TETHER_DISCORD_TOKEN, TETHER_DISCORD_OWNER_IDS (comma-separated),
@@ -209,7 +210,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
     mark: FROM_DISCORD,
     images: true,
     about:
-      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: the Home agent, session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Tether writes to your DMs; in the channel it only answers what you wrote there.",
+      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: the Home agent, session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Every ID listed is treated as you and sees everything (they're meant to be your own accounts). Tether writes to your DMs; in the channel it only answers what you wrote there.",
     notReady: "Set the bot token and your Discord user ID first, and turn Discord on.",
     enabled: () => saved().enabled ?? (!!envToken() && envOwners().length > 0),
     configured: () => !!config(),
@@ -218,7 +219,6 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       if (!cfg) throw new Error("not set up");
       const rest = new Rest(cfg.token, deps.fetch ?? fetch, deps.apiUrl);
       const fetcher = deps.fetch ?? fetch;
-      let dm: Promise<string> | undefined;
       /** An owner's DM channel: kept (with the last one, `where`), so an answer finds its owner's DM after a reconnect. */
       const rememberDm = (id: string, owner: string) => {
         const now = saved();
@@ -267,9 +267,14 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       );
       await gateway.start();
       /** Opens (or finds) an owner's DM. */
+      const opening = new Map<string, Promise<string>>();
       const openDm = async (owner: string) => {
-        const id = await (dm ??= rest.dm(owner).catch((e) => ((dm = undefined), Promise.reject(e))));
-        dm = undefined;
+        let p = opening.get(owner);
+        if (!p) {
+          p = rest.dm(owner).finally(() => opening.delete(owner));
+          opening.set(owner, p);
+        }
+        const id = await p;
         rememberDm(id, owner);
         return id;
       };
@@ -301,12 +306,18 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
               try {
                 id = await rest.post(to, part, i === parts.length - 1 ? files : []);
               } catch (e: any) {
-                // A saved DM Discord no longer takes: open the owner's DM again, once.
-                const owner = saved().dms?.[to] ?? (saved().where?.id === to ? saved().where!.owner : undefined);
-                if (reopened || to === cfg.channelId || (e?.status !== 403 && e?.status !== 404)) throw e;
+                if (reopened) throw e;
                 reopened = true;
-                forgetDm(to);
-                to = await openDm(owner && cfg.ownerIds.includes(owner) ? owner : cfg.ownerIds[0]!);
+                if (to === cfg.channelId) {
+                  // The channel didn't take it (no access, deleted, …): the owner's DM instead.
+                  to = await target();
+                } else {
+                  // A saved DM Discord no longer takes: open the owner's DM again, once.
+                  const owner = saved().dms?.[to] ?? (saved().where?.id === to ? saved().where!.owner : undefined);
+                  if (e?.status !== 403 && e?.status !== 404) throw e;
+                  forgetDm(to);
+                  to = await openDm(owner && cfg.ownerIds.includes(owner) ? owner : cfg.ownerIds[0]!);
+                }
                 id = await rest.post(to, part, i === parts.length - 1 ? files : []);
               }
               if (id) sent.push(id);

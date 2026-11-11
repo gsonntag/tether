@@ -98,7 +98,8 @@ is texted for a session you're looking at in Tether. Each text starts with its s
   **Settings → Messaging** (or in `runner.env`). They're stored on the runner. The app server can't
   send texts itself because a Foliation app has no internet access.
 - **Discord:** the same thing over a Discord bot, in a DM or one server channel. Only the user IDs
-  you set can drive it; everyone else (and other bots) is ignored. In the channel, start with
+  you set can drive it; everyone else (and other bots) is ignored. Every ID listed is treated as
+  you and sees everything (list only your own accounts). In the channel, start with
   @ and the bot's name or reply to one of its messages (anything else there is ignored); its answer
   comes back in the channel, where everyone in it can read it. Everything else Tether sends goes to
   your DMs (or wherever **Send to** says, when more than one connector is on). An answer always goes
