@@ -1306,9 +1306,12 @@ hears the person and sends text (and images, where it takes them), and its statu
 Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
 else the first connected (one that's on and really connected). Whatever follows the person's
 message about a session (or the Home agent) goes back on the connector it came by, saved per session
-(`replyVia`); the place they wrote it (a Discord channel others read) gets only the direct answer
-(the picker's reply, the agent's answer to that message), once. Reports, failures, requests and
-text_person go to them privately. Files the person sends are stored with the session (or
+(`replyVia`, with the DM it came from). A shared place (a Discord channel others read) gets Tether's
+direct reply to that message (the picker, a problem with it) and the answer of the one turn it
+started, under one rule: the channel message counts only if the session (or Home's Texts chat) was
+idle with nothing queued when it came; any other input (a DM, Tether's web, a report, a request
+answer, a held text picked from elsewhere, another turn) ends that claim; only the turn it started
+may answer there, once. In doubt, the DM. Reports, failures, requests and text_person go privately. Files the person sends are stored with the session (or
 the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
 text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
 isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one
@@ -1321,7 +1324,9 @@ discord.gg is never used. Its settings live in `texting.json` under `connectors.
 (mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
 `TETHER_DISCORD_CHANNEL_ID`); it's off until set. Tether's secrets (`TETHER_TOKEN`, the connectors'
 keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`
-(`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. The Home agent sees Discord's words marked
+(`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. A token set in `runner.env` also stays in
+`/proc/<runner pid>/environ`, readable to same-user processes: the settings page (`texting.json`) is
+the recommended place for it. The Home agent sees Discord's words marked
 `[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
 `setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
 stay for an older web).

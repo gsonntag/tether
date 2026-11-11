@@ -113,7 +113,9 @@ is texted for a session you're looking at in Tether. Each text starts with its s
      **Copy User ID** (and the channel, if you want one: **Copy Channel ID**).
   4. In **Settings → Messaging → Discord**, save the bot token, your user ID (and the channel), and
      turn it on; or set `TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS` and
-     `TETHER_DISCORD_CHANNEL_ID` in `runner.env`.
+     `TETHER_DISCORD_CHANNEL_ID` in `runner.env`. Prefer the settings page: a token in `runner.env`
+     stays readable in `/proc/<runner pid>/environ` to any process running as your user.
+     In a channel, mention the bot user itself (not its role).
 
 **Settings** also has **Notifications** (Web Push on each device) and **Agents** (runner-wide agent
 settings).

@@ -25,6 +25,8 @@ export interface HomeEnd {
   take(text: string, via?: TakeVia): Promise<void>;
   /** whether a session is the chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
+  /** the Texts chat is running a turn or has messages waiting (a text now wouldn't start the next turn) */
+  textsBusy?(): boolean;
   /**
    * A session's text_person, when the Home agent drives that session (started or messaged it, and
    * the person hasn't stepped in): the message goes to the Home agent as a report instead, and it

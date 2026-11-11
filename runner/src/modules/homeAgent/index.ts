@@ -420,6 +420,13 @@ export class HomeAgent implements HomeEnd {
     return !!this.state.texts && this.state.texts === id;
   }
 
+  textsBusy(): boolean {
+    const id = this.state.texts;
+    if (!id || !this.state.tabs.includes(id)) return false;
+    const look = this.ctx.session(id);
+    return !!look && (look.status !== "idle" || look.busy || (look.state?.queue?.length ?? 0) > 0 || !!this.textTurn);
+  }
+
   /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */
   async relay(sessionId: string, message: string): Promise<string | undefined> {
     const c = this.state.children[sessionId];
@@ -484,7 +491,7 @@ export class HomeAgent implements HomeEnd {
     if (!words) return;
     // Only the answer to a text the person sent may go back to where they wrote it (a channel others
     // read); a report's outcome goes to them privately.
-    await phone.send(words, { answer: t.kind === "text" }).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+    await phone.send(words, { answer: t.kind === "text" && !error }).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
   /**

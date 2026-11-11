@@ -13,8 +13,13 @@
 // where }; runner.env wins: TETHER_DISCORD_TOKEN, TETHER_DISCORD_OWNER_IDS (comma-separated),
 // TETHER_DISCORD_CHANNEL_ID, taken out of process.env when it loads; with childEnv.ts (every
 // spawn passes a filtered env) the token isn't passed to agents' environments. Agents run as the same
-// user and can read files, texting.json included. The token never goes to the web (settings shows
-// only "Set").
+// user and can read files, texting.json included; a token from runner.env also stays readable in
+// /proc/<runner pid>/environ to same-user processes, so the settings page (texting.json, mode 600) is
+// the better place for it. The token never goes to the web (settings shows only "Set").
+//
+// A mention of the bot's managed role (<@&role>, what Discord inserts when you pick the role instead of
+// the bot user) isn't taken: it needs the GUILDS intent to tell that role apart. The settings hint says
+// to mention the bot itself.
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -38,6 +43,8 @@ export interface DiscordSettings {
   where?: Where;
   /** when the bot last started fresh sessions (identifies), for Discord's daily limit across restarts */
   identifies?: number[];
+  /** owners' DM channels, by channel id: an answer to a DM goes back to that owner's, across reconnects */
+  dms?: Record<string, string>;
 }
 
 export type Where = { kind: "dm"; id: string; owner: string };
@@ -74,6 +81,10 @@ export function cleanSettings(v: unknown): DiscordSettings {
   const w = o.where as Record<string, unknown> | undefined;
   if (w && typeof w === "object" && isId(w.id)) {
     if (w.kind === "dm" && isId(w.owner)) out.where = { kind: "dm", id: w.id, owner: w.owner };
+  }
+  if (o.dms && typeof o.dms === "object" && !Array.isArray(o.dms)) {
+    const dms = Object.fromEntries(Object.entries(o.dms as Record<string, unknown>).filter(([k, v]) => isId(k) && isId(v)).slice(-20)) as Record<string, string>;
+    if (Object.keys(dms).length) out.dms = dms;
   }
   if (Array.isArray(o.identifies)) {
     const t = o.identifies.filter((x): x is number => typeof x === "number" && Number.isFinite(x)).slice(-1000);
@@ -179,11 +190,6 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
   const envToken = () => env.TETHER_DISCORD_TOKEN?.trim() || undefined;
   const envOwners = () => ids(env.TETHER_DISCORD_OWNER_IDS).filter(isId);
   const envChannel = () => (isId(env.TETHER_DISCORD_CHANNEL_ID?.trim()) ? env.TETHER_DISCORD_CHANNEL_ID!.trim() : undefined);
-  /** Remembers where the person last wrote (saved, so a restart keeps it). */
-  const remember = (w: Where) => {
-    const now = saved();
-    if (JSON.stringify(now.where) !== JSON.stringify(w)) store.setSection(DISCORD, { ...now, where: w });
-  };
   const token = () => envToken() ?? saved().token;
   const owners = () => (envOwners().length ? envOwners() : (saved().ownerIds ?? []));
   const channel = () => envChannel() ?? saved().channelId;
@@ -213,8 +219,20 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       const rest = new Rest(cfg.token, deps.fetch ?? fetch, deps.apiUrl);
       const fetcher = deps.fetch ?? fetch;
       let dm: Promise<string> | undefined;
-      /** DMs owners wrote in, by channel id: an answer may go back to one */
-      const dms = new Map<string, string>();
+      /** An owner's DM channel: kept (with the last one, `where`), so an answer finds its owner's DM after a reconnect. */
+      const rememberDm = (id: string, owner: string) => {
+        const now = saved();
+        if (now.dms?.[id] === owner && now.where?.id === id) return;
+        const dms = Object.fromEntries([...Object.entries(now.dms ?? {}).filter(([k]) => k !== id), [id, owner]].slice(-20));
+        store.setSection(DISCORD, { ...now, dms, where: { kind: "dm", id, owner } });
+      };
+      /** A DM that turned out gone (Discord answered 403/404): forgotten, so the next send opens a fresh one. */
+      const forgetDm = (id: string) => {
+        const now = saved();
+        const dms = { ...(now.dms ?? {}) };
+        delete dms[id];
+        store.setSection(DISCORD, { ...now, dms, ...(now.where?.id === id ? { where: undefined } : {}) });
+      };
       /** what the bot posted in the channel lately: a reply to one there is for Tether */
       const posted: string[] = [];
       const gateway = new Gateway(
@@ -224,8 +242,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
           const m = personMessage(d, { selfId: gateway.self?.id, ownerIds: cfg.ownerIds, channelId: cfg.channelId, mine: (id) => posted.includes(id) });
           if (!m) return;
           if (m.dm) {
-            dms.set(m.channelId, m.author);
-            remember({ kind: "dm", id: m.channelId, owner: m.author });
+            rememberDm(m.channelId, m.author);
           }
           const files: InboundFile[] = m.attachments
             .filter((a) => typeof a?.url === "string")
@@ -239,6 +256,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
             text: m.text,
             id: m.id,
             place: m.channelId,
+            ...(m.dm ? {} : { shared: true }),
             ...(m.replyTo ? { replyTo: m.replyTo } : {}),
             ...(files.length ? { files } : {}),
             react: (emoji) => rest.react(m.channelId, m.id, emoji),
@@ -248,32 +266,49 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
         { log, ...deps.gateway },
       );
       await gateway.start();
+      /** Opens (or finds) an owner's DM. */
+      const openDm = async (owner: string) => {
+        const id = await (dm ??= rest.dm(owner).catch((e) => ((dm = undefined), Promise.reject(e))));
+        dm = undefined;
+        rememberDm(id, owner);
+        return id;
+      };
       /**
-       * Where Tether writes: an answer to something written in the set channel, or in an owner's DM,
-       * goes back there; anything else to the DM the person last wrote in, else the first owner's.
+       * Where Tether writes: the set channel only for the direct answer to a message written there
+       * (`shared`); an answer to an owner's DM back to that DM; anything else to the DM the person
+       * last wrote in, else the first owner's.
        */
-      const target = async (place?: string): Promise<string> => {
-        if (place && place === cfg.channelId) return place;
-        if (place && cfg.ownerIds.includes(dms.get(place) ?? "")) return place;
+      const target = async (place?: string, shared?: boolean): Promise<string> => {
+        if (shared && place && place === cfg.channelId) return place;
+        if (place && cfg.ownerIds.includes(saved().dms?.[place] ?? "")) return place;
         const w = saved().where;
         if (w && cfg.ownerIds.includes(w.owner)) return w.id;
-        const owner = cfg.ownerIds[0]!;
-        const id = await (dm ??= rest.dm(owner).catch((e) => ((dm = undefined), Promise.reject(e))));
-        remember({ kind: "dm", id, owner });
-        return id;
+        return openDm(cfg.ownerIds[0]!);
       };
 
       const link = {
-        async send(out: { text: string; images?: string[]; place?: string }) {
+        async send(out: { text: string; images?: string[]; place?: string; shared?: boolean }) {
           const files = (out.images ?? []).map((p) => ({ name: basename(p), data: new Uint8Array(readFileSync(p)), type: cleanMime(undefined, p) }));
           const parts = splitMessage(unmask(out.text));
           if (!parts.length && !files.length) return [];
           if (!parts.length) parts.push("");
-          const to = await target(out.place);
+          let to = await target(out.place, out.shared);
           const sent: string[] = [];
+          let reopened = false;
           try {
             for (const [i, part] of parts.entries()) {
-              const id = await rest.post(to, part, i === parts.length - 1 ? files : []);
+              let id: string | undefined;
+              try {
+                id = await rest.post(to, part, i === parts.length - 1 ? files : []);
+              } catch (e: any) {
+                // A saved DM Discord no longer takes: open the owner's DM again, once.
+                const owner = saved().dms?.[to] ?? (saved().where?.id === to ? saved().where!.owner : undefined);
+                if (reopened || to === cfg.channelId || (e?.status !== 403 && e?.status !== 404)) throw e;
+                reopened = true;
+                forgetDm(to);
+                to = await openDm(owner && cfg.ownerIds.includes(owner) ? owner : cfg.ownerIds[0]!);
+                id = await rest.post(to, part, i === parts.length - 1 ? files : []);
+              }
               if (id) sent.push(id);
             }
           } catch (e: any) {
@@ -329,7 +364,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
           fromEnv: fromEnvChannel,
           inputs: [{ key: "channelId", placeholder: "Channel ID (optional)", optional: true }],
           unset: !!s.channelId && !fromEnvChannel,
-          note: "In the channel, start with @ and the bot's name, or reply to one of its messages. It answers there only what you wrote there, and anyone who can see the channel can read it.",
+          note: "In the channel, start with @ and the bot's name (the bot user, not its role), or reply to one of its messages. It answers there only what you wrote there, and anyone who can see the channel can read it.",
         },
       ];
     },
@@ -340,6 +375,11 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       if (typeof v.token === "string") {
         const t = v.token.trim().replace(/^Bot\s+/i, "");
         if (t && !/^[A-Za-z0-9._-]{20,200}$/.test(t)) throw new Error("That doesn't look like a bot token. Copy it again from the Developer Portal (Bot, Reset Token).");
+        // Another bot: its DMs are other channels.
+        if ((t || undefined) !== next.token) {
+          delete next.where;
+          delete next.dms;
+        }
         next.token = t || undefined;
         if (t) registerSecret(t);
       }

@@ -49,7 +49,9 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
   const told: [string, string, Attachment[]?][] = [];
   const took: [string, TakeVia | undefined][] = [];
   const line = new HomeLine();
-  if (o.home) line.home = { take: async (text, via) => void took.push([text, via]), isTextsChat: () => false };
+  /** the Home agent's Texts chat, and whether it's busy (a turn running or messages waiting) */
+  const home = { busy: false };
+  if (o.home) line.home = { take: async (text, via) => void took.push([text, via]), isTextsChat: (id) => id === "claude:texts", textsBusy: () => home.busy };
   const sessions: Record<string, any> = {
     "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } },
   };
@@ -72,7 +74,9 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
   );
   // As the texting module wires it.
   line.phone = { send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer }), text: (from, body) => t.personText(from, body) };
-  return { t, im: im.state, dc: dc.state, told, took, store, line };
+  /** the session's state as the runner sees it (idle unless set) */
+  const look = (id: string) => sessions[id];
+  return { t, im: im.state, dc: dc.state, told, took, store, line, home, look };
 }
 
 describe("the registry", () => {
@@ -467,18 +471,25 @@ describe("second review round", () => {
       (s.t.store as any).file = file;
       await s.t.start();
       await s.t.attention("claude:a");
-      s.dc.hear({ text: "1 go", place: "chan-9" });
+      s.dc.hear({ text: "1 go", place: "chan-9", shared: true });
       await tick();
-      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
-      expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
+      s.t.turnStarted("claude:a");
+      // A shared place is never saved: only the connector (a DM's place would be).
+      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord" });
+      s.dc.hear({ text: "1 and you", place: "dm-1" });
+      await tick();
+      expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "dm-1" });
+      s.dc.hear({ text: "1 go", place: "chan-9", shared: true });
+      await tick();
+      s.t.turnStarted("claude:a");
       s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Done that." }] });
       await s.t.turnEnded("claude:a");
-      expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Done that.", place: "chan-9" });
+      expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Done that.", place: "chan-9", shared: true });
       // Tether's own texts carry no place.
       await s.t.attention("claude:a");
       expect(s.dc.sent.at(-1)!.place).toBeUndefined();
-      // The place answered once; the connector stays.
-      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord" });
+      // The DM it was last written from stays the private way back.
+      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord", place: "dm-1" });
       // A preference for a connector that's off: refused, and an old one is skipped.
       s.t.prefer("imessage");
       s.im.enabled = false;
@@ -520,28 +531,31 @@ describe("round 3", () => {
   test("a channel message: the direct answer goes to the channel; a later report or request goes to the DM", async () => {
     const s = setup({ home: true });
     await s.t.start();
-    // Home: they write in the channel.
-    s.dc.hear({ text: "home: hi", place: "chan-1" });
+    // Home: they write in the channel while it's idle; the turn it starts.
+    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
     await tick();
-    // A report turn's outcome: private (no place).
+    s.t.turnStarted("claude:texts");
+    // A report's outcome: private.
     expect(await s.line.phone!.send("done: PR #3")).toBe(true);
     expect(s.dc.sent.at(-1)).toEqual({ text: "[home] done: PR #3" });
     // The direct answer to their text: the channel, once.
     expect(await s.line.phone!.send("ok, on it", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] ok, on it", place: "chan-1" });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] ok, on it", place: "chan-1", shared: true });
     expect(await s.line.phone!.send("one more", { answer: true })).toBe(true);
     expect(s.dc.sent.at(-1)).toEqual({ text: "[home] one more" });
-    // Sessions: the answer to a channel message there; a failure or a request after it to the DM.
+    // Sessions: a failure to the DM; the answer of the turn a channel message started there; after it, the DM.
     await s.t.attention("claude:a");
-    s.dc.hear({ text: "1 why", place: "chan-1" });
+    s.dc.hear({ text: "1 why", place: "chan-1", shared: true });
     await tick();
+    s.t.turnStarted("claude:a");
     await s.t.turnEnded("claude:a", "boom");
     expect(s.dc.sent.at(-1)!.place).toBeUndefined();
-    s.dc.hear({ text: "1 try again", place: "chan-1" });
+    s.dc.hear({ text: "1 try again", place: "chan-1", shared: true });
     await tick();
+    s.t.turnStarted("claude:a");
     s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Retried." }] });
     await s.t.turnEnded("claude:a");
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Retried.", place: "chan-1" });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Retried.", place: "chan-1", shared: true });
     await s.t.attention("claude:a");
     expect(s.dc.sent.at(-1)!.place).toBeUndefined();
     expect((await s.line.phone!.text("claude:a", "PR up")).isError).toBeUndefined();
@@ -576,6 +590,138 @@ describe("round 3", () => {
       st.save();
       const v = JSON.parse(readFileSync(file, "utf8"));
       expect([v.future, v.older, v.prefer, v.settings.phone]).toEqual([{ x: 1 }, [2], "discord", "+13105551234"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("round 4: only the turn a channel message started answers in the channel", () => {
+  const user = (text: string) => ({ id: "u", role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  const agent = (text: string) => ({ id: "a", role: "assistant" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+
+  test("(a) a DM in flight, then a channel message: the DM's answer goes to the DM", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 summarize the doc", place: "dm-1" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.look("claude:a").status = "running";
+    // Mid-turn, a channel message: queued behind the DM's turn, so it claims nothing.
+    s.dc.hear({ text: "1 hi", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", agent("Here's the summary."));
+    s.look("claude:a").status = "idle";
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Here's the summary.", place: "dm-1" });
+    // Its own turn (queued) starts after: it isn't the channel's either.
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Hi."));
+    await s.t.turnEnded("claude:a");
+    for (const o of s.dc.sent) expect(o.shared).toBeUndefined();
+  });
+
+  test("(b) a channel message while the session is idle: its answer goes to the channel", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 status?", place: "chan-1", shared: true });
+    await tick();
+    // The runner shows the message (defanged): it's the channel's own.
+    s.t.said("claude:a", user("\u200bstatus?"));
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("All green."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] All green.", place: "chan-1", shared: true });
+  });
+
+  test("(c) a web-started turn while a channel claim exists goes to the DM", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 status?", place: "chan-1", shared: true });
+    await tick();
+    // Its turn ran and ended without a text (someone was looking); then a turn from the web.
+    s.t.turnStarted("claude:a");
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Done, want more?"));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    // Typed in Tether into the channel's own turn: in doubt, the DM.
+    s.dc.hear({ text: "1 status?", place: "chan-1", shared: true });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", user("also check the logs"));
+    s.t.said("claude:a", agent("Logs look fine?"));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+  });
+
+  test("(d) Home: busy or interrupted, the channel gets nothing; idle and uninterrupted, the answer", async () => {
+    const s = setup({ home: true });
+    await s.t.start();
+    // A DM to Home in flight, then a channel message: the DM turn's answer goes to the DM.
+    s.dc.hear({ text: "home: summarize the doc", place: "dm-1" });
+    await tick();
+    s.t.turnStarted("claude:texts");
+    s.home.busy = true;
+    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
+    await tick();
+    expect(await s.line.phone!.send("summary: …", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    // Idle: the channel message's turn answers in the channel.
+    s.home.busy = false;
+    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
+    await tick();
+    s.t.turnStarted("claude:texts");
+    expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] hey", place: "chan-1", shared: true });
+    // A web-started (or report) turn after a channel message's turn: the DM.
+    s.dc.hear({ text: "home: and?", place: "chan-1", shared: true });
+    await tick();
+    s.t.turnStarted("claude:texts");
+    s.t.said("claude:texts", user("[From Tether] a report"));
+    expect(await s.line.phone!.send("noted", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+  });
+
+  test("a request answered from the channel claims nothing; a held text picked elsewhere neither; dropped-file notices go privately", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-r4-"));
+    try {
+      const s = setup({ attachmentsDir: dir });
+      await s.t.start();
+      const look = s.look("claude:a");
+      look.requests = ["r1"];
+      look.state.requests = [{ id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 }];
+      await s.t.request(look.state.requests[0]);
+      s.dc.hear({ text: "1 y", place: "chan-1", shared: true });
+      await tick();
+      look.requests = [];
+      look.state.requests = [];
+      s.t.turnStarted("claude:a");
+      s.t.said("claude:a", agent("Ran it."));
+      await s.t.turnEnded("claude:a");
+      expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+      // Two open; a text held from the DM, picked from the channel: no channel answer.
+      const sessions = (s.t as any).ctx.session;
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      await s.t.attention("codex:b");
+      s.dc.hear({ text: "deploy it", place: "dm-1" });
+      await tick();
+      s.dc.hear({ text: "1", place: "chan-1", shared: true });
+      await tick();
+      expect(s.told.at(-1)).toEqual(["claude:a", "deploy it"]);
+      s.t.turnStarted("claude:a");
+      s.t.said("claude:a", agent("Deployed."));
+      await s.t.turnEnded("claude:a");
+      expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+      // Held files from the channel that go nowhere: the notice goes privately.
+      s.dc.hear({ text: "look", files: [{ name: "a.png", mimeType: "image/png", size: 1, read: async () => new Uint8Array([1]) }], place: "chan-1", shared: true });
+      await tick();
+      (s.t as any).now = () => Date.now() + 11 * 60_000;
+      await s.t.checkHeld();
+      expect(s.dc.sent.at(-1)).toEqual({ text: TEXTS.filesNotSent });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

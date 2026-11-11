@@ -15,6 +15,8 @@ export function imessageConnector(store: TextingStore, open: OpenLink = openSpec
     label: "iMessage",
     service: "Photon",
     mark: FROM_IMESSAGE,
+    // One Photon client at a time: a settings change waits for the old one to stop.
+    stopWaitMs: 15_000,
     about: "Phone must be added and verified on Photon dashboard",
     notReady: "Set the phone and the Photon project's id and secret first, and turn texting on.",
     enabled: () => store.enabled(),

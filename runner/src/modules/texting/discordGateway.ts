@@ -464,7 +464,7 @@ export class Rest {
       }
       if (!r.ok) {
         const v = await r.json().catch(() => undefined);
-        throw new Error(`Discord answered ${r.status}${v?.message ? `: ${v.message}` : ""}`);
+        throw Object.assign(new Error(`Discord answered ${r.status}${v?.message ? `: ${v.message}` : ""}`), { status: r.status });
       }
       return r.status === 204 ? null : r.json().catch(() => null);
     }

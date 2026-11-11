@@ -67,10 +67,11 @@ export const FILES_ONLY = "(sent a file)";
 /** A message with only files, while it's routed (no one can type it: NUL is taken out of what they send). */
 const NO_WORDS = "\u0000";
 
-/** Where an answer goes back: the connector, and the place on it (a Discord channel or DM). */
+/** Where an answer goes back: the connector, and the place on it (a Discord DM, or a channel others read: `shared`). */
 export interface Back {
   via: string;
   place?: string;
+  shared?: boolean;
 }
 
 /** How long an agent's answer may be in a text. */
@@ -127,6 +128,16 @@ export class Texter {
   /** files that came with the text the router holds for the picker, which hold that is, and where they came from */
   private held?: { files: InboundFile[]; hold: { text: string; at: number }; back?: Back };
   private heldTimer?: ReturnType<typeof setTimeout>;
+  /** where the text the picker holds came from (files or not): picked from elsewhere, it's no channel's answer */
+  private heldFrom?: { hold: { text: string; at: number }; back?: Back };
+  /**
+   * A message from a shared place (a server channel) that started a turn, by session (or HOME). The
+   * one rule: only that turn's answer may go back there. It's set only when the session was idle
+   * with nothing queued as the message came ("armed"), becomes "active" when the turn it starts
+   * starts, and goes on any other input (a DM, Tether's web, a report, another turn) and once used.
+   * Kept in memory only: after a restart everything goes to the DM.
+   */
+  private channelTurns = new Map<string, { via: string; place: string; words: string; phase: "armed" | "active" }>();
   /** when each session's link last went out */
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
@@ -193,12 +204,29 @@ export class Texter {
    * direct answer to what they wrote there, and only once: anything later goes to their own DM.
    */
   backTo(id: string, answer = false): Back | undefined {
+    const ct = this.channelTurns.get(id);
+    if (answer && ct?.phase === "active") {
+      this.channelTurns.delete(id);
+      return { via: ct.via, place: ct.place, shared: true };
+    }
     const b = this.store.replyVia[id];
-    if (!b) return undefined;
-    if (!answer || !b.place) return { via: b.via };
-    this.store.replyVia[id] = { via: b.via };
-    this.store.save();
-    return b;
+    // A private place (the DM it came from) only: a shared one is never kept here.
+    return b ? { via: b.via, ...(b.place ? { place: b.place } : {}) } : undefined;
+  }
+
+  /** Session `id` (or HOME: the Texts chat) is idle with nothing queued, so a message now starts its next turn. */
+  private idle(id: string): boolean {
+    if (id === HOME) {
+      const busy = this.ctx.homeLine?.home?.textsBusy;
+      return !!busy && !busy();
+    }
+    const look = this.ctx.session(id);
+    return !!look && look.status === "idle" && !look.busy && !(look.state?.queue?.length ?? 0);
+  }
+
+  /** Which channelTurns key a session's events are for: HOME for the Home agent's Texts chat. */
+  private turnKey(sessionId: string): string {
+    return this.ctx.homeLine?.home?.isTextsChat(sessionId) ? HOME : sessionId;
   }
 
   private async say(text: string, back?: Back): Promise<string | undefined> {
@@ -211,7 +239,7 @@ export class Texter {
     const ch = (there?.connected ? there : undefined) ?? this.target();
     if (!ch) return { sent: false };
     try {
-      const ids = await ch.send({ text, ...(images?.length ? { images } : {}), ...(back?.place && ch === there ? { place: back.place } : {}) });
+      const ids = await ch.send({ text, ...(images?.length ? { images } : {}), ...(back?.place && ch === there ? { place: back.place, ...(back.shared ? { shared: true } : {}) } : {}) });
       this.failed = undefined;
       this.router.noteOut();
       return { sent: true, ...(ids[0] ? { id: ids[0], ids } : {}) };
@@ -383,6 +411,14 @@ export class Texter {
 
   /** The agent said something: kept until its turn ends (only the last message counts). */
   said(sessionId: string, msg: Msg) {
+    if (msg.role === "user") {
+      // Anything else put to a channel turn (typed in Tether, a report): its answer isn't the channel's.
+      const key = this.turnKey(sessionId);
+      const ct = this.channelTurns.get(key);
+      const said = msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n").replaceAll("\u200b", "");
+      if (ct && !said.includes(ct.words)) this.channelTurns.delete(key);
+      return;
+    }
     if (msg.role !== "assistant") return;
     const text = msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n").trim();
     // A check-in's answer line is Tether's to read, not the person's (shared/checkIn.ts).
@@ -390,6 +426,11 @@ export class Texter {
   }
 
   turnStarted(sessionId: string) {
+    // The turn a channel message started, or any other one (which ends the channel's claim).
+    const key = this.turnKey(sessionId);
+    const ct = this.channelTurns.get(key);
+    if (ct?.phase === "armed") ct.phase = "active";
+    else this.channelTurns.delete(key);
     this.lastSaid.delete(sessionId);
     this.settled(sessionId);
   }
@@ -411,11 +452,12 @@ export class Texter {
     if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return void this.talking.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     const talking = this.talking.delete(sessionId);
-    // What follows the person's message goes back the way it came; only the agent's answer itself may
-    // go to the place they wrote it (a channel), a failure goes to their DM.
+    // What follows the person's message goes back the way it came; only the answer of the turn a
+    // channel message started may go to that channel (backTo), a failure goes to their DM.
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via: talking ? this.backTo(sessionId) : undefined });
     // An answer to something the person texted is the back-and-forth: no link.
     else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via: talking ? this.backTo(sessionId, true) : undefined });
+    this.channelTurns.delete(sessionId);
   }
 
   // ── in: the person's replies, one at a time ──
@@ -440,7 +482,8 @@ export class Texter {
     const h = this.held;
     this.held = undefined;
     clearTimeout(this.heldTimer);
-    if (h) await this.say(TEXTS.filesNotSent, h.back);
+    // Not an answer to anything just written: privately.
+    if (h) await this.say(TEXTS.filesNotSent, h.back ? { via: h.back.via } : undefined);
   }
 
   /** The picker's hold expired with files on it: the person hears they didn't go. */
@@ -448,14 +491,14 @@ export class Texter {
     const h = this.held;
     if (!h || this.now() - h.hold.at < HELD_MS) return Promise.resolve();
     // The router forgets an expired hold on its next look; the files go now.
-    this.inbox = this.inbox.then(() => (this.held === h ? this.dropHeld() : undefined));
+    this.inbox = this.inbox.then(() => (this.held === h ? this.dropHeld() : undefined)).catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
     return this.inbox;
   }
 
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
     const via = m.via;
-    const back: Back | undefined = via ? { via, ...(m.place ? { place: m.place } : {}) } : undefined;
+    const back: Back | undefined = via ? { via, ...(m.place ? { place: m.place } : {}), ...(m.shared ? { shared: true } : {}) } : undefined;
     const mine = m.files ?? [];
     const before = this.router.state.held;
     const d = this.router.route(!m.text.trim() && mine.length ? NO_WORDS : m.text, m.replyTo, !!home, mine.length ? { filesOnly: NO_WORDS } : undefined);
@@ -475,6 +518,10 @@ export class Texter {
     // The hold moved on (a new one, picked another way, expired) with files on it: they didn't go.
     if (this.held && this.held.hold !== hold) await this.dropHeld();
     const heldThis = !!hold && hold !== before;
+    // A held text picked from another place than it was written: no channel's answer.
+    const elsewhere = tookHeld && (this.heldFrom?.hold !== before || this.heldFrom?.back?.place !== back?.place);
+    if (heldThis) this.heldFrom = { hold, ...(back ? { back } : {}) };
+    else if (!hold) this.heldFrom = undefined;
     if (heldThis && mine.length) {
       this.held = { files: mine, hold, ...(back ? { back } : {}) };
       clearTimeout(this.heldTimer);
@@ -490,13 +537,26 @@ export class Texter {
       if (mine.length && !heldThis) await this.say(TEXTS.filesNotSent, back);
       return;
     }
+    const key = d.kind === "home" ? HOME : d.sessionId;
+    // Any input ends a channel turn's claim; this one may start a new one (below).
+    this.channelTurns.delete(key);
     if (back) {
-      this.store.replyVia = Object.fromEntries([...Object.entries(this.store.replyVia).filter(([k]) => k !== (d.kind === "home" ? HOME : d.sessionId)), [d.kind === "home" ? HOME : d.sessionId, back]].slice(-REPLY_VIA_MAX));
+      // The way back: the connector, and the place only when it's private (a DM).
+      // A channel message keeps the DM this session was last written from (the place private answers go).
+      const was = this.store.replyVia[key];
+      const dm = back.shared ? (was?.via === back.via ? was.place : undefined) : back.place;
+      const keep = { via: back.via, ...(dm ? { place: dm } : {}) };
+      this.store.replyVia = Object.fromEntries([...Object.entries(this.store.replyVia).filter(([k]) => k !== key), [key, keep]].slice(-REPLY_VIA_MAX));
       this.store.save();
     }
+    /** A channel message to an idle session (or Home): the turn it starts may answer in the channel. */
+    const arm = () => {
+      if (back?.shared && back.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via: back.via, place: back.place, words: words.slice(0, 200), phase: "armed" });
+    };
     if (d.kind === "home") {
       try {
         const mark = this.channel(via)?.connector.mark;
+        arm();
         await home!.take(words, { ...(mark ? { mark } : {}), ...(files.length ? { files: (chat) => this.stash(chat, files, back) } : {}) });
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
@@ -535,6 +595,7 @@ export class Texter {
         if (files.length) await this.say(TEXTS.filesWithAnswer(d.n), back);
       } else {
         const stored = await this.stash(d.sessionId, files, back);
+        arm();
         if (stored.length) await this.ctx.sessions.tell(d.sessionId, words, stored);
         else await this.ctx.sessions.tell(d.sessionId, words);
         this.talking.add(d.sessionId);

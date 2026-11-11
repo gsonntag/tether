@@ -35,6 +35,8 @@ export interface Inbound {
   via?: string;
   /** where on that connector it was written, when there's more than one place (a Discord DM or channel): an answer goes back there */
   place?: string;
+  /** that place is shared (a server channel others read): only the answer of the turn it started goes there (texting/index.ts) */
+  shared?: boolean;
 }
 
 /** What Tether sends: text, and images (absolute paths on the runner) where the connector takes them. */
@@ -43,6 +45,8 @@ export interface Outbound {
   images?: string[];
   /** it answers a message written at this place (Inbound.place): it may go there; anything else goes to the person's private one */
   place?: string;
+  /** the place is shared (a channel): set only for the direct answer to a message written there */
+  shared?: boolean;
 }
 
 /** A send that went partly (a long message split, a later part failed): the parts that went. */
@@ -80,6 +84,8 @@ export interface Connector {
   readonly mark: string;
   /** whether it takes images out */
   readonly images?: boolean;
+  /** how long a settings change waits for its old link to close before connecting again (Channel's 3 s when unset) */
+  readonly stopWaitMs?: number;
   /** turned on (by its settings or its environment) */
   enabled(): boolean;
   /** everything its link needs is set */
@@ -176,7 +182,7 @@ export class Channel {
     // Two clients at once (Photon) can fight over the line: wait for the old one to close, but not long.
     if (old) {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([old.stop().catch(() => {}), new Promise((r) => (timer = setTimeout(r, this.stopWaitMs)))]);
+      await Promise.race([old.stop().catch(() => {}), new Promise((r) => (timer = setTimeout(r, this.connector.stopWaitMs ?? this.stopWaitMs)))]);
       clearTimeout(timer);
     }
     this.lastError = undefined;
@@ -188,7 +194,7 @@ export class Channel {
   async send(out: Outbound): Promise<string[]> {
     if (!this.link || !this.connected) throw new Error("not connected");
     try {
-      const id = await this.link.send(this.connector.images ? out : { text: out.text, ...(out.place ? { place: out.place } : {}) });
+      const id = await this.link.send(this.connector.images ? out : { text: out.text, ...(out.place ? { place: out.place } : {}), ...(out.shared ? { shared: true } : {}) });
       return id === undefined ? [] : Array.isArray(id) ? id : [id];
     } catch (e: any) {
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;

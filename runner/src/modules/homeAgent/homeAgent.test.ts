@@ -1120,12 +1120,14 @@ test("closing the Texts tab: the next text makes a new one", async () => {
 });
 
 test("a failed turn on a text is texted briefly", async () => {
-  const { line, sent, fake } = await texting();
+  const { line, sent, answers, fake } = await texting();
   const plain = fake.script;
   fake.script = (text) => (text.includes("boom") ? [async (sink) => sink.state({ status: "idle", error: "429 rate_limit_error" } as any)] : plain(text));
   await line.home!.take("boom");
   await until(() => sent.length === 1);
   expect(sent[0]).toBe("Couldn't do that: rate limited.");
+  // A failure isn't an answer: it goes to them privately, never to a channel.
+  expect(answers).toEqual([false]);
 });
 
 test("the Home agent keeps its own style rules: none of the sessions' added instructions", () => {

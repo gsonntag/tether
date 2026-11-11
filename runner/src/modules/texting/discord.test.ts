@@ -381,7 +381,7 @@ describe("review fixes", () => {
       // They write in the channel: the answer to that goes there, with its place.
       o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "c1", type: 0, guild_id: "g", channel_id: CHAN, content: `<@${BOT}> 1 y`, author: { id: ME } } });
       expect(o.heard.at(-1)!.place).toBe(CHAN);
-      await o.link.send({ text: "[1] ok", place: CHAN });
+      await o.link.send({ text: "[1] ok", place: CHAN, shared: true });
       expect(posted()).toEqual([DM, CHAN]);
       // Tether's own next text: the DM, not the channel.
       await o.link.send({ text: "[2] Can I deploy? y/n" });
@@ -570,7 +570,7 @@ describe("second review round", () => {
     const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME, TETHER_DISCORD_CHANNEL_ID: CHAN });
     const o = await openIt(f);
     o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "c1", type: 0, guild_id: "g", channel_id: CHAN, content: `<@${BOT}> hi`, author: { id: ME } } });
-    const [id] = (await o.link.send({ text: "[1] Can I? y/n", place: CHAN })) as string[];
+    const [id] = (await o.link.send({ text: "[1] Can I? y/n", place: CHAN, shared: true })) as string[];
     o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "c2", type: 19, guild_id: "g", channel_id: CHAN, content: "y", author: { id: ME }, message_reference: { message_id: id, channel_id: CHAN } } });
     o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 4, d: { id: "c3", type: 0, guild_id: "g", channel_id: CHAN, content: "y", author: { id: ME } } });
     expect(o.heard.map((m) => [m.id, m.text])).toEqual([["c1", "hi"], ["c2", "y"]]);
@@ -724,5 +724,70 @@ describe("round 3", () => {
       resetIdentifies();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("round 4", () => {
+  test("the channel only for a shared answer; owners' DMs kept across a reconnect; a gone DM reopened once; a new token forgets DMs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "discord-r4-"));
+    try {
+      const file = join(dir, "texting.json");
+      const env = { TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: `${ME},${OTHER}`, TETHER_DISCORD_CHANNEL_ID: CHAN };
+      const DM_A = "600000000000000001";
+      const DM_B = "600000000000000002";
+      const f = fakeDiscord(env, file);
+      const o = await openIt(f);
+      const create = (d: any) => o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 9, d: { type: 0, attachments: [], ...d } });
+      create({ id: "a1", channel_id: DM_A, content: "hi", author: { id: ME } });
+      create({ id: "b1", channel_id: DM_B, content: "hi", author: { id: OTHER } });
+      const url = () => f.calls.at(-1)!.url.replace("https://discord.com/api/v10", "");
+      // A channel place without `shared`: never the channel.
+      await o.link.send({ text: "x", place: CHAN });
+      expect(url()).toBe(`/channels/${DM_B}/messages`);
+      await o.link.send({ text: "x", place: CHAN, shared: true });
+      expect(url()).toBe(`/channels/${CHAN}/messages`);
+      await o.link.stop();
+      // After a reconnect, an answer to owner A's DM still goes to A's DM, not B's (the last one written).
+      const g = fakeDiscord(env, file);
+      const p = await openIt(g);
+      await p.link.send({ text: "for A", place: DM_A });
+      expect(g.calls.at(-1)!.url).toBe(`https://discord.com/api/v10/channels/${DM_A}/messages`);
+      await p.link.stop();
+      // A DM Discord no longer takes: reopened once, for its owner.
+      let failed = 0;
+      const h = fakeDiscord(env, file);
+      const realPost = h.calls;
+      const q = await (async () => {
+        const fetcher = (async (u: string, init: RequestInit = {}) => {
+          realPost.push({ method: init.method ?? "GET", url: u, ...(init.body && !(init.body instanceof FormData) ? { body: JSON.parse(String(init.body)) } : {}) });
+          if (u.endsWith(`/channels/${DM_A}/messages`) && !failed++) return Response.json({ message: "Unknown Channel" }, { status: 404 });
+          if (u.endsWith("/users/@me/channels")) return Response.json({ id: "600000000000000003" });
+          return Response.json({ id: "ok" });
+        }) as unknown as typeof fetch;
+        const socks = sockets();
+        const c = discordConnector(new TextingStore(file, env), { fetch: fetcher, gateway: { socket: socks.open } });
+        const opening = c.open(() => {}, () => {});
+        await until(() => socks.all.length > 0);
+        socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+        ready(socks.last());
+        return opening;
+      })();
+      expect(await q.send({ text: "for A again", place: DM_A })).toEqual(["ok"]);
+      expect(realPost.map((c) => c.url.replace("https://discord.com/api/v10", ""))).toEqual([`/channels/${DM_A}/messages`, "/users/@me/channels", "/channels/600000000000000003/messages"]);
+      expect(realPost[1]!.body).toEqual({ recipient_id: ME });
+      await q.stop();
+      // A new token: the old bot's DMs are forgotten.
+      const store = new TextingStore(file, {});
+      const c2 = discordConnector(store);
+      c2.update({ values: { token: "MTAy.another-bot-token.abcdefghijk" } });
+      expect([store.section<any>("discord").where, store.section<any>("discord").dms]).toEqual([undefined, undefined]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("iMessage waits for its old Photon client to stop before a new one", async () => {
+    const { imessageConnector } = await import("./imessage");
+    expect(imessageConnector(new TextingStore(undefined, {})).stopWaitMs).toBe(15_000);
   });
 });
