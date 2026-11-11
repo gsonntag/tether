@@ -2,11 +2,11 @@
 // checking the answer (merged, worktrees cleaned up) against real git repos.
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ANSWER_TAG, checkInMessage, judge, parseAnswer, skipReason, verify, type Pr } from "./checkIn";
+import { ANSWER_TAG, checkInMessage, judge, listeningPorts, namedInRunning, parseAnswer, skipReason, stillRunning, systemProbe, verify, type Pr, type Probe } from "./checkIn";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -257,4 +257,88 @@ test("verify: no git, nothing found", async () => {
   dirs.push(dir);
   expect(await verify(dir, { ...ok, branch: "x" })).toEqual(clean);
   expect(await verify(join(dir, "missing"), ok)).toEqual(clean);
+});
+
+const jungle = "local stack (tmux jungle-dev, Supabase :54421, app :3005)";
+
+test("the check-in asks what's still running, to leave it running and to spare worktrees in use", () => {
+  const m = checkInMessage("/r/x");
+  expect(m).toContain("don't stop anything you started that's still running");
+  expect(m).toContain('"running": "what you started that\'s still running, or null"');
+  expect(m).toContain("lsof +D <path>");
+  expect(m).toContain("if something is, leave the worktree and answer cleaned_up: false");
+  expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": false, "running": "${jungle}"}`)).toEqual({ done: true, merged: false, running: jungle });
+  expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": true, "running": null}`)).toEqual({ done: true, merged: true });
+  expect(namedInRunning(jungle)).toEqual({ tmux: ["jungle-dev"], ports: [54421, 3005] });
+  expect(namedInRunning("vite on port 5173, watcher")).toEqual({ tmux: [], ports: [5173] });
+});
+
+test("listeningPorts reads /proc/net/tcp", () => {
+  const text = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:D5E5 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1",
+    "   1: 0100007F:0BBD 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 2",
+  ].join("\n");
+  expect(listeningPorts(text)).toEqual([54757]);
+});
+
+/** A machine where `tmux` and `ports` are live, and `busy` folders have that many processes. */
+const fakeProbe = (o: { tmux?: Record<string, boolean | undefined>; ports?: number[]; busy?: Record<string, number> }): Probe => ({
+  tmux: async (n) => o.tmux?.[n],
+  ports: async () => (o.ports ? new Set(o.ports) : undefined),
+  usersOf: async (d) => o.busy?.[d] ?? 0,
+});
+
+test("stillRunning takes the session's word when something it names is live or can't be checked, not when all of it is gone", async () => {
+  const a = { done: true, merged: false, running: jungle };
+  expect(await stillRunning(a, fakeProbe({ tmux: { "jungle-dev": true }, ports: [] }))).toBe(jungle);
+  expect(await stillRunning(a, fakeProbe({ tmux: { "jungle-dev": false }, ports: [3005] }))).toBe(jungle);
+  expect(await stillRunning(a, fakeProbe({ tmux: { "jungle-dev": false }, ports: [] }))).toBeUndefined();
+  // tmux and the ports can't be told: its word.
+  expect(await stillRunning(a, fakeProbe({}))).toBe(jungle);
+  // Nothing it names can be checked: its word.
+  expect(await stillRunning({ ...a, running: "a file watcher" }, fakeProbe({ ports: [] }))).toBe("a file watcher");
+  expect(await stillRunning({ done: true, merged: true }, fakeProbe({ ports: [] }))).toBeUndefined();
+});
+
+test("stillRunning counts processes working in the separate worktree it names, never in its own folder", async () => {
+  const { dir } = await repo();
+  const wt = join(dir, "wt");
+  mkdirSync(wt);
+  const a = { done: true, merged: true, cleanedUp: false, worktree: wt };
+  expect(await stillRunning(a, fakeProbe({ busy: { [wt]: 2 } }))).toBe(`2 processes working in ${wt}`);
+  expect(await stillRunning(a, fakeProbe({ busy: { [wt]: 2 } }), wt)).toBeUndefined();
+  expect(await stillRunning(a, fakeProbe({}))).toBeUndefined();
+  // The machine's own view: a process started in it.
+  expect(await systemProbe.usersOf(wt)).toBe(0);
+  const p = Bun.spawn(["sleep", "30"], { cwd: wt });
+  try {
+    await Bun.sleep(50);
+    expect(await systemProbe.usersOf(wt)).toBe(1);
+    expect(await stillRunning(a)).toBe(`1 process working in ${wt}`);
+  } finally {
+    p.kill();
+    await p.exited;
+  }
+});
+
+test("systemProbe sees a listening port", async () => {
+  const s = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    expect((await systemProbe.ports())?.has(s.port)).toBe(true);
+    expect(await stillRunning({ done: true, merged: true, running: `app :${s.port}` })).toBe(`app :${s.port}`);
+  } finally {
+    s.stop(true);
+  }
+  expect(await stillRunning({ done: true, merged: true, running: `app :${s.port}` })).toBeUndefined();
+});
+
+test("judge keeps a session that still runs something, with that first", () => {
+  const none = { unmerged: [], leftover: [] };
+  // The Jungle case: still running, and its PR is open.
+  expect(judge({ done: true, merged: false, note: "PR #377 still open" }, none, jungle)).toEqual({ archive: false, reason: `still running: ${jungle}. Also done, but not merged or applied: PR #377 still open` });
+  expect(judge({ done: true, merged: true, cleanedUp: true }, { unmerged: ["PR #377 from dev into main is still open"], leftover: [] }, jungle).reason).toBe(`still running: ${jungle}. Also says it's done and merged, but git disagrees: PR #377 from dev into main is still open`);
+  // Otherwise finished: kept for that alone.
+  expect(judge({ done: true, merged: true, cleanedUp: true }, none, jungle)).toEqual({ archive: false, reason: `still running: ${jungle}` });
+  expect(judge({ done: true, merged: true, cleanedUp: true }, none, undefined).archive).toBe(true);
 });

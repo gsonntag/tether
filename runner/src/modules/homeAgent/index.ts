@@ -47,7 +47,7 @@ import type { Module, ModuleContext } from "..";
 import type { HomeEnd } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
-import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, verify, type Git } from "./checkIn";
+import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
@@ -346,6 +346,8 @@ export class HomeAgent implements HomeEnd {
     /** git for checking answers (tests replace it) */
     private git: Git = runGit(),
     private waitMs = CHECKIN_WAIT_MS,
+    /** the machine, for checking what a session says is still running (tests replace it) */
+    private probe: Probe = systemProbe,
   ) {
     this.file = join(ctx.dataDir, "state.json");
     try {
@@ -1176,7 +1178,8 @@ export class HomeAgent implements HomeEnd {
     if (error) return Object.assign(e, { outcome: "kept", reason: `its turn failed: ${error}` });
     const answer = parseAnswer(lastRawReply(await this.ctx.sessions.recent(id, 10).catch(() => [] as Msg[])));
     const found = answer?.done && (answer.merged || answer.nothingToMerge) ? await verify(e.project, answer, this.git, new Set(), e.keep).catch(() => undefined) : undefined;
-    const v = judge(answer, found);
+    const running = answer ? await stillRunning(answer, this.probe, e.project).catch(() => answer.running) : undefined;
+    const v = judge(answer, found, running);
     if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
     try {
       await this.ctx.sessions.setArchived(id, true);

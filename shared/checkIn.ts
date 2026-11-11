@@ -17,6 +17,8 @@ export interface Answer {
   /** the branch the work was meant to land in (main, or e.g. a deploy branch) */
   target?: string;
   worktree?: string;
+  /** what it started that's still running and in use (a dev server, a tmux session, containers) */
+  running?: string;
   note?: string;
 }
 
@@ -34,7 +36,7 @@ export function parseAnswer(reply: string | undefined): Answer | undefined {
       const v = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
       if (typeof v?.done !== "boolean" || typeof v?.merged !== "boolean") return undefined;
       const s = (x: unknown) => (typeof x === "string" && x.trim() && x.trim() !== "null" ? x.trim().slice(0, 300) : undefined);
-      return { done: v.done, merged: v.merged, ...(v.nothing_to_merge === true ? { nothingToMerge: true } : {}), ...(typeof v.cleaned_up === "boolean" ? { cleanedUp: v.cleaned_up } : {}), branch: s(v.branch), ...(s(v.target) ? { target: s(v.target) } : {}), worktree: s(v.worktree), note: s(v.note) };
+      return { done: v.done, merged: v.merged, ...(v.nothing_to_merge === true ? { nothingToMerge: true } : {}), ...(typeof v.cleaned_up === "boolean" ? { cleanedUp: v.cleaned_up } : {}), branch: s(v.branch), ...(s(v.target) ? { target: s(v.target) } : {}), worktree: s(v.worktree), ...(s(v.running) ? { running: s(v.running) } : {}), note: s(v.note) };
     } catch {
       return undefined;
     }
@@ -119,6 +121,7 @@ export function stripCheckIn(reply: string): Stripped {
 /** The answer in a few words, e.g. `done · merged · cleaned up`, `not merged: PR #12 open`. */
 export function answerSummary(a: Answer | undefined): string {
   if (!a) return "answered";
+  if (a.running) return `still running: ${a.running} · ${answerSummary({ ...a, running: undefined })}`;
   const note = a.note ? `: ${a.note}` : "";
   if (!a.done) return `not done${note}`;
   const what = a.merged ? (a.target ? `merged into ${a.target}` : "merged") : "nothing to merge";
