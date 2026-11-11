@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
@@ -15,6 +15,12 @@ import { HomeLine, PERSON_TEXT_MAX } from "../homeLine";
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
 
 const LINK = "https://tether.example/#/s/box/";
+
+/** Scratch folders a test made: gone after it. */
+const scratch: string[] = [];
+afterEach(() => {
+  for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
   const clock = { t: 1_000_000 };
@@ -240,6 +246,7 @@ describe("texting", () => {
 describe("settings", () => {
   test("saved mode 600, secret redacted, env wins", () => {
     const dir = mkdtempSync(join(tmpdir(), "texting-"));
+    scratch.push(dir);
     const file = join(dir, "texting.json");
     const s = new TextingStore(file, {});
     expect(s.config()).toBeUndefined();

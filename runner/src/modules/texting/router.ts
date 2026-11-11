@@ -138,9 +138,10 @@ export class Router {
 
   /**
    * What to do with the person's text. `replyTo`: the message it answers in a thread. `home`: the
-   * Home agent runs and takes texts.
+   * Home agent runs and takes texts. `files`: files came with it, so just a number (or "home") with
+   * no words delivers them, as `filesOnly` says.
    */
-  route(raw: string, replyTo?: string, home = false): Decision {
+  route(raw: string, replyTo?: string, home = false, files?: { filesOnly: string }): Decision {
     this.prune();
     const text = raw.trim();
     if (!text) return { kind: "none" };
@@ -160,6 +161,7 @@ export class Router {
       const rest = h[1]!.trim();
       if (rest) return this.toHome(rest);
       if (this.state.held) return this.toHome(this.state.held.text);
+      if (files) return this.toHome(files.filesOnly);
       this.state.aimed = { n: HOME_N, at: this.now() };
       return { kind: "reply", text: TEXTS.whatToSendHome };
     }
@@ -175,6 +177,7 @@ export class Router {
       if (rest) return this.deliver(slot, rest);
       const held = this.state.held;
       if (held) return this.deliver(slot, held.text);
+      if (files) return this.deliver(slot, files.filesOnly);
       this.state.aimed = { n, at: this.now() };
       return { kind: "reply", text: TEXTS.whatToSend(n) };
     }

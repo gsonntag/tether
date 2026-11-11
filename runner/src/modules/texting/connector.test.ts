@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { FROM_DISCORD, FROM_IMESSAGE, TEXTED_MARKS, fromTexted, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import type { Attachment } from "../../../../shared/attachments";
 import { FILES_ONLY, Texter } from ".";
-import { Channel, type ChannelLink, type Connector, type Inbound } from "./connector";
+import { Channel, FatalError, type ChannelLink, type Connector, type Inbound } from "./connector";
 import { connectors } from "./connectors";
 import { imessageConnector } from "./imessage";
 import { HomeLine, type TakeVia } from "../homeLine";
 import { TextingStore } from "./store";
-import { TEXTS } from "./texts";
+import { casualText, TEXTS } from "./texts";
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
@@ -260,5 +260,95 @@ describe("iMessage as a connector", () => {
     expect([c.enabled(), c.configured()]).toEqual([false, true]);
     c.update({ values: { phone: "" } });
     expect(c.configured()).toBe(false);
+  });
+});
+
+describe("review fixes", () => {
+  test("answers go back the way the person wrote; Send to only steers Tether's own texts", async () => {
+    const s = setup({ home: true });
+    await s.t.start();
+    s.t.prefer("imessage");
+    // A request text: Tether's own, to the preferred one.
+    await s.t.attention("claude:a");
+    expect(s.im.sent.length).toBe(1);
+    // They answer it on Discord; the session's answer comes back on Discord.
+    s.dc.hear({ text: "1 why?" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Because the tests." }] });
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.text).toBe("[1] Because the tests.");
+    expect(s.im.sent.length).toBe(1);
+    // Its next request is Tether's own again: the preferred one.
+    await s.t.attention("claude:a");
+    expect(s.im.sent.length).toBe(2);
+    // The Home agent: its reply goes back on Discord, its own text_person on the preferred one.
+    s.dc.hear({ text: "home: what's up" });
+    await tick();
+    expect(await s.line.phone!.send("not much")).toBe(true);
+    expect(s.dc.sent.at(-1)!.text).toBe("[home] not much");
+    expect((await s.line.phone!.text("home", "PR merged")).isError).toBeUndefined();
+    expect(s.im.sent.at(-1)!.text).toBe("[home] PR merged");
+  });
+
+  test("files never drop silently: held with the picker's text, a number with just files, with an answer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-held-"));
+    try {
+      const s = setup({ attachmentsDir: dir });
+      const sessions = (s.t as any).ctx.session;
+      await s.t.start();
+      const png = (name = "a.png") => ({ name, mimeType: "image/png", size: 1, read: async () => new Uint8Array([7]) });
+      // Nothing open, no Home agent: the reply says nothing's waiting, and that the file didn't go.
+      s.dc.hear({ text: "look", files: [png()] });
+      await tick(5);
+      expect(s.dc.sent.map((o) => o.text)).toEqual([TEXTS.nothingOpen, TEXTS.filesNotSent]);
+      // Two open: held for the picker with its file, then delivered with it.
+      await s.t.attention("claude:a");
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      await s.t.attention("codex:b");
+      s.dc.hear({ text: "see this", files: [png("held.png")] });
+      await tick(5);
+      expect(s.dc.sent.at(-1)!.text).toStartWith(TEXTS.which);
+      expect(s.dc.sent.at(-1)!.text).not.toContain(TEXTS.filesNotSent);
+      s.dc.hear({ text: "2" });
+      await tick(5);
+      expect(s.told.at(-1)![0]).toBe("codex:b");
+      expect(s.told.at(-1)![1]).toBe("see this");
+      expect(s.told.at(-1)![2]!.map((f) => f.name)).toEqual(["held.png"]);
+      // A number and only a file: the file goes there.
+      s.dc.hear({ text: "1", files: [png("only.png")] });
+      await tick(5);
+      expect(s.told.at(-1)![0]).toBe("claude:a");
+      expect(s.told.at(-1)![1]).toBe(FILES_ONLY);
+      expect(s.told.at(-1)![2]!.map((f) => f.name)).toEqual(["only.png"]);
+      // A file with an answer to a request: the request is answered, the person told the file wasn't passed on.
+      const r = { id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 } as any;
+      const look = (s.t as any).ctx.session("claude:a");
+      look.requests = ["r1"];
+      look.state.requests = [r];
+      s.dc.hear({ text: "1 y", files: [png()] });
+      await tick(5);
+      expect(s.dc.sent.at(-1)!.text).toBe(TEXTS.filesWithAnswer(1));
+      // A name that isn't safe is cleaned in the reply.
+      look.requests = [];
+      s.dc.hear({ text: "1 x", files: [{ ...png("../../etc/evil name.png"), size: 99 * 1024 * 1024 }] });
+      await tick(5);
+      expect(s.dc.sent.some((o) => o.text === TEXTS.fileSkipped("evil_name.png"))).toBe(true);
+      for (const t of [TEXTS.filesNotSent, TEXTS.filesWithAnswer(2), TEXTS.fileSkipped("a.png")]) expect(casualText(t)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a fatal connect error isn't retried; restart clears it", async () => {
+    const f = fake("x", "[From X] ");
+    let calls = 0;
+    const ch = new Channel({ ...f.c, open: async () => (calls++, Promise.reject(new FatalError("bad token"))) }, () => {}, () => {});
+    await ch.start();
+    expect(ch.lastError).toBe("Couldn't connect to x: bad token");
+    expect((ch as any).retry).toBeUndefined();
+    await ch.restart();
+    expect(calls).toBe(2);
+    await ch.stop();
   });
 });

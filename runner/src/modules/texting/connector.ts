@@ -16,7 +16,8 @@ export interface InboundFile {
   mimeType: string;
   /** bytes, when the service says */
   size?: number;
-  read(): Promise<Uint8Array>;
+  /** its bytes; throws past `max` bytes (and stops fetching), or when it can't be fetched */
+  read(max?: number): Promise<Uint8Array>;
 }
 
 /** A message from the person. */
@@ -79,6 +80,13 @@ export interface Connector {
   update(a: { enabled?: unknown; values?: Record<string, unknown> }): void;
 }
 
+/** An error retrying can't fix (a refused token, intents not allowed): the link stays down until the settings change. */
+export class FatalError extends Error {
+  readonly fatal = true;
+}
+
+export const isFatal = (e: unknown): boolean => !!(e && typeof e === "object" && (e as { fatal?: unknown }).fatal === true);
+
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
@@ -119,7 +127,8 @@ export class Channel {
       } catch (e: any) {
         this.lastError = `Couldn't connect to ${this.connector.service ?? this.connector.label}: ${e?.message ?? e}`;
         this.log(`texting: ${this.lastError}`);
-        this.later();
+        // Retrying won't help: down, with why, until the settings change (restart).
+        if (!isFatal(e)) this.later();
       } finally {
         this.connecting = undefined;
       }

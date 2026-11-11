@@ -17,8 +17,11 @@
 // Texts go over messaging connectors (connector.ts, connectors.ts): iMessage through Photon, a Discord
 // bot, … Everything above is the same on each: one router, one set of session numbers. Tether's texts
 // go to the connector the person picked in settings, else the one they last wrote on, else the first
-// one connected; an answer to something they sent goes back the way it came. Files they send come
-// along to the session or the Home agent (stash).
+// one connected. An answer goes back the way the person's message came: the reply to a picker, and a
+// session's (or the Home agent's) answer to what they wrote it, by the connector they last wrote
+// it on (replyVia), whatever "Send to" says. Files they send come along to the session or the Home
+// agent (stash), held with their words while the picker asks which session; none is dropped
+// without saying so.
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
@@ -111,6 +114,10 @@ export class Texter {
   private lastSaid = new Map<string, string>();
   /** sessions the person texted: the agent's answer goes back by text */
   private talking = new Set<string>();
+  /** the connector the person last wrote each session (or the Home agent, HOME) on: its answers go back there */
+  private replyVia = new Map<string, string>();
+  /** files that came with the text the router holds for the picker */
+  private heldFiles?: InboundFile[];
   /** when each session's link last went out */
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
@@ -193,11 +200,15 @@ export class Texter {
     for (const id of r.ids ?? []) this.router.noteSent(id, sessionId, requestId);
   }
 
-  /** The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it goes back to the Home agent. */
-  async homeText(body: string): Promise<boolean> {
+  /**
+   * The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it goes
+   * back to the Home agent. `reply`: it answers what the person wrote it, so it goes back the way that
+   * came; its own text (text_person) goes where Tether's texts go.
+   */
+  async homeText(body: string, o: { reply?: boolean } = {}): Promise<boolean> {
     const words = clip(body, HOME_MAX);
     if (!this.target() || !words) return false;
-    const r = await this.send(this.router.stampHome(words));
+    const r = await this.send(this.router.stampHome(words), o.reply === false ? undefined : this.replyVia.get(HOME));
     this.noteSent(r, HOME);
     this.store.save();
     return r.sent;
@@ -259,14 +270,18 @@ export class Texter {
    */
   private async stash(sessionId: string, files: InboundFile[] | undefined, via?: string): Promise<Attachment[]> {
     const dir = this.ctx.attachmentsDir;
-    if (!dir || !files?.length) return [];
+    if (!files?.length) return [];
+    if (!dir) {
+      await this.say(TEXTS.filesNotSent, via);
+      return [];
+    }
     const into = join(dir, sessionKey(sessionId));
     const out: Attachment[] = [];
     for (const f of files.slice(0, ATTACH_MAX)) {
       const max = isImageType(f.mimeType) ? ATTACH_IMAGE_MAX : ATTACH_FILE_MAX;
       try {
         if (f.size !== undefined && f.size > max) throw new Error("it's too big");
-        const data = await f.read();
+        const data = await f.read(max);
         if (data.byteLength > max) throw new Error("it's too big");
         mkdirSync(into, { recursive: true, mode: 0o700 });
         const name = safeName(f.name);
@@ -274,8 +289,8 @@ export class Texter {
         writeFileSync(path, data, { mode: 0o400 });
         out.push({ path, name, mimeType: f.mimeType, size: data.byteLength });
       } catch (e: any) {
-        this.ctx.log(`texting: couldn't take ${f.name}: ${e?.message ?? e}`);
-        await this.say(TEXTS.fileSkipped(f.name), via);
+        this.ctx.log(`texting: couldn't take ${safeName(f.name)}: ${e?.message ?? e}`);
+        await this.say(TEXTS.fileSkipped(safeName(f.name)), via);
       }
     }
     return out;
@@ -301,7 +316,7 @@ export class Texter {
     if (!this.target()) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
     const why = this.caps.take(from);
     if (why) return { text: why, isError: true };
-    const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, { always: true })).sent;
+    const sent = from === HOME ? await this.homeText(words, { reply: false }) : (await this.tell(from, TEXTED_YOU, words, { always: true })).sent;
     if (!sent) {
       this.caps.undo(from);
       return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
@@ -311,7 +326,7 @@ export class Texter {
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
-  async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean } = {}): Promise<{ sent: boolean }> {
+  async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean; via?: string } = {}): Promise<{ sent: boolean }> {
     const { also = [], quick = false, requestId, always = false } = o;
     if (!this.target()) return { sent: false };
     if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
@@ -321,7 +336,7 @@ export class Texter {
     const link = !!o.link || (!quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS);
     if (link) this.linked.set(sessionId, at);
     const { text } = this.router.stamp(sessionId, status, link ? `${body}\n${this.url(sessionId)}` : body, requestId);
-    const r = await this.send(text);
+    const r = await this.send(text, o.via);
     this.noteSent(r, sessionId, requestId);
     this.store.save();
     return { sent: r.sent };
@@ -369,9 +384,11 @@ export class Texter {
     if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return void this.talking.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     const talking = this.talking.delete(sessionId);
-    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)));
+    // An answer to what the person wrote goes back the way it came.
+    const via = talking ? this.replyVia.get(sessionId) : undefined;
+    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via });
     // An answer to something the person texted is the back-and-forth: no link.
-    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking });
+    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via });
   }
 
   // ── in: the person's replies, one at a time ──
@@ -392,15 +409,27 @@ export class Texter {
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
     const via = m.via;
-    const filesOnly = !m.text.trim() && !!m.files?.length;
-    const d = this.router.route(filesOnly ? FILES_ONLY : m.text, m.replyTo, !!home);
+    const mine = m.files ?? [];
+    const before = this.router.state.held;
+    const d = this.router.route(!m.text.trim() && mine.length ? FILES_ONLY : m.text, m.replyTo, !!home, mine.length ? { filesOnly: FILES_ONLY } : undefined);
     this.store.save();
+    // Files wait with the text the picker holds, and go wherever it goes.
+    let files = mine;
+    const held = this.router.state.held;
+    if (before && !held && (d.kind === "deliver" || d.kind === "home") && d.text === before.text) files = [...(this.heldFiles ?? []), ...mine];
+    const heldThis = !!held && held !== before;
+    this.heldFiles = heldThis ? (mine.length ? mine : undefined) : held ? this.heldFiles : undefined;
     if (d.kind === "none") return;
-    if (d.kind === "reply") return void (await this.say(d.text, via));
+    if (d.kind === "reply") {
+      await this.say(d.text, via);
+      if (mine.length && !heldThis) await this.say(TEXTS.filesNotSent, via);
+      return;
+    }
+    if (via) this.replyVia.set(d.kind === "home" ? HOME : d.sessionId, via);
     if (d.kind === "home") {
       try {
         const mark = this.channel(via)?.connector.mark;
-        await home!.take(d.text, { ...(mark ? { mark } : {}), ...(m.files?.length ? { files: (chat) => this.stash(chat, m.files, via) } : {}) });
+        await home!.take(d.text, { ...(mark ? { mark } : {}), ...(files.length ? { files: (chat) => this.stash(chat, files, via) } : {}) });
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
         await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)), via);
@@ -421,16 +450,22 @@ export class Texter {
         this.store.save();
         return void (await this.say(TEXTS.alreadyAnswered(d.n), via));
       }
-      if (open && !filesOnly) {
+      // Only files: they go to the agent, never as an answer to its request.
+      if (open && d.text !== FILES_ONLY) {
         const r = readReply(open, d.text);
-        if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`, via));
+        if ("problem" in r) {
+          await this.say(`${tag} ${r.problem}`, via);
+          if (files.length) await this.say(TEXTS.filesNotSent, via);
+          return;
+        }
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
         this.talking.add(d.sessionId);
+        if (files.length) await this.say(TEXTS.filesWithAnswer(d.n), via);
       } else {
-        const files = await this.stash(d.sessionId, m.files, via);
-        if (files.length) await this.ctx.sessions.tell(d.sessionId, d.text, files);
+        const stored = await this.stash(d.sessionId, files, via);
+        if (stored.length) await this.ctx.sessions.tell(d.sessionId, d.text, stored);
         else await this.ctx.sessions.tell(d.sessionId, d.text);
         this.talking.add(d.sessionId);
       }
@@ -448,7 +483,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text), text: (from, body) => t.personText(from, body) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text, { reply: true }), text: (from, body) => t.personText(from, body) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

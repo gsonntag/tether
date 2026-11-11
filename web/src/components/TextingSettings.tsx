@@ -4,6 +4,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import type { ConnectorForm, ConnectorStatus, MessagingStatus } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { useStore } from "../store";
+import { legacyMessaging, legacySet } from "../messagingLegacy";
 
 /**
  * Messaging, per runner: each connector (iMessage through Photon, a Discord bot, …) that texts you
@@ -16,13 +17,27 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
   const [status, setStatus] = useState<MessagingStatus>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  /** the runner predates connectors: iMessage through its old ops */
+  const [legacy, setLegacy] = useState(false);
 
   useEffect(() => {
     let gone = false;
     setStatus(undefined);
-    if (link === "open") void rpc(runnerId, "messagingStatus", {}).then((s) => { if (!gone) { setStatus(s); setError(undefined); } }).catch(() => { if (!gone) setError("Couldn't load messaging. Update and restart the runner."); });
+    setLegacy(false);
+    const done = (s: MessagingStatus, old: boolean) => { if (!gone) { setStatus(s); setLegacy(old); setError(undefined); } };
+    if (link === "open")
+      void rpc(runnerId, "messagingStatus", {})
+        .then((s) => done(s, false))
+        .catch(() => rpc(runnerId, "textingStatus", {}).then((s) => done(legacyMessaging(s), true)))
+        .catch(() => { if (!gone) setError("Couldn't load messaging. Update and restart the runner."); });
     return () => { gone = true; };
   }, [runnerId, link]);
+  /** The runner's ops, or the old iMessage ones on an old runner. */
+  const ops = {
+    set: (id: string, args: { enabled?: boolean; values?: Record<string, string> }): Promise<MessagingStatus> =>
+      legacy ? rpc(runnerId, "setTexting", legacySet(args)).then(legacyMessaging) : rpc(runnerId, "setConnector", { id, ...args }),
+    test: (id: string): Promise<null> => (legacy ? rpc(runnerId, "textingTest", {}) : rpc(runnerId, "testConnector", { id })),
+  };
 
   const disabled = busy || link !== "open";
   /** Runs a change; whether it went (its error shows under the connector it was for). */
@@ -55,16 +70,16 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
         {on.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
       </select></label>
     )}
-    {status.connectors.map((c) => <Connector key={c.id} c={c} runnerId={runnerId} disabled={disabled} run={run} />)}
+    {status.connectors.map((c) => <Connector key={c.id} c={c} ops={ops} disabled={disabled} run={run} />)}
   </>;
 }
 
-function Connector({ c, runnerId, disabled, run }: { c: ConnectorStatus; runnerId: string; disabled: boolean; run: (f: () => Promise<MessagingStatus | null>, onError: (e: string | undefined) => void) => Promise<boolean> }) {
+function Connector({ c, ops, disabled, run }: { c: ConnectorStatus; ops: { set: (id: string, args: { enabled?: boolean; values?: Record<string, string> }) => Promise<MessagingStatus>; test: (id: string) => Promise<null> }; disabled: boolean; run: (f: () => Promise<MessagingStatus | null>, onError: (e: string | undefined) => void) => Promise<boolean> }) {
   const [error, setError] = useState<string>();
   const [note, setNote] = useState<string>();
   const set = (args: { enabled?: boolean; values?: Record<string, string> }) => {
     setNote(undefined);
-    return run(() => rpc(runnerId, "setConnector", { id: c.id, ...args }), setError);
+    return run(() => ops.set(c.id, args), setError);
   };
   const state = !c.enabled ? "Off" : !c.configured ? "Not set up" : c.connected ? "Connected" : "Not connected";
   return (
@@ -75,7 +90,7 @@ function Connector({ c, runnerId, disabled, run }: { c: ConnectorStatus; runnerI
         <div className="t-credential-title"><span>{c.label}</span><span className="t-credential-status">{state}{c.lastError ? ` · ${c.lastError}` : ""}</span></div>
         <div className="t-credential-entry">
           <Button label={c.enabled ? "Turn off" : "Turn on"} variant={c.enabled ? "secondary" : "primary"} isDisabled={disabled} onClick={() => void set({ enabled: !c.enabled })} />
-          {c.enabled && c.connected && <Button label="Send a test" variant="secondary" isDisabled={disabled} onClick={() => { setNote(undefined); void run(() => rpc(runnerId, "testConnector", { id: c.id }), setError).then((ok) => ok && setNote("Sent. It should arrive in a moment.")); }} />}
+          {c.enabled && c.connected && <Button label="Send a test" variant="secondary" isDisabled={disabled} onClick={() => { setNote(undefined); void run(() => ops.test(c.id), setError).then((ok) => ok && setNote("Sent. It should arrive in a moment.")); }} />}
         </div>
         {note && <div className="t-inline-status">{note}</div>}
       </div>
