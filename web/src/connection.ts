@@ -20,6 +20,8 @@ export const on = <T extends ServerToBrowser["t"]>(t: T, fn: (m: Extract<ServerT
 export const onLinkState = (fn: (s: LinkState) => void) => link.onState(fn);
 export const onAuth = (fn: (a: AuthState) => void) => link.onAuth(fn);
 export const connect = () => link.connect();
+/** Checks that a link that looks open still answers (and redials one that doesn't). */
+export const wakeLink = () => link.wake();
 
 /** A frame that needs no answer (presence); false when not connected. */
 export const sendFrame = (m: Exclude<BrowserToServer, { t: "rpc" }>) => link.send(m);

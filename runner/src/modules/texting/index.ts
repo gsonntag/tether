@@ -215,7 +215,8 @@ export class Texter {
 
   /** The session in Tether. */
   url(sessionId: string): string {
-    if (this.ctx.links) return this.ctx.links.url(this.ctx.appUrl, sessionId);
+    const short = this.ctx.links?.url(this.ctx.appUrl, sessionId);
+    if (short) return short;
     return `${this.ctx.appUrl.replace(/\/+$/, "")}/#/s/${encodeURIComponent(this.ctx.runnerId)}/${encodeURIComponent(sessionId)}`;
   }
 
