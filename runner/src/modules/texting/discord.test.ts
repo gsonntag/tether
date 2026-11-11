@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,10 @@ import { Channel, isFatal, type Inbound } from "./connector";
 import { cleanSettings, discordConnector, personMessage, splitMessage, takeEnv, unmask } from "./discord";
 import { download, Gateway, INTENTS, resetIdentifies, Rest, retryAfter, takeIdentify, validResumeUrl, type Socket } from "./discordGateway";
 import { TextingStore } from "./store";
+
+// The identify budget is kept by the last connector made: a test's store (and its scratch folder)
+// mustn't be written to by the next test's gateways.
+afterEach(() => resetIdentifies());
 
 const TOKEN = "MTAx.discord-bot-token.abcdefghijklmnop";
 const ME = "111111111111111111";
