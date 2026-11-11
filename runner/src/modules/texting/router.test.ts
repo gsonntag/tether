@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, REPLY_MS, Router, emptyState, toHomeWords } from "./router";
+import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, REPLY_MS, Router, emptyState, parseHome, toHomeWords } from "./router";
 import { TEXTS } from "./texts";
 
 function setup() {
@@ -169,7 +169,7 @@ describe("the Home agent", () => {
   test("just \"home\": sends the held text there, or aims the next one", () => {
     const { r } = busy();
     expect(r.route("deploy it", undefined, true)).toMatchObject({ kind: "reply" });
-    expect(r.route("home", undefined, true)).toEqual({ kind: "home", text: "deploy it" });
+    expect(r.route("home", undefined, true)).toEqual({ kind: "home", text: "deploy it", held: 1 });
     expect(r.route("@home", undefined, true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
     expect(r.route("start the docs fix", undefined, true)).toEqual({ kind: "home", text: "start the docs fix" });
     // Aimed once: the next plain text is back to the usual rules.
@@ -277,7 +277,8 @@ describe("Home/H prefix", () => {
     s.r.stamp("b", "finished", ".");
     expect(s.r.route("H", undefined, true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
     expect(s.r.route("start the docs fix", undefined, true)).toEqual({ kind: "home", text: "start the docs fix" });
-    expect(s.r.route("h do x", undefined, false)).toEqual({ kind: "reply", text: TEXTS.noHome });
+    // Without a Home agent, "h" is just a word: the usual rules (the picker here).
+    expect(s.r.route("h do x", undefined, false)).toMatchObject({ kind: "reply", text: expect.stringContaining(TEXTS.which) });
   });
 });
 
@@ -348,5 +349,98 @@ describe("replying to what was just texted", () => {
     r.stampHome("PR #4 is up, merge it?", "claude:x");
     const again = new Router(JSON.parse(JSON.stringify(r.state)), () => clock.now() + 60_000);
     expect(again.route("merge", undefined, true)).toEqual({ kind: "home", text: "merge", about: { sessionId: "claude:x", byHome: true } });
+  });
+});
+
+describe("several homes: h, h1, h2, …", () => {
+  const homes = [{ n: 0, chat: "claude:t" }, { n: 1, chat: "claude:h1" }, { n: 3, chat: "claude:h3" }];
+
+  test("parsing: new, numbered, delete; never ordinary words", () => {
+    const yes: [string, ReturnType<typeof parseHome>][] = [
+      ["hn", { cmd: "new", rest: "" }],
+      ["HN fix the logo", { cmd: "new", rest: "fix the logo" }],
+      ["hn: fix it", { cmd: "new", rest: "fix it" }],
+      ["homenew fix it", { cmd: "new", rest: "fix it" }],
+      ["Home-New, fix it", { cmd: "new", rest: "fix it" }],
+      ["home new fix it", { cmd: "new", rest: "fix it" }],
+      ["HOME NEW", { cmd: "new", rest: "" }],
+      ["h1 do x", { cmd: "to", n: 1, rest: "do x" }],
+      ["H2: do x", { cmd: "to", n: 2, rest: "do x" }],
+      ["home12, do x", { cmd: "to", n: 12, rest: "do x" }],
+      ["Home3", { cmd: "to", n: 3, rest: "" }],
+      ["@h1 do x", { cmd: "to", n: 1, rest: "do x" }],
+      ["[h1] do x", { cmd: "to", n: 1, rest: "do x" }],
+      ["h do x", { cmd: "to", n: 0, rest: "do x" }],
+      ["hd1", { cmd: "delete", n: 1 }],
+      ["HD 2", { cmd: "delete", n: 2 }],
+      ["homedelete 3", { cmd: "delete", n: 3 }],
+      ["home-delete 3.", { cmd: "delete", n: 3 }],
+      ["hd0", { cmd: "delete", n: 0 }],
+    ];
+    for (const [text, want] of yes) expect([text, parseHome(text)]).toEqual([text, want]);
+    const no = ["hn's", "hnn", "hn1", "h1n1", "homeless", "home-newbie", "homenewer", "hello1", "h1-x", "h123 x", "hd", "hdd1", "hd1 now", "hd1x", "hey", "how", "Homer", "homework", "hh1", "1h", "h.1", "hi1", "hdmi"];
+    for (const text of no) expect([text, parseHome(text)]).toEqual([text, undefined]);
+    // A delete is only ever the whole text ("hd1 now" above is nothing); "home delete 1" is words to h.
+    expect(parseHome("home delete 1")).toEqual({ cmd: "to", n: 0, rest: "delete 1" });
+  });
+
+  test("routing by number, and a home that isn't open says which are", () => {
+    const { r } = setup();
+    expect(r.route("h1 do x", undefined, homes)).toEqual({ kind: "home", text: "do x", home: 1 });
+    expect(r.route("H3: do y", undefined, homes)).toEqual({ kind: "home", text: "do y", home: 3 });
+    expect(r.route("h do z", undefined, homes)).toEqual({ kind: "home", text: "do z" });
+    expect(r.route("h2 do x", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h2", "h, h1, h3") });
+    expect(r.route("h1", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.whatToSendTo("h1") });
+    expect(r.route("go on", undefined, homes)).toEqual({ kind: "home", text: "go on", home: 1 });
+  });
+
+  test("new and delete", () => {
+    const { r } = setup();
+    expect(r.route("hn fix the logo", undefined, homes)).toEqual({ kind: "newHome", text: "fix the logo" });
+    expect(r.route("hd3", undefined, homes)).toEqual({ kind: "deleteHome", n: 3 });
+    expect(r.route("hd0", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.cantDeletePrimary });
+    expect(r.route("hd2", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h2", "h, h1, h3") });
+    // Without a Home agent, none of it is a command.
+    r.stamp("a", "finished", ".");
+    expect(r.route("hn fix the logo", undefined, false)).toMatchObject({ kind: "deliver", sessionId: "a", text: "hn fix the logo" });
+    expect(r.route("hd1", undefined, false)).toMatchObject({ kind: "deliver", sessionId: "a", text: "hd1" });
+  });
+
+  test("a home's texts are marked with its name, and replies go back to it, about what it said", () => {
+    const { r, clock } = setup();
+    expect(r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" })).toBe("[h1] PR is up, merge?");
+    r.noteSent("m1", HOME, undefined, "claude:x", "claude:h1");
+    expect(r.stampHome("ok", undefined, { n: 0, chat: "claude:t" })).toBe("[home] ok");
+    r.noteSent("m2", HOME);
+    // The last text was h's: plain text answers h, nothing carried.
+    expect(r.route("thanks", undefined, homes)).toEqual({ kind: "home", text: "thanks" });
+    // A threaded reply to h1's text goes to h1 with its session, however late.
+    clock.tick(REPLY_MS * 2);
+    expect(r.route("merge it", "m1", homes)).toEqual({ kind: "home", text: "merge it", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    // h1 texts last: plain text goes to h1, about what it said; "h …" turns to h, carrying nothing.
+    r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" });
+    expect(r.route("yes", undefined, homes)).toEqual({ kind: "home", text: "yes", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("h what's running", undefined, homes)).toEqual({ kind: "home", text: "what's running" });
+    expect(r.route("h1 merge", undefined, homes)).toEqual({ kind: "home", text: "merge", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    // A threaded reply to a home that was deleted says so.
+    expect(r.route("merge it", "m1", [{ n: 0 }, { n: 3, chat: "claude:h3" }])).toEqual({ kind: "reply", text: TEXTS.homeGone("h, h3") });
+    // Plain text after h1 was deleted goes to h.
+    expect(r.route("hello?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "hello?" });
+  });
+
+  test("the held text: a number or a home takes it with its id", () => {
+    const { r } = setup();
+    r.stamp("a", "finished", ".");
+    r.stamp("b", "finished", ".");
+    expect(r.route("see this", undefined, homes)).toMatchObject({ kind: "reply" });
+    const id = r.state.held!.id!;
+    expect(r.route("h1", undefined, homes)).toEqual({ kind: "home", text: "see this", home: 1, held: id });
+    expect(r.route("again", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.route("2", undefined, homes)).toMatchObject({ kind: "deliver", sessionId: "b", text: "again", held: id + 1 });
+    expect(r.route("x", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.route("hn", undefined, homes)).toEqual({ kind: "newHome", text: "x", held: id + 2 });
+    // "5 do x" with no 5: held, with an id.
+    expect(r.route("5 do x", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.state.held).toMatchObject({ text: "do x", id: id + 3 });
   });
 });

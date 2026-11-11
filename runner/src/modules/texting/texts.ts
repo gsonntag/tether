@@ -56,6 +56,20 @@ export const TEXTS = {
   noHome: "The Home agent isn't running on this runner.",
   /** the Home agent's chat failed on something the person texted */
   homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
+  /** "h1 …" for a home that isn't open */
+  noSuchHome: (label: string, list: string) => `There's no ${label}, your homes are ${list}.`,
+  /** a threaded reply to a home that was deleted */
+  homeGone: (list: string) => `That home was deleted, your homes are ${list}.`,
+  /** just "h1": what to send there */
+  whatToSendTo: (label: string) => `What should I send to ${label}?`,
+  /** "hn" with nothing to send: the new home's name */
+  homeStarted: (label: string) => `Started ${label}, text ${label} to reach it.`,
+  /** "hd1": done, and what's left */
+  homeDeleted: (label: string, list: string) => `Deleted ${label}, your homes are ${list}.`,
+  /** "hd0" or the like */
+  cantDeletePrimary: "h is your main home, so it can't be deleted.",
+  /** images that came with a text but couldn't go with it */
+  imagesNotSent: "Your image didn't go with that, send it again with your message.",
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   /** the person texted a file that isn't an image (or one too big): it's left out */
   onlyImages: "Only images come through by text, so I left the other file out.",

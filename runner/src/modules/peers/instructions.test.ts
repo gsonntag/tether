@@ -98,6 +98,9 @@ describe("text_person", () => {
     const relayed: [string, string][] = [];
     line.phone = { send: async () => true, text: async (from, body) => (sent.push([from, body]), { text: "Texted the person." }) };
     line.home = {
+      homes: () => [{ n: 0 }],
+      newHome: async () => 1,
+      deleteHome: async () => [],
       take: async () => {},
       isTextsChat: () => false,
       relay: async (id, msg) => (id === "claude:main" ? (relayed.push([id, msg]), "Not texted: the Home agent drives this session.") : undefined),

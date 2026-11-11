@@ -18,7 +18,7 @@ import { setHomeChat } from "../presence";
 import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
 import { billingForDisplay } from "../sourceMenu";
 import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
-import { afterClose, loadTab, NEW, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
+import { afterClose, canDelete, homeTag, loadTab, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
@@ -82,7 +82,7 @@ export function HomeChat() {
     rpc(rid, "homeAgent", {})
       .then((r) => {
         if (gone) return;
-        noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}) });
+        noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}), ...(r.labels ? { labels: r.labels } : {}) });
         setAgent(r.settings ? { runnerId: rid, settings: r.settings, harnesses: r.harnesses ?? [r.settings.harness] } : undefined);
       })
       .catch((e) => !gone && setError((e as Error).message));
@@ -153,7 +153,7 @@ export function HomeChat() {
           />
         </div>
       </div>
-      {known && !oldRunner && <HomeTabs runnerId={rid!} chats={chats} tab={tab!} onShow={show} onClose={(id) => close(id).catch(fail)} />}
+      {known && !oldRunner && <HomeTabs runnerId={rid!} chats={chats} labels={known.labels} tab={tab!} onShow={show} onClose={(id) => close(id).catch(fail)} />}
       {error && <div className="t-form-error">{error}</div>}
       {current ? (
         <ChatView key={current} runnerId={rid!} sessionId={current} onReset={() => close(current, NEW)} />
@@ -178,15 +178,20 @@ export function HomeChat() {
 }
 
 /**
- * The tab strip: a tab per open chat, named by its title (double-click to rename), with a pulsing dot
- * while it works and a dot for a reply nobody read; a "New chat" tab while one is being started;
- * + for another, always in reach: the tabs scroll sideways when they don't fit (a phone).
+ * The tab strip: a tab per open chat, named by its home name ("h", "h1", …: what the person texts to
+ * reach it) and its title (double-click to rename), with a pulsing dot while it works and a dot for
+ * a reply nobody read; a "New chat" tab while one is being started; "New Home" for another, always
+ * in reach: the tabs scroll sideways when they don't fit (a phone). Deleting a home (archiving its
+ * chat) asks first; the primary home (h, the Texts tab) can't be deleted.
  */
 const MARK_LABELS = { running: "Working", waiting: "Needs you", failed: "Failed", unread: "New reply" } as const;
 
-function HomeTabs({ runnerId, chats, tab, onShow, onClose }: { runnerId: string; chats: string[]; tab: string; onShow: (t: string) => void; onClose: (id: string) => void }) {
+function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId: string; chats: string[]; labels?: Record<string, number>; tab: string; onShow: (t: string) => void; onClose: (id: string) => void }) {
   const sessions = useStore((s) => s.summaries[runnerId]?.sessions);
   const [editing, setEditing] = useState<string>();
+  /** the home whose delete waits for a yes */
+  const [confirming, setConfirming] = useState<string>();
+  const confirmTag = confirming ? homeTag(labels, confirming) : undefined;
   const strip = useRef<HTMLDivElement>(null);
   useEffect(() => {
     strip.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -204,6 +209,7 @@ function HomeTabs({ runnerId, chats, tab, onShow, onClose }: { runnerId: string;
         {chats.map((id) => {
           const s = sessions?.[id];
           const label = tabLabel(s?.title);
+          const hTag = homeTag(labels, id);
           const on = id === tab;
           return (
             <div key={id} className={on ? "t-home-tab on" : "t-home-tab"} data-session={id}>
@@ -225,14 +231,31 @@ function HomeTabs({ runnerId, chats, tab, onShow, onClose }: { runnerId: string;
                   }}
                 />
               ) : (
-                <button type="button" role="tab" aria-selected={on} className="t-home-tab-main" title={on ? `${label} (double-click to rename)` : label} onClick={() => onShow(id)} onDoubleClick={() => setEditing(id)}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  className="t-home-tab-main"
+                  title={`${hTag ? `${hTag}: text "${hTag} …" to reach it. ` : ""}${label}${on ? " (double-click to rename)" : ""}`}
+                  onClick={() => onShow(id)}
+                  onDoubleClick={() => setEditing(id)}
+                >
                   {marker(tabMark(s, on))}
+                  {hTag && <span className="t-home-tab-tag">{hTag}</span>}
                   <span className="t-home-tab-label">{label}</span>
                 </button>
               )}
-              <button type="button" className="t-home-tab-close" aria-label={`Close ${label}`} title="Close (archives the chat)" onClick={() => onClose(id)}>
-                <XMarkIcon aria-hidden />
-              </button>
+              {canDelete(labels, id) && (
+                <button
+                  type="button"
+                  className="t-home-tab-close"
+                  aria-label={hTag ? `Delete ${hTag}` : `Close ${label}`}
+                  title={hTag ? `Delete ${hTag} (archives its chat)` : "Close (archives the chat)"}
+                  onClick={() => (hTag ? setConfirming(id) : onClose(id))}
+                >
+                  <XMarkIcon aria-hidden />
+                </button>
+              )}
             </div>
           );
         })}
@@ -249,9 +272,27 @@ function HomeTabs({ runnerId, chats, tab, onShow, onClose }: { runnerId: string;
           </div>
         )}
       </div>
-      <button type="button" className="t-home-tab-new" aria-label="New chat" title="New chat" disabled={tab === NEW} onClick={() => onShow(NEW)}>
+      <button type="button" className="t-home-tab-new" aria-label="New Home" title={labels ? `New Home (${nextHomeTag(labels)}; or text "hn")` : "New chat"} disabled={tab === NEW} onClick={() => onShow(NEW)}>
         <PlusIcon aria-hidden />
+        {labels && <span className="t-home-tab-new-label">New Home</span>}
       </button>
+      {confirming && chats.includes(confirming) && (
+        <div className="t-home-tab-confirm" role="alertdialog" aria-label={`Delete ${confirmTag}?`}>
+          <span>
+            Delete {confirmTag}? Its chat is archived and texts to {confirmTag} stop reaching it.
+          </span>
+          <Button
+            label="Delete"
+            size="sm"
+            variant="destructive"
+            clickAction={() => {
+              setConfirming(undefined);
+              onClose(confirming);
+            }}
+          />
+          <Button label="Cancel" size="sm" variant="ghost" clickAction={() => setConfirming(undefined)} />
+        </div>
+      )}
     </div>
   );
 }

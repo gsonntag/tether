@@ -3,11 +3,21 @@
 // the person with its text_person tool (peers module, Home agent). Each module plugs its own end
 // in when it starts; neither imports the other. Not an op: browsers have no business sending texts
 // as Tether or posing as the person's phone.
+//
+// The Home agent has several chats (Home's tabs), each one a "home" the person can text by its
+// label: `h` is the primary one (the Texts tab), `h1`, `h2`, … the others (homeAgent/index.ts gives
+// each tab its number, kept while it's open).
 
 /** Who the Home agent is when it texts (PhoneEnd.text), and what a Home text is noted under (texting/router.ts). */
 export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
 export const PERSON_TEXT_MAX = 300;
+
+/** A home's label as the person texts it and sees it: "h" for the primary one (0), "h1", "h2", … */
+export const homeLabel = (n: number) => (n === 0 ? "h" : `h${n}`);
+
+/** The open homes as a short list for a text: "h, h1, h3". */
+export const homeList = (homes: { n: number }[]) => [...homes].sort((a, b) => a.n - b.n).map((h) => homeLabel(h.n)).join(", ");
 
 /** A file the person texted (an image), as bytes: the runner stores it as the receiving session's attachment. */
 export interface TextedFile {
@@ -16,40 +26,58 @@ export interface TextedFile {
   data: Buffer;
 }
 
-/** What one of Tether's texts was about: a session, and whether the Home agent sent it. */
+/** What one of the Home agent's texts was about: a session. */
 export interface TextAbout {
   sessionId: string;
-  /** the Home agent's own text (else a session's, or Tether's request text) */
-  byHome?: boolean;
   title?: string;
   project?: string;
 }
 
-const oneLine = (s: string, max: number) => s.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029()"]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+const oneLine = (s: string, max: number) => s.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029()"[\]]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+/** A session id as it may appear in the line: id characters only. */
+const cleanId = (id: string) => id.replace(/[^\w:.@-]+/g, "").slice(0, 200);
 
 /**
- * The line before a text the person sent right after one of Tether's texts about a session: the
- * Home agent reads the reply as being about that session ("(replying to your text about session
+ * The line before a text the person sent right after one of the Home agent's texts about a session:
+ * it reads the reply as being about that session ("(replying to your text about session
  * claude:abc, "login fix" in /home/me/web) merge it").
  */
 export function replyContext(a: TextAbout): string {
   const title = a.title ? oneLine(a.title, 120) : "";
   const project = a.project ? oneLine(a.project, 200) : "";
-  return `(replying to ${a.byHome ? "your" : "Tether's"} text about session ${a.sessionId}${title ? `, "${title}"` : ""}${project ? ` in ${project}` : ""}) `;
+  return `(replying to your text about session ${cleanId(a.sessionId)}${title ? `, "${title}"` : ""}${project ? ` in ${project}` : ""}) `;
 }
 
-const REPLY_CONTEXT = /^\(replying to (?:your|Tether's) text about session ([^\s,()]+)[,)]/;
+const REPLY_CONTEXT = /^\(replying to your text about session ([^\s,()]+)[,)]/;
 
 /** The session a texted message's context line (replyContext) names, if it has one. */
 export function aboutOf(text: string): string | undefined {
   return REPLY_CONTEXT.exec(text)?.[1];
 }
 
+/** One of the Home agent's homes: its number (0: the primary one) and its chat, once there is one. */
+export interface Home {
+  n: number;
+  chat?: string;
+}
+
+/** Which home a text goes to: by number (a prefix), or by chat (a reply to that chat's text). */
+export type HomeTarget = { n: number } | { chat: string };
+
 /** The Home agent's end. */
 export interface HomeEnd {
-  /** the person's text, to the Home agent's Texts chat (after its turn, if one runs), with the images they texted */
-  take(text: string, files?: TextedFile[]): Promise<void>;
-  /** whether a session is the chat texts go to: its own turns aren't texted as a session's */
+  /**
+   * The person's text to a home (none: the primary one, made if it's gone), after its turn if one
+   * runs, with the images they texted. Throws when that home isn't open.
+   */
+  take(text: string, files?: TextedFile[], to?: HomeTarget): Promise<void>;
+  /** the open homes, the primary one (n 0) always among them (its chat absent until it's made) */
+  homes(): Home[];
+  /** a new home (a new Home tab): its number; `text` (and `files`), if any, is its first message */
+  newHome(text: string, files?: TextedFile[]): Promise<number>;
+  /** deletes home `n` (its chat is archived, as closing its tab does): the homes left. Throws for the primary one or one that isn't open */
+  deleteHome(n: number): Promise<Home[]>;
+  /** whether a session is a chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
   /**
    * A session's text_person, when the Home agent drives that session (started or messaged it, and
@@ -63,18 +91,19 @@ export interface HomeEnd {
 /** Texting's end. */
 export interface PhoneEnd {
   /**
-   * Texts the person as the Home agent ("[home] ok, on it"); false when it didn't go (texting off,
-   * not connected). `about`: the session the text is about, so a reply right after it is read as
-   * about that session too.
+   * Texts the person as one of the Home agent's chats ("[home] ok, on it"; "[h1] …" from home 1);
+   * false when it didn't go (texting off, not connected). `about`: the session the text is about,
+   * so a reply right after it is read as about that session too. `chat`: the chat that texts
+   * (none: the primary home).
    */
-  send(text: string, about?: string): Promise<boolean>;
+  send(text: string, about?: string, chat?: string): Promise<boolean>;
   /**
    * An agent's text_person: texts the person for session `from` (or the Home agent, texting/router.ts
-   * HOME), and their reply comes back to it. `image`: a path to an image file sent after the words
-   * (texting/images.ts checks it). `about`: for the Home agent, the session it's about. What the tool
-   * answers the agent.
+   * HOME, as `chat`), and their reply comes back to it. `image`: a path to an image file sent after
+   * the words (texting/images.ts checks it). `about`: for the Home agent, the session it's about.
+   * What the tool answers the agent.
    */
-  text(from: string, body: string, o?: { image?: string; about?: string }): Promise<{ text: string; isError?: boolean }>;
+  text(from: string, body: string, o?: { image?: string; about?: string; chat?: string }): Promise<{ text: string; isError?: boolean }>;
 }
 
 export class HomeLine {

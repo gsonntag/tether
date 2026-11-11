@@ -22,7 +22,7 @@ import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
-import { readOutgoingImage } from "../texting/images";
+import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
 
 /** How much of an answer an ask returns. */
 export const ANSWER_MAX = 20_000;
@@ -71,9 +71,12 @@ export class Peers {
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
+    this.imageFails = new ImageFailures(now);
     this.now = now;
   }
   private now: () => number;
+  /** text_person images refused, per session */
+  private imageFails: ImageFailures;
 
   // ---------------- events ----------------
 
@@ -134,8 +137,12 @@ export class Peers {
         // An image is checked first: a bad path is the tool's error wherever the text would go.
         const image = str(a.image).trim();
         if (image) {
-          const r = readOutgoingImage(image);
-          if ("problem" in r) return { text: `${r.problem} Nothing was sent.`, isError: true };
+          // Failed checks count: past a few, every check fails (no probing the machine's paths).
+          const r = this.imageFails.allowed(from) ? readOutgoingImage(image) : { problem: IMAGE_REFUSED };
+          if ("problem" in r) {
+            this.imageFails.failed(from);
+            return { text: `${r.problem} Nothing was sent.`, isError: true };
+          }
         }
         // A session the Home agent drives reports to it instead: it texts the person (their PM).
         const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);

@@ -43,6 +43,7 @@ export function inboundOf(content: any): Inbound | undefined {
       mimeType: typeof content.mimeType === "string" ? content.mimeType : "application/octet-stream",
       ...(typeof content.size === "number" ? { size: content.size } : {}),
       read: () => content.read(),
+      ...(typeof content.stream === "function" ? { stream: () => content.stream() } : {}),
     };
     return { text: "", files: [file] };
   }

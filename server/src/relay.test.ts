@@ -271,6 +271,9 @@ describe("subscriptions", () => {
     fromRunner(r, { t: "homeChat", sessionId: "claude:x", rev: 1 });
     fromRunner(r, { t: "homeChat", rev: 2 });
     for (const s of [a, b]) expect(s.take("homeChat")).toEqual([{ t: "homeChat", runnerId: "box", sessionId: "claude:x", rev: 1 }, { t: "homeChat", runnerId: "box", rev: 2 }]);
+    // The tabs' home names go along.
+    fromRunner(r, { t: "homeChat", sessionId: "claude:x", chats: ["claude:x", "claude:y"], labels: { "claude:x": 0, "claude:y": 1 }, rev: 3 });
+    for (const s of [a, b]) expect(s.take("homeChat")).toEqual([{ t: "homeChat", runnerId: "box", sessionId: "claude:x", chats: ["claude:x", "claude:y"], labels: { "claude:x": 0, "claude:y": 1 }, rev: 3 }]);
   });
 });
 

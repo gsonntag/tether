@@ -6,11 +6,35 @@ import { redact } from "../../credentials";
 import type { Request, RequestAnswer } from "../../../../shared/transcript";
 import { REQUEST_MAX } from "./describe";
 import { commandWords } from "./summary";
-import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, LINK_EVERY_MS, Texter } from ".";
+import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, HEIC_NOTE, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
-import { HomeLine, PERSON_TEXT_MAX, type TextedFile } from "../homeLine";
+import { HomeLine, PERSON_TEXT_MAX, type Home, type HomeEnd, type TextedFile } from "../homeLine";
+
+/** A Home agent end with only the primary home (or `homes`), whose take and the rest can be replaced. */
+function fakeHome(o: Partial<HomeEnd> & { extra?: Home[] } = {}): HomeEnd {
+  const extra = o.extra ?? [];
+  return {
+    take: async () => {},
+    isTextsChat: () => false,
+    homes: () => [{ n: 0, chat: "claude:home" }, ...extra],
+    newHome: async () => {
+      const used = new Set(extra.map((h) => h.n));
+      let n = 1;
+      while (used.has(n)) n++;
+      extra.push({ n, chat: `claude:home${n}` });
+      return n;
+    },
+    deleteHome: async (n) => {
+      const i = extra.findIndex((h) => h.n === n);
+      if (n === 0 || i < 0) throw new Error("no");
+      extra.splice(i, 1);
+      return [{ n: 0, chat: "claude:home" }, ...extra];
+    },
+    ...o,
+  };
+}
 
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
 
@@ -426,7 +450,7 @@ describe("texting the Home agent", () => {
     const took: string[] = [];
     const tookFiles: TextedFile[][] = [];
     let textsChat = "claude:home";
-    line.home = { take: async (text, f) => void (took.push(text), f && tookFiles.push(f)), isTextsChat: (id) => id === textsChat };
+    line.home = fakeHome({ take: async (text, f) => void (took.push(text), f && tookFiles.push(f)), isTextsChat: (id) => id === textsChat });
     const s = setup({}, line);
     line.phone = { send: (text, about) => s.t.homeText(text, about), text: (from, body, o) => s.t.personText(from, body, o) };
     return { ...s, line, took, tookFiles, setTextsChat: (id: string) => (textsChat = id) };
@@ -490,9 +514,10 @@ describe("texting the Home agent", () => {
     };
     await hear({ text: "home: start x" });
     expect(texts).toEqual(["Couldn't send to the Home agent: The chat is gone."]);
+    // Without a Home agent, "home" is just a word: the usual rules (nothing open here).
     line.home = undefined;
     await hear({ text: "home: start x" });
-    expect(texts.at(-1)).toBe(TEXTS.noHome);
+    expect(texts.at(-1)).toBe(TEXTS.nothingOpen);
     for (const text of [TEXTS.noHome, TEXTS.whatToSendHome, TEXTS.homeFailed("rate limited")]) expect([text, casualText(text)]).toEqual([text, true]);
   });
 
@@ -564,7 +589,7 @@ describe("an agent texting the person (text_person)", () => {
   test("the Home agent's goes out as [home], and a reply goes back to it", async () => {
     const line = new HomeLine();
     const took: string[] = [];
-    line.home = { take: async (text) => void took.push(text), isTextsChat: () => false };
+    line.home = fakeHome({ take: async (text) => void took.push(text) });
     const s = setup({}, line);
     await s.t.start();
     const r = await s.t.personText("home", "PR #12 is merged and live");
@@ -635,7 +660,7 @@ describe("replies tied to what was just texted, and images", () => {
     const line = new HomeLine();
     const took: string[] = [];
     const tookFiles: TextedFile[][] = [];
-    line.home = { take: async (text, f) => void (took.push(text), f && tookFiles.push(f)), isTextsChat: () => false };
+    line.home = fakeHome({ take: async (text, f) => void (took.push(text), f && tookFiles.push(f)) });
     const s = setup({}, line);
     line.phone = { send: (text, about) => s.t.homeText(text, about), text: (from, body, o) => s.t.personText(from, body, o) };
     return { ...s, line, took, tookFiles };
@@ -742,5 +767,136 @@ describe("inbound attachments from Photon", () => {
     expect(inboundOf({ type: "reply", content: group, target: { id: "m3" } })).toMatchObject({ text: "what's this?", replyTo: "m3", files: [{ name: "a.png" }] });
     // Nothing usable: nothing.
     expect(inboundOf({ type: "group", items: [{ content: { type: "poll" } }] })).toBeUndefined();
+  });
+});
+
+describe("round 2: homes over text, image downloads, held images", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+  const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.alloc(16)]);
+  const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]);
+  const photo = (data: Buffer = PNG, name = "IMG_1.png", mimeType = "image/png") => ({ name, mimeType, size: data.length, read: async () => data });
+  function withHomes() {
+    const line = new HomeLine();
+    const took: [string, unknown][] = [];
+    const tookFiles: TextedFile[][] = [];
+    const extra: Home[] = [];
+    const made: string[] = [];
+    line.home = fakeHome({
+      extra,
+      take: async (text, f, to) => void (took.push([text, to]), f && tookFiles.push(f)),
+    });
+    const newHome = line.home.newHome;
+    line.home.newHome = async (text, f) => (made.push(text), f && tookFiles.push(f), newHome(text, f));
+    const s = setup({}, line);
+    line.phone = { send: (text, about, chat) => s.t.homeText(text, about, chat), text: (from, body, o) => s.t.personText(from, body, o) };
+    return { ...s, line, took, tookFiles, extra, made };
+  }
+
+  test("hn makes a home, h1 reaches it, its texts say [h1] and a reply goes back to it, hd1 deletes it", async () => {
+    const { t, texts, took, hear, made, line } = withHomes();
+    await t.start();
+    await hear({ text: "hn" });
+    expect(made).toEqual([""]);
+    expect(texts.at(-1)).toBe(TEXTS.homeStarted("h1"));
+    await hear({ text: "hn fix the logo" });
+    expect(made.at(-1)).toBe("fix the logo");
+    await hear({ text: "h1 status?" });
+    expect(took.at(-1)).toEqual(["status?", { n: 1 }]);
+    await hear({ text: "h7 status?" });
+    expect(texts.at(-1)).toBe(TEXTS.noSuchHome("h7", "h, h1, h2"));
+    // h2's text is marked [h2]; plain text then goes back to h2, a threaded reply to it too.
+    await line.phone!.send("logo is done, ship it?", "claude:a", "claude:home2");
+    expect(texts.at(-1)).toBe("[h2] logo is done, ship it?");
+    const id = `m${texts.length}`;
+    await hear({ text: "yes" });
+    expect(took.at(-1)).toEqual(['(replying to your text about session claude:a, "secret plans" in /home/me/web) yes', { n: 2 }]);
+    await line.phone!.send("ok", undefined);
+    expect(texts.at(-1)).toBe("[home] ok");
+    await hear({ text: "and deploy", replyTo: id });
+    expect(took.at(-1)).toEqual(["(replying to your text about session claude:a, \"secret plans\" in /home/me/web) and deploy", { n: 2 }]);
+    await hear({ text: "hd2" });
+    expect(texts.at(-1)).toBe(TEXTS.homeDeleted("h2", "h, h1"));
+    await hear({ text: "hd0" });
+    expect(texts.at(-1)).toBe(TEXTS.cantDeletePrimary);
+    for (const x of [TEXTS.homeStarted("h1"), TEXTS.noSuchHome("h7", "h, h1"), TEXTS.homeDeleted("h2", "h, h1"), TEXTS.cantDeletePrimary, TEXTS.whatToSendTo("h1"), TEXTS.homeGone("h"), TEXTS.imagesNotSent])
+      expect([x, casualText(x)]).toEqual([x, true]);
+  });
+
+  test("a stuck image download doesn't hold up texting: it times out, the words go, the person is told", async () => {
+    const { DOWNLOAD } = await import("./images");
+    const was = DOWNLOAD.ms;
+    DOWNLOAD.ms = 30;
+    try {
+      const { t, took, tookFiles, hear, texts } = withHomes();
+      await t.start();
+      const stuck = { name: "a.png", mimeType: "image/png", size: 0, read: () => new Promise<Buffer>(() => {}) };
+      const first = hear({ text: "h look", files: [stuck] });
+      const second = hear({ text: "h and this" });
+      await Promise.all([first, second]);
+      expect(took.map((x) => x[0])).toEqual(["look", "and this"]);
+      expect(tookFiles).toEqual([]);
+      expect(texts).toEqual([TEXTS.imagesNotSent]);
+    } finally {
+      DOWNLOAD.ms = was;
+    }
+  });
+
+  test("a photo, then its caption: the caption takes the photo along, and a number sends both", async () => {
+    const { t, hear, say, told, toldFiles, texts } = withHomes();
+    // No Home agent here: the picker.
+    t["ctx"].homeLine = undefined;
+    await t.start();
+    say("claude:a", "Which?");
+    await t.turnEnded("claude:a");
+    say("codex:b", "Which?");
+    await t.turnEnded("codex:b");
+    await hear({ text: "", files: [photo()] });
+    await hear({ text: "make it blue" });
+    expect(told).toEqual([]);
+    await hear({ text: "2" });
+    expect(told).toEqual([["codex:b", "make it blue"]]);
+    expect(toldFiles).toEqual([["codex:b", [{ name: "IMG_1.png", mimeType: "image/png", data: PNG }]]]);
+    // "5 with this" (no 5): held with its photo; a number sends both.
+    await hear({ text: "5 with this", files: [photo()] });
+    await hear({ text: "1" });
+    expect(told.at(-1)).toEqual(["claude:a", "with this"]);
+    expect(toldFiles.at(-1)).toEqual(["claude:a", [{ name: "IMG_1.png", mimeType: "image/png", data: PNG }]]);
+    // A photo with "2" alone (aimed, nothing sent): the person is told it didn't go.
+    await hear({ text: "2", files: [photo()] });
+    expect(texts.at(-1)).toBe(TEXTS.imagesNotSent);
+  });
+
+  test("an image alone while a request waits leaves the request waiting on the person; a bad answer with an image says the image didn't go", async () => {
+    const { t, open, hear, queued, texts } = setup();
+    await t.start();
+    await open("claude:a", bash());
+    await hear({ text: "", files: [photo()] });
+    expect(queued.length).toBe(1);
+    expect(t.router.open()[0]!.answered).toBe(false);
+    // One that only takes y or n: other words are a problem, and the image is reported lost.
+    await open("claude:a", { ...bash("r2"), noReason: true });
+    await hear({ text: "maybe", files: [photo()] });
+    expect(texts.slice(-2)).toEqual(["[1] This one only takes y or n.", TEXTS.imagesNotSent]);
+    expect(queued.length).toBe(1);
+  });
+
+  test("HEIC: turned into JPEG; when it can't be, it goes by path with a note", async () => {
+    const { t, hear, took, tookFiles } = withHomes();
+    await t.start();
+    t.convert = async () => JPEG;
+    await hear({ text: "h this", files: [photo(HEIC, "IMG_9.HEIC", "image/heic")] });
+    expect(tookFiles.at(-1)).toEqual([{ name: "IMG_9.jpg", mimeType: "image/jpeg", data: JPEG }]);
+    t.convert = async () => undefined;
+    await hear({ text: "h this", files: [photo(HEIC, "IMG_9.HEIC", "image/heic")] });
+    expect(tookFiles.at(-1)).toEqual([{ name: "IMG_9.HEIC", mimeType: "image/heic", data: HEIC }]);
+    expect(took.at(-1)![0]).toBe(`this\n\n${HEIC_NOTE}`);
+  });
+
+  test("a refused image counts against the agent's text cap", async () => {
+    const { t, texts } = setup();
+    await t.start();
+    for (let i = 0; i < AGENT_TEXT_MAX; i++) expect((await t.personText("claude:a", "x", { image: "/etc/passwd" })).isError).toBe(true);
+    expect((await t.personText("claude:a", "plain")).text).toContain(`${AGENT_TEXT_MAX} times`);
+    expect(texts).toEqual([]);
   });
 });

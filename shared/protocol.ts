@@ -118,7 +118,7 @@ export interface Ops {
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
   /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
-  homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
+  homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; labels?: Record<string, number>; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**
    * What the Home agent runs on, kept on the runner for every chat to come. The chat in view
    * (`sessionId`, an open tab; else the current one) takes it too: a model and a mode now, Claude's
@@ -457,6 +457,11 @@ export interface HomeChatUpdate {
   sessionId?: string;
   /** the open chats, Home's tabs (absent from a runner from before tabs) */
   chats?: string[];
+  /**
+   * each tab's home number, as the person texts it (homeLabel: 0 is `h`, the Texts tab; 1 is `h1`, …),
+   * kept while the tab is open; absent from a runner from before homes
+   */
+  labels?: Record<string, number>;
   rev: number;
 }
 

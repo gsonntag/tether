@@ -165,15 +165,15 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const { op, chat, tools, project, runner, driverOf, announced, dataDir } = await setup();
   const first = await op("homeAgent");
   expect(first.sessionId).toBe(chat);
-  expect(announced).toEqual([{ sessionId: chat, chats: [chat], rev: first.rev }]);
+  expect(announced).toEqual([{ sessionId: chat, chats: [chat], labels: { [chat]: 1 }, rev: first.rev }]);
   const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
   const child = /session (\S+) in/.exec(said)![1]!;
   await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
 
   const { rev } = await op("homeAgentClear");
   expect(rev).toBeGreaterThan(first.rev);
-  expect(announced.at(-1)).toEqual({ chats: [], rev });
-  expect(await op("homeAgent")).toEqual({ chats: [], folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription", mode: "auto" }, harnesses: ["claude"] });
+  expect(announced.at(-1)).toEqual({ chats: [], labels: {}, rev });
+  expect(await op("homeAgent")).toEqual({ chats: [], labels: {}, folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription", mode: "auto" }, harnesses: ["claude"] });
   // Kept across a restart.
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ rev });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).current).toBeUndefined();
@@ -189,7 +189,7 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const next = await op("homeAgentNew");
   expect(next.sessionId).not.toBe(chat);
   expect(next.rev).toBeGreaterThan(rev);
-  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, chats: [next.sessionId], rev: next.rev });
+  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, chats: [next.sessionId], labels: { [next.sessionId]: 1 }, rev: next.rev });
   expect((await op("homeAgent")).sessionId).toBe(next.sessionId);
 });
 
@@ -205,9 +205,12 @@ test("tabs: each new chat is a tab, closing one archives it and keeps the rest, 
   // Several run at once, each its own conversation.
   expect([chat, b, c].map((id) => driverOf(id)!.sent)).toEqual([["hi"], ["hi"], ["hi"]]);
 
+  // Each is a home, h1, h2, h3 (no Texts tab yet: no h).
+  expect((await op("homeAgent")).labels).toEqual({ [chat]: 1, [b]: 2, [c]: 3 });
   // Closing the middle one: the others stay, it's archived (history kept), every device is told.
+  // The others keep their numbers; a new tab takes the free one.
   const { rev } = await op("homeAgentClose", { sessionId: b });
-  expect(announced.at(-1)).toEqual({ sessionId: c, chats: [chat, c], rev });
+  expect(announced.at(-1)).toEqual({ sessionId: c, chats: [chat, c], labels: { [chat]: 1, [c]: 3 }, rev });
   expect(runner.core.sessions.get(b)?.summary.archived ?? runner.look.sessions.list().find((r) => r.id === b)?.archived).toBe(true);
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ tabs: [chat, c], current: c });
   // Closing the current one: the newest tab left is current.
@@ -974,14 +977,15 @@ async function texting(o: { attachments?: boolean } = {}) {
   const personTexts: [string, string][] = [];
   /** what each text was about (send's `about`), and text_person's options */
   const abouts: (string | undefined)[] = [];
-  const personOpts: ({ image?: string; about?: string } | undefined)[] = [];
+  const sentChats: (string | undefined)[] = [];
+  const personOpts: ({ image?: string; about?: string; chat?: string } | undefined)[] = [];
   line.phone = {
-    send: async (t, about) => (sent.push(t), abouts.push(about), true),
+    send: async (t, about, chat) => (sent.push(t), abouts.push(about), sentChats.push(chat), true),
     text: async (from, body, o) => (personTexts.push([from, body]), personOpts.push(o), { text: "Texted the person." }),
   };
   const t = await setup({ homeLine: line, ...o });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, abouts, personTexts, personOpts, textsTab };
+  return { ...t, line, sent, abouts, sentChats, personTexts, personOpts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1185,29 +1189,81 @@ test("the Home agent's instructions make it the PM over text", () => {
   expect(INSTRUCTIONS).toContain("relay any instruction to the right session with send_to_session");
 });
 
-test("replies tied to a session: the Texts tab's texts say which session they're about, and text_person passes it on", async () => {
-  const { line, sent, abouts, personOpts, runner, driverOf, textsTab, tools, project, fake } = await texting();
-  // A text answering one about a session: the reply to it is about that session too.
-  await line.home!.take(`${replyContext({ sessionId: "claude:abc", byHome: true, title: "login fix", project: "/p" })}merge it`);
+test("a Home text says which session it's about only by what its turn acted on, never by what the person's text was about", async () => {
+  const { line, sent, abouts, personOpts, runner, textsTab, tools, project, fake } = await texting();
+  // The person answers a text about claude:abc, but the turn does nothing with it: no tag.
+  await line.home!.take(`${replyContext({ sessionId: "claude:abc", title: "login fix", project: "/p" })}nvm`);
   await until(() => sent.length === 1);
-  expect(abouts).toEqual(["claude:abc"]);
+  expect(abouts).toEqual([undefined]);
   const texts = await textsTab();
   await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
-  // A report from a session it started: its texted outcome is about that session.
-  const child = /session (\S+) in/.exec(await tools(texts).start_session!({ project_path: project, prompt: "Fix it." }))![1]!;
-  await until(() => sent.length === 2);
-  expect(abouts[1]).toBe(child);
-  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
-  // text_person in that turn: the session goes with it unless the agent names another; an image goes too.
+  // A reply about X, but the turn starts Y ("start a new session for the logo"): the answer is about Y.
+  let y = "";
   const plain = fake.script;
-  fake.script = (text) => (text.includes("and send the chart") ? [async () => void (await tools(texts).text_person!({ message: "here", image: "/tmp/chart.png" })), ...plain(text)] : plain(text));
-  await line.home!.take(`${replyContext({ sessionId: child, byHome: true })}and send the chart`);
-  await until(() => personOpts.length === 1);
-  expect(personOpts[0]).toEqual({ about: child, image: "/tmp/chart.png" });
+  fake.script = (text) =>
+    text.includes("new session for the logo")
+      ? [async () => void (y = /session (\S+) in/.exec(await tools(texts).start_session!({ project_path: project, prompt: "Logo." }))![1]!), ...plain(text)]
+      : plain(text);
+  await line.home!.take(`${replyContext({ sessionId: "claude:abc" })}nvm, start a new session for the logo`);
+  await until(() => sent.length >= 2);
+  expect(y).not.toBe("");
+  expect(abouts[1]).toBe(y);
   await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
-  expect(await tools(texts).text_person!({ message: "other news", session_id: "codex:zz" })).toContain("Texted");
-  expect(personOpts[1]).toEqual({ about: "codex:zz" });
-  void driverOf;
+  // Y's report: the texted outcome is about Y.
+  await until(() => sent.length >= 3);
+  expect(abouts[2]).toBe(y);
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  // text_person: an explicit session_id must exist; without one, the session the turn acted on.
+  fake.script = (text) => (text.includes("send the chart") ? [async () => void (await tools(texts).text_person!({ message: "here", image: "/tmp/chart.png" })), ...plain(text)] : plain(text));
+  await line.home!.take(`${replyContext({ sessionId: "claude:abc" })}send the chart`);
+  await until(() => personOpts.length === 1);
+  // The turn acted on nothing: what the text was about doesn't count.
+  expect(personOpts[0]).toEqual({ image: "/tmp/chart.png" });
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await expect(tools(texts).text_person!({ message: "other news", session_id: "codex:nope" })).rejects.toThrow(/no session/);
+  expect(personOpts.length).toBe(1);
+  expect(await tools(texts).text_person!({ message: "other news", session_id: y })).toContain("Texted");
+  expect(personOpts[1]).toEqual({ about: y });
+});
+
+test("homes: hn makes one (h2, h3, …), its number reaches it, its texts are marked with its name, and it can be deleted but h can't", async () => {
+  const { line, sent, sentChats, runner, driverOf, textsTab, op, chat } = await texting();
+  const home = line.home!;
+  // The chat Home opened with is a home too: h1 (no Texts tab, h, until a text makes it).
+  expect(home.homes()).toEqual([{ n: 0 }, { n: 1, chat }]);
+  expect(await home.newHome("look at the logo")).toBe(2);
+  const h2 = home.homes().find((h) => h.n === 2)!.chat!;
+  await until(() => !!driverOf(h2)?.sent.length);
+  expect(driverOf(h2)!.sent[0]).toBe(`${FROM_IMESSAGE}look at the logo`);
+  // Its answer goes back by text, from h2.
+  await until(() => sent.length === 1);
+  expect(sentChats[0]).toBe(h2);
+  expect(home.isTextsChat(h2)).toBe(true);
+  expect(home.isTextsChat(chat)).toBe(false);
+  // The primary home is made by the first text to h.
+  await home.take("hi");
+  const texts = await textsTab();
+  await until(() => sent.length === 2);
+  expect(sentChats[1]).toBeUndefined();
+  expect(home.homes()).toEqual([{ n: 0, chat: texts }, { n: 1, chat }, { n: 2, chat: h2 }]);
+  // To h2 by number; to one that isn't open, it throws.
+  await until(() => runner.core.sessions.get(h2)?.state.status === "idle");
+  await home.take("and the favicon", undefined, { n: 2 });
+  await until(() => driverOf(h2)!.sent.length === 2);
+  await expect(home.take("x", undefined, { n: 5 })).rejects.toThrow(/no h5/);
+  // Texting h1 (a tab opened in Tether) makes it answer by text too.
+  await home.take("status?", undefined, { n: 1 });
+  expect(home.isTextsChat(chat)).toBe(true);
+  expect(await home.newHome("")).toBe(3);
+  expect((await op("homeAgent")).labels).toMatchObject({ [texts]: 0, [chat]: 1, [h2]: 2 });
+  // Delete: h can't go; h2 goes (archived), h3 keeps its number, a new one takes 2.
+  await expect(home.deleteHome(0)).rejects.toThrow(/can't be deleted/);
+  await expect(home.deleteHome(7)).rejects.toThrow(/no h7/);
+  const left = await home.deleteHome(2);
+  expect(left.map((h) => h.n)).toEqual([0, 1, 3]);
+  expect(runner.look.sessions.list().find((r) => r.id === h2)?.archived ?? runner.core.sessions.get(h2)?.summary.archived).toBe(true);
+  expect(await home.newHome("")).toBe(2);
+  expect(home.homes().map((h) => h.n)).toEqual([0, 1, 2, 3]);
 });
 
 test("the person's texted images reach the Texts tab as attachments", async () => {

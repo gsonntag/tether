@@ -47,7 +47,7 @@ import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/prot
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
-import { aboutOf, HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd, type TextedFile } from "../homeLine";
+import { HOME_SENDER, homeLabel, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TextedFile } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
@@ -137,8 +137,12 @@ interface State {
   lastCheckIn?: CheckInStatus["last"];
   /** "Watch all sessions"; none: on */
   watchAll?: boolean;
-  /** the tab the person's texts go to ("Texts"), once one came */
+  /** the tab the person's texts go to ("Texts"), once one came: the primary home, `h` */
   texts?: string;
+  /** the other tabs' home numbers (h1, h2, …), by chat: kept while the tab is open, the lowest free one for a new tab */
+  labels?: Record<string, number>;
+  /** tabs other than Texts that the person has texted (or made by text): their answers go back by text too */
+  textHomes?: string[];
   /** "Reply by text"; none: on */
   replyByText?: boolean;
 }
@@ -153,9 +157,18 @@ interface TextTurn {
   nudged?: boolean;
   /** it texted the person itself this turn (text_person): its answer isn't texted again */
   texted?: boolean;
-  /** the session this turn is about (the person's reply to a text about it, or a report from it): its texts are about it too */
-  about?: string;
+  /**
+   * the sessions this turn acted on: started, messaged, or reported on (a report from it). Its texts
+   * are about that session when it's exactly one; never about what the person's text was about.
+   */
+  acted?: string[];
 }
+
+/** The one session a turn acted on, if it acted on exactly one. */
+const actedOn = (t: TextTurn | undefined) => (t?.acted?.length === 1 ? t.acted[0] : undefined);
+const act = (t: TextTurn, id: string) => {
+  if (!(t.acted ??= []).includes(id)) t.acted.push(id);
+};
 
 /** The session a report starts with (describe: "Session <id> (…"). */
 const REPORT_ABOUT = /^Session (\S+) \(/;
@@ -209,8 +222,9 @@ How to work:
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
-- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered.
-- Replies to texts: when the person answers soon after a text about a session, their message starts with "(replying to your text about session <id>, ...)" (or "Tether's text", for one Tether sent itself). Assume they mean that same session: relay instructions there with send_to_session ("merge it", "yes do that", "try again") without asking which session, unless their words clearly name a different one. Images they text come as attachments (listed with their paths): forward the paths in your message when a session needs them. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- Replies to texts: when the person answers soon after one of your texts about a session, their message starts with "(replying to your text about session <id>, ...)". Assume they mean that same session: relay instructions there with send_to_session ("merge it", "yes do that", "try again") without asking which session, unless their words clearly name a different one or ask for something new. Images they text come as attachments (listed with their paths): forward the paths in your message when a session needs them.
+- The person can text several of your chats: "h" is the Texts tab, "h1", "h2", … are your other tabs (they start one by texting "hn"), and each tab's texts go out marked with its name. Answer in the chat the text came to.
 - You're the person's PM over text: text_person texts their phone, and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started over iMessage), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
@@ -337,8 +351,8 @@ async function overview(folder: string): Promise<string> {
 
 export class HomeAgent implements HomeEnd {
   state: State = { rev: 0, tabs: [], children: {} };
-  /** the Texts chat's turn now */
-  private textTurn?: TextTurn;
+  /** each texting chat's turn now (homes: the Texts tab and the tabs the person texted) */
+  private textTurns = new Map<string, TextTurn>();
   /** the Texts tab being made (two texts at once make one) */
   private makingTexts?: Promise<string>;
   private file: string;
@@ -377,10 +391,13 @@ export class HomeAgent implements HomeEnd {
           ...(v.lastCheckIn && typeof v.lastCheckIn === "object" ? { lastCheckIn: v.lastCheckIn } : {}),
           ...(v.watchAll === false ? { watchAll: false } : {}),
           ...(typeof v.texts === "string" && v.texts ? { texts: v.texts } : {}),
+          ...(v.labels && typeof v.labels === "object" ? { labels: Object.fromEntries(Object.entries(v.labels).filter(([k, n]) => typeof k === "string" && Number.isSafeInteger(n) && (n as number) > 0)) as Record<string, number> } : {}),
+          ...(Array.isArray(v.textHomes) ? { textHomes: v.textHomes.filter((x: unknown): x is string => typeof x === "string") } : {}),
           ...(v.replyByText === false ? { replyByText: false } : {}),
         };
       }
     } catch {}
+    this.label();
     // Check-ins a restart interrupted: their clocks start again (one already past reports now).
     for (const id of Object.keys(this.state.checkIns ?? {})) this.arm(id);
   }
@@ -422,12 +439,70 @@ export class HomeAgent implements HomeEnd {
 
   // ── texts (homeLine.ts) ──
 
+  /** Whether a chat is one the person texts: the Texts tab (h), or another home they texted. */
   isTextsChat(id: string): boolean {
-    return !!this.state.texts && this.state.texts === id;
+    return (!!this.state.texts && this.state.texts === id) || !!this.state.textHomes?.includes(id);
+  }
+
+  /**
+   * Gives every open tab but Texts a home number (h1, h2, …), keeping the ones they have: a new tab
+   * takes the lowest free one. Drops the numbers (and text marks) of tabs that closed. Whether
+   * anything changed.
+   */
+  private label(): boolean {
+    const before = JSON.stringify([this.state.labels, this.state.textHomes]);
+    const open = this.state.tabs.filter((t) => t !== this.state.texts);
+    const labels: Record<string, number> = {};
+    for (const t of open) if (this.state.labels?.[t]) labels[t] = this.state.labels[t]!;
+    const used = new Set(Object.values(labels));
+    for (const t of open) {
+      if (labels[t]) continue;
+      let n = 1;
+      while (used.has(n)) n++;
+      labels[t] = n;
+      used.add(n);
+    }
+    this.state.labels = labels;
+    this.state.textHomes = (this.state.textHomes ?? []).filter((t) => open.includes(t));
+    return JSON.stringify([this.state.labels, this.state.textHomes]) !== before;
+  }
+
+  /** The open homes: h (the Texts tab, absent until a text makes it) and h1, h2, … (the other tabs). */
+  homes(): Home[] {
+    const texts = this.state.texts && this.state.tabs.includes(this.state.texts) ? this.state.texts : undefined;
+    const rest = Object.entries(this.state.labels ?? {})
+      .filter(([chat]) => this.state.tabs.includes(chat))
+      .map(([chat, n]) => ({ n, chat }))
+      .sort((a, b) => a.n - b.n);
+    return [{ n: 0, ...(texts ? { chat: texts } : {}) }, ...rest];
+  }
+
+  /** Each open tab's home number (the Texts tab: 0), for Home's tabs. */
+  labels(): Record<string, number> {
+    return Object.fromEntries(this.homes().flatMap((h) => (h.chat ? [[h.chat, h.n]] : [])));
+  }
+
+  /** A new home (a new tab), texted: its number. Its first message, if any, goes in as the person's text. */
+  async newHome(text: string, files?: TextedFile[]): Promise<number> {
+    const { sessionId } = await this.newChat();
+    (this.state.textHomes ??= []).push(sessionId);
+    this.save();
+    if (text.trim() || files?.length) await this.ctx.sessions.queue(sessionId, FROM_IMESSAGE + (text.trim() || "(image)"), files?.length ? files : undefined);
+    return this.state.labels?.[sessionId] ?? 0;
+  }
+
+  /** Deletes home `n` (by text): closes its tab (its chat is archived). The homes left. */
+  async deleteHome(n: number): Promise<Home[]> {
+    if (n === 0) throw new Error("h is your main home, so it can't be deleted");
+    const h = this.homes().find((x) => x.n === n);
+    if (!h?.chat) throw new Error(`there's no h${n}`);
+    await this.close(h.chat);
+    return this.homes();
   }
 
   /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */
   async relay(sessionId: string, message: string, image?: string): Promise<string | undefined> {
+    // (The chat it reports to hears it as a report on that session: textsMessage.)
     const c = this.state.children[sessionId];
     if (!c || c.released) return undefined;
     const words = message.trim().slice(0, PERSON_TEXT_MAX * 4);
@@ -436,9 +511,23 @@ export class HomeAgent implements HomeEnd {
     return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
-  /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs (with the images they texted). */
-  async take(text: string, files?: TextedFile[]): Promise<void> {
-    const chat = await this.textsChat();
+  /**
+   * The person texted the Home agent: to a home (none, or h: the Texts tab, made if it's gone; h1,
+   * …: that tab, if it's open), as theirs, after its turn if one runs (with the images they texted).
+   */
+  async take(text: string, files?: TextedFile[], to?: HomeTarget): Promise<void> {
+    let chat: string;
+    const n = to && "n" in to ? to.n : undefined;
+    if (!to || n === 0) chat = await this.textsChat();
+    else {
+      const h = this.homes().find((x) => x.n !== 0 && (n !== undefined ? x.n === n : x.chat === (to as { chat: string }).chat));
+      if (!h?.chat) throw new Error(`there's no ${n !== undefined ? homeLabel(n) : "such home"}`);
+      chat = await this.follow(h.chat).catch(() => h.chat!);
+      if (!this.isTextsChat(chat)) {
+        (this.state.textHomes ??= []).push(chat);
+        this.save();
+      }
+    }
     await this.ctx.sessions.queue(chat, FROM_IMESSAGE + text, files?.length ? files : undefined);
   }
 
@@ -456,15 +545,16 @@ export class HomeAgent implements HomeEnd {
       await this.ctx.sessions.rename(chat, TEXTS_TITLE).catch(() => {});
       this.state.texts = chat;
       this.state.tabs.push(chat);
+      this.label();
       this.announce();
       return chat;
     })().finally(() => (this.makingTexts = undefined));
     return this.makingTexts;
   }
 
-  /** What the Texts chat hears and says this turn (the message event). */
-  private textsMessage(msg: Msg) {
-    const t = (this.textTurn ??= { kind: "quiet" });
+  /** What a texting chat hears and says this turn (the message event). */
+  private textsMessage(chat: string, msg: Msg) {
+    const t = this.turnOf(chat);
     if (msg.role === "assistant") {
       const said = text(msg);
       if (said) t.said = replyForPeople(said);
@@ -477,22 +567,30 @@ export class HomeAgent implements HomeEnd {
     const report = tether && raw.includes(TEXTED);
     if (texted) t.kind = "text";
     else if (report && t.kind === "quiet") t.kind = "report";
-    // What this turn is about: the session the person's reply or the report names (the newest wins).
-    const about = texted ? aboutOf(raw.startsWith(FROM_IMESSAGE) ? raw.slice(FROM_IMESSAGE.length) : raw) : tether ? REPORT_ABOUT.exec(fromTether(raw) ?? raw)?.[1] : undefined;
-    if (about) t.about = about;
+    // A report on a session: this turn acts on it. (What the person's text was about doesn't count:
+    // they may be turning to something else.)
+    const reported = tether ? REPORT_ABOUT.exec(fromTether(raw) ?? raw)?.[1] : undefined;
+    if (reported) act(t, reported);
   }
 
   /** The Texts chat's turn ended: its answer goes back by text when the turn was a text's or a texted-work report's. */
-  private async textsTurnEnded(error?: string, stopped?: boolean) {
-    const t = this.textTurn;
-    this.textTurn = undefined;
+  private async textsTurnEnded(chat: string, error?: string, stopped?: boolean) {
+    const t = this.textTurns.get(chat);
+    this.textTurns.delete(chat);
     const phone = this.ctx.homeLine?.phone;
     if (!t || t.kind === "quiet" || stopped || !phone || this.state.replyByText === false) return;
     if (t.kind === "report" && t.nudged && !error) return;
     if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
     if (!words) return;
-    await phone.send(words, t.about).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+    await phone.send(words, error ? undefined : actedOn(t), chat === this.state.texts ? undefined : chat).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+  }
+
+  /** A texting chat's turn now (made when something happens in it). */
+  private turnOf(chat: string): TextTurn {
+    let t = this.textTurns.get(chat);
+    if (!t) this.textTurns.set(chat, (t = { kind: "quiet" }));
+    return t;
   }
 
   /**
@@ -587,7 +685,7 @@ export class HomeAgent implements HomeEnd {
     // A clock-based rev stays ahead of what browsers saw even if state.json was lost.
     this.state.rev = Math.max(this.state.rev + 1, Date.now());
     this.save();
-    this.ctx.announceHomeChat?.({ ...(this.state.current ? { sessionId: this.state.current } : {}), chats: [...this.state.tabs], rev: this.state.rev });
+    this.ctx.announceHomeChat?.({ ...(this.state.current ? { sessionId: this.state.current } : {}), chats: [...this.state.tabs], labels: this.labels(), rev: this.state.rev });
     return this.state.rev;
   }
 
@@ -605,6 +703,7 @@ export class HomeAgent implements HomeEnd {
     }
     if (changed || out.some((id, i) => id !== this.state.tabs[i])) {
       this.state.tabs = out;
+      this.label();
       if (this.state.current && !out.includes(this.state.current)) this.state.current = out.at(-1);
       this.announce();
     }
@@ -639,6 +738,12 @@ export class HomeAgent implements HomeEnd {
     this.state.tabs = tabs.filter((t, i) => tabs.indexOf(t) === i);
     if (this.state.current === from) this.state.current = to;
     if (this.state.texts === from) this.state.texts = to;
+    if (this.state.labels?.[from]) {
+      this.state.labels[to] = this.state.labels[from]!;
+      delete this.state.labels[from];
+    }
+    if (this.state.textHomes?.includes(from)) this.state.textHomes = this.state.textHomes.map((t) => (t === from ? to : t));
+    this.label();
     this.announce();
   }
 
@@ -677,6 +782,7 @@ export class HomeAgent implements HomeEnd {
     const permissionMode = await this.modeFor(harness, mode);
     const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
     this.state.tabs.push(id);
+    this.label();
     return { sessionId: id, rev: this.setCurrent(id) };
   }
 
@@ -762,6 +868,7 @@ export class HomeAgent implements HomeEnd {
     if (this.state.current === old) this.state.current = this.state.tabs.at(-1);
     // The next text makes a new Texts tab.
     if (this.state.texts === old) delete this.state.texts;
+    this.label();
     const rev = this.announce();
     // Nothing stored yet (never sent to): there's nothing to archive.
     if (look || (await this.ctx.sessions.open(old).catch(() => undefined))) await this.ctx.sessions.setArchived(old, true).catch((e) => this.ctx.log(`couldn't archive ${old}: ${(e as Error).message}`));
@@ -865,6 +972,7 @@ export class HomeAgent implements HomeEnd {
           const id = await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) });
           this.state.children[id] = { chat, reports: 0 };
           this.save();
+          if (this.isTextsChat(chat)) act(this.turnOf(chat), id);
           const title = a.title?.replace(/[\x00-\x1f\x7f]/g, " ").trim();
           if (title) await s.rename(id, title).catch(() => {});
           await s.send(id, FROM_TETHER + a.prompt);
@@ -950,7 +1058,11 @@ export class HomeAgent implements HomeEnd {
         input: { session_id: z.string(), message: z.string().min(1) },
         run: async (a: { session_id: string; message: string }) => {
           const said = await this.message(chat, a.session_id, a.message);
-          if (this.isTextsChat(chat) && this.textTurn) this.textTurn.nudged = true;
+          if (this.isTextsChat(chat)) {
+            const t = this.turnOf(chat);
+            t.nudged = true;
+            act(t, a.session_id.trim());
+          }
           return said;
         },
       },
@@ -965,10 +1077,14 @@ export class HomeAgent implements HomeEnd {
         run: async (a: { message: string; session_id?: string; image?: string }) => {
           const phone = this.ctx.homeLine?.phone;
           if (!phone) throw new Error("Texting is off in Tether, so nothing was sent. Say it in your reply instead.");
-          const about = a.session_id?.trim() || (this.isTextsChat(chat) ? this.textTurn?.about : undefined);
-          const r = await phone.text(HOME_SENDER, a.message, { ...(about ? { about } : {}), ...(a.image?.trim() ? { image: a.image.trim() } : {}) });
+          // What it's about: the session it names (it must exist), else the one session this turn acted on.
+          const named = a.session_id?.trim();
+          if (named && (this.isChat(named) || !(this.ctx.session(named) ?? (await this.ctx.sessions.open(named).catch(() => undefined)))))
+            throw new Error(`There's no session ${named.slice(0, 200)}: pass an id from list_sessions, or leave session_id out. Nothing was sent.`);
+          const about = named || (this.isTextsChat(chat) ? actedOn(this.textTurns.get(chat)) : undefined);
+          const r = await phone.text(HOME_SENDER, a.message, { ...(about ? { about } : {}), ...(a.image?.trim() ? { image: a.image.trim() } : {}), ...(chat !== this.state.texts ? { chat } : {}) });
           if (r.isError) throw new Error(r.text);
-          if (this.isTextsChat(chat)) (this.textTurn ??= { kind: "quiet" }).texted = true;
+          if (this.isTextsChat(chat)) this.turnOf(chat).texted = true;
           return r.text;
         },
       },
@@ -1269,7 +1385,7 @@ export class HomeAgent implements HomeEnd {
   }
 
   async turnEnded(id: string, error?: string, stopped?: boolean) {
-    if (this.isTextsChat(id)) return this.textsTurnEnded(error, stopped);
+    if (this.isTextsChat(id)) return this.textsTurnEnded(id, error, stopped);
     // A check-in's answer isn't one of the session's reports.
     const w = this.waiting(id);
     if (w) return this.answered(w[0], id, error, stopped);
@@ -1334,7 +1450,7 @@ export class HomeAgent implements HomeEnd {
    * in starts the agent's turn. The person writing in a chat makes it the one watch reports go to.
    */
   personSpoke(id: string, msg: Msg) {
-    if (this.isTextsChat(id)) this.textsMessage(msg);
+    if (this.isTextsChat(id)) this.textsMessage(id, msg);
     if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && fromTether(p.text) !== undefined) && this.state.tabs.includes(id)) this.touched(id);
     const c = this.state.children[id];
     if (!c || c.released || msg.role !== "user") return;
@@ -1372,7 +1488,7 @@ export const homeAgentModule: Module = {
     ctx.ops.register("homeAgent", async () => {
       const chats = await agent.chats();
       const sessionId = await agent.current();
-      return { ...(sessionId ? { sessionId } : {}), chats, folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
+      return { ...(sessionId ? { sessionId } : {}), chats, labels: agent.labels(), folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
     });
     ctx.ops.register("homeAgentSet", (a) => agent.set(a));
     ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));

@@ -3058,3 +3058,28 @@
   .t-updates-row td[data-label]::before { content: attr(data-label); color: var(--t-muted); }
   .t-updates-detail { display: block; padding-bottom: 10px; }
 }
+
+/* Home names on the tabs (h, h1, …: what the person texts), "New Home", and a delete's confirm row. */
+.t-home-tabbar { flex-wrap: wrap; }
+.t-home-tabbar > .t-home-tabs { flex: 1 1 0; }
+.t-home-tab-tag {
+  flex: none;
+  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  padding: 2px 4px;
+  margin-right: 4px;
+  border-radius: 4px;
+  background: var(--color-overlay-hover);
+  color: var(--color-text-secondary);
+}
+.t-home-tab-new:has(.t-home-tab-new-label) { width: auto; padding: 0 8px; gap: 4px; display: inline-flex; align-items: center; white-space: nowrap; }
+.t-home-tab-new-label { font-size: 12px; }
+.t-home-tab-confirm {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 12px;
+  font-size: 13px;
+}
+.t-home-tab-confirm > span { flex: 1 1 auto; min-width: 0; }

@@ -2,6 +2,7 @@
 // which one this device shows is kept here, per runner. NEW is a tab with no chat yet: its first
 // message starts one.
 
+import type { HomeChatUpdate } from "../../shared/protocol";
 import type { SessionSummary } from "../../shared/transcript";
 import { fromImessage, fromTether } from "../../shared/fromTether";
 
@@ -61,4 +62,43 @@ export function tabMark(s: Pick<SessionSummary, "status" | "requests" | "unread"
   if (s.status === "running") return "running";
   if (!shown && s.unread) return s.unread === "failed" ? "failed" : "unread";
   return undefined;
+}
+
+/**
+ * A tab's home name, matching the texts (runner/src/modules/homeLine.ts homeLabel): "h" for the
+ * Texts tab, "h1", "h2", … for the others; undefined from a runner from before homes.
+ */
+export function homeTag(labels: Record<string, number> | undefined, id: string): string | undefined {
+  const n = labels?.[id];
+  if (n === undefined) return undefined;
+  return n === 0 ? "h" : `h${n}`;
+}
+
+/** Whether a tab can be deleted from Home: any but the primary home (h), which stays. */
+export const canDelete = (labels: Record<string, number> | undefined, id: string) => labels?.[id] !== 0;
+
+/** The name the next new Home tab will get: the lowest number no open tab has. */
+export function nextHomeTag(labels: Record<string, number> | undefined): string {
+  const used = new Set(Object.values(labels ?? {}));
+  let n = 1;
+  while (used.has(n)) n++;
+  return `h${n}`;
+}
+
+/**
+ * What a runner's Home tabs become with update `u`, or undefined to keep them: a newer rev replaces
+ * them; the same rev only fills in what's missing (the tabs, asked for after a broadcast that came
+ * without them; the home labels, which a tab change made here doesn't know). Labels a newer update
+ * leaves out are kept for the tabs still open.
+ */
+export function mergeHomeChat(cur: HomeChatUpdate | undefined, u: HomeChatUpdate): HomeChatUpdate | undefined {
+  if (cur && cur.rev > u.rev) return undefined;
+  if (cur && cur.rev === u.rev) {
+    const chats = cur.chats ?? u.chats;
+    const labels = u.labels ?? cur.labels;
+    if (chats === cur.chats && labels === cur.labels) return undefined;
+    return { ...cur, ...(chats ? { chats } : {}), ...(labels ? { labels } : {}) };
+  }
+  const kept = u.labels ?? (cur?.labels && u.chats ? Object.fromEntries(Object.entries(cur.labels).filter(([c]) => u.chats!.includes(c))) : cur?.labels);
+  return { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}), ...(u.chats ? { chats: u.chats } : {}), ...(kept ? { labels: kept } : {}) };
 }

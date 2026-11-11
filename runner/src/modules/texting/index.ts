@@ -33,9 +33,9 @@ import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
-import { HOME, Router, type About } from "./router";
-import { PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
-import { incomingImage, pickIncoming, readOutgoingImage, type InboundFile, type OutImage } from "./images";
+import { HELD_MS, HOME, Router, type About } from "./router";
+import { homeLabel, homeList, PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
+import { download, imagemagick, incomingImage, pickIncoming, readOutgoingImage, type Convert, type InboundFile, type OutImage } from "./images";
 import { TextingStore } from "./store";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
@@ -93,6 +93,17 @@ export class AgentTextCaps {
   }
 }
 
+/** What the person's images came to: the ones that go (`heic`: kept as HEIC, by path only), and how many didn't. */
+interface Got {
+  files: (TextedFile & { heic?: boolean })[];
+  notImages: number;
+  failed: number;
+}
+const NO_FILES: Got = { files: [], notImages: 0, failed: 0 };
+
+/** Said to the agent with a HEIC photo that couldn't be made a JPEG. */
+export const HEIC_NOTE = "(The photo is HEIC and couldn't be converted, so it's attached by its path only.)";
+
 /** What an image the person texted with no words says to the agent. */
 export const IMAGE_ONLY = "(image)";
 /** What the images the person texted with an answer to a request say, when they follow it. */
@@ -119,8 +130,10 @@ export class Texter {
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
   private heardIds: string[] = [];
-  /** images that came with a text the router holds (waiting for the person to pick a session) */
-  private heldFiles?: { text: string; files: TextedFile[] };
+  /** images that came with the text the router holds (its id), waiting for the person to pick a session */
+  private heldFiles?: { id: number; files: TextedFile[]; at: number };
+  /** turns HEIC into JPEG (tests replace it) */
+  convert: Convert = imagemagick;
   readonly caps: AgentTextCaps;
 
   constructor(
@@ -215,26 +228,34 @@ export class Texter {
    * The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it
    * goes back to the Home agent; `about`: the session it's about, which a reply goes with.
    */
-  async homeText(body: string, about?: string): Promise<boolean> {
-    return (await this.homeSend(body, about)).sent;
+  async homeText(body: string, about?: string, chat?: string): Promise<boolean> {
+    return (await this.homeSend(body, about, undefined, chat)).sent;
   }
 
-  private async homeSend(body: string, about?: string, image?: OutImage): Promise<{ sent: boolean; imageSent?: boolean }> {
+  /** The home a chat is (none, or the primary one's: undefined), for stamping its texts "[h1] …". */
+  private homeOf(chat?: string): { n: number; chat: string } | undefined {
+    if (!chat) return undefined;
+    const h = this.ctx.homeLine?.home?.homes().find((x) => x.chat === chat);
+    return h && h.n !== 0 ? { n: h.n, chat } : undefined;
+  }
+
+  private async homeSend(body: string, about?: string, image?: OutImage, chat?: string): Promise<{ sent: boolean; imageSent?: boolean }> {
     const words = clip(body, HOME_MAX);
     if (!this.link || !words) return { sent: false };
-    const { sent, id } = await this.send(this.router.stampHome(words, about));
-    if (id) this.router.noteSent(id, HOME, undefined, about);
-    const imageSent = sent && image ? await this.sendImage(image, HOME, about) : undefined;
+    const home = this.homeOf(chat);
+    const { sent, id } = await this.send(this.router.stampHome(words, about, home));
+    if (id) this.router.noteSent(id, HOME, undefined, about, home?.chat);
+    const imageSent = sent && image ? await this.sendImage(image, HOME, about, undefined, home?.chat) : undefined;
     this.store.save();
     return { sent, ...(imageSent !== undefined ? { imageSent } : {}) };
   }
 
   /** An image after a text, threaded like it (a reply to the image goes where a reply to the text would). */
-  private async sendImage(image: OutImage, sessionId: string, about?: string, requestId?: string): Promise<boolean> {
+  private async sendImage(image: OutImage, sessionId: string, about?: string, requestId?: string, home?: string): Promise<boolean> {
     if (!this.link?.sendFile) return false;
     try {
       const id = await this.link.sendFile(image);
-      if (id) this.router.noteSent(id, sessionId, requestId, about);
+      if (id) this.router.noteSent(id, sessionId, requestId, about, home);
       return true;
     } catch (e: any) {
       this.lastError = `Couldn't send an image: ${e?.message ?? e}`;
@@ -264,20 +285,21 @@ export class Texter {
    * session's number (or [home]) so a reply goes back to it. Sent even while the session is open in
    * Tether: the agent was asked to text. What the tool answers the agent.
    */
-  async personText(from: string, body: string, o: { image?: string; about?: string } = {}): Promise<{ text: string; isError?: boolean }> {
+  async personText(from: string, body: string, o: { image?: string; about?: string; chat?: string } = {}): Promise<{ text: string; isError?: boolean }> {
     const words = clip(body, PERSON_TEXT_MAX);
     if (!words) return { text: "The message is empty.", isError: true };
     if (!this.link) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
+    if (o.image && !this.link.sendFile) return { text: "Images can't be texted on this connection. Nothing was sent.", isError: true };
+    // Taken before an image is checked: a refused image counts as a try (no free probing of paths).
+    const why = this.caps.take(from);
+    if (why) return { text: why, isError: true };
     let image: OutImage | undefined;
-    if (o.image !== undefined && o.image !== "") {
-      if (!this.link.sendFile) return { text: "Images can't be texted on this connection. Nothing was sent.", isError: true };
+    if (o.image) {
       const r = readOutgoingImage(o.image);
       if ("problem" in r) return { text: `${r.problem} Nothing was sent.`, isError: true };
       image = r;
     }
-    const why = this.caps.take(from);
-    if (why) return { text: why, isError: true };
-    const { sent, imageSent } = from === HOME ? await this.homeSend(words, o.about, image) : await this.tell(from, TEXTED_YOU, words, { always: true, image });
+    const { sent, imageSent } = from === HOME ? await this.homeSend(words, o.about, image, o.chat) : await this.tell(from, TEXTED_YOU, words, { always: true, image });
     if (!sent) {
       this.caps.undo(from);
       return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
@@ -360,97 +382,156 @@ export class Texter {
       if (this.heardIds.includes(m.id)) return this.inbox;
       this.heardIds = [...this.heardIds, m.id].slice(-HEARD_MAX);
     }
-    this.inbox = this.inbox.then(() => this.answer(m)).catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
+    // Its images download now, beside the texts before it (each within DOWNLOAD.ms): the queue
+    // waits for them, never longer.
+    const got = m.files?.length ? this.download(m.files) : Promise.resolve(NO_FILES);
+    this.inbox = this.inbox.then(async () => this.answer(m, await got)).catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
     return this.inbox;
   }
 
-  /** The images among what the person texted, downloaded and checked, and how many files were left out. */
-  private async download(list: InboundFile[]): Promise<{ files: TextedFile[]; left: number }> {
+  /** The images among what the person texted, downloaded and checked; how many files were left out (not images) and how many failed. */
+  private async download(list: InboundFile[]): Promise<Got> {
     const { take, left } = pickIncoming(list);
-    const files: TextedFile[] = [];
-    let out = left;
-    for (const f of take) {
-      try {
-        const img = incomingImage(f, await f.read());
-        if (img) files.push(img);
-        else out++;
-      } catch (e: any) {
-        this.ctx.log(`texting: couldn't download an image: ${e?.message ?? e}`);
-        out++;
-      }
-    }
-    return { files, left: out };
+    const files: Got["files"] = [];
+    let failed = 0;
+    let notImages = left;
+    await Promise.all(
+      take.map(async (f) => {
+        try {
+          const img = await incomingImage(f, await download(f), this.convert);
+          if (img) files.push(img);
+          else notImages++;
+        } catch (e: any) {
+          this.ctx.log(`texting: couldn't download an image: ${e?.message ?? e}`);
+          failed++;
+        }
+      }),
+    );
+    return { files, notImages, failed };
   }
 
   /** What a reply to the Home agent is about, with the session's title and folder. */
   private aboutText(a: About): string {
     const look = this.ctx.session(a.sessionId);
-    return replyContext({ ...a, ...(look?.summary.title ? { title: look.summary.title } : {}), ...(look ? { project: look.summary.projectPath } : {}) });
+    return replyContext({ sessionId: a.sessionId, ...(look?.summary.title ? { title: look.summary.title } : {}), ...(look ? { project: look.summary.projectPath } : {}) });
   }
 
-  private async answer(m: Inbound) {
+  /** The images held with the held text `id`, taken (and those of other held texts dropped). */
+  private takeHeld(id: number | undefined): TextedFile[] {
+    const h = this.heldFiles;
+    this.heldFiles = undefined;
+    if (!h) return [];
+    if (h.id === id && this.now() - h.at < HELD_MS) return h.files;
+    return [];
+  }
+
+  private async answer(m: Inbound, got: Got) {
     const home = this.ctx.homeLine?.home;
-    const got = m.files?.length ? await this.download(m.files) : { files: [], left: 0 };
-    if (got.left) await this.say(TEXTS.onlyImages);
+    if (got.notImages) await this.say(TEXTS.onlyImages);
+    else if (got.failed) await this.say(TEXTS.imagesNotSent);
     const words = m.text.trim();
-    const text = words || (got.files.length ? IMAGE_ONLY : "");
-    const d = this.router.route(text, m.replyTo, !!home);
+    const heic = got.files.some((f) => f.heic);
+    const own: TextedFile[] = got.files.map(({ heic: _, ...f }) => f);
+    const text = words || (own.length ? IMAGE_ONLY : "");
+    const heldBefore = this.router.state.held?.id;
+    const d = this.router.route(text, m.replyTo, home ? home.homes() : false);
     this.store.save();
-    // Images go with their words: now, or when the text the router held goes (a number picks it).
-    let files = got.files;
-    const held = this.heldFiles;
-    if (d.kind === "deliver" || d.kind === "home") {
-      if (held && d.text === held.text) files = [...held.files, ...files];
-      this.heldFiles = undefined;
-    } else if (files.length && this.router.state.held?.text === text) this.heldFiles = { text, files };
-    if (d.kind === "none") return;
-    if (d.kind === "reply") return void (await this.say(d.text));
-    if (d.kind === "home") {
+    // Images go with their words: now, or (held while the person picks a session) when the held
+    // text goes. A text that replaces a held one takes its images along (a photo, then its caption).
+    let files = own;
+    const heldNow = this.router.state.held;
+    if (d.kind === "deliver" || d.kind === "home" || d.kind === "newHome") {
+      files = [...this.takeHeld(d.held), ...own];
+    } else if (heldNow && heldNow.id !== heldBefore) {
+      const carried = this.heldFiles && this.now() - this.heldFiles.at < HELD_MS ? this.heldFiles.files : [];
+      this.heldFiles = carried.length || own.length ? { id: heldNow.id!, files: [...carried, ...own], at: this.now() } : undefined;
+      own.length = 0;
+      files = [];
+    }
+    // Anything below that doesn't pass the images on says so (never lost without a word).
+    let passed = files.length === 0;
+    const withNote = (t: string) => (heic ? `${t}\n\n${HEIC_NOTE}` : t);
+    try {
+      if (d.kind === "none") return;
+      if (d.kind === "reply") return void (await this.say(d.text));
+      if (d.kind === "newHome") {
+        try {
+          const n = await home!.newHome(withNote(d.text), files.length ? files : undefined);
+          passed = true;
+          if (d.text) await m.react?.(READ).catch(() => {});
+          else await this.say(TEXTS.homeStarted(homeLabel(n)));
+        } catch (e: any) {
+          await this.say(TEXTS.couldNotSend("a new home", String(e?.message ?? e)));
+        }
+        return;
+      }
+      if (d.kind === "deleteHome") {
+        try {
+          const left = await home!.deleteHome(d.n);
+          await this.say(TEXTS.homeDeleted(homeLabel(d.n), homeList(left)));
+        } catch (e: any) {
+          await this.say(TEXTS.couldNotSend(homeLabel(d.n), String(e?.message ?? e)));
+        }
+        return;
+      }
+      if (d.kind === "home") {
+        const label = homeLabel(d.home ?? 0);
+        try {
+          await home!.take(withNote((d.about ? this.aboutText(d.about) : "") + d.text), files.length ? files : undefined, { n: d.home ?? 0 });
+          passed = true;
+          await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+        } catch (e: any) {
+          await this.say(TEXTS.couldNotSend(d.home ? label : "the Home agent", String(e?.message ?? e)));
+        }
+        return;
+      }
+      const tag = `[${d.n}]`;
       try {
-        await home!.take((d.about ? this.aboutText(d.about) : "") + d.text, files.length ? files : undefined);
+        const look = this.ctx.session(d.sessionId);
+        const pending = look?.state?.requests?.filter((r) => look.requests.includes(r.id)) ?? [];
+        // A reply to a request's text answers that request only. Once it's closed (answered in
+        // Tether, by a rule, or by an earlier text) the reply goes nowhere: a "y" sent on to the
+        // agent as words starts a turn with no context, and it mustn't answer a newer request the
+        // person hasn't seen yet either.
+        const open = d.requestId ? pending.find((r) => r.id === d.requestId) : pending[0];
+        if (d.requestId && !open) {
+          this.router.closedRequest(d.sessionId, d.requestId);
+          this.store.save();
+          return void (await this.say(TEXTS.alreadyAnswered(d.n)));
+        }
+        if (open && d.text === IMAGE_ONLY && files.length) {
+          // Just an image while a request waits: it isn't a y or an n, so it goes after the turn,
+          // and the request still waits on the person.
+          if (!this.ctx.sessions.queue) throw new Error("this session can't take images now");
+          await this.ctx.sessions.queue(d.sessionId, withNote(d.text), files);
+          passed = true;
+          this.router.unsettle(d.sessionId);
+          this.store.save();
+        } else if (open) {
+          const r = readReply(open, d.text);
+          if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));
+          // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
+          const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
+          await this.ctx.sessions.answer(d.sessionId, open.id, answer);
+          // Images with the answer: the agent gets them after its turn.
+          if (files.length && this.ctx.sessions.queue) {
+            await this.ctx.sessions.queue(d.sessionId, withNote(TEXTED_WITH_ANSWER), files);
+            passed = true;
+          }
+          this.talking.add(d.sessionId);
+        } else {
+          await this.ctx.sessions.tell(d.sessionId, withNote(d.text), files.length ? files : undefined);
+          passed = true;
+          this.talking.add(d.sessionId);
+        }
+        // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
+        // person's text says Tether read it and passed it on.
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
-        await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)));
+        await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
       }
-      return;
-    }
-    const tag = `[${d.n}]`;
-    try {
-      const look = this.ctx.session(d.sessionId);
-      const pending = look?.state?.requests?.filter((r) => look.requests.includes(r.id)) ?? [];
-      // A reply to a request's text answers that request only. Once it's closed (answered in
-      // Tether, by a rule, or by an earlier text) the reply goes nowhere: a "y" sent on to the
-      // agent as words starts a turn with no context, and it mustn't answer a newer request the
-      // person hasn't seen yet either.
-      const open = d.requestId ? pending.find((r) => r.id === d.requestId) : pending[0];
-      if (d.requestId && !open) {
-        this.router.closedRequest(d.sessionId, d.requestId);
-        this.store.save();
-        return void (await this.say(TEXTS.alreadyAnswered(d.n)));
-      }
-      if (open && d.text === IMAGE_ONLY && files.length) {
-        // Just an image while a request waits: it isn't a y or an n, so it goes after the turn.
-        if (!this.ctx.sessions.queue) throw new Error("this session can't take images now");
-        await this.ctx.sessions.queue(d.sessionId, d.text, files);
-        this.talking.add(d.sessionId);
-      } else if (open) {
-        const r = readReply(open, d.text);
-        if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));
-        // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
-        const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
-        await this.ctx.sessions.answer(d.sessionId, open.id, answer);
-        // Images with the answer: the agent gets them after its turn.
-        if (files.length) await this.ctx.sessions.queue?.(d.sessionId, TEXTED_WITH_ANSWER, files);
-        this.talking.add(d.sessionId);
-      } else {
-        await this.ctx.sessions.tell(d.sessionId, d.text, files.length ? files : undefined);
-        this.talking.add(d.sessionId);
-      }
-      // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
-      // person's text says Tether read it and passed it on.
-      await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
-    } catch (e: any) {
-      await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
+    } finally {
+      if (!passed) await this.say(TEXTS.imagesNotSent);
     }
   }
 }
@@ -460,7 +541,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about) => t.homeText(text, about), text: (from, body, o) => t.personText(from, body, o) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

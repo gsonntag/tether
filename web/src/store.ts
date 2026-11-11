@@ -2,6 +2,7 @@
 // session lists and projects, and the sessions this page has open.
 
 import { create } from "zustand";
+import { mergeHomeChat } from "./homeTabs";
 import { checkBuild } from "./build";
 import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
@@ -139,12 +140,12 @@ export function start() {
       }
   });
   // Another device started a Home chat or cleared it (/new): this one's Home follows.
-  on("homeChat", ({ runnerId, sessionId, chats, rev }) => {
-    noteHomeChat(runnerId, { sessionId, rev, ...(chats ? { chats } : {}) });
+  on("homeChat", ({ runnerId, sessionId, chats, labels, rev }) => {
+    noteHomeChat(runnerId, { sessionId, rev, ...(chats ? { chats } : {}), ...(labels ? { labels } : {}) });
     // A server from before tabs passes no list on: the runner is asked for it.
     if (!chats)
       void rpc(runnerId, "homeAgent", {})
-        .then((r) => noteHomeChat(runnerId, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}) }))
+        .then((r) => noteHomeChat(runnerId, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}), ...(r.labels ? { labels: r.labels } : {}) }))
         .catch(() => {});
   });
   on("event", (m) => {
@@ -292,11 +293,10 @@ export async function setArchived(runnerId: string, sessionId: string, archived:
 
 /** A runner's Home agent tabs and current chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
 export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
-  const cur = get().homeChats[runnerId];
-  // The same rev with the tabs (asked for after a broadcast that came without them) fills them in.
-  if (cur && (cur.rev > u.rev || (cur.rev === u.rev && (cur.chats || !u.chats)))) return;
-  set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}), ...(u.chats ? { chats: u.chats } : {}) } } }));
+  const next = mergeHomeChat(get().homeChats[runnerId], u);
+  if (next) set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: next } }));
 }
+
 
 /** What a runner's Home agent watches (a homeAgentWatch answer). */
 export function noteHomeWatch(runnerId: string, w: Watching) {

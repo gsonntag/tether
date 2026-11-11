@@ -1302,30 +1302,67 @@ with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
 1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
    session (a request's text answers only that request, #66), and a `[home]` text goes to the Home
    agent.
-2. `home` or `h` as the first word, in any case, followed by a space, `:`, `,` or nothing (`home …`,
-   `Home, …`, `H: …`, `h …`), or `@home`/`@h`/`[home]`/`[h]`, goes to the Home agent, prefix and
-   separator taken off. Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`).
-   Just `home` (or `h`) sends a held text there, or aims the next one.
+2. While the Home agent runs (without it these are ordinary words for a session), a first word in
+   any case followed by a space, `:`, `,` or nothing (`texting/router.ts` parseHome):
+   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[home]`): the primary home; `h1`/`home1`,
+     `h2`, …: that home. The prefix and separator are taken off. Just `h1` sends a held text there,
+     or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
+   - `hn`/`homenew`/`home-new`/`home new`: a new home; the rest of the text (and its images) is its
+     first message. With nothing after it: "Started h2, text h2 to reach it."
+   - `hd1`/`hd 1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1 (archives its
+     chat, as closing its tab does) and answers with the homes left. `h` can't be deleted. No y/n:
+     the syntax isn't something typed by accident, a longer text never deletes, and an archived chat
+     comes back from the archive. (`home delete 1` is words to `h`.)
+   Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`, `hnn`, `hn's`,
+   `h1n1`, `homeless`, `home-newbie`, `hello1`).
 3. `n text` (and just `n`) goes to session n, as before.
-4. Plain text goes to the Home agent when Tether's last text was a Home text or no session is open.
+4. Plain text goes to the home that sent Tether's last text when that was a home's (the primary one
+   when no session is open).
    Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
    `home:` row.
 
-*Replies about what was just texted.* A `[home]` text can say which session it's about (the Texts
-tab's answer to a text or report about one; `text_person`'s `session_id`). A text to the Home agent
-within 30 minutes (`router.ts` REPLY_MS) of such a text, or a threaded reply to it at any age,
-arrives with a line naming that session first: `[From iMessage] (replying to your text about
-session <id>, "<title>" in <project>) merge it`, and the Home agent takes it as being about that
-session (relays it there) unless the words name another. A number, or a session's own text since,
-turns away from it. The router's state (texting.json) keeps it across restarts.
+*Homes.* Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
+tab (made by the first text to `h`, again if it was closed; Home shows no delete for it, though
+`/new` in it still starts a fresh one), and every other tab is `h1`, `h2`, …. A tab keeps its number
+while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
+making a new home gives `h2` again, and a reply threaded to the deleted one's text is told it's gone
+rather than reaching the new one. The numbers are in the Home agent's state.json (they survive a
+restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). A home's texts start
+`[home]` (primary) or `[h1]`, …. A tab the person has texted (or made with `hn`) answers by text
+like the Texts tab. Home shows each tab's name (h, h1, …), a **New Home** button, and on every tab
+but `h` a delete that asks first ("Delete h2? Its chat is archived and texts to h2 stop reaching
+it.") before closing the tab through the usual close (stopped if running, archived, its sessions
+let go).
 
-*Images.* Photon carries iMessage attachments both ways. Images the person texts (PNG, JPEG, GIF,
-WebP, HEIC by their bytes, up to 10 MB, at most 10) go with their words to whoever the text goes to,
-stored as that session's attachments (§9: the agent sees them as images and by path); an image alone
-is "(image)"; other files are left out and the person is told once. `text_person` takes an optional
-`image`: an absolute path to a .png/.jpg/.gif/.webp/.heic file whose first bytes match, at most
-10 MB, sent after the words (the bytes checked are the bytes sent); anything else is the tool's
-error and nothing goes. A relayed session's image path goes to the Home agent in its report.
+*Replies about what was just texted.* A home's text can say which session it's about: the session
+its turn acted on, when it acted on exactly one (started it, messaged it, or answered its report),
+never what the person's text was about (they may have turned to something new); or
+`text_person`'s `session_id`, which must be a session that exists. A text to that same home within
+30 minutes (`router.ts` REPLY_MS), or a threaded reply to it at any age, arrives with a line naming
+that session first: `[From iMessage] (replying to your text about session <id>, "<title>" in
+<project>) merge it` (id, title and folder cleaned to one line), and the Home agent takes it as
+being about that session (relays it there) unless the words name another. A number, another home,
+or a session's own text since, turns away from it. The router's state (texting.json) keeps it
+across restarts.
+
+*Images.* Photon carries iMessage attachments both ways. The runner reads these files itself,
+outside every session's sandbox, and they go only to the person's own phone (out) or into the
+session the person texted (in). Images the person texts (PNG, JPEG, GIF, WebP, HEIC by their bytes,
+up to 10 MB, at most 10) go with their words to whoever the text goes to, stored as that session's
+attachments (§9: the agent sees them as images and by path). Each downloads beside the text queue
+(the queue waits at most 45 s for it) and stops past 10 MB however big it said it was; one that
+fails or times out is dropped, the words still go, and the person is told. HEIC is turned into JPEG
+with ImageMagick when the runner has it (told the input is HEIC, time-limited); otherwise it goes
+by path with a note saying so. An image alone is "(image)"; while a request waits it goes after the
+turn and the request still waits on the person. Images held with a text the picker holds go when
+that text goes (a caption sent after its photo takes the photo along). Other files are left out;
+any image that doesn't go, for whatever reason, is reported to the person. `text_person` takes an
+optional `image`: an absolute path to a .png/.jpg/.gif/.webp/.heic file, opened once without
+following a final symlink or blocking on a FIFO, checked on that handle (a regular file of at most
+10 MB whose first bytes match), sent as the bytes checked. Every refusal says the same thing (no
+telling which paths exist), a try counts against the agent's text cap (sessions' pre-check: at most
+5 refusals per 10 minutes), and nothing goes. A relayed session's image path goes to the Home agent
+in its report.
 
 A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
 to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It
