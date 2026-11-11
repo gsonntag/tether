@@ -78,7 +78,8 @@ export interface HarnessCapabilities {
 
 export type ToolStatus = "running" | "done" | "error";
 /** A tool call by what it does, whatever the harness names it. The UI renders tool cards by kind. */
-export type ToolKind = "shell" | "edit" | "write" | "read" | "search" | "fetch" | "todo" | "task" | "other";
+/** `peer`: one of Tether's tools for talking to other sessions (tether_send, tether_ask, …) */
+export type ToolKind = "shell" | "edit" | "write" | "read" | "search" | "fetch" | "todo" | "task" | "peer" | "other";
 
 export interface ToolPart {
   type: "tool";
@@ -138,7 +139,7 @@ export interface Msg {
    * user: a turn the harness added that you didn't type (another session's message, a channel,
    * a subagent's report): who it's from. The UI shows it apart from your own messages.
    */
-  origin?: { kind: string; name?: string };
+  origin?: { kind: string; name?: string; sessionId?: string; all?: boolean };
   /** user: a slash command as the harness stored it, not a prompt (which may start with "/" too) */
   localCommand?: boolean;
   /**

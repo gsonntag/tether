@@ -219,8 +219,27 @@ export interface AgentSetup {
   deny?: string[];
 }
 
+/**
+ * Tether's own MCP server for every session's agent (the peers module): a stdio command the harness
+ * runs beside the agent. `env` is its environment for one session; a harness that only learns the
+ * id after starting the thread (Codex) asks for `<harness>:*`, and the server takes the thread from
+ * the call's `_meta` instead.
+ */
+export interface ToolServer {
+  name: string;
+  command: string;
+  args: string[];
+  env(sessionId: string): Record<string, string>;
+  /** how long one call may take (an ask waits for the answer) */
+  timeoutMs: number;
+  /** a folder whose sessions don't get it (the Home agent's: it has tools of its own) */
+  skip?(projectPath: string): boolean;
+}
+
 export interface Adapter {
   id: HarnessId;
+  /** Gives every session this harness starts from now on Tether's MCP server. Returns the function that takes it away. */
+  toolServer?(server: ToolServer): () => void;
   /**
    * Gives every session this harness runs in `folder` the setup `make` returns for it (by native
    * id), from its next process start. Returns the function that takes it away.

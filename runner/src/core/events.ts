@@ -11,6 +11,8 @@ export interface CoreEvents {
   /** `stopped`: the person stopped it (Stop, or Stop and send now) */
   turnEnded: { sessionId: string; error?: string; stopped?: boolean };
   message: { sessionId: string; msg: Msg };
+  /** a waiting message left the queue: it went out to the harness, or was cancelled */
+  queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled" };
   toolCall: { sessionId: string; msgId: string; tool: ToolPart };
   requestOpened: { request: Request };
   /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */

@@ -253,6 +253,7 @@ export class MessageQueue {
     const recent = [...(s.state.queueGone ?? []).filter((g) => g.id !== m.id), { id: m.id, how }].slice(-10);
     s.setState({ queueGone: recent });
     this.gone?.(s, m, how);
+    this.core.o.bus.emit("queueGone", { sessionId: s.id, msgId: m.id, how });
   }
 
   /** The queue with the message going out (until the harness has it). */

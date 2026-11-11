@@ -24,7 +24,7 @@ import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } f
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 import { ClaudeCostCounter } from "./cost";
-import { claudeSetupFor } from "./setup";
+import { claudeSetupFor, claudeToolServerFor } from "./setup";
 
 /** The tool that starts a subagent ("Task" before Claude Code 2.1.x renamed it). */
 const SUBAGENT_TOOLS = "^(Agent|Task)$";
@@ -97,7 +97,6 @@ export class ClaudeDriver implements Driver {
     };
     // The Home agent's folder: Tether's tools and instructions (setup.ts).
     const extra = claudeSetupFor(this.projectPath, this.nativeId);
-    const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? [])];
     // The runner setting "Always run subagents in the background": each Agent call goes out with
     // run_in_background, whatever the model asked (read at every launch, so a change applies at once).
     const background: HookCallback = async (input) => {
@@ -107,6 +106,9 @@ export class ClaudeDriver implements Driver {
       if (args.run_in_background === true) return {};
       return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...args, run_in_background: true } } };
     };
+    // Every other session: Tether's MCP server (sessions talking to each other), its tools allowed.
+    const tools = extra ? undefined : claudeToolServerFor(this.projectPath, this.nativeId);
+    const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? []), ...(tools?.allow ?? [])];
     this.q = query({
       prompt: this.input,
       options: {
@@ -124,6 +126,7 @@ export class ClaudeDriver implements Driver {
         // A moved session reads its own history without asking (SPEC §15).
         ...(allowed.length ? { allowedTools: allowed } : {}),
         ...(extra ? { mcpServers: extra.mcpServers, ...(extra.deny.length ? { disallowedTools: extra.deny } : {}) } : {}),
+        ...(tools ? { mcpServers: tools.mcpServers } : {}),
         settingSources: ["user", "project", "local"],
         settings: claudeAuthSettings(this.lease.helper),
         systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : {}) },
