@@ -43,6 +43,20 @@ test("every process the runner starts gets an explicit environment (Bun hands a 
   expect(missing).toEqual([]);
 });
 
+test("every Agent SDK query() passes an environment too (it would otherwise hand Claude Code the runner's)", () => {
+  const missing: string[] = [];
+  let seen = 0;
+  for (const f of sources()) {
+    const src = readFileSync(f, "utf8");
+    for (const c of calls(src, /(?<![.\w])query\((?=\{)/g)) {
+      seen++;
+      if (!/\benv\b/.test(c)) missing.push(`${f.replace(import.meta.dir, "src")}: ${c.slice(0, 80)}`);
+    }
+  }
+  expect(seen).toBeGreaterThanOrEqual(3);
+  expect(missing).toEqual([]);
+});
+
 test("childEnv: Tether's secrets out, everything else (and extras) in", () => {
   const env = { PATH: "/bin", HOME: "/h", CODEX_HOME: "/c", OPENAI_API_KEY: "o", TETHER_TOKEN: "t", TETHER_DISCORD_TOKEN: "d", TETHER_PHOTON_PROJECT_SECRET: "p", TETHER_TEXT_PHONE: "+1", TETHER_PEERS_TOKEN: "x", TETHER_TMUX_SOCKET: "tether", TETHER_URL: "https://x" };
   expect(childEnv({ GIT_TERMINAL_PROMPT: "0", HOME: undefined }, env)).toEqual({ PATH: "/bin", CODEX_HOME: "/c", OPENAI_API_KEY: "o", TETHER_TMUX_SOCKET: "tether", TETHER_URL: "https://x", GIT_TERMINAL_PROMPT: "0" });

@@ -33,6 +33,9 @@ export function normalPhone(v: string): string | undefined {
   return digits.startsWith("+") ? digits : digits.length === 10 ? `+1${digits}` : `+${digits}`;
 }
 
+/** The top-level keys this version writes; any other is kept as it was. */
+const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia"]);
+
 export class TextingStore {
   settings: TextingSettings = {};
   router: RouterState = emptyState();
@@ -44,6 +47,8 @@ export class TextingStore {
   lastVia?: string;
   /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
   replyVia: Record<string, { via: string; place?: string }> = {};
+  /** what else the file held (a newer or older Tether's): written back as it was */
+  private other: Record<string, unknown> = {};
 
   constructor(
     private file?: string,
@@ -52,6 +57,7 @@ export class TextingStore {
     if (file) {
       try {
         const v = JSON.parse(readFileSync(file, "utf8"));
+        if (v && typeof v === "object" && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) if (!KNOWN.has(k)) this.other[k] = x;
         if (v?.settings && typeof v.settings === "object") this.settings = v.settings;
         if (Array.isArray(v?.router?.slots) && Array.isArray(v?.router?.sent)) this.router = v.router;
         if (v?.connectors && typeof v.connectors === "object" && !Array.isArray(v.connectors)) this.connectors = v.connectors;
@@ -132,7 +138,7 @@ export class TextingStore {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.${process.pid}.tmp`;
       const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}) };
-      writeFileSync(tmp, JSON.stringify({ settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify({ ...this.other, settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);
     } catch {}

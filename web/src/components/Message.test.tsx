@@ -58,3 +58,9 @@ test("texted messages show as the person's, labelled with how they came, files a
   expect(dc).toContain("shot.pdf");
   expect(dc).toContain('class="t-msg user"');
 });
+
+test("an origin kind that only exists on Object.prototype isn't a messaging app", () => {
+  const out = html(user("hi", { kind: "constructor" } as any));
+  expect(out).not.toContain("via ");
+  expect(out).not.toContain("undefined");
+});

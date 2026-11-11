@@ -4,7 +4,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import type { ConnectorForm, ConnectorStatus, MessagingStatus } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { useStore } from "../store";
-import { legacyMessaging, legacySet } from "../messagingLegacy";
+import { isUnknownOp, legacyMessaging, legacySet } from "../messagingLegacy";
 
 /**
  * Messaging, per runner: each connector (iMessage through Photon, a Discord bot, …) that texts you
@@ -28,8 +28,9 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
     if (link === "open")
       void rpc(runnerId, "messagingStatus", {})
         .then((s) => done(s, false))
-        .catch(() => rpc(runnerId, "textingStatus", {}).then((s) => done(legacyMessaging(s), true)))
-        .catch(() => { if (!gone) setError("Couldn't load messaging. Update and restart the runner."); });
+        // Only a runner from before connectors (it doesn't know the op) gets the old iMessage ops.
+        .catch((e) => (isUnknownOp(e, "messagingStatus") ? rpc(runnerId, "textingStatus", {}).then((s) => done(legacyMessaging(s), true)) : Promise.reject(e)))
+        .catch((e) => { if (!gone) setError(isUnknownOp(e, "textingStatus") || !(e as Error)?.message ? "Couldn't load messaging. Update and restart the runner." : `Couldn't load messaging: ${(e as Error).message}`); });
     return () => { gone = true; };
   }, [runnerId, link]);
   /** The runner's ops, or the old iMessage ones on an old runner. */
@@ -93,7 +94,8 @@ function Connector({ c, ops, disabled, run }: { c: ConnectorStatus; ops: { set: 
         <div className="t-credential-title"><span>{c.label}</span><span className="t-credential-status">{state}{c.lastError ? ` · ${c.lastError}` : ""}</span></div>
         <div className="t-credential-entry">
           <Button label={c.enabled ? "Turn off" : "Turn on"} variant={c.enabled ? "secondary" : "primary"} isDisabled={disabled} onClick={() => void set({ enabled: !c.enabled })} />
-          {c.enabled && c.connected && <Button label="Send a test" variant="secondary" isDisabled={disabled} onClick={() => { setNote(undefined); void run(() => ops.test(c.id), setError).then((ok) => ok && setNote("Sent. It should arrive in a moment.")); }} />}
+          {/* Also while it's down: the test says why it can't connect. */}
+          {c.enabled && c.configured && <Button label="Send a test" variant="secondary" isDisabled={disabled} onClick={() => { setNote(undefined); void run(() => ops.test(c.id), setError).then((ok) => ok && setNote("Sent. It should arrive in a moment.")); }} />}
         </div>
         {note && <div className="t-inline-status">{note}</div>}
       </div>

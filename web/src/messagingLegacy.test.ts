@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { legacyMessaging, legacySet } from "./messagingLegacy";
+import { isUnknownOp, legacyMessaging, legacySet } from "./messagingLegacy";
 
 test("an old runner's texting shows as one iMessage section, and saves through setTexting", () => {
   const m = legacyMessaging({ enabled: true, phoneLast4: "1234", keysSet: true, fromEnv: { phone: false, keys: true }, connected: false, lastError: "Couldn't connect to Photon: x" });
@@ -11,4 +11,12 @@ test("an old runner's texting shows as one iMessage section, and saves through s
   expect(legacySet({ enabled: false })).toEqual({ enabled: false });
   expect(legacySet({ values: { projectId: "p", projectSecret: "s", other: "x" } })).toEqual({ projectId: "p", projectSecret: "s" });
   expect(legacySet({ values: { phone: "" } })).toEqual({ phone: "" });
+});
+
+test("only a runner that doesn't know the op falls back", () => {
+  expect(isUnknownOp(new Error('This runner doesn\'t know "messagingStatus". Update and restart it.'), "messagingStatus")).toBe(true);
+  expect(isUnknownOp(new Error("Runner offline."), "messagingStatus")).toBe(false);
+  expect(isUnknownOp(new Error("timed out"), "messagingStatus")).toBe(false);
+  expect(isUnknownOp(new Error('This runner doesn\'t know "textingStatus". Update and restart it.'), "messagingStatus")).toBe(false);
+  expect(isUnknownOp(undefined, "messagingStatus")).toBe(false);
 });

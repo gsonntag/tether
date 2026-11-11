@@ -972,10 +972,12 @@ async function texting() {
   const line = new HomeLine();
   const sent: string[] = [];
   const personTexts: [string, string][] = [];
-  line.phone = { send: async (t) => (sent.push(t), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
+  /** for each text, whether it was the direct answer to a text (it may go back to where they wrote it) */
+  const answers: boolean[] = [];
+  line.phone = { send: async (t, o) => (sent.push(t), answers.push(!!o?.answer), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
   const t = await setup({ homeLine: line });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, personTexts, textsTab };
+  return { ...t, line, sent, answers, personTexts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1023,7 +1025,7 @@ test("a Discord message goes to the Texts tab marked as Discord's, with its file
 });
 
 test("texted work: a finished-turn report's outcome goes back by text, a turn that only keeps it going doesn't", async () => {
-  const { line, sent, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  const { line, sent, answers, runner, driverOf, textsTab, tools, project, fake } = await texting();
   await line.home!.take("fix the tests in project");
   await until(() => sent.length === 1);
   const texts = await textsTab();
@@ -1051,6 +1053,8 @@ test("texted work: a finished-turn report's outcome goes back by text, a turn th
   expect(sent.length).toBe(3);
   expect(sent[2]).toContain("Report 3 of");
   expect(sent.some((t) => t.includes("Report 2 of"))).toBe(false);
+  // Only the answer to the person's text is an answer (it may go to a channel); reports go privately.
+  expect(answers).toEqual([true, false, false]);
 });
 
 test("reports to another tab, and watch reports in the Texts tab, aren't texted", async () => {

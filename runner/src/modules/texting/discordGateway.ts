@@ -30,16 +30,36 @@ export const IDENTIFY_MAX = 900;
 const IDENTIFY_DAY_MS = 24 * 60 * 60_000;
 const identifies: number[] = [];
 
+/** Where the budget is kept, so a restart doesn't start it over (discord.ts: texting.json). */
+export interface IdentifyLog {
+  load(): number[];
+  save(times: number[]): void;
+}
+let identifyLog: IdentifyLog | undefined;
+
+/** Keeps the budget in `log`, adding what it already holds. */
+export function keepIdentifies(log: IdentifyLog) {
+  identifyLog = log;
+  const merged = new Set([...identifies, ...log.load().filter((t) => Number.isFinite(t))]);
+  identifies.splice(0, identifies.length, ...[...merged].sort((a, b) => a - b));
+}
+
 /** Takes one identify from the day's budget; false when it's spent. */
 export function takeIdentify(now = Date.now(), max = IDENTIFY_MAX): boolean {
   while (identifies.length && now - identifies[0]! >= IDENTIFY_DAY_MS) identifies.shift();
   if (identifies.length >= max) return false;
   identifies.push(now);
+  try {
+    identifyLog?.save([...identifies]);
+  } catch {}
   return true;
 }
 
-/** Tests: the budget starts over. */
-export const resetIdentifies = () => void identifies.splice(0);
+/** Tests: the budget starts over, kept nowhere. */
+export const resetIdentifies = () => {
+  identifies.splice(0);
+  identifyLog = undefined;
+};
 
 /** A resume URL Discord gave: only a wss: host under discord.gg gets the token. */
 export function validResumeUrl(v: unknown): string | undefined {

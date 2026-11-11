@@ -140,6 +140,8 @@ export class Texter {
     private now: () => number = Date.now,
     deps: { connectors?: ConnectorDeps; list?: Connector[] } = {},
   ) {
+    // A hold of only files from before a restart: its files are gone with that process.
+    if (store.router.held?.text === NO_WORDS) store.router.held = undefined;
     this.router = new Router(store.router, now);
     this.caps = new AgentTextCaps(now);
     const list = deps.list ?? connectors(store, { ...deps.connectors, [IMESSAGE]: open });
@@ -185,9 +187,18 @@ export class Texter {
     return this.channels.find((c) => c.connected && c.connector.enabled());
   }
 
-  /** Where an answer to session `id` (or the Home agent, HOME) goes: the way the person last wrote it. */
-  backTo(id: string): Back | undefined {
-    return this.store.replyVia[id];
+  /**
+   * Where a text about session `id` (or the Home agent, HOME) goes: the connector the person last
+   * wrote it on. The place they wrote it (a server channel others read) only for `answer`, the
+   * direct answer to what they wrote there, and only once: anything later goes to their own DM.
+   */
+  backTo(id: string, answer = false): Back | undefined {
+    const b = this.store.replyVia[id];
+    if (!b) return undefined;
+    if (!answer || !b.place) return { via: b.via };
+    this.store.replyVia[id] = { via: b.via };
+    this.store.save();
+    return b;
   }
 
   private async say(text: string, back?: Back): Promise<string | undefined> {
@@ -220,10 +231,10 @@ export class Texter {
    * back to the Home agent. `reply`: it answers what the person wrote it, so it goes back the way that
    * came; its own text (text_person) goes where Tether's texts go.
    */
-  async homeText(body: string, o: { reply?: boolean } = {}): Promise<boolean> {
+  async homeText(body: string, o: { reply?: boolean; answer?: boolean } = {}): Promise<boolean> {
     const words = clip(body, HOME_MAX);
     if (!this.target() || !words) return false;
-    const r = await this.send(this.router.stampHome(words), o.reply === false ? undefined : this.backTo(HOME));
+    const r = await this.send(this.router.stampHome(words), o.reply === false ? undefined : this.backTo(HOME, !!o.answer));
     this.noteSent(r, HOME);
     this.store.save();
     return r.sent;
@@ -400,11 +411,11 @@ export class Texter {
     if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return void this.talking.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     const talking = this.talking.delete(sessionId);
-    // An answer to what the person wrote goes back the way it came.
-    const via = talking ? this.backTo(sessionId) : undefined;
-    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via });
+    // What follows the person's message goes back the way it came; only the agent's answer itself may
+    // go to the place they wrote it (a channel), a failure goes to their DM.
+    if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via: talking ? this.backTo(sessionId) : undefined });
     // An answer to something the person texted is the back-and-forth: no link.
-    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via });
+    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via: talking ? this.backTo(sessionId, true) : undefined });
   }
 
   // ── in: the person's replies, one at a time ──
@@ -457,6 +468,9 @@ export class Texter {
       files = [...this.held.files, ...mine];
       this.held = undefined;
       clearTimeout(this.heldTimer);
+    } else if (tookHeld && before.text === NO_WORDS && !mine.length) {
+      // Its files are gone (a restart): nothing to deliver.
+      return void (await this.say(TEXTS.filesNotSent, back));
     }
     // The hold moved on (a new one, picked another way, expired) with files on it: they didn't go.
     if (this.held && this.held.hold !== hold) await this.dropHeld();
@@ -539,7 +553,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text, { reply: true }), text: (from, body) => t.personText(from, body) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer }), text: (from, body) => t.personText(from, body) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

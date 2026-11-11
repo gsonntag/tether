@@ -36,8 +36,12 @@ export interface HomeEnd {
 
 /** Texting's end. */
 export interface PhoneEnd {
-  /** texts the person as the Home agent ("[home] ok, on it"); false when it didn't go (texting off, not connected) */
-  send(text: string): Promise<boolean>;
+  /**
+   * texts the person as the Home agent ("[home] ok, on it"); false when it didn't go (texting off, not
+   * connected). `answer`: it's the direct answer to a text they sent, so it may go back to where they
+   * wrote it (a server channel); anything else goes to them privately.
+   */
+  send(text: string, o?: { answer?: boolean }): Promise<boolean>;
   /**
    * An agent's text_person: texts the person for session `from` (or the Home agent, texting/router.ts
    * HOME), and their reply comes back to it. What the tool answers the agent.

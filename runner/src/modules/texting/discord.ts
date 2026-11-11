@@ -24,7 +24,7 @@ import { ATTACH_FILE_MAX } from "../../../../shared/limits";
 import type { ConnectorForm } from "../../../../shared/protocol";
 import { registerSecret } from "../../credentials";
 import { PartialSend, type Connector, type Inbound, type InboundFile } from "./connector";
-import { download, Gateway, MESSAGE_MAX, Rest, type GatewayOptions } from "./discordGateway";
+import { download, Gateway, keepIdentifies, MESSAGE_MAX, Rest, type GatewayOptions } from "./discordGateway";
 import type { TextingStore } from "./store";
 
 export const DISCORD = "discord";
@@ -36,6 +36,8 @@ export interface DiscordSettings {
   channelId?: string;
   /** the DM the person last wrote in: Tether's messages go there (while its owner still is one) */
   where?: Where;
+  /** when the bot last started fresh sessions (identifies), for Discord's daily limit across restarts */
+  identifies?: number[];
 }
 
 export type Where = { kind: "dm"; id: string; owner: string };
@@ -72,6 +74,10 @@ export function cleanSettings(v: unknown): DiscordSettings {
   const w = o.where as Record<string, unknown> | undefined;
   if (w && typeof w === "object" && isId(w.id)) {
     if (w.kind === "dm" && isId(w.owner)) out.where = { kind: "dm", id: w.id, owner: w.owner };
+  }
+  if (Array.isArray(o.identifies)) {
+    const t = o.identifies.filter((x): x is number => typeof x === "number" && Number.isFinite(x)).slice(-1000);
+    if (t.length) out.identifies = t;
   }
   return out;
 }
@@ -182,6 +188,8 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
   const owners = () => (envOwners().length ? envOwners() : (saved().ownerIds ?? []));
   const channel = () => envChannel() ?? saved().channelId;
   for (const k of [saved().token, envToken()]) if (k) registerSecret(k);
+  // The daily identify budget survives a restart: kept with these settings.
+  keepIdentifies({ load: () => saved().identifies ?? [], save: (identifies) => store.setSection(DISCORD, { ...saved(), identifies }) });
 
   const config = (): DiscordConfig | undefined => {
     const t = token();

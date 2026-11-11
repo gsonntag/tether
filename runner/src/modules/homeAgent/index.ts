@@ -466,7 +466,7 @@ export class HomeAgent implements HomeEnd {
     }
     if (msg.role !== "user") return;
     const raw = text(msg);
-    const texted = (!!msg.origin && msg.origin.kind in TEXTED_VIA) || (!msg.origin && !!fromTexted(raw));
+    const texted = (!!msg.origin && Object.hasOwn(TEXTED_VIA, msg.origin.kind)) || (!msg.origin && !!fromTexted(raw));
     const report = (msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined)) && raw.includes(TEXTED);
     if (texted) t.kind = "text";
     else if (report && t.kind === "quiet") t.kind = "report";
@@ -482,7 +482,9 @@ export class HomeAgent implements HomeEnd {
     if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
     if (!words) return;
-    await phone.send(words).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+    // Only the answer to a text the person sent may go back to where they wrote it (a channel others
+    // read); a report's outcome goes to them privately.
+    await phone.send(words, { answer: t.kind === "text" }).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
   /**

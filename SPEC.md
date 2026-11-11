@@ -1304,9 +1304,11 @@ stops it with why). A connector is only a transport: its settings (secrets write
 hears the person and sends text (and images, where it takes them), and its status. Everything above
 (numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
 Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
-else the first connected (one that's on and really connected). An answer (to the picker, or a
-session's or the Home agent's answer to what the person wrote it) goes back the connector and place
-it came by, saved per session (`replyVia`). Files the person sends are stored with the session (or
+else the first connected (one that's on and really connected). Whatever follows the person's
+message about a session (or the Home agent) goes back on the connector it came by, saved per session
+(`replyVia`); the place they wrote it (a Discord channel others read) gets only the direct answer
+(the picker's reply, the agent's answer to that message), once. Reports, failures, requests and
+text_person go to them privately. Files the person sends are stored with the session (or
 the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
 text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
 isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one

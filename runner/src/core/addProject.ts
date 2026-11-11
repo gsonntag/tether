@@ -47,13 +47,16 @@ export function listFolders(path: string): FolderList {
 /** Whether `dir` is itself a clone of `url` (not just inside one). */
 function sameRepo(dir: string, url: string): boolean {
   if (!existsSync(join(dir, ".git"))) return false;
-  // The URL as configured: `remote get-url` applies url.<x>.insteadOf rewrites, which would hide the repo.
-  const origin = Bun.spawnSync(["git", "-C", dir, "config", "--get", "remote.origin.url"], { env: childEnv(), stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
-  try {
-    return parseRepo(origin).url === url;
-  } catch {
-    return false;
-  }
+  // The URL as configured, or as git reads it (`remote get-url` applies url.<x>.insteadOf rewrites):
+  // either one naming the repo will do.
+  const read = (args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { env: childEnv(), stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
+  return [read(["config", "--get", "remote.origin.url"]), read(["remote", "get-url", "origin"])].some((origin) => {
+    try {
+      return parseRepo(origin).url === url;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**

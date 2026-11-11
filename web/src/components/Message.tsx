@@ -198,7 +198,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
         ))}
       </HomeReportRow>
     );
-  if (msg.role === "user" && msg.origin && !(msg.origin.kind in TEXTED_VIA)) {
+  if (msg.role === "user" && msg.origin && !(Object.hasOwn(TEXTED_VIA, msg.origin.kind))) {
     // Not something you typed: another session's message, a channel, a report.
     // Another Tether session (SPEC §9a): by its title, with a way there.
     const from = msg.origin.kind === "session" ? msg.origin : undefined;
@@ -246,7 +246,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
     const files: Attachment[] = [];
     const hasImages = parts.some((p) => p.type === "image");
     // Texted to the Home agent (shared/fromTether.ts FROM_IMESSAGE, FROM_DISCORD): the person's own words, marked.
-    const via = msg.origin && msg.origin.kind in TEXTED_VIA ? (msg.origin.kind as TextedKind) : parts.flatMap((p) => (p.type === "text" ? [fromTexted(p.text)?.kind] : [])).find(Boolean);
+    const via = msg.origin && Object.hasOwn(TEXTED_VIA, msg.origin.kind) ? (msg.origin.kind as TextedKind) : parts.flatMap((p) => (p.type === "text" ? [fromTexted(p.text)?.kind] : [])).find(Boolean);
     const texted = !!via;
     const shownParts = parts.map((p) => {
       if (p.type !== "text") return p;

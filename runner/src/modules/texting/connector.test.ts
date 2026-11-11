@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_DISCORD, FROM_IMESSAGE, TEXTED_MARKS, fromTexted, tetherOrigin, titleText } from "../../../../shared/fromTether";
@@ -70,7 +70,8 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
     Date.now,
     { list: [im.c, dc.c] },
   );
-  line.phone = { send: (text) => t.homeText(text), text: (from, body) => t.personText(from, body) };
+  // As the texting module wires it.
+  line.phone = { send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer }), text: (from, body) => t.personText(from, body) };
   return { t, im: im.state, dc: dc.state, told, took, store, line };
 }
 
@@ -468,14 +469,16 @@ describe("second review round", () => {
       await s.t.attention("claude:a");
       s.dc.hear({ text: "1 go", place: "chan-9" });
       await tick();
+      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
+      expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
       s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Done that." }] });
       await s.t.turnEnded("claude:a");
       expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Done that.", place: "chan-9" });
       // Tether's own texts carry no place.
       await s.t.attention("claude:a");
       expect(s.dc.sent.at(-1)!.place).toBeUndefined();
-      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
-      expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
+      // The place answered once; the connector stays.
+      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord" });
       // A preference for a connector that's off: refused, and an old one is skipped.
       s.t.prefer("imessage");
       s.im.enabled = false;
@@ -488,13 +491,93 @@ describe("second review round", () => {
     }
   });
 
-  test("N12: a settings change doesn't wait on the old link closing", async () => {
+  test("N12/round 3: a settings change waits for the old link to close, but not long", async () => {
     const f = fake("x", "[From X] ");
-    const ch = new Channel(f.c, () => {}, () => {});
+    const ch = new Channel(f.c, () => {}, () => {}, 50);
     await ch.start();
+    // A link that closes: the new one opens only after it has.
+    const order: string[] = [];
+    const first = f.state.links.at(-1)!;
+    first.stop = async () => {
+      await tick(10);
+      order.push("old closed");
+    };
+    const open = f.c.open;
+    f.c.open = async (...a) => (order.push("new opened"), open(...a));
+    await ch.restart();
+    expect(order).toEqual(["old closed", "new opened"]);
+    // A link that never closes: the settings change still goes through, after the wait.
     f.state.links.at(-1)!.stop = () => new Promise(() => {});
-    const done = await Promise.race([ch.restart().then(() => "restarted"), tick(200).then(() => "stuck")]);
+    const at = Date.now();
+    const done = await Promise.race([ch.restart().then(() => "restarted"), tick(1000).then(() => "stuck")]);
     expect(done).toBe("restarted");
+    expect(Date.now() - at).toBeGreaterThanOrEqual(45);
     expect(ch.connected).toBe(true);
+  });
+});
+
+describe("round 3", () => {
+  test("a channel message: the direct answer goes to the channel; a later report or request goes to the DM", async () => {
+    const s = setup({ home: true });
+    await s.t.start();
+    // Home: they write in the channel.
+    s.dc.hear({ text: "home: hi", place: "chan-1" });
+    await tick();
+    // A report turn's outcome: private (no place).
+    expect(await s.line.phone!.send("done: PR #3")).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] done: PR #3" });
+    // The direct answer to their text: the channel, once.
+    expect(await s.line.phone!.send("ok, on it", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] ok, on it", place: "chan-1" });
+    expect(await s.line.phone!.send("one more", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] one more" });
+    // Sessions: the answer to a channel message there; a failure or a request after it to the DM.
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 why", place: "chan-1" });
+    await tick();
+    await s.t.turnEnded("claude:a", "boom");
+    expect(s.dc.sent.at(-1)!.place).toBeUndefined();
+    s.dc.hear({ text: "1 try again", place: "chan-1" });
+    await tick();
+    s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Retried." }] });
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Retried.", place: "chan-1" });
+    await s.t.attention("claude:a");
+    expect(s.dc.sent.at(-1)!.place).toBeUndefined();
+    expect((await s.line.phone!.text("claude:a", "PR up")).isError).toBeUndefined();
+    expect(s.dc.sent.at(-1)!.place).toBeUndefined();
+  });
+
+  test("a files-only hold from before a restart isn't delivered as words", async () => {
+    const s = setup();
+    s.store.router.held = { text: "\u0000", at: Date.now() };
+    const t2 = new Texter((s.t as any).ctx, s.store, undefined, Date.now, { list: [] });
+    expect(t2.router.state.held).toBeUndefined();
+    // And if one survives in the router anyway, picking it says the file didn't go.
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const sessions = (s.t as any).ctx.session;
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    await s.t.attention("codex:b");
+    s.t.router.state.held = { text: "\u0000", at: Date.now() };
+    s.dc.hear({ text: "2" });
+    await tick();
+    expect(s.told).toEqual([]);
+    expect(s.dc.sent.at(-1)!.text).toBe(TEXTS.filesNotSent);
+  });
+
+  test("the store keeps keys it doesn't know", () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-keys-"));
+    try {
+      const file = join(dir, "texting.json");
+      writeFileSync(file, JSON.stringify({ settings: { phone: "+13105551234" }, router: { slots: [], sent: [] }, future: { x: 1 }, older: [2] }));
+      const st = new TextingStore(file, {});
+      st.prefer = "discord";
+      st.save();
+      const v = JSON.parse(readFileSync(file, "utf8"));
+      expect([v.future, v.older, v.prefer, v.settings.phone]).toEqual([{ x: 1 }, [2], "discord", "+13105551234"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

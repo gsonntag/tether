@@ -119,6 +119,8 @@ export class Channel {
     readonly connector: Connector,
     private onInbound: (m: Inbound) => void,
     private log: (line: string) => void,
+    /** how long a settings change waits for the old link to close before connecting again */
+    private stopWaitMs = 3_000,
   ) {}
 
   get id() {
@@ -171,7 +173,12 @@ export class Channel {
     await this.connecting;
     const old = this.link;
     this.link = undefined;
-    void old?.stop().catch(() => {});
+    // Two clients at once (Photon) can fight over the line: wait for the old one to close, but not long.
+    if (old) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([old.stop().catch(() => {}), new Promise((r) => (timer = setTimeout(r, this.stopWaitMs)))]);
+      clearTimeout(timer);
+    }
     this.lastError = undefined;
     this.delay = RETRY_MIN_MS;
     await this.start();

@@ -696,3 +696,29 @@ describe("second review round", () => {
     resetIdentifies();
   });
 });
+
+describe("round 3", () => {
+  test("the identify budget is kept in texting.json and read back after a restart", async () => {
+    resetIdentifies();
+    const dir = mkdtempSync(join(tmpdir(), "discord-budget-"));
+    try {
+      const file = join(dir, "texting.json");
+      const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME }, file);
+      const o = await openIt(f);
+      await o.link.stop();
+      const saved = JSON.parse(readFileSync(file, "utf8")).connectors.discord.identifies;
+      expect(saved.length).toBe(1);
+      // A restart: the count starts from what was kept.
+      resetIdentifies();
+      const store = new TextingStore(file, {});
+      store.setSection("discord", { ...store.section("discord"), identifies: [Date.now() - 1000, Date.now() - 500, ...saved] });
+      discordConnector(store);
+      expect(takeIdentify(Date.now(), 3)).toBe(false);
+      expect(takeIdentify(Date.now(), 4)).toBe(true);
+      expect(cleanSettings({ identifies: [1, "x", NaN, 2] }).identifies).toEqual([1, 2]);
+    } finally {
+      resetIdentifies();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

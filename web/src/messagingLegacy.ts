@@ -5,6 +5,12 @@ import type { ConnectorStatus, MessagingStatus, TextingStatus } from "../../shar
 
 export const LEGACY_IMESSAGE = "imessage";
 
+/** Whether an rpc failed because the runner doesn't have `op` at all (runner/src/core/ops.ts), not for any other reason. */
+export function isUnknownOp(e: unknown, op: string): boolean {
+  const m = (e as Error | undefined)?.message ?? "";
+  return m.includes(`doesn't know "${op}"`);
+}
+
 /** An old runner's texting status, as the one connector it has. */
 export function legacyMessaging(s: TextingStatus): MessagingStatus {
   const env = (on: boolean) => (on ? " · from runner.env" : "");
