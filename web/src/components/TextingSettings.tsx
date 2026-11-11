@@ -83,8 +83,6 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
         {status.keysSet && !status.fromEnv.keys && <Button label="Unset" variant="secondary" isDisabled={disabled} onClick={() => void set({ projectId: "", projectSecret: "" })} />}
       </div>
     </form>
-    <p className="t-inline-status">
-      Keys are in the Photon dashboard (app.photon.codes). Your phone must be added and verified there. They can also go in the runner's runner.env as TETHER_PHOTON_PROJECT_ID, TETHER_PHOTON_PROJECT_SECRET and TETHER_TEXT_PHONE.
-    </p>
+    <p className="t-inline-status">Phone must be added and verified on Photon dashboard</p>
   </>;
 }
