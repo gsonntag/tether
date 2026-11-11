@@ -2,19 +2,24 @@
 // starts a session in the right project with a full brief, then keeps it going until it's done.
 // The chat is a session like any other, shown here instead of in the lists. `/new` or `/clear`
 // (or New chat) drops it: the next message starts a fresh chat, on every device at once.
+// Expand puts it over the whole window (Escape or Collapse brings it back), remembered per device.
 
 import { useEffect, useMemo, useState } from "react";
 import { HOME_COMMANDS, isHomeReset } from "../../../shared/commands";
 import { Button } from "@astryxdesign/core/Button";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { ArrowsPointingInIcon, ArrowsPointingOutIcon } from "@heroicons/react/24/outline";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { rpc } from "../connection";
 import { setHomeChat } from "../presence";
 import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
 import { billingForDisplay } from "../sourceMenu";
+import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
-import { HomeAgentSettingsChip } from "./HomeAgentSettings";
+import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
@@ -22,6 +27,16 @@ import { Transcript } from "./Transcript";
 
 const PLACEHOLDER = "What should get done? e.g. “In tether, make the sidebar remember its width”";
 const loadCommands = async () => HOME_COMMANDS;
+
+/** Whether a popover or dialog is open over the page. */
+function openLayer(): boolean {
+  try {
+    return !!document.querySelector('.t-home-chat-head [aria-expanded="true"], :popover-open [role="dialog"], [role="dialog"]:popover-open, :popover-open [role="menu"], [role="menu"]:popover-open, dialog[open]');
+  } catch {
+    // no :popover-open
+    return !!document.querySelector('.t-home-chat-head [aria-expanded="true"], dialog[open]');
+  }
+}
 
 export function HomeChat() {
   const runners = useStore((s) => s.runners);
@@ -34,6 +49,24 @@ export function HomeChat() {
   const [error, setError] = useState<string>();
   /** what it runs on; absent from a runner from before it could change */
   const [agent, setAgent] = useState<{ runnerId: string; settings: HomeAgentSettings; harnesses: HarnessId[] }>();
+  const [expanded, setExpanded] = useState(loadExpanded);
+  const expand = (on: boolean) => {
+    setExpanded(on);
+    saveExpanded(on);
+  };
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Not while a picker's menu (or any dialog) is open over it: Escape closes that first.
+      // (A popover's dialog stays in the page while closed: only an open one counts.)
+      const layerOpen = openLayer();
+      const onOwnButton = e.target instanceof Element && !!e.target.closest(".t-home-chat-actions");
+      if (escapeCollapses(e, layerOpen, onOwnButton)) expand(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
 
   useEffect(() => {
     if (!rid || !linkOpen) return;
@@ -64,23 +97,33 @@ export function HomeChat() {
 
   if (!runner) return null;
   return (
-    <section className="t-home-chat" aria-label="Home agent">
-      {(current || (agent && agent.runnerId === rid)) && (
-        <div className="t-home-chat-head">
-          {agent && agent.runnerId === rid && (
-            <HomeAgentSettingsChip
-              runnerId={rid!}
-              settings={agent.settings}
-              harnesses={agent.harnesses}
-              onChanged={(r) => {
-                setAgent({ ...agent, settings: r.settings });
-                if (r.sessionId) noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev });
-              }}
-            />
-          )}
+    <section className={expanded ? "t-home-chat expanded" : "t-home-chat"} aria-label="Home agent">
+      <div className="t-home-chat-head">
+        {expanded && <span className="t-home-chat-title">Home agent</span>}
+        {agent && agent.runnerId === rid && (
+          <HomeAgentPickers
+            runnerId={rid!}
+            settings={agent.settings}
+            harnesses={agent.harnesses}
+            onChanged={(r) => {
+              setAgent({ ...agent, settings: r.settings });
+              if (r.sessionId) noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev });
+            }}
+            onError={setError}
+          />
+        )}
+        <div className="t-home-chat-actions">
           {current && <Button label="New chat" size="sm" variant="ghost" clickAction={() => clear().catch((e) => setError((e as Error).message))} />}
+          <IconButton
+            label={expanded ? "Collapse the Home agent" : "Expand the Home agent"}
+            tooltip={expanded ? "Collapse (Esc)" : "Expand"}
+            size="sm"
+            variant="ghost"
+            icon={<Icon icon={expanded ? ArrowsPointingInIcon : ArrowsPointingOutIcon} />}
+            onClick={() => expand(!expanded)}
+          />
         </div>
-      )}
+      </div>
       {error && <div className="t-form-error">{error}</div>}
       {current ? (
         <ChatView key={current} runnerId={rid!} sessionId={current} onReset={clear} />
