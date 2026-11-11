@@ -764,8 +764,18 @@ event (with the message's text) and the queued message's id from `SessionActions
   running turn, obeys holds, survives restarts and can be cancelled from any device; a peer
   message can't be edited. It starts with `[From session "<title>" (<id>)] ` (`to all]` for a
   broadcast) and ends with a short hint for the agent, `\n\n[Tether: …]`, which the transcript
-  hides. The transcript shows it as "From “<title>” · Open it" (· to all), the queue as
-  "From “<title>”: …". A person's text that starts like one gets defang's mark.
+  hides; the hint also says the sender's permissions. The transcript shows it as "From “<title>” ·
+  Open it" (· to all), the queue as "From “<title>”: …". A person's text that starts like one gets
+  defang's mark.
+- **Stricter to looser waits for you.** Each session's permission mode has a level on the scale
+  Move uses (`core/permissionLevel.ts`, shared/move.ts `LEVELS`): Claude plan < default <
+  acceptEdits < auto < bypassPermissions; Codex read-only < untrusted < auto (workspace-write) <
+  full-access. A message (send, ask or broadcast) to a session whose level is above the sender's
+  goes into its queue held (`queueHeldBy: "peer"`, "Held for your OK", Resume lets it go; Home
+  lists it as needing you, like any paused queue). An unknown level counts as the loosest for the
+  target and the strictest for the sender; equal or stricter goes straight through. The tool says
+  it waits for the person's OK; an ask keeps waiting (its timeout still applies). The hold covers
+  the whole queue, like the others; sending something yourself releases it too.
 - **Ask.** The answer is the target's last written reply in the turn that took the question (the
   next turn end after it went out), cut at 20 KB with "open session X for the rest". Otherwise:
   "turn failed: …", "the person stopped …'s turn", "Not delivered: the person removed your question

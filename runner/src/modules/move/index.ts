@@ -5,11 +5,12 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
-import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type Level, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
+import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
 import type { BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
+import { levelOf } from "../../core/permissionLevel";
 import type { Module, ModuleContext, SessionLook } from "..";
 
 const labelOf = (h: HarnessId) => HARNESS_LABELS[h] ?? h;
@@ -28,11 +29,7 @@ export function refusal(s: SessionLook): string | undefined {
   return undefined;
 }
 
-/** A mode's level on its harness; anything it can't place is unknown. */
-export function levelOf(a: Adapter, mode: string | undefined): Level | undefined {
-  if (!mode || !a.move) return undefined;
-  return a.move.modes.find((m) => m.mode === mode)?.level ?? a.move.levelOf?.(mode);
-}
+export { levelOf };
 
 export function targetMode(source: Adapter, mode: string | undefined, target: Adapter): string {
   return mapMode(levelOf(source, mode), target.move?.modes ?? []);

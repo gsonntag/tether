@@ -62,8 +62,11 @@ export interface SessionActions {
   list(): SessionSummary[];
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
-  /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */
-  queue(id: string, text: string): Promise<{ id: string }>;
+  /**
+   * a message through the session's queue: now when it's idle, else after its turn (its id: the
+   * queueGone event says when it leaves). `hold: "peer"`: the queue waits for the person's OK.
+   */
+  queue(id: string, text: string, o?: { hold?: "peer" }): Promise<{ id: string }>;
   /** the newest `limit` messages of its transcript */
   recent(id: string, limit: number): Promise<Msg[]>;
   rename(id: string, title: string): Promise<void>;

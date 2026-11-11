@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSessionMessage, peerHops, tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
+import { claudeMove } from "../../adapters/claude/move";
+import { codexMove } from "../../adapters/codex/move";
 import { classifyTool } from "../../adapters/toolKind";
 import { peerTarget } from "../../../../shared/peers";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
@@ -13,8 +15,8 @@ import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
 const row = (id: string, title: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.startsWith("codex") ? "codex" : "claude", nativeId: id.split(":")[1]!, projectPath: "/p/app", title, mode: "live", status: "idle", updatedAt: 0, ...o });
 
 /** Peers over a fake set of sessions (`stored`: older ones the lists leave out); what it queues and notices is recorded. */
-function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string } = {}) {
-  const queued: { to: string; text: string; id: string }[] = [];
+function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string; modes?: Record<string, string | undefined> } = {}) {
+  const queued: { to: string; text: string; id: string; held?: boolean }[] = [];
   const notices: { id: string; text: string }[] = [];
   const recent = new Map<string, Msg[]>();
   const fail = new Set<string>();
@@ -22,7 +24,10 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
   let now = 1_000_000;
   const look = (id: string) => {
     const s = [...rows, ...(o.stored ?? [])].find((r) => r.id === id);
-    return s ? ({ summary: s, status: s.status, requests: [], state: { mode: s.mode, queue: [] } as any, busy: false, background: false }) : undefined;
+    // Every session asks first unless `modes` says otherwise (undefined: not known).
+    const permissionMode = o.modes && id in o.modes ? o.modes[id] : s?.harness === "codex" ? "untrusted" : "default";
+    const held = queued.some((q) => q.to === id && q.held);
+    return s ? ({ summary: s, status: s.status, requests: [], state: { mode: s.mode, queue: [], permissionMode, ...(held ? { queueHeld: true, queueHeldBy: "peer" } : {}) } as any, busy: false, background: false }) : undefined;
   };
   const ctx: any = {
     log: () => {},
@@ -31,10 +36,11 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
     sessions: {
       list: () => rows,
       open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
-      queue: async (to: string, text: string) => {
+      adapters: () => [{ id: "claude", move: claudeMove }, { id: "codex", move: codexMove }],
+      queue: async (to: string, text: string, q?: { hold?: string }) => {
         if (fail.has(to)) throw new Error("queue full");
         const id = `q${++n}`;
-        queued.push({ to, text, id });
+        queued.push({ to, text, id, ...(q?.hold ? { held: true } : {}) });
         return { id };
       },
       notice: async (id: string, m: Msg) => void notices.push({ id, text: (m.parts[0] as any).text }),
@@ -246,6 +252,41 @@ describe("tools", () => {
     const many = await peers.send("claude:a", "line", "x").catch((e) => e.message);
     expect(many).toMatch(/2 sessions match/);
     expect(many).not.toMatch(/[\x00-\x1f]/);
+  });
+  test("a stricter session's message to a looser one waits for the person's OK", async () => {
+    const rows = [row("claude:plan", "Planner"), row("claude:edits", "Editor"), row("claude:full", "Bypass"), row("codex:full", "Codex full"), row("codex:ro", "Codex reader"), row("claude:what", "Unknown")];
+    const modes = { "claude:plan": "plan", "claude:edits": "acceptEdits", "claude:full": "bypassPermissions", "codex:full": "full-access", "codex:ro": "read-only", "claude:what": undefined };
+    const { peers, queued } = setup(rows, { modes });
+    const r = await peers.send("claude:edits", "claude:full", "do it");
+    expect(r.text).toMatch(/waits in its queue for the person's OK/);
+    expect(queued.at(-1)!.held).toBe(true);
+    // Equal or stricter: straight through.
+    expect((await peers.send("claude:full", "codex:full", "x")).text).not.toMatch(/OK/);
+    expect(queued.at(-1)!.held).toBeUndefined();
+    await peers.send("claude:edits", "codex:ro", "x");
+    expect(queued.at(-1)!.held).toBeUndefined();
+    await peers.send("claude:edits", "claude:plan", "x");
+    expect(queued.at(-1)!.held).toBeUndefined();
+    // Unknown: the loosest as a target, the strictest as a sender.
+    await peers.send("claude:full", "claude:what", "x");
+    expect(queued.at(-1)!.held).toBe(true);
+    await peers.send("claude:what", "codex:ro", "x");
+    expect(queued.at(-1)!.held).toBeUndefined();
+    await peers.send("claude:what", "claude:plan", "x");
+    expect(queued.at(-1)!.held).toBeUndefined();
+    // The receiver reads the sender's permissions.
+    expect(queued.at(-1)!.text).toMatch(/\[Tether: [^\]]*The sender's permissions: read only\.\]$/);
+    expect(parseSessionMessage(queued.at(-1)!.text)?.text).toBe("x");
+  });
+  test("a held ask keeps waiting; its timeout says it waits for the person's OK", async () => {
+    const { peers } = setup([row("claude:a", "A"), row("claude:b", "B")], { modes: { "claude:a": "plan", "claude:b": "auto" } });
+    const orig = globalThis.setTimeout;
+    (globalThis as any).setTimeout = (f: () => void) => orig(f, 1);
+    try {
+      expect((await peers.ask("claude:a", "claude:b", "q", 1)).text).toMatch(/still waits in its queue for the person's OK/);
+    } finally {
+      (globalThis as any).setTimeout = orig;
+    }
   });
   test("caps hold for calls running side by side", async () => {
     const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B"), row("claude:c", "C"), row("claude:d", "D"), row("claude:e", "E")]);

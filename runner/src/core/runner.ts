@@ -235,7 +235,7 @@ export function createRunner(o: RunnerOptions) {
         projects: () => core.listProjects(),
         list: () => core.book.list(),
         folder: (path: string) => core.folder(path),
-        queue: (id: string, text: string) => live.queue.add(id, text, []),
+        queue: (id: string, text: string, o?: { hold?: "peer" }) => live.queue.add(id, text, [], o?.hold ? { hold: o.hold } : {}),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
           return (await core.load(s)).newest(limit).messages;

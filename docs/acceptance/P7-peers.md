@@ -35,5 +35,6 @@ broadcasts a project filter in tests.
 | 7 | Send to all from the UI, project filter, one target mid-turn, one stored. | real: "Queued in 2 sessions" with links, as your own message in each; the stored one started. The mid-turn wait is the queue of #4 (not seen separately: the other session had just gone idle). |
 | 8 | Two sessions told to keep a counting game going. | real: stopped at the 5th message ("would be the 5th in a chain"), with a notice. |
 | 9 | Marker parse, defang, tool kind, caps, token identity, socket, stdio server. | unit |
-| 10 | Restart the runner during an open ask. | not run: the ask ends with the MCP server's "can't be reached" error; the queued question is the core queue's (runner.json). |
+| 10 | Restart the runner during an open ask. | unit: a runner that is away says nothing was sent; one cut off mid-call says the message may already be queued (check with tether_sessions). The queued question is the core queue's (runner.json), and its hops survive with it. |
 | 11 | Screenshots: origin bubble, tool cards, Send to all, desktop and phone. | by hand |
+| 12 | A plan-mode session sends to a bypassPermissions one; unknown modes; the receiver's hint. | unit (peers.test.ts "a stricter session's message to a looser one waits for the person's OK", p5.test.ts "held for your OK"). |

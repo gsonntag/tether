@@ -27,6 +27,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "Paused after Stop. Send something, or resume.",
   failed: "Paused after a failed turn.",
   restart: "Paused: the runner restarted mid-turn.",
+  peer: "Held for your OK: another session with stricter permissions sent this one. Resume lets it go.",
 };
 
 /** An edit in progress: the message it's for, its text before, and the edited text. */

@@ -10,7 +10,9 @@ import { defang, markTitle, parseSessionMessage, peerHops, sessionMessage } from
 import { MESSAGE_TEXT_MAX } from "../../../../shared/limits";
 import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord, type BroadcastFilter } from "../../../../shared/peers";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import type { Module, ModuleContext } from "..";
+import { LEVELS, type Level } from "../../../../shared/move";
+import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
+import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
@@ -198,9 +200,21 @@ export class Peers {
     throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions and subagents can't be). tether_sessions lists them.`);
   }
 
-  private async sender(from: string): Promise<{ id: string; title: string }> {
+  /** Who sends: its title, and its permission level (unknown: the strictest). */
+  private async sender(from: string): Promise<{ id: string; title: string; level: Level }> {
     const s = this.ctx.session(from) ?? (await this.ctx.sessions.open(from).catch(() => undefined));
-    return { id: from, title: s?.summary.title || "Untitled" };
+    return { id: from, title: s?.summary.title || "Untitled", level: this.level(s) ?? LEVELS.readOnly };
+  }
+
+  /** How far a session's mode lets its agent go without asking (core/permissionLevel.ts), if known. */
+  private level(s: SessionLook | undefined): Level | undefined {
+    if (!s) return undefined;
+    return levelOf(this.ctx.sessions.adapters().find((a) => a.id === s.summary.harness), s.state.permissionMode);
+  }
+
+  /** The hint the receiving agent reads: what it's for, and the sender's permissions. */
+  private hint(me: { level: Level }, text: string) {
+    return `${text} The sender's permissions: ${LEVEL_WORDS[me.level]}.`;
   }
 
   /** A cap hit: the tool says why, and the sender's transcript shows it. */
@@ -216,20 +230,27 @@ export class Peers {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
   }
 
-  /** Puts a peer message in `to`'s queue; says where it stands. */
-  private async deliver(to: SessionSummary, body: string): Promise<{ msgId: string; where: string; terminal: boolean }> {
-    const { id } = await this.ctx.sessions.queue(to.id, body);
+  /**
+   * Puts a peer message in `to`'s queue; says where it stands. A target whose permissions are
+   * looser than the sender's (unknown: the loosest) gets it held for the person's OK.
+   */
+  private async deliver(me: { level: Level }, to: SessionSummary, body: string): Promise<{ msgId: string; where: string; terminal: boolean; held: boolean }> {
+    const before = await this.ctx.sessions.open(to.id).catch(() => undefined);
+    const held = (this.level(before) ?? Infinity) > me.level;
+    const { id } = await this.ctx.sessions.queue(to.id, body, held ? { hold: "peer" } : undefined);
     const look = await this.ctx.sessions.open(to.id).catch(() => undefined);
     const agent = AGENT_NAMES[to.harness as HarnessId] ?? "It";
     const terminal = look?.state.mode === "terminal";
-    const where = terminal
+    const where = held
+      ? "Its permissions are looser than this session's, so it waits in its queue for the person's OK."
+      : terminal
       ? "Its terminal is driving, so it waits in the queue until the person goes back to Tether."
       : look?.state.queueHeld
         ? "Its queue is paused for the person, so it waits there until they carry on."
         : look && look.status !== "idle"
           ? `${agent} is working: it gets this when its current turn ends.`
           : "It's idle, so it starts on it now.";
-    return { msgId: id, where, terminal };
+    return { msgId: id, where, terminal, held };
   }
 
   async send(from: string, to: string, text: string): Promise<PeerAnswer> {
@@ -242,8 +263,8 @@ export class Peers {
     const undo = this.caps.count(from);
     const d = await (async () => {
       const me = await this.sender(from);
-      const body = sessionMessage(me, text, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`, false, hops);
-      return this.deliver(t, body);
+      const body = sessionMessage(me, text, this.hint(me, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`), false, hops);
+      return this.deliver(me, t, body);
     })().catch((e) => {
       undo();
       throw e;
@@ -267,7 +288,7 @@ export class Peers {
       const hint = terminal
         ? `a question from another session, not the person. Answer it with tether_send to "${from}".`
         : "a question from another session, not the person. Your final reply this turn goes back to it automatically.";
-      return this.deliver(t, sessionMessage(me, text, hint, false, hops));
+      return this.deliver(me, t, sessionMessage(me, text, this.hint(me, hint), false, hops));
     })().catch((e) => {
       undo();
       close();
@@ -292,7 +313,8 @@ export class Peers {
       };
       this.asks.push(ask);
       const timer = setTimeout(() => {
-        const still = ask.delivered ? "is still working on it" : "hasn't got to it yet (it waits in its queue)";
+        const held = d.held && this.ctx.session(t.id)?.state.queueHeldBy === "peer";
+        const still = ask.delivered ? "is still working on it" : held ? "still waits in its queue for the person's OK (its permissions are looser than yours)" : "hasn't got to it yet (it waits in its queue)";
         this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: ${this.who(t.id, t.title)} ${still}. Ask again later, or check with tether_sessions.`, isError: true });
       }, wait);
       // The asking agent stopped waiting (its turn was stopped): the question stays queued.
@@ -312,13 +334,13 @@ export class Peers {
     const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from, true);
     const me = await this.sender(from);
-    const body = sessionMessage(me, text, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`, true, hops);
+    const body = sessionMessage(me, text, this.hint(me, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`), true, hops);
     const sent: string[] = [];
     const failed: string[] = [];
     for (const t of targets) {
       try {
-        await this.deliver(t, body);
-        sent.push(`- ${t.id} ("${markTitle(t.title)}")`);
+        const d = await this.deliver(me, t, body);
+        sent.push(`- ${t.id} ("${markTitle(t.title)}")${d.held ? ": waits for the person's OK (looser permissions)" : ""}`);
       } catch (e) {
         failed.push(`- ${t.id} ("${markTitle(t.title)}"): ${(e as Error).message}`);
       }

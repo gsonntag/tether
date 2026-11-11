@@ -19,6 +19,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "paused after Stop",
   failed: "paused after a failed turn",
   restart: "paused after a restart",
+  peer: "held for your OK",
 };
 
 export function ShellCard({ msg }: { msg: Msg }) {

@@ -98,6 +98,22 @@ describe("the queue", () => {
     expect(s.state.queue.map((m) => m.text)).toEqual(["c"]);
   });
 
+  test("a message held for your OK waits, even on an idle session, until Resume", async () => {
+    const { adapter, live, core, driver, prefs } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.add("claude:s1", "from a session", [], { hold: "peer" });
+    const s = await core.open("claude:s1");
+    expect(s.state).toMatchObject({ queueHeld: true, queueHeldBy: "peer" });
+    expect(s.summary.queuePaused).toBe(true);
+    prefs.flush();
+    expect(prefs.get("claude:s1").queueHeldBy).toBe("peer");
+    await Bun.sleep(100);
+    expect(adapter.drivers.length).toBe(0);
+    await live.queue.resume("claude:s1");
+    await until(() => adapter.drivers.length > 0 && driver().sent.length === 1);
+    expect(driver().sent).toEqual(["from a session"]);
+  });
+
   test("Stop holds it until you send; a send of yours releases it after that turn", async () => {
     const { adapter, live, core, driver, end } = setup();
     adapter.addStored("s1", []);

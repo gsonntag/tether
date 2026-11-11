@@ -335,10 +335,11 @@ export interface LiveState {
   /**
    * Queued messages wait, untouched, while set (SPEC §8, §9): while the TUI drives (released by
    * Back to Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart
-   * (released when you send, or with Resume). `queueHeldBy` says why.
+   * (released when you send, or with Resume). `queueHeldBy` says why. `peer`: another session sent
+   * a message to this one, whose permissions are looser than its own (SPEC §9a): it waits for your OK.
    */
   queueHeld?: boolean;
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "peer";
   /**
    * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
    * Resume can't release them until this clears.
