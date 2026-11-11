@@ -1,21 +1,24 @@
 // Home's chat with the Home agent (runner/src/modules/homeAgent): say what should get done, and it
 // starts a session in the right project with a full brief, then keeps it going until it's done.
-// The chat is a session like any other, shown here instead of in the lists. `/new` or `/clear`
-// (or New chat) drops it: the next message starts a fresh chat, on every device at once.
+// Each chat is a session like any other, shown here instead of in the lists, as a tab: several can
+// be open and run at once; + starts another, and closing a tab (or `/new` / `/clear` in it) archives
+// that chat. Which chats are open is the runner's, on every device at once; which tab shows is this
+// device's (homeTabs.ts).
 // Expand puts it over the whole window (Escape or Collapse brings it back), remembered per device.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HOME_COMMANDS, isHomeReset } from "../../../shared/commands";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
-import { ArrowsPointingInIcon, ArrowsPointingOutIcon } from "@heroicons/react/24/outline";
+import { ArrowsPointingInIcon, ArrowsPointingOutIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { rpc } from "../connection";
 import { setHomeChat } from "../presence";
 import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
 import { billingForDisplay } from "../sourceMenu";
 import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
+import { afterClose, loadTab, NEW, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
@@ -45,7 +48,7 @@ export function HomeChat() {
   const runner = runners.find((r) => r.online && r.homeFolder);
   const rid = runner?.id;
   const conn = `${rid}:${runner?.connectedAt}:${linkOpen}`;
-  /** the current chat (kept in sync across devices by the runner's homeChat broadcasts): undefined while asking, null when there's none yet */
+  /** the tabs and current chat (kept in sync across devices by the runner's homeChat broadcasts): undefined while asking */
   const known = useStore((s) => (rid ? s.homeChats[rid] : undefined));
   const [error, setError] = useState<string>();
   /** what it runs on; absent from a runner from before it could change */
@@ -55,6 +58,9 @@ export function HomeChat() {
     setExpanded(on);
     saveExpanded(on);
   };
+  /** the tab this device picked, per runner */
+  const [picked, setPicked] = useState<{ runnerId?: string; tab?: string }>({});
+  if (picked.runnerId !== rid) setPicked({ runnerId: rid, tab: rid ? loadTab(rid) : undefined });
 
   useEffect(() => {
     if (!expanded) return;
@@ -75,7 +81,7 @@ export function HomeChat() {
     rpc(rid, "homeAgent", {})
       .then((r) => {
         if (gone) return;
-        noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0 });
+        noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}) });
         setAgent(r.settings ? { runnerId: rid, settings: r.settings, harnesses: r.harnesses ?? [r.settings.harness] } : undefined);
       })
       .catch((e) => !gone && setError((e as Error).message));
@@ -84,17 +90,33 @@ export function HomeChat() {
     };
   }, [conn]);
 
-  const current = known ? (known.sessionId ?? null) : undefined;
-  const newChat = async () => {
-    const r = await rpc(rid!, "homeAgentNew", {});
-    noteHomeChat(rid!, r);
-    return r.sessionId;
-  };
-  /** `/new`, `/clear`, New chat: the next message starts a fresh chat */
-  const clear = async () => {
-    noteHomeChat(rid!, await rpc(rid!, "homeAgentClear", {}));
+  const chats = tabsOf(known);
+  /** a runner from before tabs: one chat, which New chat clears */
+  const oldRunner = !!known && !known.chats;
+  const tab = known ? pickTab(chats, picked.tab, known.sessionId) : undefined;
+  const current = tab && tab !== NEW ? tab : known ? null : undefined;
+  const show = (t: string) => {
+    setPicked({ runnerId: rid, tab: t });
+    saveTab(rid!, t);
     setError(undefined);
   };
+  const newChat = async () => {
+    const r = await rpc(rid!, "homeAgentNew", {});
+    noteHomeChat(rid!, { ...r, chats: oldRunner ? undefined : [...chats.filter((c) => c !== r.sessionId), r.sessionId] });
+    show(r.sessionId);
+    return r.sessionId;
+  };
+  /** closes a tab (archives its chat); `/new` and `/clear` in a tab close it for a fresh one */
+  const close = async (id: string, next = afterClose(chats, id)) => {
+    if (oldRunner) noteHomeChat(rid!, await rpc(rid!, "homeAgentClear", {}));
+    else {
+      const { rev } = await rpc(rid!, "homeAgentClose", { sessionId: id });
+      const left = chats.filter((c) => c !== id);
+      noteHomeChat(rid!, { rev, chats: left, ...(known?.sessionId && known.sessionId !== id ? { sessionId: known.sessionId } : left.length ? { sessionId: left.at(-1)! } : {}) });
+    }
+    if (tab === id) show(next);
+  };
+  const fail = (e: unknown) => setError((e as Error).message);
 
   if (!runner) return null;
   return (
@@ -104,17 +126,22 @@ export function HomeChat() {
         {agent && agent.runnerId === rid && (
           <HomeAgentPickers
             runnerId={rid!}
+            sessionId={current ?? undefined}
             settings={agent.settings}
             harnesses={agent.harnesses}
             onChanged={(r) => {
               setAgent({ ...agent, settings: r.settings });
-              if (r.sessionId) noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev });
+              // A move: the tab in view is the chat it went on in.
+              if (r.sessionId && current && r.sessionId !== current) {
+                noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev, ...(oldRunner ? {} : { chats: chats.map((c) => (c === current ? r.sessionId! : c)) }) });
+                show(r.sessionId);
+              }
             }}
             onError={setError}
           />
         )}
         <div className="t-home-chat-actions">
-          {current && <Button label="New chat" size="sm" variant="ghost" clickAction={() => clear().catch((e) => setError((e as Error).message))} />}
+          {oldRunner && current && <Button label="New chat" size="sm" variant="ghost" clickAction={() => close(current, NEW).catch(fail)} />}
           <IconButton
             label={expanded ? "Collapse the Home agent" : "Expand the Home agent"}
             tooltip={expanded ? "Collapse (Esc)" : "Expand"}
@@ -125,9 +152,10 @@ export function HomeChat() {
           />
         </div>
       </div>
+      {known && !oldRunner && <HomeTabs runnerId={rid!} chats={chats} tab={tab!} onShow={show} onClose={(id) => close(id).catch(fail)} />}
       {error && <div className="t-form-error">{error}</div>}
       {current ? (
-        <ChatView key={current} runnerId={rid!} sessionId={current} onReset={clear} />
+        <ChatView key={current} runnerId={rid!} sessionId={current} onReset={() => close(current, NEW)} />
       ) : (
         <Composer
           draftKey={`home:${rid}`}
@@ -136,7 +164,7 @@ export function HomeChat() {
           placeholder={PLACEHOLDER}
           loadCommands={loadCommands}
           onSend={async (_kind, text) => {
-            if (isHomeReset(text)) return clear();
+            if (isHomeReset(text)) return;
             const sessionId = await newChat();
             await rpc(rid!, "send", { sessionId, text });
           }}
@@ -145,6 +173,85 @@ export function HomeChat() {
         />
       )}
     </section>
+  );
+}
+
+/**
+ * The tab strip: a tab per open chat, named by its title (double-click to rename), with a pulsing dot
+ * while it works and a dot for a reply nobody read; a "New chat" tab while one is being started;
+ * + for another, always in reach: the tabs scroll sideways when they don't fit (a phone).
+ */
+const MARK_LABELS = { running: "Working", waiting: "Needs you", failed: "Failed", unread: "New reply" } as const;
+
+function HomeTabs({ runnerId, chats, tab, onShow, onClose }: { runnerId: string; chats: string[]; tab: string; onShow: (t: string) => void; onClose: (id: string) => void }) {
+  const sessions = useStore((s) => s.summaries[runnerId]?.sessions);
+  const [editing, setEditing] = useState<string>();
+  const strip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    strip.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab, chats.length]);
+  const rename = (id: string, title: string) => {
+    setEditing(undefined);
+    const t = title.trim();
+    if (t && t !== sessions?.[id]?.title) void rpc(runnerId, "renameSession", { sessionId: id, title: t }).catch(() => {});
+  };
+  const marker = (m: ReturnType<typeof tabMark>) =>
+    m ? <span className={`t-home-tab-mark ${m}`} role="img" aria-label={MARK_LABELS[m]} title={MARK_LABELS[m]} /> : null;
+  return (
+    <div className="t-home-tabbar">
+      <div className="t-home-tabs" role="tablist" aria-label="Home agent chats" ref={strip}>
+        {chats.map((id) => {
+          const s = sessions?.[id];
+          const label = tabLabel(s?.title);
+          const on = id === tab;
+          return (
+            <div key={id} className={on ? "t-home-tab on" : "t-home-tab"} data-session={id}>
+              {editing === id ? (
+                <input
+                  className="t-home-tab-edit"
+                  aria-label="Chat name"
+                  defaultValue={s?.title && label !== "New chat" ? label : ""}
+                  autoFocus
+                  maxLength={120}
+                  onBlur={(e) => rename(id, e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") rename(id, e.currentTarget.value);
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setEditing(undefined);
+                    }
+                  }}
+                />
+              ) : (
+                <button type="button" role="tab" aria-selected={on} className="t-home-tab-main" title={on ? `${label} (double-click to rename)` : label} onClick={() => onShow(id)} onDoubleClick={() => setEditing(id)}>
+                  {marker(tabMark(s, on))}
+                  <span className="t-home-tab-label">{label}</span>
+                </button>
+              )}
+              <button type="button" className="t-home-tab-close" aria-label={`Close ${label}`} title="Close (archives the chat)" onClick={() => onClose(id)}>
+                <XMarkIcon aria-hidden />
+              </button>
+            </div>
+          );
+        })}
+        {tab === NEW && (
+          <div className="t-home-tab on">
+            <button type="button" role="tab" aria-selected className="t-home-tab-main">
+              <span className="t-home-tab-label">New chat</span>
+            </button>
+            {chats.length > 0 && (
+              <button type="button" className="t-home-tab-close" aria-label="Close New chat" title="Close" onClick={() => onShow(chats.at(-1)!)}>
+                <XMarkIcon aria-hidden />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <button type="button" className="t-home-tab-new" aria-label="New chat" title="New chat" disabled={tab === NEW} onClick={() => onShow(NEW)}>
+        <PlusIcon aria-hidden />
+      </button>
+    </div>
   );
 }
 

@@ -110,18 +110,21 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
-  /** the Home agent's current chat (none before the first message), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
-  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
+  /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
+  homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**
-   * What the Home agent runs on, kept on the runner for every chat to come. The current chat takes it
-   * too: a model and a mode now, Claude's source from its next start, and a harness or a Codex source by a move
-   * (a new chat with the conversation, which becomes current). Answers with the chat that's current now
+   * What the Home agent runs on, kept on the runner for every chat to come. The chat in view
+   * (`sessionId`, an open tab; else the current one) takes it too: a model and a mode now, Claude's
+   * source from its next start, and a harness or a Codex source by a move (a new chat with the
+   * conversation, in the same tab). Answers with that chat as it is now
    */
-  homeAgentSet: { args: HomeAgentSettings; result: { sessionId?: string; settings: HomeAgentSettings; rev: number } };
-  /** a new Home agent chat, current from now; its first send starts it */
+  homeAgentSet: { args: HomeAgentSettings & { sessionId?: string }; result: { sessionId?: string; settings: HomeAgentSettings; rev: number } };
+  /** a new Home agent chat, a new tab (the last) and current from now; its first send starts it */
   homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
   /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */
   homeAgentClear: { args: Record<string, never>; result: { rev: number } };
+  /** closes a Home tab: that chat is archived (its history kept), stopped if it runs, and stops following its sessions */
+  homeAgentClose: { args: { sessionId: string }; result: { rev: number } };
   /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers. `following`: the sessions its chats follow (absent from a runner from before it was sent) */
   homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean; following?: string[] } };
   /**
@@ -430,13 +433,15 @@ export type SummaryUpdate =
   | { kind: "remove"; epoch: string; seq: number; ids: string[] };
 
 /**
- * The Home agent's current chat changed (a new one, or `/new` cleared it): broadcast to every
- * browser, so each device's Home shows the same chat. `rev` grows with each change (it's kept across
+ * The Home agent's tabs or current chat changed (a new one, a closed one, the person wrote in another): broadcast to every
+ * browser, so each device's Home shows the same tabs. `rev` grows with each change (it's kept across
  * restarts), so an answer to the `homeAgent` rpc and a broadcast can be put in order.
  */
 export interface HomeChatUpdate {
-  /** absent: none, the next message starts one */
+  /** the current chat, where watch reports go; absent: no tab, the next message starts one */
   sessionId?: string;
+  /** the open chats, Home's tabs (absent from a runner from before tabs) */
+  chats?: string[];
   rev: number;
 }
 

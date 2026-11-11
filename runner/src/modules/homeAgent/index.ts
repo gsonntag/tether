@@ -17,10 +17,12 @@
 // remove the worktrees they made; it checks the answers against git, archives the finished ones,
 // and sends the chat one report of what was archived and what wasn't.
 //
-// `/new` or `/clear` on Home (homeAgentClear) drops the current chat: the next message starts a
-// fresh one, a new Claude session with none of the old context. The old chat is stopped if it runs
-// and lets go of the sessions it started (they keep going on their own, in the lists). Every
-// change of the current chat is broadcast, so each device's Home follows.
+// Home shows its chats as tabs (`tabs`): each is its own Claude session, with its own turns, and
+// several can run at once. A session a chat starts (or messages) reports to that chat. Watch reports
+// go to one chat only, `current`: the tab the person last wrote in (or opened). Closing a tab
+// (homeAgentClose; `/new` or `/clear` in it) archives that chat: it's stopped if it runs and lets go
+// of the sessions it started (they keep going on their own, in the lists). Every change of the tabs
+// or of `current` is broadcast, so each device's Home follows. Settings are one for all chats.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -72,7 +74,7 @@ interface Child {
   messaged?: boolean;
   /** the agent's message waits behind a turn that isn't the agent's: that turn's end isn't reported */
   queued?: boolean;
-  /** the person stepped in, it hit MAX_REPORTS, or its chat was cleared: no more reports (a new message follows it again, but past the limit) */
+  /** the person stepped in, it hit MAX_REPORTS, or its chat was closed: no more reports (a new message follows it again, but past the limit) */
   released?: "person" | "limit" | "cleared";
 }
 
@@ -98,7 +100,10 @@ interface CheckIn {
 }
 
 interface State {
+  /** the chat watch reports go to: the tab the person last wrote in or opened */
   current?: string;
+  /** the open chats (Home's tabs), oldest first */
+  tabs: string[];
   /** grows with each change of `current`, across restarts (HomeChatUpdate.rev) */
   rev: number;
   children: Record<string, Child>;
@@ -255,7 +260,7 @@ async function overview(folder: string): Promise<string> {
 }
 
 export class HomeAgent {
-  state: State = { rev: 0, children: {} };
+  state: State = { rev: 0, tabs: [], children: {} };
   private file: string;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** a button check-in being started (it awaits git before it's saved): a second press waits for it */
@@ -277,9 +282,12 @@ export class HomeAgent {
     this.file = join(ctx.dataDir, "state.json");
     try {
       const v = JSON.parse(readFileSync(this.file, "utf8"));
-      if (v && typeof v === "object")
+      if (v && typeof v === "object") {
+        const current = typeof v.current === "string" ? v.current : undefined;
         this.state = {
-          current: typeof v.current === "string" ? v.current : undefined,
+          current,
+          // A state from before tabs: its one chat is the one tab.
+          tabs: Array.isArray(v.tabs) ? [...new Set(v.tabs.filter((t: unknown): t is string => typeof t === "string" && !!t))] : current ? [current] : [],
           rev: Number.isSafeInteger(v.rev) ? v.rev : 0,
           children: v.children && typeof v.children === "object" ? v.children : {},
           ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}),
@@ -287,6 +295,7 @@ export class HomeAgent {
           ...(v.lastCheckIn && typeof v.lastCheckIn === "object" ? { lastCheckIn: v.lastCheckIn } : {}),
           ...(v.watchAll === false ? { watchAll: false } : {}),
         };
+      }
     } catch {}
     // Check-ins a restart interrupted: their clocks start again (one already past reports now).
     for (const id of Object.keys(this.state.checkIns ?? {})) this.arm(id);
@@ -398,14 +407,45 @@ export class HomeAgent {
     }
   }
 
-  /** `current` becomes `id` (none: cleared), saved and told to every browser. */
+  /** `current` becomes `id` (none: no tab), saved and told to every browser with the tabs. */
   private setCurrent(id: string | undefined) {
+    this.state.current = id;
+    return this.announce();
+  }
+
+  /** Saves, and tells every browser the tabs and `current`. */
+  private announce() {
     // A clock-based rev stays ahead of what browsers saw even if state.json was lost.
     this.state.rev = Math.max(this.state.rev + 1, Date.now());
-    this.state.current = id;
     this.save();
-    this.ctx.announceHomeChat?.({ ...(id ? { sessionId: id } : {}), rev: this.state.rev });
+    this.ctx.announceHomeChat?.({ ...(this.state.current ? { sessionId: this.state.current } : {}), chats: [...this.state.tabs], rev: this.state.rev });
     return this.state.rev;
+  }
+
+  /**
+   * The open tabs, each where it went on (a move), without those that are gone: a chat created but
+   * never sent to has nothing stored, so it can't open after a restart.
+   */
+  async chats(): Promise<string[]> {
+    const out: string[] = [];
+    let changed = false;
+    for (const id of [...this.state.tabs]) {
+      const at = await this.follow(id).catch(() => undefined);
+      if (at && !out.includes(at)) out.push(at);
+      else changed = true;
+    }
+    if (changed || out.some((id, i) => id !== this.state.tabs[i])) {
+      this.state.tabs = out;
+      if (this.state.current && !out.includes(this.state.current)) this.state.current = out.at(-1);
+      this.announce();
+    }
+    return out;
+  }
+
+  /** The person wrote in a chat: watch reports go there from now. */
+  private touched(id: string) {
+    if (this.state.current === id || !this.state.tabs.includes(id)) return;
+    this.setCurrent(id);
   }
 
   /**
@@ -423,11 +463,13 @@ export class HomeAgent {
     return at;
   }
 
-  /** A chat went on in `to`: it's current if `from` was, and the sessions `from` started report there. */
+  /** A chat went on in `to`: its tab is `to`'s, it's current if `from` was, and the sessions `from` started report there. */
   private moved(from: string, to: string) {
     for (const c of Object.values(this.state.children)) if (c.chat === from) c.chat = to;
-    if (this.state.current === from) this.setCurrent(to);
-    else this.save();
+    const tabs = this.state.tabs.map((t) => (t === from ? to : t));
+    this.state.tabs = tabs.filter((t, i) => tabs.indexOf(t) === i);
+    if (this.state.current === from) this.state.current = to;
+    this.announce();
   }
 
   /** The harnesses that can run it here: the runner has them, and they take Tether's tools. */
@@ -464,16 +506,19 @@ export class HomeAgent {
     const { harness, source, model, mode } = await this.settings();
     const permissionMode = await this.modeFor(harness, mode);
     const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
+    this.state.tabs.push(id);
     return { sessionId: id, rev: this.setCurrent(id) };
   }
 
   /**
-   * Puts the current chat on the chosen mode if it runs in another, between turns: a chat from
+   * Puts every open chat on the chosen mode if it runs in another, between turns: a chat from
    * before the mode could be chosen ran in "Ask first" (or Codex's read only), and none chosen is auto.
    */
   async alignMode(): Promise<void> {
-    const id = await this.current();
-    if (!id) return;
+    for (const id of await this.chats()) await this.alignOne(id).catch((e) => this.ctx.log(`couldn't set ${id}'s mode: ${(e as Error).message}`));
+  }
+
+  private async alignOne(id: string): Promise<void> {
     const look = await this.ctx.sessions.open(id).catch(() => undefined);
     if (!look || look.status !== "idle") return;
     const { harness, mode } = await this.settings();
@@ -483,12 +528,14 @@ export class HomeAgent {
   }
 
   /**
-   * Keeps `asked` for every chat to come, and puts the current chat on it: the model at once,
+   * Keeps `asked` for every chat to come, and puts the chat in view (`sessionId`, an open tab; else
+   * the current one) on it: the model at once,
    * Claude's source from its next start (the same session), and anything else (another harness, or
    * a Codex source, which needs a new thread) by a move, a new chat with the whole conversation.
    * The move needs the chat idle; until something is applied nothing is saved.
    */
   async set(asked: unknown): Promise<{ sessionId?: string; settings: HomeAgentSettings; rev: number }> {
+    const inView = (asked as { sessionId?: unknown } | undefined)?.sessionId;
     const next = settingsOf(asked);
     if (!next) throw new Error("Pick an agent and a source.");
     if (!this.harnesses().includes(next.harness)) throw new Error(`${HARNESS_LABELS[next.harness]} can't run the Home agent on this runner.`);
@@ -503,7 +550,7 @@ export class HomeAgent {
       if (!deployments[0]) throw new Error("Add an Azure deployment in Credentials first.");
       next.model = deployments[0];
     }
-    let id = await this.current();
+    let id = typeof inView === "string" && this.state.tabs.includes(inView) ? await this.follow(inView).catch(() => undefined) : await this.current();
     if (id) {
       const look = await this.ctx.sessions.open(id);
       const s = this.ctx.sessions;
@@ -531,18 +578,22 @@ export class HomeAgent {
   }
 
   /**
-   * `/new` and `/clear`: no current chat, so the next message starts a fresh one with none of this
-   * one's context. This one is stopped if it runs, and the sessions it started go on without it:
-   * a report would wake a chat nobody sees.
+   * Closes a tab (none: the current one; `/new` and `/clear` from a Home from before tabs): the chat
+   * is archived, its history kept. It's stopped if it runs, and the sessions it started go on
+   * without it: a report would wake a chat nobody sees. Watch reports go to the newest tab left.
    */
-  async clear(): Promise<{ rev: number }> {
-    const old = this.state.current;
-    if (old) {
-      for (const c of Object.values(this.state.children)) if (c.chat === old && !c.released) c.released = "cleared";
-      const look = this.ctx.session(old);
-      if (look && look.status !== "idle") await this.ctx.sessions.interrupt(old).catch((e) => this.ctx.log(`couldn't stop ${old}: ${(e as Error).message}`));
-    }
-    return { rev: this.setCurrent(undefined) };
+  async close(sessionId?: unknown): Promise<{ rev: number }> {
+    const old = typeof sessionId === "string" && sessionId ? sessionId : this.state.current;
+    if (!old || (!this.isChat(old) && !this.state.tabs.includes(old))) return { rev: this.state.rev };
+    for (const c of Object.values(this.state.children)) if (c.chat === old && !c.released) c.released = "cleared";
+    const look = this.ctx.session(old);
+    if (look && look.status !== "idle") await this.ctx.sessions.interrupt(old).catch((e) => this.ctx.log(`couldn't stop ${old}: ${(e as Error).message}`));
+    this.state.tabs = this.state.tabs.filter((t) => t !== old);
+    if (this.state.current === old) this.state.current = this.state.tabs.at(-1);
+    const rev = this.announce();
+    // Nothing stored yet (never sent to): there's nothing to archive.
+    if (look || (await this.ctx.sessions.open(old).catch(() => undefined))) await this.ctx.sessions.setArchived(old, true).catch((e) => this.ctx.log(`couldn't archive ${old}: ${(e as Error).message}`));
+    return { rev };
   }
 
   /** Whether `id` is one of the Home agent's own chats. */
@@ -688,7 +739,7 @@ export class HomeAgent {
                 : c.released === "limit"
                   ? "You've stopped following it (report limit)."
                   : c.released === "cleared"
-                    ? "Your chat was cleared; you've stopped following it."
+                    ? "Your chat was closed; you've stopped following it."
                     : `${whose}. Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
             prompt ? `Latest prompt:\n${cut(prompt, STATUS_MAX)}` : "",
             reply ? `Latest reply:\n${cut(reply, STATUS_MAX)}` : "No reply yet.",
@@ -1044,8 +1095,12 @@ export class HomeAgent {
     await this.report(id, c, `${await this.describe(id)} is waiting for the person: ${what}. Only they can answer it, in that session. Tell them in one casual sentence.`);
   }
 
-  /** Someone typed into a session the agent follows: it's theirs from now. Tether's own message going in starts the agent's turn. */
+  /**
+   * Someone typed into a session the agent follows: it's theirs from now. Tether's own message going
+   * in starts the agent's turn. The person writing in a chat makes it the one watch reports go to.
+   */
   personSpoke(id: string, msg: Msg) {
+    if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER)) && this.state.tabs.includes(id)) this.touched(id);
     const c = this.state.children[id];
     if (!c || c.released || msg.role !== "user") return;
     // A harness that hasn't parsed the marker yet shows Tether's own text as it was sent.
@@ -1073,16 +1128,18 @@ export const homeAgentModule: Module = {
     const unset = () => unsets.forEach((f) => f());
 
     ctx.ops.register("homeAgent", async () => {
+      const chats = await agent.chats();
       const sessionId = await agent.current();
-      return { ...(sessionId ? { sessionId } : {}), folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
+      return { ...(sessionId ? { sessionId } : {}), chats, folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
     });
     ctx.ops.register("homeAgentSet", (a) => agent.set(a));
     ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));
     ctx.ops.register("homeAgentCheckIn", (a) => agent.checkInFromHome((a ?? {}) as { start?: boolean; dismiss?: boolean }));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
-    ctx.ops.register("homeAgentClear", () => agent.clear());
+    ctx.ops.register("homeAgentClear", () => agent.close());
+    ctx.ops.register("homeAgentClose", (a) => agent.close((a as { sessionId?: unknown } | undefined)?.sessionId));
     // A chat from before modes could be chosen takes the chosen one (auto) once the runner is up.
-    void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chat's mode: ${(e as Error).message}`));
+    void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chats' mode: ${(e as Error).message}`));
 
     const offs = [
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void agent.turnEnded(sessionId, error, stopped)),

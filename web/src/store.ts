@@ -57,7 +57,7 @@ interface State {
   pushKey?: string;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
-  /** each runner's Home agent chat (none: the next message starts one), newest `rev` wins */
+  /** each runner's Home agent tabs and current chat (none: the next message starts one), newest `rev` wins */
   homeChats: Record<string, HomeChatUpdate>;
   /** each runner's "Watch all sessions" and the sessions its Home agent follows (homeAgentWatch) */
   homeWatch: Record<string, Watching>;
@@ -139,7 +139,14 @@ export function start() {
       }
   });
   // Another device started a Home chat or cleared it (/new): this one's Home follows.
-  on("homeChat", ({ runnerId, sessionId, rev }) => noteHomeChat(runnerId, { sessionId, rev }));
+  on("homeChat", ({ runnerId, sessionId, chats, rev }) => {
+    noteHomeChat(runnerId, { sessionId, rev, ...(chats ? { chats } : {}) });
+    // A server from before tabs passes no list on: the runner is asked for it.
+    if (!chats)
+      void rpc(runnerId, "homeAgent", {})
+        .then((r) => noteHomeChat(runnerId, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}) }))
+        .catch(() => {});
+  });
   on("event", (m) => {
     const entry = models.get(key(m.runnerId, m.sessionId));
     if (!entry) return;
@@ -283,11 +290,12 @@ export async function setArchived(runnerId: string, sessionId: string, archived:
   set({ archiveEdit: { runnerId, sessionId, archived } });
 }
 
-/** A runner's Home agent chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
+/** A runner's Home agent tabs and current chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
 export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
   const cur = get().homeChats[runnerId];
-  if (cur && cur.rev >= u.rev) return;
-  set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}) } } }));
+  // The same rev with the tabs (asked for after a broadcast that came without them) fills them in.
+  if (cur && (cur.rev > u.rev || (cur.rev === u.rev && (cur.chats || !u.chats)))) return;
+  set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}), ...(u.chats ? { chats: u.chats } : {}) } } }));
 }
 
 /** What a runner's Home agent watches (a homeAgentWatch answer). */
