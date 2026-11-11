@@ -4,7 +4,7 @@
 
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { CloneStatus, FolderList } from "../../../shared/protocol";
+import type { ActiveClone, CloneStatus, FolderList } from "../../../shared/protocol";
 import { parseRepo } from "../../../shared/repo";
 import { expandPath } from "./sessions";
 
@@ -78,6 +78,8 @@ const KEEP_MS = 10 * 60_000;
 
 interface Job {
   status: CloneStatus;
+  /** as typed, for a dialog that picks the clone back up */
+  repo?: string;
   kill?: () => void;
 }
 
@@ -104,10 +106,15 @@ export class CloneJobs {
       this.finish(cloneId, { state: "done", path: dest, percent: 100 });
       return { cloneId };
     }
-    const job: Job = { status: { state: "running", path: dest, phase: "Connecting" } };
+    const job: Job = { status: { state: "running", path: dest, phase: "Connecting" }, repo: repo.trim() };
     this.jobs.set(cloneId, job);
     void this.run(job, url, dest);
     return { cloneId };
+  }
+
+  /** The clones still running, so a dialog opened again can follow one. */
+  active(): ActiveClone[] {
+    return [...this.jobs].filter(([, j]) => j.status.state === "running").map(([cloneId, j]) => ({ cloneId, repo: j.repo ?? "", status: j.status }));
   }
 
   status(cloneId: string): CloneStatus {
