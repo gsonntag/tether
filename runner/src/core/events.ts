@@ -12,7 +12,7 @@ export interface CoreEvents {
   turnEnded: { sessionId: string; error?: string; stopped?: boolean };
   message: { sessionId: string; msg: Msg };
   /** a waiting message left the queue: it went out to the harness, or was cancelled */
-  queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled" };
+  queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled"; text: string };
   toolCall: { sessionId: string; msgId: string; tool: ToolPart };
   requestOpened: { request: Request };
   /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseSessionMessage, tetherOrigin } from "../../../../shared/fromTether";
+import { parseSessionMessage, peerHops, tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
 import { classifyTool } from "../../adapters/toolKind";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
@@ -139,7 +139,7 @@ describe("tools", () => {
     const { peers, queued, recent } = setup([row("claude:a", "Alpha"), row("claude:b", "Beta")]);
     const p = peers.ask("claude:a", "claude:b", "2+2?", 15);
     await Bun.sleep(1);
-    peers.queueGone("claude:b", queued[0]!.id, "sent");
+    peers.queueGone("claude:b", queued[0]!.id, "sent", queued[0]!.text);
     recent.set("claude:b", [
       { id: "u", role: "user", ts: 1, origin: { kind: "session", sessionId: "claude:a" }, parts: [{ type: "text", text: "2+2?" }] },
       { id: "x", role: "assistant", ts: 2, parts: [{ type: "text", text: "4" }] },
@@ -151,16 +151,16 @@ describe("tools", () => {
     const { peers, queued } = setup([row("claude:a", "Alpha"), row("claude:b", "Beta")]);
     const p1 = peers.ask("claude:a", "claude:b", "q1", 15);
     await Bun.sleep(1);
-    peers.queueGone("claude:b", queued[0]!.id, "cancelled");
+    peers.queueGone("claude:b", queued[0]!.id, "cancelled", queued[0]!.text);
     expect((await p1).text).toMatch(/Not delivered/);
     const p2 = peers.ask("claude:a", "claude:b", "q2", 15);
     await Bun.sleep(1);
-    peers.queueGone("claude:b", queued[1]!.id, "sent");
+    peers.queueGone("claude:b", queued[1]!.id, "sent", queued[1]!.text);
     await peers.turnEnded("claude:b", "boom");
     expect((await p2).text).toMatch(/failed: boom/);
     const p3 = peers.ask("claude:a", "claude:b", "q3", 15);
     await Bun.sleep(1);
-    peers.queueGone("claude:b", queued[2]!.id, "sent");
+    peers.queueGone("claude:b", queued[2]!.id, "sent", queued[2]!.text);
     await peers.turnEnded("claude:b", undefined, true);
     expect((await p3).text).toMatch(/stopped/);
   });
@@ -171,7 +171,7 @@ describe("tools", () => {
     for (let i = 1; i <= MAX_HOPS; i++) {
       const r = await peers.send(from, to, `ping ${i}`);
       expect(r.isError).toBeFalsy();
-      peers.queueGone(to, queued.at(-1)!.id, "sent");
+      peers.queueGone(to, queued.at(-1)!.id, "sent", queued.at(-1)!.text);
       [from, to] = [to, from];
     }
     const refused = await peers.send(from, to, "one more");
@@ -180,6 +180,22 @@ describe("tools", () => {
     peers.message(from, { id: "p", role: "user", ts: 0, parts: [{ type: "text", text: "carry on" }] });
     expect((await peers.send(from, to, "again")).isError).toBeFalsy();
   });
+  test("hops come from the queued message, so they survive a restart; a turn's end clears them", async () => {
+    const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B")]);
+    peers.caps.turnFrom("claude:a", { hops: 2 });
+    await peers.send("claude:a", "claude:b", "x");
+    expect(peerHops(queued[0]!.text)).toBe(3);
+    expect(parseSessionMessage(queued[0]!.text)?.text).toBe("x");
+    // A new runner: nothing in memory, the message still queued.
+    const { peers: after } = setup([row("claude:a", "A"), row("claude:b", "B")]);
+    after.queueGone("claude:b", "q-old", "sent", queued[0]!.text);
+    expect(after.caps.hopsFrom("claude:b")).toBe(4);
+    await after.turnEnded("claude:b");
+    expect(after.caps.hopsFrom("claude:b")).toBe(1);
+    // A broadcast's turn stays one, across a restart too.
+    after.queueGone("claude:b", "q-all", "sent", '[From session "A" (claude:a) to all] hi\n\n[Tether: hop 1. note]');
+    expect(after.caps.checkBroadcast("claude:b")).toMatch(/can't send one to all/);
+  });
   test("broadcast: everyone else matching, once; a receiver can't pass it on", async () => {
     const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B"), row("codex:c", "C", { projectPath: "/p/other" }), row("claude:d", "D", { archived: true })]);
     const r = await peers.broadcastFrom("claude:a", "main moved", { project: "app" });
@@ -187,7 +203,7 @@ describe("tools", () => {
     expect(queued.map((q) => q.to)).toEqual(["claude:b"]);
     expect(parseSessionMessage(queued[0]!.text)?.all).toBe(true);
     expect((await peers.broadcastFrom("claude:a", "again", {})).isError).toBe(true);
-    peers.queueGone("claude:b", queued[0]!.id, "sent");
+    peers.queueGone("claude:b", queued[0]!.id, "sent", queued[0]!.text);
     expect((await peers.broadcastFrom("claude:b", "relay", {})).text).toMatch(/can't send one to all/);
   });
   test("Send to all from the person: as their own words, filtered, archived left out", async () => {

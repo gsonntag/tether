@@ -6,12 +6,12 @@
 // capped instead (caps.ts). The person's own "Send to all" is the `broadcast` op.
 
 import { join } from "node:path";
-import { defang, markTitle, sessionMessage } from "../../../../shared/fromTether";
+import { defang, markTitle, parseSessionMessage, peerHops, sessionMessage } from "../../../../shared/fromTether";
 import { MESSAGE_TEXT_MAX } from "../../../../shared/limits";
 import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord, type BroadcastFilter } from "../../../../shared/peers";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import type { Module, ModuleContext } from "..";
-import { BROADCAST_MAX, PeerCaps, type Hop } from "./caps";
+import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
 
@@ -55,8 +55,6 @@ interface Ask {
 
 export class Peers {
   readonly caps: PeerCaps;
-  /** peer messages still in a queue: the hop they carry */
-  private waiting = new Map<string, Hop>();
   private asks: Ask[] = [];
 
   constructor(
@@ -70,11 +68,13 @@ export class Peers {
 
   // ---------------- events ----------------
 
-  /** A message left a queue (core event queueGone). */
-  queueGone(sessionId: string, msgId: string, how: "sent" | "cancelled") {
-    const hop = this.waiting.get(msgId);
-    this.waiting.delete(msgId);
-    if (hop && how === "sent") this.caps.turnFrom(sessionId, hop);
+  /**
+   * A message left a queue (core event queueGone). One from another session starts a turn with the
+   * hops its hint carries (so a message queued before a restart keeps them).
+   */
+  queueGone(sessionId: string, msgId: string, how: "sent" | "cancelled", text = "") {
+    const peer = parseSessionMessage(text);
+    if (peer && how === "sent") this.caps.turnFrom(sessionId, { hops: peerHops(text) ?? 1, ...(peer.all ? { broadcast: true } : {}) });
     const ask = this.asks.find((a) => a.msgId === msgId);
     if (!ask) return;
     if (how === "sent") ask.delivered = true;
@@ -90,6 +90,8 @@ export class Peers {
 
   /** A turn ended: the oldest delivered question to that session has its answer. */
   async turnEnded(sessionId: string, error?: string, stopped?: boolean) {
+    // Whatever starts its next turn says where that one comes from.
+    this.caps.turnFrom(sessionId);
     const ask = this.asks.find((a) => a.to === sessionId && a.delivered);
     if (!ask) return;
     if (stopped) return this.finish(ask, { text: `The person stopped ${this.name(sessionId)}'s turn before it answered.`, isError: true });
@@ -207,9 +209,8 @@ export class Peers {
   }
 
   /** Puts a peer message in `to`'s queue; says where it stands. */
-  private async deliver(from: string, to: SessionSummary, body: string, hop: Hop): Promise<{ msgId: string; where: string; terminal: boolean }> {
+  private async deliver(to: SessionSummary, body: string): Promise<{ msgId: string; where: string; terminal: boolean }> {
     const { id } = await this.ctx.sessions.queue(to.id, body);
-    this.waiting.set(id, hop);
     const look = await this.ctx.sessions.open(to.id).catch(() => undefined);
     const agent = AGENT_NAMES[to.harness as HarnessId] ?? "It";
     const terminal = look?.state.mode === "terminal";
@@ -229,12 +230,12 @@ export class Peers {
     const why = this.caps.check(from, t.id, "send");
     if (why) return this.refused(from, why);
     // Reserved before anything waits (and given back if it doesn't go).
-    const hop = { hops: this.caps.hopsFrom(from) };
+    const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
     const d = await (async () => {
       const me = await this.sender(from);
-      const body = sessionMessage(me, text, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`);
-      return this.deliver(from, t, body, hop);
+      const body = sessionMessage(me, text, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`, false, hops);
+      return this.deliver(t, body);
     })().catch((e) => {
       undo();
       throw e;
@@ -249,7 +250,7 @@ export class Peers {
     if (why) return this.refused(from, why);
     // Reserved before anything waits, so two asks side by side see each other (a cycle, the open
     // asks, the rate); given back if it doesn't go.
-    const hop = { hops: this.caps.hopsFrom(from) };
+    const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
     const close = this.caps.open(from, t.id);
     const d = await (async () => {
@@ -258,7 +259,7 @@ export class Peers {
       const hint = terminal
         ? `a question from another session, not the person. Answer it with tether_send to "${from}".`
         : "a question from another session, not the person. Your final reply this turn goes back to it automatically.";
-      return this.deliver(from, t, sessionMessage(me, text, hint), hop);
+      return this.deliver(t, sessionMessage(me, text, hint, false, hops));
     })().catch((e) => {
       undo();
       close();
@@ -300,15 +301,15 @@ export class Peers {
     if (!targets.length) return { text: "No other session matches, so nothing was sent." };
     if (targets.length > BROADCAST_MAX) return this.refused(from, `${targets.length} sessions match (at most ${BROADCAST_MAX} at once). Narrow it with project or status.`);
     // Reserved before anything waits; given back if it reached nobody.
-    const hop = { hops: this.caps.hopsFrom(from), broadcast: true };
+    const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from, true);
     const me = await this.sender(from);
-    const body = sessionMessage(me, text, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`, true);
+    const body = sessionMessage(me, text, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`, true, hops);
     const sent: string[] = [];
     const failed: string[] = [];
     for (const t of targets) {
       try {
-        await this.deliver(from, t, body, hop);
+        await this.deliver(t, body);
         sent.push(`- ${t.id} ("${markTitle(t.title)}")`);
       } catch (e) {
         failed.push(`- ${t.id} ("${markTitle(t.title)}"): ${(e as Error).message}`);
@@ -373,7 +374,7 @@ export const peersModule: Module = {
       }),
     );
     const offs = [
-      ctx.bus.on("queueGone", ({ sessionId, msgId, how }) => peers.queueGone(sessionId, msgId, how)),
+      ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void peers.turnEnded(sessionId, error, stopped)),
     ];

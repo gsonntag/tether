@@ -730,7 +730,7 @@ Only the owner can run one (the same auth as sending).
 An agent can message or ask another session on its runner, Claude Code or Codex, and send a note
 to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
 (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
-event and the queued message's id from `SessionActions.queue`.
+event (with the message's text) and the queued message's id from `SessionActions.queue`.
 
 - **Reach.** `tether_sessions`, titles and broadcasts cover what the lists show (`SessionActions.list`:
   the last 3 days and every live session); an explicit id reaches an older session too (opened
@@ -774,9 +774,12 @@ event and the queued message's id from `SessionActions.queue`.
   returns at once. A runner restart ends an open ask with an error (the MCP server can't reach the
   runner); the question stays queued.
 - **Caps** (`caps.ts`): no messages to itself; a message carries hops (the sender's turn's + 1,
-  where a turn started by the person or Tether is 0) and the 5th in a chain is refused; 10 messages
+  where a turn started by the person or Tether is 0; written in its hint, `hop N.`, so a message
+  queued across a restart keeps them, and a turn's end forgets them) and the 5th in a chain is refused; 10 messages
   per sender per 10 minutes; 3 open asks; an ask to a session that waits (directly or through others)
   on the asker is refused; one broadcast per 10 minutes, and none from a turn a broadcast started.
+  A message is counted (and an ask opened) right after the check, before anything waits, so calls
+  side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
 - **Send to all (the person).** "Send to all" beside Home's Sessions heading and the sidebar's
   Recent heading opens a dialog: project, agent and status pickers (default: every non-archived
