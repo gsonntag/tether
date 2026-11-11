@@ -15,7 +15,7 @@
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
-// wording), a request's in plain words with no raw command (describe.ts, summary.ts); known secrets
+// wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
 // are redacted. Tether's own words read like a human's: "[6] ok", one
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
 // passed on (texts.ts has the whole rule).
@@ -248,7 +248,7 @@ export class Texter {
     // A request's text always has it: the full command is there, not in the text.
     const link = !!o.link || (!quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS);
     if (link) this.linked.set(sessionId, at);
-    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body, requestId);
+    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n${this.url(sessionId)}` : body, requestId);
     const { sent, id } = await this.send(text);
     if (id) this.router.noteSent(id, sessionId, requestId);
     this.store.save();

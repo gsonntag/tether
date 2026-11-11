@@ -1,6 +1,6 @@
 // Plain-English summaries for request texts (SPEC §11 Texting): a person reading a text on their phone
-// gets what the agent wants to do and why it was flagged, in words, never the raw command or the
-// harness's warning. Deterministic: the tool call's own `description` (Claude Code's Bash tool has
+// gets what the agent wants to do, as the end of "Can I …?", never the raw command or the harness's
+// warning. Deterministic: the tool call's own `description` (Claude Code's Bash tool has
 // one) when there is one, else a reading of the command's programs, the riskiest first. The full
 // command stays in Tether, where the text's link opens the request.
 
@@ -25,7 +25,7 @@ function gitAct(args: string[]): Act {
     case "clean":
       return { risk: 0, words: "delete untracked files" };
     case "worktree":
-      return rest[0] === "remove" ? { risk: 1, words: "remove a worktree (a temporary copy of the code)" } : rest[0] === "add" ? { risk: 3, words: "make a worktree (a temporary copy of the code)" } : { risk: 5, words: "check worktrees" };
+      return rest[0] === "remove" ? { risk: 1, words: "clean up a worktree" } : rest[0] === "add" ? { risk: 3, words: "make a worktree" } : { risk: 5, words: "check worktrees" };
     case "branch":
       return has("-D") || has("-d") ? { risk: 2, words: "delete a branch" } : { risk: 5, words: "check branches" };
     case "commit":
@@ -167,7 +167,8 @@ function worktreeOf(command: string): string | undefined {
 export function commandWords(command: string, description?: string): string {
   const tree = worktreeOf(command);
   const where = tree ? ` (in the ${tree} worktree)` : "";
-  if (description?.trim()) return `${lowerFirst(bare(description))}${tree && !description.includes(tree) ? where : ""}`;
+  // The agent's own words for it.
+  if (description?.trim()) return lowerFirst(bare(description));
   const acts: Act[] = [];
   const unknown: string[] = [];
   for (const { prog, args } of programs(command)) {
@@ -176,30 +177,13 @@ export function commandWords(command: string, description?: string): string {
       if (!acts.some((x) => x.words === a.words)) acts.push(a);
     } else if (!unknown.includes(prog) && /^[\w.+-]{1,30}$/.test(prog)) unknown.push(prog);
   }
-  let shown = acts.sort((a, b) => a.risk - b.risk).filter((a, i) => i < 2 || a.risk <= 1).slice(0, 3).map((a) => a.words);
-  // The worktree it names, said where the worktree is ("remove the hide-checkin worktree (…)").
-  let at = where;
-  if (tree && shown.some((w) => w.includes("a worktree"))) {
-    shown = shown.map((w) => w.replace("a worktree", `the ${tree} worktree`));
-    at = "";
-  }
+  const shown = acts.sort((a, b) => a.risk - b.risk).filter((a, i) => i < 2 || a.risk <= 1).slice(0, 3).map((a) => a.words);
+  // Removing a worktree it names is the point: the deletes around it are part of the cleanup.
+  if (tree && shown.includes("clean up a worktree")) return `clean up the ${tree} worktree`;
+  const at = where;
   if (!shown.length) return unknown.length ? `run ${unknown.slice(0, 2).join(" and ")}${at}` : `run a shell command${at}`;
   const said = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]!;
   return `${said}${at}`;
-}
-
-/** Why the harness flagged it, in plain words ("it deletes files"); undefined when it's nothing a person needs. Never the warning itself. */
-export function flagWords(reason: string | undefined, command = ""): string | undefined {
-  const r = `${reason ?? ""}`.toLowerCase();
-  if (!r.trim()) return undefined;
-  if (/\brm\b|delet|remov|destroy|unlink/.test(r) || (/danger/.test(r) && /\brm\b/.test(command))) return "it deletes files";
-  if (/force|overwrite|discard|reset --hard/.test(r)) return "it can overwrite work";
-  if (/sudo|root|privilege|admin/.test(r)) return "it runs as admin";
-  if (/network|internet|curl|wget|download|http/.test(r)) return "it uses the internet";
-  if (/outside|working director|workspace|sandbox|write access|writable/.test(r)) return "it reaches outside the project folder";
-  if (/operator|substitution|redirect|pipe|compound|subshell|variable|expan|complex|multiple commands|chain/.test(r)) return "it's a complex command";
-  if (/danger|risky|destructive/.test(r)) return "it could be risky";
-  return undefined;
 }
 
 /** A path's last two parts ("src/app.css"): enough to recognize on a phone. */
