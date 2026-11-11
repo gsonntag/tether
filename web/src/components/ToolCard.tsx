@@ -4,6 +4,7 @@ import { memo, type ReactNode } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { peerAction } from "../../../shared/peers";
 import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { rpc } from "../connection";
@@ -172,6 +173,59 @@ export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
   }
 }
 
+/** The session a peer tool names (its id, or a title only one session has), from the runner's list. */
+function usePeerTarget(runnerId: string, to: string | undefined): { id?: string; title?: string } {
+  return useStore((s) => {
+    if (!to) return EMPTY_TARGET;
+    const sessions = s.summaries[runnerId]?.sessions;
+    const byId = sessions?.[to];
+    if (byId) return byId;
+    const lower = to.toLowerCase();
+    return Object.values(sessions ?? {}).find((x) => x.title.toLowerCase() === lower) ?? EMPTY_TARGET;
+  });
+}
+const EMPTY_TARGET = {};
+
+/** A peer tool's card head: what it did, to whom (SPEC §9a). */
+function peerHead(p: ToolPart, title: string | undefined): { label: string; sum: string } {
+  const i = (p.input ?? {}) as Record<string, any>;
+  const who = title ? `“${title}”` : (str(i.to) ?? "");
+  switch (peerAction(p.name)) {
+    case "sessions":
+      return { label: "Looked at sessions", sum: [str(i.project), str(i.query)].filter(Boolean).join(" · ") };
+    case "send":
+      return { label: p.status === "running" ? "Sending to" : p.status === "error" ? "Not sent to" : "Sent to", sum: who };
+    case "ask":
+      return { label: p.status === "running" ? "Asking" : "Asked", sum: who };
+    case "broadcast":
+      return { label: p.status === "error" ? "Not sent to all" : "Sent to all", sum: [str(i.project), str(i.status)].filter(Boolean).join(" · ") };
+    default:
+      return { label: p.name, sum: "" };
+  }
+}
+
+function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?: string } }) {
+  const i = (p.input ?? {}) as Record<string, any>;
+  const { runnerId } = useSessionCtx();
+  const ask = peerAction(p.name) === "ask";
+  return (
+    <>
+      {target.id && (
+        <button type="button" className="t-link" onClick={() => openSession(runnerId, target.id!)}>
+          Open {target.title ? `“${target.title}”` : "it"} <Icon icon={ArrowTopRightOnSquareIcon} size="xsm" />
+        </button>
+      )}
+      {str(i.text) && (
+        <>
+          <span className="t-label">{ask ? "Question" : "Message"}</span>
+          <pre className="t-pre wrap">{i.text}</pre>
+        </>
+      )}
+      <Output text={p.output} label={ask && p.status === "done" ? "Answer" : p.status === "error" ? "Why" : "Result"} />
+    </>
+  );
+}
+
 /** Open by default: diffs and todo lists (what you want to see), and failures. */
 const openByDefault = (p: ToolPart) => p.kind === "edit" || p.kind === "todo" || p.status === "error";
 
@@ -179,7 +233,10 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   const [open, setOpen] = useRowState<boolean | undefined>(`tool:${part.id}`, undefined);
   const isOpen = open ?? openByDefault(part);
   const { runnerId, sessionId } = useSessionCtx();
-  const sum = summary(part, root);
+  const peer = part.kind === "peer";
+  const target = usePeerTarget(runnerId, peer ? str((part.input as any)?.to) : undefined);
+  const head = peer ? peerHead(part, target.title) : undefined;
+  const sum = head ? head.sum : summary(part, root);
   // The call waits on your answer (the requests dock, above the composer).
   const waiting = useStore((s) => part.status === "running" && !!s.views[viewKey(runnerId, sessionId)]?.state?.requests.some((r) => r.toolId === part.id));
   // A background subagent: Claude answers the call at once ("launched") while the subagent runs on,
@@ -197,7 +254,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   return (
     <div className="t-tool" data-kind={part.kind}>
       <button type="button" className="t-tool-head" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
-        <span className="t-tool-name">{part.name}</span>
+        <span className="t-tool-name">{head ? head.label : part.name}</span>
         <span className="t-tool-sum" title={sum}>
           {sum}
         </span>
@@ -214,7 +271,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
       {isOpen && (
         <div className="t-tool-body">
           {background}
-          <ToolDetails p={part} root={root} />
+          {peer ? <PeerDetails p={part} target={target} /> : <ToolDetails p={part} root={root} />}
           {extra}
         </div>
       )}

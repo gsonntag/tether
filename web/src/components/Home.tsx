@@ -74,7 +74,10 @@ function Inbox() {
     <VStack gap={3}>
       <div className="t-inbox-head">
         <Heading level={2}>Sessions</Heading>
-        {unread.length > 1 && <Button label="Mark all read" size="sm" variant="ghost" onClick={() => unread.forEach(markRead)} />}
+        <span className="t-inbox-actions">
+          {unread.length > 1 && <Button label="Mark all read" size="sm" variant="ghost" onClick={() => unread.forEach(markRead)} />}
+          {runners.some((r) => r.online) && <Button label="Send to all" size="sm" variant="ghost" onClick={() => useStore.setState({ sendAllOpen: true })} />}
+        </span>
       </div>
       {rows.length === 0 ? (
         <div className="t-inline-status">Nothing needs you. Finished and failed turns show here until you look at them.</div>
