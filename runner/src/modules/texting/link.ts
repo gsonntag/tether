@@ -7,6 +7,8 @@ export interface Inbound {
   text: string;
   /** the message it answers in a thread */
   replyTo?: string;
+  /** puts a reaction on this message on the person's phone (a tapback; any emoji) */
+  react?: (emoji: string) => Promise<void>;
 }
 
 export interface TextLink {
@@ -47,7 +49,7 @@ export const openSpectrum: OpenLink = async (cfg, onInbound, log) => {
         if (message.direction !== "inbound" || message.timestamp < since) continue;
         if (!message.sender || digits(message.sender.id) !== me) continue;
         const m = inboundOf(message.content);
-        if (m) onInbound(m);
+        if (m) onInbound({ ...m, react: async (emoji) => void (await message.react(emoji)) });
       }
     } catch (e: any) {
       if (!stopped) log(`texting: listener ended: ${e?.message ?? e}`);

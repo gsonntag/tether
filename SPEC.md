@@ -1249,7 +1249,8 @@ with, else to Tether for `n text` naming an open session, else to whoever texted
 silent on a reply that isn't its own. On an open request, `y` allows
 (approves a plan), `n` denies, a letter answers a question, and anything else is the person's words
 to the agent (a denial's reason, which the agent reads and answers). Otherwise a reply is the
-person's own message (`live.tell`, defanged). One runner holds the link; keys live on it
+person's own message (`live.tell`, defanged). A reply passed on gets a ✅ reaction (tapback) on the
+person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the

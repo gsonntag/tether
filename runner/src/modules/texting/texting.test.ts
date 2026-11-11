@@ -151,6 +151,35 @@ describe("texting", () => {
     expect(texts.at(-1)).toBe("Couldn't send to [1]: It's gone.");
   });
 
+  test("a text passed on to its session gets a ✅; an unclear one or a failed send doesn't", async () => {
+    const { t, texts, told, answered, hear, open, sessions } = setup();
+    await t.start();
+    await t.turnEnded("claude:a", "boom");
+    const reacted: string[] = [];
+    const heard = (text: string) => hear({ text, react: async (e) => void reacted.push(`${text} ${e}`) });
+    await heard("hi");
+    expect(told.at(-1)).toEqual(["claude:a", "hi"]);
+    expect(reacted).toEqual(["hi ✅"]);
+    // No text back: the reaction is the only acknowledgment.
+    expect(texts.at(-1)).not.toMatch(/hi/);
+    await open("claude:a", bash());
+    await heard("y");
+    expect(answered.at(-1)?.[2]).toMatchObject({ allow: true });
+    expect(reacted.at(-1)).toBe("y ✅");
+    sessions["claude:a"].requests = [];
+    sessions["claude:a"].state.requests = [];
+    // A failure to forward: a text says why, and no ✅.
+    (t as any).ctx.sessions.tell = async () => { throw new Error("It's gone."); };
+    await heard("still there?");
+    expect(reacted).not.toContain("still there? ✅");
+    // A reaction that fails doesn't turn into a failed send.
+    (t as any).ctx.sessions.tell = async (id: string, text: string) => void told.push([id, text]);
+    const n = texts.length;
+    await hear({ text: "again", react: async () => { throw new Error("no tapbacks"); } });
+    expect(told.at(-1)).toEqual(["claude:a", "again"]);
+    expect(texts.length).toBe(n);
+  });
+
   test("the link: at most every few minutes per session, never on the back-and-forth", async () => {
     const { t, texts, say, hear, clock } = setup();
     await t.start();

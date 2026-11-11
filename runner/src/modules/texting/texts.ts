@@ -6,8 +6,8 @@
 // - Never say that something works, passed or was verified.
 // - Nothing to add: just "ok" (OK below), or better, nothing at all.
 // - No acknowledgments after passing a reply on to a session ("Sent", "→ my-app", "Got it, the
-//   session is doing X"): the session answers for itself. A forwarded reply sends no text back;
-//   only a failure to forward does.
+//   session is doing X"): the session answers for itself. A forwarded reply sends no text back,
+//   just a ✅ reaction on it (index.ts READ); only a failure to forward sends a text.
 // - A text is just its session's number and the message ("[6] ok"): no folder, no agent label.
 // - The session's link in Tether goes along at most every LINK_EVERY_MS (index.ts) per session, and
 //   never on the back-and-forth of a texted conversation.
