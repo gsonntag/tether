@@ -8,6 +8,74 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
 import { upstreamFailure, upstreamHeaders, upstreamUrl } from "./upstream";
+import { safeRetryAt } from "../../rateLimit";
+
+const SAFE_ERROR_CODES = new Map<string, string>([
+  ...["rate_limit_error", "rate_limit_exceeded", "rateLimitExceeded", "responseTooManyFailedAttempts", "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached", "usage_limit_exceeded", "unauthorized", "authentication_error", "invalid_api_key"].map((x): [string, string] => [x.toLowerCase(), x]),
+]);
+
+/** Read at most max bytes from an untrusted provider error, then cancel the rest. */
+export async function readErrorPrefix(body: ReadableStream<Uint8Array> | null, max = 16 * 1024, signal?: AbortSignal, timeoutMs = 1_500): Promise<string> {
+  if (!body) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { timedOut = true; reject(new Error("Provider error body timed out")); }, timeoutMs);
+    timer.unref?.();
+  });
+  const aborted = signal && new Promise<never>((_, reject) => {
+    if (signal.aborted) reject(signal.reason ?? new Error("Request aborted"));
+    else {
+      onAbort = () => reject(signal.reason ?? new Error("Request aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  try {
+    while (size < max) {
+      const { value, done } = await Promise.race([reader.read(), timeout, ...(aborted ? [aborted] : [])]);
+      if (done || !value) break;
+      const take = value.subarray(0, max - size);
+      chunks.push(take); size += take.length;
+      if (take.length !== value.length || size >= max) break;
+    }
+  } catch (error) {
+    if (!timedOut) throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    void reader.cancel().catch(() => {});
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return new TextDecoder().decode(bytes);
+}
+
+export function safeProviderErrorCode(body: any): string | undefined {
+  const candidates = [body?.error?.code, body?.error?.type, body?.code, body?.type];
+  for (const value of candidates) if (typeof value === "string") {
+    const safe = SAFE_ERROR_CODES.get(value.toLowerCase());
+    if (safe) return safe;
+  }
+  // Recognize common quota/billing messages inside the bounded provider body, but return only a
+  // canonical code. Provider text (which may echo credentials) never reaches the daemon.
+  const message = typeof body?.error?.message === "string" ? body.error.message : typeof body?.message === "string" ? body.message : "";
+  if (/\b(?:insufficient|exceeded|out of|over)\s+(?:(?:the|your)\s+)?(?:current\s+)?quota\b|\bquota\s+(?:exceeded|limit|reached)\b|\bbilling\s+(?:hard\s+)?limit\b/i.test(message)) return "insufficient_quota";
+  return undefined;
+}
+
+export function retryAtFromHeaders(headers: Headers, now = Date.now()): number | undefined {
+  const normal = safeRetryAt(headers.get("retry-after"), now);
+  if (normal) return normal;
+  const ms = headers.get("retry-after-ms");
+  if (!ms || !/^\d+(?:\.\d+)?$/.test(ms.trim())) return undefined;
+  const at = now + Number(ms.trim());
+  return Number.isFinite(at) && at > now ? at : undefined;
+}
 
 /** A streaming redactor holds a possible partial key across network chunk boundaries. */
 export function redactStream(key: string): TransformStream<Uint8Array, Uint8Array> {
@@ -99,9 +167,22 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
           // Providers sometimes repeat a partly masked key in auth errors. Do not forward any
           // provider error body or headers into native logs, even when the full key is absent.
           if (inference && (upstream.status === 401 || upstream.status === 403)) ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
-          await upstream.body?.cancel().catch(() => {});
+          let providerError: any;
+          if (upstream.status === 429) {
+            const prefix = await readErrorPrefix(upstream.body, 16 * 1024, req.signal);
+            try { providerError = JSON.parse(prefix); } catch {}
+          } else await upstream.body?.cancel().catch(() => {});
           const message = upstreamFailure(source, upstream.status);
-          return Response.json({ error: { message, type: upstream.status === 429 ? "rate_limit_error" : "api_error" } }, { status: upstream.status });
+          const code = upstream.status === 429 ? safeProviderErrorCode(providerError) : undefined;
+          const retryAt = upstream.status === 429 ? retryAtFromHeaders(upstream.headers) : undefined;
+          const headers = new Headers();
+          if (retryAt) {
+            const ms = Math.max(1, retryAt - Date.now());
+            headers.set("retry-after", String(Math.max(1, Math.ceil(ms / 1000))));
+            headers.set("retry-after-ms", String(ms));
+          }
+          const fatal = code && ["insufficient_quota", "quota_exceeded", "billing_hard_limit_reached", "usage_limit_exceeded", "unauthorized", "authentication_error", "invalid_api_key"].includes(code.toLowerCase());
+          return Response.json({ error: { message, type: upstream.status === 429 && !fatal ? "rate_limit_error" : "api_error", ...(code ? { code } : {}), ...(retryAt ? { retry_at: retryAt } : {}) } }, { status: upstream.status, headers });
         }
         const out = new Headers(upstream.headers);
         for (const h of ["content-length", "content-encoding", "transfer-encoding", "connection"]) out.delete(h);

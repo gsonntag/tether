@@ -14,6 +14,7 @@ export const DAEMON_SOCKET = process.env.CODEX_DAEMON_SOCKET || join(CODEX_HOME,
 
 export interface RpcError extends Error {
   code?: number;
+  data?: unknown;
 }
 
 /**
@@ -76,6 +77,7 @@ export class CodexRpc {
       if (m.error) {
         const e: RpcError = new Error(m.error.message ?? JSON.stringify(m.error));
         e.code = m.error.code;
+        e.data = m.error.data;
         w.rej(e);
       } else w.res(m.result);
       return;

@@ -711,6 +711,40 @@
 .t-inline-status.error {
   color: var(--color-text-red, var(--color-error));
 }
+.t-retry-status {
+  flex: none;
+  border-top: 1px solid var(--t-border);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--t-muted);
+  font-size: 13px;
+}
+.t-retry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.t-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 520px) {
+  .t-retry-status {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
 
 /* ---------- new session ---------- */
 

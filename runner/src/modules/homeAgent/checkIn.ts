@@ -58,6 +58,7 @@ export function skipReason(row: SessionSummary, look: SessionLook | undefined): 
   if (!look) return row.status === "idle" ? undefined : "it's running a turn";
   if (look.requests.length) return "it's waiting for the person";
   if (look.status !== "idle") return "it's running a turn";
+  if (look.state.retry) return "it's waiting to retry after a rate limit";
   if (look.state.queue.length || look.state.queueHeld) return "it has messages queued";
   if (look.busy) return "it has work running";
   return undefined;

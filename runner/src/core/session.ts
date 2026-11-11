@@ -10,10 +10,15 @@ import { capState } from "../../../shared/limits";
 import { repeatsError } from "../../../shared/notices";
 import { Transcript } from "./transcript";
 import { redactValue } from "../credentials";
+import type { SavedRetry } from "./retryPolicy";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 
 export class Session {
+  retry?: SavedRetry;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  rateHit?: { retryAt?: number };
+  retrySuppressed = false;
   readonly id: string;
   summary: SessionSummary;
   state: LiveState;
@@ -56,7 +61,7 @@ export class Session {
   renewing?: Promise<Session>;
   /** the send that is starting the harness or handing it the message (a token per send) */
   sending?: object;
-  /** the message that started the running turn, for a resend when the plan runs out (live.ts planOut) */
+  /** The message that started the turn, for a safe resend after throttling or plan exhaustion. */
   lastSend?: { text: string; attachments: Attachment[]; tether?: boolean };
   /** this turn ran a tool or took a steer: resending it could repeat them */
   turnActed = false;

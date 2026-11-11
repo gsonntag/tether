@@ -334,7 +334,7 @@ export const textingModule: Module = {
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void (!stopped && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
     ];
     const status = () => store.status(t);
     ctx.ops.register("textingStatus", () => status());

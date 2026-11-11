@@ -773,7 +773,8 @@ export class HomeAgent implements HomeEnd {
     const revived = !!look.summary.archived;
     if (revived) await s.setArchived(id, false);
     // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
-    const behind = look.status !== "idle" || look.state.queue.length > 0;
+    // A rate limit retry waiting is the previous turn, not over yet.
+    const behind = look.status !== "idle" || look.state.queue.length > 0 || !!look.state.retry;
     const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
     if (behind) next.queued = true;
     this.state.children[id] = next;
@@ -1340,7 +1341,8 @@ export const homeAgentModule: Module = {
     void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chats' mode: ${(e as Error).message}`));
 
     const offs = [
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void agent.turnEnded(sessionId, error, stopped)),
+      // A rate-limit retry is still that turn: no report, answer or failure until it really ends.
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && agent.turnEnded(sessionId, error, stopped))),
       ctx.bus.on("message", ({ sessionId, msg }) => agent.personSpoke(sessionId, msg)),
       ctx.bus.on("requestOpened", ({ request }) => void agent.needsPerson(request.sessionId, request.title || request.question || (request.tool ? `permission for ${request.tool}` : "a question"))),
       ctx.bus.on("attention", ({ sessionId, message }) => void agent.needsPerson(sessionId, message || "in its terminal")),

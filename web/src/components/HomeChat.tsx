@@ -24,6 +24,7 @@ import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
 import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
+import { RateLimitRetry } from "./RateLimitRetry";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
 import { HomeWaiting } from "./HomeWaiting";
@@ -290,6 +291,15 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
         />
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={view.session?.projectPath} />
         <QueueList runnerId={runnerId} sessionId={sessionId} state={state} messages={view.window.messages} />
+        {state.retry && (
+          <RateLimitRetry
+            retry={state.retry}
+            offline={linkOpen ? undefined : "Reconnecting…"}
+            onRetryNow={() => rpc(runnerId, "retryNow", { sessionId })}
+            onCancel={() => rpc(runnerId, "cancelRetry", { sessionId })}
+            onFailed={(message) => failedSend(runnerId, sessionId, message)}
+          />
+        )}
         <Composer
           draftKey={k}
           billing={billingForDisplay(state)}

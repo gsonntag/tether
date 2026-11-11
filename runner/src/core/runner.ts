@@ -122,9 +122,9 @@ export function createRunner(o: RunnerOptions) {
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
-    ops.register("setCredential", (a) => o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates));
-    ops.register("unsetCredential", (a) => o.credentials!.unset(a.source));
-    ops.register("setAzure", (a) => o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }));
+    ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
+    ops.register("unsetCredential", (a) => { const result = o.credentials!.unset(a.source); live.credentialsChanged(); return result; });
+    ops.register("setAzure", (a) => { const result = o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }); live.credentialsChanged(); return result; });
     ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
     ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), typeof a.on === "boolean" ? a.on : undefined, a.fallbackKeys); return null; });
@@ -276,7 +276,7 @@ export function createRunner(o: RunnerOptions) {
       await terminal?.start();
       // Queues come back after the sessions that kept running are joined again and the TUIs are
       // readopted (a queue held for a terminal that is gone must not wait for it).
-      void rejoined.finally(() => live.queue.restore());
+      void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); });
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */

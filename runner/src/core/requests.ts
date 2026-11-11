@@ -282,6 +282,7 @@ export class RequestDesk {
     const list = this.held.get(root);
     if (!list?.length) return void this.held.delete(root);
     if (s && (s.state.status !== "idle" || s.sending)) return; // after this turn (turnEnded)
+    if (s?.retry) return; // a rate limit retry is still that turn: after its real end (turnEnded)
     const next = list.shift()!;
     if (!list.length) this.held.delete(root);
     try {
