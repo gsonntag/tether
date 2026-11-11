@@ -79,10 +79,11 @@ by default only pages on the app's own host may open one.
 
 ## Texting
 
-The runner can text you an iMessage (through [Photon Spectrum](https://photon.codes)) at the same
-moments a push notification goes out: a request, "needs you" in the terminal, a turn finished or
-failed. Nothing is texted for a session you're looking at in Tether. Texts say only the folder, the
-agent and what happened (`[2] my-app · Claude: Finished.`), like pushes.
+The runner can text you an iMessage (through [Photon Spectrum](https://photon.codes)) when a session
+has a request, needs you in the terminal, fails, or ends its turn by asking you something. A turn
+that just finishes doesn't text. Nothing is texted for a session you're looking at in Tether. Texts
+say only the folder, the agent and what happened (`[2] my-app · Claude: Claude has a question for
+you.`), like pushes; never the agent's words.
 
 Reply to send that session a message (into its running turn when the harness allows it). A reply to
 a session with an open request denies it, with your text as the note; approve in Tether. Each text

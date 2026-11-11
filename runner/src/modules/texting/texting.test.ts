@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
-import { Texter } from ".";
+import { asksQuestion, Texter } from ".";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
 
@@ -35,14 +35,21 @@ function setup(viewers: Record<string, string[]> = {}) {
 }
 
 describe("texting", () => {
-  test("turn ends text with a number and no title; replies route", async () => {
+  test("a finished turn texts only when the agent asked something; replies route", async () => {
     const { t, texts, told, hear } = setup();
     await t.start();
+    const say = (id: string, text: string) => t.said(id, { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text }] });
+    say("claude:a", "Done. All tests pass.");
+    await t.turnEnded("claude:a");
+    expect(texts).toEqual([]);
+    say("claude:a", "Should I also update the docs?");
     await t.turnEnded("claude:a");
     await t.turnEnded("codex:b", "429 rate_limit_error secret");
-    expect(texts).toEqual(["[1] web · Claude: Finished.", "[2] api · Codex: Failed: rate limited."]);
+    expect(texts).toEqual(["[1] web · Claude: Claude has a question for you.", "[2] api · Codex: Failed: rate limited."]);
+    // never the agent's words
+    expect(texts.join()).not.toContain("docs");
     await hear({ text: "keep going" });
-    expect(texts.at(-1)).toStartWith("Which session?\n[1] web · Claude: finished");
+    expect(texts.at(-1)).toStartWith("Which session?\n[1] web · Claude: asked you something");
     await hear({ text: "2" });
     expect(told).toEqual([["codex:b", "keep going"]]);
     expect(texts.at(-1)).toBe("→ [2] api · Codex");
@@ -50,11 +57,19 @@ describe("texting", () => {
     expect(told.at(-1)).toEqual(["claude:a", "again"]);
   });
 
+  test("what counts as asking", () => {
+    expect(asksQuestion("Want me to commit?")).toBe(true);
+    expect(asksQuestion("Fixed it.\n\nShould I open a PR (or wait)?")).toBe(true);
+    expect(asksQuestion("Anything else? Let me know.\n\nDone.")).toBe(false);
+    expect(asksQuestion("Done.\n\n```\nfoo?bar ?x\n```")).toBe(false);
+    expect(asksQuestion("See https://x.dev/a?b=1 for details.")).toBe(false);
+  });
+
   test("nothing while someone looks at the session; nothing without a link", async () => {
     const { t, texts } = setup({ "claude:a": ["laptop"] });
-    await t.turnEnded("claude:a");
+    await t.attention("claude:a");
     await t.start();
-    await t.turnEnded("claude:a");
+    await t.attention("claude:a");
     expect(texts).toEqual([]);
   });
 
@@ -73,7 +88,7 @@ describe("texting", () => {
   test("a failed send says why", async () => {
     const { t, texts, hear } = setup();
     await t.start();
-    await t.turnEnded("claude:a");
+    await t.turnEnded("claude:a", "boom");
     (t as any).ctx.sessions.tell = async () => { throw new Error("This subagent has finished."); };
     await hear({ text: "hi" });
     expect(texts.at(-1)).toBe("Couldn't send to [1] web · Claude: This subagent has finished.");

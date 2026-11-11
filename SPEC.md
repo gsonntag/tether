@@ -1111,9 +1111,10 @@ clears on the other.
 **P5: Daily-driver features.** Steer and queue, attachments, web push notifications (requests,
 finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 
-**Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum at push's
-moments and with push's wording (no titles, commands or agent text), skipped while the session is
-viewed. Replies route by number: each text starts with its session's number (1-9, kept while the
+**Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum for a
+request, "needs you", a failed turn, or a turn whose last message asks the person something (a
+finished turn otherwise doesn't text); push's wording (no titles, commands or agent text), skipped
+while the session is viewed. Replies route by number: each text starts with its session's number (1-9, kept while the
 session is open, 30 minutes after its last text); `n text`, a threaded reply, or plain text when one
 session is open go straight there; plain text with several open is held and answered with a numbered
 picker. A reply is the person's own message (`live.tell`, defanged); on an open request it denies
