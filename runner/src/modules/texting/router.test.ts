@@ -114,3 +114,78 @@ describe("replies", () => {
     expect(again.route("2")).toMatchObject({ sessionId: "b", text: "held text" });
   });
 });
+
+describe("sharing the thread with textme", () => {
+  const waiter = (sentAt: number, id?: string) => ({ pid: 1, sentAt, until: sentAt + 5 * 60_000, ...(id ? { id } : {}) });
+
+  test("plain text after a newer textme text: none; numbers for open sessions still Tether's", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    r.stamp("b", "finished", ".");
+    r.noteOut();
+    clock.tick(1000);
+    const w = [waiter(clock.now())];
+    expect(r.route("no", undefined, w)).toEqual({ kind: "none" });
+    expect(r.route("20 more files", undefined, w)).toEqual({ kind: "none" });
+    expect(r.route("7 do it", undefined, w)).toEqual({ kind: "none" });
+    expect(r.route("2 do it", undefined, w)).toMatchObject({ kind: "deliver", sessionId: "b", text: "do it" });
+    expect(r.state.held).toBeUndefined();
+  });
+
+  test("Tether texted after the textme: plain text is Tether's", () => {
+    const { r, clock } = setup();
+    const w = [waiter(clock.now())];
+    clock.tick(1000);
+    r.stamp("a", "finished", ".");
+    r.noteOut();
+    expect(r.route("go on", undefined, w)).toMatchObject({ kind: "deliver", sessionId: "a" });
+  });
+
+  test("a threaded reply goes to whoever sent the message it answers", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    r.noteSent("t1", "a");
+    r.noteOut();
+    clock.tick(1000);
+    const w = [waiter(clock.now(), "tm1")];
+    expect(r.route("yes", "t1", w)).toMatchObject({ kind: "deliver", sessionId: "a" });
+    clock.tick(1000);
+    r.noteOut();
+    expect(r.route("yes", "tm1", w)).toEqual({ kind: "none" });
+  });
+
+  test("answered sessions leave the picker; a number still reaches them", () => {
+    const { r } = setup();
+    r.stamp("a", "finished", ".");
+    r.stamp("b", "asked you something", ".");
+    r.stamp("c", "wants to read files", ".");
+    expect(r.route("1 ok")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    r.settle("b");
+    expect(r.route("hm")).toEqual({ kind: "reply", text: "Which session, by number?\n[3] wants to read files, just now" });
+    expect(r.route("2")).toMatchObject({ kind: "deliver", sessionId: "b", text: "hm" });
+    // a new text puts it back
+    r.stamp("a", "finished", ".");
+    expect((r.route("x") as any).text).toContain("[1] finished");
+  });
+
+  test("note: last text, open numbers with their deadline, sent ids", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    r.noteSent("t1", "a");
+    r.noteOut();
+    expect(r.note()).toEqual({ lastOut: clock.now(), open: [{ n: 1, until: clock.now() + OPEN_MS }], sent: ["t1"] });
+  });
+});
+
+describe("a textme's tag", () => {
+  test("a reply starting with a waiting textme's tag is its, even when Tether texted last", () => {
+    const { r, clock } = setup();
+    const w = [{ pid: 1, sentAt: clock.now(), until: clock.now() + 60_000, tag: "foliation" }];
+    clock.tick(1000);
+    r.stamp("a", "finished", ".");
+    r.noteOut();
+    expect(r.route("[foliation] no", undefined, w)).toEqual({ kind: "none" });
+    expect(r.route("Foliation: no", undefined, w)).toEqual({ kind: "none" });
+    expect(r.route("foliations are cool", undefined, w)).toMatchObject({ kind: "deliver" });
+  });
+});

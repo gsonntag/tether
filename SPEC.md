@@ -1163,7 +1163,13 @@ to the session; skipped while the session is viewed. Texts carry what the agent 
 file, question and options, plan) with known secrets redacted. Replies route by number: each text
 starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
 text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
-text with several open is held and answered with a numbered picker. On an open request, `y` allows
+text with several open is held and answered with a numbered picker listing only the sessions still
+waiting (one answered by text or in Tether since its last text drops out; its number still works).
+The thread is shared with the `textme` CLI (text-me skill), which texts from the same number: both
+publish their last text in `~/.local/state/imessage-thread/` (`thread.ts`), and a reply belongs to
+the sender of the message it answers in a thread, else to a waiting textme whose `[tag]` it starts
+with, else to Tether for `n text` naming an open session, else to whoever texted last; Tether stays
+silent on a reply that isn't its own. On an open request, `y` allows
 (approves a plan), `n` denies, a letter answers a question, and anything else is the person's words
 to the agent (a denial's reason, which the agent reads and answers). Otherwise a reply is the
 person's own message (`live.tell`, defanged). One runner holds the link; keys live on it
