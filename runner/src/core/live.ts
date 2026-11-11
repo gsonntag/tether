@@ -61,6 +61,17 @@ export const AUTO_CONTINUE_MAX = 5;
 /** What Tether tells the agent after a restart cut its turn off (marked as Tether's own). */
 export const AUTO_CONTINUE_TEXT = `${FROM_TETHER}Tether: continue after restart. The runner restarted mid-turn; carry on where you left off, and check whether any command you were running finished.`;
 
+/**
+ * What Tether tells the agent after a restart stopped its subagents (the runner's restart ends Claude
+ * Code, and every subagent in it). `turnCut`: the main turn was cut off too.
+ */
+export function restartText(lost: readonly { title: string; agentType?: string }[], turnCut: boolean): string {
+  if (!lost.length) return AUTO_CONTINUE_TEXT;
+  const list = lost.map((a) => `- ${a.title}${a.agentType ? ` (${a.agentType})` : ""}`).join("\n");
+  const head = turnCut ? AUTO_CONTINUE_TEXT : `${FROM_TETHER}Tether: continue after restart. The runner restarted while subagents were still working.`;
+  return `${head}\nThe restart stopped these subagents before they finished; their results will not arrive:\n${list}\nStart again any whose work is still needed (in the background as before), then carry on.`;
+}
+
 /** A turn whose answer is in the store: its last message (past Tether's notices) is the agent's, ending in text. */
 export function turnFinished(msgs: readonly Msg[]): boolean {
   const last = [...msgs].reverse().find((m) => !(m.role === "notice"));
@@ -681,7 +692,7 @@ export class LiveControl {
         }
         this.core.log(`${id}: not continuing the turn the restart cut off: ${why}`);
         this.read.set(id, { failure: "The runner restarted mid-turn." });
-        this.core.o.prefs.set(id, { running: undefined, cutOff: true, restartWait: undefined });
+        this.core.o.prefs.set(id, { running: undefined, cutOff: true, restartWait: undefined, liveSubagents: undefined });
       }
     this.core.o.prefs.flush();
 
@@ -742,13 +753,17 @@ export class LiveControl {
       if (!on()) return;
       // The turn finished after all (the store has its answer after the last prompt), or you pressed
       // Stop meanwhile: nothing to continue, and what waited for the store goes on.
-      if (!this.core.o.prefs.get(id).running || turnFinished(s.transcript?.messages ?? [])) {
+      const lost = this.core.o.prefs.get(id).liveSubagents ?? [];
+      const finished = turnFinished(s.transcript?.messages ?? []);
+      if (!this.core.o.prefs.get(id).running || (finished && !lost.length)) {
         this.endWait(s);
         if (s.state.queueHeldBy === "restart") this.queue.release(s);
         this.core.log(`${id}: the cut-off turn had finished or was stopped; not continued`);
         return this.queue.later(id);
       }
-      await this.send(id, AUTO_CONTINUE_TEXT, [], { tether: true, continued: true });
+      this.core.o.prefs.set(id, { liveSubagents: undefined });
+      if (lost.length) this.core.log(`${id}: the restart stopped ${lost.length} subagent(s); asking for them again`);
+      await this.send(id, restartText(lost, !finished), [], { tether: true, continued: true });
     } catch (e) {
       this.continueFailed(id, s, e);
     } finally {
@@ -760,7 +775,7 @@ export class LiveControl {
   private endWait(s: Session, turnGoesOn = false) {
     this.restartWaits.delete(s.id);
     s.setState({ restartWait: undefined });
-    this.core.o.prefs.set(s.id, { restartWait: undefined, ...(turnGoesOn ? {} : { running: undefined }) });
+    this.core.o.prefs.set(s.id, { restartWait: undefined, liveSubagents: undefined, ...(turnGoesOn ? {} : { running: undefined }) });
     this.core.o.prefs.flush();
     this.core.touch(s);
   }
@@ -777,7 +792,7 @@ export class LiveControl {
       return;
     }
     this.restartWaits.delete(id);
-    this.core.o.prefs.set(id, { running: undefined, restartWait: undefined });
+    this.core.o.prefs.set(id, { running: undefined, restartWait: undefined, liveSubagents: undefined });
     this.core.o.prefs.flush();
     s?.setState({ restartWait: undefined });
     this.read.set(id, { failure: `Couldn't continue after the restart: ${why}.` });
@@ -1581,6 +1596,17 @@ export class LiveControl {
     };
   }
 
+  /** Saves which subagents run now under a main session, for the next start after a restart. */
+  private noteSubagents(root: Session) {
+    if (root.summary.parentSessionId || root.capabilities.persistent) return;
+    const list = [...this.core.sessions.values()]
+      .filter((c) => c !== root && c.childRunning && this.rootOf(c) === root)
+      .map((c) => ({ title: c.summary.title || "Subagent", ...(c.summary.agentType ? { agentType: c.summary.agentType } : {}) }));
+    const had = this.core.o.prefs.get(root.id).liveSubagents;
+    if (!list.length && !had) return;
+    this.core.o.prefs.set(root.id, { liveSubagents: list.length ? list : undefined });
+  }
+
   /** How many subagents still run with the main agent free (SPEC §6a): running ones only, counted afresh. */
   private countBackground(s: Session) {
     if (s.summary.parentSessionId) return;
@@ -1665,6 +1691,7 @@ export class LiveControl {
     c.setState({ mode: "live", status: "running", billing: parent.state.billing });
     this.core.touch(c, { updatedAt: now });
     this.countBackground(this.rootOf(c) ?? parent);
+    this.noteSubagents(this.rootOf(c) ?? parent);
     // The parent's tool card links to it.
     const at = parent.transcript?.findTool(start.parentToolId);
     if (at) parent.apply({ type: "tool", msgId: at.msg.id, toolId: start.parentToolId, patch: { childSessionId: id } });
@@ -1692,6 +1719,8 @@ export class LiveControl {
     // The last subagent of a finished turn: nothing runs on the turn's settings any more.
     const parent = this.rootOf(c);
     if (parent && parent !== c) this.countBackground(parent);
+    // Not while the runner stops: the list is what the next start tells the agent it lost.
+    if (parent && parent !== c && !this.stopping) this.noteSubagents(parent);
     // Only for a subagent that ended by itself: one ended because the runner stops (or the process
     // went away) may well go on in a harness that keeps it (persistent), and must be found again.
     if (parent && parent !== c && parent.driver && !this.stopping && parent.state.status === "idle" && !parent.driver.busy()) {

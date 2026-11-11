@@ -19,6 +19,7 @@ import { LiveControl } from "./live";
 import { OpRegistry } from "./ops";
 import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
+import { readRunnerSettingsFrom } from "./runnerSettings";
 import { registerSessionOps } from "./sessionOps";
 import { registerShellOps, ShellRuns } from "./shellRuns";
 import type { Session } from "./session";
@@ -100,6 +101,7 @@ export function createRunner(o: RunnerOptions) {
   });
 
   const prefs = new Prefs(o.prefsFile);
+  readRunnerSettingsFrom(() => prefs.settings());
   const costs = new CostLedger(o.costsFile);
   const core = new SessionCore({
     costs,
@@ -129,6 +131,8 @@ export function createRunner(o: RunnerOptions) {
     ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
+  ops.register("runnerSettings", () => prefs.settings());
+  ops.register("setRunnerSettings", (a) => prefs.setSettings({ ...(typeof a?.backgroundSubagents === "boolean" ? { backgroundSubagents: a.backgroundSubagents } : {}) }));
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
   registerShellOps(ops, shellRuns);

@@ -2,7 +2,7 @@
 // per session, so the process stays up between turns. What it says goes through ClaudeStream into
 // the session's sink; permission prompts go to the broker through the sink.
 
-import { query, type CanUseTool, type PermissionMode, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type HookCallback, type PermissionMode, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
 import { tetherOrigin } from "../../../../shared/fromTether";
@@ -12,6 +12,7 @@ import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
 import type { Driver, Sink, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
+import { runnerSettings } from "../../core/runnerSettings";
 import { parseCommand } from "../../../../shared/commands";
 import { CLAUDE_BIN } from "./bin";
 import { commandList, lastGoalStatus } from "./commands";
@@ -24,6 +25,9 @@ import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 import { ClaudeCostCounter } from "./cost";
 import { claudeSetupFor } from "./setup";
+
+/** The tool that starts a subagent ("Task" before Claude Code 2.1.x renamed it). */
+const SUBAGENT_TOOLS = "^(Agent|Task)$";
 
 /** User messages for the SDK, pushed as they're sent; the iterator waits between them. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -94,6 +98,15 @@ export class ClaudeDriver implements Driver {
     // The Home agent's folder: Tether's tools and instructions (setup.ts).
     const extra = claudeSetupFor(this.projectPath, this.nativeId);
     const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? [])];
+    // The runner setting "Always run subagents in the background": each Agent call goes out with
+    // run_in_background, whatever the model asked (read at every launch, so a change applies at once).
+    const background: HookCallback = async (input) => {
+      const tool = input.hook_event_name === "PreToolUse" ? input : undefined;
+      if (!tool || !runnerSettings().backgroundSubagents || typeof tool.tool_input !== "object" || !tool.tool_input) return {};
+      const args = tool.tool_input as Record<string, unknown>;
+      if (args.run_in_background === true) return {};
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...args, run_in_background: true } } };
+    };
     this.q = query({
       prompt: this.input,
       options: {
@@ -115,6 +128,7 @@ export class ClaudeDriver implements Driver {
         settings: claudeAuthSettings(this.lease.helper),
         systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : {}) },
         canUseTool,
+        hooks: { PreToolUse: [{ matcher: SUBAGENT_TOOLS, hooks: [background] }] },
         env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {

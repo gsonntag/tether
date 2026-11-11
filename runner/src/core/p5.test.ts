@@ -721,6 +721,41 @@ describe("read state", () => {
     expect(b.driver().sent[1]).toBe("two");
   });
 
+  test("subagents a restart stopped after the main turn had finished: the agent is told which, to start them again", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    a.adapter.script = () => [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1"), say("a2", "Started it in the background.")];
+    await a.live.send("claude:s1", "go");
+    const d = a.driver();
+    d.freeBeside = true;
+    d.isBusy = true;
+    a.end();
+    expect(a.prefs.get("claude:s1")).toMatchObject({ running: true, liveSubagents: [{ title: "Count lines", agentType: "general-purpose" }] });
+    a.prefs.flush();
+    a.core.stop();
+    const b = setup({ dir, prefsFile: a.prefsFile });
+    b.adapter.addStored("s1", [
+      { id: "u1", role: "user", ts: 1, parts: [{ type: "text", text: "go" }] },
+      { id: "a2", role: "assistant", ts: 2, parts: [{ type: "text", text: "Started it in the background." }] },
+    ]);
+    await b.live.rejoin();
+    const sent = b.driver().sent[0]!;
+    expect(sent).toContain("restarted while subagents were still working");
+    expect(sent).toContain("- Count lines (general-purpose)");
+    expect(b.prefs.get("claude:s1").liveSubagents).toBeUndefined();
+  });
+
+  test("a subagent that ends takes itself off the list a restart would report", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
+    const a = setup({ dir });
+    a.adapter.addStored("s1", []);
+    a.adapter.script = () => [toolCall("a1", "t1", "Agent", {}), subagent("s1/agentA", "t1")];
+    await a.live.send("claude:s1", "go");
+    a.driver().children.get("s1/agentA")!.ended!();
+    expect(a.prefs.get("claude:s1").liveSubagents).toBeUndefined();
+  });
+
   test("a restart soon after an automatic continue doesn't continue again: Failed on Home, the queue held", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
     const a = setup({ dir });
