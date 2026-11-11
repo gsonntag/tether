@@ -3,6 +3,7 @@
 // (docs/foliation-app-service-tokens.md: `svc: true`). Without FOLIATION_ISSUER we are in local
 // dev: browsers are a fake owner and runners present TETHER_DEV_RUNNER_TOKEN.
 
+import type { User } from "../../shared/protocol";
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from "jose";
 
 export interface Viewer {
@@ -11,6 +12,12 @@ export interface Viewer {
   name: string;
   role: string;
   service: boolean;
+  /**
+   * Their Foliation profile picture, "" for none: the token's `picture` claim, a public capability
+   * URL `{issuer}/pictures/<key>` that browsers load directly (Foliation contracts/identity.md
+   * "Profile pictures"). A new picture gets a new URL, so the next token carries the change.
+   */
+  picture: string;
 }
 
 const env = process.env;
@@ -41,8 +48,8 @@ const keys: JWTVerifyGetKey = async (header, token) => {
 export async function viewerFrom(req: Request): Promise<Viewer | null> {
   if (DEV) {
     const auth = req.headers.get("authorization");
-    if (auth) return auth === `Bearer ${DEV_RUNNER_TOKEN}` ? { id: "svc:dev", email: "", name: "runner", role: "editor", service: true } : null;
-    return { id: "dev", email: "dev@localhost", name: "Developer", role: "owner", service: false };
+    if (auth) return auth === `Bearer ${DEV_RUNNER_TOKEN}` ? { id: "svc:dev", email: "", name: "runner", role: "editor", service: true, picture: "" } : null;
+    return { id: "dev", email: "dev@localhost", name: "Developer", role: "owner", service: false, picture: env.TETHER_DEV_PICTURE ?? "" };
   }
   const token = req.headers.get("x-foliation-user");
   if (!token) return null;
@@ -59,11 +66,15 @@ export async function viewerFrom(req: Request): Promise<Viewer | null> {
       name: String(payload.name ?? ""),
       role: String(payload.role ?? ""),
       service: payload.svc === true,
+      picture: typeof payload.picture === "string" ? payload.picture : "",
     };
   } catch {
     return null;
   }
 }
+
+/** What a browser is told about who it is signed in as (no picture key when there is none). */
+export const browserUser = (v: Viewer): User => ({ name: v.name, email: v.email, ...(v.picture ? { picture: v.picture } : {}) });
 
 /** Browsers: only the app's owners (it runs shell commands on your machines). */
 export const isOwner = (v: Viewer | null) => !!v && !v.service && v.role === "owner";

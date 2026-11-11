@@ -2480,6 +2480,15 @@
   flex: 1;
   min-width: 0;
 }
+/* The account's Foliation picture, in the user icon's place and box (Sidebar.tsx UserAvatar). */
+.t-avatar {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+}
 .t-settings {
   display: inline-flex;
   flex: none;

@@ -86,6 +86,8 @@ export const HOME_AGENT_MODE = "auto";
 export interface User {
   name: string;
   email: string;
+  /** Their Foliation profile picture (the identity token's `picture` claim), absent when they have none. */
+  picture?: string;
 }
 
 // ---------- ops (browser -> runner, answered with a result) ----------

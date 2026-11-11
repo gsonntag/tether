@@ -8,6 +8,7 @@ import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
 import { folderName, isHomeChat, mergeRows, recentSessions, waitingOn, type Row } from "../sessionList";
+import { avatarSrc } from "../avatar";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
@@ -127,7 +128,7 @@ export function Sidebar() {
         <div className="t-side-foot">
           {user && (
             <SideNavSection title="Account" isHeaderHidden>
-              <SideNavItem label={user.name || user.email} icon={UserCircleIcon} />
+              <SideNavItem label={user.name || user.email} icon={<UserAvatar picture={user.picture} />} />
             </SideNavSection>
           )}
           <button
@@ -266,4 +267,12 @@ export function Sidebar() {
     <SidebarHandle />
     </div>
   );
+}
+
+/** The Foliation profile picture, round, at the icon's size; else the user icon exactly as before. */
+function UserAvatar({ picture }: { picture?: string }) {
+  const [failed, setFailed] = useState<string>();
+  const src = avatarSrc(picture, failed);
+  if (!src) return <Icon icon={UserCircleIcon} size="sm" color="secondary" />;
+  return <img className="t-avatar" src={src} alt="" draggable={false} referrerPolicy="no-referrer" onError={() => setFailed(src)} />;
 }
