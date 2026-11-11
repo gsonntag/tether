@@ -837,8 +837,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   process start: with **Concise replies** on (a runner setting, Settings → Agents, default on),
   "end each turn with a short reply: 1–3 sentences, outcome first, then a link; details (≤ ~5
   bullets) only for a decision or a failure; no test counts, file lists or recaps unless asked";
-  always, "to text the person, use `text_person`, never the text-me skill or the textme CLI". Its
-  shell gets `TETHER_SESSION=<id>` (Codex: `shell_environment_policy.set.TETHER_SESSION`).
+  always, "to text the person, use `text_person`" (and, in a session the Home agent drives, to put
+  news in the final reply instead).
 - **`text_person(message)`** on the same server texts the person through the texting module (§11
   Texting, "Agents texting the person").
 
@@ -1282,11 +1282,9 @@ starts with its session's number (1-9, kept while the session is open, 30 minute
 text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
 text with several open is held and answered with a numbered picker listing only the sessions still
 waiting (one answered by text or in Tether since its last text drops out; its number still works).
-The thread is shared with the `textme` CLI (text-me skill), which texts from the same number: both
-publish their last text in `~/.local/state/imessage-thread/` (`thread.ts`), and a reply belongs to
-the sender of the message it answers in a thread, else to a waiting textme whose `[tag]` it starts
-with, else to Tether for `n text` naming an open session, else to whoever texted last; Tether stays
-silent on a reply that isn't its own. On an open request, `y` allows
+Tether owns every reply on the thread: the text-me skill (`textme`), which used to text from the
+same number and split replies with Tether through `~/.local/state/imessage-thread/`, is gone, and
+agents text only through Tether (`text_person`, below). On an open request, `y` allows
 (approves a plan), `n` denies, a letter answers a question, and anything else is the person's words
 to the agent (a denial's reason, which the agent reads and answers). Otherwise a reply is the
 person's own message (`live.tell`, defanged). A reply passed on gets a ✅ reaction (tapback) on the
@@ -1295,19 +1293,14 @@ person's phone, and no text back. One runner holds the link; keys live on it
 
 *Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
 in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
-with `[home]`, like a session's `[n]`, and their ids are published with Tether's others, so textme
-leaves threaded replies to them alone. Who a reply belongs to, in order:
+with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
 1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
-   session (a request's text answers only that request, #66), a `[home]` text goes to the Home
-   agent, and a textme's text goes to that textme.
-2. A waiting textme's `[tag]` belongs to that textme.
-3. If a textme texted after Tether did, anything else (except `n text` for an open session) is
-   that textme's. This includes `home: …`, because textme's rule can't tell `home:` apart and a
-   reply must be taken exactly once.
-4. `home: …`, `home, …`, `@home …` or `[home] …` goes to the Home agent. Just `home` sends a held
+   session (a request's text answers only that request, #66), and a `[home]` text goes to the Home
+   agent.
+2. `home: …`, `home, …`, `@home …` or `[home] …` goes to the Home agent. Just `home` sends a held
    text there, or aims the next one.
-5. `n text` (and just `n`) goes to session n, as before.
-6. Plain text goes to the Home agent when Tether's last text was a Home text or no session is open.
+3. `n text` (and just `n`) goes to session n, as before.
+4. Plain text goes to the Home agent when Tether's last text was a Home text or no session is open.
    Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
    `home:` row.
 
@@ -1329,7 +1322,7 @@ check-ins not from the Texts tab, "waiting for the person" reports (Tether alrea
 session's request itself), and anything typed in Tether. The Texts tab's own turn ends aren't
 texted as a session's.
 
-*Agents texting the person.* Inside Tether, texts go through Tether, never the text-me skill: every
+*Agents texting the person.* Texts go through Tether (the text-me skill is removed): every
 session Tether runs has `text_person(message)` (§9a), and so does the Home agent. The Home agent is the
 main texter, the person's PM: when they're away or prefer texts (they texted it, asked "text me
 when done", or Reply by text is on) it texts short updates (what needs them, what shipped with a
@@ -1345,9 +1338,7 @@ cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (
 failed one is the tool's error, and says to put it in the reply instead). A reply routes like a
 reply to any of Tether's texts (threaded, `n text`, the one open session; ✅, taken once), so it
 reaches that session as the person's message, and its answer comes back by text. A Texts-tab
-turn that used `text_person` isn't texted again by Reply by text. The text-me skill's `textme`
-refuses when `TETHER_SESSION` is set (it says to use `text_person`; `TEXTME_IN_TETHER=1`
-overrides), so a session can't text past Tether's router; outside Tether it works as before.
+turn that used `text_person` isn't texted again by Reply by text.
 
 *What reaches the Home agent.* A report carries at most 2000 characters of the session's last
 reply (session_status shows more), a watch report 280 per session; transcripts keep everything.

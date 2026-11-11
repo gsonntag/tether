@@ -133,7 +133,7 @@ export class ClaudeDriver implements Driver {
         systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : tools?.append ? { append: tools.append } : {}) },
         canUseTool,
         hooks: { PreToolUse: [{ matcher: SUBAGENT_TOOLS, hooks: [background] }] },
-        env: { ...claudeEnv(opts.credential), ...tools?.env },
+        env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {
           this.stderr.push(redact(data));

@@ -11,12 +11,7 @@
 // nothing else claims them go to its Texts chat, and its short replies come back as "[home] ..."
 // texts (homeAgent/index.ts decides which replies).
 //
-// The thread is shared with the `textme` CLI (the text-me skill), which texts from the same Photon
-// number and hears the same replies: each says what it last sent in a shared folder (thread.ts), and
-// a reply that's answering a textme's text is left to it, with no picker.
-//
-// An agent can text the person itself with its text_person tool (personText; never the text-me
-// skill, which textme refuses inside Tether's sessions): a short text stamped with its session's
+// An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
@@ -33,7 +28,6 @@ import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link
 import { HOME, Router } from "./router";
 import { PERSON_TEXT_MAX } from "../homeLine";
 import { TextingStore } from "./store";
-import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
 
@@ -116,7 +110,6 @@ export class Texter {
     readonly store: TextingStore,
     private open: OpenLink = openSpectrum,
     private now: () => number = Date.now,
-    private thread: Thread = new FileThread(),
   ) {
     this.router = new Router(store.router, now);
     this.caps = new AgentTextCaps(now);
@@ -138,7 +131,6 @@ export class Texter {
         this.connected = true;
         this.lastError = undefined;
         this.delay = RETRY_MIN_MS;
-        this.publish();
         void link.closed.then(() => this.dropped(link));
       } catch (e: any) {
         this.lastError = `Couldn't connect to Photon: ${e?.message ?? e}`;
@@ -158,7 +150,6 @@ export class Texter {
     const link = this.link;
     this.link = undefined;
     this.connected = false;
-    this.thread.clear();
     await link?.stop();
   }
 
@@ -184,11 +175,6 @@ export class Texter {
     this.delay = Math.min(this.delay * 2, RETRY_MAX_MS);
   }
 
-  /** Tells textme (thread.ts) what Tether last sent and which sessions are open. */
-  private publish() {
-    if (this.link) this.thread.publish(this.router.note());
-  }
-
   private async say(text: string): Promise<string | undefined> {
     return (await this.send(text)).id;
   }
@@ -199,8 +185,7 @@ export class Texter {
     try {
       const id = await this.link.send(text);
       this.router.noteOut();
-      this.publish();
-      return { sent: true, ...(id ? { id } : {}) };
+        return { sent: true, ...(id ? { id } : {}) };
     } catch (e: any) {
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
       this.ctx.log(`texting: ${this.lastError}`);
@@ -215,7 +200,6 @@ export class Texter {
     const { sent, id } = await this.send(this.router.stampHome(words));
     if (id) this.router.noteSent(id, HOME);
     this.store.save();
-    this.publish();
     return sent;
   }
 
@@ -265,7 +249,6 @@ export class Texter {
     const { sent, id } = await this.send(text);
     if (id) this.router.noteSent(id, sessionId, requestId);
     this.store.save();
-    this.publish();
     return { sent };
   }
 
@@ -298,7 +281,6 @@ export class Texter {
   settled(sessionId: string) {
     this.router.settle(sessionId);
     this.store.save();
-    this.publish();
   }
 
   /**
@@ -331,9 +313,8 @@ export class Texter {
 
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
-    const d = this.router.route(m.text, m.replyTo, this.thread.waiters(this.now()), !!home);
+    const d = this.router.route(m.text, m.replyTo, !!home);
     this.store.save();
-    this.publish();
     if (d.kind === "none") return;
     if (d.kind === "reply") return void (await this.say(d.text));
     if (d.kind === "home") {

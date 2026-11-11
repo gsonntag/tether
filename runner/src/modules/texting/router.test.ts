@@ -116,43 +116,15 @@ describe("replies", () => {
   });
 });
 
-describe("sharing the thread with textme", () => {
-  const waiter = (sentAt: number, id?: string) => ({ pid: 1, sentAt, until: sentAt + 5 * 60_000, ...(id ? { id } : {}) });
-
-  test("plain text after a newer textme text: none; numbers for open sessions still Tether's", () => {
-    const { r, clock } = setup();
-    r.stamp("a", "finished", ".");
-    r.stamp("b", "finished", ".");
-    r.noteOut();
-    clock.tick(1000);
-    const w = [waiter(clock.now())];
-    expect(r.route("no", undefined, w)).toEqual({ kind: "none" });
-    expect(r.route("20 more files", undefined, w)).toEqual({ kind: "none" });
-    expect(r.route("7 do it", undefined, w)).toEqual({ kind: "none" });
-    expect(r.route("2 do it", undefined, w)).toMatchObject({ kind: "deliver", sessionId: "b", text: "do it" });
-    expect(r.state.held).toBeUndefined();
-  });
-
-  test("Tether texted after the textme: plain text is Tether's", () => {
-    const { r, clock } = setup();
-    const w = [waiter(clock.now())];
-    clock.tick(1000);
-    r.stamp("a", "finished", ".");
-    r.noteOut();
-    expect(r.route("go on", undefined, w)).toMatchObject({ kind: "deliver", sessionId: "a" });
-  });
-
-  test("a threaded reply goes to whoever sent the message it answers", () => {
-    const { r, clock } = setup();
+describe("threads", () => {
+  test("a threaded reply goes to the session whose text it answers, a reply to anything else is Tether's too", () => {
+    const { r } = setup();
     r.stamp("a", "finished", ".");
     r.noteSent("t1", "a");
-    r.noteOut();
-    clock.tick(1000);
-    const w = [waiter(clock.now(), "tm1")];
-    expect(r.route("yes", "t1", w)).toMatchObject({ kind: "deliver", sessionId: "a" });
-    clock.tick(1000);
-    r.noteOut();
-    expect(r.route("yes", "tm1", w)).toEqual({ kind: "none" });
+    r.stamp("b", "finished", ".");
+    expect(r.route("yes", "t1")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    // Not one of Tether's texts (gone, or never Tether's): Tether still owns it and asks which session.
+    expect(r.route("yes", "tm1")).toMatchObject({ kind: "reply" });
   });
 
   test("answered sessions leave the picker; a number still reaches them", () => {
@@ -169,30 +141,9 @@ describe("sharing the thread with textme", () => {
     expect((r.route("x") as any).text).toContain("[1] finished");
   });
 
-  test("note: last text, open numbers with their deadline, sent ids", () => {
-    const { r, clock } = setup();
-    r.stamp("a", "finished", ".");
-    r.noteSent("t1", "a");
-    r.noteOut();
-    expect(r.note()).toEqual({ lastOut: clock.now(), open: [{ n: 1, until: clock.now() + OPEN_MS }], sent: ["t1"] });
-  });
-});
-
-describe("a textme's tag", () => {
-  test("a reply starting with a waiting textme's tag is its, even when Tether texted last", () => {
-    const { r, clock } = setup();
-    const w = [{ pid: 1, sentAt: clock.now(), until: clock.now() + 60_000, tag: "foliation" }];
-    clock.tick(1000);
-    r.stamp("a", "finished", ".");
-    r.noteOut();
-    expect(r.route("[foliation] no", undefined, w)).toEqual({ kind: "none" });
-    expect(r.route("Foliation: no", undefined, w)).toEqual({ kind: "none" });
-    expect(r.route("foliations are cool", undefined, w)).toMatchObject({ kind: "deliver" });
-  });
 });
 
 describe("the Home agent", () => {
-  const waiter = (sentAt: number, id?: string, tag?: string) => ({ pid: 1, sentAt, until: sentAt + 5 * 60_000, ...(id ? { id } : {}), ...(tag ? { tag } : {}) });
   /** Several sessions open, so plain text would otherwise get a picker. */
   const busy = () => {
     const s = setup();
@@ -205,28 +156,28 @@ describe("the Home agent", () => {
   test("a prefixed text goes to it, whatever is open, in every form", () => {
     for (const text of ["home: start the login fix", "Home, start the login fix", "@home start the login fix", "[home] start the login fix", "  HOME:start the login fix"]) {
       const { r } = busy();
-      expect([text, r.route(text, undefined, [], true)]).toEqual([text, { kind: "home", text: "start the login fix" }]);
+      expect([text, r.route(text, undefined, true)]).toEqual([text, { kind: "home", text: "start the login fix" }]);
     }
     // Words that only start with "home" aren't addressed to it.
     const { r } = busy();
-    expect(r.route("homework is done", undefined, [], true)).toMatchObject({ kind: "reply" });
-    expect(r.route("home is where the tests are", undefined, [], true)).toMatchObject({ kind: "reply" });
-    expect(r.route("@homer hi", undefined, [], true)).toMatchObject({ kind: "reply" });
+    expect(r.route("homework is done", undefined, true)).toMatchObject({ kind: "reply" });
+    expect(r.route("home is where the tests are", undefined, true)).toMatchObject({ kind: "reply" });
+    expect(r.route("@homer hi", undefined, true)).toMatchObject({ kind: "reply" });
   });
 
   test("just \"home\": sends the held text there, or aims the next one", () => {
     const { r } = busy();
-    expect(r.route("deploy it", undefined, [], true)).toMatchObject({ kind: "reply" });
-    expect(r.route("home", undefined, [], true)).toEqual({ kind: "home", text: "deploy it" });
-    expect(r.route("@home", undefined, [], true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
-    expect(r.route("start the docs fix", undefined, [], true)).toEqual({ kind: "home", text: "start the docs fix" });
+    expect(r.route("deploy it", undefined, true)).toMatchObject({ kind: "reply" });
+    expect(r.route("home", undefined, true)).toEqual({ kind: "home", text: "deploy it" });
+    expect(r.route("@home", undefined, true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
+    expect(r.route("start the docs fix", undefined, true)).toEqual({ kind: "home", text: "start the docs fix" });
     // Aimed once: the next plain text is back to the usual rules.
-    expect(r.route("go on", undefined, [], true)).toMatchObject({ kind: "reply" });
+    expect(r.route("go on", undefined, true)).toMatchObject({ kind: "reply" });
   });
 
   test("the picker offers it", () => {
     const { r } = busy();
-    const d = r.route("go on", undefined, [], true);
+    const d = r.route("go on", undefined, true);
     expect(d).toMatchObject({ kind: "reply" });
     expect((d as { text: string }).text.split("\n").at(-1)).toBe(TEXTS.homeRow);
     // Not without a Home agent.
@@ -234,7 +185,7 @@ describe("the Home agent", () => {
     expect((r2.route("go on") as { text: string }).text).not.toContain(TEXTS.homeRow);
   });
 
-  test("a threaded reply to a Home text goes to it, even with a session open and a textme texting later", () => {
+  test("a threaded reply to a Home text goes to it, even with a session open", () => {
     const { r, clock } = setup();
     expect(r.stampHome("started the login fix in web")).toBe("[home] started the login fix in web");
     r.noteSent("h1", HOME);
@@ -243,99 +194,29 @@ describe("the Home agent", () => {
     r.noteSent("s1", "a", "req1");
     r.noteOut();
     clock.tick(1000);
-    const w = [waiter(clock.now(), "tm1")];
-    expect(r.route("also do the docs", "h1", w, true)).toEqual({ kind: "home", text: "also do the docs" });
-    expect(r.route("y", "s1", w, true)).toMatchObject({ kind: "deliver", sessionId: "a", requestId: "req1" });
-    // The Home text's id is published: textme leaves a threaded reply to it alone.
-    expect(r.note().sent).toEqual(["h1", "s1"]);
+    expect(r.route("also do the docs", "h1", true)).toEqual({ kind: "home", text: "also do the docs" });
+    expect(r.route("y", "s1", true)).toMatchObject({ kind: "deliver", sessionId: "a", requestId: "req1" });
     // Without a Home agent (a runner without one now) it says so instead.
-    expect(r.route("also", "h1", [], false)).toEqual({ kind: "reply", text: TEXTS.noHome });
+    expect(r.route("also", "h1", false)).toEqual({ kind: "reply", text: TEXTS.noHome });
   });
 
   test("plain text: to it when Tether's last text was the Home agent's, or nothing is open", () => {
     const { r, clock } = setup();
     // Nothing open: the Home agent takes it (without one, the old answer).
-    expect(r.route("start a session to fix the login", undefined, [], true)).toEqual({ kind: "home", text: "start a session to fix the login" });
-    expect(r.route("hi", undefined, [], false)).toEqual({ kind: "reply", text: NOTHING_OPEN });
+    expect(r.route("start a session to fix the login", undefined, true)).toEqual({ kind: "home", text: "start a session to fix the login" });
+    expect(r.route("hi", undefined, false)).toEqual({ kind: "reply", text: NOTHING_OPEN });
     // A session texted, then the Home agent did: plain text answers the Home agent.
     r.stamp("a", "finished", ".");
     r.noteOut();
     clock.tick(1000);
     r.stampHome("PR, merge + deploy, or just local changes?");
     r.noteOut();
-    expect(r.route("just a PR", undefined, [], true)).toEqual({ kind: "home", text: "just a PR" });
+    expect(r.route("just a PR", undefined, true)).toEqual({ kind: "home", text: "just a PR" });
     // Then a session texts: plain text is that session's again.
     clock.tick(1000);
     r.stamp("a", "asked you something", ".");
     r.noteOut();
-    expect(r.route("yes", undefined, [], true)).toMatchObject({ kind: "deliver", sessionId: "a" });
+    expect(r.route("yes", undefined, true)).toMatchObject({ kind: "deliver", sessionId: "a" });
   });
 
-  test("a textme that texted after Tether: plain and prefixed texts are its (as textme reads them), so nothing is taken twice", () => {
-    const { r, clock } = setup();
-    r.stampHome("ok, on it");
-    r.noteOut();
-    clock.tick(1000);
-    const w = [waiter(clock.now(), "tm1")];
-    expect(r.route("sure", undefined, w, true)).toEqual({ kind: "none" });
-    expect(r.route("home: start x", undefined, w, true)).toEqual({ kind: "none" });
-    // Tether texts again: it's Tether's, and so the Home agent's.
-    clock.tick(1000);
-    r.stampHome("started x in web");
-    r.noteOut();
-    expect(r.route("home: and y", undefined, w, true)).toEqual({ kind: "home", text: "and y" });
-    expect(r.route("thanks", undefined, w, true)).toEqual({ kind: "home", text: "thanks" });
-  });
-
-  test("a textme's tag wins over the Home agent, even when Tether texted last", () => {
-    const { r, clock } = setup();
-    const w = [waiter(clock.now(), "tm1", "home")];
-    clock.tick(1000);
-    r.stampHome("ok");
-    r.noteOut();
-    expect(r.route("[home] that's mine", undefined, w, true)).toEqual({ kind: "none" });
-  });
-
-  test("each text has exactly one owner: Tether (a session or the Home agent), or textme", () => {
-    // textme's own rule (github.com/gsonntag/text-me scripts/thread.ts `owns`), restated: a
-    // threaded reply is its sender's; a waiting textme's tag is that textme's; a number for an open
-    // Tether session is Tether's; anything else is whoever texted last.
-    const textmeOwns = (r: Router, w: ReturnType<typeof waiter>, text: string, replyTo: string | undefined, now: number) => {
-      if (replyTo) {
-        if (replyTo === w.id) return true;
-        if (r.state.sent.some((x) => x.id === replyTo)) return false;
-      }
-      const t = text.trim().toLowerCase().replace(/^\[\s*/, "");
-      if (w.tag && t.startsWith(w.tag) && /^($|[\s\]:,.-])/.test(t.slice(w.tag.length))) return true;
-      const n = /^[[(]?\s*([1-9])\s*[\])]?(?=$|[\s:.,)\]-])/.exec(text.trim());
-      if (n && r.note().open.some((o) => o.n === Number(n[1]) && o.until > now)) return false;
-      return w.sentAt >= (r.state.lastOut ?? 0);
-    };
-    const texts: [string, string | undefined][] = [
-      ["home: start x", undefined],
-      ["thanks", undefined],
-      ["1 y", undefined],
-      ["y", "s1"],
-      ["more", "h1"],
-      ["mine", "tm1"],
-      ["[app] mine", undefined],
-    ];
-    for (const textmeLast of [false, true]) {
-      for (const [text, replyTo] of texts) {
-        const { r, clock } = setup();
-        const early = clock.now();
-        clock.tick(1000);
-        r.stamp("a", "wants to run a command", ".", "req1");
-        r.noteSent("s1", "a", "req1");
-        r.stampHome("ok, on it");
-        r.noteSent("h1", HOME);
-        r.noteOut();
-        clock.tick(1000);
-        const w = waiter(textmeLast ? clock.now() : early, "tm1", "app");
-        const tether = r.route(text, replyTo, [w], true).kind !== "none";
-        const textme = textmeOwns(r, w, text, replyTo, clock.now());
-        expect([textmeLast, text, tether, textme]).toEqual([textmeLast, text, !textme, textme]);
-      }
-    }
-  });
 });

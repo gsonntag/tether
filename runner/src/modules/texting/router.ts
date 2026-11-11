@@ -8,15 +8,11 @@
 // text that starts with "home:" (or "@home", "[home]"), a threaded reply to a Home text, and plain
 // text when Tether's last text was a Home text or no session is open go to it.
 //
-// The thread is shared with textme (thread.ts): a reply that answers a waiting textme's text in a
-// thread or starts with its [tag], or any reply that isn't for one of Tether's open sessions by
-// number or a threaded reply to Tether's own text while a textme texted more recently than Tether
-// did, isn't Tether's, and Tether says nothing. textme applies the same rule, so a reply is taken
-// once: "home: ..." while a textme texted last is that textme's (it can't tell "home:" apart).
+// Tether owns every reply on the thread: the text-me skill (textme), which used to share the
+// Photon number and split replies with it, is gone; agents text through Tether's text_person.
 
 import { HOME_SENDER } from "../homeLine";
 import { TEXTS } from "./texts";
-import { addressedToWaiter, type TetherNote, type Waiter } from "./thread";
 
 export const OPEN_MS = 30 * 60_000;
 /** The `sessionId` a Home agent text is noted under (`sent`). */
@@ -140,21 +136,11 @@ export class Router {
     if (slot) slot.answered = true;
   }
 
-  /** What textme needs to know to leave Tether's replies alone (thread.ts). */
-  note(): TetherNote {
-    return {
-      lastOut: this.state.lastOut ?? 0,
-      open: this.open().map((s) => ({ n: s.n, until: s.at + OPEN_MS })),
-      sent: this.state.sent.map((x) => x.id),
-    };
-  }
-
   /**
-   * What to do with the person's text. `replyTo`: the message it answers in a thread. `waiters`:
-   * the textme processes waiting for a reply on the same thread (thread.ts). `home`: the Home agent
-   * runs and takes texts.
+   * What to do with the person's text. `replyTo`: the message it answers in a thread. `home`: the
+   * Home agent runs and takes texts.
    */
-  route(raw: string, replyTo?: string, waiters: Waiter[] = [], home = false): Decision {
+  route(raw: string, replyTo?: string, home = false): Decision {
     this.prune();
     const text = raw.trim();
     if (!text) return { kind: "none" };
@@ -165,15 +151,8 @@ export class Router {
       const slot = this.state.slots.find((x) => x.sessionId === threaded.sessionId);
       if (slot) return this.deliver(slot, text, threaded.requestId ?? slot.requestId);
     }
-    // A threaded answer to a textme's text is that textme's.
-    if (replyTo && waiters.some((w) => w.id === replyTo)) return { kind: "none" };
-    // So is one that starts with its tag.
-    if (addressedToWaiter(text, waiters)) return { kind: "none" };
-
     const m = NUMBERED.exec(text);
     const named = m && this.state.slots.find((x) => x.n === Number(m[1]));
-    // Not for an open session by number, and a textme texted after Tether did: it's answering that.
-    if (!named && waiters.some((w) => w.sentAt > (this.state.lastOut ?? 0))) return { kind: "none" };
 
     const h = TO_HOME.exec(text);
     if (h) {

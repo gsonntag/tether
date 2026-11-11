@@ -74,10 +74,8 @@ export function toolConfig(projectPath: string): { config?: Record<string, unkno
   const s = codexTools.for(projectPath);
   if (!s) return {};
   const server = { command: s.command, args: s.args, env: s.env("codex:*"), default_tools_approval_mode: "approve", tool_timeout_sec: Math.ceil(s.timeoutMs / 1000) };
-  // Dotted down to each variable, so the person's own shell_environment_policy.set stays.
-  const shell = Object.fromEntries(Object.entries(s.shellEnv?.("codex:*") ?? {}).map(([k, v]) => [`shell_environment_policy.set.${k}`, v]));
   const instructions = s.instructions?.();
-  return { config: { [`mcp_servers.${s.name}`]: server, ...shell }, ...(instructions ? { developerInstructions: instructions } : {}) };
+  return { config: { [`mcp_servers.${s.name}`]: server }, ...(instructions ? { developerInstructions: instructions } : {}) };
 }
 
 /**

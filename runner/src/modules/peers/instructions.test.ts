@@ -3,7 +3,7 @@ import type { ToolServer } from "../../core/adapter";
 import { claudeToolServerFor, claudeTools } from "../../adapters/claude/setup";
 import { codexTools, withTools } from "../../adapters/codex/driver";
 import { HomeLine } from "../homeLine";
-import { CONCISE_RULE, SESSION_ENV, sessionInstructions, TEXTING_RULE } from "./instructions";
+import { CONCISE_RULE, sessionInstructions, TEXTING_RULE } from "./instructions";
 import { Peers } from "./index";
 import { TOOL_DEFS } from "./tools";
 
@@ -15,7 +15,7 @@ describe("the instructions Tether adds to its sessions", () => {
     expect(off).not.toContain(CONCISE_RULE);
     for (const s of [sessionInstructions({}), off]) {
       expect(s).toContain(TEXTING_RULE);
-      expect(s).toContain("never the text-me skill or the textme CLI");
+      expect(s).toContain("use the text_person tool");
     }
   });
 
@@ -29,17 +29,15 @@ describe("the instructions Tether adds to its sessions", () => {
       timeoutMs: 60_000,
       skip: (p) => p === "/home-agent",
       instructions: () => sessionInstructions(settings),
-      shellEnv: (id) => ({ [SESSION_ENV]: id }),
     };
   }
 
-  test("Claude: appended to the system prompt, TETHER_SESSION in its shell; not for the Home agent's folder", () => {
+  test("Claude: appended to the system prompt; not for the Home agent's folder", () => {
     const settings: { conciseReplies?: boolean } = {};
     const unset = claudeTools.set(server(settings));
     try {
       const on = claudeToolServerFor("/p/app", "abc")!;
       expect(on.append).toContain(CONCISE_RULE);
-      expect(on.env).toEqual({ TETHER_SESSION: "claude:abc" });
       // Read at each process start: a changed setting applies from the next one.
       settings.conciseReplies = false;
       const off = claudeToolServerFor("/p/app", "abc")!;
@@ -51,14 +49,13 @@ describe("the instructions Tether adds to its sessions", () => {
     }
   });
 
-  test("Codex: developer instructions on start and resume, TETHER_SESSION through the shell policy; not for the Home agent", () => {
+  test("Codex: developer instructions on start and resume; not for the Home agent", () => {
     const settings: { conciseReplies?: boolean } = {};
     const unset = codexTools.set(server(settings));
     try {
       const t: any = withTools({}, "/p/app");
       expect(t.developerInstructions).toContain(CONCISE_RULE);
-      // Dotted to the variable: the person's own shell_environment_policy stays.
-      expect(t.config["shell_environment_policy.set.TETHER_SESSION"]).toBe("codex:*");
+      expect(Object.keys(t.config)).toEqual(["mcp_servers.tether"]);
       settings.conciseReplies = false;
       expect((withTools({}, "/p/app") as any).developerInstructions).not.toContain(CONCISE_RULE);
       // A folder's own instructions (the Home agent's) are never replaced.
