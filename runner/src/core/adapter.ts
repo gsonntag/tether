@@ -238,8 +238,6 @@ export interface ToolServer {
   skip?(projectPath: string): boolean;
   /** what's added to the system prompt (Claude) or developer instructions (Codex) of each session that gets it, read at each process start */
   instructions?(): string;
-  /** variables set in the shell of each session that gets it (TETHER_SESSION), by session id */
-  shellEnv?(sessionId: string): Record<string, string>;
 }
 
 export interface Adapter {

@@ -90,8 +90,8 @@ is texted for a session you're looking at in Tether. Each text starts with its s
   A session takes replies for 30 minutes after its last text.
 - **Confirmation:** a reply that was passed on to its session gets a ✅ reaction, not another text.
   The session's answer comes back by text.
-- **Sharing the thread:** the iMessage thread is shared with the `textme` CLI, and each reply goes to
-  exactly one of the two.
+- **Agents texting you:** sessions and the Home agent text you with Tether's `text_person` tool;
+  sessions the Home agent drives report to it instead, and it sends you one condensed text.
 - **Secrets:** your known keys are removed from texts, but anything else the agent writes can appear
   in one.
 - **Setup:** add a Photon project's id and secret and your verified phone number under

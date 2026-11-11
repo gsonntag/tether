@@ -8,7 +8,6 @@ import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, LINK_EVERY_MS, Texter } fr
 import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
-import type { TetherNote, Thread, Waiter } from "./thread";
 import { HomeLine, PERSON_TEXT_MAX } from "../homeLine";
 
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
@@ -26,9 +25,6 @@ function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
     "claude:a": { summary: { id: "claude:a", title: "secret plans", projectPath: "/home/me/web" }, status: "idle", requests: [], state: { requests: [] } },
     "codex:b": { summary: { id: "codex:b", projectPath: "/home/me/api" }, status: "idle", requests: [], state: { requests: [] } },
   };
-  const waiters: Waiter[] = [];
-  const notes: TetherNote[] = [];
-  const thread: Thread = { waiters: (now) => waiters.filter((w) => w.until > now), publish: (n) => void notes.push(n), clear: () => {} };
   const told: [string, string][] = [];
   const answered: [string, string, RequestAnswer][] = [];
   const t = new Texter(
@@ -44,7 +40,6 @@ function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
     new TextingStore(undefined, ENV),
     open,
     () => clock.t,
-    thread,
   );
   const say = (id: string, text: string) => t.said(id, { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text }] });
   const open1 = (id: string, r: Request) => {
@@ -52,7 +47,7 @@ function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
     sessions[id].state.requests = [r];
     return t.request(r);
   };
-  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock, waiters, notes };
+  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock };
 }
 
 const bash = (id = "r1"): Request => ({ id, sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "npm test -- --watch=false", openedAt: 1 });
@@ -272,56 +267,7 @@ describe("settings", () => {
   });
 });
 
-describe("the thread shared with textme", () => {
-  test("a reply to a textme sent after Tether's last text is left to it: no picker", async () => {
-    const { t, texts, told, hear, clock, waiters, say } = setup();
-    await t.start();
-    say("claude:a", "Should I deploy?");
-    await t.turnEnded("claude:a");
-    await t.turnEnded("codex:b", "boom");
-    const before = texts.length;
-    clock.t += 60_000;
-    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
-    clock.t += 1000;
-    await hear({ text: "no" });
-    expect(texts.length).toBe(before);
-    expect(told).toEqual([]);
-    // but a number for an open session is Tether's
-    await hear({ text: "2 retry it" });
-    expect(told).toEqual([["codex:b", "retry it"]]);
-  });
-
-  test("a threaded reply to a textme's text is its own, even when Tether texted later", async () => {
-    const { t, texts, told, hear, clock, waiters } = setup();
-    await t.start();
-    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
-    clock.t += 1000;
-    await t.turnEnded("codex:b", "boom");
-    await hear({ text: "no", replyTo: "tm1" });
-    expect(told).toEqual([]);
-    expect(texts.length).toBe(1);
-    // Tether texted last: plain text is Tether's again
-    await hear({ text: "try again" });
-    expect(told).toEqual([["codex:b", "try again"]]);
-  });
-
-  test("a textme past its wait counts for nothing", async () => {
-    const { t, told, hear, clock, waiters } = setup();
-    await t.start();
-    await t.turnEnded("codex:b", "boom");
-    waiters.push({ pid: 1, sentAt: clock.t + 1, until: clock.t + 60_000 });
-    clock.t += 2 * 60_000;
-    await hear({ text: "try again" });
-    expect(told).toEqual([["codex:b", "try again"]]);
-  });
-
-  test("publishes what textme needs: last text, open numbers, sent ids", async () => {
-    const { t, notes, clock } = setup();
-    await t.start();
-    await t.turnEnded("codex:b", "boom");
-    expect(notes.at(-1)).toMatchObject({ lastOut: clock.t, open: [{ n: 1 }], sent: ["m1"] });
-  });
-
+describe("the picker", () => {
   test("the picker leaves out sessions already answered", async () => {
     const { t, texts, hear } = setup();
     await t.start();
@@ -477,7 +423,7 @@ describe("texting the Home agent", () => {
   }
 
   test("a text with nothing open goes to it with a ✅, and its reply comes back as a [home] text", async () => {
-    const { t, texts, took, told, hear, line, notes } = withHome();
+    const { t, texts, took, told, hear, line } = withHome();
     await t.start();
     const reacted: string[] = [];
     await hear({ text: "start a session to fix the login in web", react: async (e) => void reacted.push(e) });
@@ -489,8 +435,7 @@ describe("texting the Home agent", () => {
     expect(await line.phone!.send("ok, on it")).toBe(true);
     expect(texts).toEqual(["[home] ok, on it"]);
     expect(casualText(texts[0]!)).toBe(true);
-    // Its id is published for textme, and a threaded reply to it goes back to the Home agent.
-    expect(notes.at(-1)!.sent).toEqual(["m1"]);
+    // A threaded reply to it goes back to the Home agent.
     await hear({ text: "also the docs", replyTo: "m1" });
     expect(took.at(-1)).toBe("also the docs");
   });
@@ -516,22 +461,6 @@ describe("texting the Home agent", () => {
     await hear({ text: "just a PR" });
     expect(took).toEqual(["just a PR"]);
     expect(told).toEqual([]);
-  });
-
-  test("a textme that texted after Tether keeps plain and prefixed texts; nothing goes twice", async () => {
-    const { t, texts, took, hear, clock, waiters, line } = withHome();
-    await t.start();
-    await line.phone!.send("ok");
-    clock.t += 1000;
-    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
-    clock.t += 1000;
-    await hear({ text: "sure" });
-    await hear({ text: "home: start x" });
-    expect(took).toEqual([]);
-    expect(texts).toEqual(["[home] ok"]);
-    // A threaded reply to the Home text is still the Home agent's.
-    await hear({ text: "start x", replyTo: "m1" });
-    expect(took).toEqual(["start x"]);
   });
 
   test("the same text heard twice goes to the Home agent once", async () => {

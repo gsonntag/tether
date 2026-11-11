@@ -7,14 +7,14 @@
 //
 // The same server carries text_person (the texting module texts the person for the session, through
 // homeLine.ts), and with it Tether's instructions for every session it runs (instructions.ts: concise
-// replies, texting only through text_person) and TETHER_SESSION in its shell, so textme refuses.
+// replies, texting only through text_person).
 
 import { join } from "node:path";
 import { markTitle, parseSessionMessage, peerHops, sessionMessage } from "../../../../shared/fromTether";
 import { MESSAGE_TEXT_MAX } from "../../../../shared/limits";
 import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord, TEXT_PERSON } from "../../../../shared/peers";
 import { runnerSettings } from "../../core/runnerSettings";
-import { SESSION_ENV, sessionInstructions } from "./instructions";
+import { sessionInstructions } from "./instructions";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -409,7 +409,6 @@ export const peersModule: Module = {
         // The Home agent has tools (and instructions) of its own.
         skip: (p) => !!home && p === home,
         instructions: () => sessionInstructions(runnerSettings()),
-        shellEnv: (id) => ({ [SESSION_ENV]: id }),
       }),
     );
     const offs = [
