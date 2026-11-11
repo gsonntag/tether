@@ -46,6 +46,7 @@ test("the status in place of the line", () => {
   expect(answerSummary({ done: true, merged: true, cleanedUp: false, note: "stray build" })).toBe("done · merged · not cleaned up: stray build");
   expect(answerSummary({ done: true, merged: false, note: "PR #3 open" })).toBe("done · not merged: PR #3 open");
   expect(answerSummary({ done: false, merged: false })).toBe("not done");
+  expect(answerSummary({ done: true, merged: true, cleanedUp: true, target: "foliation" })).toBe("done · merged into foliation · cleaned up");
   expect(answerSummary({ done: true, merged: false, nothingToMerge: true, cleanedUp: true })).toBe("done · nothing to merge · cleaned up");
   expect(answerSummary(undefined)).toBe("answered");
   expect(replyForPeople(`Merged.\n${T} {"done": true, "merged": true, "cleaned_up": true}`)).toBe("Merged.\nCheck-in: done · merged · cleaned up");

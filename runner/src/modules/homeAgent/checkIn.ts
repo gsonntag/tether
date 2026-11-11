@@ -38,7 +38,7 @@ export function checkInMessage(ownFolder: string, keep: string[] = []): string {
 
 Don't start or continue any task work in this turn. From what you know and a quick look at git:
 1. Is the task you were given done (finished and verified, nothing left you meant to do)?
-2. Is all of your work merged or applied? That means: everything is committed and merged into the main branch, or your changes are in the project's own working tree (uncommitted is fine there). It is NOT merged if any of it is only on a separate branch or in a separate worktree, or a PR is still open.
+2. Is all of your work merged or applied? That means: everything is committed and merged into the branch your work targets, or your changes are in the project's own working tree (uncommitted is fine there). The target is usually the main branch, but some projects collect or deploy work from another branch (a deploy branch, say, when the person wants all work there): merged into that intended branch on the remote counts as merged, and you name it as target. It is NOT merged if any of it is only on a separate branch or in a separate worktree, or a PR is still open.
    Or is there nothing to merge? That is: the task never needed code kept (research, running a command, seeding local data, other local-only work), or the person asked you to discard the work. Then answer merged: false and nothing_to_merge: true, but only if no branch or PR with your unmerged work is left: delete a discarded branch (git branch -D <branch> only for work the person asked you to discard; also its remote branch if you pushed one) and close its PR.
 3. Only if the task is done and its work is merged or there's nothing to merge: clean up before you answer. Remove each git worktree you created for this task (git worktree remove <path>, without --force) and delete its local branch if it's merged (git branch -d <branch>; -D only as above). If a worktree has uncommitted changes or its branch isn't merged (and wasn't discarded), leave it and answer merged: false, nothing_to_merge: false. Never remove or change:
    - the main checkout (the first entry of git worktree list),
@@ -47,7 +47,7 @@ Don't start or continue any task work in this turn. From what you know and a qui
    If you're done but don't clean up (for one of those reasons), say why.
 
 Give one or two sentences, then end your reply with exactly one line in this form (valid JSON after the tag, on one line):
-${ANSWER_TAG} {"done": true, "merged": true, "nothing_to_merge": false, "cleaned_up": true, "branch": "the branch you worked on, or null", "worktree": "the absolute path of a separate worktree you used (even if you removed it), or null", "note": "a few words on what's left, or what you did"}
+${ANSWER_TAG} {"done": true, "merged": true, "nothing_to_merge": false, "cleaned_up": true, "branch": "the branch you worked on, or null", "target": "the branch your work was meant to land in, e.g. main, or null", "worktree": "the absolute path of a separate worktree you used (even if you removed it), or null", "note": "a few words on what's left, or what you did"}
 cleaned_up is true when no worktree you created is left (also when you never made one), false otherwise. branch is the branch you worked on even if you deleted it.`;
 }
 
@@ -121,25 +121,38 @@ async function worktrees(git: Git, cwd: string): Promise<{ path: string; branch?
     .filter((w): w is { path: string; branch?: string } => !!w);
 }
 
-/** The open PRs for a branch (their numbers), or undefined when that can't be told (no gh, no remote). */
-export type OpenPrs = (cwd: string, branch: string) => Promise<number[] | undefined>;
+/** A PR from a branch: its number, state and the branch it goes into. */
+export interface Pr {
+  number: number;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  base: string;
+}
 
-/** Open PRs by gh, with a time limit. */
-export const ghOpenPrs =
-  (ms = 15_000): OpenPrs =>
+/** The PRs from a branch, or undefined when that can't be told (no gh, no GitHub remote). */
+export type Prs = (cwd: string, branch: string) => Promise<Pr[] | undefined>;
+
+/** A branch's PRs by gh, with a time limit. */
+export const ghPrs =
+  (ms = 15_000): Prs =>
   async (cwd, branch) => {
     try {
-      const p = Bun.spawn(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "5"], { cwd, stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
+      const p = Bun.spawn(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,state,baseRefName", "--limit", "10"], { cwd, stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
       const t = setTimeout(() => p.kill(), ms);
       const s = await new Response(p.stdout).text();
       clearTimeout(t);
       if ((await p.exited) !== 0) return undefined;
       const v = JSON.parse(s);
-      return Array.isArray(v) ? v.map((x) => Number(x?.number)).filter((n) => Number.isFinite(n)) : undefined;
+      if (!Array.isArray(v)) return undefined;
+      return v
+        .map((x) => ({ number: Number(x?.number), state: x?.state, base: x?.baseRefName }))
+        .filter((x): x is Pr => Number.isFinite(x.number) && ["OPEN", "MERGED", "CLOSED"].includes(x.state) && typeof x.base === "string" && !!x.base);
     } catch {
       return undefined;
     }
   };
+
+/** A branch name that's safe to put in a ref (no options, no ranges). */
+const branchName = (b: string | undefined) => (b && /^[\w][\w./-]{0,200}$/.test(b) && !b.includes("..") ? b : undefined);
 
 export interface Findings {
   /** work git says isn't merged or applied */
@@ -149,14 +162,17 @@ export interface Findings {
 }
 
 /**
- * What git says against the answer. Unmerged: the branch the session names, or its own folder
- * when that is a separate worktree, has uncommitted changes or commits not in main. The main
+ * What git says against the answer. Merged means in a target branch: the repo's main branch, the
+ * target the session names, or the base of a PR from its branch (open or merged), each only as it
+ * is on the remote (origin/<target>). Unmerged: the branch the session names, or its own folder
+ * when that is a separate worktree, has uncommitted changes or commits in no target, or a PR from
+ * its branch is still open. The main
  * checkout's uncommitted changes count as applied (other sessions share it), so they aren't held
  * against anyone. Leftover: a worktree it names, or one on the branch it names, still exists; the
  * main checkout, its own folder and `keep` (other sessions' folders) are never counted as its
  * leftovers. No git: nothing found.
  */
-export async function verify(projectPath: string, a: Answer, git: Git = runGit(), fetched = new Set<string>(), keep: string[] = [], prs: OpenPrs = ghOpenPrs()): Promise<Findings> {
+export async function verify(projectPath: string, a: Answer, git: Git = runGit(), fetched = new Set<string>(), keep: string[] = [], prs: Prs = ghPrs()): Promise<Findings> {
   const found: Findings = { unmerged: [], leftover: [] };
   if (!existsSync(projectPath)) return found;
   const top = await git(projectPath, "rev-parse", "--show-toplevel");
@@ -169,6 +185,16 @@ export async function verify(projectPath: string, a: Answer, git: Git = runGit()
     await runGit(15_000)(projectPath, "fetch", "--quiet", "--prune", "--no-tags", "origin").catch(() => undefined);
   }
   const mains = await mainRefs(git, projectPath);
+  const branch = branchName(a.branch);
+  // The branch's PRs (undefined: can't tell), and the branches its work may land in.
+  const prList = branch && !MAIN_NAMES.includes(branch) ? await prs(projectPath, branch).catch(() => undefined) : undefined;
+  const extra: string[] = [];
+  for (const t of [branchName(a.target), ...(prList ?? []).filter((p) => p.state !== "CLOSED").map((p) => branchName(p.base))]) {
+    const r = t && `origin/${t}`;
+    if (r && !mains.includes(r) && !extra.includes(r) && (await git(projectPath, "rev-parse", "--verify", "--quiet", `refs/remotes/${r}^{commit}`))) extra.push(r);
+  }
+  const targets = [...extra, ...mains];
+  const into = targets[0];
   const own = resolve(top);
   const trees = await worktrees(git, projectPath);
   // Its own folder as a separate worktree: Tether started it there, so it stays; its work must be in.
@@ -176,19 +202,17 @@ export async function verify(projectPath: string, a: Answer, git: Git = runGit()
     const status = await git(own, "status", "--porcelain");
     const n = status ? status.split("\n").length : 0;
     if (n) found.unmerged.push(`its worktree ${own} has ${n} uncommitted change${n === 1 ? "" : "s"}`);
-    const branch = await git(own, "rev-parse", "--abbrev-ref", "HEAD");
-    if (mains.length && branch && !MAIN_NAMES.includes(branch) && !(await inMain(git, own, "HEAD", mains))) found.unmerged.push(`its worktree ${own} is on ${branch}, which has commits not in ${mains[0]}`);
+    const head = await git(own, "rev-parse", "--abbrev-ref", "HEAD");
+    if (into && head && !MAIN_NAMES.includes(head) && !(await inMain(git, own, "HEAD", targets))) found.unmerged.push(`its worktree ${own} is on ${head}, which has commits not in ${into}`);
   }
-  if (a.branch && mains.length && !MAIN_NAMES.includes(a.branch) && !mains.includes(a.branch)) {
-    const ref = (await git(projectPath, "rev-parse", "--verify", "--quiet", `refs/heads/${a.branch}`)) ? a.branch : (await git(projectPath, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${a.branch}`)) ? `origin/${a.branch}` : undefined;
-    // A branch that's gone was usually deleted after its merge.
-    if (ref && !(await inMain(git, projectPath, ref, mains))) found.unmerged.push(`branch ${a.branch} has commits not in ${mains[0]}`);
+  if (branch && into && !MAIN_NAMES.includes(branch) && !mains.includes(branch)) {
+    const ref = (await git(projectPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)) ? branch : (await git(projectPath, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`)) ? `origin/${branch}` : undefined;
+    // A branch that's gone was usually deleted after its merge. One that is itself the target (work
+    // done on a deploy branch) must be on the remote.
+    if (ref && !targets.includes(ref) && !(await inMain(git, projectPath, ref, targets))) found.unmerged.push(`branch ${branch} has commits not in ${into}`);
   }
-  // Nothing to merge: no PR may still be open for its branch.
-  if (a.nothingToMerge && !a.merged && a.branch && !MAIN_NAMES.includes(a.branch) && !mains.includes(a.branch)) {
-    const open = await prs(projectPath, a.branch).catch(() => undefined);
-    if (open?.length) found.unmerged.push(`PR ${open.map((n) => `#${n}`).join(", ")} for ${a.branch} is still open`);
-  }
+  // A PR from its branch that's still open: not merged, whatever the commits say.
+  for (const p of prList ?? []) if (p.state === "OPEN") found.unmerged.push(`PR #${p.number} from ${branch} into ${p.base} is still open`);
   const named = a.worktree ? resolve(isAbsolute(a.worktree) ? a.worktree : join(top, a.worktree)) : undefined;
   const others = new Set(keep.map((f) => resolve(f)));
   for (const w of trees.slice(1))

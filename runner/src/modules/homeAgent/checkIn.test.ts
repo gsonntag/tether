@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ANSWER_TAG, checkInMessage, judge, parseAnswer, skipReason, verify } from "./checkIn";
+import { ANSWER_TAG, checkInMessage, judge, parseAnswer, skipReason, verify, type Pr } from "./checkIn";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -75,6 +75,9 @@ test("parseAnswer reads nothing_to_merge", () => {
   expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": false, "nothing_to_merge": true, "cleaned_up": true}`)).toEqual({ done: true, merged: false, nothingToMerge: true, cleanedUp: true });
   expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": false, "nothing_to_merge": "yes"}`)).toEqual({ done: true, merged: false });
   expect(checkInMessage("/r/x")).toContain('"nothing_to_merge": false');
+  expect(checkInMessage("/r/x")).toContain('"target": ');
+  expect(checkInMessage("/r/x")).toContain("merged into that intended branch on the remote counts as merged");
+  expect(parseAnswer(`${ANSWER_TAG} {"done": true, "merged": true, "target": "foliation"}`)).toEqual({ done: true, merged: true, target: "foliation" });
 });
 
 test("skipReason leaves busy sessions alone", () => {
@@ -139,7 +142,7 @@ async function withOrigin(name: string) {
 }
 
 const nothing = { done: true, merged: false, nothingToMerge: true, cleanedUp: true };
-const noPrs = async () => [] as number[];
+const noPrs = async () => [] as Pr[];
 
 test("verify, nothing to merge: discarded work whose branch is gone everywhere passes", async () => {
   const { main, origin } = await withOrigin("seed-local");
@@ -159,9 +162,50 @@ test("verify, nothing to merge: a branch or an open PR with unmerged work still 
   expect(await verify(main, { ...nothing, branch: "seed-local" }, undefined, undefined, [], noPrs)).toEqual({ unmerged: ["branch seed-local has commits not in main"], leftover: [] });
   // An open PR for it, whatever git says.
   const { main: other } = await repo();
-  expect(await verify(other, { ...nothing, branch: "gone" }, undefined, undefined, [], async (_cwd, b) => (b === "gone" ? [7] : []))).toEqual({ unmerged: ["PR #7 for gone is still open"], leftover: [] });
+  expect(await verify(other, { ...nothing, branch: "gone" }, undefined, undefined, [], async (_cwd, b) => (b === "gone" ? [{ number: 7, state: "OPEN" as const, base: "main" }] : []))).toEqual({ unmerged: ["PR #7 from gone into main is still open"], leftover: [] });
   // No way to tell (no gh): git alone decides.
   expect(await verify(other, { ...nothing, branch: "gone" }, undefined, undefined, [], async () => undefined)).toEqual(clean);
+});
+
+/** A repo whose work goes to a `foliation` branch on origin, and branch `remove-link` with one commit, pushed. */
+async function deployBranch() {
+  const r = await withOrigin("remove-link");
+  await sh(r.main, "git", "branch", "foliation", "main");
+  await sh(r.main, "git", "push", "-q", "origin", "foliation");
+  return r;
+}
+const mergedAnswer = { done: true, merged: true, cleanedUp: true, branch: "remove-link" };
+
+test("verify: merged into the session's own target branch on the remote counts, not main only", async () => {
+  const { main } = await deployBranch();
+  // Not in main, and not in foliation yet.
+  expect((await verify(main, mergedAnswer, undefined, undefined, [], noPrs)).unmerged).toEqual(["branch remove-link has commits not in main"]);
+  // Merged into foliation only here, not on the remote: still not merged.
+  await sh(main, "git", "checkout", "-q", "foliation");
+  await sh(main, "git", "merge", "-q", "--no-ff", "-m", "merge", "remove-link");
+  await sh(main, "git", "checkout", "-q", "main");
+  expect((await verify(main, { ...mergedAnswer, target: "foliation" }, undefined, undefined, [], noPrs)).unmerged).toEqual(["branch remove-link has commits not in origin/foliation"]);
+  // Pushed: merged, by the target it names or by its merged PR's base.
+  await sh(main, "git", "push", "-q", "origin", "foliation");
+  expect(await verify(main, { ...mergedAnswer, target: "foliation" }, undefined, undefined, [], noPrs)).toEqual(clean);
+  expect(await verify(main, mergedAnswer, undefined, undefined, [], async () => [{ number: 2, state: "MERGED", base: "foliation" }])).toEqual(clean);
+  // A closed PR's base doesn't count, nor does a target that isn't on the remote.
+  expect((await verify(main, mergedAnswer, undefined, undefined, [], async () => [{ number: 2, state: "CLOSED", base: "foliation" }])).unmerged).toEqual(["branch remove-link has commits not in main"]);
+  expect((await verify(main, { ...mergedAnswer, target: "nowhere" }, undefined, undefined, [], noPrs)).unmerged).toEqual(["branch remove-link has commits not in main"]);
+  // Work done on the target branch itself must be on the remote.
+  expect(await verify(main, { ...mergedAnswer, branch: "foliation", target: "foliation" }, undefined, undefined, [], noPrs)).toEqual(clean);
+  expect(judge({ ...mergedAnswer, target: "foliation", note: "live via foliation" }, clean)).toEqual({ archive: true, reason: "live via foliation" });
+});
+
+test("verify: a PR still open against a non-default branch keeps it", async () => {
+  const { main } = await deployBranch();
+  const open = async () => [{ number: 3, state: "OPEN" as const, base: "foliation" }];
+  const f = await verify(main, { ...mergedAnswer, target: "foliation" }, undefined, undefined, [], open);
+  expect(f.unmerged).toEqual(["branch remove-link has commits not in origin/foliation", "PR #3 from remove-link into foliation is still open"]);
+  expect(judge({ ...mergedAnswer, target: "foliation" }, f).archive).toBe(false);
+  // Open even though the commits are in foliation already.
+  await sh(main, "git", "push", "-q", "origin", "remove-link:foliation");
+  expect((await verify(main, { ...mergedAnswer, target: "foliation" }, undefined, undefined, [], open)).unmerged).toEqual(["PR #3 from remove-link into foliation is still open"]);
 });
 
 test("verify: a squash-merged branch counts as merged", async () => {
