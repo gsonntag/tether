@@ -170,16 +170,16 @@ export class Texter {
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now. */
-  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false) {
+  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false, requestId?: string) {
     if (!this.link) return;
     if ([sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return;
     // The link only now and then, and never on a quick back-and-forth.
     const at = this.now();
     const link = !quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS;
     if (link) this.linked.set(sessionId, at);
-    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body);
+    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body, requestId);
     const id = await this.say(text);
-    if (id) this.router.noteSent(id, sessionId);
+    if (id) this.router.noteSent(id, sessionId, requestId);
     this.store.save();
     this.publish();
   }
@@ -189,7 +189,7 @@ export class Texter {
     if (!look || !requestStillOpen(look, r.id)) return;
     const root = look.summary.parentSessionId;
     const { status, body } = requestText(r, agentOf(r.sessionId));
-    await this.tell(r.sessionId, status, body, root ? [root] : []);
+    await this.tell(r.sessionId, status, body, root ? [root] : [], false, r.id);
   }
 
   async attention(sessionId: string) {
@@ -245,7 +245,17 @@ export class Texter {
     const tag = `[${d.n}]`;
     try {
       const look = this.ctx.session(d.sessionId);
-      const open = look?.state?.requests?.find((r) => look.requests.includes(r.id));
+      const pending = look?.state?.requests?.filter((r) => look.requests.includes(r.id)) ?? [];
+      // A reply to a request's text answers that request only. Once it's closed (answered in
+      // Tether, by a rule, or by an earlier text) the reply goes nowhere: a "y" sent on to the
+      // agent as words starts a turn with no context, and it mustn't answer a newer request the
+      // person hasn't seen yet either.
+      const open = d.requestId ? pending.find((r) => r.id === d.requestId) : pending[0];
+      if (d.requestId && !open) {
+        this.router.closedRequest(d.sessionId, d.requestId);
+        this.store.save();
+        return void (await this.say(TEXTS.alreadyAnswered(d.n)));
+      }
       if (open) {
         const r = readReply(open, d.text);
         if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));

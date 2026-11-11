@@ -49,4 +49,6 @@ export const TEXTS = {
   which: "Which session, by number?",
   notWaiting: (n: number) => `[${n}] isn't waiting on a reply, which one did you mean?`,
   whatToSend: (n: number) => `What should I send to [${n}]?`,
+  /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
+  alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

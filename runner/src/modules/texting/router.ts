@@ -25,6 +25,9 @@ export interface Slot {
   at: number;
   /** the person answered it (by text, or in Tether) since its last text: not in the picker */
   answered?: boolean;
+  /** the request its last text was about: a reply answers that one only, never another, and never
+   * goes to the agent as words once it's closed (texting/index.ts) */
+  requestId?: string;
 }
 
 export interface RouterState {
@@ -34,13 +37,14 @@ export interface RouterState {
   /** the person sent just a number: their next text goes there */
   aimed?: { n: number; at: number };
   /** Tether's own texts, newest last: a threaded reply names one */
-  sent: { id: string; sessionId: string }[];
+  sent: { id: string; sessionId: string; requestId?: string }[];
   /** when Tether last texted anything */
   lastOut?: number;
 }
 
 export type Decision =
-  | { kind: "deliver"; sessionId: string; n: number; text: string }
+  /** `requestId`: the request the text it answers was about */
+  | { kind: "deliver"; sessionId: string; n: number; text: string; requestId?: string }
   | { kind: "reply"; text: string }
   | { kind: "none" };
 
@@ -68,8 +72,8 @@ export class Router {
     return [...this.state.slots].sort((a, b) => a.n - b.n);
   }
 
-  /** A text about a session is going out: its number (kept, else the lowest free one) and the text. */
-  stamp(sessionId: string, status: string, body: string): { n: number; text: string } {
+  /** A text about a session (about `requestId`, when it's a request) is going out: its number (kept, else the lowest free one) and the text. */
+  stamp(sessionId: string, status: string, body: string, requestId?: string): { n: number; text: string } {
     this.prune();
     const s = this.state.slots;
     let slot = s.find((x) => x.sessionId === sessionId);
@@ -81,14 +85,20 @@ export class Router {
       slot = { n, sessionId, status, at: 0 };
       s.push(slot);
     }
-    Object.assign(slot, { status, at: this.now(), answered: false });
+    Object.assign(slot, { status, at: this.now(), answered: false, requestId });
     // Just the number and the message ("[6] ok"): no folder, no agent.
     return { n: slot.n, text: `[${slot.n}] ${body}` };
   }
 
   /** Tether's text went out as message `id` (a threaded reply to it names it). */
-  noteSent(id: string, sessionId: string) {
-    this.state.sent = [...this.state.sent.filter((x) => x.id !== id), { id, sessionId }].slice(-MAX_SENT);
+  noteSent(id: string, sessionId: string, requestId?: string) {
+    this.state.sent = [...this.state.sent.filter((x) => x.id !== id), { id, sessionId, ...(requestId ? { requestId } : {}) }].slice(-MAX_SENT);
+  }
+
+  /** The request a session's last text was about is closed and the person was told: their next text to it is words to the agent. */
+  closedRequest(sessionId: string, requestId: string) {
+    const slot = this.state.slots.find((x) => x.sessionId === sessionId);
+    if (slot?.requestId === requestId) slot.requestId = undefined;
   }
 
   /** Tether texted something (any text: a picker too). */
@@ -123,7 +133,7 @@ export class Router {
     const threaded = replyTo && this.state.sent.find((x) => x.id === replyTo);
     if (threaded) {
       const slot = this.state.slots.find((x) => x.sessionId === threaded.sessionId);
-      if (slot) return this.deliver(slot, text);
+      if (slot) return this.deliver(slot, text, threaded.requestId ?? slot.requestId);
     }
     // A threaded answer to a textme's text is that textme's.
     if (replyTo && waiters.some((w) => w.id === replyTo)) return { kind: "none" };
@@ -170,12 +180,12 @@ export class Router {
     return `${head}\n${rows.join("\n")}`;
   }
 
-  private deliver(slot: Slot, text: string): Decision {
+  private deliver(slot: Slot, text: string, requestId = slot.requestId): Decision {
     this.state.held = undefined;
     this.state.aimed = undefined;
     slot.at = this.now();
     slot.answered = true;
-    return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, text };
+    return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, text, ...(requestId ? { requestId } : {}) };
   }
 
   private prune() {
