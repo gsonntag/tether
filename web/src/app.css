@@ -2678,7 +2678,12 @@
   justify-content: flex-end;
   margin-bottom: -4px;
 }
-.t-home-chat-head { gap: 6px; align-items: center; }
+.t-home-chat-head { gap: 6px; align-items: center; flex-wrap: wrap; }
+/* The chip's popover wrapper may shrink to the row (a long summary on a phone was pushed off-screen to the left); New chat keeps its size. */
+.t-home-chat-head > * { min-width: 0; max-width: 100%; }
+.t-home-chat-head > button { flex-shrink: 0; }
+.t-home-agent-chip > span { overflow: hidden; text-overflow: ellipsis; }
+.t-home-agent-chip > .t-home-agent-sep, .t-home-agent-chip > .t-home-agent-chev { flex-shrink: 0; }
 .t-home-agent-chip {
   display: inline-flex;
   align-items: center;

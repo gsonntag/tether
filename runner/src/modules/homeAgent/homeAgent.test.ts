@@ -12,8 +12,9 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ago, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
+import { ago, HomeAgent, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
 import { ANSWER_TAG } from "./checkIn";
+import { claudeMove } from "../../adapters/claude/move";
 
 import { WATCH } from "./index";
 
@@ -170,7 +171,7 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const { rev } = await op("homeAgentClear");
   expect(rev).toBeGreaterThan(first.rev);
   expect(announced.at(-1)).toEqual({ rev });
-  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription" }, harnesses: ["claude"] });
+  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription", mode: "auto" }, harnesses: ["claude"] });
   // Kept across a restart.
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ rev });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).current).toBeUndefined();
@@ -380,12 +381,12 @@ test("stateOf, inProject, lastPrompt and ago", () => {
 test("its model and source are kept for every chat, and the current chat takes them", async () => {
   const { runner, op, chat } = await setup();
   const first = await op("homeAgent");
-  expect(first.settings).toEqual({ harness: "claude", source: "subscription" });
+  expect(first.settings).toEqual({ harness: "claude", source: "subscription", mode: "auto" });
   expect(first.harnesses).toEqual(["claude"]);
   // A model, on the same harness and source: the same chat, its model changed.
   const r = await op("homeAgentSet", { harness: "claude", source: "subscription", model: "claude-opus-5-5" });
   expect(r.sessionId).toBe(chat);
-  expect(r.settings).toEqual({ harness: "claude", source: "subscription", model: "claude-opus-5-5" });
+  expect(r.settings).toEqual({ harness: "claude", source: "subscription", model: "claude-opus-5-5", mode: "auto" });
   expect(runner.core.sessions.get(chat)!.state.model).toBe("claude-opus-5-5");
   expect((await op("homeAgent")).settings.model).toBe("claude-opus-5-5");
   // A new chat starts on it.
@@ -393,7 +394,7 @@ test("its model and source are kept for every chat, and the current chat takes t
   expect(next).not.toBe(chat);
   expect(runner.core.sessions.get(next)!.state.model).toBe("claude-opus-5-5");
   // "default" is no model: the harness's own.
-  expect((await op("homeAgentSet", { harness: "claude", source: "subscription", model: "default" })).settings).toEqual({ harness: "claude", source: "subscription" });
+  expect((await op("homeAgentSet", { harness: "claude", source: "subscription", model: "default" })).settings).toEqual({ harness: "claude", source: "subscription", mode: "auto" });
 });
 
 test("a source that isn't set up, or a harness that can't run it, is refused and nothing is kept", async () => {
@@ -401,7 +402,7 @@ test("a source that isn't set up, or a harness that can't run it, is refused and
   await expect(op("homeAgentSet", { harness: "claude", source: "anthropic" })).rejects.toThrow("Anthropic API key isn't set up on this runner.");
   await expect(op("homeAgentSet", { harness: "codex", source: "subscription" })).rejects.toThrow("Codex can't run the Home agent on this runner.");
   await expect(op("homeAgentSet", { harness: "claude" })).rejects.toThrow("Pick an agent and a source.");
-  expect((await op("homeAgent")).settings).toEqual({ harness: "claude", source: "subscription" });
+  expect((await op("homeAgent")).settings).toEqual({ harness: "claude", source: "subscription", mode: "auto" });
 });
 
 test("a Claude source change keeps the same chat, from its next start", async () => {
@@ -416,11 +417,49 @@ test("a Claude source change keeps the same chat, from its next start", async ()
 test("the choice is saved with the module's state", async () => {
   const { op, dataDir } = await setup();
   await op("homeAgentSet", { harness: "claude", source: "subscription", model: "claude-haiku-5-5" });
-  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).settings).toEqual({ harness: "claude", source: "subscription", model: "claude-haiku-5-5" });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).settings).toEqual({ harness: "claude", source: "subscription", model: "claude-haiku-5-5", mode: "auto" });
+});
+
+test("the chat runs in auto by default, and an existing chat in another mode takes it", async () => {
+  const { runner, op, chat, homeFolder, dataDir } = await setup();
+  expect((await op("homeAgent")).settings.mode).toBe("auto");
+  expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("auto");
+  // A chat from before modes ran in "Ask first": once the runner is up again, it's on auto.
+  await op("setPermissionMode", { sessionId: chat, mode: "default" });
+  const again = new HomeAgent({ bus: runner.bus, ops: runner.ops, dataDir, log: () => {}, runnerId: "t", appUrl: "http://x", ...runner.look, announceHomeChat: () => {} } as any, homeFolder);
+  await again.alignMode();
+  expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("auto");
+});
+
+test("a chosen mode is kept, applied to the current chat at once, and new chats start in it", async () => {
+  const { runner, fake, op, chat, dataDir } = await setup();
+  fake.listModels = async () => ({ models: [{ id: "default", label: "Default" }], efforts: [], permissionModes: ["default", "acceptEdits", "plan", "bypassPermissions", "auto"].map((id) => ({ id, label: id })) });
+  const r = await op("homeAgentSet", { harness: "claude", source: "subscription", mode: "bypassPermissions" });
+  expect(r.sessionId).toBe(chat);
+  expect(r.settings).toEqual({ harness: "claude", source: "subscription", mode: "bypassPermissions" });
+  expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("bypassPermissions");
+  expect((await op("homeAgent")).settings.mode).toBe("bypassPermissions");
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).settings.mode).toBe("bypassPermissions");
+  const next = (await op("homeAgentNew")).sessionId;
+  expect(runner.core.sessions.get(next)!.state.permissionMode).toBe("bypassPermissions");
+  // One the harness doesn't have is refused, and nothing changes.
+  await expect(op("homeAgentSet", { harness: "claude", source: "subscription", mode: "yolo" })).rejects.toThrow("has no mode yolo");
+  expect((await op("homeAgent")).settings.mode).toBe("bypassPermissions");
+});
+
+test("auto on a Claude Code without it is its nearest mode below, as a move maps it", async () => {
+  const { runner, fake, op, chat } = await setup();
+  fake.listModels = async () => ({ models: [{ id: "default", label: "Default" }], efforts: [], permissionModes: ["default", "acceptEdits", "plan", "bypassPermissions"].map((id) => ({ id, label: id })) });
+  (fake as Adapter).move = { ...claudeMove };
+  const r = await op("homeAgentSet", { harness: "claude", source: "subscription" });
+  expect(r.settings.mode).toBe("acceptEdits");
+  expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("acceptEdits");
 });
 
 test("settingsOf keeps only what's valid", () => {
   expect(settingsOf({ harness: "codex", source: "azure", model: " dep " })).toEqual({ harness: "codex", source: "azure", model: "dep" });
+  expect(settingsOf({ harness: "claude", source: "subscription", mode: "auto" })).toEqual({ harness: "claude", source: "subscription", mode: "auto" });
+  expect(settingsOf({ harness: "claude", source: "subscription", mode: " " })).toEqual({ harness: "claude", source: "subscription" });
   expect(settingsOf({ harness: "other", source: "subscription" })).toBeUndefined();
   expect(settingsOf(null)).toBeUndefined();
 });

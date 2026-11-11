@@ -1,14 +1,14 @@
-// What the Home agent runs on (runner/src/modules/homeAgent): its harness, source and model, shown
+// What the Home agent runs on (runner/src/modules/homeAgent): its harness, source, model and mode, shown
 // above its chat and changed from there. Kept on the runner for every chat; the current chat takes a
 // change too (a harness or a Codex source by a move, which keeps the conversation).
 
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Popover } from "@astryxdesign/core/Popover";
-import { findModel, isApiBilling, modelLabel, prettyModel } from "../../../shared/labels";
+import { findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
-import type { HomeAgentSettings } from "../../../shared/protocol";
-import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId, type ModelOption } from "../../../shared/transcript";
+import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../shared/protocol";
+import { CLAUDE_UNSET, HARNESS_LABELS, type Choice, type HarnessId, type ModelOption } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { loadModels, modelListKey, useStore } from "../store";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
@@ -20,6 +20,9 @@ const unpickedOf = (harness: HarnessId, models: ModelOption[]) => (harness === "
 /** The models to offer: the harness's list, or its default when there's none yet. */
 const listedOf = (harness: HarnessId, models?: ModelOption[]): ModelOption[] =>
   models?.length ? models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
+
+/** The modes to offer: the harness's list, with `mode` in it even when the list lacks it (the runner then runs the nearest below). */
+const modesOf = (mode: string, modes?: Choice[]): Choice[] => (modes?.some((m) => m.id === mode) ? modes : [{ id: mode, label: permissionModeLabel(mode) }, ...(modes ?? [])]);
 
 function useSources(runnerId: string, harness: HarnessId, when: unknown) {
   const [sources, setSources] = useState<SourceChoices>();
@@ -66,12 +69,14 @@ export function HomeAgentSettingsChip({ runnerId, settings, harnesses, onChanged
         ) : null
       }
     >
-      <button type="button" className="t-home-agent-chip" aria-label="Home agent: model and source">
+      <button type="button" className="t-home-agent-chip" aria-label="Home agent: model, source and mode">
         <span>{HARNESS_LABELS[settings.harness]}</span>
         <span className="t-home-agent-sep">·</span>
         <span>{model}</span>
         <span className="t-home-agent-sep">·</span>
         <span className={billing && isApiBilling(billing) ? "t-move-api" : undefined}>{billing?.label ?? (sources ? "Unavailable" : "…")}</span>
+        <span className="t-home-agent-sep">·</span>
+        <span>{permissionModeLabel(settings.mode ?? HOME_AGENT_MODE)}</span>
         <span aria-hidden className="t-home-agent-chev">▾</span>
       </button>
     </Popover>
@@ -82,6 +87,7 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
   const [harness, setHarness] = useState<HarnessId>(settings.harness);
   const [source, setSource] = useState<BillingSource | undefined>(settings.source);
   const [model, setModel] = useState<string>(settings.model ?? "default");
+  const [mode, setMode] = useState<string>(settings.mode ?? HOME_AGENT_MODE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const models = useStore((s) => s.modelLists[modelListKey(runnerId, harness)]);
@@ -96,6 +102,7 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
   const deployments = azureDeployments(picked);
   const listed = listedOf(harness, models?.models);
   const modelOk = listed.some((m) => m.id === model);
+  const modes = modesOf(mode, models?.permissionModes);
   const shownModel = deployments ? ((deployments.find((d) => d.name === model) ?? deployments[0])?.name ?? "") : modelOk && model !== "default" ? model : unpickedOf(harness, listed);
 
   const apply = async () => {
@@ -105,7 +112,7 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
     setBusy(true);
     setError(undefined);
     try {
-      const r = await rpc(runnerId, "homeAgentSet", { harness, source: src, ...(shownModel && shownModel !== "default" ? { model: shownModel } : {}) });
+      const r = await rpc(runnerId, "homeAgentSet", { harness, source: src, ...(shownModel && shownModel !== "default" ? { model: shownModel } : {}), mode });
       onDone(r);
     } catch (e) {
       setError((e as Error).message);
@@ -130,6 +137,7 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
                 setHarness(h);
                 setModel(h === settings.harness ? (settings.model ?? "default") : "default");
                 setSource(h === settings.harness ? settings.source : undefined);
+                setMode(h === settings.harness ? (settings.mode ?? HOME_AGENT_MODE) : HOME_AGENT_MODE);
               }}
             >
               {HARNESS_LABELS[h]}
@@ -159,6 +167,17 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
           </select>
         </label>
       )}
+      <label>
+        <span className="t-field-label">Mode</span>
+        <select className="t-select" value={mode} onChange={(e) => setMode(e.target.value)}>
+          {modes.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {modes.find((m) => m.id === mode)?.description && <span className="t-inline-status">{modes.find((m) => m.id === mode)!.description}</span>}
       {(harness !== settings.harness || (harness === "codex" && !!picked && picked.source !== settings.source)) && <span className="t-inline-status">The conversation moves to a new chat on {HARNESS_LABELS[harness]}.</span>}
       {error && <div className="t-form-error">{error}</div>}
       <div style={{ display: "flex", justifyContent: "flex-end" }}>

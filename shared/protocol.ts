@@ -77,7 +77,12 @@ export interface HomeAgentSettings {
   source: BillingSource;
   /** on Azure, a deployment's name */
   model?: string;
+  /** the permission mode its own chat runs in, one of the harness's (ModelList.permissionModes). None: auto (HOME_AGENT_MODE) */
+  mode?: string;
 }
+
+/** The Home agent's mode when none is chosen: auto, or the harness's nearest below it. */
+export const HOME_AGENT_MODE = "auto";
 
 export interface User {
   name: string;
@@ -110,7 +115,7 @@ export interface Ops {
   homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**
    * What the Home agent runs on, kept on the runner for every chat to come. The current chat takes it
-   * too: a model now, Claude's source from its next start, and a harness or a Codex source by a move
+   * too: a model and a mode now, Claude's source from its next start, and a harness or a Codex source by a move
    * (a new chat with the conversation, which becomes current). Answers with the chat that's current now
    */
   homeAgentSet: { args: HomeAgentSettings; result: { sessionId?: string; settings: HomeAgentSettings; rev: number } };

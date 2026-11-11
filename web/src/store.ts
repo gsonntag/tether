@@ -2,6 +2,7 @@
 // session lists and projects, and the sessions this page has open.
 
 import { create } from "zustand";
+import { checkBuild } from "./build";
 import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
@@ -85,7 +86,12 @@ const set = useStore.setState;
 const get = useStore.getState;
 
 export function start() {
-  onLinkState((link) => set((s) => ({ link, everOpen: s.everOpen || link === "open" })));
+  const markStale = () => set({ stale: true });
+  onLinkState((link) => {
+    set((s) => ({ link, everOpen: s.everOpen || link === "open" }));
+    if (link === "open") void checkBuild(markStale);
+  });
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && void checkBuild(markStale));
   onAuth((auth) => set({ auth }));
   const resub = resubscriber(subscriptions);
   /** the next runners frame follows our own (re)connect: every runner's lists may be stale */
@@ -97,7 +103,7 @@ export function start() {
     if (at >= 0) location.hash = url.slice(at);
   });
   on("hello", (m) => {
-    set({ user: m.user, stale: m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey });
+    set((s) => ({ user: m.user, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
     resub.hello();

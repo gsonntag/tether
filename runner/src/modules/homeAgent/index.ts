@@ -29,9 +29,11 @@ import { z } from "zod";
 import { FROM_TETHER, fromTether } from "../../../../shared/fromTether";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
-import type { HomeAgentSettings } from "../../../../shared/protocol";
+import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
+import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
+import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, verify, type Git } from "./checkIn";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
@@ -54,12 +56,12 @@ export const WATCH = { quietMs: 20_000, maxMs: 90_000 };
 const WATCH_REPLY_MAX = 280;
 /** Each harness's mode that runs without asking. */
 const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", codex: "full-access" };
-/**
- * The mode the agent's own chats run in on each harness. Claude's tools that touch anything are
- * taken away (AgentSetup.deny); Codex's shell, patch and web tools are switched off by config
- * (adapters/codex/setup.ts), and its sandbox is read-only on top.
+/*
+ * The agent's own chats run in the mode the person picks (HomeAgentSettings.mode), auto unless they
+ * pick another. Whatever the mode, Claude's tools that touch anything are taken away
+ * (AgentSetup.deny) and Codex's shell, patch and web tools are switched off by config
+ * (adapters/codex/setup.ts): the mode only decides what its remaining tools ask before using.
  */
-const OWN_MODE: Record<HarnessId, string> = { claude: "default", codex: "read-only" };
 
 interface Child {
   /** the chat that started it, or last messaged it */
@@ -118,7 +120,8 @@ export function settingsOf(v: unknown): HomeAgentSettings | undefined {
   const o = v as Partial<HomeAgentSettings> | undefined;
   if (!o || typeof o !== "object" || !HARNESSES.includes(o.harness as HarnessId) || typeof o.source !== "string" || !o.source) return undefined;
   const model = typeof o.model === "string" && o.model.trim() && o.model !== "default" ? o.model.trim() : undefined;
-  return { harness: o.harness as HarnessId, source: o.source as BillingSource, ...(model ? { model } : {}) };
+  const mode = typeof o.mode === "string" && o.mode.trim() ? o.mode.trim() : undefined;
+  return { harness: o.harness as HarnessId, source: o.source as BillingSource, ...(model ? { model } : {}), ...(mode ? { mode } : {}) };
 }
 
 export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to you from Tether's home page. Your job is to turn what they ask for into a coding session in one of their projects, give it a strong first prompt, and see it through until the task is done.
@@ -425,15 +428,47 @@ export class HomeAgent {
   async settings(): Promise<HomeAgentSettings> {
     const have = this.harnesses();
     const set = this.state.settings;
-    if (set && have.includes(set.harness)) return set;
+    if (set && have.includes(set.harness)) return { ...set, mode: set.mode ?? HOME_AGENT_MODE };
     const harness = have.includes("claude") ? "claude" : (have[0] ?? "claude");
-    return { harness, source: (await this.ctx.sessions.sources(harness)).default ?? "subscription" };
+    return { harness, source: (await this.ctx.sessions.sources(harness)).default ?? "subscription", mode: HOME_AGENT_MODE };
+  }
+
+  /**
+   * The mode a chat on `harness` runs in for `asked` (none: auto): the mode itself when the harness
+   * offers it, else (auto on a Claude Code or model without it) the loosest mode at or below it, as a
+   * move maps modes. A harness that can't list its modes gets it as asked.
+   */
+  async modeFor(harness: HarnessId, asked: string | undefined): Promise<string> {
+    const mode = asked ?? HOME_AGENT_MODE;
+    const a = this.adapter(harness);
+    const offered = (await a?.listModels().catch(() => undefined))?.permissionModes.map((m) => m.id);
+    if (!a || !offered?.length || offered.includes(mode)) return mode;
+    const level = levelOf(a, mode);
+    if (level === undefined || !a.move?.modes.length) throw new Error(`${HARNESS_LABELS[harness]} has no mode ${mode}.`);
+    const usable = a.move.modes.filter((m) => offered.includes(m.mode));
+    return mapMode(level, usable.length ? usable : a.move.modes);
   }
 
   async newChat(): Promise<{ sessionId: string; rev: number }> {
-    const { harness, source, model } = await this.settings();
-    const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode: OWN_MODE[harness], ...(model ? { model } : {}) });
+    const { harness, source, model, mode } = await this.settings();
+    const permissionMode = await this.modeFor(harness, mode);
+    const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
     return { sessionId: id, rev: this.setCurrent(id) };
+  }
+
+  /**
+   * Puts the current chat on the chosen mode if it runs in another, between turns: a chat from
+   * before the mode could be chosen ran in "Ask first" (or Codex's read only), and none chosen is auto.
+   */
+  async alignMode(): Promise<void> {
+    const id = await this.current();
+    if (!id) return;
+    const look = await this.ctx.sessions.open(id).catch(() => undefined);
+    if (!look || look.status !== "idle") return;
+    const { harness, mode } = await this.settings();
+    if (look.summary.harness !== harness) return;
+    const want = await this.modeFor(harness, mode);
+    if (look.state.permissionMode !== want) await this.ctx.ops.call("setPermissionMode", { sessionId: id, mode: want });
   }
 
   /**
@@ -446,6 +481,8 @@ export class HomeAgent {
     const next = settingsOf(asked);
     if (!next) throw new Error("Pick an agent and a source.");
     if (!this.harnesses().includes(next.harness)) throw new Error(`${HARNESS_LABELS[next.harness]} can't run the Home agent on this runner.`);
+    const mode = await this.modeFor(next.harness, next.mode);
+    next.mode = mode;
     const sources = await this.ctx.sessions.sources(next.harness);
     // A runner with no choice of source: its harness's own login.
     const option = sources.options.length ? sources.options.find((o) => o.source === next.source) : next.source === "subscription" ? ({ source: next.source } as SourceOption) : undefined;
@@ -464,11 +501,12 @@ export class HomeAgent {
       const capabilities = this.adapter(next.harness)?.capabilities;
       if (!sameHarness || (next.source !== own && !(capabilities?.sourceSwitch && !capabilities.sourceCarry))) {
         const moved = await this.ctx.ops.call("moveSession", { sessionId: id, harness: next.harness, source: next.source, ...(next.model ? { model: next.model } : {}) });
-        await this.ctx.ops.call("setPermissionMode", { sessionId: moved.sessionId, mode: OWN_MODE[next.harness] }).catch((e) => this.ctx.log(`couldn't set the moved chat's mode: ${(e as Error).message}`));
+        await this.ctx.ops.call("setPermissionMode", { sessionId: moved.sessionId, mode }).catch((e) => this.ctx.log(`couldn't set the moved chat's mode: ${(e as Error).message}`));
         this.moved(id, moved.sessionId);
         id = moved.sessionId;
       } else {
         if (next.model && next.model !== look.state.model) await this.ctx.ops.call("setModel", { sessionId: id, model: next.model });
+        if (mode !== look.state.permissionMode) await this.ctx.ops.call("setPermissionMode", { sessionId: id, mode });
         if (next.source !== own) await this.ctx.ops.call("setSessionSource", { sessionId: id, source: next.source });
       }
     }
@@ -963,6 +1001,8 @@ export const homeAgentModule: Module = {
     ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.clear());
+    // A chat from before modes could be chosen takes the chosen one (auto) once the runner is up.
+    void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chat's mode: ${(e as Error).message}`));
 
     const offs = [
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void agent.turnEnded(sessionId, error, stopped)),
