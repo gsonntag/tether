@@ -764,6 +764,62 @@
   margin-bottom: 4px;
 }
 
+/* Tether's report to the Home agent, in its chat: one quiet line, the full text when opened. */
+.t-msg.t-home-report {
+  margin: 2px 0;
+  min-width: 0;
+}
+.t-home-report-line {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-secondary, inherit);
+  opacity: 0.8;
+}
+.t-home-report-line:hover {
+  background: var(--color-overlay-hover);
+  opacity: 1;
+}
+.t-home-report-line:focus-visible {
+  outline: 2px solid var(--color-border-focus, currentColor);
+}
+.t-home-report.attention .t-home-report-line {
+  color: var(--color-text-yellow, inherit);
+  opacity: 1;
+}
+.t-home-report-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-home-report-mark {
+  flex: none;
+}
+.t-home-report-chev {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s;
+}
+.t-home-report-line[aria-expanded="true"] .t-home-report-chev {
+  transform: rotate(90deg);
+}
+.t-home-report-body {
+  border-left: 2px solid var(--color-border, #444);
+  padding: 4px 0 4px 12px;
+  margin: 4px 0 8px 6px;
+  font-size: 13px;
+}
+
 /* ---------- requests dock (above the composer) ---------- */
 
 .t-dock {

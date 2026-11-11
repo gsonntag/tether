@@ -156,7 +156,7 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
   }, [runnerId, sessionId]);
   const view = useStore((s) => s.views[k]);
   const linkOpen = useStore((s) => s.link === "open");
-  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: view?.session?.projectPath }), [runnerId, sessionId, view?.session?.projectPath]);
+  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: view?.session?.projectPath, home: true }), [runnerId, sessionId, view?.session?.projectPath]);
   if (!view?.window || !view.state) {
     return <div className="t-inline-status">{view?.error ?? <Spinner size="sm" label="Opening…" />}</div>;
   }
