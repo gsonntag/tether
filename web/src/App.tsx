@@ -36,7 +36,7 @@ export function App() {
     >
       {auth !== "ok" ? (
         <Blocked auth={auth} />
-      ) : route.page === "credentials" || route.page === "azure" || route.page === "texting" ? (
+      ) : route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" ? (
         <Settings page={route.page} />
       ) : route.page === "session" ? (
         <SessionView key={`${route.runnerId}\u0000${route.sessionId}`} runnerId={route.runnerId} sessionId={route.sessionId} />

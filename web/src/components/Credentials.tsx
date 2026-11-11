@@ -5,12 +5,13 @@ import type { CredentialSlot as Status, CredentialSource, CredentialStatus } fro
 import { rpc } from "../connection";
 import { useStore } from "../store";
 import { AzureSettings } from "./AzureSettings";
+import { DeviceNotifications } from "./DeviceNotifications";
 import { TextingSettings } from "./TextingSettings";
 
-type Page = "credentials" | "azure" | "texting";
+type Page = "credentials" | "azure" | "texting" | "notifications";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
-/** Settings, per runner: Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) and Texting (iMessage). */
+/** Settings, per runner: Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Texting (iMessage) and this device's Notifications. */
 export function Settings({ page }: { page: Page }) {
   const runners = useStore((s) => s.runners);
   const [chosen, setChosen] = useState("");
@@ -23,11 +24,17 @@ export function Settings({ page }: { page: Page }) {
         <a href="#/settings/credentials" aria-current={page === "credentials" ? "page" : undefined}>Credentials</a>
         <a href="#/settings/azure" aria-current={page === "azure" ? "page" : undefined}>Azure</a>
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Texting</a>
+        <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
       </nav>
       <div className="t-credentials">
+      {page === "notifications" ? <>
+      <Heading level={2}>Notifications</Heading>
+      <DeviceNotifications />
+      </> : <>
       <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Texting" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}</select></label>}
       {!runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
+      </>}
       </div>
       </div>
     </main>
