@@ -61,6 +61,8 @@ export interface SessionActions {
   projects(): Promise<ProjectInfo[]>;
   /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first */
   list(): SessionSummary[];
+  /** the archived sessions (which the lists leave out), newest activity first */
+  archived(): Promise<SessionSummary[]>;
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
   /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */

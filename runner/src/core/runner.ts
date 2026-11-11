@@ -234,6 +234,7 @@ export function createRunner(o: RunnerOptions) {
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
         list: () => core.book.list(),
+        archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string) => live.queue.add(id, text, []),
         recent: async (id: string, limit: number) => {
