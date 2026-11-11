@@ -64,6 +64,12 @@ export interface RunnerInfo {
   homeFolder?: string;
 }
 
+/** Runner-wide settings (the Settings page), kept in runner.json. */
+export interface RunnerSettings {
+  /** Claude: every subagent the agent starts runs in the background (its Agent call is made with run_in_background) */
+  backgroundSubagents?: boolean;
+}
+
 export interface User {
   name: string;
   email: string;
@@ -95,6 +101,9 @@ export interface Ops {
   homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string } };
   /** a new Home agent chat, current from now; its first send starts it */
   homeAgentNew: { args: Record<string, never>; result: { sessionId: string } };
+  runnerSettings: { args: Record<string, never>; result: RunnerSettings };
+  /** changes the given settings; live sessions follow at once */
+  setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

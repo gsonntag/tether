@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
 import { redactValue } from "../credentials";
 import type { BillingSource } from "../../../shared/credentials";
+import type { RunnerSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./broker";
 
@@ -31,6 +32,7 @@ export class Prefs {
 
   private open: SavedRequest[];
   private closed: ClosedRequest[];
+  private runnerSettings: RunnerSettings;
 
   constructor(
     private file = CONFIG_FILE,
@@ -40,6 +42,21 @@ export class Prefs {
     this.map = { ...(cfg.sessions ?? {}) };
     this.open = Array.isArray(cfg.requests) ? cfg.requests : [];
     this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
+    this.runnerSettings = cfg.settings && typeof cfg.settings === "object" ? { ...cfg.settings } : {};
+  }
+
+  /** The runner-wide settings. */
+  settings(): RunnerSettings {
+    return { ...this.runnerSettings };
+  }
+
+  /** Changes runner-wide settings (only known keys): written at once. */
+  setSettings(patch: RunnerSettings): RunnerSettings {
+    if (typeof patch.backgroundSubagents === "boolean") this.runnerSettings.backgroundSubagents = patch.backgroundSubagents || undefined;
+    if (this.runnerSettings.backgroundSubagents === undefined) delete this.runnerSettings.backgroundSubagents;
+    this.dirty = true;
+    this.flush();
+    return this.settings();
   }
 
 
@@ -109,9 +126,9 @@ export class Prefs {
     // Reread, so a name edited by hand meanwhile isn't overwritten.
     const cfg = read(this.file);
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
-    const { requests: _, closedRequests: __, ...rest } = cfg;
+    const { requests: _, closedRequests: __, settings: ___, ...rest } = cfg;
     saveConfig(
-      { ...rest, runnerId: cfg.runnerId, sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      { ...rest, runnerId: cfg.runnerId, ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
       this.file,
     );
   }

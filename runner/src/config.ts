@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
 
@@ -20,6 +21,8 @@ export interface RunnerConfig {
   runnerId: string;
   /** what people see; the hostname unless set */
   name?: string;
+  /** runner-wide settings (the Settings page) */
+  settings?: RunnerSettings;
   /** per-session settings Tether chose (SPEC §4), by session id */
   sessions?: Record<string, SessionPrefs>;
   /** approvals and questions still waiting for a person (SPEC §7): they survive a restart */
@@ -70,6 +73,8 @@ export interface SessionPrefs {
   carried?: boolean;
   /** a turn was running: still set at start means it was cut off (a runner restart, a crash); through the quiet wait too */
   running?: boolean;
+  /** the subagents running now (kept so a restart can tell the agent which ones it lost) */
+  liveSubagents?: { title: string; agentType?: string }[];
   /** a turn a restart cut off, recorded (Home shows it once): its notice goes in when the session is read */
   cutOff?: boolean;
   /** when the quiet wait after a restart began: set until it resolves, across further restarts (live.ts autoContinue) */
