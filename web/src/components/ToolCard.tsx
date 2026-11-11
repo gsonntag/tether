@@ -221,7 +221,12 @@ function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?
           <pre className="t-pre wrap">{i.text}</pre>
         </>
       )}
-      <Output text={p.output} label={ask && p.status === "done" ? "Answer" : p.status === "error" ? "Why" : "Result"} />
+      {p.output && (
+        <>
+          <span className="t-label">{ask && p.status === "done" ? "Answer" : p.status === "error" ? "Why" : "Result"}</span>
+          <pre className="t-pre wrap">{p.output}</pre>
+        </>
+      )}
     </>
   );
 }
