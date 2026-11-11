@@ -1276,8 +1276,15 @@ finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 **Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum for a
 request, "needs you", a failed turn, a turn whose last message asks the person something, and the
 agent's answer after the person texted it (a turn that just finishes doesn't text), each with a link
-to the session; skipped while the session is viewed. Texts carry what the agent wants (the command,
-file, question and options, plan) with known secrets redacted. Replies route by number: each text
+to the session; skipped while the session is viewed. A request's text is
+for a person on a phone, at most ~200 characters plus the link (always there, since the details
+live in Tether): what the agent wants to do in plain words ("Claude wants to delete folders and
+remove the hide-checkin worktree (a temporary copy of the code), flagged because it deletes files.
+Safe? y/n"), from the tool call's own `description` (Claude Code's Bash) or a deterministic reading
+of the command (`texting/summary.ts`: its programs, the riskiest first). The harness's warning is
+translated into a few words ("it deletes files", "it's a complex command") or left out, never
+pasted, and the raw command never goes in a text. A question carries its options, a plan its
+first line. Known secrets are redacted. Replies route by number: each text
 starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
 text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
 text with several open is held and answered with a numbered picker listing only the sessions still

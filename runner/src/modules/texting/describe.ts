@@ -1,10 +1,15 @@
-// What a text about a request says, and what a reply to one means. Texts say what the agent wants
-// (the command, the file, the question and its options, the plan), with known secrets redacted, and
-// take short answers: y or n for an approval or a plan, a letter for a question. Anything else is
+// What a text about a request says, and what a reply to one means. An approval's text says in plain
+// words what the agent wants to do and why it was flagged (summary.ts: never the raw command or the
+// harness's warning, which stay in Tether behind the text's link), at most REQUEST_MAX characters; a
+// question carries its options, a plan its title. Known secrets are redacted. Texts take short answers: y or n for an approval or a plan, a letter for a question. Anything else is
 // the person talking to the agent: it goes to the agent as their words.
 
 import type { Request, RequestAnswer } from "../../../../shared/transcript";
 import { redact } from "../../credentials";
+import { commandWords, flagWords, shortPath, toolWords } from "./summary";
+
+/** How long an approval's or a plan's words may be (the "[n] " stamp and the link come on top). */
+export const REQUEST_MAX = 200;
 
 export const clip = (s: string, n: number) => {
   const t = redact(s).trim();
@@ -20,14 +25,17 @@ export function requestText(r: Request, agent: string): { status: string; body: 
     const qs = r.questions?.length ? r.questions : [{ question: r.question ?? "", options: (r.options ?? []).map((label) => ({ label })) }];
     const shown = qs.slice(0, 4).map((q, i) => {
       const head = qs.length > 1 ? `${i + 1}. ` : "";
-      const opts = q.options.slice(0, LETTERS.length).map((o, j) => `${LETTERS[j]}) ${clip(o.label, 120)}`).join("\n");
-      return `${head}${clip(q.question, 400)}${"multiSelect" in q && q.multiSelect ? " (pick any)" : ""}\n${opts}`;
+      const opts = q.options.slice(0, LETTERS.length).map((o, j) => `${LETTERS[j]}) ${clip(o.label, 80)}`).join("\n");
+      return `${head}${clip(q.question, REQUEST_MAX)}${"multiSelect" in q && q.multiSelect ? " (pick any)" : ""}\n${opts}`;
     });
     const how = qs.length > 1 ? `Reply with a letter for each question, like "a c".` : "Reply with a letter, or your own answer.";
     return { status: "has a question", body: `${agent} asks:\n${shown.join("\n\n")}\n\n${how}` };
   }
   if (r.plan !== undefined) {
-    return { status: "has a plan to approve", body: `${agent} has a plan:\n\n${clip(r.plan, 1500)}\n\nReply y to approve, or say what to change.` };
+    // Its first line that says something ("# Plan" doesn't).
+    const title = r.plan.split("\n").map((l) => l.replace(/^(\s*([#>*-]+|\d+[.)])\s*)+/, "").trim()).find((l) => l && !/^(the\s+)?(implementation\s+)?plan:?$/i.test(l)) ?? "";
+    const ask = "Approve? y, or say what to change.";
+    return { status: "has a plan to approve", body: `${clip(`${agent} has a plan to approve${title ? `: ${bare(title)}` : ""}`, REQUEST_MAX - ask.length - 2)}. ${ask}` };
   }
   const input = (r.input ?? {}) as Record<string, unknown>;
   const files = Array.isArray(input.files) ? input.files.flatMap((f: any) => str(f?.path) ?? str(f) ?? []) : [];
@@ -36,30 +44,43 @@ export function requestText(r: Request, agent: string): { status: string; body: 
   const kind = r.toolKind ?? (command ? "shell" : undefined);
   let status: string;
   let what: string;
+  let flag: string | undefined;
   if (r.network) {
     status = "wants network access";
-    what = `${agent} wants network access${r.reason ? `: ${clip(r.reason, 300)}` : "."}`;
+    what = "use the internet";
   } else if (kind === "shell" && command) {
     status = "wants to run a command";
-    what = `${agent} wants to run:\n${clip(command, 600)}`;
+    what = commandWords(command, str(input.description));
+    flag = flagWords(r.reason, command);
   } else if ((kind === "edit" || kind === "write") && (path || files.length)) {
     status = files.length > 1 ? `wants to edit ${files.length} files` : "wants to edit a file";
-    what = `${agent} wants to ${kind === "write" ? "write" : "edit"} ${files.length > 1 ? files.slice(0, 5).map((f) => clip(f, 150)).join(", ") : clip(path!, 300)}`;
+    what = files.length > 1 ? `edit ${files.length} files (${files.slice(0, 3).map(shortPath).join(", ")})` : `${kind === "write" ? "write" : "edit"} ${shortPath(path!)}`;
+    flag = flagWords(r.reason);
   } else if ((kind === "read" || kind === "search") && (path || r.title)) {
     status = "wants to read files";
-    what = `${agent} wants to read ${clip(path ?? r.title!, 300)}`;
+    what = `read ${path ? shortPath(path) : r.title!}`;
+    flag = flagWords(r.reason);
   } else if (kind === "fetch" && str(input.url)) {
     status = "wants to fetch from the web";
-    what = `${agent} wants to fetch ${clip(str(input.url)!, 300)}`;
+    what = `open ${hostOf(str(input.url)!)}`;
   } else {
     status = "wants to use a tool";
-    const args = Object.keys(input).length ? `\n${clip(JSON.stringify(input), 300)}` : "";
-    what = `${agent} wants to use ${r.tool ?? "a tool"}${r.title ? `: ${clip(r.title, 200)}` : ""}${args}`;
+    what = `use ${toolWords(r.tool ?? "a tool")}${r.title ? `: ${r.title}` : ""}`;
+    flag = flagWords(r.reason);
   }
-  const why = r.reason && !r.network ? `\n(${clip(r.reason, 200)})` : "";
-  const how = r.noReason ? "Reply y to allow or n to deny." : "Reply y to allow, n to deny, or tell it what to do instead.";
-  return { status, body: `${what}${why}\n\n${how}` };
+  const ask = r.noReason ? "Allow? y/n" : "Safe? y/n";
+  const words = `${agent} wants to ${what}${flag ? `, flagged because ${flag}` : ""}`;
+  return { status, body: `${clip(bare(words), REQUEST_MAX - ask.length - 2)}. ${ask}` };
 }
+
+const bare = (s: string) => s.trim().replace(/[.!:\s]+$/, "");
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+};
 
 export type ReplyMeaning =
   /** an answer to the request (nothing is texted back: the agent answers for itself) */
