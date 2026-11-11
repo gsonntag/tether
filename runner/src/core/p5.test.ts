@@ -13,7 +13,7 @@ import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import { FakeAdapter, FakeDriver, say, subagent, toolCall } from "./fakeAdapter";
-import { AUTO_CONTINUE_TEXT, LiveControl } from "./live";
+import { AUTO_CONTINUE_MAX, AUTO_CONTINUE_TEXT, LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { SessionCore } from "./sessions";
 
@@ -736,7 +736,7 @@ describe("read state", () => {
     expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
     b.prefs.flush();
     b.core.stop();
-    // Cut off again within two minutes.
+    // Cut off again within seconds (a crash loop).
     const c = setup({ dir, prefsFile: a.prefsFile });
     c.adapter.addStored("s1", []);
     await c.live.rejoin();
@@ -871,7 +871,7 @@ describe("read state", () => {
   test("a second restart during the wait waits again: the turn is kept, no Failed, continued once", async () => {
     const { a, b, quiet } = await inWait({ queue: "two" });
     expect(b.prefs.get("claude:s1")).toMatchObject({ running: true, queueHeldBy: "restart" });
-    expect(b.prefs.get("claude:s1").continuedTurn).toBeUndefined();
+    expect(b.prefs.get("claude:s1").continues).toBeUndefined();
     const since = b.prefs.get("claude:s1").restartWait;
     expect(since).toBeNumber();
     await b.live.closeAll();
@@ -895,7 +895,7 @@ describe("read state", () => {
     clearInterval(tick);
     await until(() => c.adapter.drivers.length === 1 && c.driver().sent.length === 1, 3000);
     expect(c.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
-    expect(c.prefs.get("claude:s1")).toMatchObject({ running: true, continuedTurn: true });
+    expect(c.prefs.get("claude:s1")).toMatchObject({ running: true, continues: 1 });
     expect(c.prefs.get("claude:s1").restartWait).toBeUndefined();
     expect(JSON.stringify(s.transcript!.messages)).not.toContain("This turn stopped");
     expect(s.state.queue.map((m) => m.text)).toEqual(["two"]);
@@ -918,13 +918,13 @@ describe("read state", () => {
     expect(c.prefs.get("claude:s1").running).toBeUndefined();
   });
 
-  test("a stale continuedTurn doesn't block the next cut-off turn", async () => {
+  test("a stale continue count doesn't block the next cut-off turn", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
     const a = setup({ dir });
     a.adapter.addStored("s1", []);
-    a.prefs.set("claude:s1", { continuedTurn: true });
+    a.prefs.set("claude:s1", { continues: AUTO_CONTINUE_MAX });
     await a.live.send("claude:s1", "one");
-    expect(a.prefs.get("claude:s1").continuedTurn).toBeUndefined();
+    expect(a.prefs.get("claude:s1").continues).toBeUndefined();
     a.prefs.flush();
     a.core.stop();
     const b = setup({ dir, prefsFile: a.prefsFile });
@@ -1037,19 +1037,50 @@ describe("read state", () => {
     expect(b.prefs.get("claude:s1").unread).toBeUndefined();
   });
 
-  test("a turn Tether continued, cut off again even long after, isn't continued a second time", async () => {
+  test("a continued turn cut off again by a later restart is continued again, up to AUTO_CONTINUE_MAX times", async () => {
     const { a, b } = await cutOff();
     await b.live.rejoin();
     expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
-    // Much later, still the same continued turn.
-    b.prefs.set("claude:s1", { autoContinuedAt: Date.now() - 60 * 60_000 });
+    let prev = b;
+    for (let n = 2; n <= AUTO_CONTINUE_MAX + 1; n++) {
+      // Minutes later, the same continued turn still running.
+      prev.prefs.set("claude:s1", { autoContinuedAt: Date.now() - 5 * 60_000 });
+      await prev.live.closeAll();
+      prev.prefs.flush();
+      prev.core.stop();
+      const c = setup({ prefsFile: a.prefsFile });
+      c.adapter.addStored("s1", []);
+      c.live.quiet = { quietMs: 0, pollMs: 50, maxMs: 2000 };
+      await c.live.rejoin();
+      if (n <= AUTO_CONTINUE_MAX) {
+        await until(() => c.adapter.drivers.length === 1 && c.driver().sent.length === 1);
+        expect(c.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
+        expect(c.prefs.get("claude:s1").continues).toBe(n);
+      } else {
+        expect(c.adapter.drivers).toHaveLength(0);
+        expect(c.prefs.get("claude:s1").unread).toBe("failed");
+      }
+      prev = c;
+    }
+  });
+
+  test("a continued turn that ends clears the count: the next cut-off turn is continued", async () => {
+    const { a, b } = await cutOff();
+    await b.live.rejoin();
+    expect(b.prefs.get("claude:s1").continues).toBe(1);
+    b.end();
+    await until(() => b.prefs.get("claude:s1").continues === undefined);
+    await b.live.send("claude:s1", "next");
+    b.prefs.set("claude:s1", { autoContinuedAt: Date.now() - 5 * 60_000 });
+    await b.live.closeAll();
     b.prefs.flush();
     b.core.stop();
-    const c = setup({ dir: undefined as any, prefsFile: a.prefsFile });
+    const c = setup({ prefsFile: a.prefsFile });
     c.adapter.addStored("s1", []);
+    c.live.quiet = { quietMs: 0, pollMs: 50, maxMs: 2000 };
     await c.live.rejoin();
-    expect(c.adapter.drivers).toHaveLength(0);
-    expect(c.prefs.get("claude:s1").unread).toBe("failed");
+    await until(() => c.adapter.drivers.length === 1 && c.driver().sent.length === 1);
+    expect(c.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
   });
 
   test("two sessions cut off at once are both continued", async () => {

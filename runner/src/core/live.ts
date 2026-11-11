@@ -51,8 +51,13 @@ export interface TerminalSeam {
   blocked(s: Session): string | undefined;
 }
 
-/** A runner restart within this long of an automatic continue doesn't continue again (no loops). */
-export const AUTO_CONTINUE_GUARD_MS = 2 * 60_000;
+/**
+ * Crash-loop guards for the continue after a restart: a restart this soon after the last automatic
+ * continue doesn't continue again (a runner crashing on the continue restarts within seconds), and
+ * one turn is continued at most this many times without ending.
+ */
+export const AUTO_CONTINUE_GUARD_MS = 30_000;
+export const AUTO_CONTINUE_MAX = 5;
 /** What Tether tells the agent after a restart cut its turn off (marked as Tether's own). */
 export const AUTO_CONTINUE_TEXT = `${FROM_TETHER}Tether: continue after restart. The runner restarted mid-turn; carry on where you left off, and check whether any command you were running finished.`;
 
@@ -219,7 +224,7 @@ export class LiveControl {
       this.endWait(s, true);
       if (s.state.queueHeldBy === "restart") this.queue.release(s);
       s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
-    } else if (this.core.o.prefs.get(id).continuedTurn) this.core.o.prefs.set(id, { continuedTurn: undefined });
+    } else if (this.core.o.prefs.get(id).continues) this.core.o.prefs.set(id, { continues: undefined });
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
     this.status(s, "running");
     try {
@@ -248,7 +253,7 @@ export class LiveControl {
       // Handed to the harness from here: its turn starts (a change now is against that turn).
       s.sentOut = me;
       if (o.continued) {
-        this.core.o.prefs.set(id, { autoContinuedAt: this.core.now(), continuedTurn: true });
+        this.core.o.prefs.set(id, { autoContinuedAt: this.core.now(), continues: (this.core.o.prefs.get(id).continues ?? 0) + 1 });
         this.core.o.prefs.flush();
       }
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
@@ -577,8 +582,8 @@ export class LiveControl {
     this.queue.hold(s, "stopped");
     if (s.state.status !== "idle" || s.sending) s.stopped = true;
     // Saved now: a restart before the stop takes effect must not continue a turn you stopped.
-    if (this.core.o.prefs.get(id).running || this.core.o.prefs.get(id).continuedTurn) {
-      this.core.o.prefs.set(id, { running: undefined, continuedTurn: undefined, restartWait: undefined });
+    if (this.core.o.prefs.get(id).running || this.core.o.prefs.get(id).continues) {
+      this.core.o.prefs.set(id, { running: undefined, continues: undefined, restartWait: undefined });
       this.core.o.prefs.flush();
     }
     // Stopped before the harness has the message (it may still be starting): it never goes out.
@@ -650,16 +655,23 @@ export class LiveControl {
     // Recorded once: `running` becomes `cutOff` (the session's notice still goes in when it's read),
     // so a later restart doesn't bring it back after you marked it read.
     // A turn a restart cut off goes on by itself (SPEC §4): Tether resumes the session with a short
-    // message of its own. Not for a session waiting on you (its saved request is asked again), nor
-    // twice in a row: a restart within AUTO_CONTINUE_GUARD_MS of an automatic continue falls back to
-    // Failed on Home and a held queue, for you to pick up.
+    // message of its own, again after each restart that cuts the continued turn off too. Not for a
+    // session waiting on you (its saved request is asked again), nor when it looks like a crash loop:
+    // a restart within AUTO_CONTINUE_GUARD_MS of the last automatic continue, or a turn continued
+    // AUTO_CONTINUE_MAX times without ending. Those fall back to Failed on Home and a held queue.
     const waiting = new Set(this.desk.broker.sessions(true));
     const continuing: string[] = [];
     for (const id of this.core.o.prefs.running())
       if (!persistent(id) && parseSessionId(id)) {
         const p = this.core.o.prefs.get(id);
-        const again = p.continuedTurn || (p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS);
-        if (!waiting.has(id) && !again) {
+        const why = waiting.has(id)
+          ? "it's waiting for you"
+          : p.autoContinuedAt && this.core.now() - p.autoContinuedAt < AUTO_CONTINUE_GUARD_MS
+            ? `it was continued ${Math.round((this.core.now() - p.autoContinuedAt) / 1000)}s ago`
+            : (p.continues ?? 0) >= AUTO_CONTINUE_MAX
+              ? `its turn was already continued ${p.continues} times`
+              : undefined;
+        if (!why) {
           // `running` stays until the wait resolves: a restart meanwhile comes back here.
           this.core.o.prefs.set(id, { cutOff: undefined, restartWait: p.restartWait ?? this.core.now() });
           this.restartWaits.add(id);
@@ -667,6 +679,7 @@ export class LiveControl {
           continuing.push(id);
           continue;
         }
+        this.core.log(`${id}: not continuing the turn the restart cut off: ${why}`);
         this.read.set(id, { failure: "The runner restarted mid-turn." });
         this.core.o.prefs.set(id, { running: undefined, cutOff: true, restartWait: undefined });
       }
@@ -1587,7 +1600,7 @@ export class LiveControl {
     // Not cleared while its subagents still run (busy): a restart must find them again (persistent harnesses rejoin).
     if (!s.summary.parentSessionId && s.state.mode !== "terminal" && (now === "idle") !== (before === "idle") && !(now === "idle" && s.driver?.busy()))
     {
-      this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true, ...(now === "idle" ? { continuedTurn: undefined } : {}) });
+      this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: now === "idle" ? undefined : true, ...(now === "idle" ? { continues: undefined } : {}) });
       // At once, not after the usual short delay: a crash right after a turn ends mustn't look mid-turn.
       this.core.o.prefs.flush();
     }
