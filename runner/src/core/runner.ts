@@ -1,6 +1,7 @@
 // The runner's core, assembled: its event bus, ops, harness facts and connection to the app.
 // index.ts adds modules and process handling; tests build one against a fake server.
 
+import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
@@ -222,6 +223,8 @@ export function createRunner(o: RunnerOptions) {
         sourceOf: async (id: string) => live.sourceOf(await core.open(id)),
         sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
+        tell: (id: string, text: string) => live.tell(id, defang(text)),
+        deny: (id: string, requestId: string, reason?: string) => live.answerRequest(id, requestId, { allow: false, reason: reason ? defang(reason) : undefined }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
         folder: (path: string) => core.folder(path),

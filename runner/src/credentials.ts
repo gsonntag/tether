@@ -32,6 +32,10 @@ export interface AzureSettings { endpoint?: string; deployments: AzureDeployment
  */
 interface Saved { version: 3; anthropic?: Secret; openai?: Secret; azure?: Secret; azureSettings?: AzureSettings }
 const secrets = new Set<string>();
+/** A secret kept elsewhere (a module's own file): redacted from every op answer and log from now on. */
+export function registerSecret(key: string) {
+  if (key.length >= 8) secrets.add(key);
+}
 export function redact(text: string): string {
   for (const key of secrets) text = text.replaceAll(key, "[redacted]");
   return text;

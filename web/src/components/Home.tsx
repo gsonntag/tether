@@ -143,7 +143,7 @@ function Notifications() {
     <div className="t-notify" aria-label="Notifications">
       <div className="t-notify-text">
         <span className="t-notify-title">Notifications on this device</span>
-        <span className="t-inline-status">{note ?? text[state]}</span>
+        <span className="t-inline-status">{note ?? text[state]} <a href="#/settings/texting">Get texts too</a></span>
       </div>
       {state === "off" && <Button label="Turn on" size="sm" variant="primary" clickAction={() => run(() => enablePush(pushKey!, online))} />}
       {state === "on" && (

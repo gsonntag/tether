@@ -154,11 +154,16 @@ export interface Ops {
   /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
   listFolders: { args: { path: string }; result: FolderList };
   /**
-   * Add project: `git clone git@github.com:org/repo.git` into `path` (a new folder; parents are
-   * made). `repo` is `org/repo` or a GitHub URL; it always clones over SSH. A folder that already
-   * holds a clone of that repo is answered as it is.
+   * Add project: starts `git clone git@github.com:org/repo.git` into `path` (a new folder; parents
+   * are made) and answers right away; `cloneStatus` tells how it goes. `repo` is `org/repo` or a
+   * GitHub URL; it always clones over SSH. A folder that already holds a clone of that repo is
+   * done at once; any other existing folder is refused here.
    */
-  cloneRepo: { args: { repo: string; path: string }; result: { path: string } };
+  cloneRepo: { args: { repo: string; path: string }; result: { cloneId: string } };
+  /** How a clone is going (polled; kept a while after it ends). */
+  cloneStatus: { args: { cloneId: string }; result: CloneStatus };
+  /** Stops a running clone; what it wrote is removed. */
+  cancelClone: { args: { cloneId: string }; result: null };
   /**
    * Starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI,
    * then Enter (SPEC §9). `stop`: Stop and send now (the running turn is stopped first). Sending
@@ -201,6 +206,12 @@ export interface Ops {
   pushStatus: { args: { endpoint: string }; result: { subscribed: boolean; ready: boolean } };
   /** Sends a test notification to one subscription. */
   pushTest: { args: { endpoint: string }; result: null };
+  /** Texting (iMessage through Photon, SPEC §11 Texting): how it's set on this runner. Never the keys. */
+  textingStatus: { args: {}; result: TextingStatus };
+  /** Changes texting's settings; an empty string clears a field. The link restarts. */
+  setTexting: { args: { enabled?: boolean; phone?: string; projectId?: string; projectSecret?: string }; result: TextingStatus };
+  /** Sends a test text to the phone. */
+  textingTest: { args: {}; result: null };
   /**
    * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
    * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)
@@ -284,6 +295,20 @@ export interface FolderList {
   folders: string[];
   /** more folders than were listed */
   more?: boolean;
+}
+
+/** cloneStatus: a clone's progress. */
+export interface CloneStatus {
+  state: "running" | "done" | "failed";
+  /** the folder it clones into (expanded) */
+  path: string;
+  /** what git is doing now, e.g. "Receiving objects" */
+  phase?: string;
+  /** 0–100 over the whole clone; none while the server is still counting */
+  percent?: number;
+  /** how much came so far and how fast, e.g. "10.96 MiB · 1.55 MiB/s" */
+  detail?: string;
+  error?: string;
 }
 
 /** A browser's push subscription (PushSubscription.toJSON()). */
@@ -416,3 +441,16 @@ export type RunnerToServer =
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */
   | { t: "ping" };
+
+/** Texting's settings on a runner, as the web sees them (secrets stay on the runner). */
+export interface TextingStatus {
+  enabled: boolean;
+  /** the phone's last 4 digits */
+  phoneLast4?: string;
+  /** the Photon project's id and secret are both set */
+  keysSet: boolean;
+  /** what holds a field: the runner's environment (runner.env) wins over what was saved here */
+  fromEnv: { phone: boolean; keys: boolean };
+  connected: boolean;
+  lastError?: string;
+}

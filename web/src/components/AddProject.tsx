@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import type { FolderList } from "../../../shared/protocol";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import type { CloneStatus, FolderList } from "../../../shared/protocol";
 import { defaultClonePath, parseRepo } from "../../../shared/repo";
 import { rpc } from "../connection";
 
@@ -76,6 +77,11 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
   const [dest, setDest] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  /** the running clone and how it goes */
+  const [progress, setProgress] = useState<CloneStatus>();
+  const cloneId = useRef<string>(undefined);
+  const live = useRef(true);
+  useEffect(() => () => void (live.current = false), []);
   let parsed: ReturnType<typeof parseRepo> | undefined;
   try {
     parsed = repo.trim() ? parseRepo(repo) : undefined;
@@ -85,14 +91,37 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
     if (!parsed || !path.trim() || busy) return;
     setBusy(true);
     setError(undefined);
+    setProgress(undefined);
     try {
-      const r = await rpc(runnerId, "cloneRepo", { repo, path: path.trim() });
-      onPick(r.path);
+      const { cloneId: id } = await rpc(runnerId, "cloneRepo", { repo, path: path.trim() });
+      cloneId.current = id;
+      // The clone runs on the runner; its progress is asked for until it ends.
+      for (;;) {
+        const st = await rpc(runnerId, "cloneStatus", { cloneId: id });
+        if (!live.current || cloneId.current !== id) return;
+        if (st.state === "done") return onPick(st.path);
+        if (st.state === "failed") {
+          if (st.error !== "Canceled.") setError(st.error);
+          return;
+        }
+        setProgress(st);
+        await new Promise((r) => setTimeout(r, 500));
+      }
     } catch (e) {
-      setError((e as Error).message);
+      if (live.current) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (live.current) {
+        setBusy(false);
+        setProgress(undefined);
+      }
+      cloneId.current = undefined;
     }
+  };
+  const cancel = () => {
+    const id = cloneId.current;
+    if (!id) return onCancel();
+    cloneId.current = undefined;
+    void rpc(runnerId, "cancelClone", { cloneId: id }).catch(() => {});
   };
   const enter = (e: React.KeyboardEvent) => e.key === "Enter" && void clone();
   return (
@@ -101,7 +130,7 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
         <label className="t-field-label" htmlFor="t-clone-repo">
           Repository
         </label>
-        <input id="t-clone-repo" className="t-search" placeholder="org/repo" value={repo} autoComplete="off" autoFocus onChange={(e) => setRepo(e.target.value)} onKeyDown={enter} />
+        <input id="t-clone-repo" className="t-search" disabled={busy} placeholder="org/repo" value={repo} autoComplete="off" autoFocus onChange={(e) => setRepo(e.target.value)} onKeyDown={enter} />
         {parsed && <span className="t-inline-status t-clone-url">{parsed.url}</span>}
         {repo.trim() && !parsed && <span className="t-inline-status error">Use org/repo or a github.com URL.</span>}
       </div>
@@ -109,11 +138,19 @@ function CloneForm({ runnerId, onPick, onCancel }: { runnerId: string; onPick: (
         <label className="t-field-label" htmlFor="t-clone-dest">
           Clone to
         </label>
-        <input id="t-clone-dest" className="t-search" placeholder="~/projects/repo" value={path} autoComplete="off" onChange={(e) => setDest(e.target.value)} onKeyDown={enter} />
+        <input id="t-clone-dest" className="t-search" disabled={busy} placeholder="~/projects/repo" value={path} autoComplete="off" onChange={(e) => setDest(e.target.value)} onKeyDown={enter} />
       </div>
+      {busy && (
+        <ProgressBar
+          label={[progress?.phase ?? "Starting", progress?.detail].filter(Boolean).join(" · ")}
+          value={progress?.percent ?? 0}
+          isIndeterminate={progress?.percent === undefined}
+          hasValueLabel={progress?.percent !== undefined}
+        />
+      )}
       {error && <div className="t-form-error">{error}</div>}
       <div className="t-add-proj-actions">
-        <Button label="Cancel" variant="secondary" onClick={onCancel} />
+        <Button label={busy ? "Stop" : "Cancel"} variant="secondary" onClick={cancel} />
         <Button label={busy ? "Cloning…" : "Clone"} variant="primary" isDisabled={!parsed || !path.trim() || busy} onClick={() => void clone()} />
       </div>
     </>

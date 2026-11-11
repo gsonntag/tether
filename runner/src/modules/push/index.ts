@@ -18,11 +18,11 @@ import { SubscriptionStore } from "./store";
 const DEV = process.env.TETHER_DEV === "1";
 
 /** A request that closes this fast (answered elsewhere, a policy step) never notifies. */
-const REQUEST_DELAY_MS = 800;
+export const REQUEST_DELAY_MS = 800;
 /** A turn end is told only if the session is still idle by then (the queue may send the next message). */
-const FINISH_DELAY_MS = 1500;
+export const FINISH_DELAY_MS = 1500;
 
-const agentOf = (sessionId: string) => AGENT_NAMES[parseSessionId(sessionId)?.harness ?? "claude"] ?? "The agent";
+export const agentOf = (sessionId: string) => AGENT_NAMES[parseSessionId(sessionId)?.harness ?? "claude"] ?? "The agent";
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
 /** Looks like a path, URL, key, token, secret or an assignment: never in a notification. */
@@ -85,6 +85,16 @@ export function failureKind(error: string): string {
   return "an error";
 }
 
+/** A turn end worth telling: a main session, still idle, not waiting on a request (that tells itself). */
+export function endWorthTelling(look: { summary: { parentSessionId?: string }; status: string; requests: string[] } | undefined): boolean {
+  return !!look && !look.summary.parentSessionId && look.status === "idle" && !look.requests.length;
+}
+
+/** A request worth telling: still open after the delay. */
+export function requestStillOpen(look: { requests: string[] } | undefined, requestId: string): boolean {
+  return !!look?.requests.includes(requestId);
+}
+
 export class Notifier {
   constructor(
     private ctx: Pick<ModuleContext, "session" | "viewersOf" | "runnerId" | "log">,
@@ -118,7 +128,7 @@ export class Notifier {
 
   async request(r: Request) {
     const look = this.ctx.session(r.sessionId);
-    if (!look?.requests.includes(r.id)) return;
+    if (!look || !requestStillOpen(look, r.id)) return;
     const root = look.summary.parentSessionId;
     await this.notify({ kind: "request", sessionId: r.sessionId, title: this.title(r.sessionId), body: requestBody(r, agentOf(r.sessionId), parseSessionId(r.sessionId)?.harness), tag: `req-${r.id}` }, root ? [root] : []);
   }
@@ -128,10 +138,8 @@ export class Notifier {
   }
 
   async turnEnded(sessionId: string, error?: string) {
-    const look = this.ctx.session(sessionId);
-    if (!look || look.summary.parentSessionId) return;
     // The queue sent the next message, or the session waits on a request (that notifies itself).
-    if (look.status !== "idle" || look.requests.length) return;
+    if (!endWorthTelling(this.ctx.session(sessionId))) return;
     // Why it needs you, not what the agent said (lock screens show notifications).
     if (error) await this.notify({ kind: "failed", sessionId, title: this.title(sessionId), body: `Failed: ${failureKind(error)}.`, tag: `end-${sessionId}` });
     else await this.notify({ kind: "finished", sessionId, title: this.title(sessionId), body: `Finished.`, tag: `end-${sessionId}` });
