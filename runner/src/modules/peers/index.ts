@@ -3,12 +3,12 @@
 // note to all. A message goes through the target's queue like any other (core/queue.ts): it never
 // steers, waits for a running turn, obeys holds and survives restarts; it starts with a marker
 // (shared/fromTether.ts) so the transcript shows who wrote it. Nothing asks the person; loops are
-// capped instead (caps.ts). The person's own "Send to all" is the `broadcast` op.
+// capped instead (caps.ts).
 
 import { join } from "node:path";
-import { defang, markTitle, parseSessionMessage, peerHops, sessionMessage } from "../../../../shared/fromTether";
+import { markTitle, parseSessionMessage, peerHops, sessionMessage } from "../../../../shared/fromTether";
 import { MESSAGE_TEXT_MAX } from "../../../../shared/limits";
-import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord, type BroadcastFilter } from "../../../../shared/peers";
+import { matching, PEER_SERVER, PEER_TOOLS, reachable, statusWord } from "../../../../shared/peers";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -371,25 +371,6 @@ export class Peers {
     if (!sent.length) undo();
     return { text: [`Sent to ${sent.length} session${sent.length === 1 ? "" : "s"}:`, ...sent, ...(denied.length ? ["No permission (their permissions are looser than this session's), not sent to:", ...denied] : []), ...(failed.length ? ["Couldn't send to:", ...failed] : [])].join("\n") };
   }
-
-  /** Send to all, from the person: their own message in each matching session's queue. No caps. */
-  async broadcast(text: string, filter: BroadcastFilter) {
-    if (!text.trim()) throw new Error("Type a message first.");
-    if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
-    const targets = matching(this.ctx.sessions.list(), filter).filter((s) => this.reaches(s));
-    const queued: { sessionId: string; title: string }[] = [];
-    const failed: { sessionId: string; title: string; error: string }[] = [];
-    for (const t of targets) {
-      try {
-        // What a person types never passes for a message from Tether or another session.
-        await this.ctx.sessions.queue(t.id, defang(text));
-        queued.push({ sessionId: t.id, title: t.title });
-      } catch (e) {
-        failed.push({ sessionId: t.id, title: t.title, error: (e as Error).message });
-      }
-    }
-    return { queued, failed };
-  }
 }
 
 /** How long an MCP call may run: an ask's longest wait, and a little. */
@@ -403,17 +384,6 @@ export const peersModule: Module = {
     const secret = peerSecret(ctx.dataDir);
     const socket = new PeerSocket(join(ctx.dataDir, "peers.sock"), secret, (c) => peers.call(c), ctx.log);
     socket.start();
-    const filter = (v: unknown): BroadcastFilter => {
-      const f = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
-      const s = (x: unknown) => (typeof x === "string" && x ? x : undefined);
-      const status = s(f.status);
-      return {
-        ...(s(f.projectPath) ? { projectPath: s(f.projectPath) } : {}),
-        ...(f.harness === "claude" || f.harness === "codex" ? { harness: f.harness } : {}),
-        ...(status === "idle" || status === "working" || status === "waiting" ? { status } : {}),
-      };
-    };
-    ctx.ops.register("broadcast", (a) => peers.broadcast(typeof a.text === "string" ? a.text : "", filter(a.filter)));
     const home = ctx.homeFolder;
     const unset = ctx.sessions.adapters().map((a) =>
       a.toolServer?.({
