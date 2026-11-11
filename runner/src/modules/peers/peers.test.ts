@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parseSessionMessage, peerHops, tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
 import { classifyTool } from "../../adapters/toolKind";
+import { peerTarget } from "../../../../shared/peers";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
 import { answerIn, Peers } from "./index";
 import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
@@ -140,6 +141,7 @@ describe("tools", () => {
     const { peers, queued } = setup([row("claude:a", "Alpha"), row("codex:b", "Beta", { status: "running" })]);
     const r = await peers.send("claude:a", "Beta", "hello");
     expect(r.text).toMatch(/Sent to "Beta" \(codex:b\)\. Codex is working/);
+    expect(peerTarget(r.text)).toEqual({ id: "codex:b", title: "Beta" });
     expect(parseSessionMessage(queued[0]!.text)).toMatchObject({ title: "Alpha", sessionId: "claude:a", text: "hello" });
     expect(await peers.send("claude:a", "claude:a", "x").catch((e) => e.message)).toMatch(/this session/);
     expect((await peers.call({ from: "claude:a", tool: "tether_sessions", args: {}, signal: new AbortController().signal })).text).toContain("codex:b");

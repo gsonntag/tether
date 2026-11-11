@@ -2,7 +2,7 @@
 // own words. Each session's queue applies: a running turn gets it afterwards, never steered. No
 // confirm step: nothing goes until you press Send, and the count sits beside it.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { matching, type BroadcastFilter } from "../../../shared/peers";
@@ -10,7 +10,7 @@ import { HARNESS_LABELS, type HarnessId, type SessionSummary } from "../../../sh
 import type { OpResult } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { openSession } from "../route";
-import { folderName } from "../sessionList";
+import { folderName, isHomeChat } from "../sessionList";
 import { useStore } from "../store";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -24,11 +24,21 @@ export function SendToAll() {
   const [runnerId, setRunnerId] = useState<string>();
   const rid = runnerId && online.some((r) => r.id === runnerId) ? runnerId : online[0]?.id;
   const rows = useStore((s) => (rid ? (s.summaries[rid]?.sessions ?? NONE) : NONE));
-  const all = useMemo(() => matching(Object.values(rows)), [rows]);
+  // The Home agent's chat is never one of them (the runner leaves it out too).
+  const all = useMemo(() => matching(Object.values(rows)).filter((s) => !isHomeChat(rid ?? "", s.projectPath)), [rows, rid]);
   const [filter, setFilter] = useState<BroadcastFilter>({});
-  const targets = useMemo(() => matching(all, filter), [all, filter]);
+  // Each time it opens: every session again, so a filter left from before never narrows it unseen.
+  useEffect(() => {
+    if (open) setFilter({});
+  }, [open]);
   const projects = useMemo(() => [...new Set(all.map((s) => s.projectPath))].sort((a, b) => folderName(a).localeCompare(folderName(b))), [all]);
   const harnesses = useMemo(() => (["claude", "codex"] as HarnessId[]).filter((h) => all.some((s) => s.harness === h)), [all]);
+  // A picked project or agent that has no session any more (or isn't shown) narrows nothing.
+  const used = useMemo<BroadcastFilter>(() => {
+    const { projectPath, harness, ...rest } = filter;
+    return { ...rest, ...(projectPath && projects.includes(projectPath) ? { projectPath } : {}), ...(harness && harnesses.length > 1 && harnesses.includes(harness) ? { harness } : {}) };
+  }, [filter, projects, harnesses]);
+  const targets = useMemo(() => matching(all, used), [all, used]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -44,7 +54,7 @@ export function SendToAll() {
     setBusy(true);
     setError(undefined);
     try {
-      setResult(await rpc(rid, "broadcast", { text, filter }));
+      setResult(await rpc(rid, "broadcast", { text, filter: used }));
       setText("");
     } catch (e) {
       setError((e as Error).message);
@@ -68,7 +78,7 @@ export function SendToAll() {
         {online.length > 1 && (
           <label>
             <span className="t-field-label">Runner</span>
-            <select className="t-select" value={rid} onChange={(e) => setRunnerId(e.target.value)}>
+            <select className="t-select" value={rid} onChange={(e) => (setRunnerId(e.target.value), setFilter({}))}>
               {online.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name || r.id}
@@ -80,7 +90,7 @@ export function SendToAll() {
         <div className="t-sendall-filters">
           <label>
             <span className="t-field-label">Project</span>
-            <select className="t-select" value={filter.projectPath ?? ""} onChange={(e) => set({ projectPath: e.target.value || undefined })}>
+            <select className="t-select" value={used.projectPath ?? ""} onChange={(e) => set({ projectPath: e.target.value || undefined })}>
               <option value="">All projects</option>
               {projects.map((p) => (
                 <option key={p} value={p}>
@@ -92,7 +102,7 @@ export function SendToAll() {
           {harnesses.length > 1 && (
             <label>
               <span className="t-field-label">Agent</span>
-              <select className="t-select" value={filter.harness ?? ""} onChange={(e) => set({ harness: (e.target.value || undefined) as HarnessId | undefined })}>
+              <select className="t-select" value={used.harness ?? ""} onChange={(e) => set({ harness: (e.target.value || undefined) as HarnessId | undefined })}>
                 <option value="">Any</option>
                 {harnesses.map((h) => (
                   <option key={h} value={h}>

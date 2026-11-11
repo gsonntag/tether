@@ -8,9 +8,6 @@
 // got there) the edit attaches to it again, so nothing is ever sent twice.
 
 import { parseSessionMessage, undefang } from "../../../shared/fromTether";
-
-/** Another session's message (SPEC §9a): shown by who sent it, and only cancelled, never edited. */
-const peerOf = (text: string) => parseSessionMessage(text);
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
@@ -21,6 +18,9 @@ import { putDraft } from "./Composer";
 import { lostEdit, UNKNOWN_MS } from "../queueEdit";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+
+/** Another session's message (SPEC §9a): shown by who sent it, and only cancelled, never edited. */
+const peerOf = (text: string) => parseSessionMessage(text);
 
 const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   terminal: "Waiting until you're back from the terminal.",

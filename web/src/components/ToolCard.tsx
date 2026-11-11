@@ -4,7 +4,8 @@ import { memo, type ReactNode } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { peerAction } from "../../../shared/peers";
+import { peerAction, peerTarget } from "../../../shared/peers";
+import { peerHead } from "../peerCard";
 import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { rpc } from "../connection";
@@ -173,36 +174,19 @@ export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
   }
 }
 
-/** The session a peer tool names (its id, or a title only one session has), from the runner's list. */
-function usePeerTarget(runnerId: string, to: string | undefined): { id?: string; title?: string } {
-  return useStore((s) => {
-    if (!to) return EMPTY_TARGET;
-    const sessions = s.summaries[runnerId]?.sessions;
-    const byId = sessions?.[to];
-    if (byId) return byId;
-    const lower = to.toLowerCase();
-    return Object.values(sessions ?? {}).find((x) => x.title.toLowerCase() === lower) ?? EMPTY_TARGET;
-  });
+/**
+ * The session a peer tool reached: the one its answer names (the runner resolved it), else `to`
+ * when that is a listed session's id. Its title as the list has it now.
+ */
+function usePeerTarget(runnerId: string, p: ToolPart | undefined): { id?: string; title?: string } {
+  const said = p ? peerTarget(p.output) : undefined;
+  const to = p ? str((p.input as any)?.to) : undefined;
+  const id = said?.id ?? to;
+  const listed = useStore((s) => (id ? s.summaries[runnerId]?.sessions?.[id] : undefined));
+  if (listed) return listed;
+  return said ?? EMPTY_TARGET;
 }
 const EMPTY_TARGET = {};
-
-/** A peer tool's card head: what it did, to whom (SPEC §9a). */
-function peerHead(p: ToolPart, title: string | undefined): { label: string; sum: string } {
-  const i = (p.input ?? {}) as Record<string, any>;
-  const who = title ? `“${title}”` : (str(i.to) ?? "");
-  switch (peerAction(p.name)) {
-    case "sessions":
-      return { label: "Looked at sessions", sum: [str(i.project), str(i.query)].filter(Boolean).join(" · ") };
-    case "send":
-      return { label: p.status === "running" ? "Sending to" : p.status === "error" ? "Not sent to" : "Sent to", sum: who };
-    case "ask":
-      return { label: p.status === "running" ? "Asking" : "Asked", sum: who };
-    case "broadcast":
-      return { label: p.status === "error" ? "Not sent to all" : "Sent to all", sum: [str(i.project), str(i.status)].filter(Boolean).join(" · ") };
-    default:
-      return { label: p.name, sum: "" };
-  }
-}
 
 function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?: string } }) {
   const i = (p.input ?? {}) as Record<string, any>;
@@ -239,7 +223,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   const isOpen = open ?? openByDefault(part);
   const { runnerId, sessionId } = useSessionCtx();
   const peer = part.kind === "peer";
-  const target = usePeerTarget(runnerId, peer ? str((part.input as any)?.to) : undefined);
+  const target = usePeerTarget(runnerId, peer ? part : undefined);
   const head = peer ? peerHead(part, target.title) : undefined;
   const sum = head ? head.sum : summary(part, root);
   // The call waits on your answer (the requests dock, above the composer).

@@ -32,3 +32,12 @@ export function peerAction(name: string): keyof typeof PEER_TOOLS | undefined {
   const m = /(?:^|__|\.)tether_(sessions|send|ask|broadcast)$/.exec(name);
   return m ? (m[1] as keyof typeof PEER_TOOLS) : undefined;
 }
+
+/**
+ * The session a peer tool's answer says it reached: the first `"<title>" (<id>)` on its first line
+ * (the runner writes it once the message is in that session's queue), else undefined.
+ */
+export function peerTarget(output: string | undefined): { id: string; title: string } | undefined {
+  const m = /"([^"\n]{0,200})" \(([a-z]+:[^\s()]{1,200})\)/.exec((output ?? "").split("\n", 1)[0]!);
+  return m ? { id: m[2]!, title: m[1]! } : undefined;
+}

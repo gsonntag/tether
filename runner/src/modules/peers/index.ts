@@ -94,11 +94,11 @@ export class Peers {
     this.caps.turnFrom(sessionId);
     const ask = this.asks.find((a) => a.to === sessionId && a.delivered);
     if (!ask) return;
-    if (stopped) return this.finish(ask, { text: `The person stopped ${this.name(sessionId)}'s turn before it answered.`, isError: true });
-    if (error) return this.finish(ask, { text: `${this.name(sessionId)}'s turn failed: ${error}`, isError: true });
+    if (stopped) return this.finish(ask, { text: `The person stopped ${this.who(sessionId)}'s turn before it answered.`, isError: true });
+    if (error) return this.finish(ask, { text: `${this.who(sessionId)}'s turn failed: ${error}`, isError: true });
     const msgs = await this.ctx.sessions.recent(sessionId, 60).catch(() => [] as Msg[]);
     const answer = answerIn(msgs, ask.from, sessionId);
-    this.finish(ask, answer ? { text: `${this.name(sessionId)} (${sessionId}) answered:\n\n${answer}` } : { text: `${this.name(sessionId)} ended its turn without a written answer.` });
+    this.finish(ask, answer ? { text: `${this.who(sessionId)} answered:\n\n${answer}` } : { text: `${this.who(sessionId)} ended its turn without a written answer.` });
   }
 
   private finish(ask: Ask, a: PeerAnswer) {
@@ -139,6 +139,14 @@ export class Peers {
   private name(id: string) {
     const t = this.ctx.session(id)?.summary.title;
     return t ? `"${markTitle(t)}"` : id;
+  }
+
+  /**
+   * `"<title>" (<id>)`: how an answer names the session a message reached, which the transcript's
+   * tool card reads (shared/peers.ts peerTarget). Only once it reached it.
+   */
+  private who(id: string, title = this.ctx.session(id)?.summary.title ?? "") {
+    return `"${markTitle(title)}" (${id})`;
   }
 
   /** Whether a message can reach `s`: listed, not archived, not a subagent, not the Home agent's chat. */
@@ -240,7 +248,7 @@ export class Peers {
       undo();
       throw e;
     });
-    return { text: `Sent to "${markTitle(t.title)}" (${t.id}). ${d.where}` };
+    return { text: `Sent to ${this.who(t.id, t.title)}. ${d.where}` };
   }
 
   async ask(from: string, to: string, text: string, minutes: number, signal?: AbortSignal): Promise<PeerAnswer> {
@@ -267,7 +275,7 @@ export class Peers {
     });
     if (d.terminal) {
       close();
-      return { text: `Queued for "${markTitle(t.title)}" (${t.id}), not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
+      return { text: `Queued for ${this.who(t.id, t.title)}, not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
     }
     const wait = Math.min(Math.max(minutes, 1), ASK_MAX_MIN) * 60_000;
     return new Promise<PeerAnswer>((resolve) => {
@@ -285,7 +293,7 @@ export class Peers {
       this.asks.push(ask);
       const timer = setTimeout(() => {
         const still = ask.delivered ? "is still working on it" : "hasn't got to it yet (it waits in its queue)";
-        this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: "${markTitle(t.title)}" ${still}. Ask again later, or check with tether_sessions.`, isError: true });
+        this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: ${this.who(t.id, t.title)} ${still}. Ask again later, or check with tether_sessions.`, isError: true });
       }, wait);
       // The asking agent stopped waiting (its turn was stopped): the question stays queued.
       signal?.addEventListener("abort", () => this.asks.includes(ask) && this.finish(ask, { text: "Stopped waiting.", isError: true }));
