@@ -748,7 +748,8 @@ A module (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only
   could still forge a call: the token keeps sessions apart, it isn't a security boundary.
 - **Claude** gets the server in its `query()` options (`mcpServers`, with a per-server `timeout`
   of 65 minutes so an ask can wait). **Codex** gets it as the thread's own `config`
-  (`mcp_servers.tether`, with `tool_timeout_sec`) on `thread/start` and `thread/resume`. Checked on
+  (the dotted key `mcp_servers.tether`, with `tool_timeout_sec`, so the person's own
+  `mcp_servers` stay) on `thread/start` and `thread/resume`. Checked on
   the daemon (0.167.1) with two threads at once: each thread runs its own MCP process with its own
   env, and a resume of an unloaded thread takes the new config; a thread another client already
   has loaded keeps what it was loaded with. As a thread's id isn't known before `thread/start`,

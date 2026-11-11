@@ -30,3 +30,22 @@ test("a thread in the agent's folder starts with its tools, instructions and con
   }
   expect(codexStartExtras("/home-agent")).toEqual({});
 });
+
+test("Tether's MCP server joins a thread's config as one dotted key, beside the Home agent's", async () => {
+  const { codexTools, withTools } = await import("./driver");
+  const unsetTools = codexTools.set({ name: "tether", command: "bun", args: ["mcp.ts"], env: (id) => ({ ID: id }), timeoutMs: 60_000, skip: (p) => p === "/skip" });
+  const unset = setCodexSetup("/home-agent", () => ({ server: "tether", instructions: "", tools: [] }));
+  try {
+    const plain: any = withTools({}, "/p");
+    // Not `mcp_servers: {…}`: that would replace the person's own servers.
+    expect(Object.keys(plain.config)).toEqual(["mcp_servers.tether"]);
+    expect(plain.config["mcp_servers.tether"]).toMatchObject({ command: "bun", env: { ID: "codex:*" }, tool_timeout_sec: 60 });
+    const both: any = withTools(codexResumeExtras("/home-agent"), "/home-agent");
+    expect(both.config["features.shell_tool"]).toBe(false);
+    expect(both.config["mcp_servers.tether"]).toBeDefined();
+    expect(withTools({}, "/skip")).toEqual({});
+  } finally {
+    unset();
+    unsetTools();
+  }
+});

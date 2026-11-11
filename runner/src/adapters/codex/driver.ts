@@ -66,16 +66,18 @@ export const codexTools = new ToolServerSlot();
  * per thread, env included (checked on 0.167.1); a thread another client already has loaded keeps
  * what it was loaded with. Its tools run without asking and may wait as long as an ask does. The
  * thread's id isn't known before thread/start, so the server reads it from each call's `_meta`.
+ * A dotted key, like AGENT_CONFIG's (setup.ts): it adds `tether` to the person's own mcp_servers
+ * (~/.codex/config.toml) instead of replacing them.
  */
 export function toolConfig(projectPath: string): { config?: Record<string, unknown> } {
   const s = codexTools.for(projectPath);
   if (!s) return {};
   const server = { command: s.command, args: s.args, env: s.env("codex:*"), default_tools_approval_mode: "approve", tool_timeout_sec: Math.ceil(s.timeoutMs / 1000) };
-  return { config: { mcp_servers: { [s.name]: server } } };
+  return { config: { [`mcp_servers.${s.name}`]: server } };
 }
 
 /** A thread's extras (the Home agent's, setup.ts) with Tether's MCP server added to their config. */
-function withTools(extras: Record<string, unknown>, projectPath: string): Record<string, unknown> {
+export function withTools(extras: Record<string, unknown>, projectPath: string): Record<string, unknown> {
   const t = toolConfig(projectPath).config;
   return t ? { ...extras, config: { ...((extras.config as Record<string, unknown>) ?? {}), ...t } } : extras;
 }
