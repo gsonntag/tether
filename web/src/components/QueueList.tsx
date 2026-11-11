@@ -7,7 +7,10 @@
 // transcript), or was removed on another device; and if the message comes back (stopped before it
 // got there) the edit attaches to it again, so nothing is ever sent twice.
 
-import { undefang } from "../../../shared/fromTether";
+import { parseSessionMessage, undefang } from "../../../shared/fromTether";
+
+/** Another session's message (SPEC §9a): shown by who sent it, and only cancelled, never edited. */
+const peerOf = (text: string) => parseSessionMessage(text);
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
@@ -222,6 +225,10 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
                     <>
                       Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
                     </>
+                  ) : peerOf(m.text) ? (
+                    <>
+                      <span className="t-queued-from">From “{peerOf(m.text)!.title}”{peerOf(m.text)!.all ? " · to all" : ""}:</span> {peerOf(m.text)!.text}
+                    </>
                   ) : (
                     undefang(m.text) || <em>No text</em>
                   )}
@@ -234,7 +241,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
                       <ArrowUpIcon aria-hidden />
                     </button>
                   )}
-                  {!m.truncated && !m.shell && <button
+                  {!m.truncated && !m.shell && !peerOf(m.text) && <button
                     type="button"
                     className="t-icon-btn"
                     aria-label="Edit"

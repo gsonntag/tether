@@ -1768,6 +1768,9 @@
   font-family: var(--t-mono);
   font-size: 12px;
 }
+.t-queued-from {
+  color: var(--color-text-secondary);
+}
 .t-msg.shellsent .t-pre {
   margin-top: 6px;
   white-space: pre-wrap;

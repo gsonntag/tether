@@ -57,7 +57,10 @@ export class PeerCaps {
     if (this.turns.get(from)?.broadcast) return "This turn started with a note to all sessions, so it can't send one to all itself. Use tether_send to answer whoever wrote it.";
     if (this.hopsFrom(from) > MAX_HOPS) return `This turn is the end of a chain of ${MAX_HOPS} sessions passing work along: no more messages from it. Tell the person what you have.`;
     const last = this.broadcasts.get(from);
-    if (last !== undefined && this.now() - last < RATE_MS) return `You sent a note to all sessions ${Math.max(1, Math.round((this.now() - last) / 60_000))} minutes ago. At most one every ${RATE_MS / 60_000} minutes.`;
+    if (last !== undefined && this.now() - last < RATE_MS) {
+      const m = Math.max(1, Math.round((this.now() - last) / 60_000));
+      return `You sent a note to all sessions ${m} minute${m === 1 ? "" : "s"} ago. At most one every ${RATE_MS / 60_000} minutes.`;
+    }
     return this.rate(from);
   }
 
