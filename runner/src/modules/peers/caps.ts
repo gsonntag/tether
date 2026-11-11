@@ -71,10 +71,28 @@ export class PeerCaps {
     return undefined;
   }
 
-  /** A message (or one broadcast) went from `from`. */
-  count(from: string, broadcast = false) {
-    this.sent.set(from, [...(this.sent.get(from) ?? []), this.now()]);
-    if (broadcast) this.broadcasts.set(from, this.now());
+  /**
+   * A message (or one broadcast) goes from `from`: counted at once, right after the check, so calls
+   * running side by side can't all pass it. The returned function takes it back (it didn't go).
+   */
+  count(from: string, broadcast = false): () => void {
+    const at = this.now();
+    const before = this.broadcasts.get(from);
+    this.sent.set(from, [...(this.sent.get(from) ?? []), at]);
+    if (broadcast) this.broadcasts.set(from, at);
+    let undone = false;
+    return () => {
+      if (undone) return;
+      undone = true;
+      const list = [...(this.sent.get(from) ?? [])];
+      const i = list.lastIndexOf(at);
+      if (i >= 0) list.splice(i, 1);
+      this.sent.set(from, list);
+      if (broadcast && this.broadcasts.get(from) === at) {
+        if (before === undefined) this.broadcasts.delete(from);
+        else this.broadcasts.set(from, before);
+      }
+    };
   }
 
   /** `from` waits on `to`; the returned function ends the wait. */

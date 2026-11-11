@@ -16,6 +16,7 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
   const queued: { to: string; text: string; id: string }[] = [];
   const notices: { id: string; text: string }[] = [];
   const recent = new Map<string, Msg[]>();
+  const fail = new Set<string>();
   let n = 0;
   let now = 1_000_000;
   const look = (id: string) => {
@@ -30,6 +31,7 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
       list: () => rows,
       open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
       queue: async (to: string, text: string) => {
+        if (fail.has(to)) throw new Error("queue full");
         const id = `q${++n}`;
         queued.push({ to, text, id });
         return { id };
@@ -39,7 +41,7 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
     },
   };
   const peers = new Peers(ctx, () => now);
-  return { peers, queued, notices, recent, tick: (ms: number) => (now += ms) };
+  return { peers, queued, notices, recent, fail, tick: (ms: number) => (now += ms) };
 }
 
 describe("session marker", () => {
@@ -217,6 +219,32 @@ describe("tools", () => {
     const many = await peers.send("claude:a", "line", "x").catch((e) => e.message);
     expect(many).toMatch(/2 sessions match/);
     expect(many).not.toMatch(/[\x00-\x1f]/);
+  });
+  test("caps hold for calls running side by side", async () => {
+    const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B"), row("claude:c", "C"), row("claude:d", "D"), row("claude:e", "E")]);
+    // A asks B while B asks A: only one of them waits.
+    const [ab, ba] = [peers.ask("claude:a", "claude:b", "q", 15), peers.ask("claude:b", "claude:a", "q", 15)];
+    expect((await ba).text).toMatch(/waiting for an answer from you/);
+    // One sender, more asks at once than it may keep open.
+    const more = ["claude:c", "claude:d", "claude:e"].map((to) => peers.ask("claude:a", to, "q", 15));
+    const refused = await Promise.race([Promise.all(more.slice(2)), Bun.sleep(50).then(() => undefined)]);
+    expect(refused?.[0]?.text).toMatch(/questions waiting/);
+    expect(queued).toHaveLength(3);
+    void ab;
+    // And more sends at once than the rate allows.
+    const { peers: p2 } = setup([row("claude:a", "A"), row("claude:b", "B")]);
+    const r = await Promise.all(Array.from({ length: RATE_MAX + 2 }, (_, i) => p2.send("claude:a", "claude:b", `m${i}`)));
+    expect(r.filter((x) => x.isError)).toHaveLength(2);
+  });
+  test("a message that didn't go doesn't count", async () => {
+    const { peers, fail } = setup([row("claude:a", "A"), row("claude:b", "B")]);
+    fail.add("claude:b");
+    for (let i = 0; i < RATE_MAX + 1; i++) await peers.send("claude:a", "claude:b", "x").catch(() => {});
+    for (let i = 0; i < ASKS_MAX + 1; i++) await peers.ask("claude:a", "claude:b", "x", 15).catch(() => {});
+    expect(await peers.broadcastFrom("claude:a", "x", {})).toMatchObject({ text: expect.stringMatching(/Couldn't send/) });
+    fail.clear();
+    expect((await peers.send("claude:a", "claude:b", "x")).isError).toBeFalsy();
+    expect((await peers.broadcastFrom("claude:a", "x", {})).isError).toBeFalsy();
   });
   test("answerIn takes the last reply after the question, cut short when long", () => {
     const q = (sessionId: string): Msg => ({ id: sessionId, role: "user", ts: 0, origin: { kind: "session", sessionId }, parts: [{ type: "text", text: "?" }] });

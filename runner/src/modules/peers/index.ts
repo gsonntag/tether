@@ -228,11 +228,17 @@ export class Peers {
     const t = await this.target(from, to);
     const why = this.caps.check(from, t.id, "send");
     if (why) return this.refused(from, why);
-    const me = await this.sender(from);
-    const body = sessionMessage(me, text, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`);
+    // Reserved before anything waits (and given back if it doesn't go).
     const hop = { hops: this.caps.hopsFrom(from) };
-    this.caps.count(from);
-    const d = await this.deliver(from, t, body, hop);
+    const undo = this.caps.count(from);
+    const d = await (async () => {
+      const me = await this.sender(from);
+      const body = sessionMessage(me, text, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`);
+      return this.deliver(from, t, body, hop);
+    })().catch((e) => {
+      undo();
+      throw e;
+    });
     return { text: `Sent to "${markTitle(t.title)}" (${t.id}). ${d.where}` };
   }
 
@@ -241,16 +247,27 @@ export class Peers {
     const t = await this.target(from, to);
     const why = this.caps.check(from, t.id, "ask");
     if (why) return this.refused(from, why);
-    const me = await this.sender(from);
-    const terminal = this.ctx.session(t.id)?.state.mode === "terminal";
-    const hint = terminal
-      ? `a question from another session, not the person. Answer it with tether_send to "${from}".`
-      : "a question from another session, not the person. Your final reply this turn goes back to it automatically.";
+    // Reserved before anything waits, so two asks side by side see each other (a cycle, the open
+    // asks, the rate); given back if it doesn't go.
     const hop = { hops: this.caps.hopsFrom(from) };
-    this.caps.count(from);
-    const d = await this.deliver(from, t, sessionMessage(me, text, hint), hop);
-    if (d.terminal) return { text: `Queued for "${markTitle(t.title)}" (${t.id}), not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
+    const undo = this.caps.count(from);
     const close = this.caps.open(from, t.id);
+    const d = await (async () => {
+      const me = await this.sender(from);
+      const terminal = this.ctx.session(t.id)?.state.mode === "terminal";
+      const hint = terminal
+        ? `a question from another session, not the person. Answer it with tether_send to "${from}".`
+        : "a question from another session, not the person. Your final reply this turn goes back to it automatically.";
+      return this.deliver(from, t, sessionMessage(me, text, hint), hop);
+    })().catch((e) => {
+      undo();
+      close();
+      throw e;
+    });
+    if (d.terminal) {
+      close();
+      return { text: `Queued for "${markTitle(t.title)}" (${t.id}), not waiting for the answer: ${d.where} It was asked to answer with tether_send.` };
+    }
     const wait = Math.min(Math.max(minutes, 1), ASK_MAX_MIN) * 60_000;
     return new Promise<PeerAnswer>((resolve) => {
       const ask: Ask = {
@@ -282,10 +299,11 @@ export class Peers {
     const targets = matching(this.others(from), { ...(status ? { status } : {}) }).filter((s) => this.inProject(s, f.project ?? ""));
     if (!targets.length) return { text: "No other session matches, so nothing was sent." };
     if (targets.length > BROADCAST_MAX) return this.refused(from, `${targets.length} sessions match (at most ${BROADCAST_MAX} at once). Narrow it with project or status.`);
+    // Reserved before anything waits; given back if it reached nobody.
+    const hop = { hops: this.caps.hopsFrom(from), broadcast: true };
+    const undo = this.caps.count(from, true);
     const me = await this.sender(from);
     const body = sessionMessage(me, text, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`, true);
-    const hop = { hops: this.caps.hopsFrom(from), broadcast: true };
-    this.caps.count(from, true);
     const sent: string[] = [];
     const failed: string[] = [];
     for (const t of targets) {
@@ -296,6 +314,7 @@ export class Peers {
         failed.push(`- ${t.id} ("${markTitle(t.title)}"): ${(e as Error).message}`);
       }
     }
+    if (!sent.length) undo();
     return { text: [`Sent to ${sent.length} session${sent.length === 1 ? "" : "s"}:`, ...sent, ...(failed.length ? ["Couldn't send to:", ...failed] : [])].join("\n") };
   }
 
