@@ -721,7 +721,7 @@ test("check_in_sessions asks idle sessions, archives the finished ones, skips bu
   expect(status).toContain("Latest prompt:\n(the Home agent's check-in: is the task done and merged?)");
   expect(status).not.toContain("Don't start or continue any task work");
   const listed = await tools(chat).list_sessions!({});
-  expect(listed).toContain("replied: Merged. Check-in: done · merged · cleaned up");
+  expect(listed).toContain("replied: Check-in: done · merged · not cleaned up: worktree has a stray build");
   expect(listed).not.toContain(ANSWER_TAG);
   // Archived sessions aren't asked again.
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
