@@ -6,7 +6,8 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, StopIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { peerAction, peerTarget } from "../../../shared/peers";
 import { peerHead } from "../peerCard";
-import type { LiveState, ToolPart } from "../../../shared/transcript";
+import type { ToolPart } from "../../../shared/transcript";
+import { stoppable } from "../toolStop";
 import { lineDiff, withContext } from "../diff";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -213,14 +214,6 @@ function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?
       )}
     </>
   );
-}
-
-/**
- * A command the agent is waiting on, in a turn Tether drives: Stop on its card ends the turn, as
- * Esc in the composer does. Not while it waits on your answer (the dock answers that).
- */
-export function stoppable(p: ToolPart, state: Pick<LiveState, "mode" | "status"> | undefined, waiting = false): boolean {
-  return p.kind === "shell" && p.status === "running" && !waiting && state?.mode === "live" && state.status === "running";
 }
 
 /** Open by default: diffs and todo lists (what you want to see), and failures. */

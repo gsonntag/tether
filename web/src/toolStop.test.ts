@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { ToolPart } from "../../../shared/transcript";
-import { stoppable } from "./ToolCard";
+import type { ToolPart } from "../../shared/transcript";
+import { stoppable } from "./toolStop";
 
 const shell = (over: Partial<ToolPart> = {}): ToolPart => ({ type: "tool", id: "t1", name: "Bash", kind: "shell", status: "running", command: "sleep 300", ...over }) as ToolPart;
 const live = { mode: "live" as const, status: "running" as const };
