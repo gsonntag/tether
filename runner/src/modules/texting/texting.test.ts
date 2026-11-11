@@ -330,3 +330,135 @@ describe("the thread shared with textme", () => {
     expect(texts.at(-1)).toBe("Which session, by number?\n[2] failed: an error, just now");
   });
 });
+
+describe("a reply to a request has exactly one effect", () => {
+  /** A setup whose answers close the request, as the broker does, and with the Home agent's tabs as sessions. */
+  function real() {
+    const s = setup();
+    for (const id of ["claude:home1", "claude:home2"]) s.sessions[id] = { summary: { id, projectPath: "/home/me/.local/share/tether/modules/homeAgent/workspace" }, status: "running", requests: [], state: { requests: [] } };
+    const close = (id: string) => {
+      s.sessions[id].requests = [];
+      s.sessions[id].state.requests = [];
+    };
+    (s.t as any).ctx.sessions.answer = async (id: string, r: string, a: RequestAnswer) => {
+      s.answered.push([id, r, a]);
+      close(id);
+    };
+    const read = (id = "r1", sessionId = "claude:a"): Request => ({ id, sessionId, kind: "approval", tool: "Read", toolKind: "read", path: "/home/ubuntu/tether-prod/web/src", reason: "Path is outside allowed working directories", openedAt: 1 });
+    const reacted: string[] = [];
+    const heard = (text: string, replyTo?: string) => s.hear({ text, ...(replyTo ? { replyTo } : {}), react: async (e) => void reacted.push(`${text} ${e}`) });
+    return { ...s, close, read, reacted, heard };
+  }
+
+  for (const [reply, answer] of [
+    ["y", { allow: true }],
+    ["n", { allow: false }],
+    ["use the copy in web-coder instead", { allow: false, reason: "use the copy in web-coder instead" }],
+  ] as const) {
+    test(`"${reply}" answers the request and nothing else, even heard twice`, async () => {
+      const s = real();
+      await s.t.start();
+      await s.open("claude:a", s.read());
+      await s.heard(reply);
+      expect(s.answered).toEqual([["claude:a", "r1", answer]]);
+      expect(s.told).toEqual([]);
+      expect(s.reacted).toEqual([`${reply} ✅`]);
+      // The same reply heard again (Photon delivering it twice): never a message to the agent.
+      await s.heard(reply);
+      expect(s.answered.length).toBe(1);
+      expect(s.told).toEqual([]);
+      expect(s.reacted.length).toBe(1);
+    });
+  }
+
+  test(`"[2] y" with two sessions waiting answers [2]'s request only`, async () => {
+    const s = real();
+    await s.t.start();
+    await s.t.turnEnded("codex:b", "boom");
+    await s.open("claude:a", s.read());
+    expect(s.texts.at(-1)).toStartWith("[2] Claude wants to read /home/ubuntu/tether-prod/web/src");
+    await s.heard("[2] y");
+    expect(s.answered).toEqual([["claude:a", "r1", { allow: true }]]);
+    expect(s.told).toEqual([]);
+  });
+
+  test("a threaded reply to the request's text answers that request", async () => {
+    const s = real();
+    await s.t.start();
+    await s.t.turnEnded("codex:b", "boom");
+    await s.open("claude:a", s.read());
+    const id = s.t.router.state.sent.at(-1)!.id;
+    await s.heard("y", id);
+    expect(s.answered).toEqual([["claude:a", "r1", { allow: true }]]);
+    expect(s.told).toEqual([]);
+    // Again on the same text, once it's answered: nothing to the agent.
+    await s.heard("y", id);
+    expect(s.answered.length).toBe(1);
+    expect(s.told).toEqual([]);
+  });
+
+  test("Home agent tab: a y after the request was answered in Tether goes nowhere", async () => {
+    const s = real();
+    await s.t.start();
+    await s.t.turnEnded("codex:b", "boom");
+    await s.open("claude:home2", s.read("r9", "claude:home2"));
+    expect(s.texts.at(-1)).toStartWith("[2] Claude wants to read");
+    // Answered in Tether: the request closes, the session goes on.
+    s.close("claude:home2");
+    s.t.settled("claude:home2");
+    s.clock.t += 28 * 60_000;
+    // Two open: the picker holds it; picking [2] gives it to [2]'s closed request.
+    await s.heard("y");
+    expect(s.texts.at(-1)).toStartWith(TEXTS.which);
+    await s.heard("2");
+    expect(s.told).toEqual([]);
+    expect(s.answered).toEqual([]);
+    expect(s.reacted).toEqual([]);
+    expect(s.texts.at(-1)).toBe(TEXTS.alreadyAnswered(2));
+    // A numbered one too.
+    await s.open("claude:home2", s.read("r10", "claude:home2"));
+    s.close("claude:home2");
+    await s.heard("[2] y");
+    expect(s.told).toEqual([]);
+    expect(s.texts.at(-1)).toBe(TEXTS.alreadyAnswered(2));
+    // Told so, the person's next text to it is words to the agent.
+    await s.heard("2 what are you reading that for?");
+    expect(s.told).toEqual([["claude:home2", "what are you reading that for?"]]);
+  });
+
+  test("a y to a closed request never answers a newer one the person hasn't seen", async () => {
+    const s = real();
+    await s.t.start();
+    await s.open("claude:a", s.read());
+    s.close("claude:a");
+    // A new request opened; its text hasn't gone out yet (REQUEST_DELAY_MS).
+    s.sessions["claude:a"].requests = ["r2"];
+    s.sessions["claude:a"].state.requests = [bash("r2")];
+    await s.heard("y");
+    expect(s.answered).toEqual([]);
+    expect(s.told).toEqual([]);
+    // Its text goes out: now y answers it.
+    await s.t.request(bash("r2"));
+    await s.heard("y");
+    expect(s.answered).toEqual([["claude:a", "r2", { allow: true }]]);
+  });
+
+  test("the request closing while the reply waits in the inbox", async () => {
+    const s = real();
+    await s.t.start();
+    await s.open("claude:a", s.read());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // A reply still being handled holds the inbox.
+    const first = s.hear({ text: "y", react: () => gate });
+    const second = s.heard("y");
+    release();
+    await Promise.all([first, second]);
+    expect(s.answered).toEqual([["claude:a", "r1", { allow: true }]]);
+    expect(s.told).toEqual([]);
+  });
+
+  test("the already-answered text is casual", () => {
+    expect(casualText(TEXTS.alreadyAnswered(2))).toBe(true);
+  });
+});
