@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { FROM_DISCORD, FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import { HomeLine } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
@@ -1005,6 +1005,21 @@ test("a text goes to the Texts tab, marked as texted, and the reply goes back by
   await until(() => driverOf(texts)!.sent.length === 3 && runner.core.sessions.get(texts)?.state.status === "idle");
   await Bun.sleep(50);
   expect(sent.length).toBe(2);
+});
+
+test("a Discord message goes to the Texts tab marked as Discord's, with its files, and the reply goes back", async () => {
+  const { line, sent, driverOf, textsTab } = await texting();
+  const file = { path: "/tmp/tether-attachments/x/1a2b3c4d-shot.png", name: "shot.png", mimeType: "image/png", size: 3 };
+  let storedFor = "";
+  await line.home!.take("what's this?", { mark: FROM_DISCORD, files: async (chat) => ((storedFor = chat), [file]) });
+  const texts = await textsTab();
+  expect(storedFor).toBe(texts);
+  await until(() => sent.length === 1);
+  const got = driverOf(texts)!.sent[0]!;
+  expect(got).toStartWith(`${FROM_DISCORD}what's this?`);
+  expect(got).toContain(file.path);
+  expect(tetherOrigin(got)?.origin).toEqual({ kind: "discord" });
+  expect(sent[0]).toStartWith(`echo ${FROM_DISCORD}what's this?`);
 });
 
 test("texted work: a finished-turn report's outcome goes back by text, a turn that only keeps it going doesn't", async () => {

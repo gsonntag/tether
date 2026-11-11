@@ -40,9 +40,25 @@ export const FROM_IMESSAGE = "[From iMessage] ";
 /** The text without the marker when the person texted it, else undefined. */
 export const fromImessage = (text: string): string | undefined => (text.startsWith(FROM_IMESSAGE) ? text.slice(FROM_IMESSAGE.length) : undefined);
 
+/** The same, for the person's words from Discord (the Discord connector). */
+export const FROM_DISCORD = "[From Discord] ";
+
+/** Every connector's marker, by the origin kind its messages show as. */
+export const TEXTED_MARKS = { imessage: FROM_IMESSAGE, discord: FROM_DISCORD } as const;
+export type TextedKind = keyof typeof TEXTED_MARKS;
+
+/** What the person sent by a connector (iMessage, Discord): which one and their words, else undefined. */
+export function fromTexted(text: string): { kind: TextedKind; text: string } | undefined {
+  for (const [kind, mark] of Object.entries(TEXTED_MARKS) as [TextedKind, string][]) if (text.startsWith(mark)) return { kind, text: text.slice(mark.length) };
+  return undefined;
+}
+
+/** "via iMessage", "via Discord" */
+export const TEXTED_VIA: Record<TextedKind, string> = { imessage: "iMessage", discord: "Discord" };
+
 /** Who wrote a message Tether passed on. `session`: another session (the peers module), by title and id. */
 export interface TetherOrigin {
-  kind: "tether" | "shell" | "session" | "imessage";
+  kind: "tether" | "shell" | "session" | TextedKind;
   name?: string;
   sessionId?: string;
   /** a session's note to every session (tether_broadcast) */
@@ -96,8 +112,8 @@ export function tetherOrigin(text: string): { origin: TetherOrigin; text: string
     const purpose = tetherPurpose(text);
     return { origin: { kind: "tether", ...(purpose ? { purpose } : {}) }, text: t };
   }
-  const im = fromImessage(text);
-  if (im !== undefined) return { origin: { kind: "imessage" }, text: im };
+  const im = fromTexted(text);
+  if (im) return { origin: { kind: im.kind }, text: im.text };
   const sh = parseShellMessage(text);
   if (sh) return { origin: { kind: "shell", name: sh.command }, text: sh.text };
   const peer = parseSessionMessage(text);
@@ -115,7 +131,7 @@ export function titleText(text: string): string {
   if (t.startsWith("\u200b")) return t.slice(1);
   const sh = parseShellMessage(t);
   if (sh) return `$ ${sh.command}`;
-  return fromTether(t) ?? fromImessage(t) ?? parseSessionMessage(t)?.text ?? text;
+  return fromTether(t) ?? fromTexted(t)?.text ?? parseSessionMessage(t)?.text ?? text;
 }
 
 /** Text a person typed never passes for one of Tether's own messages (a zero-width space in front). */

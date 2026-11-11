@@ -1,17 +1,11 @@
 // The connection to Photon Spectrum (iMessage): sends texts to one phone and hears that phone's
-// replies. One long-lived listener; history Photon replays on connect is skipped.
+// replies. One long-lived listener; history Photon replays on connect is skipped. The iMessage
+// connector (imessage.ts) runs it.
 
+import type { Inbound } from "./connector";
 import type { LinkConfig } from "./store";
 
-export interface Inbound {
-  text: string;
-  /** its message id, when Photon gives one: a text heard twice is taken once */
-  id?: string;
-  /** the message it answers in a thread */
-  replyTo?: string;
-  /** puts a reaction on this message on the person's phone (a tapback; any emoji) */
-  react?: (emoji: string) => Promise<void>;
-}
+export type { Inbound } from "./connector";
 
 export interface TextLink {
   /** the sent message's id, when Photon gives one */

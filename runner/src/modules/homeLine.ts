@@ -4,15 +4,25 @@
 // in when it starts; neither imports the other. Not an op: browsers have no business sending texts
 // as Tether or posing as the person's phone.
 
+import type { Attachment } from "../../../shared/attachments";
+
 /** Who the Home agent is when it texts (PhoneEnd.text), and what a Home text is noted under (texting/router.ts). */
 export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
 export const PERSON_TEXT_MAX = 300;
 
+/** How the person's text reached Tether (texting/connector.ts). */
+export interface TakeVia {
+  /** what marks it as theirs, by its connector ("[From iMessage] ", shared/fromTether.ts); iMessage's when unset */
+  mark?: string;
+  /** the files that came with it, stored for the chat that takes them */
+  files?: (sessionId: string) => Promise<Attachment[]>;
+}
+
 /** The Home agent's end. */
 export interface HomeEnd {
   /** the person's text, to the Home agent's Texts chat (after its turn, if one runs) */
-  take(text: string): Promise<void>;
+  take(text: string, via?: TakeVia): Promise<void>;
   /** whether a session is the chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
   /**

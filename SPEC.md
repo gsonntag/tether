@@ -1296,6 +1296,25 @@ person's own message (`live.tell`, defanged). A reply passed on gets a ✅ react
 person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
+*Connectors* (`texting/connector.ts`, listed in `texting/connectors.ts`). Texts travel over
+messaging connectors: iMessage (`imessage.ts`, Photon) and a Discord bot (`discord.ts`, its Gateway
+WebSocket and REST API with no library: identify with GUILD_MESSAGES, DIRECT_MESSAGES and
+MESSAGE_CONTENT, heartbeats, resume after a drop, reconnect with backoff; a refused token or intent
+stops it with why). A connector is only a transport: its settings (secrets write-only), a link that
+hears the person and sends text (and images, where it takes them), and its status. Everything above
+(numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
+Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
+else the first connected; an answer to a message goes back the way it came. Files the person sends
+are stored with the session (or the Home agent's Texts chat) like composer uploads, and go with
+their words. Discord: only the owner user ids set may drive it (in a DM or the one channel set);
+anyone else, bots, webhooks and the bot itself are ignored silently. Messages are split at 2000
+characters; mentions never ping. Its settings live in `texting.json` under `connectors.discord`
+(mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
+`TETHER_DISCORD_CHANNEL_ID`); it's off until set. The Home agent sees Discord's words marked
+`[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
+`setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
+stay for an older web).
+
 *Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
 in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
 with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:

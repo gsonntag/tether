@@ -43,3 +43,18 @@ test("a check-in answer shows without its machine line, a status in its place", 
   // Other replies are as they were.
   expect(html(reply("All good."))).not.toContain("t-checkin-status");
 });
+
+test("texted messages show as the person's, labelled with how they came, files as chips", async () => {
+  const { FROM_DISCORD, FROM_IMESSAGE } = await import("../../../shared/fromTether");
+  const im = html(user(`${FROM_IMESSAGE}start the fix`));
+  expect(im).toContain("via iMessage");
+  expect(im).toContain("start the fix");
+  expect(im).not.toContain("[From iMessage]");
+  const dc = html(user(`${FROM_DISCORD}look at this\n\nAttached files:\n- /home/me/.config/tether/attachments/x/1a2b3c4d-shot.pdf (application/pdf, 3 B)`, { kind: "discord" }));
+  expect(dc).toContain("via Discord");
+  expect(dc).toContain("look at this");
+  expect(dc).not.toContain("[From Discord]");
+  expect(dc).not.toContain("Attached files:");
+  expect(dc).toContain("shot.pdf");
+  expect(dc).toContain('class="t-msg user"');
+});

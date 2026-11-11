@@ -57,5 +57,7 @@ export const TEXTS = {
   /** the Home agent's chat failed on something the person texted */
   homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
+  /** a file the person sent that didn't come along (too big, or Discord wouldn't give it) */
+  fileSkipped: (name: string) => `Couldn't take ${name}, it's too big or it didn't download.`,
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

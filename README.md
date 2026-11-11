@@ -77,7 +77,7 @@ You add keys under **Settings → Credentials** and **Settings → Azure**, and 
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
 
-**Texting** (iMessage through [Photon Spectrum](https://photon.codes)): the runner can text you when
+**Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
 is texted for a session you're looking at in Tether. Each text starts with its session's number.
 
@@ -95,8 +95,22 @@ is texted for a session you're looking at in Tether. Each text starts with its s
 - **Secrets:** your known keys are removed from texts, but anything else the agent writes can appear
   in one.
 - **Setup:** add a Photon project's id and secret and your verified phone number under
-  **Settings → Texting** (or in `runner.env`). They're stored on the runner. The app server can't
+  **Settings → Messaging** (or in `runner.env`). They're stored on the runner. The app server can't
   send texts itself because a Foliation app has no internet access.
+- **Discord:** the same thing over a Discord bot, in a DM or one server channel. Only the user IDs
+  you set can drive it; everyone else (and other bots) is ignored. Messages go where you last wrote
+  (or where **Send to** says, when more than one connector is on). Files you send reach the session.
+  To set it up:
+  1. In the [Developer Portal](https://discord.com/developers/applications), make an application,
+     open **Bot**, **Reset Token** and copy it, and turn on **Message Content Intent**.
+  2. Under **OAuth2 → URL Generator**, tick the `bot` scope and the permissions View Channels, Send
+     Messages, Read Message History, Attach Files and Add Reactions; open the URL and add the bot to
+     a server of yours (the bot can only DM you if you share a server).
+  3. In Discord, turn on **Settings → Advanced → Developer Mode**, then right-click your name and
+     **Copy User ID** (and the channel, if you want one: **Copy Channel ID**).
+  4. In **Settings → Messaging → Discord**, save the bot token, your user ID (and the channel), and
+     turn it on; or set `TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS` and
+     `TETHER_DISCORD_CHANNEL_ID` in `runner.env`.
 
 **Settings** also has **Notifications** (Web Push on each device) and **Agents** (runner-wide agent
 settings).
@@ -111,7 +125,7 @@ dial out, so your machines need no inbound port. SPEC §3 has the details.
 |---|---|
 | `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, commands, plan, sync |
 | `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
-| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting`, `push`, `move` |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move` |
 | `web/` | React + Vite + Astryx UI |
 | `scripts/` | End-to-end checks, a fake runner, probes |
 | `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |
@@ -140,7 +154,8 @@ Runner (`runner.env` in production, or the shell in dev):
 | `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals use (`tmux -L <socket>`). Give a dev runner its own |
 | `TETHER_HIDE_PROJECTS` | | folders to leave out of the session lists |
 | `TETHER_PEERS` | | `0` turns off session-to-session messaging |
-| `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET`, `TETHER_TEXT_PHONE` | | texting, instead of Settings → Texting (these take precedence) |
+| `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET`, `TETHER_TEXT_PHONE` | | texting, instead of Settings → Messaging (these take precedence) |
+| `TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`, `TETHER_DISCORD_CHANNEL_ID` | | the Discord connector, instead of Settings → Messaging (these take precedence; owner ids comma-separated) |
 
 On first start the runner writes `runner.json` with a generated `runnerId`. Set `"name"` there to
 change its label (the default is the hostname). Never copy a `runner.json` between machines,

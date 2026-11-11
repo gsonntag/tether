@@ -14,18 +14,33 @@
 // An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
 //
+// Texts go over messaging connectors (connector.ts, connectors.ts): iMessage through Photon, a Discord
+// bot, … Everything above is the same on each: one router, one set of session numbers. Tether's texts
+// go to the connector the person picked in settings, else the one they last wrote on, else the first
+// one connected; an answer to something they sent goes back the way it came. Files they send come
+// along to the session or the Home agent (stash).
+//
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
 // are redacted. Tether's own words read like a human's: "[6] ok", one
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
 // passed on (texts.ts has the whole rule).
 
+import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript";
+import { isImageType, safeName, type Attachment } from "../../../../shared/attachments";
+import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
+import type { MessagingStatus } from "../../../../shared/protocol";
 import type { Module, ModuleContext } from "..";
+import { sessionKey } from "../../core/attachments";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
+import { Channel, type Connector, type Inbound, type InboundFile } from "./connector";
+import { connectors, type ConnectorDeps } from "./connectors";
 import { clip, readReply, requestText } from "./describe";
-import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
+import { IMESSAGE } from "./imessage";
+import { openSpectrum, type OpenLink } from "./link";
 import { HOME, Router } from "./router";
 import { PERSON_TEXT_MAX } from "../homeLine";
 import { TextingStore } from "./store";
@@ -35,9 +50,6 @@ import { replyForPeople } from "../../../../shared/checkIn";
 /** The reaction on a text Tether read and passed on to its session. */
 export const READ = "✅";
 
-const RETRY_MIN_MS = 5_000;
-const RETRY_MAX_MS = 5 * 60_000;
-
 /** Whether an agent's message ends by asking the person something: its last paragraph (code left out) has a question. */
 export function asksQuestion(text: string): boolean {
   const prose = text.replace(/```[\s\S]*?(```|$)/g, "").replace(/`[^`\n]*`/g, "").trim();
@@ -45,7 +57,10 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+
+/** What a message with only files in it says, for routing and to the agent. */
+export const FILES_ONLY = "(sent a file)";
 
 /** How long an agent's answer may be in a text. */
 const SAID_MAX = 1500;
@@ -88,14 +103,10 @@ export const LINK_EVERY_MS = 5 * 60_000;
 
 export class Texter {
   readonly router: Router;
-  private link?: TextLink;
-  private connecting?: Promise<void>;
-  private retry?: ReturnType<typeof setTimeout>;
-  private delay = RETRY_MIN_MS;
-  private stopped = false;
+  /** one per connector, in CONNECTORS' order */
+  readonly channels: Channel[];
   private inbox = Promise.resolve();
-  connected = false;
-  lastError?: string;
+  private failed?: string;
   /** each session's last words from the agent this turn (to tell whether it ended asking something) */
   private lastSaid = new Map<string, string>();
   /** sessions the person texted: the agent's answer goes back by text */
@@ -109,106 +120,165 @@ export class Texter {
   constructor(
     private ctx: Ctx,
     readonly store: TextingStore,
-    private open: OpenLink = openSpectrum,
+    open: OpenLink = openSpectrum,
     private now: () => number = Date.now,
+    deps: Omit<ConnectorDeps, "imessage"> & { list?: Connector[] } = {},
   ) {
     this.router = new Router(store.router, now);
     this.caps = new AgentTextCaps(now);
+    const list = deps.list ?? connectors(store, { ...deps, imessage: open });
+    this.channels = list.map((c) => new Channel(c, (m) => void this.heard(m), ctx.log));
   }
 
-  // ── the link ──
+  // ── the links ──
 
-  /** Connects when texting is on and set; reconnects after a drop, backing off. */
-  start() {
-    this.stopped = false;
-    if (this.link || this.connecting) return this.connecting ?? Promise.resolve();
-    const cfg = this.store.config();
-    if (!cfg) return Promise.resolve();
-    this.connecting = (async () => {
-      try {
-        const link = await this.open(cfg, (m) => this.heard(m), this.ctx.log);
-        if (this.stopped) return void (await link.stop());
-        this.link = link;
-        this.connected = true;
-        this.lastError = undefined;
-        this.delay = RETRY_MIN_MS;
-        void link.closed.then(() => this.dropped(link));
-      } catch (e: any) {
-        this.lastError = `Couldn't connect to Photon: ${e?.message ?? e}`;
-        this.ctx.log(`texting: ${this.lastError}`);
-        this.later();
-      } finally {
-        this.connecting = undefined;
-      }
-    })();
-    return this.connecting;
+  /** Connects every connector that's on and set; each reconnects after a drop, backing off. */
+  async start() {
+    await Promise.all(this.channels.map((c) => c.start()));
   }
 
   async stop() {
-    this.stopped = true;
-    clearTimeout(this.retry);
-    await this.connecting;
-    const link = this.link;
-    this.link = undefined;
-    this.connected = false;
-    await link?.stop();
+    await Promise.all(this.channels.map((c) => c.stop()));
   }
 
-  /** Settings changed: a new link with them (or none). */
-  async restart() {
-    await this.stop();
-    this.lastError = undefined;
-    this.delay = RETRY_MIN_MS;
-    await this.start();
+  /** Settings changed: new links with them (or none); `id`: just that connector's. */
+  async restart(id?: string) {
+    await Promise.all(this.channels.filter((c) => !id || c.id === id).map((c) => c.restart()));
   }
 
-  private dropped(link: TextLink) {
-    if (this.link !== link) return;
-    this.link = undefined;
-    this.connected = false;
-    if (!this.stopped) this.later();
+  channel(id: string | undefined): Channel | undefined {
+    return id ? this.channels.find((c) => c.id === id) : undefined;
   }
 
-  private later() {
-    if (this.stopped) return;
-    clearTimeout(this.retry);
-    this.retry = setTimeout(() => void this.start(), this.delay);
-    this.delay = Math.min(this.delay * 2, RETRY_MAX_MS);
+  /** Some connector is connected. */
+  get connected(): boolean {
+    return this.channels.some((c) => c.connected);
   }
 
-  private async say(text: string): Promise<string | undefined> {
-    return (await this.send(text)).id;
+  /** Why the last text didn't go, or why the link to the person is down. */
+  get lastError(): string | undefined {
+    return this.failed ?? this.target()?.lastError ?? this.channels.find((c) => c.lastError)?.lastError;
   }
 
-  /** Texts the person; `sent`: it went (Photon may give no id). */
-  private async send(text: string): Promise<{ sent: boolean; id?: string }> {
-    if (!this.link) return { sent: false };
+  /** Where Tether's texts go: the connector picked in settings, else the one the person last wrote on, else the first one connected. */
+  target(): Channel | undefined {
+    for (const id of [this.store.prefer, this.store.lastVia]) {
+      const c = this.channel(id);
+      if (c?.connected) return c;
+    }
+    return this.channels.find((c) => c.connected);
+  }
+
+  private async say(text: string, via?: string): Promise<string | undefined> {
+    return (await this.send(text, via)).id;
+  }
+
+  /** Texts the person (on `via` when it's connected: an answer goes back the way it came); `sent`: it went (Photon may give no id). */
+  private async send(text: string, via?: string, images?: string[]): Promise<{ sent: boolean; id?: string; ids?: string[] }> {
+    const ch = (via && this.channel(via)?.connected ? this.channel(via) : undefined) ?? this.target();
+    if (!ch) return { sent: false };
     try {
-      const id = await this.link.send(text);
+      const ids = await ch.send({ text, ...(images?.length ? { images } : {}) });
+      this.failed = undefined;
       this.router.noteOut();
-        return { sent: true, ...(id ? { id } : {}) };
+      return { sent: true, ...(ids[0] ? { id: ids[0], ids } : {}) };
     } catch (e: any) {
-      this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
-      this.ctx.log(`texting: ${this.lastError}`);
+      this.failed = ch.lastError;
       return { sent: false };
     }
+  }
+
+  /** Notes each part of a text that went (a split one has several): a threaded reply to any of them names it. */
+  private noteSent(r: { ids?: string[] }, sessionId: string, requestId?: string) {
+    for (const id of r.ids ?? []) this.router.noteSent(id, sessionId, requestId);
   }
 
   /** The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it goes back to the Home agent. */
   async homeText(body: string): Promise<boolean> {
     const words = clip(body, HOME_MAX);
-    if (!this.link || !words) return false;
-    const { sent, id } = await this.send(this.router.stampHome(words));
-    if (id) this.router.noteSent(id, HOME);
+    if (!this.target() || !words) return false;
+    const r = await this.send(this.router.stampHome(words));
+    this.noteSent(r, HOME);
     this.store.save();
-    return sent;
+    return r.sent;
   }
 
-  async test() {
-    if (!this.store.config()) throw new Error("Set the phone and the Photon project's id and secret first, and turn texting on.");
-    await this.start();
-    if (!this.link) throw new Error(this.lastError ?? "Not connected to Photon yet.");
-    await this.link.send(TEXTS.test);
+  /** A test text on one connector (iMessage when unnamed). */
+  async test(id: string = IMESSAGE) {
+    const ch = this.channel(id);
+    if (!ch) throw new Error("There's no such connector.");
+    const c = ch.connector;
+    if (!c.enabled() || !c.configured()) throw new Error(c.notReady);
+    await ch.start();
+    if (!ch.connected) throw new Error(ch.lastError ?? `Not connected to ${c.service ?? c.label} yet.`);
+    await ch.send({ text: TEXTS.test });
+  }
+
+  /** Settings: every connector, never a secret. */
+  messaging(): MessagingStatus {
+    return {
+      connectors: this.channels.map((ch) => {
+        const c = ch.connector;
+        return { id: c.id, label: c.label, enabled: c.enabled(), configured: c.configured(), connected: ch.connected, ...(ch.lastError ? { lastError: ch.lastError } : {}), about: c.about, forms: c.forms() };
+      }),
+      ...(this.store.prefer ? { prefer: this.store.prefer } : {}),
+      ...(this.store.lastVia ? { lastUsed: this.store.lastVia } : {}),
+    };
+  }
+
+  /** Changes one connector's settings, and reconnects it. */
+  async setConnector(a: { id?: unknown; enabled?: unknown; values?: unknown }): Promise<MessagingStatus> {
+    const ch = this.channel(typeof a.id === "string" ? a.id : undefined);
+    if (!ch) throw new Error("There's no such connector.");
+    const values: Record<string, string> = {};
+    if (a.values !== undefined) {
+      if (!a.values || typeof a.values !== "object" || Array.isArray(a.values)) throw new Error("Bad settings.");
+      for (const [k, v] of Object.entries(a.values)) {
+        if (typeof v !== "string" || v.length > 500) throw new Error("That value is too long.");
+        values[k] = v;
+      }
+    }
+    ch.connector.update({ ...(typeof a.enabled === "boolean" ? { enabled: a.enabled } : {}), values });
+    await ch.restart();
+    return this.messaging();
+  }
+
+  /** Where Tether's texts go: a connector, or (null) wherever the person last wrote. */
+  prefer(id: unknown): MessagingStatus {
+    if (id === null || id === undefined || id === "") this.store.prefer = undefined;
+    else if (typeof id === "string" && this.channel(id)) this.store.prefer = id;
+    else throw new Error("There's no such connector.");
+    this.store.save();
+    return this.messaging();
+  }
+
+  /**
+   * The person's files, stored for `sessionId` under the runner's attachments folder (as the
+   * composer's uploads are, core/attachments.ts): what a message to it carries. One that's too big or
+   * won't come is skipped, and the person is told.
+   */
+  private async stash(sessionId: string, files: InboundFile[] | undefined, via?: string): Promise<Attachment[]> {
+    const dir = this.ctx.attachmentsDir;
+    if (!dir || !files?.length) return [];
+    const into = join(dir, sessionKey(sessionId));
+    const out: Attachment[] = [];
+    for (const f of files.slice(0, ATTACH_MAX)) {
+      const max = isImageType(f.mimeType) ? ATTACH_IMAGE_MAX : ATTACH_FILE_MAX;
+      try {
+        if (f.size !== undefined && f.size > max) throw new Error("it's too big");
+        const data = await f.read();
+        if (data.byteLength > max) throw new Error("it's too big");
+        mkdirSync(into, { recursive: true, mode: 0o700 });
+        const name = safeName(f.name);
+        const path = join(into, `${randomBytes(4).toString("hex")}-${name}`);
+        writeFileSync(path, data, { mode: 0o400 });
+        out.push({ path, name, mimeType: f.mimeType, size: data.byteLength });
+      } catch (e: any) {
+        this.ctx.log(`texting: couldn't take ${f.name}: ${e?.message ?? e}`);
+        await this.say(TEXTS.fileSkipped(f.name), via);
+      }
+    }
+    return out;
   }
 
   // ── out: what happened ──
@@ -228,7 +298,7 @@ export class Texter {
   async personText(from: string, body: string): Promise<{ text: string; isError?: boolean }> {
     const words = clip(body, PERSON_TEXT_MAX);
     if (!words) return { text: "The message is empty.", isError: true };
-    if (!this.link) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
+    if (!this.target()) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
     const why = this.caps.take(from);
     if (why) return { text: why, isError: true };
     const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, { always: true })).sent;
@@ -243,7 +313,7 @@ export class Texter {
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
   async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean } = {}): Promise<{ sent: boolean }> {
     const { also = [], quick = false, requestId, always = false } = o;
-    if (!this.link) return { sent: false };
+    if (!this.target()) return { sent: false };
     if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
     // The link only now and then, and never on a quick back-and-forth.
     const at = this.now();
@@ -251,10 +321,10 @@ export class Texter {
     const link = !!o.link || (!quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS);
     if (link) this.linked.set(sessionId, at);
     const { text } = this.router.stamp(sessionId, status, link ? `${body}\n${this.url(sessionId)}` : body, requestId);
-    const { sent, id } = await this.send(text);
-    if (id) this.router.noteSent(id, sessionId, requestId);
+    const r = await this.send(text);
+    this.noteSent(r, sessionId, requestId);
     this.store.save();
-    return { sent };
+    return { sent: r.sent };
   }
 
   async request(r: Request) {
@@ -309,25 +379,31 @@ export class Texter {
   heard(m: Inbound): Promise<void> {
     // The same text heard twice (a reconnect's replay) is taken once.
     if (m.id) {
-      if (this.heardIds.includes(m.id)) return this.inbox;
-      this.heardIds = [...this.heardIds, m.id].slice(-HEARD_MAX);
+      const key = m.via ? `${m.via}:${m.id}` : m.id;
+      if (this.heardIds.includes(key)) return this.inbox;
+      this.heardIds = [...this.heardIds, key].slice(-HEARD_MAX);
     }
+    // Tether's texts follow the person to the connector they wrote on.
+    if (m.via && this.channel(m.via)) this.store.lastVia = m.via;
     this.inbox = this.inbox.then(() => this.answer(m)).catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
     return this.inbox;
   }
 
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
-    const d = this.router.route(m.text, m.replyTo, !!home);
+    const via = m.via;
+    const filesOnly = !m.text.trim() && !!m.files?.length;
+    const d = this.router.route(filesOnly ? FILES_ONLY : m.text, m.replyTo, !!home);
     this.store.save();
     if (d.kind === "none") return;
-    if (d.kind === "reply") return void (await this.say(d.text));
+    if (d.kind === "reply") return void (await this.say(d.text, via));
     if (d.kind === "home") {
       try {
-        await home!.take(d.text);
+        const mark = this.channel(via)?.connector.mark;
+        await home!.take(d.text, { ...(mark ? { mark } : {}), ...(m.files?.length ? { files: (chat) => this.stash(chat, m.files, via) } : {}) });
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
-        await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)));
+        await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)), via);
       }
       return;
     }
@@ -343,24 +419,26 @@ export class Texter {
       if (d.requestId && !open) {
         this.router.closedRequest(d.sessionId, d.requestId);
         this.store.save();
-        return void (await this.say(TEXTS.alreadyAnswered(d.n)));
+        return void (await this.say(TEXTS.alreadyAnswered(d.n), via));
       }
-      if (open) {
+      if (open && !filesOnly) {
         const r = readReply(open, d.text);
-        if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));
+        if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`, via));
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
         this.talking.add(d.sessionId);
       } else {
-        await this.ctx.sessions.tell(d.sessionId, d.text);
+        const files = await this.stash(d.sessionId, m.files, via);
+        if (files.length) await this.ctx.sessions.tell(d.sessionId, d.text, files);
+        else await this.ctx.sessions.tell(d.sessionId, d.text);
         this.talking.add(d.sessionId);
       }
       // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
       // person's text says Tether read it and passed it on.
       await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
     } catch (e: any) {
-      await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
+      await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)), via);
     }
   }
 }
@@ -380,14 +458,20 @@ export const textingModule: Module = {
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
     ];
-    const status = () => store.status(t);
+    // iMessage's own ops, for a web from before connectors.
+    const imessage = t.channel(IMESSAGE)!;
+    const status = () => store.status(imessage);
     ctx.ops.register("textingStatus", () => status());
     ctx.ops.register("setTexting", async (a) => {
       store.update(a);
-      await t.restart();
+      await t.restart(IMESSAGE);
       return status();
     });
-    ctx.ops.register("textingTest", async () => (await t.test(), null));
+    ctx.ops.register("textingTest", async () => (await t.test(IMESSAGE), null));
+    ctx.ops.register("messagingStatus", () => t.messaging());
+    ctx.ops.register("setConnector", (a) => t.setConnector(a));
+    ctx.ops.register("setMessagingPrefer", (a) => t.prefer(a.prefer));
+    ctx.ops.register("testConnector", async (a) => (await t.test(String(a.id)), null));
     void t.start();
     return () => {
       offs.forEach((f) => f());
