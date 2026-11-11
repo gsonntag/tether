@@ -15,8 +15,14 @@ import type { SessionSummary } from "../../../../shared/transcript";
 import { ago, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
 import { ANSWER_TAG } from "./checkIn";
 
+import { WATCH } from "./index";
+
 const stops: (() => void)[] = [];
-afterEach(() => stops.splice(0).forEach((f) => f()));
+const WATCH_DEFAULT = { ...WATCH };
+afterEach(() => {
+  stops.splice(0).forEach((f) => f());
+  Object.assign(WATCH, WATCH_DEFAULT);
+});
 
 async function until(f: () => boolean, ms = 3000) {
   const end = Date.now() + ms;
@@ -523,4 +529,91 @@ test("a session with its worktree left isn't archived, and it's told to spare ot
   await until(() => driverOf(chat)?.sent.length === 1);
   expect(driverOf(chat)!.sent[0]).toContain(`${mine} "mine" (${project}): done and merged, but its worktree is still there: ${left}`);
   expect(runner.core.sessions.get(mine)!.summary.archived).toBeUndefined();
+});
+
+/** A session the person starts and drives themselves, in `project`. */
+async function personSession(t: Awaited<ReturnType<typeof setup>>, text: string) {
+  const id = (await t.op("newSession", { harness: "claude", projectPath: t.project })).sessionId as string;
+  await t.op("renameSession", { sessionId: id, title: text });
+  return id;
+}
+
+test("watch: sessions it didn't start are reported when they finish, fail or wait for the person, together", async () => {
+  WATCH.quietMs = 150;
+  const t = await setup();
+  const { op, fake, runner, chat, tools, driverOf, project } = t;
+  fake.script = (text) =>
+    text.startsWith("ASKME") ? [askQuestion("Which color?", ["red", "blue"])] : text.startsWith("BOOM") ? [(s) => s.state({ status: "idle", error: "it broke" })] : [say(`a-${text}`, `did ${text}`), idle];
+  const a = await personSession(t, "task a");
+  const b = await personSession(t, "task b");
+  const q = await personSession(t, "task q");
+  await op("send", { sessionId: a, text: "work a" });
+  await op("send", { sessionId: b, text: "BOOM" }).catch(() => {});
+  op("send", { sessionId: q, text: "ASKME" }).catch(() => {});
+  // One report for all three, once things went quiet.
+  await until(() => driverOf(chat)?.sent.length === 1);
+  const report = driverOf(chat)!.sent[0]!;
+  expect(report.startsWith(FROM_TETHER)).toBe(true);
+  expect(report).toContain("Sessions you didn't start");
+  expect(report).toContain(`- ${a} "task a" (project, Claude): finished a turn. It said: did work a`);
+  expect(report).toContain(`- ${q} "task q" (project, Claude): waiting for the person: Which color?`);
+  expect(report).toMatch(new RegExp(`- ${b} "task b" .*failed`));
+  await Bun.sleep(300);
+  expect(driverOf(chat)!.sent.length).toBe(1);
+  // A session it started reports on its own, not in a watch report.
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain("Report 1 of");
+  await Bun.sleep(300);
+  expect(driverOf(chat)!.sent.length).toBe(2);
+  expect(driverOf(chat)!.sent.join("\n")).not.toContain(`- ${child}`);
+});
+
+test("watch leaves out archived sessions, the agent's own chats and stopped turns", async () => {
+  WATCH.quietMs = 100;
+  const t = await setup();
+  const { op, fake, runner, chat, driverOf } = t;
+  fake.script = (text) => [say(`a-${text}`, `did ${text}`), idle];
+  // The agent's own chat finishing a turn isn't news.
+  await op("send", { sessionId: chat, text: "hello" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && driverOf(chat)?.sent.length === 1);
+  const archived = await personSession(t, "old");
+  await runner.look.sessions.setArchived(archived, true);
+  await op("send", { sessionId: archived, text: "work" });
+  const stopped = await personSession(t, "stopped");
+  await op("send", { sessionId: stopped, text: "work" });
+  await until(() => runner.core.sessions.get(stopped)?.state.status === "idle");
+  await Bun.sleep(250);
+  // The one finished turn that isn't archived was reported; nothing about the chat or the archived one.
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain(`- ${stopped} "stopped"`);
+  expect(driverOf(chat)!.sent[1]).not.toContain(archived);
+  expect(driverOf(chat)!.sent[1]).not.toContain(`- ${chat}`);
+  // A Stop is the person's own doing: not reported.
+  const before = driverOf(chat)!.sent.length;
+  runner.bus.emit("turnEnded", { sessionId: stopped, stopped: true });
+  await Bun.sleep(250);
+  expect(driverOf(chat)!.sent.length).toBe(before);
+});
+
+test("the Watch all sessions toggle is on by default, kept, and off means no watch reports", async () => {
+  WATCH.quietMs = 100;
+  const t = await setup();
+  const { op, runner, chat, driverOf, dataDir } = t;
+  expect(await op("homeAgentWatch", {})).toEqual({ watchAll: true });
+  expect(await op("homeAgentWatch", { on: false })).toEqual({ watchAll: false });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).watchAll).toBe(false);
+  await op("send", { sessionId: chat, text: "hello" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && driverOf(chat)?.sent.length === 1);
+  const a = await personSession(t, "task a");
+  await op("send", { sessionId: a, text: "work" });
+  await Bun.sleep(300);
+  expect(driverOf(chat)!.sent.length).toBe(1);
+  // On again: the next one is reported.
+  expect(await op("homeAgentWatch", { on: true })).toEqual({ watchAll: true });
+  await op("send", { sessionId: a, text: "more" });
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain(`- ${a} "task a"`);
 });

@@ -12,6 +12,7 @@ import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId, type ModelOption } from "
 import { rpc } from "../connection";
 import { loadModels, modelListKey, useStore } from "../store";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
+import { WatchAllToggle } from "./HomeAgentWatch";
 
 /** The model a harness runs with none picked, as the picker lists it. */
 const unpickedOf = (harness: HarnessId, models: ModelOption[]) => (harness === "claude" ? (findModel(models, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default");
@@ -115,6 +116,7 @@ function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: st
 
   return (
     <div className="t-form t-home-agent-form">
+      <WatchAllToggle runnerId={runnerId} />
       {harnesses.length > 1 && (
         <div className="t-seg" role="radiogroup" aria-label="Agent">
           {harnesses.map((h) => (
