@@ -102,20 +102,26 @@ test("start_session starts a session with full permissions, and its finished tur
   expect(await tools(chat).session_status!({ session_id: child })).toContain("Latest reply:");
 });
 
-test("another chat can't drive it, and the agent's own folder isn't a project", async () => {
+test("another chat that messages it follows it from then on, and the agent's own folder isn't a project", async () => {
   const { op, chat, tools, project, homeFolder, runner, driverOf } = await setup();
   const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
   const child = /session (\S+) in/.exec(said)![1]!;
-  await until(() => runner.core.sessions.get(child)?.state.status === "idle");
+  await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(child)?.state.status === "idle");
   const other = (await op("homeAgentNew")).sessionId as string;
   expect(other).not.toBe(chat);
-  await expect(tools(other).send_to_session!({ session_id: child, message: "hi" })).rejects.toThrow("isn't a session you started");
+  expect(await tools(other).send_to_session!({ session_id: child, message: "hi" })).toContain("Sent.");
+  await until(() => driverOf(child)!.sent.length === 2);
+  // Its report goes to the chat that messaged it, not the one that started it.
+  await until(() => driverOf(other)?.sent.length === 1);
+  expect(driverOf(other)!.sent[0]).toContain("Report 1 of");
+  expect(driverOf(chat)!.sent.length).toBe(1);
+  // Never one of its own chats.
+  await expect(tools(other).send_to_session!({ session_id: chat, message: "hi" })).rejects.toThrow("your own chats");
   await expect(tools(chat).start_session!({ project_path: homeFolder, prompt: "x" })).rejects.toThrow("your own folder");
   await expect(tools(chat).start_session!({ project_path: join(project, "nope"), prompt: "x" })).rejects.toThrow("no folder");
-  expect(driverOf(child)!.sent.length).toBe(1);
 });
 
-test("a session the person types into is theirs: no more reports, and the agent can't message it", async () => {
+test("a session the person types into is theirs: no more reports until the agent messages it again", async () => {
   const { op, chat, tools, project, runner, driverOf } = await setup();
   const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
   const child = /session (\S+) in/.exec(said)![1]!;
@@ -125,7 +131,11 @@ test("a session the person types into is theirs: no more reports, and the agent 
   await until(() => driverOf(child)!.sent.length === 2 && runner.core.sessions.get(child)?.state.status === "idle");
   await Bun.sleep(50);
   expect(driverOf(chat)!.sent.length).toBe(1);
-  await expect(tools(chat).send_to_session!({ session_id: child, message: "more" })).rejects.toThrow("taken this session over");
+  expect(await tools(chat).session_status!({ session_id: child })).toContain("taken this session over");
+  // When the person asks the agent to message it, it follows it again.
+  await tools(chat).send_to_session!({ session_id: child, message: "more" });
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain("Report 1 of");
 });
 
 test("after MAX_REPORTS reports it stops following", async () => {
@@ -164,7 +174,6 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   await until(() => driverOf(child)!.sent.length === 2 && runner.core.sessions.get(child)?.state.status === "idle");
   await Bun.sleep(50);
   expect(driverOf(chat)!.sent.length).toBe(1);
-  await expect(tools(chat).send_to_session!({ session_id: child, message: "more" })).rejects.toThrow("cleared this chat");
   expect(await tools(chat).session_status!({ session_id: child })).toContain("stopped following");
 
   // The next message's chat is a new session: none of the old context.
@@ -263,18 +272,77 @@ test("list_sessions filters by state and project, and says when nothing matches"
   expect(one).toContain("(1 of 3:");
 });
 
-test("session_status reads any session, and the agent still can't message one it didn't start", async () => {
-  const { chat, tools, done, waiting } = await others();
+test("session_status reads any session, and send_to_session messages one the agent didn't start and follows it", async () => {
+  const { chat, tools, done, waiting, runner, driverOf } = await others();
   const st: string = await tools(chat).session_status!({ session_id: done });
   expect(st).toContain("State: finished");
-  expect(st).toContain("You didn't start it");
+  expect(st).toContain("You didn't start it. You can message it");
   expect(st).toContain("Latest prompt:\nFix the login bug");
   expect(st).toContain("Latest reply:\necho Fix the login bug");
   const w: string = await tools(chat).session_status!({ session_id: waiting });
   expect(w).toContain("State: waiting on you");
   expect(w).toContain("Waiting for the person: Which color?");
-  await expect(tools(chat).send_to_session!({ session_id: done, message: "more" })).rejects.toThrow("isn't a session you started");
   await expect(tools(chat).session_status!({ session_id: "claude:nope" })).rejects.toThrow();
+  // Waiting on the person: only they can answer it.
+  await expect(tools(chat).send_to_session!({ session_id: waiting, message: "pick red" })).rejects.toThrow("waiting for the person (Which color?)");
+  // An idle one it didn't start: it goes now, and its turn is reported like one it started.
+  expect(await tools(chat).send_to_session!({ session_id: done, message: "Add a test for it." })).toContain("Sent.");
+  await until(() => driverOf(done)!.sent.length === 2);
+  expect(driverOf(done)!.sent[1]).toBe(`${FROM_TETHER}Add a test for it.`);
+  await until(() => driverOf(chat)?.sent.length === 1);
+  expect(driverOf(chat)!.sent[0]).toContain("finished a turn");
+  expect(driverOf(chat)!.sent[0]).toContain(`echo ${FROM_TETHER}Add a test for it.`);
+  expect(driverOf(chat)!.sent[0]).toContain("Report 1 of");
+  await until(() => runner.core.sessions.get(done)?.state.status === "idle");
+  expect(await tools(chat).session_status!({ session_id: done })).toContain("You messaged it. Reports so far: 1 of");
+});
+
+test("a busy session it didn't start gets the message after its turn, and only that turn is reported", async () => {
+  const t = await setup();
+  const { op, fake, runner, chat, tools, driverOf, project } = t;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  fake.script = (text) => (text.includes("long") ? [say(`a-${text}`, "the person's long turn"), async () => await gate, idle] : [say(`a-${text}`, `echo ${text}`), idle]);
+  const id = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+  // The person's turn: it holds until released (and the send with it).
+  const sent = op("send", { sessionId: id, text: "a long task" });
+  await until(() => runner.core.sessions.get(id)?.state.status === "running");
+  expect(await tools(chat).send_to_session!({ session_id: id, message: "Then open a PR." })).toContain("Queued: it goes after the session's current turn");
+  expect(driverOf(id)!.sent.length).toBe(1);
+  release();
+  await sent;
+  // The person's turn ends unreported; the queued message goes, and its turn is the report.
+  await until(() => driverOf(id)!.sent.length === 2);
+  expect(driverOf(id)!.sent[1]).toBe(`${FROM_TETHER}Then open a PR.`);
+  await until(() => driverOf(chat)?.sent.length === 1);
+  await Bun.sleep(50);
+  expect(driverOf(chat)!.sent.length).toBe(1);
+  expect(driverOf(chat)!.sent[0]).toContain(`echo ${FROM_TETHER}Then open a PR.`);
+  expect(driverOf(chat)!.sent[0]).not.toContain("the person's long turn");
+  expect(driverOf(chat)!.sent[0]).toContain("Report 1 of");
+});
+
+test("send_to_session refuses archived sessions, ones open in a terminal, and subagents", async () => {
+  const { op, runner, chat, tools, driverOf, project } = await setup();
+  const make = async () => {
+    const id = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+    await op("send", { sessionId: id, text: "work" });
+    await until(() => runner.core.sessions.get(id)?.state.status === "idle");
+    return id;
+  };
+  const archived = await make();
+  await runner.look.sessions.setArchived(archived, true);
+  await expect(tools(chat).send_to_session!({ session_id: archived, message: "hi" })).rejects.toThrow("archived");
+  const inTerminal = await make();
+  runner.core.sessions.get(inTerminal)!.setState({ mode: "terminal" } as any);
+  await expect(tools(chat).send_to_session!({ session_id: inTerminal, message: "hi" })).rejects.toThrow("open in a terminal");
+  const sub = await make();
+  (runner.core.sessions.get(sub)!.summary as any).parentSessionId = archived;
+  await expect(tools(chat).send_to_session!({ session_id: sub, message: "hi" })).rejects.toThrow("subagent");
+  await expect(tools(chat).send_to_session!({ session_id: "claude:nope", message: "hi" })).rejects.toThrow("no session");
+  for (const id of [archived, inTerminal, sub]) expect(driverOf(id)!.sent.length).toBe(1);
+  // Nothing refused is followed.
+  expect(await tools(chat).session_status!({ session_id: archived })).toContain("You didn't start it");
 });
 
 test("stateOf, inProject, lastPrompt and ago", () => {
