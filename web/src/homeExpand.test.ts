@@ -25,4 +25,7 @@ test("Escape collapses unless something else took it or a popover is open", () =
   expect(escapeCollapses({ key: "Escape", defaultPrevented: true }, false)).toBe(false);
   expect(escapeCollapses({ key: "Escape", defaultPrevented: false, isComposing: true }, false)).toBe(false);
   expect(escapeCollapses({ key: "Escape", defaultPrevented: false }, true)).toBe(false);
+  // On the expand button, whose tooltip takes Escape: still collapses, unless a menu is open.
+  expect(escapeCollapses({ key: "Escape", defaultPrevented: true }, false, true)).toBe(true);
+  expect(escapeCollapses({ key: "Escape", defaultPrevented: true }, true, true)).toBe(false);
 });

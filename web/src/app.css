@@ -2675,35 +2675,16 @@
 }
 .t-home-chat-head {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: -4px;
 }
-.t-home-chat-head { gap: 6px; align-items: center; flex-wrap: wrap; }
-/* The chip's popover wrapper may shrink to the row (a long summary on a phone was pushed off-screen to the left); New chat keeps its size. */
-.t-home-chat-head > * { min-width: 0; max-width: 100%; }
-.t-home-chat-head > button { flex-shrink: 0; }
-.t-home-agent-chip > span { overflow: hidden; text-overflow: ellipsis; }
-.t-home-agent-chip > .t-home-agent-sep, .t-home-agent-chip > .t-home-agent-chev { flex-shrink: 0; }
-.t-home-agent-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 3px 8px;
-  border: 1px solid var(--t-border);
-  border-radius: 999px;
-  background: none;
-  color: var(--t-muted, inherit);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-}
-.t-home-agent-chip:hover { color: inherit; }
-.t-home-agent-sep { opacity: .5; }
-.t-home-agent-chev { font-size: 10px; opacity: .7; }
-.t-home-agent-form { padding: 12px; }
+/* The session page's pickers (HomeAgentSettings.tsx): they take the row's room and, on a phone,
+   scroll sideways as a session's do; New chat and expand stay at the end. */
+.t-home-chat-head > .t-home-agent-pickers { flex: 1 1 auto; }
+.t-home-agent-pickers > .t-check { flex: none; font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.t-home-chat-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
 
 /* Expanded (HomeChat.tsx): the chat over the whole window; on a phone that's full screen. */
 .t-home-chat.expanded {
@@ -2715,7 +2696,7 @@
   overscroll-behavior: contain;
 }
 .t-home-chat.expanded .t-home-chat-head { margin-bottom: 0; }
-.t-home-chat-title { margin-right: auto; font-weight: 600; }
+.t-home-chat-title { flex: none; font-weight: 600; }
 .t-home-chat.expanded > .t-home-chat-box.t-session { height: auto; flex: 1 1 0; min-height: 0; }
 /* No chat yet: the composer sits at the bottom, like a chat's. */
 .t-home-chat.expanded > .t-composer { margin-top: auto; }

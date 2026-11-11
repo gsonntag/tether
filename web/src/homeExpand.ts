@@ -22,8 +22,9 @@ export function saveExpanded(on: boolean, s: Store | undefined = local()) {
 
 /**
  * Whether an Escape keydown collapses it: not one something else took (the composer stopping a
- * turn, a menu closing), and not one meant for a popover or dialog that's open over it.
+ * turn, a menu closing), and not one meant for a popover or dialog that's open over it. On the
+ * chat's own header buttons it does, though their tooltip claims it.
  */
-export function escapeCollapses(e: { key: string; defaultPrevented: boolean; isComposing?: boolean }, layerOpen: boolean): boolean {
-  return e.key === "Escape" && !e.defaultPrevented && !e.isComposing && !layerOpen;
+export function escapeCollapses(e: { key: string; defaultPrevented: boolean; isComposing?: boolean }, layerOpen: boolean, onOwnButton = false): boolean {
+  return e.key === "Escape" && (!e.defaultPrevented || onOwnButton) && !e.isComposing && !layerOpen;
 }

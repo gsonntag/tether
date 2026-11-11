@@ -30,10 +30,13 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
   return { choices: wanted ? known.get(key) : undefined, refresh };
 }
 
-/** What the session draws from, loud on a key, and the way to change it. */
-export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey: (on: boolean) => void }) {
+/**
+ * What the session draws from, loud on a key, and the way to change it. `standalone`: for a choice
+ * kept outside a session (the Home agent's): always changeable, and no plan-runs-out switch.
+ */
+export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, standalone }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; standalone?: boolean }) {
   const [editingFallback, setEditingFallback] = useState(false);
-  const changeable = !session.parentSessionId && !!capabilities?.sourceSwitch;
+  const changeable = standalone || (!session.parentSessionId && !!capabilities?.sourceSwitch);
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
@@ -48,7 +51,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   // The plan's figures whatever the session draws from, by the plan's own name, so a key session sees them before switching.
   const planName = choices.options.find((o) => o.source === "subscription")?.billing.label;
   const plan = planName ? planLines(state.plan) : [];
-  const autoKey = autoKeyItem(session.harness, state, choices);
+  const autoKey = standalone || !onAutoKey ? undefined : autoKeyItem(session.harness, state, choices);
   return (
     <>
       <DropdownMenu
@@ -79,7 +82,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
           {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
         </DropdownMenuRadioGroup>
         {autoKey && <DropdownMenuDivider />}
-        {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={onAutoKey} />}
+        {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={(on) => onAutoKey?.(on)} />}
         {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
         {menu.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
         {menu.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}

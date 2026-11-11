@@ -19,7 +19,7 @@ import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
-import { HomeAgentSettingsChip } from "./HomeAgentSettings";
+import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
@@ -31,10 +31,10 @@ const loadCommands = async () => HOME_COMMANDS;
 /** Whether a popover or dialog is open over the page. */
 function openLayer(): boolean {
   try {
-    return !!document.querySelector('.t-home-agent-chip[aria-expanded="true"], :popover-open [role="dialog"], [role="dialog"]:popover-open, dialog[open]');
+    return !!document.querySelector('.t-home-chat-head [aria-expanded="true"], :popover-open [role="dialog"], [role="dialog"]:popover-open, :popover-open [role="menu"], [role="menu"]:popover-open, dialog[open]');
   } catch {
     // no :popover-open
-    return !!document.querySelector('.t-home-agent-chip[aria-expanded="true"], dialog[open]');
+    return !!document.querySelector('.t-home-chat-head [aria-expanded="true"], dialog[open]');
   }
 }
 
@@ -58,10 +58,11 @@ export function HomeChat() {
   useEffect(() => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => {
-      // Not while the settings popover (or any dialog) is open over it: Escape closes that first.
+      // Not while a picker's menu (or any dialog) is open over it: Escape closes that first.
       // (A popover's dialog stays in the page while closed: only an open one counts.)
       const layerOpen = openLayer();
-      if (escapeCollapses(e, layerOpen)) expand(false);
+      const onOwnButton = e.target instanceof Element && !!e.target.closest(".t-home-chat-actions");
+      if (escapeCollapses(e, layerOpen, onOwnButton)) expand(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -98,9 +99,9 @@ export function HomeChat() {
   return (
     <section className={expanded ? "t-home-chat expanded" : "t-home-chat"} aria-label="Home agent">
       <div className="t-home-chat-head">
-      {expanded && <span className="t-home-chat-title">Home agent</span>}
+        {expanded && <span className="t-home-chat-title">Home agent</span>}
         {agent && agent.runnerId === rid && (
-          <HomeAgentSettingsChip
+          <HomeAgentPickers
             runnerId={rid!}
             settings={agent.settings}
             harnesses={agent.harnesses}
@@ -108,17 +109,20 @@ export function HomeChat() {
               setAgent({ ...agent, settings: r.settings });
               if (r.sessionId) noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev });
             }}
+            onError={setError}
           />
         )}
+        <div className="t-home-chat-actions">
           {current && <Button label="New chat" size="sm" variant="ghost" clickAction={() => clear().catch((e) => setError((e as Error).message))} />}
-        <IconButton
-          label={expanded ? "Collapse the Home agent" : "Expand the Home agent"}
-          tooltip={expanded ? "Collapse (Esc)" : "Expand"}
-          size="sm"
-          variant="ghost"
-          icon={<Icon icon={expanded ? ArrowsPointingInIcon : ArrowsPointingOutIcon} />}
-          onClick={() => expand(!expanded)}
-        />
+          <IconButton
+            label={expanded ? "Collapse the Home agent" : "Expand the Home agent"}
+            tooltip={expanded ? "Collapse (Esc)" : "Expand"}
+            size="sm"
+            variant="ghost"
+            icon={<Icon icon={expanded ? ArrowsPointingInIcon : ArrowsPointingOutIcon} />}
+            onClick={() => expand(!expanded)}
+          />
+        </div>
       </div>
       {error && <div className="t-form-error">{error}</div>}
       {current ? (

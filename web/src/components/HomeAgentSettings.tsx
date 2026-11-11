@@ -1,188 +1,89 @@
-// What the Home agent runs on (runner/src/modules/homeAgent): its harness, source, model and mode, shown
-// above its chat and changed from there. Kept on the runner for every chat; the current chat takes a
-// change too (a harness or a Codex source by a move, which keeps the conversation).
+// What the Home agent runs on (runner/src/modules/homeAgent): its model, source and mode, as the
+// session page's own pickers (ChoiceMenu, BillingChip) above its chat, plus its agent when the
+// runner has more than one. A pick applies at once, as on a session: kept on the runner for every
+// chat, and the current chat takes it too (a harness or a Codex source by a move, which keeps the
+// conversation).
 
 import { useEffect, useState } from "react";
-import { Button } from "@astryxdesign/core/Button";
-import { Popover } from "@astryxdesign/core/Popover";
-import { findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
-import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import { findModel, modelLabel, permissionModeLabel } from "../../../shared/labels";
+import type { BillingSource } from "../../../shared/credentials";
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../shared/protocol";
-import { CLAUDE_UNSET, HARNESS_LABELS, type Choice, type HarnessId, type ModelOption } from "../../../shared/transcript";
+import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId, type LiveState, type ModelOption, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { loadModels, modelListKey, useStore } from "../store";
-import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
+import { BillingChip, useSources } from "./BillingChip";
+import { ChoiceMenu } from "./ChoiceMenu";
 import { WatchAllToggle } from "./HomeAgentWatch";
 
+type Changed = { sessionId?: string; settings: HomeAgentSettings; rev: number };
+
 /** The model a harness runs with none picked, as the picker lists it. */
-const unpickedOf = (harness: HarnessId, models: ModelOption[]) => (harness === "claude" ? (findModel(models, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default");
+export const unpickedOf = (harness: HarnessId, models: ModelOption[]) => (harness === "claude" ? (findModel(models, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default");
 
-/** The models to offer: the harness's list, or its default when there's none yet. */
-const listedOf = (harness: HarnessId, models?: ModelOption[]): ModelOption[] =>
-  models?.length ? models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
-
-/** The modes to offer: the harness's list, with `mode` in it even when the list lacks it (the runner then runs the nearest below). */
-const modesOf = (mode: string, modes?: Choice[]): Choice[] => (modes?.some((m) => m.id === mode) ? modes : [{ id: mode, label: permissionModeLabel(mode) }, ...(modes ?? [])]);
-
-function useSources(runnerId: string, harness: HarnessId, when: unknown) {
-  const [sources, setSources] = useState<SourceChoices>();
-  useEffect(() => {
-    let gone = false;
-    setSources(undefined);
-    rpc(runnerId, "billingSources", { harness })
-      .then((s) => !gone && setSources(s))
-      .catch(() => !gone && setSources({ options: [] }));
-    return () => void (gone = true);
-  }, [runnerId, harness, when]);
-  return sources;
+/** The settings with `patch` applied: another agent starts on its default source and model, and auto. */
+export function nextSettings(settings: HomeAgentSettings, patch: Partial<HomeAgentSettings>, defaultSource?: BillingSource): HomeAgentSettings {
+  if (patch.harness && patch.harness !== settings.harness) return { harness: patch.harness, source: patch.source ?? defaultSource ?? "subscription", mode: HOME_AGENT_MODE };
+  const next = { ...settings, ...patch };
+  // Another source's models are its own (Azure's deployments): the runner picks its first.
+  if (patch.source && patch.source !== settings.source && !patch.model) delete next.model;
+  return next;
 }
 
-export function HomeAgentSettingsChip({ runnerId, settings, harnesses, onChanged }: { runnerId: string; settings: HomeAgentSettings; harnesses: HarnessId[]; onChanged: (r: { sessionId?: string; settings: HomeAgentSettings; rev: number }) => void }) {
-  const [open, setOpen] = useState(false);
-  const models = useStore((s) => s.modelLists[modelListKey(runnerId, settings.harness)]);
-  const sources = useSources(runnerId, settings.harness, settings.source);
-  useEffect(() => {
-    if (!models) void loadModels(runnerId, settings.harness);
-  }, [runnerId, settings.harness]);
-  const billing = sources?.options.find((o) => o.source === settings.source)?.billing;
-  const listed = listedOf(settings.harness, models?.models);
-  const model = settings.model ? modelLabel(settings.model, listed) : modelLabel(unpickedOf(settings.harness, listed), listed);
-  return (
-    <Popover
-      isOpen={open}
-      onOpenChange={setOpen}
-      width={340}
-      label="Home agent settings"
-      placement="below"
-      alignment="end"
-      content={
-        open ? (
-          <HomeAgentForm
-            runnerId={runnerId}
-            settings={settings}
-            harnesses={harnesses}
-            onDone={(r) => {
-              setOpen(false);
-              onChanged(r);
-            }}
-          />
-        ) : null
-      }
-    >
-      <button type="button" className="t-home-agent-chip" aria-label="Home agent: model, source and mode">
-        <span>{HARNESS_LABELS[settings.harness]}</span>
-        <span className="t-home-agent-sep">·</span>
-        <span>{model}</span>
-        <span className="t-home-agent-sep">·</span>
-        <span className={billing && isApiBilling(billing) ? "t-move-api" : undefined}>{billing?.label ?? (sources ? "Unavailable" : "…")}</span>
-        <span className="t-home-agent-sep">·</span>
-        <span>{permissionModeLabel(settings.mode ?? HOME_AGENT_MODE)}</span>
-        <span aria-hidden className="t-home-agent-chev">▾</span>
-      </button>
-    </Popover>
-  );
-}
-
-function HomeAgentForm({ runnerId, settings, harnesses, onDone }: { runnerId: string; settings: HomeAgentSettings; harnesses: HarnessId[]; onDone: (r: { sessionId?: string; settings: HomeAgentSettings; rev: number }) => void }) {
-  const [harness, setHarness] = useState<HarnessId>(settings.harness);
-  const [source, setSource] = useState<BillingSource | undefined>(settings.source);
-  const [model, setModel] = useState<string>(settings.model ?? "default");
-  const [mode, setMode] = useState<string>(settings.mode ?? HOME_AGENT_MODE);
+export function HomeAgentPickers({ runnerId, settings, harnesses, onChanged, onError }: { runnerId: string; settings: HomeAgentSettings; harnesses: HarnessId[]; onChanged: (r: Changed) => void; onError: (message?: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const { harness } = settings;
   const models = useStore((s) => s.modelLists[modelListKey(runnerId, harness)]);
-  const sources = useSources(runnerId, harness, undefined);
-  useEffect(() => {
-    if (!models) void loadModels(runnerId, harness);
-  }, [runnerId, harness]);
+  const { choices: sources, refresh: refreshSources } = useSources(runnerId, harness, true);
+  const ensureModels = () => void (models ? undefined : loadModels(runnerId, harness));
+  useEffect(ensureModels, [runnerId, harness]);
 
-  const options = sources?.options ?? [];
-  // A source this harness doesn't have (another harness's, or a key since unset): its first instead.
-  const picked = options.find((o) => o.source === source) ?? options.find((o) => o.source === sources?.default) ?? options[0];
-  const deployments = azureDeployments(picked);
-  const listed = listedOf(harness, models?.models);
-  const modelOk = listed.some((m) => m.id === model);
-  const modes = modesOf(mode, models?.permissionModes);
-  const shownModel = deployments ? ((deployments.find((d) => d.name === model) ?? deployments[0])?.name ?? "") : modelOk && model !== "default" ? model : unpickedOf(harness, listed);
+  const option = sources?.options.find((o) => o.source === settings.source);
+  const onAzure = settings.source === "azure";
+  const azureModels = option?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
+  const listed = models?.models ?? [];
+  const model = settings.model ?? (onAzure ? (azureModels?.[0]?.id ?? "") : unpickedOf(harness, listed));
+  const mode = settings.mode ?? HOME_AGENT_MODE;
+  // The source chip reads a session: this one is what the Home agent would run on.
+  const session: SessionSummary = { id: "home", harness, nativeId: "home", projectPath: "", title: "Home agent", mode: "stored", status: "idle", updatedAt: 0 };
+  const state: LiveState = { mode: "stored", status: "idle", requests: [], queue: [], ...(option ? { billing: option.billing } : {}) } as LiveState;
 
-  const apply = async () => {
-    // A runner without sources has only its harness's own login.
-    const src = picked?.source ?? (sources && !options.length ? "subscription" : undefined);
-    if (!src) return;
+  const apply = async (patch: Partial<HomeAgentSettings>) => {
     setBusy(true);
-    setError(undefined);
+    onError(undefined);
     try {
-      const r = await rpc(runnerId, "homeAgentSet", { harness, source: src, ...(shownModel && shownModel !== "default" ? { model: shownModel } : {}), mode });
-      onDone(r);
+      const other = patch.harness && patch.harness !== harness ? await rpc(runnerId, "billingSources", { harness: patch.harness }).catch(() => undefined) : undefined;
+      const r = await rpc(runnerId, "homeAgentSet", nextSettings(settings, patch, other?.default ?? other?.options[0]?.source));
+      onChanged(r);
     } catch (e) {
-      setError((e as Error).message);
+      onError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
+  const disabled = busy ? "Applying…" : undefined;
 
   return (
-    <div className="t-form t-home-agent-form">
-      <WatchAllToggle runnerId={runnerId} />
+    <div className="t-chips t-home-agent-pickers" aria-label="Home agent settings" role="group">
       {harnesses.length > 1 && (
-        <div className="t-seg" role="radiogroup" aria-label="Agent">
-          {harnesses.map((h) => (
-            <button
-              type="button"
-              role="radio"
-              aria-checked={h === harness}
-              key={h}
-              className={`t-seg-opt${h === harness ? " on" : ""}`}
-              onClick={() => {
-                setHarness(h);
-                setModel(h === settings.harness ? (settings.model ?? "default") : "default");
-                setSource(h === settings.harness ? settings.source : undefined);
-                setMode(h === settings.harness ? (settings.mode ?? HOME_AGENT_MODE) : HOME_AGENT_MODE);
-              }}
-            >
-              {HARNESS_LABELS[h]}
-            </button>
-          ))}
-        </div>
+        <ChoiceMenu name="Agent" value={harness} label={HARNESS_LABELS[harness]} disabled={disabled} choices={harnesses.map((h) => ({ id: h, label: HARNESS_LABELS[h] }))} onPick={(h) => h !== harness && void apply({ harness: h as HarnessId })} />
       )}
-      {sources && !options.length ? (
-        <div>
-          <span className="t-field-label">Source</span>
-          <div>{HARNESS_LABELS[harness]}'s own login</div>
-        </div>
+      <ChoiceMenu
+        name="Model"
+        customLabel={harness === "codex" ? "Other model or deployment…" : undefined}
+        value={model}
+        label={model ? modelLabel(model, onAzure ? azureModels : listed) : "…"}
+        disabled={disabled}
+        choices={(onAzure ? (azureModels ?? []) : listed).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
+        onOpen={() => (ensureModels(), onAzure && refreshSources())}
+        onPick={(m) => m !== model && void apply({ model: m })}
+      />
+      {sources && sources.options.length > 0 ? (
+        <BillingChip runnerId={runnerId} session={session} state={state} standalone onSwitch={(source) => source !== settings.source && void apply({ source })} />
       ) : (
-        <SourcePicker choices={sources} value={picked?.source} onChange={setSource} />
+        <span className="t-chip t-chip-info">{sources ? `${HARNESS_LABELS[harness]}'s own login` : "…"}</span>
       )}
-      {deployments ? (
-        <DeploymentPicker deployments={deployments} value={shownModel} onChange={setModel} />
-      ) : (
-        <label>
-          <span className="t-field-label">Model</span>
-          <select className="t-select" value={shownModel} onChange={(e) => setModel(e.target.value)}>
-            {listed.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id === "default" ? modelLabel("default", models?.models) : m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <label>
-        <span className="t-field-label">Mode</span>
-        <select className="t-select" value={mode} onChange={(e) => setMode(e.target.value)}>
-          {modes.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      {modes.find((m) => m.id === mode)?.description && <span className="t-inline-status">{modes.find((m) => m.id === mode)!.description}</span>}
-      {(harness !== settings.harness || (harness === "codex" && !!picked && picked.source !== settings.source)) && <span className="t-inline-status">The conversation moves to a new chat on {HARNESS_LABELS[harness]}.</span>}
-      {error && <div className="t-form-error">{error}</div>}
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <Button label={busy ? "Applying…" : "Apply"} variant="primary" size="sm" isDisabled={busy || !sources} onClick={() => void apply()} />
-      </div>
+      <ChoiceMenu name="Mode" value={mode} label={permissionModeLabel(mode)} disabled={disabled} choices={models?.permissionModes ?? []} onOpen={ensureModels} onPick={(m) => m !== mode && void apply({ mode: m })} />
+      <WatchAllToggle runnerId={runnerId} />
     </div>
   );
 }
