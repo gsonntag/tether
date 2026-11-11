@@ -7,7 +7,8 @@
 // transcript), or was removed on another device; and if the message comes back (stopped before it
 // got there) the edit attaches to it again, so nothing is ever sent twice.
 
-import { parseSessionMessage, undefang } from "../../../shared/fromTether";
+import { FROM_TETHER, parseSessionMessage, undefang } from "../../../shared/fromTether";
+import { homeReport } from "../../../shared/homeReport";
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
@@ -15,6 +16,7 @@ import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { viewKey } from "../store";
 import { putDraft } from "./Composer";
+import { useSessionCtx } from "./sessionContext";
 import { lostEdit, UNKNOWN_MS } from "../queueEdit";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -81,6 +83,8 @@ function useShort(): boolean {
 
 export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: string; sessionId: string; state: LiveState; messages?: Msg[] }) {
   const key = viewKey(runnerId, sessionId);
+  /** the Home agent's chat: Tether's reports waiting in its queue read as one line (shared/homeReport.ts) */
+  const { home } = useSessionCtx();
   const [edit, setEditState] = useState<Edit | undefined>(() => edits.get(key));
   const [error, setError] = useState<string>();
   const setEdit = (e: Edit | undefined) => {
@@ -225,6 +229,8 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
                     <>
                       Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
                     </>
+                  ) : home && m.text.startsWith(FROM_TETHER) ? (
+                    <span className="t-queued-from">↳ {homeReport(m.text)?.summary}</span>
                   ) : peerOf(m.text) ? (
                     <>
                       <span className="t-queued-from">From “{peerOf(m.text)!.title}”{peerOf(m.text)!.all ? " · to all" : ""}:</span> {peerOf(m.text)!.text}

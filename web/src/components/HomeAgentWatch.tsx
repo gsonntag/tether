@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { rpc } from "../connection";
+import { noteHomeWatch } from "../store";
 
 export function WatchAllToggle({ runnerId }: { runnerId: string }) {
   const [on, setOn] = useState<boolean>();
@@ -11,7 +12,7 @@ export function WatchAllToggle({ runnerId }: { runnerId: string }) {
   useEffect(() => {
     let gone = false;
     rpc(runnerId, "homeAgentWatch", {})
-      .then((r) => !gone && setOn(r.watchAll))
+      .then((r) => !gone && (setOn(r.watchAll), noteHomeWatch(runnerId, r)))
       .catch(() => !gone && setOn(undefined));
     return () => void (gone = true);
   }, [runnerId]);
@@ -27,7 +28,7 @@ export function WatchAllToggle({ runnerId }: { runnerId: string }) {
             setOn(next);
             setError(undefined);
             rpc(runnerId, "homeAgentWatch", { on: next })
-              .then((r) => setOn(r.watchAll))
+              .then((r) => (setOn(r.watchAll), noteHomeWatch(runnerId, r)))
               .catch((err) => {
                 setOn(!next);
                 setError((err as Error).message);

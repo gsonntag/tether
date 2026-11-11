@@ -8,10 +8,11 @@ import { Markdown } from "./Markdown";
 import { hardBreaks } from "../breaks";
 import { checked } from "../parts";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
+import { ChevronRightIcon, ExclamationTriangleIcon, InformationCircleIcon, PaperClipIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, splitAttachments, type Attachment } from "../../../shared/attachments";
 import type { Msg, Part } from "../../../shared/transcript";
-import { undefang } from "../../../shared/fromTether";
+import { fromTether, undefang } from "../../../shared/fromTether";
+import { homeReport } from "../../../shared/homeReport";
 import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
@@ -89,8 +90,37 @@ function Attached({ mimeType, data }: { mimeType: string; data: string }) {
   return <img className="t-img" alt="Attached image" src={`data:${mimeType};base64,${data}`} style={style} />;
 }
 
+/**
+ * One of Tether's reports to the Home agent, in its chat: one quiet line, the full text (what the
+ * agent got) when opened. Stays as left when the row is mounted again.
+ */
+function HomeReportRow({ msg, summary, attention, children }: { msg: Msg; summary: string; attention: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useRowState(`report:${msg.id}`, false);
+  return (
+    <div className={`t-msg t-home-report${attention ? " attention" : ""}`}>
+      <button type="button" className="t-home-report-line" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? "Hide the full report" : "Show the full report"}>
+        <span className="t-home-report-mark" aria-hidden>
+          ↳
+        </span>
+        <span className="t-home-report-text">{summary}</span>
+        <ChevronRightIcon className="t-home-report-chev" aria-hidden />
+      </button>
+      {open && <div className="t-home-report-body">{children}</div>}
+    </div>
+  );
+}
+
+/** The Home chat's report in a user message, if it is one: Tether's, by origin or (not yet parsed) by its marker. */
+function homeReportOf(msg: Msg) {
+  if (msg.role !== "user") return undefined;
+  const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+  if (msg.origin?.kind === "tether") return homeReport(text);
+  if (!msg.origin && fromTether(text) !== undefined) return homeReport(text);
+  return undefined;
+}
+
 export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed?: boolean }) {
-  const { projectPath, runnerId } = useSessionCtx();
+  const { projectPath, runnerId, home } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
@@ -136,6 +166,15 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
   // A `!` command you ran, and the message that carried its output to the agent.
   if (msg.shell) return <ShellCard msg={msg} />;
   if (msg.role === "user" && msg.origin?.kind === "shell") return <ShellSent msg={msg} />;
+  const report = home ? homeReportOf(msg) : undefined;
+  if (report)
+    return (
+      <HomeReportRow msg={msg} summary={report.summary} attention={report.attention}>
+        {parts.map((p, i) => (
+          <PartView key={i} rowKey={`${msg.id}:${i}`} part={p.type === "text" ? { ...p, text: fromTether(p.text) ?? p.text } : p} streaming={false} cut={cutFor(i)} root={projectPath} />
+        ))}
+      </HomeReportRow>
+    );
   if (msg.role === "user" && msg.origin) {
     // Not something you typed: another session's message, a channel, a report.
     // Another Tether session (SPEC §9a): by its title, with a way there.

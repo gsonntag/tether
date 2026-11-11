@@ -298,8 +298,11 @@ export class HomeAgent {
     clearTimeout(this.watchTimer);
   }
 
-  /** "Watch all sessions" (default on); `on` changes it. Off drops what's waiting to be reported. */
-  watch(on?: unknown): { watchAll: boolean } {
+  /**
+   * "Watch all sessions" (default on); `on` changes it. Off drops what's waiting to be reported.
+   * Answers with the sessions its chats follow too (the Home chat's "Waiting for N sessions").
+   */
+  watch(on?: unknown): { watchAll: boolean; following: string[] } {
     if (typeof on === "boolean") {
       if (on) delete this.state.watchAll;
       else {
@@ -310,7 +313,8 @@ export class HomeAgent {
       }
       this.save();
     }
-    return { watchAll: this.state.watchAll !== false };
+    const following = Object.entries(this.state.children).flatMap(([id, c]) => (c.released ? [] : [id]));
+    return { watchAll: this.state.watchAll !== false, following };
   }
 
   /**

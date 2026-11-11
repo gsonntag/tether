@@ -23,6 +23,7 @@ import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
+import { HomeWaiting } from "./HomeWaiting";
 import { Transcript } from "./Transcript";
 
 const PLACEHOLDER = "What should get done? e.g. “In tether, make the sidebar remember its width”";
@@ -156,7 +157,7 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
   }, [runnerId, sessionId]);
   const view = useStore((s) => s.views[k]);
   const linkOpen = useStore((s) => s.link === "open");
-  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: view?.session?.projectPath }), [runnerId, sessionId, view?.session?.projectPath]);
+  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: view?.session?.projectPath, home: true }), [runnerId, sessionId, view?.session?.projectPath]);
   if (!view?.window || !view.state) {
     return <div className="t-inline-status">{view?.error ?? <Spinner size="sm" label="Opening…" />}</div>;
   }
@@ -175,7 +176,9 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
               <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
                 <Spinner size="sm" /> Working…
               </div>
-            ) : undefined
+            ) : running ? undefined : (
+              <HomeWaiting runnerId={runnerId} />
+            )
           }
         />
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={view.session?.projectPath} />

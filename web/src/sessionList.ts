@@ -52,6 +52,36 @@ export function waitingOn(summaries: Record<string, SummaryState>, runnerId: str
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }
 
+/** What the Home agent watches: every session ("Watch all sessions"), or only those its chats follow. */
+export interface Watching {
+  watchAll: boolean;
+  /** absent: a runner from before it said */
+  following?: string[];
+}
+
+/** A session that's waiting for a person: an open request, or a TUI asking. */
+const needsPerson = (r: SessionSummary) => (r.requests ?? 0) > 0 || r.status === "waiting";
+
+/**
+ * The sessions the Home agent is waiting on, on one runner (its chat's "Waiting for N sessions"):
+ * those running a turn or waiting for the person, among every session when it watches all of them,
+ * else the ones it follows. Never its own chats, subagents or archived sessions (the watch reports
+ * leave them out too). Those waiting for the person first, then oldest first.
+ */
+export function awaitedSessions(summaries: Record<string, SummaryState>, runnerId: string, w: Watching): { rows: Row[]; needs: number } {
+  const follows = new Set(w.following ?? []);
+  const out = rows(summaries).filter(
+    (r) => r.runnerId === runnerId && !r.parentSessionId && !r.archived && (w.watchAll || follows.has(r.id)) && (r.status === "running" || needsPerson(r)),
+  );
+  out.sort((a, b) => Number(needsPerson(b)) - Number(needsPerson(a)) || a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
+  return { rows: out, needs: out.filter(needsPerson).length };
+}
+
+export { needsPerson };
+
+/** "Waiting for 3 sessions to finish…" */
+export const waitingLine = (n: number) => `Waiting for ${n} session${n === 1 ? "" : "s"} to finish…`;
+
 /** Merges two lists by session (the later one wins), newest first. */
 export function mergeRows(a: Row[], b: Row[]): Row[] {
   const by = new Map<string, Row>();

@@ -10,7 +10,7 @@ import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState }
 import { startPresence, tellPresence } from "./presence";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
-import { setHomeFolders } from "./sessionList";
+import { setHomeFolders, type Watching } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 
@@ -59,6 +59,8 @@ interface State {
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
   /** each runner's Home agent chat (none: the next message starts one), newest `rev` wins */
   homeChats: Record<string, HomeChatUpdate>;
+  /** each runner's "Watch all sessions" and the sessions its Home agent follows (homeAgentWatch) */
+  homeWatch: Record<string, Watching>;
 }
 
 const known = loadKnown();
@@ -77,6 +79,7 @@ export const useStore = create<State>(() => ({
   views: {},
   newSessionOpen: false,
   homeChats: {},
+  homeWatch: {},
 }));
 
 const set = useStore.setState;
@@ -285,6 +288,11 @@ export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
   const cur = get().homeChats[runnerId];
   if (cur && cur.rev >= u.rev) return;
   set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}) } } }));
+}
+
+/** What a runner's Home agent watches (a homeAgentWatch answer). */
+export function noteHomeWatch(runnerId: string, w: Watching) {
+  set((s) => ({ homeWatch: { ...s.homeWatch, [runnerId]: { watchAll: w.watchAll, ...(w.following ? { following: w.following } : {}) } } }));
 }
 
 /** Drops a disconnected runner from this browser's list. */
