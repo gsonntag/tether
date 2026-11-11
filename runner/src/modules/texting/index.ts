@@ -27,6 +27,9 @@ import { TextingStore } from "./store";
 import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
 
+/** The reaction on a text Tether read and passed on to its session. */
+export const READ = "✅";
+
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
@@ -244,17 +247,19 @@ export class Texter {
       const look = this.ctx.session(d.sessionId);
       const open = look?.state?.requests?.find((r) => look.requests.includes(r.id));
       if (open) {
-        const m = readReply(open, d.text);
-        if ("problem" in m) return void (await this.say(`${tag} ${m.problem}`));
+        const r = readReply(open, d.text);
+        if ("problem" in r) return void (await this.say(`${tag} ${r.problem}`));
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
-        const answer: RequestAnswer = "answer" in m ? m.answer : { allow: false, reason: m.talk };
+        const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
         this.talking.add(d.sessionId);
       } else {
         await this.ctx.sessions.tell(d.sessionId, d.text);
         this.talking.add(d.sessionId);
       }
-      // No "sent" or "allowed" back (texts.ts): the session answers for itself.
+      // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
+      // person's text says Tether read it and passed it on.
+      await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
     } catch (e: any) {
       await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
     }
