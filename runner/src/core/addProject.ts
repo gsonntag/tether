@@ -4,12 +4,10 @@
 
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { FolderList } from "../../../shared/protocol";
+import type { CloneStatus, FolderList } from "../../../shared/protocol";
 import { parseRepo } from "../../../shared/repo";
 import { expandPath } from "./sessions";
 
-/** A clone has to finish inside the relay's rpc timeout (server relay.ts, 120 s). */
-export const CLONE_TIMEOUT_MS = 110_000;
 const MAX_FOLDERS = 500;
 
 const rooted = (p: string) => {
@@ -56,37 +54,131 @@ function sameRepo(dir: string, url: string): boolean {
   }
 }
 
+/** How far a running `git clone --progress` is, from its stderr (`Receiving objects:  45% (450/1000)`). */
+const PHASES: Record<string, [number, number]> = {
+  "Receiving objects": [0, 75],
+  "Resolving deltas": [75, 90],
+  "Updating files": [90, 100],
+};
+export function readProgress(line: string): { phase: string; percent?: number; detail?: string } | undefined {
+  const m = line.match(/^(?:remote: )?([A-Z][a-z]+(?: [a-z]+)*):\s+(\d+)%/);
+  if (!m) return undefined;
+  const span = PHASES[m[1]!];
+  // Counted in objects, so one big file holds the bar still: how much came, and how fast, says more.
+  const bytes = line.match(/,\s*([\d.]+ [KMGT]?i?B)(?:\s*\|\s*([\d.]+ [KMGT]?i?B\/s))?/);
+  const detail = bytes ? [bytes[1], bytes[2]].filter(Boolean).join(" · ") : undefined;
+  // The server's counting and compressing come first: shown, but not yet part of the bar.
+  return { phase: m[1]!, ...(span ? { percent: Math.round(span[0] + ((span[1] - span[0]) * Number(m[2])) / 100) } : {}), ...(detail ? { detail } : {}) };
+}
+
+/** A clone's whole life is capped so a stalled connection can't hold one forever. */
+export const CLONE_TIMEOUT_MS = 30 * 60_000;
+/** A finished clone's status is kept this long for the dialog to read. */
+const KEEP_MS = 10 * 60_000;
+
+interface Job {
+  status: CloneStatus;
+  kill?: () => void;
+}
+
 /**
- * `git clone git@github.com:org/repo.git <path>`; parent folders are made as needed. A folder that
- * is already a clone of the same repo is used as it is; any other existing folder is refused.
+ * Clones run in the background: `start` checks what it can right away and answers with an id,
+ * `status` is polled for progress, `cancel` stops one (and removes what it wrote).
  */
-export async function cloneRepo(repo: string, path: string, timeoutMs = CLONE_TIMEOUT_MS): Promise<{ path: string }> {
-  const { url } = parseRepo(repo);
-  if (!rooted(path)) throw new Error("Use a full path, like ~/projects/app.");
-  const dest = expandPath(path);
-  if (existsSync(dest)) {
-    if (statSync(dest).isDirectory() && sameRepo(dest, url)) return { path: dest };
-    throw new Error(`${dest} already exists. Pick another folder.`);
+export class CloneJobs {
+  private jobs = new Map<string, Job>();
+  constructor(private o: { timeoutMs?: number; keepMs?: number } = {}) {}
+
+  /**
+   * `git clone git@github.com:org/repo.git <path>`; parent folders are made as needed. A folder
+   * that is already a clone of the same repo is used as it is; any other existing folder is refused.
+   */
+  start(repo: string, path: string): { cloneId: string } {
+    const { url } = parseRepo(repo);
+    if (!rooted(path)) throw new Error("Use a full path, like ~/projects/app.");
+    const dest = expandPath(path);
+    for (const j of this.jobs.values()) if (j.status.state === "running" && j.status.path === dest) throw new Error(`${dest} is already being cloned.`);
+    const cloneId = crypto.randomUUID();
+    if (existsSync(dest)) {
+      if (!(statSync(dest).isDirectory() && sameRepo(dest, url))) throw new Error(`${dest} already exists. Pick another folder.`);
+      this.finish(cloneId, { state: "done", path: dest, percent: 100 });
+      return { cloneId };
+    }
+    const job: Job = { status: { state: "running", path: dest, phase: "Connecting" } };
+    this.jobs.set(cloneId, job);
+    void this.run(job, url, dest);
+    return { cloneId };
   }
-  const proc = Bun.spawn(["git", "clone", "--", url, dest], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-      // Nobody can answer a passphrase prompt; a host seen for the first time is trusted.
-      GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
-    },
-  });
-  const timer = setTimeout(() => proc.kill(), timeoutMs);
-  const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-  clearTimeout(timer);
-  if (code !== 0) {
+
+  status(cloneId: string): CloneStatus {
+    const j = this.jobs.get(cloneId);
+    if (!j) throw new Error("That clone is gone. Start it again.");
+    return j.status;
+  }
+
+  cancel(cloneId: string) {
+    const j = this.jobs.get(cloneId);
+    if (j?.status.state === "running") {
+      j.status = { ...j.status, state: "failed", error: "Canceled." };
+      j.kill?.();
+    }
+  }
+
+  private finish(cloneId: string, status: CloneStatus) {
+    this.jobs.set(cloneId, { status });
+    setTimeout(() => this.jobs.delete(cloneId), this.o.keepMs ?? KEEP_MS).unref?.();
+  }
+
+  private async run(job: Job, url: string, dest: string) {
+    const proc = Bun.spawn(["git", "clone", "--progress", "--", url, dest], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+      // Its own process group, so stopping it stops ssh too (which would hold the pipe open).
+      detached: true,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        // Nobody can answer a passphrase prompt; a host seen for the first time is trusted.
+        GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+      },
+    });
+    let timedOut = false;
+    job.kill = () => {
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        proc.kill("SIGKILL");
+      }
+    };
+    const timer = setTimeout(() => ((timedOut = true), job.kill?.()), this.o.timeoutMs ?? CLONE_TIMEOUT_MS);
+    const lines: string[] = [];
+    let rest = "";
+    const decoder = new TextDecoder();
+    const read = (async () => {
+      // git redraws its progress with \r: each piece is the latest state of a line.
+      for await (const chunk of proc.stderr) {
+        const parts = (rest + decoder.decode(chunk, { stream: true })).split(/[\r\n]/);
+        rest = parts.pop() ?? "";
+        for (const line of parts.map((l) => l.trim()).filter(Boolean)) {
+          const p = readProgress(line);
+          if (p && job.status.state === "running") job.status = { ...job.status, phase: p.phase, detail: p.detail, ...(p.percent !== undefined ? { percent: Math.max(p.percent, job.status.percent ?? 0) } : {}) };
+          else if (!p && !line.startsWith("Cloning into")) lines.push(line), lines.length > 5 && lines.shift();
+        }
+      }
+    })().catch(() => {});
+    const code = await proc.exited;
+    // Its last words, but never waiting on a pipe something else still holds.
+    await Promise.race([read, Bun.sleep(1000)]);
+    clearTimeout(timer);
+    const id = [...this.jobs].find(([, j]) => j === job)?.[0];
+    if (code === 0 && job.status.state === "running") {
+      if (id) this.finish(id, { state: "done", path: dest, percent: 100 });
+      return;
+    }
     rmSync(dest, { recursive: true, force: true });
-    if (proc.signalCode) throw new Error(`Cloning ${url} took over ${Math.round(timeoutMs / 1000)} s. Clone it in a terminal, then choose the folder.`);
-    const lines = err.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("Cloning into"));
-    throw new Error(`git clone ${url} failed: ${lines.slice(-3).join(" ") || `exit ${code}`}`);
+    const error =
+      job.status.state === "failed" ? job.status.error! : timedOut ? `Cloning ${url} took over ${Math.round((this.o.timeoutMs ?? CLONE_TIMEOUT_MS) / 60_000)} min.` : `git clone ${url} failed: ${lines.slice(-3).join(" ") || `exit ${code}`}`;
+    if (id) this.finish(id, { state: "failed", path: dest, error });
   }
-  return { path: dest };
 }
