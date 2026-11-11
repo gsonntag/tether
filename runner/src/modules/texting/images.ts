@@ -18,7 +18,7 @@
 // goes as it came. Other files are left out, and the person is told.
 
 import { spawn } from "node:child_process";
-import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { ATTACH_IMAGE_EDGE, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
@@ -29,8 +29,11 @@ import type { TextedFile } from "../homeLine";
 export const OUT_IMAGE_MAX = 10 * 1024 * 1024;
 /** The biggest image the person can text in that Tether passes on (an upload's cap). */
 export const IN_IMAGE_MAX = ATTACH_IMAGE_MAX;
-/** How long one incoming image may take to download, and to convert. Tests shorten them. */
-export const DOWNLOAD = { ms: 45_000, convertMs: 30_000 };
+/**
+ * How long one incoming image may take to download, and to be converted (waiting for a slot and
+ * running, together): at most a minute in all before its text goes on. Tests shorten them.
+ */
+export const DOWNLOAD = { ms: 30_000, convertMs: 30_000 };
 
 /** What every refused outgoing image says. */
 export const IMAGE_REFUSED = "That isn't an image Tether can text: give the absolute path of a .png, .jpg, .gif, .webp or .heic image of at most 10 MB.";
@@ -228,29 +231,64 @@ export type Convert = (data: Buffer, from: "heic" | "png" | "jpeg" | "webp") => 
 export const CONVERT_MAX = 2;
 let converting = 0;
 const waiting: (() => void)[] = [];
-/** Runs `f` when a conversion slot is free. */
-async function inSlot<T>(f: () => Promise<T>): Promise<T> {
-  if (converting >= CONVERT_MAX) await new Promise<void>((go) => waiting.push(go));
-  converting++;
+
+/**
+ * Runs `f` in a conversion slot, waiting at most `waitMs` for one (then throws: the image goes as it
+ * came). A finished one hands its slot straight to the next in line, so never more than CONVERT_MAX
+ * run. `f` gets how long it has left of `waitMs`.
+ */
+export async function inSlot<T>(f: (leftMs: number) => Promise<T>, waitMs: number): Promise<T> {
+  const start = Date.now();
+  if (converting < CONVERT_MAX) converting++;
+  else
+    await new Promise<void>((go, no) => {
+      const take = () => (clearTimeout(timer), go());
+      const timer = setTimeout(() => {
+        const i = waiting.indexOf(take);
+        if (i >= 0) waiting.splice(i, 1);
+        no(new Error("no conversion slot in time"));
+      }, waitMs);
+      waiting.push(take);
+    });
   try {
-    return await f();
+    return await f(Math.max(0, waitMs - (Date.now() - start)));
   } finally {
-    converting--;
-    waiting.shift()?.();
+    const next = waiting.shift();
+    // The slot goes to the next one as it is: the count stays.
+    if (next) next();
+    else converting--;
   }
+}
+
+/** The prefix of ImageMagick's temporary folders. */
+const MAGICK_TMP = "tether-magick-";
+
+/** Removes ImageMagick temporary folders an earlier runner left (older than an hour). */
+export function sweepMagickTemp(dir = tmpdir(), now = Date.now()) {
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith(MAGICK_TMP)) continue;
+      const p = join(dir, name);
+      try {
+        if (now - statSync(p).mtimeMs > 60 * 60_000) rmSync(p, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
 }
 
 /**
  * ImageMagick (`convert`), told what the input is (never left to guess a coder from the bytes),
- * bounded (memory, disk, time; its temporary files in a folder of its own, removed after), at most
- * CONVERT_MAX at once, scaled down to ATTACH_IMAGE_EDGE, output capped. Undefined when it isn't
- * installed or fails.
+ * bounded (memory, map, disk, pixel area and size, time; its temporary files in a folder of its own,
+ * removed after), at most CONVERT_MAX at once, waiting and running within DOWNLOAD.convertMs, scaled
+ * down to ATTACH_IMAGE_EDGE, output capped. Undefined when it isn't installed, fails, or runs out of
+ * time.
  */
 export const imagemagick: Convert = (data, from) =>
-  inSlot(async () => {
+  inSlot(async (leftMs) => {
+    if (leftMs <= 0) return undefined;
     let tmp: string | undefined;
     try {
-      tmp = mkdtempSync(join(tmpdir(), "tether-magick-"));
+      tmp = mkdtempSync(join(tmpdir(), MAGICK_TMP));
     } catch {
       return undefined;
     }
@@ -262,13 +300,18 @@ export const imagemagick: Convert = (data, from) =>
         try {
           p = spawn(
             "convert",
-            ["-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "1GiB", "-limit", "time", "30", `${from}:-`, "-auto-orient", "-resize", `${ATTACH_IMAGE_EDGE}x${ATTACH_IMAGE_EDGE}>`, "-quality", "85", "jpeg:-"],
+            [
+              ...["-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "256MiB"],
+              ...["-limit", "area", "128MP", "-limit", "width", "16KP", "-limit", "height", "16KP", "-limit", "time", String(Math.max(1, Math.ceil(leftMs / 1000)))],
+              `${from}:-`,
+              ...["-auto-orient", "-resize", `${ATTACH_IMAGE_EDGE}x${ATTACH_IMAGE_EDGE}>`, "-quality", "85", "jpeg:-"],
+            ],
             { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, MAGICK_TEMPORARY_PATH: tmp, MAGICK_TMPDIR: tmp, TMPDIR: tmp } },
           );
         } catch {
           return done(undefined);
         }
-        const timer = setTimeout(() => p.kill("SIGKILL"), DOWNLOAD.convertMs);
+        const timer = setTimeout(() => p.kill("SIGKILL"), leftMs);
         p.on("error", () => (clearTimeout(timer), done(undefined)));
         p.stdout.on("data", (c: Buffer) => {
           size += c.length;
@@ -288,7 +331,7 @@ export const imagemagick: Convert = (data, from) =>
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, DOWNLOAD.convertMs).catch(() => undefined);
 
 const CODER: Record<string, "heic" | "png" | "jpeg" | "webp"> = { "image/heic": "heic", "image/heif": "heic", "image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp" };
 const jpgName = (name: string) => `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.jpg`;
@@ -306,7 +349,8 @@ export async function incomingImage(f: Pick<InboundFile, "name">, data: Buffer, 
   if (isHeif(mimeType)) {
     const jpeg = await convert(data, "heic").catch(() => undefined);
     if (jpeg) return { name: jpgName(name), mimeType: "image/jpeg", data: jpeg };
-    return { name, mimeType, data, heic: true };
+    // Kept as it came: by its own kind's name, never whatever name the sender gave it.
+    return { name: `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.heic`, mimeType, data, heic: true };
   }
   if (CODER[mimeType] && tooBigToSee(data)) {
     const jpeg = await convert(data, CODER[mimeType]!).catch(() => undefined);

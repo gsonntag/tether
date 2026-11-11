@@ -35,7 +35,7 @@ import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
 import { HELD_MS, HOME, Router, type About } from "./router";
 import { homeLabel, homeList, PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
-import { download, imagemagick, incomingImage, pickIncoming, readOutgoingImage, type Convert, type InboundFile, type OutImage } from "./images";
+import { download, imagemagick, incomingImage, sweepMagickTemp, pickIncoming, readOutgoingImage, type Convert, type InboundFile, type OutImage } from "./images";
 import { TextingStore } from "./store";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
@@ -132,6 +132,7 @@ export class Texter {
   private heardIds: string[] = [];
   /** images that came with the text the router holds (its id), waiting for the person to pick a session */
   private heldFiles?: { id: number; files: TextedFile[]; at: number };
+  private heldTimer?: ReturnType<typeof setTimeout>;
   /** turns HEIC into JPEG (tests replace it) */
   convert: Convert = imagemagick;
   readonly caps: AgentTextCaps;
@@ -176,6 +177,7 @@ export class Texter {
 
   async stop() {
     this.stopped = true;
+    clearTimeout(this.heldTimer);
     clearTimeout(this.retry);
     await this.connecting;
     const link = this.link;
@@ -423,18 +425,42 @@ export class Texter {
   }
 
   /** The images held with the held text `id`, taken (and those of other held texts dropped). */
-  private takeHeld(id: number | undefined): { files: TextedFile[]; lost: boolean } {
+  private takeHeld(id: number | undefined): TextedFile[] {
     const h = this.heldFiles;
-    if (!h) return { files: [], lost: false };
-    // Others' are kept: they're for a held text still waiting.
-    if (h.id !== id && this.now() - h.at < HELD_MS && this.router.state.held?.id === h.id) return { files: [], lost: false };
+    if (!h || h.id !== id) return [];
+    this.dropHeld();
+    return h.files;
+  }
+
+  /** Keeps images with the held text `id` (until HELD_MS after `at`, when they're dropped and the person is told). */
+  private holdFiles(id: number, files: TextedFile[], at: number) {
+    this.dropHeld();
+    this.heldFiles = { id, files, at };
+    this.heldTimer = setTimeout(() => void this.expireHeld().catch(() => {}), Math.max(0, at + HELD_MS - this.now()) + 50);
+    this.heldTimer.unref?.();
+  }
+
+  private dropHeld() {
+    clearTimeout(this.heldTimer);
+    this.heldTimer = undefined;
     this.heldFiles = undefined;
-    if (h.id === id && this.now() - h.at < HELD_MS) return { files: h.files, lost: false };
-    return { files: [], lost: true };
+  }
+
+  /**
+   * Held images whose time is up (the person never picked a session): dropped, and the person is
+   * told then, once (never later, with some other text).
+   */
+  async expireHeld() {
+    const h = this.heldFiles;
+    if (!h || this.now() - h.at < HELD_MS) return;
+    this.dropHeld();
+    await this.say(TEXTS.heldImageExpired);
   }
 
   private async answer(m: Inbound, got: Got) {
     const home = this.ctx.homeLine?.home;
+    // (Their timer tells the person; this only catches a timer that hasn't fired yet.)
+    await this.expireHeld();
     // At most one word about what didn't come through, per message.
     if (m.unsupported) await this.say(TEXTS.onlyTextAndImages);
     else if (got.notImages) await this.say(TEXTS.onlyImages);
@@ -454,10 +480,10 @@ export class Texter {
     const heldNow = this.router.state.held;
     if (d.kind === "deliver" || d.kind === "home" || d.kind === "newHome") {
       const held = this.takeHeld(d.held);
-      files = [...held.files, ...own];
-      // Held images that are gone (a restart: they're kept in memory only; or they expired): the
-      // person is told, and a held "(image)" with nothing left isn't passed on as if it were one.
-      const lost = held.lost || (d.held !== undefined && heldBefore?.id === d.held && !!heldBefore.images && !held.files.length);
+      files = [...held, ...own];
+      // Held images a restart dropped (they're kept in memory only): the person is told, and a held
+      // "(image)" with nothing left isn't passed on as if it were one.
+      const lost = d.held !== undefined && heldBefore?.id === d.held && !!heldBefore.images && !held.length;
       if (lost && !toldLost) {
         toldLost = true;
         await this.say(TEXTS.imagesNotSent);
@@ -468,15 +494,24 @@ export class Texter {
         return;
       }
     } else if (heldNow && heldNow.id !== heldBefore?.id) {
-      const carried = this.heldFiles && this.now() - this.heldFiles.at < HELD_MS ? this.heldFiles.files : [];
-      this.heldFiles = carried.length || own.length ? { id: heldNow.id!, files: [...carried, ...own], at: this.now() } : undefined;
-      if (this.heldFiles) heldNow.images = this.heldFiles.files.length;
+      // (Expired ones were dropped, and the person told, above.)
+      const carried = this.heldFiles?.files ?? [];
+      if (carried.length || own.length) {
+        this.holdFiles(heldNow.id!, [...carried, ...own], this.now());
+        heldNow.images = carried.length + own.length;
+      } else this.dropHeld();
       files = [];
     }
     this.store.save();
-    // Anything below that doesn't pass the images on says so (never lost without a word).
+    // Anything below that doesn't pass the images on says so (never lost without a word), once:
+    // a failure to send says it in the same text.
     let passed = files.length === 0;
     const withNote = (t: string) => (heic ? `${t}\n\n${HEIC_NOTE}` : t);
+    const failed = async (tag: string, e: any) => {
+      const why = String(e?.message ?? e);
+      await this.say(!passed && !toldLost ? TEXTS.couldNotSendWithImage(tag, why) : TEXTS.couldNotSend(tag, why));
+      passed = true;
+    };
     try {
       if (d.kind === "none") return;
       if (d.kind === "reply") return void (await this.say(d.text));
@@ -487,7 +522,7 @@ export class Texter {
           if (d.text) await m.react?.(READ).catch(() => {});
           else await this.say(TEXTS.homeStarted(homeLabel(n)));
         } catch (e: any) {
-          await this.say(TEXTS.couldNotSend("a new home", String(e?.message ?? e)));
+          await failed("a new home", e);
         }
         return;
       }
@@ -503,11 +538,13 @@ export class Texter {
       if (d.kind === "home") {
         const label = homeLabel(d.home ?? 0);
         try {
-          await home!.take(withNote((d.about ? this.aboutText(d.about) : "") + d.text), files.length ? files : undefined, { n: d.home ?? 0 });
+          // By its chat: the number may belong to another tab by now.
+          await home!.take(withNote((d.about ? this.aboutText(d.about) : "") + d.text), files.length ? files : undefined, d.chat ? { chat: d.chat } : { n: 0 });
           passed = true;
           await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+          if (d.gone) await this.say(TEXTS.homeGoneSentToH);
         } catch (e: any) {
-          await this.say(TEXTS.couldNotSend(d.home ? label : "the Home agent", String(e?.message ?? e)));
+          await failed(d.home ? label : "the Home agent", e);
         }
         return;
       }
@@ -554,7 +591,7 @@ export class Texter {
         // person's text says Tether read it and passed it on.
         await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
       } catch (e: any) {
-        await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
+        await failed(tag, e);
       }
     } finally {
       if (!passed && !toldLost) await this.say(TEXTS.imagesNotSent);
@@ -565,6 +602,8 @@ export class Texter {
 export const textingModule: Module = {
   name: "texting",
   start(ctx) {
+    // ImageMagick's folders an earlier runner left behind (a crash mid-conversion).
+    sweepMagickTemp();
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
     if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o), moved: (from, to) => t.homeMoved(from, to) };

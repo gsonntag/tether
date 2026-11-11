@@ -780,15 +780,23 @@ export class HomeAgent implements HomeEnd {
   }
 
   async newChat(): Promise<{ sessionId: string; rev: number }> {
-    if (this.homes().filter((h) => h.n !== 0).length >= MAX_EXTRA_HOMES)
+    // The slot is taken before anything is awaited: two at once can't both get the last one.
+    if (this.homes().filter((h) => h.n !== 0).length + this.making >= MAX_EXTRA_HOMES)
       throw new Error(`At most ${MAX_EXTRA_HOMES} Home tabs besides Texts (h1 to h${MAX_EXTRA_HOMES}): close one first.`);
-    const { harness, source, model, mode } = await this.settings();
-    const permissionMode = await this.modeFor(harness, mode);
-    const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
-    this.state.tabs.push(id);
-    this.label();
-    return { sessionId: id, rev: this.setCurrent(id) };
+    this.making++;
+    try {
+      const { harness, source, model, mode } = await this.settings();
+      const permissionMode = await this.modeFor(harness, mode);
+      const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
+      this.state.tabs.push(id);
+      this.label();
+      return { sessionId: id, rev: this.setCurrent(id) };
+    } finally {
+      this.making--;
+    }
   }
+  /** new tabs being made now (newChat): they count against the cap */
+  private making = 0;
 
   /**
    * Puts every open chat on the chosen mode if it runs in another, between turns: a chat from

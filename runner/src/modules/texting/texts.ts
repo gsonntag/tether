@@ -74,8 +74,14 @@ export const TEXTS = {
   cantDeletePrimary: "h is your main home, so it can't be deleted.",
   /** images that came with a text but couldn't go with it */
   imagesNotSent: "Your image didn't go with that, send it again with your message.",
-  /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   /** the person texted a file that isn't an image (or one too big): it's left out */
   onlyImages: "Only images come through by text, so I left the other file out.",
+  /** an image held while the person was to pick a session, dropped when the pick didn't come in time */
+  heldImageExpired: "The image you sent earlier didn't go anywhere, send it again with a session number.",
+  /** sending failed, and the images with it didn't go either */
+  couldNotSendWithImage: (tag: string, error: string) => `Couldn't send to ${tag} (nor your image): ${bare(error.split("\n")[0]!.split(/(?<=[.!?])\s/)[0]!)}.`,
+  /** a text to a home that was deleted since: sent to h instead */
+  homeGoneSentToH: "That home was deleted, so I sent it to h.",
+  /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

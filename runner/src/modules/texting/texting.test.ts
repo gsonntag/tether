@@ -8,7 +8,8 @@ import { REQUEST_MAX } from "./describe";
 import { commandWords } from "./summary";
 import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, HEIC_NOTE, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
-import { inboundOf, type Inbound, type OpenLink } from "./link";
+import { fromOwner, inboundOf, senderPhone, type Inbound, type OpenLink } from "./link";
+import { HELD_MS } from "./router";
 import { normalPhone, TextingStore } from "./store";
 import { HomeLine, PERSON_TEXT_MAX, type Home, type HomeEnd, type TextedFile } from "../homeLine";
 
@@ -808,7 +809,7 @@ describe("round 2: homes over text, image downloads, held images", () => {
     await hear({ text: "hn fix the logo" });
     expect(made.at(-1)).toBe("fix the logo");
     await hear({ text: "h1 status?" });
-    expect(took.at(-1)).toEqual(["status?", { n: 1 }]);
+    expect(took.at(-1)).toEqual(["status?", { chat: "claude:home1" }]);
     await hear({ text: "h7 status?" });
     expect(texts.at(-1)).toBe(TEXTS.noSuchHome("h7", "h, h1, h2"));
     // h2's text is marked [h2]; plain text then goes back to h2, a threaded reply to it too.
@@ -816,11 +817,11 @@ describe("round 2: homes over text, image downloads, held images", () => {
     expect(texts.at(-1)).toBe("[h2] logo is done, ship it?");
     const id = `m${texts.length}`;
     await hear({ text: "yes" });
-    expect(took.at(-1)).toEqual(['(replying to your text about session claude:a, "secret plans" in /home/me/web) yes', { n: 2 }]);
+    expect(took.at(-1)).toEqual(['(replying to your text about session claude:a, "secret plans" in /home/me/web) yes', { chat: "claude:home2" }]);
     await line.phone!.send("ok", undefined);
     expect(texts.at(-1)).toBe("[home] ok");
     await hear({ text: "and deploy", replyTo: id });
-    expect(took.at(-1)).toEqual(["(replying to your text about session claude:a, \"secret plans\" in /home/me/web) and deploy", { n: 2 }]);
+    expect(took.at(-1)).toEqual(["(replying to your text about session claude:a, \"secret plans\" in /home/me/web) and deploy", { chat: "claude:home2" }]);
     await hear({ text: "hd2" });
     expect(texts.at(-1)).toBe(TEXTS.homeDeleted("h2", "h, h1"));
     await hear({ text: "hd0" });
@@ -895,7 +896,7 @@ describe("round 2: homes over text, image downloads, held images", () => {
     expect(tookFiles.at(-1)).toEqual([{ name: "IMG_9.jpg", mimeType: "image/jpeg", data: JPEG }]);
     t.convert = async () => undefined;
     await hear({ text: "h this", files: [photo(HEIC, "IMG_9.HEIC", "image/heic")] });
-    expect(tookFiles.at(-1)).toEqual([{ name: "IMG_9.HEIC", mimeType: "image/heic", data: HEIC }]);
+    expect(tookFiles.at(-1)).toEqual([{ name: "IMG_9.heic", mimeType: "image/heic", data: HEIC }]);
     expect(took.at(-1)![0]).toBe(`this\n\n${HEIC_NOTE}`);
   });
 
@@ -945,7 +946,7 @@ describe("round 3: held photos on every path, unsupported content, restarts", ()
     expect(s.took).toEqual([["what is wrong here", { n: 0 }, IMG]]);
     s = await heldPhoto();
     await s.hear({ text: "h1 what is wrong here" });
-    expect(s.took).toEqual([["what is wrong here", { n: 1 }, IMG]]);
+    expect(s.took).toEqual([["what is wrong here", { chat: "claude:home1" }, IMG]]);
   });
 
   test('"hn …": the held photo is the new home\'s', async () => {
@@ -993,7 +994,7 @@ describe("round 3: held photos on every path, unsupported content, restarts", ()
     extra[0]!.chat = "codex:home1";
     line.phone!.moved!("claude:home1", "codex:home1");
     await s.hear({ text: "merge it", replyTo: "m1" });
-    expect(took).toEqual([['(replying to your text about session claude:a, "secret plans" in /home/me/web) merge it', { n: 1 }]]);
+    expect(took).toEqual([['(replying to your text about session claude:a, "secret plans" in /home/me/web) merge it', { chat: "codex:home1" }]]);
   });
 });
 
@@ -1001,3 +1002,98 @@ describe("round 3: held photos on every path, unsupported content, restarts", ()
 function textingModuleLike(t: Texter, line: HomeLine) {
   line.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o), moved: (from, to) => t.homeMoved(from, to) };
 }
+
+describe("round 4: who a text is from", () => {
+  test("only the person's own number, exactly; never an email or another country's number with the same digits", () => {
+    expect(fromOwner("+15551234567", "+15551234567")).toBe(true);
+    expect(fromOwner("+1 555-123-4567", "+15551234567")).toBe(true);
+    expect(fromOwner("+15551234567", "(555) 123-4567")).toBe(true);
+    expect(fromOwner("15551234567", "5551234567")).toBe(true);
+    expect(fromOwner("tel:+15551234567", "+15551234567")).toBe(true);
+    expect(fromOwner("x5551234567@icloud.com", "+15551234567")).toBe(false);
+    expect(fromOwner("5551234567@icloud.com", "+15551234567")).toBe(false);
+    expect(fromOwner("+445551234567", "+15551234567")).toBe(false);
+    expect(fromOwner("+15551234568", "+15551234567")).toBe(false);
+    expect(fromOwner("", "+15551234567")).toBe(false);
+    expect(fromOwner(undefined, "+15551234567")).toBe(false);
+    expect(fromOwner("+15551234567", "")).toBe(false);
+    expect(fromOwner("555 123 4567 ext", "+15551234567")).toBe(false);
+    expect(senderPhone("+1 (555) 123-4567")).toBe("+15551234567");
+  });
+
+  test("a link sent with its preview is its words", () => {
+    expect(inboundOf({ type: "richlink", url: "https://example.com/a" })).toEqual({ text: "https://example.com/a" });
+    expect(inboundOf({ type: "reply", content: { type: "richlink", url: "https://x.y/" }, target: { id: "m1" } })).toEqual({ text: "https://x.y/", replyTo: "m1" });
+    expect(inboundOf({ type: "richlink" })).toBeUndefined();
+  });
+});
+
+describe("round 4: held images expire once, failures say it once, deleted homes", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+  const photo = () => ({ name: "IMG_1.png", mimeType: "image/png", size: PNG.length, read: async () => PNG });
+  async function two() {
+    const s = setup();
+    await s.t.start();
+    s.say("claude:a", "Which?");
+    await s.t.turnEnded("claude:a");
+    s.say("codex:b", "Which?");
+    await s.t.turnEnded("codex:b");
+    return s;
+  }
+
+  test("a held image that's never picked: the person is told when it expires, once, and not later with another text", async () => {
+    const s = await two();
+    await s.hear({ text: "", files: [photo()] });
+    s.clock.t += HELD_MS;
+    await s.t.expireHeld();
+    expect(s.texts.at(-1)).toBe(TEXTS.heldImageExpired);
+    await s.t.expireHeld();
+    const n = s.texts.length;
+    await s.hear({ text: "1 hi" });
+    expect(s.texts.length).toBe(n);
+    expect(s.toldFiles).toEqual([]);
+    expect(s.texts.filter((x) => x === TEXTS.imagesNotSent || x === TEXTS.heldImageExpired).length).toBe(1);
+    expect(casualText(TEXTS.heldImageExpired)).toBe(true);
+  });
+
+  test("an expired held image replaced by a new held text: told once, and the new one carries only its own", async () => {
+    const s = await two();
+    await s.hear({ text: "", files: [photo()] });
+    s.clock.t += HELD_MS + 1;
+    // (Its timer hasn't fired in this test's clock: the next text catches it, once.)
+    await s.hear({ text: "see this", files: [photo()] });
+    expect(s.texts.filter((x) => x === TEXTS.heldImageExpired).length).toBe(1);
+    await s.hear({ text: "2" });
+    expect(s.toldFiles).toEqual([["codex:b", [{ name: "IMG_1.png", mimeType: "image/png", data: PNG }]]]);
+  });
+
+  test("a send that fails with an image says both in one text", async () => {
+    const s = setup();
+    (s.t as any).ctx.sessions.tell = async () => {
+      throw new Error("The session is gone.");
+    };
+    await s.t.start();
+    s.say("claude:a", "Which?");
+    await s.t.turnEnded("claude:a");
+    await s.hear({ text: "this", files: [photo()] });
+    expect(s.texts.slice(-1)).toEqual([TEXTS.couldNotSendWithImage("[1]", "The session is gone.")]);
+    expect(s.texts).not.toContain(TEXTS.imagesNotSent);
+    expect(casualText(TEXTS.couldNotSendWithImage("[1]", "The session is gone."))).toBe(true);
+  });
+
+  test("a reply to a home that was deleted goes to h, and the person is told", async () => {
+    const line = new HomeLine();
+    const took: unknown[] = [];
+    const extra = [{ n: 1, chat: "claude:home1" }];
+    line.home = fakeHome({ extra, take: async (text, _f, to) => void took.push([text, to]) });
+    const s = setup({}, line);
+    await s.t.start();
+    textingModuleLike(s.t, line);
+    await line.phone!.send("logo done", undefined, "claude:home1");
+    extra.length = 0;
+    await s.hear({ text: "ship it" });
+    expect(took).toEqual([["ship it", { n: 0 }]]);
+    expect(s.texts.at(-1)).toBe(TEXTS.homeGoneSentToH);
+    expect(casualText(TEXTS.homeGoneSentToH)).toBe(true);
+  });
+});

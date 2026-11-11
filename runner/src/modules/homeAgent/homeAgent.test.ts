@@ -1321,3 +1321,12 @@ test("round 3: archiving a session tags the reply; a moved Home chat tells texti
   await expect(op("homeAgentNew")).rejects.toThrow(/At most 9/);
   await expect(line.home!.newHome("x")).rejects.toThrow(/At most 9/);
 });
+
+test("round 4: two new Homes at once can't both take the last slot", async () => {
+  const { line, op } = await texting();
+  const extras = () => line.home!.homes().filter((h) => h.n !== 0).length;
+  while (extras() < 8) await op("homeAgentNew");
+  const both = await Promise.allSettled([op("homeAgentNew"), op("homeAgentNew")]);
+  expect(both.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+  expect(extras()).toBe(9);
+});

@@ -389,12 +389,12 @@ describe("several homes: h, h1, h2, …", () => {
 
   test("routing by number, and a home that isn't open says which are", () => {
     const { r } = setup();
-    expect(r.route("h1 do x", undefined, homes)).toEqual({ kind: "home", text: "do x", home: 1 });
-    expect(r.route("H3: do y", undefined, homes)).toEqual({ kind: "home", text: "do y", home: 3 });
+    expect(r.route("h1 do x", undefined, homes)).toEqual({ kind: "home", text: "do x", home: 1, chat: "claude:h1" });
+    expect(r.route("H3: do y", undefined, homes)).toEqual({ kind: "home", text: "do y", home: 3, chat: "claude:h3" });
     expect(r.route("h do z", undefined, homes)).toEqual({ kind: "home", text: "do z" });
     expect(r.route("h2 do x", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h2", "h, h1, h3") });
     expect(r.route("h1", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.whatToSendTo("h1") });
-    expect(r.route("go on", undefined, homes)).toEqual({ kind: "home", text: "go on", home: 1 });
+    expect(r.route("go on", undefined, homes)).toEqual({ kind: "home", text: "go on", home: 1, chat: "claude:h1" });
   });
 
   test("new and delete", () => {
@@ -419,16 +419,17 @@ describe("several homes: h, h1, h2, …", () => {
     expect(r.route("thanks", undefined, homes)).toEqual({ kind: "home", text: "thanks" });
     // A threaded reply to h1's text goes to h1 with its session, however late.
     clock.tick(REPLY_MS * 2);
-    expect(r.route("merge it", "m1", homes)).toEqual({ kind: "home", text: "merge it", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("merge it", "m1", homes)).toEqual({ kind: "home", text: "merge it", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
     // h1 texts last: plain text goes to h1, about what it said; "h …" turns to h, carrying nothing.
     r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" });
-    expect(r.route("yes", undefined, homes)).toEqual({ kind: "home", text: "yes", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("yes", undefined, homes)).toEqual({ kind: "home", text: "yes", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
     expect(r.route("h what's running", undefined, homes)).toEqual({ kind: "home", text: "what's running" });
-    expect(r.route("h1 merge", undefined, homes)).toEqual({ kind: "home", text: "merge", home: 1, about: { sessionId: "claude:x", byHome: true } });
-    // A threaded reply to a home that was deleted says so.
-    expect(r.route("merge it", "m1", [{ n: 0 }, { n: 3, chat: "claude:h3" }])).toEqual({ kind: "reply", text: TEXTS.homeGone("h, h3") });
-    // Plain text after h1 was deleted goes to h.
-    expect(r.route("hello?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "hello?" });
+    expect(r.route("h1 merge", undefined, homes)).toEqual({ kind: "home", text: "merge", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
+    // A threaded reply to a home that was deleted goes to h (with what it was about), marked so the person is told.
+    expect(r.route("merge it", "m1", [{ n: 0 }, { n: 3, chat: "claude:h3" }])).toEqual({ kind: "home", text: "merge it", about: { sessionId: "claude:x", byHome: true }, gone: true });
+    // So does plain text after the home that texted last was deleted; after that, h is the last one.
+    expect(r.route("hello?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "hello?", gone: true });
+    expect(r.route("still there?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "still there?" });
   });
 
   test("the held text: a number or a home takes it with its id", () => {
@@ -437,7 +438,7 @@ describe("several homes: h, h1, h2, …", () => {
     r.stamp("b", "finished", ".");
     expect(r.route("see this", undefined, homes)).toMatchObject({ kind: "reply" });
     const id = r.state.held!.id!;
-    expect(r.route("h1", undefined, homes)).toEqual({ kind: "home", text: "see this", home: 1, held: id });
+    expect(r.route("h1", undefined, homes)).toEqual({ kind: "home", text: "see this", home: 1, chat: "claude:h1", held: id });
     expect(r.route("again", undefined, homes)).toMatchObject({ kind: "reply" });
     expect(r.route("2", undefined, homes)).toMatchObject({ kind: "deliver", sessionId: "b", text: "again", held: id + 1 });
     expect(r.route("x", undefined, homes)).toMatchObject({ kind: "reply" });
@@ -464,7 +465,7 @@ describe("round 3", () => {
     s = held();
     expect(s.r.route("h what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", held: s.id });
     s = held();
-    expect(s.r.route("h1 what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", home: 1, held: s.id });
+    expect(s.r.route("h1 what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", home: 1, chat: "claude:h1", held: s.id });
     s = held();
     expect(s.r.route("hn what is wrong here", undefined, homes)).toEqual({ kind: "newHome", text: "what is wrong here", held: s.id });
     // No held text: nothing carried.
@@ -493,7 +494,7 @@ describe("round 3", () => {
 
   test("a Home chat that moves takes its texts, its last text and what it was about along", () => {
     const { r } = setup();
-    r.stampHome("PR up, merge?", "claude:x", { n: 1, chat: "claude:h1" });
+    r.stampHome("PR up, merge?", "claude:x", { n: 1, chat: "codex:h1" });
     r.noteSent("m1", HOME, undefined, "claude:x", "claude:h1");
     r.route("h1", undefined, homes);
     r.movedHome("claude:h1", "codex:h1");
@@ -502,8 +503,8 @@ describe("round 3", () => {
     expect(r.state.about?.home).toBe("codex:h1");
     expect(r.state.aimed?.chat).toBe("codex:h1");
     const moved = [{ n: 0, chat: "claude:t" }, { n: 1, chat: "codex:h1" }];
-    expect(r.route("merge it", undefined, moved)).toEqual({ kind: "home", text: "merge it", home: 1, about: { sessionId: "claude:x", byHome: true } });
-    expect(r.route("and deploy", "m1", moved)).toEqual({ kind: "home", text: "and deploy", home: 1, about: { sessionId: "claude:x", byHome: true } });
-    expect(r.route("yes", undefined, moved)).toEqual({ kind: "home", text: "yes", home: 1, about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("merge it", undefined, moved)).toEqual({ kind: "home", text: "merge it", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("and deploy", "m1", moved)).toEqual({ kind: "home", text: "and deploy", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
+    expect(r.route("yes", undefined, moved)).toEqual({ kind: "home", text: "yes", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
   });
 });

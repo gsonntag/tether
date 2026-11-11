@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { download, IMAGE_REFUSED, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
+import { CONVERT_MAX, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { aboutOf, replyContext } from "../homeLine";
 
@@ -97,7 +97,7 @@ describe("images the person texts", () => {
 
   test("HEIC becomes JPEG when it can; else it's kept, marked", async () => {
     expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => JPEG)).toEqual({ name: "IMG_2.jpg", mimeType: "image/jpeg", data: JPEG });
-    expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => undefined)).toEqual({ name: "IMG_2.HEIC", mimeType: "image/heic", data: HEIC, heic: true });
+    expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => undefined)).toEqual({ name: "IMG_2.heic", mimeType: "image/heic", data: HEIC, heic: true });
     expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => Promise.reject(new Error("x")))).toMatchObject({ heic: true });
     // The real converter on a file that isn't HEIC: no JPEG (whether or not ImageMagick is here).
     expect(await imagemagick(Buffer.from("not heic"), "heic")).toBeUndefined();
@@ -171,5 +171,56 @@ describe("scaling texted images down", () => {
     const outs = await Promise.all([1, 2, 3].map(() => imagemagick(big, "png")));
     for (const o of outs) expect(imageDims(o!)).toEqual({ w: 2048, h: 1024 });
     expect(readdirSync(tmpdir()).filter((n) => n.startsWith("tether-magick-")).length).toBe(before);
+  });
+});
+
+describe("round 4", () => {
+  test("never more than CONVERT_MAX at once, a finished one handing its slot straight on; a wait for a slot is bounded", async () => {
+    let now = 0;
+    let peak = 0;
+    const gates: (() => void)[] = [];
+    const job = () =>
+      inSlot(async () => {
+        now++;
+        peak = Math.max(peak, now);
+        await new Promise<void>((go) => gates.push(go));
+        now--;
+        return true;
+      }, 5_000);
+    const all = Array.from({ length: 6 }, job);
+    for (let i = 0; i < 20 && gates.length < 6; i++) {
+      await Bun.sleep(5);
+      // Let one finish whenever two run: a third must never start before.
+      expect(now).toBeLessThanOrEqual(CONVERT_MAX);
+      gates.shift()?.();
+    }
+    while (gates.length) gates.shift()!();
+    expect(await Promise.all(all)).toEqual([true, true, true, true, true, true]);
+    expect(peak).toBe(CONVERT_MAX);
+    // Both slots busy: a third gives up after its wait (the image then goes as it came).
+    const hold: (() => void)[] = [];
+    const busy = [1, 2].map(() => inSlot(() => new Promise<void>((go) => hold.push(go)), 5_000));
+    await expect(inSlot(async () => 1, 20)).rejects.toThrow(/no conversion slot/);
+    hold.forEach((go) => go());
+    await Promise.all(busy);
+    expect(await inSlot(async (left) => left > 0, 1_000)).toBe(true);
+  });
+
+  test("old ImageMagick temp folders are swept at start; new ones stay", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-sweep-"));
+    mkdirSync(join(dir, "tether-magick-old"));
+    mkdirSync(join(dir, "tether-magick-new"));
+    mkdirSync(join(dir, "other-old"));
+    const now = Date.now() + 2 * 60 * 60_000;
+    utimesSync(join(dir, "tether-magick-new"), new Date(now), new Date(now));
+    sweepMagickTemp(dir, now);
+    expect(readdirSync(dir).sort()).toEqual(["other-old", "tether-magick-new"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("an unconverted HEIC is named .heic, whatever the sender called it", async () => {
+    const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.alloc(16)]);
+    expect(await incomingImage({ name: "x.html" }, HEIC, async () => undefined)).toMatchObject({ name: "x.heic", mimeType: "image/heic", heic: true });
+    expect(await incomingImage({ name: "" }, HEIC, async () => undefined)).toMatchObject({ name: "image.heic" });
   });
 });

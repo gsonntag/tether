@@ -1309,7 +1309,7 @@ with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
      or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
    - `hn`/`homenew`/`home-new`: a new home; the rest of the text (and its images) is its first
      message. With nothing after it: "Started h2, text h2 to reach it." At most 9 homes besides `h`
-     (`h1`–`h9`; Home's New Home button stops there too): past that, a short text listing the homes
+     (`h1`–`h9`; Home's New Home button stops there too, and two made at once can't both take the last): past that, a short text listing the homes
      says to delete one with `hd` and its number. Not `home new …`: "Home new build is broken" is
      words to `h`.
    - `hd1`/`hd 1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1 (archives its
@@ -1329,8 +1329,9 @@ if the home is deleted meanwhile (and its number reused), the person is told it'
 tab (made by the first text to `h`, again if it was closed; Home shows no delete for it, though
 `/new` in it still starts a fresh one), and every other tab is `h1`, `h2`, …. A tab keeps its number
 while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
-making a new home gives `h2` again, and a reply threaded to the deleted one's text is told it's gone
-rather than reaching the new one. The numbers are in the Home agent's state.json (they survive a
+making a new home gives `h2` again. A reply to a deleted home (threaded to its text, or plain text
+when it texted last) never reaches the new one: it goes to `h`, and the person is told ("That home
+was deleted, so I sent it to h."). What goes to a home goes by its chat, not its number. The numbers are in the Home agent's state.json (they survive a
 restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). When a Home chat moves to a new
 thread (a harness or source change), its number, and texting's record of its texts (threads, the
 last text, what it was about), go with it. A home's texts start
@@ -1357,18 +1358,24 @@ outside every session's sandbox, and they go only to the person's own phone (out
 session the person texted (in). Images the person texts (PNG, JPEG, GIF, WebP, HEIC by their bytes,
 up to 10 MB, at most 10) go with their words to whoever the text goes to, stored as that session's
 attachments (§9: the agent sees them as images and by path). Each downloads beside the text queue
-(the queue waits at most 45 s for it) and stops past 10 MB however big it said it was; one that
+(at most 30 s to download and 30 s to convert, waiting for a slot included, so a text never waits
+more than about a minute) and stops past 10 MB however big it said it was; one that
 fails or times out is dropped, the words still go, and the person is told. HEIC is turned into JPEG
 with ImageMagick when the runner has it, and so is a PNG, JPEG or WebP over 2048 px on its long edge
 (ATTACH_IMAGE_EDGE) or too big for the model APIs (NATIVE_IMAGE_MAX), scaled to fit: `convert` told
-the input's coder, `-limit memory 256MiB -limit map 512MiB -limit disk 1GiB -limit time 30`, its
-temporary files in a folder of its own that's removed after, at most 2 at once, output capped.
-Without it (or when it fails) a big image goes as it came, and a HEIC by path with a note saying so. An image alone is "(image)"; while a request waits it goes after the
+the input's coder, `-limit memory 256MiB -limit map 512MiB -limit disk 256MiB -limit area 128MP
+-limit width 16KP -limit height 16KP -limit time …`, its temporary files in a `tether-magick-*`
+folder of its own that's removed after (ones older than an hour are swept when texting starts), at
+most 2 at once (a finished one hands its slot straight on), output capped. Without it (or when it
+fails, or no slot frees in time) a big image goes as it came, and a HEIC by path, named `.heic`
+whatever the sender called it, with a note saying so. An image alone is "(image)"; while a request waits it goes after the
 turn and the request still waits on the person. Images held with a text the picker holds go when
 that text goes, or with whatever text takes the held one over (`2 what's wrong here`, `h1 …`,
 `hn …`), and a caption sent after its photo takes the photo along. Held images are kept in memory
 only: after a runner restart they're gone, and the person is told so when the held text goes (a
-held photo alone isn't passed on as an empty "(image)"). A voice note, contact card, poll or app
+held photo alone isn't passed on as an empty "(image)"). Held images the person never sends on
+(no pick within 10 minutes) are dropped and the person is told then, once. A send that fails says
+so and that the image didn't go, in one text. A voice note, contact card, poll or app
 card gets one short text per message ("Only text and images get through, so I left the rest
 out."); the words with it still go. Reactions and read receipts are ignored. Other files are left out;
 any image that doesn't go, for whatever reason, is reported to the person. `text_person` takes an
@@ -1379,6 +1386,10 @@ telling which paths exist), a try counts against the agent's text cap (sessions'
 5 refusals per 10 minutes), and nothing goes. A relayed session's image path goes to the Home agent
 in its report.
 
+Only texts from the person's own number are heard: the sender's Apple address must be a phone
+number (no `@`; an Apple ID email is never taken, whatever digits it has) that is exactly the
+configured phone once both are in E.164 (`+1 555-123-4567` is `+15551234567`); another country's
+number ending in the same digits isn't. A link sent with its preview (`richlink`) is its URL as words.
 A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
 to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It
 arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts`; the chat shows it

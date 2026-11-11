@@ -90,10 +90,12 @@ export type Decision =
   /** `requestId`: the request the text it answers was about */
   | { kind: "deliver"; sessionId: string; n: number; text: string; requestId?: string; held?: number }
   /**
-   * the person's words to the Home agent: to home `home` (absent: the primary one); `about`: the
+   * the person's words to the Home agent: to home `home`, chat `chat` (the chat decides: a number may
+   * be taken again by another tab before it's handed over; absent: the primary one); `gone`: the home
+   * it was for was deleted, so it goes to h and the person is told; `about`: the
    * session the text they answer was about; `held`: the held text's id when this took it over (its words, or these instead)
    */
-  | { kind: "home"; text: string; about?: About; home?: number; held?: number }
+  | { kind: "home"; text: string; about?: About; home?: number; chat?: string; held?: number; gone?: boolean }
   /** a new home, `text` its first message (maybe none) */
   | { kind: "newHome"; text: string; held?: number }
   /** delete home `n` (checked: open, and not the primary one) */
@@ -260,9 +262,11 @@ export class Router {
     if (threaded) {
       if (threaded.sessionId === HOME) {
         if (!running) return { kind: "reply", text: TEXTS.noHome };
+        const thread = threaded.about ? { sessionId: threaded.about, byHome: true } : null;
         const h = threaded.home ? homes.find((x) => x.n !== 0 && x.chat === threaded.home) : primary;
-        if (!h) return { kind: "reply", text: TEXTS.homeGone(homeList(homes)) };
-        return this.toHome(text, h, threaded.about ? { sessionId: threaded.about, byHome: true } : null);
+        // Its home was deleted since: to h, and the person is told (as for plain text below).
+        if (!h) return this.toHome(text, primary, thread, true);
+        return this.toHome(text, h, thread);
       }
       const slot = this.state.slots.find((x) => x.sessionId === threaded.sessionId);
       if (slot) return this.deliver(slot, text, threaded.requestId ?? slot.requestId);
@@ -321,7 +325,15 @@ export class Router {
     if (aimed) return this.deliver(aimed, text);
 
     // Tether's last text was a home's: this answers it (and is about what that text was about).
-    if (running && this.state.homeLast) return this.toHome(text, (this.state.homeChat && homes.find((x) => x.n !== 0 && x.chat === this.state.homeChat)) || primary);
+    if (running && this.state.homeLast) {
+      const from = this.state.homeChat;
+      const h = from ? homes.find((x) => x.n !== 0 && x.chat === from) : primary;
+      if (h) return this.toHome(text, h);
+      // The home that texted last was deleted since: to h, the person told, and h is the last one now.
+      delete this.state.homeChat;
+      delete this.state.about;
+      return this.toHome(text, primary, undefined, true);
+    }
     const open = this.open();
     if (!open.length) return running ? this.toHome(text, primary) : { kind: "reply", text: NOTHING_OPEN };
     if (open.length === 1) return this.deliver(open[0]!, text);
@@ -353,12 +365,12 @@ export class Router {
    * text's id when there was one, whether its words go or these replace them: what came with it
    * goes the same way (texting/index.ts).
    */
-  private toHome(text: string, h: Home, thread?: About | null): Decision {
+  private toHome(text: string, h: Home, thread?: About | null, gone = false): Decision {
     const about = thread === undefined ? this.recent(h.n === 0 ? undefined : h.chat) : (thread ?? undefined);
     const held = this.state.held?.id;
     this.state.held = undefined;
     this.state.aimed = undefined;
-    return { kind: "home", text, ...(about ? { about } : {}), ...(h.n !== 0 ? { home: h.n } : {}), ...(held !== undefined ? { held } : {}) };
+    return { kind: "home", text, ...(about ? { about } : {}), ...(h.n !== 0 ? { home: h.n, ...(h.chat ? { chat: h.chat } : {}) } : {}), ...(held !== undefined ? { held } : {}), ...(gone ? { gone } : {}) };
   }
 
   private deliver(slot: Slot, text: string, requestId = slot.requestId): Decision {

@@ -3,7 +3,7 @@
 
 import type { TextedFile } from "../homeLine";
 import type { InboundFile } from "./images";
-import type { LinkConfig } from "./store";
+import { normalPhone, type LinkConfig } from "./store";
 
 export interface Inbound {
   /** its words ("" when it's only an image) */
@@ -32,7 +32,24 @@ export interface TextLink {
 
 export type OpenLink = (cfg: LinkConfig, onInbound: (m: Inbound) => void, log: (line: string) => void) => Promise<TextLink>;
 
-const digits = (s: string) => s.replace(/\D/g, "").slice(-10);
+/**
+ * A sender's Apple address as an E.164 phone number, when it is one: no "@" (an Apple ID email is
+ * never a phone, whatever digits it has), only digits, "+", spaces, dashes, dots and parentheses
+ * (after a "tel:" or "sms:" prefix, if one is ever used). Else undefined.
+ */
+export function senderPhone(address: unknown): string | undefined {
+  if (typeof address !== "string") return undefined;
+  const a = address.trim().replace(/^(?:tel|sms):/i, "");
+  if (!a || a.includes("@") || !/^[+\d\s().-]+$/.test(a)) return undefined;
+  return normalPhone(a);
+}
+
+/** Whether a message is from the person: its sender's address is their phone number, exactly (E.164). */
+export function fromOwner(address: unknown, ownerPhone: string): boolean {
+  const owner = normalPhone(ownerPhone);
+  const sender = senderPhone(address);
+  return !!owner && !!sender && sender === owner;
+}
 
 /** What the person can send that isn't text or a file: kept as "unsupported", so they hear it didn't go. (Reactions, read receipts and the like aren't messages: ignored.) */
 const UNSUPPORTED = new Set(["voice", "contact", "poll", "app"]);
@@ -46,6 +63,11 @@ export function inboundOf(content: any): Inbound | undefined {
   if (UNSUPPORTED.has(content.type) || (content.type === "custom" && content.raw?.imessage_type === "unsupported-message"))
     return { text: "", unsupported: 1 };
   if (content.type === "effect") return inboundOf(content.content);
+  // A link sent with its preview: the link is the message.
+  if (content.type === "richlink") {
+    const url = typeof content.url === "string" ? content.url : content.url instanceof URL ? content.url.href : undefined;
+    return url ? { text: url } : undefined;
+  }
   if (content.type === "text" && typeof content.text === "string") return { text: content.text };
   if (content.type === "markdown" && typeof content.markdown === "string") return { text: content.markdown };
   if (content.type === "attachment" && typeof content.read === "function") {
@@ -76,7 +98,6 @@ export const openSpectrum: OpenLink = async (cfg, onInbound, log) => {
   const { Spectrum, attachment } = await import("spectrum-ts");
   const { imessage } = await import("@spectrum-ts/imessage");
   const app = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [imessage.config()] });
-  const me = digits(cfg.phone);
   const since = new Date(Date.now() - 2000);
   let stopped = false;
 
@@ -84,7 +105,9 @@ export const openSpectrum: OpenLink = async (cfg, onInbound, log) => {
     try {
       for await (const [, message] of app.messages) {
         if (message.direction !== "inbound" || message.timestamp < since) continue;
-        if (!message.sender || digits(message.sender.id) !== me) continue;
+        // Only the person's own number: never an Apple ID email or another country's number that
+        // happens to end in the same digits.
+        if (!message.sender || !fromOwner(message.sender.id, cfg.phone)) continue;
         const m = inboundOf(message.content);
         if (m) onInbound({ ...m, ...(typeof message.id === "string" ? { id: message.id } : {}), react: async (emoji) => void (await message.react(emoji)) });
       }
