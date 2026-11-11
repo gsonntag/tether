@@ -2704,3 +2704,18 @@
 .t-home-agent-sep { opacity: .5; }
 .t-home-agent-chev { font-size: 10px; opacity: .7; }
 .t-home-agent-form { padding: 12px; }
+
+/* Expanded (HomeChat.tsx): the chat over the whole window; on a phone that's full screen. */
+.t-home-chat.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--color-background-body, var(--color-background-surface, var(--t-card)));
+  padding: max(12px, env(safe-area-inset-top)) max(16px, calc((100vw - 1100px) / 2), env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, calc((100vw - 1100px) / 2), env(safe-area-inset-left));
+  overscroll-behavior: contain;
+}
+.t-home-chat.expanded .t-home-chat-head { margin-bottom: 0; }
+.t-home-chat-title { margin-right: auto; font-weight: 600; }
+.t-home-chat.expanded > .t-home-chat-box.t-session { height: auto; flex: 1 1 0; min-height: 0; }
+/* No chat yet: the composer sits at the bottom, like a chat's. */
+.t-home-chat.expanded > .t-composer { margin-top: auto; }
