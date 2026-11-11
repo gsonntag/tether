@@ -38,6 +38,8 @@ export interface LinkTimings {
 }
 
 const OPEN = 1;
+/** An rpc's error when no answer came in time. */
+export const NO_ANSWER = "No answer in time.";
 
 export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000 };
 
@@ -97,7 +99,7 @@ export class Link {
       const id = String(++this.rpcSeq);
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error("No answer in time."));
+        reject(new Error(NO_ANSWER));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       sock.send(JSON.stringify({ t: "rpc", id, runnerId, op, args }));

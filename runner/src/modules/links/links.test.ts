@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpRegistry } from "../../core/ops";
@@ -116,14 +116,42 @@ describe("short links", () => {
     }
   });
 
-  test("a broken file starts empty", () => {
+  test("a broken file is moved aside (and logged), not overwritten; bad entries are skipped", () => {
     const dir = tmp();
     try {
       const file = join(dir, "links.json");
+      const lines: string[] = [];
       writeFileSync(file, "{not json");
-      expect(new ShortLinks(file).size).toBe(0);
+      const a = new ShortLinks(file, () => 77, undefined, (l) => lines.push(l));
+      expect(a.size).toBe(0);
+      expect(readFileSync(join(dir, "links.json.corrupt-77"), "utf8")).toBe("{not json");
+      expect(existsSync(file)).toBe(false);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("links.json.corrupt-77");
+
       writeFileSync(file, JSON.stringify({ links: { "bad code!": { sessionId: "x", createdAt: 0, expiresAt: Infinity }, Ab3dE6gH: { sessionId: 5 } } }));
-      expect(new ShortLinks(file).size).toBe(0);
+      expect(new ShortLinks(file, () => 1, undefined, (l) => lines.push(l)).size).toBe(0);
+      expect(lines).toHaveLength(1);
+      // No file yet: nothing to say.
+      expect(new ShortLinks(join(dir, "none.json"), () => 1, undefined, (l) => lines.push(l)).size).toBe(0);
+      expect(lines).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed save leaves no temp file behind and is logged", () => {
+    const dir = tmp();
+    try {
+      // A directory where the file goes: the rename fails.
+      const file = join(dir, "links.json");
+      const lines: string[] = [];
+      const links = new ShortLinks(file, () => 1, undefined, (l) => lines.push(l));
+      mkdirSync(file);
+      const c = links.codeFor("claude:a");
+      expect(links.resolve(c)).toEqual({ sessionId: "claude:a" });
+      expect(readdirSync(dir)).toEqual(["links.json"]);
+      expect(lines[0]).toContain("couldn't save");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -131,12 +159,12 @@ describe("short links", () => {
 });
 
 describe("resolveLink op", () => {
-  test("answers with this runner and the session, or null", async () => {
+  test("answers with the session, or null", async () => {
     const ops = new OpRegistry();
     const links = new ShortLinks(undefined, () => 1);
     const c = links.codeFor("claude:a");
     await linksModule.start({ ops, links, runnerId: "box" } as any);
-    expect(await ops.handle("resolveLink", { code: c })).toEqual({ ok: true, data: { runnerId: "box", sessionId: "claude:a" } });
+    expect(await ops.handle("resolveLink", { code: c })).toEqual({ ok: true, data: { sessionId: "claude:a" } });
     expect(await ops.handle("resolveLink", { code: "nope1234" })).toEqual({ ok: true, data: null });
     expect(await ops.handle("resolveLink", {})).toEqual({ ok: true, data: null });
   });

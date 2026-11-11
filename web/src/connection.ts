@@ -24,8 +24,8 @@ export const connect = () => link.connect();
 /** A frame that needs no answer (presence); false when not connected. */
 export const sendFrame = (m: Exclude<BrowserToServer, { t: "rpc" }>) => link.send(m);
 
-/** Calls an op on a runner through the relay. */
-export const rpc = <K extends OpName>(runnerId: string, op: K, args: OpArgs<K>) => link.rpc(runnerId, op, args) as Promise<OpResult<K>>;
+/** Calls an op on a runner through the relay (`timeoutMs`: sooner than the usual wait for an answer). */
+export const rpc = <K extends OpName>(runnerId: string, op: K, args: OpArgs<K>, timeoutMs?: number) => link.rpc(runnerId, op, args, timeoutMs) as Promise<OpResult<K>>;
 
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && link.wake());
 window.addEventListener("online", () => link.wake());

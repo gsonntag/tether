@@ -57,7 +57,7 @@ mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 // Private: it holds runner.json and the terminal hooks' socket.
 chmodSync(CONFIG_DIR, 0o700);
 const homeLine = new HomeLine();
-const links = new ShortLinks(join(CONFIG_DIR, "modules", "links", "links.json"));
+const links = new ShortLinks(join(CONFIG_DIR, "modules", "links", "links.json"), Date.now, undefined, (line) => console.log(`[links] ${line}`));
 const stopModules = await startModules(MODULES, (m) => {
   const dataDir = join(CONFIG_DIR, "modules", m.name);
   mkdirSync(dataDir, { recursive: true });

@@ -9,7 +9,7 @@ export const linksModule: Module = {
   start(ctx) {
     ctx.ops.register("resolveLink", ({ code }) => {
       const hit = ctx.links?.resolve(code);
-      return hit ? { runnerId: ctx.runnerId, sessionId: hit.sessionId } : null;
+      return hit ? { sessionId: hit.sessionId } : null;
     });
   },
 };

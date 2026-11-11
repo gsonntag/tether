@@ -7,7 +7,7 @@
 // who couldn't already open the session.
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const LINK_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -41,14 +41,25 @@ export class ShortLinks {
     private file?: string,
     private now: () => number = Date.now,
     private code: () => string = () => randomCode(),
+    private log: (line: string) => void = () => {},
   ) {
-    if (file) {
+    if (file && existsSync(file)) {
       try {
         const v = JSON.parse(readFileSync(file, "utf8"));
-        for (const [c, e] of Object.entries<any>(v?.links ?? {})) {
+        if (!v || typeof v !== "object" || !v.links || typeof v.links !== "object") throw new Error("no links in it");
+        for (const [c, e] of Object.entries<any>(v.links)) {
           if (CODE_RE.test(c) && typeof e?.sessionId === "string" && typeof e.createdAt === "number" && typeof e.expiresAt === "number") this.links.set(c, { sessionId: e.sessionId, createdAt: e.createdAt, expiresAt: e.expiresAt });
         }
-      } catch {}
+      } catch (e: any) {
+        // Kept aside for a look, not overwritten: its links stop working, the next ones start fresh.
+        const aside = `${file}.corrupt-${this.now()}`;
+        try {
+          renameSync(file, aside);
+          this.log(`links: ${file} couldn't be read (${e?.message ?? e}); moved it to ${aside}`);
+        } catch (e2: any) {
+          this.log(`links: ${file} couldn't be read (${e?.message ?? e}) or moved aside (${e2?.message ?? e2})`);
+        }
+      }
       this.prune();
     }
   }
@@ -100,12 +111,15 @@ export class ShortLinks {
 
   private save() {
     if (!this.file) return;
+    const tmp = `${this.file}.${process.pid}.tmp`;
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ links: Object.fromEntries(this.links) }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);
-    } catch {}
+    } catch (e: any) {
+      rmSync(tmp, { force: true });
+      this.log(`links: couldn't save ${this.file}: ${e?.message ?? e}`);
+    }
   }
 }
