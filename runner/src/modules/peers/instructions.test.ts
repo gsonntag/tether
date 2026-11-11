@@ -95,6 +95,28 @@ describe("text_person", () => {
     expect(sent).toEqual([["claude:main", "PR is up"], ["claude:main", "blocked"]]);
   });
 
+  test("a session the Home agent drives is sent to it as a report, not texted; one it doesn't drive texts", async () => {
+    const line = new HomeLine();
+    const sent: [string, string][] = [];
+    const relayed: [string, string][] = [];
+    line.phone = { send: async () => true, text: async (from, body) => (sent.push([from, body]), { text: "Texted the person." }) };
+    line.home = {
+      take: async () => {},
+      isTextsChat: () => false,
+      relay: async (id, msg) => (id === "claude:main" ? (relayed.push([id, msg]), "Not texted: the Home agent drives this session.") : undefined),
+    };
+    const p = setup(line);
+    // Owned (a subagent speaks for its main session): to the Home agent.
+    expect((await call(p, "claude:sub", "blocked on the DB")).text).toContain("Not texted");
+    expect(relayed).toEqual([["claude:main", "blocked on the DB"]]);
+    expect(sent).toEqual([]);
+    // Not owned: straight to the person.
+    const other: any = setup(line);
+    (other as any).ctx.session = (id: string) => ({ summary: { id, projectPath: "/p/x", title: "X" }, state: {} });
+    expect(await call(other, "claude:mine", "PR is up")).toEqual({ text: "Texted the person." });
+    expect(sent).toEqual([["claude:mine", "PR is up"]]);
+  });
+
   test("texting off: an error, nothing sent", async () => {
     expect((await call(setup(new HomeLine()), "claude:main", "hi")).isError).toBe(true);
     expect((await call(setup(), "claude:main", "hi")).isError).toBe(true);

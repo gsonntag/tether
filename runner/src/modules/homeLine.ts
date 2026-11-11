@@ -15,6 +15,13 @@ export interface HomeEnd {
   take(text: string): Promise<void>;
   /** whether a session is the chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
+  /**
+   * A session's text_person, when the Home agent drives that session (started or messaged it, and
+   * the person hasn't stepped in): the message goes to the Home agent as a report instead, and it
+   * decides what to text (it's the person's PM). What the tool answers the session; undefined: the
+   * Home agent doesn't drive it, so it texts the person itself.
+   */
+  relay?(sessionId: string, message: string): Promise<string | undefined>;
 }
 
 /** Texting's end. */

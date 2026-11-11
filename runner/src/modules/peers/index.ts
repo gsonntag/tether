@@ -130,6 +130,9 @@ export class Peers {
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
+        // A session the Home agent drives reports to it instead: it texts the person (their PM).
+        const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message));
+        if (relayed) return { text: relayed };
         const phone = this.ctx.homeLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
         return phone.text(from, str(a.message));

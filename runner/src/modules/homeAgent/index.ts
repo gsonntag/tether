@@ -30,8 +30,9 @@
 // its answer to a finished-turn report from a session it started (the outcome: done with a link, or
 // what it needs); a turn that only kept a session going, a watch report, a "waiting for the person"
 // report (Tether texts the request itself) and tool calls aren't texted. Any chat can also text the
-// person itself with text_person (when they ask "text me when it's done"); a Texts turn that did
-// isn't texted again at its end.
+// person itself with text_person: it's the person's PM over text, so the sessions it drives don't
+// text them; their text_person comes to it as a report (relay) and it decides what's worth a text,
+// condensed. A Texts turn that texted isn't texted again at its end.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -204,7 +205,7 @@ How to work:
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
 - Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
-- text_person texts the person on their phone. Use it when they ask you to text them (for example "text me when the PR is merged": text them once it is), or for something urgent they need to know while away. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. One short sentence, outcome first. If they reply, it comes back to your Texts tab.
+- You're the person's PM over text: text_person texts their phone, and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started over iMessage), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -417,6 +418,15 @@ export class HomeAgent implements HomeEnd {
 
   isTextsChat(id: string): boolean {
     return !!this.state.texts && this.state.texts === id;
+  }
+
+  /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */
+  async relay(sessionId: string, message: string): Promise<string | undefined> {
+    const c = this.state.children[sessionId];
+    if (!c || c.released) return undefined;
+    const words = message.trim().slice(0, PERSON_TEXT_MAX * 4);
+    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person:\n<<<\n${words}\n>>>\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person, condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
+    return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
   /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs. */
