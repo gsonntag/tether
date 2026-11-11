@@ -28,6 +28,7 @@ import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
+import type { HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
@@ -140,6 +141,10 @@ export interface Ops {
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
+  /** Each harness's installed and newest version and how it was installed (cached a few minutes; `refresh` looks again). Updates in progress show on their rows */
+  harnessVersions: { args: { refresh?: boolean }; result: HarnessReport };
+  /** Starts updating one harness (one at a time per runner) and answers at once; poll harnessVersions for its output. Running sessions aren't stopped */
+  harnessUpdate: { args: { id: string }; result: HarnessReport };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
