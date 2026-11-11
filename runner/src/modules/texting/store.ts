@@ -42,6 +42,8 @@ export class TextingStore {
   prefer?: string;
   /** the connector the person last wrote on */
   lastVia?: string;
+  /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
+  replyVia: Record<string, { via: string; place?: string }> = {};
 
   constructor(
     private file?: string,
@@ -55,6 +57,9 @@ export class TextingStore {
         if (v?.connectors && typeof v.connectors === "object" && !Array.isArray(v.connectors)) this.connectors = v.connectors;
         if (typeof v?.prefer === "string") this.prefer = v.prefer;
         if (typeof v?.lastVia === "string") this.lastVia = v.lastVia;
+        if (v?.replyVia && typeof v.replyVia === "object" && !Array.isArray(v.replyVia))
+          for (const [k, b] of Object.entries(v.replyVia as Record<string, any>))
+            if (b && typeof b.via === "string") this.replyVia[k] = { via: b.via, ...(typeof b.place === "string" ? { place: b.place } : {}) };
       } catch {}
     }
     for (const k of [this.settings.projectSecret, this.env.TETHER_PHOTON_PROJECT_SECRET]) if (k) registerSecret(k);
@@ -126,7 +131,7 @@ export class TextingStore {
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}) };
+      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}) };
       writeFileSync(tmp, JSON.stringify({ settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);

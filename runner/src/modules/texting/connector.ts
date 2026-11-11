@@ -33,12 +33,26 @@ export interface Inbound {
   files?: InboundFile[];
   /** the connector it came by (Channel sets it) */
   via?: string;
+  /** where on that connector it was written, when there's more than one place (a Discord DM or channel): an answer goes back there */
+  place?: string;
 }
 
 /** What Tether sends: text, and images (absolute paths on the runner) where the connector takes them. */
 export interface Outbound {
   text: string;
   images?: string[];
+  /** it answers a message written at this place (Inbound.place): it may go there; anything else goes to the person's private one */
+  place?: string;
+}
+
+/** A send that went partly (a long message split, a later part failed): the parts that went. */
+export class PartialSend extends Error {
+  constructor(
+    message: string,
+    readonly ids: string[],
+  ) {
+    super(message);
+  }
 }
 
 /** An open connection. */
@@ -49,6 +63,8 @@ export interface ChannelLink {
   closed: Promise<void>;
   /** why it ended for good: no reconnecting until the settings change */
   fatal?: string;
+  /** whether it can send right now (a Discord gateway between drops); always, when unset */
+  up?(): boolean;
   stop(): Promise<void>;
 }
 
@@ -97,7 +113,6 @@ export class Channel {
   private retry?: ReturnType<typeof setTimeout>;
   private delay = RETRY_MIN_MS;
   private stopped = false;
-  connected = false;
   lastError?: string;
 
   constructor(
@@ -110,6 +125,11 @@ export class Channel {
     return this.connector.id;
   }
 
+  /** Its link is open and up. */
+  get connected(): boolean {
+    return !!this.link && (this.link.up?.() ?? true);
+  }
+
   /** Connects when it's on and set; reconnects after a drop, backing off. */
   start(): Promise<void> {
     this.stopped = false;
@@ -120,7 +140,6 @@ export class Channel {
         const link = await this.connector.open((m) => this.onInbound({ ...m, via: this.id }), this.log);
         if (this.stopped) return void (await link.stop());
         this.link = link;
-        this.connected = true;
         this.lastError = undefined;
         this.delay = RETRY_MIN_MS;
         void link.closed.then(() => this.dropped(link));
@@ -142,13 +161,17 @@ export class Channel {
     await this.connecting;
     const link = this.link;
     this.link = undefined;
-    this.connected = false;
     await link?.stop();
   }
 
-  /** Settings changed: a new link with them (or none). */
+  /** Settings changed: a new link with them (or none). The old one closes in the background. */
   async restart() {
-    await this.stop();
+    this.stopped = true;
+    clearTimeout(this.retry);
+    await this.connecting;
+    const old = this.link;
+    this.link = undefined;
+    void old?.stop().catch(() => {});
     this.lastError = undefined;
     this.delay = RETRY_MIN_MS;
     await this.start();
@@ -156,13 +179,15 @@ export class Channel {
 
   /** Sends on the link; throws when it didn't go. */
   async send(out: Outbound): Promise<string[]> {
-    if (!this.link) throw new Error("not connected");
+    if (!this.link || !this.connected) throw new Error("not connected");
     try {
-      const id = await this.link.send(this.connector.images ? out : { text: out.text });
+      const id = await this.link.send(this.connector.images ? out : { text: out.text, ...(out.place ? { place: out.place } : {}) });
       return id === undefined ? [] : Array.isArray(id) ? id : [id];
     } catch (e: any) {
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
       this.log(`texting: ${this.connector.label}: ${this.lastError}`);
+      // Some of it went: those are sent (a reply to them still finds its session).
+      if (e instanceof PartialSend && e.ids.length) return e.ids;
       throw e;
     }
   }
@@ -170,7 +195,6 @@ export class Channel {
   private dropped(link: ChannelLink) {
     if (this.link !== link) return;
     this.link = undefined;
-    this.connected = false;
     if (link.fatal) {
       this.lastError = link.fatal;
       this.log(`texting: ${this.connector.label}: ${link.fatal}`);

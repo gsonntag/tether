@@ -1304,11 +1304,18 @@ stops it with why). A connector is only a transport: its settings (secrets write
 hears the person and sends text (and images, where it takes them), and its status. Everything above
 (numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
 Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
-else the first connected; an answer to a message goes back the way it came. Files the person sends
-are stored with the session (or the Home agent's Texts chat) like composer uploads, and go with
-their words. Discord: only the owner user ids set may drive it (in a DM or the one channel set);
-anyone else, bots, webhooks and the bot itself are ignored silently. Messages are split at 2000
-characters; mentions never ping. Its settings live in `texting.json` under `connectors.discord`
+else the first connected (one that's on and really connected). An answer (to the picker, or a
+session's or the Home agent's answer to what the person wrote it) goes back the connector and place
+it came by, saved per session (`replyVia`). Files the person sends are stored with the session (or
+the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
+text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
+isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one
+channel set, where only a message that starts by mentioning the bot or replies to one of its
+messages counts; anyone else, bots, webhooks and the bot itself are ignored silently. Tether's own
+messages go to the owner's DM; only an answer to something written in the channel goes there.
+Messages are split at 2000 characters, masked links are spelled out (and any left escaped);
+mentions never ping. At most 900 fresh identifies a day across reconnects; a resume URL off
+discord.gg is never used. Its settings live in `texting.json` under `connectors.discord`
 (mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
 `TETHER_DISCORD_CHANNEL_ID`); it's off until set. Tether's secrets (`TETHER_TOKEN`, the connectors'
 keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`

@@ -22,6 +22,36 @@ const FATAL: Record<number, string> = {
   4013: "Discord says the intents are invalid.",
   4014: "Discord refused the intents: turn on Message Content Intent under Bot in the Developer Portal.",
 };
+/**
+ * Fresh identifies across every gateway this runner opens (a reconnect loop makes new ones): Discord
+ * allows 1000 a day per bot and resets the token past that, so Tether stops at IDENTIFY_MAX.
+ */
+export const IDENTIFY_MAX = 900;
+const IDENTIFY_DAY_MS = 24 * 60 * 60_000;
+const identifies: number[] = [];
+
+/** Takes one identify from the day's budget; false when it's spent. */
+export function takeIdentify(now = Date.now(), max = IDENTIFY_MAX): boolean {
+  while (identifies.length && now - identifies[0]! >= IDENTIFY_DAY_MS) identifies.shift();
+  if (identifies.length >= max) return false;
+  identifies.push(now);
+  return true;
+}
+
+/** Tests: the budget starts over. */
+export const resetIdentifies = () => void identifies.splice(0);
+
+/** A resume URL Discord gave: only a wss: host under discord.gg gets the token. */
+export function validResumeUrl(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  try {
+    const u = new URL(v);
+    return u.protocol === "wss:" && (u.hostname === "discord.gg" || u.hostname.endsWith(".discord.gg")) && !u.username && !u.password ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Close codes after which the session can't be resumed: identify again. */
 const FRESH = new Set([4007, 4009]);
 
@@ -50,6 +80,8 @@ export interface GatewayOptions {
   stableMs?: number;
   /** the least time between two identifies (a fresh session), whatever else happens */
   identifyGapMs?: number;
+  /** fresh identifies allowed a day, across gateways */
+  identifyMax?: number;
   random?: () => number;
   log?: (line: string) => void;
 }
@@ -67,6 +99,10 @@ export class Gateway {
   private delay: number;
   private stable?: ReturnType<typeof setTimeout>;
   private lastIdentify = -Infinity;
+  /** reconnect requests (op 7) since the connection was last stable: past the first, they back off */
+  private reconnects = 0;
+  /** READY or RESUMED, and not dropped since */
+  up = false;
   private ended!: () => void;
   /** why it ended for good */
   fatal?: string;
@@ -90,6 +126,7 @@ export class Gateway {
       reconnectMinMs: o.reconnectMinMs ?? 1_000,
       reconnectMaxMs: o.reconnectMaxMs ?? 60_000,
       invalidMs: o.invalidMs ?? 1_000 + Math.floor(Math.random() * 4_000),
+      identifyMax: o.identifyMax ?? IDENTIFY_MAX,
       stableMs: o.stableMs ?? 60_000,
       identifyGapMs: o.identifyGapMs ?? 5_000,
       random: o.random ?? Math.random,
@@ -120,6 +157,7 @@ export class Gateway {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
+    this.up = false;
     clearTimeout(this.retry);
     clearTimeout(this.beat);
     clearTimeout(this.stable);
@@ -160,6 +198,7 @@ export class Gateway {
       } catch {
         return;
       }
+      if (!p || typeof p !== "object" || Array.isArray(p) || typeof p.op !== "number") return;
       this.packet(ws, p);
     };
     ws.onclose = (e) => {
@@ -184,6 +223,7 @@ export class Gateway {
         this.heartbeat(ws, every, every * this.o.random());
         if (this.sessionId && this.resumeUrl) this.send(ws, { op: 6, d: { token: this.token, session_id: this.sessionId, seq: this.seq } });
         else {
+          if (!takeIdentify(Date.now(), this.o.identifyMax)) return this.giveUp(ws, "Discord's daily limit on new sessions is almost used up, so Tether stopped connecting. Turn Discord off and on again tomorrow.");
           this.lastIdentify = Date.now();
           this.send(ws, { op: 2, d: { token: this.token, intents: INTENTS, properties: { os: process.platform, browser: "tether", device: "tether" } } });
         }
@@ -196,24 +236,19 @@ export class Gateway {
         this.send(ws, { op: 1, d: this.seq });
         return;
       case 7:
-        // Reconnect: resume on a new connection.
-        return this.reopen(ws, 4000);
+        // Reconnect: resume on a new connection; at once the first time, backing off if it keeps asking.
+        if (this.reconnects++ === 0) return this.reopen(ws, 4000);
+        return this.later(ws, 4000);
       case 9: {
         // Invalid session: resume if Discord says it can be, else start over, after a short wait.
         if (!p.d) this.forget();
-        this.ws = undefined;
-        try {
-          ws.close(4000, "invalid session");
-        } catch {}
-        clearTimeout(this.beat);
-        clearTimeout(this.retry);
-        this.retry = setTimeout(() => this.connect(), this.o.invalidMs);
-        return;
+        return this.later(ws, 4000, this.o.invalidMs);
       }
       case 0: {
         if (p.t === "READY") {
           this.sessionId = p.d?.session_id;
-          this.resumeUrl = p.d?.resume_gateway_url;
+          // Not a Discord gateway: never resume there (the token goes with a resume); identify again instead.
+          this.resumeUrl = validResumeUrl(p.d?.resume_gateway_url);
           this.self = p.d?.user ? { id: String(p.d.user.id), username: p.d.user.username } : undefined;
           this.settle(ws);
           this.whenReady?.();
@@ -234,10 +269,39 @@ export class Gateway {
 
   /** Connected: the backoff starts over only once this connection has stayed up stableMs. */
   private settle(ws: Socket) {
+    this.up = true;
     clearTimeout(this.stable);
     this.stable = setTimeout(() => {
-      if (this.ws === ws) this.delay = this.o.reconnectMinMs;
+      if (this.ws !== ws) return;
+      this.delay = this.o.reconnectMinMs;
+      this.reconnects = 0;
     }, this.o.stableMs);
+  }
+
+  /** Closes this connection and connects again after the backoff (at least `least`), doubling it. */
+  private later(ws: Socket, code: number, least = 0) {
+    this.ws = undefined;
+    this.up = false;
+    clearTimeout(this.beat);
+    clearTimeout(this.stable);
+    try {
+      ws.close(code, "reconnect");
+    } catch {}
+    clearTimeout(this.retry);
+    this.retry = setTimeout(() => this.connect(), Math.max(this.delay, least));
+    this.delay = Math.min(this.delay * 2, this.o.reconnectMaxMs);
+  }
+
+  /** Stops for good, with why. */
+  private giveUp(ws: Socket, why: string) {
+    this.ws = undefined;
+    try {
+      ws.close(1000, "bye");
+    } catch {}
+    this.fatal = why;
+    this.o.log(`discord: ${why}`);
+    if (this.whenFailed) return this.whenFailed(new FatalError(why));
+    this.stop();
   }
 
   private heartbeat(ws: Socket, every: number, first: number) {
@@ -256,6 +320,7 @@ export class Gateway {
   /** Closes this connection and resumes on a new one, now. */
   private reopen(ws: Socket, code: number) {
     this.ws = undefined;
+    this.up = false;
     clearTimeout(this.beat);
     try {
       ws.close(code, "reconnect");
@@ -271,6 +336,7 @@ export class Gateway {
 
   private dropped(code?: number, reason?: string) {
     this.ws = undefined;
+    this.up = false;
     clearTimeout(this.beat);
     clearTimeout(this.stable);
     if (this.stopped) return;
@@ -319,7 +385,8 @@ export async function download(url: string, max: number, fetcher: typeof fetch =
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(new Error("timed out")), timeoutMs);
   try {
-    const r = await fetcher(u.href, { signal: ac.signal });
+    // No redirects: a hop could leave Discord's CDN.
+    const r = await fetcher(u.href, { signal: ac.signal, redirect: "error" });
     if (!r.ok) throw new Error(`Discord answered ${r.status}`);
     if (Number(r.headers.get("content-length") ?? 0) > max) throw new Error("it's too big");
     if (!r.body) return new Uint8Array(0);

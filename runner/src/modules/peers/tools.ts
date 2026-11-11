@@ -56,7 +56,7 @@ export const TOOL_DEFS = [
   {
     name: TEXT_PERSON,
     description:
-      "Texts the person through Tether (iMessage or Discord, whichever Tether texts them on), marked with this session's number. Use it only when they asked to be texted (\"text me when it's done\") or you're blocked on something only they can answer. Keep it to one short sentence (it's cut at 300 characters), outcome first, with a link if there is one. If they reply, their reply comes to this session as a message. In a session Tether's Home agent drives, the message goes to the Home agent instead (it texts the person).",
+      "Texts the person through Tether, in the messaging app it reaches them on, marked with this session's number. Use it only when they asked to be texted (\"text me when it's done\") or you're blocked on something only they can answer. Keep it to one short sentence (it's cut at 300 characters), outcome first, with a link if there is one. If they reply, their reply comes to this session as a message. In a session Tether's Home agent drives, the message goes to the Home agent instead (it texts the person).",
     inputSchema: { type: "object", properties: { message: { type: "string", description: "The text: one short sentence." } }, required: ["message"] },
   },
 ];

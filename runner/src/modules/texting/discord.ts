@@ -1,10 +1,11 @@
 // A Discord bot as a connector (connector.ts): the person DMs the bot, or writes in one server
 // channel set here, and it's the same as texting Tether (the Home agent, session numbers, y or n to a
 // request). Only the owner user ids set here drive it: everyone else, other bots, webhooks and the
-// bot itself are ignored, in DMs and in the channel, without a word. Tether's messages go to the
-// first owner's DMs, and to the channel only while the person last wrote there (others in a channel
-// can read it); where they last wrote is kept with the settings (`where`), so a restart doesn't move
-// it. Long messages are split at Discord's 2000 characters, and a masked link ([text](url)) is
+// bot itself are ignored, in DMs and in the channel, without a word. In the channel only a message
+// that starts by mentioning the bot, or replies to one of its messages, is for Tether (a "yes" to a
+// coworker there mustn't approve anything). Tether's messages go to the owner's DMs; only an answer
+// to something written in the channel goes there (others in the channel can read it). The DM is kept
+// with the settings (`where`). Long messages are split at Discord's 2000 characters, and a masked link ([text](url)) is
 // spelled out so an agent can't disguise one. Files the person sends come in (fetched from
 // Discord's CDN only, when a session takes them); images go out as attachments.
 //
@@ -22,7 +23,7 @@ import { cleanMime } from "../../../../shared/attachments";
 import { ATTACH_FILE_MAX } from "../../../../shared/limits";
 import type { ConnectorForm } from "../../../../shared/protocol";
 import { registerSecret } from "../../credentials";
-import type { Connector, Inbound, InboundFile } from "./connector";
+import { PartialSend, type Connector, type Inbound, type InboundFile } from "./connector";
 import { download, Gateway, MESSAGE_MAX, Rest, type GatewayOptions } from "./discordGateway";
 import type { TextingStore } from "./store";
 
@@ -33,11 +34,11 @@ export interface DiscordSettings {
   token?: string;
   ownerIds?: string[];
   channelId?: string;
-  /** where the person last wrote: Tether's messages go there (a DM only while its owner still is one) */
+  /** the DM the person last wrote in: Tether's messages go there (while its owner still is one) */
   where?: Where;
 }
 
-export type Where = { kind: "dm"; id: string; owner: string } | { kind: "channel"; id: string };
+export type Where = { kind: "dm"; id: string; owner: string };
 
 /** What the link needs. */
 export interface DiscordConfig {
@@ -70,8 +71,7 @@ export function cleanSettings(v: unknown): DiscordSettings {
   if (isId(o.channelId)) out.channelId = o.channelId;
   const w = o.where as Record<string, unknown> | undefined;
   if (w && typeof w === "object" && isId(w.id)) {
-    if (w.kind === "channel") out.where = { kind: "channel", id: w.id };
-    else if (w.kind === "dm" && isId(w.owner)) out.where = { kind: "dm", id: w.id, owner: w.owner };
+    if (w.kind === "dm" && isId(w.owner)) out.where = { kind: "dm", id: w.id, owner: w.owner };
   }
   return out;
 }
@@ -92,9 +92,14 @@ export function takeEnv(env: Record<string, string | undefined>): DiscordEnv {
 /** The runner's own, taken when this loads: before any agent or harness is started. */
 const PROCESS_ENV = takeEnv(process.env);
 
-/** "[docs](https://x)" → "docs (https://x)": what a link says and where it goes, both shown. The rest of the markdown stays. */
+/**
+ * "[docs](https://x)" → "docs (https://x)": what a link says and where it goes, both shown. Whatever
+ * the simple form misses (nested brackets, parentheses in the URL, a line break in the text) can't
+ * become a link either: every "](" left is escaped. The rest of the markdown stays.
+ */
 export function unmask(text: string): string {
-  return text.replace(/\[([^\[\]\n]*)\]\(\s*<?([^\s()<>]+)>?(?:\s+"[^"\n]*")?\s*\)/g, (_, label: string, url: string) => (label.trim() ? `${label} (${url})` : url));
+  const plain = text.replace(/\[([^\[\]\n]*)\]\(\s*<?([^\s()<>]+)>?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g, (_, label: string, url: string) => (label.trim() ? `${label} (${url})` : url));
+  return plain.replace(/\]\s*\(/g, (m) => `\\${m}`);
 }
 
 /**
@@ -129,6 +134,8 @@ export interface Audience {
   ownerIds: string[];
   /** the server channel it listens in, besides DMs */
   channelId?: string;
+  /** whether a message id is one the bot posted (a reply to it in the channel is for Tether) */
+  mine?: (messageId: string) => boolean;
 }
 
 /**
@@ -144,12 +151,19 @@ export function personMessage(d: any, who: Audience): { text: string; id: string
   const channelId = String(d.channel_id ?? "");
   const dm = !d.guild_id;
   if (!dm && (!who.channelId || channelId !== who.channelId)) return undefined;
-  // "@Tether 2 yes" in the channel: the mention isn't part of what they said.
-  let text = typeof d.content === "string" ? d.content : "";
-  if (who.selfId) text = text.replace(new RegExp(`^\\s*<@!?${who.selfId}>\\s*`), "");
   // A reply in this same channel names what it answers; a forward (type 1) or a cross-channel reference doesn't.
   const ref = d.message_reference;
   const replyTo = ref?.message_id && (ref.type === undefined || ref.type === 0) && String(ref.channel_id) === channelId ? String(ref.message_id) : undefined;
+  // "@Tether 2 yes" in the channel: the mention isn't part of what they said.
+  let text = typeof d.content === "string" ? d.content : "";
+  const mention = who.selfId ? new RegExp(`^\\s*<@!?${who.selfId}>\\s*`) : undefined;
+  const mentioned = !!mention && mention.test(text);
+  if (mention) text = text.replace(mention, "");
+  // In the channel, only what's addressed to the bot: a mention first, or a reply to one of its messages.
+  if (!dm) {
+    const toBot = !!replyTo && (String(d.referenced_message?.author?.id ?? "") === who.selfId || !!who.mine?.(replyTo));
+    if (!mentioned && !toBot) return undefined;
+  }
   return { text, id: String(d.id), author, channelId, dm, ...(replyTo ? { replyTo } : {}), attachments: Array.isArray(d.attachments) ? d.attachments : [] };
 }
 
@@ -181,7 +195,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
     mark: FROM_DISCORD,
     images: true,
     about:
-      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: the Home agent, session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Tether writes to your DMs, and in the channel only while you last wrote there.",
+      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: the Home agent, session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Tether writes to your DMs; in the channel it only answers what you wrote there.",
     notReady: "Set the bot token and your Discord user ID first, and turn Discord on.",
     enabled: () => saved().enabled ?? (!!envToken() && envOwners().length > 0),
     configured: () => !!config(),
@@ -191,13 +205,20 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       const rest = new Rest(cfg.token, deps.fetch ?? fetch, deps.apiUrl);
       const fetcher = deps.fetch ?? fetch;
       let dm: Promise<string> | undefined;
+      /** DMs owners wrote in, by channel id: an answer may go back to one */
+      const dms = new Map<string, string>();
+      /** what the bot posted in the channel lately: a reply to one there is for Tether */
+      const posted: string[] = [];
       const gateway = new Gateway(
         cfg.token,
         (type, d) => {
           if (type !== "MESSAGE_CREATE") return;
-          const m = personMessage(d, { selfId: gateway.self?.id, ownerIds: cfg.ownerIds, channelId: cfg.channelId });
+          const m = personMessage(d, { selfId: gateway.self?.id, ownerIds: cfg.ownerIds, channelId: cfg.channelId, mine: (id) => posted.includes(id) });
           if (!m) return;
-          remember(m.dm ? { kind: "dm", id: m.channelId, owner: m.author } : { kind: "channel", id: m.channelId });
+          if (m.dm) {
+            dms.set(m.channelId, m.author);
+            remember({ kind: "dm", id: m.channelId, owner: m.author });
+          }
           const files: InboundFile[] = m.attachments
             .filter((a) => typeof a?.url === "string")
             .map((a) => ({
@@ -209,6 +230,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
           const msg: Inbound = {
             text: m.text,
             id: m.id,
+            place: m.channelId,
             ...(m.replyTo ? { replyTo: m.replyTo } : {}),
             ...(files.length ? { files } : {}),
             react: (emoji) => rest.react(m.channelId, m.id, emoji),
@@ -218,11 +240,15 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
         { log, ...deps.gateway },
       );
       await gateway.start();
-      /** Where Tether writes: where the person last wrote, while that's still allowed (the set channel, an owner's DM); else the first owner's DMs. */
-      const target = async (): Promise<string> => {
+      /**
+       * Where Tether writes: an answer to something written in the set channel, or in an owner's DM,
+       * goes back there; anything else to the DM the person last wrote in, else the first owner's.
+       */
+      const target = async (place?: string): Promise<string> => {
+        if (place && place === cfg.channelId) return place;
+        if (place && cfg.ownerIds.includes(dms.get(place) ?? "")) return place;
         const w = saved().where;
-        if (w?.kind === "channel" && w.id === cfg.channelId) return w.id;
-        if (w?.kind === "dm" && cfg.ownerIds.includes(w.owner)) return w.id;
+        if (w && cfg.ownerIds.includes(w.owner)) return w.id;
         const owner = cfg.ownerIds[0]!;
         const id = await (dm ??= rest.dm(owner).catch((e) => ((dm = undefined), Promise.reject(e))));
         remember({ kind: "dm", id, owner });
@@ -230,19 +256,29 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       };
 
       const link = {
-        async send(out: { text: string; images?: string[] }) {
+        async send(out: { text: string; images?: string[]; place?: string }) {
           const files = (out.images ?? []).map((p) => ({ name: basename(p), data: new Uint8Array(readFileSync(p)), type: cleanMime(undefined, p) }));
           const parts = splitMessage(unmask(out.text));
           if (!parts.length && !files.length) return [];
           if (!parts.length) parts.push("");
-          const to = await target();
+          const to = await target(out.place);
           const sent: string[] = [];
-          for (const [i, part] of parts.entries()) {
-            const id = await rest.post(to, part, i === parts.length - 1 ? files : []);
-            if (id) sent.push(id);
+          try {
+            for (const [i, part] of parts.entries()) {
+              const id = await rest.post(to, part, i === parts.length - 1 ? files : []);
+              if (id) sent.push(id);
+            }
+          } catch (e: any) {
+            if (sent.length) throw new PartialSend(String(e?.message ?? e), sent);
+            throw e;
+          }
+          if (to === cfg.channelId) {
+            posted.push(...sent);
+            posted.splice(0, Math.max(0, posted.length - 200));
           }
           return sent;
         },
+        up: () => gateway.up,
         closed: gateway.closed.then(() => {
           if (gateway.fatal) link.fatal = gateway.fatal;
         }),
@@ -285,7 +321,7 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
           fromEnv: fromEnvChannel,
           inputs: [{ key: "channelId", placeholder: "Channel ID (optional)", optional: true }],
           unset: !!s.channelId && !fromEnvChannel,
-          note: "Tether answers there only while you last wrote there. Anyone who can see the channel can read what it posts.",
+          note: "In the channel, start with @ and the bot's name, or reply to one of its messages. It answers there only what you wrote there, and anyone who can see the channel can read it.",
         },
       ];
     },

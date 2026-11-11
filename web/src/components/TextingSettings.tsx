@@ -58,16 +58,19 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
 
   if (!status) return <>{error ? <div className="t-inline-status error" role="alert">{error}</div> : <div className="t-inline-status">Loading…</div>}</>;
   const on = status.connectors.filter((c) => c.enabled);
+  // A preference for a connector that's since been turned off stays clearable.
+  const stale = status.prefer ? status.connectors.find((c) => c.id === status.prefer && !c.enabled) : undefined;
 
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     <p className="t-inline-status">
       Get a message when a session needs you, asks you something or fails (not while you're looking at it in Tether), with what it wants and a link. Reply y or n to a request, or write to the agent: its answer comes back the same way. Each message starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether sends back a list to choose from.
     </p>
-    {on.length > 1 && (
+    {(on.length > 1 || stale) && (
       <label className="t-field">Send to<select className="t-select" value={status.prefer ?? ""} disabled={disabled} onChange={(e) => void run(() => rpc(runnerId, "setMessagingPrefer", { prefer: e.target.value || null }), setError)}>
         <option value="">Wherever I last wrote{status.lastUsed ? ` (${status.connectors.find((c) => c.id === status.lastUsed)?.label ?? status.lastUsed})` : ""}</option>
         {on.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+        {stale && <option value={stale.id}>{stale.label} (off)</option>}
       </select></label>
     )}
     {status.connectors.map((c) => <Connector key={c.id} c={c} ops={ops} disabled={disabled} run={run} />)}

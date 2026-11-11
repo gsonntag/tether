@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { redact } from "../../credentials";
 import { Channel, isFatal, type Inbound } from "./connector";
 import { cleanSettings, discordConnector, personMessage, splitMessage, takeEnv, unmask } from "./discord";
-import { download, Gateway, INTENTS, Rest, retryAfter, type Socket } from "./discordGateway";
+import { download, Gateway, INTENTS, resetIdentifies, Rest, retryAfter, takeIdentify, validResumeUrl, type Socket } from "./discordGateway";
 import { TextingStore } from "./store";
 
 const TOKEN = "MTAx.discord-bot-token.abcdefghijklmnop";
@@ -176,7 +176,7 @@ describe("who may drive it", () => {
 
   test("the owner in a DM, or in the set channel", () => {
     expect(personMessage(msg(), who)).toEqual({ text: "2 yes", id: "m1", author: ME, channelId: DM, dm: true, attachments: [] });
-    expect(personMessage(msg({ guild_id: "g", channel_id: CHAN }), who)?.channelId).toBe(CHAN);
+    expect(personMessage(msg({ guild_id: "g", channel_id: CHAN, content: `<@${BOT}> 2 yes` }), who)?.channelId).toBe(CHAN);
     // A reply, and a mention of the bot in front.
     expect(personMessage(msg({ type: 19, content: `<@${BOT}> y`, message_reference: { message_id: "t1", channel_id: DM } }), who)).toEqual({ text: "y", id: "m1", author: ME, channelId: DM, dm: true, replyTo: "t1", attachments: [] });
     expect(personMessage(msg({ content: `<@!${BOT}>   home: hi` }), who)?.text).toBe("home: hi");
@@ -364,7 +364,7 @@ describe("the Discord connector", () => {
 describe("review fixes", () => {
   const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
-  test("Tether writes to the owner's DM; the channel only while the person last wrote there, kept across a reopen", async () => {
+  test("Tether writes to the owner's DM; the channel only for an answer to what was written there; the DM is kept across a reopen", async () => {
     const dir = mkdtempSync(join(tmpdir(), "discord-where-"));
     try {
       const file = join(dir, "texting.json");
@@ -374,30 +374,33 @@ describe("review fixes", () => {
       const posted = () => f.calls.filter((c) => c.url.endsWith("/messages")).map((c) => c.url.split("/channels/")[1]!.split("/")[0]);
       await o.link.send({ text: "[1] Can I run the tests? y/n" });
       expect(posted()).toEqual([DM]);
-      // They write in the channel: answers go there now.
-      o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "c1", type: 0, guild_id: "g", channel_id: CHAN, content: "1 y", author: { id: ME } } });
-      await o.link.send({ text: "[1] ok" });
+      // They write in the channel: the answer to that goes there, with its place.
+      o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "c1", type: 0, guild_id: "g", channel_id: CHAN, content: `<@${BOT}> 1 y`, author: { id: ME } } });
+      expect(o.heard.at(-1)!.place).toBe(CHAN);
+      await o.link.send({ text: "[1] ok", place: CHAN });
       expect(posted()).toEqual([DM, CHAN]);
-      expect(JSON.parse(readFileSync(file, "utf8")).connectors.discord.where).toEqual({ kind: "channel", id: CHAN });
+      // Tether's own next text: the DM, not the channel.
+      await o.link.send({ text: "[2] Can I deploy? y/n" });
+      expect(posted()).toEqual([DM, CHAN, DM]);
+      // A place that isn't the set channel or an owner's DM: the DM.
+      await o.link.send({ text: "x", place: "777777777777777777" });
+      expect(posted().at(-1)).toBe(DM);
+      expect(JSON.parse(readFileSync(file, "utf8")).connectors.discord.where).toEqual({ kind: "dm", id: DM, owner: ME });
       await o.link.stop();
-      // A restart keeps it.
+      // A restart keeps the DM: no new DM to open.
       const g = fakeDiscord(env, file);
       const p = await openIt(g);
       await p.link.send({ text: "[2] hi" });
-      expect(g.calls.map((c) => c.url)).toEqual([`https://discord.com/api/v10/channels/${CHAN}/messages`]);
-      // Back in the DM: DMs again.
-      p.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "d1", type: 0, channel_id: DM, content: "hi", author: { id: ME } } });
-      await p.link.send({ text: "[2] ok" });
-      expect(g.calls.at(-1)!.url).toBe(`https://discord.com/api/v10/channels/${DM}/messages`);
+      expect(g.calls.map((c) => c.url)).toEqual([`https://discord.com/api/v10/channels/${DM}/messages`]);
       await p.link.stop();
-      // The channel changed in settings: never the old one.
-      const h = fakeDiscord({ ...env, TETHER_DISCORD_CHANNEL_ID: "555555555555555555" }, file);
+      // An old saved "channel" target is dropped on load.
+      const h = fakeDiscord(env, file);
       h.store.setSection("discord", { ...h.store.section("discord"), where: { kind: "channel", id: CHAN } });
       const q = await openIt(h);
       await q.link.send({ text: "x" });
       expect(h.calls.map((c) => c.url.replace("https://discord.com/api/v10", ""))).toEqual(["/users/@me/channels", `/channels/${DM}/messages`]);
       await q.link.stop();
-      expect(h.c.forms().find((x) => x.key === "channel")!.note).toContain("Anyone who can see the channel can read");
+      expect(h.c.forms().find((x) => x.key === "channel")!.note).toContain("anyone who can see the channel can read it");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -539,5 +542,157 @@ describe("review fixes", () => {
     expect(env).toEqual({ PATH: "/bin" });
     // The runner's own was taken when discord.ts loaded.
     expect(process.env.TETHER_DISCORD_TOKEN).toBeUndefined();
+  });
+});
+
+describe("second review round", () => {
+  test("B2: in the channel only a mention of the bot or a reply to it counts; DMs as before", () => {
+    const who = { selfId: BOT, ownerIds: [ME], channelId: CHAN, mine: (id: string) => id === "tether1" };
+    const inChan = (o: any) => ({ id: "m", type: 0, guild_id: "g", channel_id: CHAN, author: { id: ME }, content: "yes", ...o });
+    // "yes" to a coworker: nothing.
+    expect(personMessage(inChan({}), who)).toBeUndefined();
+    expect(personMessage(inChan({ content: `yes <@${BOT}>` }), who)).toBeUndefined();
+    // A reply to a coworker's message: nothing.
+    expect(personMessage(inChan({ type: 19, message_reference: { message_id: "other", channel_id: CHAN }, referenced_message: { author: { id: OTHER } } }), who)).toBeUndefined();
+    // A mention first, stripped; a reply to Tether's message (by its author, or one it posted).
+    expect(personMessage(inChan({ content: `<@${BOT}> yes` }), who)?.text).toBe("yes");
+    expect(personMessage(inChan({ type: 19, message_reference: { message_id: "x", channel_id: CHAN }, referenced_message: { author: { id: BOT } } }), who)?.text).toBe("yes");
+    expect(personMessage(inChan({ type: 19, message_reference: { message_id: "tether1", channel_id: CHAN } }), who)?.replyTo).toBe("tether1");
+    // DMs need neither.
+    expect(personMessage({ id: "d", type: 0, channel_id: DM, author: { id: ME }, content: "yes" }, who)?.text).toBe("yes");
+  });
+
+  test("B2: a reply in the channel to a message the bot posted there is taken", async () => {
+    const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME, TETHER_DISCORD_CHANNEL_ID: CHAN });
+    const o = await openIt(f);
+    o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 2, d: { id: "c1", type: 0, guild_id: "g", channel_id: CHAN, content: `<@${BOT}> hi`, author: { id: ME } } });
+    const [id] = (await o.link.send({ text: "[1] Can I? y/n", place: CHAN })) as string[];
+    o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 3, d: { id: "c2", type: 19, guild_id: "g", channel_id: CHAN, content: "y", author: { id: ME }, message_reference: { message_id: id, channel_id: CHAN } } });
+    o.gw.push({ op: 0, t: "MESSAGE_CREATE", s: 4, d: { id: "c3", type: 0, guild_id: "g", channel_id: CHAN, content: "y", author: { id: ME } } });
+    expect(o.heard.map((m) => [m.id, m.text])).toEqual([["c1", "hi"], ["c2", "y"]]);
+    await o.link.stop();
+  });
+
+  test("N1: no masked link survives", () => {
+    const hostile = ["[a [b] c](https://evil)", "[G](https://evil.com/a_(b))", "[two\nlines](https://evil)", '[t](https://evil "title")', "[t](<https://evil>)", "[t] (https://evil)", "[t](https://evil 'x')"];
+    for (const h of hostile) {
+      const out = unmask(h);
+      // Every link target left is shown, and nothing parses as [text](url) any more.
+      expect([h, /\[[^\]]*\]\s*\(/.test(out.replace(/\\\]/g, ""))]).toEqual([h, false]);
+      expect(out).toContain("https://evil");
+    }
+    expect(unmask("**bold** _it_ `code` [1] ok")).toBe("**bold** _it_ `code` [1] ok");
+  });
+
+  test("N2: identifies are budgeted across gateways; op 9 and repeated op 7 back off", async () => {
+    resetIdentifies();
+    expect(takeIdentify(1000, 2)).toBe(true);
+    expect(takeIdentify(1001, 2)).toBe(true);
+    expect(takeIdentify(1002, 2)).toBe(false);
+    // A day later the budget is back.
+    expect(takeIdentify(1000 + 24 * 60 * 60_000, 2)).toBe(true);
+    resetIdentifies();
+    // Spent: the gateway stops for good, with why.
+    const socks = sockets();
+    const g = new Gateway(TOKEN, () => {}, { socket: socks.open, identifyMax: 0 });
+    const started = g.start();
+    socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    const e = await started.catch((x) => x);
+    expect(isFatal(e)).toBe(true);
+    expect(String(e.message)).toContain("daily limit");
+    expect(socks.last().ops(2)).toEqual([]);
+    resetIdentifies();
+
+    const { g: g2, socks: s2 } = await connected({ reconnectMinMs: 40, reconnectMaxMs: 1000 });
+    // First reconnect request: at once. The next ones before it's stable: after the backoff.
+    s2.last().push({ op: 7 });
+    expect(s2.all.length).toBe(2);
+    s2.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    s2.last().push({ op: 7 });
+    expect(s2.all.length).toBe(2);
+    await until(() => s2.all.length === 3);
+    // An invalid session waits the backoff too (now 80 ms, over invalidMs 5).
+    s2.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    const at = Date.now();
+    s2.last().push({ op: 9, d: true });
+    await until(() => s2.all.length === 4);
+    expect(Date.now() - at).toBeGreaterThanOrEqual(70);
+    g2.stop();
+    resetIdentifies();
+  });
+
+  test("N4: downloads don't follow redirects", async () => {
+    let init: RequestInit | undefined;
+    const f = (async (_u: string, i: RequestInit) => ((init = i), new Response(new Uint8Array([1])))) as unknown as typeof fetch;
+    await download("https://cdn.discordapp.com/a", 10, f);
+    expect(init!.redirect).toBe("error");
+  });
+
+  test("N5: junk payloads are ignored; a resume URL off discord.gg never gets the token", async () => {
+    expect(validResumeUrl("wss://gateway-us-east1-b.discord.gg")).toBeDefined();
+    for (const bad of ["wss://evil.example", "ws://gateway.discord.gg", "wss://discord.gg.evil.example", "wss://x@gateway.discord.gg", 5, null, "nonsense"]) expect(validResumeUrl(bad)).toBeUndefined();
+    const socks = sockets();
+    const g = new Gateway(TOKEN, () => {}, { socket: socks.open, reconnectMinMs: 5, identifyGapMs: 0 });
+    const started = g.start();
+    const s = socks.last();
+    for (const junk of ["null", "5", "[1]", '"x"', "{}", '{"op":"10"}']) s.onmessage!({ data: junk });
+    s.push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    s.push({ op: 0, t: "READY", s: 1, d: { session_id: "sess1", resume_gateway_url: "wss://evil.example", user: { id: BOT } } });
+    await started;
+    s.drop(1006);
+    await until(() => socks.all.length === 2);
+    expect(socks.last().url).toBe("wss://gateway.discord.gg/?v=10&encoding=json");
+    socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    expect(socks.last().ops(6)).toEqual([]);
+    expect(socks.last().ops(2).length).toBe(1);
+    g.stop();
+    resetIdentifies();
+  });
+
+  test("N6: a split message that fails partway reports the parts that went", async () => {
+    let n = 0;
+    const calls: string[] = [];
+    const fetcher = (async (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/users/@me/channels")) return Response.json({ id: DM });
+      return ++n === 2 ? Response.json({ message: "boom" }, { status: 500 }) : Response.json({ id: `p${n}` });
+    }) as unknown as typeof fetch;
+    const socks = sockets();
+    const c = discordConnector(new TextingStore(undefined, { TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME }), { fetch: fetcher, gateway: { socket: socks.open } });
+    const opening = c.open(() => {}, () => {});
+    await until(() => socks.all.length > 0);
+    socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    ready(socks.last());
+    const link = await opening;
+    const e = await link.send({ text: "z".repeat(4500) }).catch((x) => x);
+    expect(e.ids).toEqual(["p1"]);
+    // Through a Channel: it counts as sent, with those ids.
+    const ch = new Channel({ ...c, open: async () => link }, () => {}, () => {});
+    await ch.start();
+    n = 0;
+    expect(await ch.send({ text: "z".repeat(4500) })).toEqual(["p1"]);
+    expect(ch.lastError).toContain("boom");
+    await ch.stop();
+    resetIdentifies();
+  });
+
+  test("N10: Connected only while the gateway is up", async () => {
+    const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME });
+    const ch = new Channel(f.c, () => {}, () => {});
+    const starting = ch.start();
+    await until(() => f.socks.all.length === 1);
+    f.socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    ready(f.socks.last());
+    await starting;
+    expect(ch.connected).toBe(true);
+    f.socks.last().drop(1006);
+    expect(ch.connected).toBe(false);
+    await expect(ch.send({ text: "x" })).rejects.toThrow("not connected");
+    await until(() => f.socks.all.length === 2);
+    f.socks.last().push({ op: 10, d: { heartbeat_interval: 10_000 } });
+    f.socks.last().push({ op: 0, t: "RESUMED", s: 2, d: {} });
+    expect(ch.connected).toBe(true);
+    await ch.stop();
+    resetIdentifies();
   });
 });

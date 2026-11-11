@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { FROM_DISCORD, FROM_IMESSAGE, TEXTED_MARKS, fromTexted, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import type { Attachment } from "../../../../shared/attachments";
 import { FILES_ONLY, Texter } from ".";
-import { Channel, FatalError, type ChannelLink, type Connector, type Inbound } from "./connector";
+import { Channel, FatalError, type ChannelLink, type Connector, type Inbound, type Outbound } from "./connector";
 import { connectors } from "./connectors";
 import { imessageConnector } from "./imessage";
 import { HomeLine, type TakeVia } from "../homeLine";
@@ -16,7 +16,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 /** A connector whose link the test holds: what it sent, and a way to be the person. */
 function fake(id: string, mark: string) {
-  const state = { enabled: true, configured: true, sent: [] as { text: string; images?: string[] }[], opens: 0, fail: undefined as string | undefined, hear: (_m: Inbound) => {}, links: [] as (ChannelLink & { end: () => void })[] };
+  const state = { enabled: true, configured: true, sent: [] as Outbound[], opens: 0, fail: undefined as string | undefined, hear: (_m: Inbound) => {}, links: [] as (ChannelLink & { end: () => void })[] };
   let n = 0;
   const c: Connector = {
     id,
@@ -33,7 +33,7 @@ function fake(id: string, mark: string) {
       state.hear = onInbound;
       let end!: () => void;
       const closed = new Promise<void>((r) => (end = r));
-      const link = { send: async (o: { text: string; images?: string[] }) => (state.sent.push(o), `${id}-${++n}`), closed, stop: async () => end(), end };
+      const link = { send: async (o: Outbound) => (state.sent.push(o), `${id}-${++n}`), closed, stop: async () => end(), end };
       state.links.push(link);
       return link;
     },
@@ -362,4 +362,139 @@ test("a session's link in a Discord text is its short link, as on iMessage", asy
   s.store.lastVia = "discord";
   await s.t.attention("claude:a");
   expect(s.dc.sent.at(-1)!.text).toEndWith("\nhttps://tether.example/#/l/abc123");
+});
+
+describe("second review round", () => {
+  const png = (name = "a.png") => ({ name, mimeType: "image/png", size: 1, read: async () => new Uint8Array([7]) });
+  /** Two sessions open, so plain text gets the picker. */
+  async function twoOpen(o: { attachmentsDir?: string } = {}) {
+    const s = setup(o);
+    const sessions = (s.t as any).ctx.session;
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    await s.t.start();
+    await s.t.attention("claude:a");
+    await s.t.attention("codex:b");
+    return s;
+  }
+
+  test("N7: held files that don't go are reported: picked with other words, replaced, expired", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-held2-"));
+    try {
+      const s = await twoOpen({ attachmentsDir: dir });
+      const notSent = () => s.dc.sent.filter((o) => o.text === TEXTS.filesNotSent).length;
+      // Held, then "2 other words": those words go, the held file doesn't, and they're told.
+      s.dc.hear({ text: "look", files: [png()] });
+      await tick(5);
+      s.dc.hear({ text: "2 other words" });
+      await tick(5);
+      expect(s.told.at(-1)).toEqual(["codex:b", "other words"]);
+      expect(notSent()).toBe(1);
+      // Held, then a new unclear text replaces it.
+      await s.t.attention("codex:b");
+      s.dc.hear({ text: "look again", files: [png()] });
+      await tick(5);
+      s.dc.hear({ text: "something else" });
+      await tick(5);
+      expect(notSent()).toBe(2);
+      // Held, then it expires.
+      s.dc.hear({ text: "and this", files: [png()] });
+      await tick(5);
+      (s.t as any).now = () => Date.now() + 11 * 60_000;
+      await s.t.checkHeld();
+      expect(notSent()).toBe(3);
+      // Not twice.
+      await s.t.checkHeld();
+      expect(notSent()).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("N8: someone typing \"(sent a file)\" is just words; a file alone is flagged, not matched by text", async () => {
+    const s = setup();
+    const sessions = (s.t as any).ctx.session;
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const look = sessions("claude:a");
+    look.requests = ["r1"];
+    look.state.requests = [{ id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 }];
+    const answered: any[] = [];
+    (s.t as any).ctx.sessions.answer = async (...a: any[]) => void answered.push(a);
+    s.dc.hear({ text: FILES_ONLY });
+    await tick(5);
+    // Words to a request: the agent reads them as the reason.
+    expect(answered).toEqual([["claude:a", "r1", { allow: false, reason: FILES_ONLY }]]);
+    expect(s.told).toEqual([]);
+    // A NUL can't smuggle the flag in either.
+    s.dc.hear({ text: "\u0000" });
+    await tick(5);
+    expect(s.told).toEqual([]);
+  });
+
+  test("N9: files with a reply to an already-answered request: told they didn't go", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-n9-"));
+    try {
+      const s = setup({ attachmentsDir: dir });
+      await s.t.start();
+      const look = (s.t as any).ctx.session("claude:a");
+      look.requests = ["r1"];
+      look.state.requests = [{ id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 }];
+      await s.t.request(look.state.requests[0]);
+      look.requests = [];
+      s.dc.hear({ text: "y", files: [png()], replyTo: s.t.router.state.sent.at(-1)!.id });
+      await tick(5);
+      expect(s.dc.sent.slice(-2).map((o) => o.text)).toEqual([TEXTS.alreadyAnswered(1), TEXTS.filesNotSent]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("N11: every connector's app is in the shared registry, with its marker and label", async () => {
+    const { MESSAGING_APPS, TEXTED_MARKS, TEXTED_VIA } = await import("../../../../shared/fromTether");
+    for (const c of connectors(new TextingStore(undefined, {}))) {
+      expect(Object.keys(MESSAGING_APPS)).toContain(c.id);
+      expect(c.mark).toBe(TEXTED_MARKS[c.id as keyof typeof TEXTED_MARKS]);
+      expect(TEXTED_VIA[c.id as keyof typeof TEXTED_VIA]).toBe(c.label);
+    }
+  });
+
+  test("N3/N12: answers carry their place; the way back is saved; Send to skips a connector that's off", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "texting-n12-"));
+    try {
+      const file = join(dir, "texting.json");
+      const s = setup();
+      (s.t.store as any).file = file;
+      await s.t.start();
+      await s.t.attention("claude:a");
+      s.dc.hear({ text: "1 go", place: "chan-9" });
+      await tick();
+      s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Done that." }] });
+      await s.t.turnEnded("claude:a");
+      expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Done that.", place: "chan-9" });
+      // Tether's own texts carry no place.
+      await s.t.attention("claude:a");
+      expect(s.dc.sent.at(-1)!.place).toBeUndefined();
+      expect(JSON.parse(readFileSync(file, "utf8")).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
+      expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "chan-9" });
+      // A preference for a connector that's off: refused, and an old one is skipped.
+      s.t.prefer("imessage");
+      s.im.enabled = false;
+      expect(() => s.t.prefer("imessage")).toThrow("Turn it on first");
+      await s.t.attention("claude:a");
+      expect(s.im.sent.length).toBe(1);
+      expect(s.t.prefer(null).prefer).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("N12: a settings change doesn't wait on the old link closing", async () => {
+    const f = fake("x", "[From X] ");
+    const ch = new Channel(f.c, () => {}, () => {});
+    await ch.start();
+    f.state.links.at(-1)!.stop = () => new Promise(() => {});
+    const done = await Promise.race([ch.restart().then(() => "restarted"), tick(200).then(() => "stuck")]);
+    expect(done).toBe("restarted");
+    expect(ch.connected).toBe(true);
+  });
 });
