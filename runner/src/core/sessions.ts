@@ -149,6 +149,7 @@ export class SessionCore {
     for (const s of this.sessions.values()) {
       s.unwatch?.();
       clearTimeout(s.idleTimer);
+      clearTimeout(s.retryTimer);
     }
   }
 
@@ -182,7 +183,7 @@ export class SessionCore {
   /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
   private owned(id: string) {
     const s = this.sessions.get(id);
-    return !!s && (s.live || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
+    return !!s && (s.live || !!s.retry || s.childRunning || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal);
   }
 
   /** A session that went on under another id, or a thread that may yet: one row for the conversation. */
@@ -495,7 +496,7 @@ export class SessionCore {
 
   /** Kept in memory: live, starting or sending, running (a turn or a `!` command), waiting on a person, in a terminal, pinned, or watched. */
   private held(s: Session) {
-    return s.live || !!s.sending || !!s.starting || s.pins > 0 || s.childRunning || s.shellsRunning > 0 || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
+    return s.live || !!s.retry || !!s.sending || !!s.starting || s.pins > 0 || s.childRunning || s.shellsRunning > 0 || s.state.requests.length > 0 || s.state.queue.length > 0 || s.state.mode === "terminal" || !!s.state.terminal || this.watched.has(s.id);
   }
 
   /**
@@ -544,12 +545,12 @@ export class SessionCore {
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, retry: _retry, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
     const q = s.state.queue.length;
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

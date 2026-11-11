@@ -620,6 +620,41 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   `~/.config/tether/attachments/<session>/`. They go to the harness natively where supported, and as
   paths otherwise.
 
+### Temporary model rate limits
+
+After the harness finishes its own retries, a terminal transient throttle can be retried by the
+runner. Codex reports a rate-limit code, HTTP 429 (including a retry-exhausted wrapper), or the
+known token-rate-limit message when there is no specific code. Claude reports a terminal
+`rate_limit` API error with HTTP 429 and no plan rejection. Exhausted plan limits, insufficient
+quota, authentication failures and interrupted turns retain their existing behavior.
+
+Tether resends only a main turn it started, before any tool ran or message was steered into it,
+with no background work, shell command or agent terminal running. The session, source, credential
+revision, model, effort, permission mode and attachments stay the same. After tools or steering,
+a notice explains why the message wasn't resent and asks the person to continue.
+
+There are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
+20% jitter. A valid provider retry time is a minimum. No new retry starts after ten minutes from
+the first terminal throttle; restarting the runner preserves this deadline and attempt count.
+Sessions sharing a known source, credential revision and model/deployment share a runner-local
+cooldown, with a gap between dispatches. This does not coordinate different runners.
+
+The chat shows the next attempt's countdown, **Retry now** and **Cancel**. Retry now skips Tether's
+backoff but honors provider timing and concurrent-session cooldowns. Stop, a direct message, a
+settings/source/credential change, opening the agent terminal or a native client taking over
+invalidates the pending retry. Queued messages wait behind recovery and drain after success;
+cancellation leaves them paused. Intermediate attempts create no failed inbox entry or push;
+the eventual answer or final failure uses the usual notifications.
+
+`LiveState.retry` and the session summary expose only timing, attempt count and the redacted error.
+The runner saves the original message, attachments, settings fingerprint and dispatch phase in
+its private `runner.json`. A waiting retry is restored after reconciling the session and terminals.
+For a nonpersistent harness, the saved store revision must still match; changed or unknown
+history requires the person to continue.
+A retry saved as already dispatching is never replayed after a restart: it may have reached the
+harness, so the conversation is left for the person to continue. The private API gateway retains
+only validated retry timing and recognized error categories; provider error text stays private.
+
 ### Commands and skills
 
 "/" at the start of the box opens a menu of the session's real commands and skills: name, what it

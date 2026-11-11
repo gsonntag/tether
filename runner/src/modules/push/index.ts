@@ -86,8 +86,9 @@ export function failureKind(error: string): string {
 }
 
 /** A turn end worth telling: a main session, still idle, not waiting on a request (that tells itself). */
-export function endWorthTelling(look: { summary: { parentSessionId?: string }; status: string; requests: string[] } | undefined): boolean {
-  return !!look && !look.summary.parentSessionId && look.status === "idle" && !look.requests.length;
+export function endWorthTelling(look: { summary: { parentSessionId?: string }; status: string; requests: string[]; state?: { retry?: unknown } } | undefined): boolean {
+  // A rate-limit retry pending: the turn isn't over yet, it notifies when it really ends.
+  return !!look && !look.summary.parentSessionId && look.status === "idle" && !look.requests.length && !look.state?.retry;
 }
 
 /** A request worth telling: still open after the delay. */
@@ -157,7 +158,7 @@ export const pushModule: Module = {
       ctx.bus.on("connected", ({ push }) => sender.setKeys(push)),
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => n.request(request))),
       ctx.bus.on("attention", ({ sessionId, message }) => void later(0, () => n.attention(sessionId, message))),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void (!stopped && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
     ];
     const str = (v: unknown, what: string) => {
       if (typeof v !== "string" || !v || v.length > 2000) throw new Error(`${what} is required.`);

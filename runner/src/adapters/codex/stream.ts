@@ -12,6 +12,7 @@ import type { Msg, Part, ToolPart } from "../../../../shared/transcript";
 import type { Sink, SubagentStart } from "../../core/adapter";
 import { reportedContext, reportedPlan } from "./discovery";
 import { agentName, compactionNotice, itemPart, pathLeaf, shown, turnError, usageLimitHit, userMsg } from "./items";
+import { rateLimitHit } from "../../rateLimit";
 
 /** Shell output kept per tool card while streaming (the stored output is whole). */
 const OUTPUT_MAX = 100_000;
@@ -242,6 +243,10 @@ export class CodexStream {
     }
     if (error && !v.msg) this.put(v, { id: `e-${turn.id}`, role: "assistant", ts: Date.now(), parts: [], error });
     if (error && v === this.main && usageLimitHit(turn.error)) v.sink.limitReached?.({});
+    else if (turn?.status === "failed" && v === this.main) {
+      const hit = rateLimitHit(turn.error);
+      if (hit) v.sink.rateLimited?.(hit);
+    }
     v.turnId = undefined;
     v.msg = undefined;
     // A plan proposed by a turn that finished (not one stopped or failed): it goes up for review.

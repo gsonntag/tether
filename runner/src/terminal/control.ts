@@ -194,6 +194,7 @@ export class TerminalControl {
       if (s !== opened) opened.setState({ continuedIn: s.id });
       if (s.summary.parentSessionId) throw new Error("A subagent runs inside its main session. Open the main session's terminal.");
       if (a.reattach && (!this.tuis.has(s.id) || this.returning.has(s.id))) throw new Error(TERMINAL_CLOSED);
+      if (s.retry?.phase === "waiting") await this.o.live.cancelRetry(s.id);
       await this.enter(s, { stop: a.stop, cols: a.cols, rows: a.rows });
       target = this.nameOf(s.id);
     } else throw new Error("Say which terminal to open.");

@@ -1,5 +1,6 @@
 // The runner's directory and its small state file (SPEC §4): runner.json, mode 600: the runner's
-// id, per-session prefs, queued messages, read state and open requests. Never transcripts.
+// id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
+// Complete transcripts stay in the harness's own store.
 
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -9,6 +10,7 @@ import type { BillingSource, CredentialSource } from "../../shared/credentials";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
+import type { SavedRetry } from "./core/retryPolicy";
 
 export const CONFIG_DIR = process.env.TETHER_CONFIG_DIR || join(homedir(), ".config", "tether");
 export const CONFIG_FILE = join(CONFIG_DIR, "runner.json");
@@ -33,6 +35,7 @@ export interface RunnerConfig {
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
 export interface SessionPrefs {
+  retry?: SavedRetry;
   /** A title chosen in Tether, kept across harness discovery and process restarts. */
   title?: string;
   /** Kept out of Recent while remaining available through explicit search. */

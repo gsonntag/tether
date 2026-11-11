@@ -8,7 +8,7 @@
 // sessions (SPEC §6a).
 
 import { Commands } from "./commands";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
 import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import type { CostLedger } from "../costs";
@@ -30,6 +30,7 @@ import { RequestDesk } from "./requests";
 import { Session } from "./session";
 import { chosenOf, type SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
+import { RetryControl } from "./retryControl";
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -86,6 +87,7 @@ export { SendCancelled };
 const CARRY_ANSWER_MS = 30_000;
 
 export class LiveControl {
+  readonly retries: RetryControl;
   private readonly idleMs: number;
   terminal?: TerminalSeam;
   readonly desk: RequestDesk;
@@ -112,6 +114,12 @@ export class LiveControl {
     private opts: { idleMs?: number; attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
+    this.retries = new RetryControl(core, {
+      identity: (s) => this.retryIdentity(s),
+      revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
+      blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
+      send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
+    });
     this.desk = new RequestDesk(core, broker, {
       send: (id, text) => this.send(id, text, [], { tether: true }),
       setPermissionMode: (id, mode) => this.setPermissionMode(id, mode),
@@ -130,6 +138,7 @@ export class LiveControl {
     // The terminal opened during the wait: you took over, so nothing is continued, then or later.
     bus.on("modeChanged", ({ sessionId, to }) => {
       const s = core.sessions.get(sessionId);
+      if (s && to === "terminal" && s.retry) this.cancelRetrySession(s);
       if (to !== "terminal" || !s || !this.restartWaits.has(sessionId)) return;
       this.endWait(s);
       if (s.state.queueHeldBy === "restart") this.queue.hold(s, "terminal", { over: true });
@@ -137,6 +146,66 @@ export class LiveControl {
   }
 
   // ---------------- ops ----------------
+
+  private retryIdentity(s: Session) {
+    const source = this.sourceOf(s);
+    const deployment = this.deploymentOf(s);
+    const credential = this.opts.credentials?.snapshot(source, deployment);
+    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, credential?.revision, credential?.endpoint, deployment ?? s.state.modelResolved ?? s.state.model])).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify([scope, s.state.model, s.state.effort, s.state.permissionMode])).digest("hex");
+    return { scope, fingerprint };
+  }
+
+  private cancelRetrySession(s: Session) {
+    s.retrySuppressed = true;
+    this.retries.clear(s);
+    this.queue.hold(s, "stopped");
+  }
+
+  async cancelRetry(id: string) {
+    const s = await this.core.open(id);
+    if (s.retry?.phase === "sending") return this.interrupt(id);
+    if (s.retry || this.core.o.prefs.get(id).retry) this.cancelRetrySession(s);
+  }
+
+  async retryNow(id: string) {
+    await this.retries.now(await this.core.open(id));
+  }
+
+  credentialsChanged() {
+    for (const s of this.core.sessions.values()) {
+      if (s.retry && s.retry.fingerprint !== this.retryIdentity(s).fingerprint) this.cancelRetrySession(s);
+    }
+  }
+
+  /** Reconcile before timers and queues resume. Uncertain dispatches require a person to continue. */
+  async restoreRetries() {
+    for (const id of this.core.o.prefs.retrying()) {
+      const saved = this.core.o.prefs.get(id).retry;
+      let s: Session | undefined;
+      try {
+        s = await this.core.open(id);
+        this.core.pin(s);
+        await this.core.load(s);
+        if (s.capabilities.persistent && !s.driver && s.state.mode !== "terminal") await this.ensureDriver(s, true);
+        if (this.core.o.prefs.get(id).retry !== saved) continue;
+        if (this.retries.restore(s, saved)) continue;
+        this.retries.clear(s);
+        const error = "Automatic retry stopped after the runner restarted. Check the conversation and send a message to continue.";
+        s.apply({ type: "msg", msg: notice(error, "warning") });
+        if (s.state.status === "idle") {
+          this.queue.hold(s, "failed");
+          this.read.set(id, { failure: error });
+        }
+      } catch {
+        this.core.o.prefs.set(id, { retry: undefined, running: undefined, queueHeldBy: "failed" });
+        this.core.o.prefs.flush();
+        this.read.set(id, { failure: "The saved rate limit retry could not be restored. Send a message to continue." });
+      } finally {
+        if (s) this.core.unpin(s);
+      }
+    }
+  }
 
   async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts): Promise<{ sessionId: string }> {
     this.core.adapter(args.harness); // throws for a harness this runner can't drive, before anything is made
@@ -170,10 +239,15 @@ export class LiveControl {
    * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
    * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string } = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const s = await this.core.open(id);
+    if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
+    if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
+      if (o.queued) throw new Error("A rate limit retry is waiting.");
+      this.cancelRetrySession(s);
+    }
     // A subagent the harness lets you message: into its running turn (SPEC §6a).
     if (s.summary.parentSessionId) return this.steer(id, text, attachments);
     const to = s.rebuilt || s.movedTo ? await this.current(s) : s;
@@ -237,11 +311,13 @@ export class LiveControl {
       s.apply({ type: "msg", msg: notice("The Tether runner restarted mid-turn; continuing.") });
     } else if (this.core.o.prefs.get(id).continues) this.core.o.prefs.set(id, { continues: undefined });
     // Running from now: starting Claude can take seconds, and Stop works meanwhile (cancelSend).
+    s.setState({ error: undefined });
     this.status(s, "running");
     try {
       this.applyNextDeployment(s);
       await this.core.load(s);
       const d = await this.ensureDriver(s);
+      if (o.retryId && (s.retry?.id !== o.retryId || s.retry.fingerprint !== this.retryIdentity(s).fingerprint)) throw new SendCancelled();
       // A credential change racing process startup is never allowed to send on the old source.
       this.checkCredential(s);
       // Stopped before the message went out (interrupt already set idle and freed the session):
@@ -269,28 +345,39 @@ export class LiveControl {
       }
       const shown: StartOpts = { ...(s.state.model ? { model: s.state.model } : {}), ...(s.state.effort ? { effort: s.state.effort } : {}), ...(s.state.permissionMode ? { permissionMode: s.state.permissionMode } : {}) };
       this.checkCredential(s);
+      if (o.retryId && (s.retry?.id !== o.retryId || s.retrySuppressed || s.retry.fingerprint !== this.retryIdentity(s).fingerprint)) throw new SendCancelled();
       s.lastSend = { text, attachments, ...(o.tether ? { tether: true } : {}) };
+      s.retrySuppressed = false;
       s.turnActed = false;
       s.limitHit = undefined;
+      s.rateHit = undefined;
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
       if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
-      if (s.sending === me) s.lastSend = undefined;
+      if (s.sending === me && e instanceof SendCancelled && s.state.status !== "idle") {
+        s.stopped = true;
+        this.status(s, "idle");
+      }
       if (s.sending === me && !(e instanceof SendCancelled)) {
         this.markSourceSwitchFailed(s);
         s.turnError = redact((e as Error)?.message ?? String(e));
+        const hit = (e as { rateLimit?: { retryAt?: number } })?.rateLimit;
+        if (hit && typeof hit === "object") s.rateHit = hit;
         // Errors show in the chat. A failed start has said this already, and repeats don't add a row.
         s.apply({ type: "msg", msg: notice(s.turnError, "error") });
         s.setState({ error: s.turnError });
         this.status(s, "idle");
+        if (s.retry?.phase === "waiting") return;
       }
+      if (s.sending === me && !s.retry) s.lastSend = undefined;
       throw e;
     } finally {
       if (s.sending === me) s.sending = undefined;
       if (s.sentOut === me) s.sentOut = undefined;
       if (s.cancelSend === me) s.cancelSend = undefined;
+      if (s.state.status === "idle" && !s.retry) s.lastSend = undefined;
       // A send keeps a session in memory: it may go now (a start that failed).
       this.core.scheduleEvict(s);
     }
@@ -576,6 +663,7 @@ export class LiveControl {
 
   async interrupt(id: string) {
     const s = await this.core.open(id);
+    if (s.retry) this.cancelRetrySession(s);
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -673,7 +761,7 @@ export class LiveControl {
     const waiting = new Set(this.desk.broker.sessions(true));
     const continuing: string[] = [];
     for (const id of this.core.o.prefs.running())
-      if (!persistent(id) && parseSessionId(id)) {
+      if (!persistent(id) && parseSessionId(id) && !this.core.o.prefs.get(id).retry) {
         const p = this.core.o.prefs.get(id);
         const why = waiting.has(id)
           ? "it's waiting for you"
@@ -873,6 +961,7 @@ export class LiveControl {
   async closeAll() {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
+    this.retries.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
   }
@@ -881,6 +970,7 @@ export class LiveControl {
 
   private async setting(id: string, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const s = await this.core.open(id);
+    if (s.retry) this.cancelRetrySession(s);
     if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
     // A handoff TUI drives (SPEC §8), or is being started: it takes no settings from Tether, so a
     // change here would only pretend.
@@ -1058,6 +1148,7 @@ export class LiveControl {
    * The mode is left to the caller.
    */
   async release(s: Session, retire = false) {
+    if (!this.stopping && s.retry) this.cancelRetrySession(s);
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
     clearTimeout(s.idleTimer);
     this.desk.cancel((_r, chain) => chain.at(-1) === s.id);
@@ -1229,6 +1320,7 @@ export class LiveControl {
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown) {
     const s = await this.core.open(id);
+    if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
@@ -1494,7 +1586,7 @@ export class LiveControl {
       if (!s.driver) return;
       // Not while a turn, a subagent or a background task runs, nor while the harness's own TUI
       // shares the session (it would lose what Tether relays): look again later.
-      if (s.state.status !== "idle" || s.driver.busy() || s.state.terminal) return this.scheduleIdle(s);
+      if (s.state.status !== "idle" || s.driver.busy() || s.state.terminal || s.retry) return this.scheduleIdle(s);
       void this.close(s, true);
     }, this.idleMs);
     s.idleTimer.unref?.();
@@ -1540,6 +1632,7 @@ export class LiveControl {
       mainChanged: () => this.countBackground(s),
       state: (patch) => {
         patch = redactValue(patch);
+        if (s.retry?.phase === "waiting" && patch.status !== undefined && patch.status !== "idle") this.cancelRetrySession(s);
         if (this.opts.costs && (patch.billing?.kind === "apiKey" || patch.billing?.kind === "provider") && !s.summary.parentSessionId) {
           // What it was on until now: the billing this patch replaces.
           try { patch.cost = this.startCost(s, s.state.billing); }
@@ -1587,6 +1680,7 @@ export class LiveControl {
       limitReached: (hit) => {
         s.limitHit = hit;
       },
+      rateLimited: (hit) => { s.rateHit = hit; },
       nativeId: (id) => {
         if (id !== s.summary.nativeId) core.log(`${s.id}: the harness calls it ${id}`);
       },
@@ -1638,10 +1732,20 @@ export class LiveControl {
       const stopped = s.stopped;
       s.stopped = false;
       const { limitHit, lastSend, turnActed } = s;
+      const rateHit = s.rateHit;
+      const error = s.turnError ?? s.state.error;
+      const provisional = !!s.sending && s.retry?.phase === "sending" && !lastSend;
+      const recovering = provisional || (!!rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited."));
+      if (rateHit && !recovering && !stopped && lastSend) {
+        const why = turnActed ? "Tools ran or a message was steered in this turn, so it wasn't resent automatically. Send a message to continue." : s.retry ? "Automatic rate limit retries stopped after reaching the attempt or time limit. Send a message to continue." : undefined;
+        if (why) s.apply({ type: "msg", msg: notice(why, "warning") });
+      }
+      s.rateHit = undefined;
+      if (!recovering && s.retry && (!s.sending || lastSend)) this.retries.clear(s);
       s.limitHit = undefined;
       // A process start can report idle before the turn: the send isn't over.
       if (limitHit || !s.sending) s.lastSend = undefined;
-      bus.emit("turnEnded", { sessionId: s.id, error: s.state.error ?? s.turnError, ...(stopped ? { stopped } : {}) });
+      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}) });
       s.turnError = undefined;
       if (limitHit && !stopped) void this.planOut(s, limitHit, lastSend, turnActed);
       this.scheduleIdle(s);

@@ -290,7 +290,17 @@ export interface Billing {
 }
 export const UNKNOWN_BILLING: Billing = { kind: "unknown", label: "Unknown" };
 
+/** A bounded recovery wait. Payload and credentials stay on the runner. */
+export interface RetryState {
+  attempt: number;
+  maxAttempts: number;
+  nextAt: number;
+  deadline: number;
+  error: string;
+}
+
 export interface LiveState {
+  retry?: RetryState;
   mode: SessionMode;
   status: RunStatus;
   /** the model the session uses: an alias ("opus", "default") or a full id */
@@ -375,6 +385,7 @@ export interface LiveState {
 
 /** One row in the sidebar and Home. */
 export interface SessionSummary {
+  retry?: RetryState;
   cost?: SessionCost;
   /** The latest source confirmed by the harness; never inferred from configured credentials. */
   billing?: Billing;
