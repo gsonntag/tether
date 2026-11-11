@@ -771,8 +771,9 @@ event (with the message's text) and the queued message's id from `SessionActions
   "turn failed: …", "the person stopped …'s turn", "Not delivered: the person removed your question
   from …'s queue", or after the timeout "still working on it" / "hasn't got to it yet". A target in
   terminal mode gets the question queued with a hint to answer by `tether_send`, and the ask
-  returns at once. A runner restart ends an open ask with an error (the MCP server can't reach the
-  runner); the question stays queued.
+  returns at once. A runner restart ends an open call with an error: a runner that wasn't there says
+  nothing was sent; one cut off mid-call says the message may already be queued (check with
+  `tether_sessions`, don't resend blindly). A queued question stays queued.
 - **Caps** (`caps.ts`): no messages to itself; a message carries hops (the sender's turn's + 1,
   where a turn started by the person or Tether is 0; written in its hint, `hop N.`, so a message
   queued across a restart keeps them, and a turn's end forgets them) and the 5th in a chain is refused; 10 messages

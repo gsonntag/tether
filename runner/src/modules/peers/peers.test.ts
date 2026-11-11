@@ -271,37 +271,86 @@ describe("tools", () => {
   });
 });
 
+/** mcp.ts as a harness runs it, on `socket`; its answers by request id. */
+function mcp(socket: string, secret: string) {
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "mcp.ts")], {
+    stdin: "pipe",
+    stdout: "pipe",
+    env: { ...process.env, TETHER_PEERS_SOCKET: socket, TETHER_PEERS_ID: "codex:*", TETHER_PEERS_TOKEN: peerToken(secret, "codex:*") },
+  });
+  const lines: any[] = [];
+  const reader = (async () => {
+    let buf = "";
+    for await (const chunk of p.stdout) {
+      buf += new TextDecoder().decode(chunk);
+      for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(JSON.parse(buf.slice(0, i)));
+    }
+  })();
+  return {
+    lines,
+    send: (m: unknown) => p.stdin.write(JSON.stringify(m) + "\n"),
+    raw: (b: Uint8Array) => (p.stdin.write(b), p.stdin.flush()),
+    answer: async (id: number) => {
+      for (let i = 0; i < 150 && !lines.some((l) => l.id === id); i++) await Bun.sleep(20);
+      return lines.find((l) => l.id === id);
+    },
+    close: async () => {
+      p.stdin.end();
+      await reader;
+      p.kill();
+    },
+  };
+}
+
 describe("the stdio MCP server", () => {
   test("lists the tools and passes a call to the runner's socket", async () => {
     const dir = mkdtempSync(join(tmpdir(), "peers-mcp-"));
     const secret = peerSecret(dir);
-    const sock = new PeerSocket(join(dir, "p.sock"), secret, async (c) => ({ text: `from ${c.from}: ${c.tool}` }));
+    const sock = new PeerSocket(join(dir, "p.sock"), secret, async (c) => ({ text: `from ${c.from}: ${c.tool} ${JSON.stringify(c.args)}` }));
     sock.start();
-    const p = Bun.spawn([process.execPath, join(import.meta.dir, "mcp.ts")], {
-      stdin: "pipe",
-      stdout: "pipe",
-      env: { ...process.env, TETHER_PEERS_SOCKET: sock.socketPath, TETHER_PEERS_ID: "codex:*", TETHER_PEERS_TOKEN: peerToken(secret, "codex:*") },
-    });
+    const m = mcp(sock.socketPath, secret);
     try {
-      const lines: any[] = [];
-      const reader = (async () => {
-        let buf = "";
-        for await (const chunk of p.stdout) {
-          buf += new TextDecoder().decode(chunk);
-          for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(JSON.parse(buf.slice(0, i)));
-        }
-      })();
-      const send = (m: unknown) => p.stdin.write(JSON.stringify(m) + "\n");
-      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
-      send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "tether_sessions", arguments: {}, _meta: { threadId: "t9" } } });
-      for (let i = 0; i < 100 && lines.length < 3; i++) await Bun.sleep(20);
-      expect(lines.find((l) => l.id === 2).result.tools.map((t: any) => t.name)).toEqual(["tether_sessions", "tether_send", "tether_ask", "tether_broadcast"]);
-      expect(lines.find((l) => l.id === 3).result.content[0].text).toBe("from codex:t9: tether_sessions");
-      p.stdin.end();
-      await reader;
+      m.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+      m.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      m.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "tether_sessions", arguments: {}, _meta: { threadId: "t9" } } });
+      expect((await m.answer(2)).result.tools.map((t: any) => t.name)).toEqual(["tether_sessions", "tether_send", "tether_ask", "tether_broadcast"]);
+      expect((await m.answer(3)).result.content[0].text).toBe("from codex:t9: tether_sessions {}");
+      // A character split between two reads arrives whole.
+      const bytes = new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "tether_send", arguments: { text: "café ✓" }, _meta: { threadId: "t9" } } }) + "\n");
+      const cut = bytes.indexOf(0xc3) + 1;
+      m.raw(bytes.slice(0, cut));
+      await Bun.sleep(50);
+      m.raw(bytes.slice(cut));
+      expect((await m.answer(4)).result.content[0].text).toBe('from codex:t9: tether_send {"text":"café ✓"}');
     } finally {
-      p.kill();
+      await m.close();
+      sock.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test("a runner that's away says nothing was sent; one that restarts mid-call says it may be queued", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "peers-mcp-"));
+    const secret = peerSecret(dir);
+    let reached!: () => void;
+    const got = new Promise<void>((r) => (reached = r));
+    const sock = new PeerSocket(join(dir, "p.sock"), secret, () => (reached(), new Promise(() => {})));
+    const call = (id: number) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "tether_send", arguments: { to: "x", text: "y" }, _meta: { threadId: "t9" } } });
+    const m = mcp(sock.socketPath, secret);
+    try {
+      m.send(call(1));
+      const away = (await m.answer(1)).result;
+      expect(away.isError).toBe(true);
+      expect(away.content[0].text).toMatch(/nothing was sent/);
+      sock.start();
+      m.send(call(2));
+      await got;
+      sock.stop();
+      const cut = (await m.answer(2)).result;
+      expect(cut.isError).toBe(true);
+      expect(cut.content[0].text).toMatch(/may already be queued.*check with tether_sessions/);
+      expect(cut.content[0].text).not.toMatch(/nothing was sent/);
+    } finally {
+      await m.close();
       sock.stop();
       rmSync(dir, { recursive: true, force: true });
     }

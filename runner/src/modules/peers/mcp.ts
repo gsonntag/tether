@@ -13,6 +13,9 @@ const write = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 const reply = (id: unknown, result: unknown) => write({ jsonrpc: "2.0", id, result });
 const text = (t: string, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 
+/** The runner wasn't there to take the call (no socket, or nobody listening): nothing was sent. */
+const NOT_SENT = /FailedToOpenSocket|ECONNREFUSED|ENOENT|ConnectionRefused/;
+
 /** Calls in flight, by request id: a cancelled call stops waiting. */
 const calls = new Map<unknown, AbortController>();
 
@@ -33,7 +36,12 @@ async function call(id: unknown, params: any) {
     reply(id, text(r.text ?? "", !!r.isError));
   } catch (e) {
     if (abort.signal.aborted) return;
-    reply(id, text(`Tether's runner can't be reached right now (it may be restarting), so nothing was sent. Try again in a minute. (${(e as Error)?.message ?? e})`, true));
+    const why = `${(e as any)?.code ?? ""} ${(e as Error)?.message ?? e}`.trim();
+    // Cut off after it reached the runner: the message may be in the other session's queue already.
+    const said = NOT_SENT.test(why)
+      ? `Tether's runner can't be reached right now (it may be restarting), so nothing was sent. Try again in a minute. (${why})`
+      : `Tether's runner restarted during this call. Your message may already be queued in the other session: check with tether_sessions before sending it again, and don't resend blindly; an ask's answer won't come back here. (${why})`;
+    reply(id, text(said, true));
   } finally {
     calls.delete(id);
   }
@@ -57,8 +65,10 @@ function handle(m: any) {
 }
 
 let buf = "";
-process.stdin.on("data", (d) => {
-  buf += d.toString();
+// A character split across chunks stays whole.
+const utf8 = new TextDecoder();
+process.stdin.on("data", (d: Uint8Array) => {
+  buf += utf8.decode(d, { stream: true });
   let i: number;
   while ((i = buf.indexOf("\n")) >= 0) {
     const line = buf.slice(0, i).trim();
