@@ -200,6 +200,12 @@ export interface Ops {
   pushStatus: { args: { endpoint: string }; result: { subscribed: boolean; ready: boolean } };
   /** Sends a test notification to one subscription. */
   pushTest: { args: { endpoint: string }; result: null };
+  /** Texting (iMessage through Photon, SPEC §11 Texting): how it's set on this runner. Never the keys. */
+  textingStatus: { args: {}; result: TextingStatus };
+  /** Changes texting's settings; an empty string clears a field. The link restarts. */
+  setTexting: { args: { enabled?: boolean; phone?: string; projectId?: string; projectSecret?: string }; result: TextingStatus };
+  /** Sends a test text to the phone. */
+  textingTest: { args: {}; result: null };
   /**
    * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
    * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)
@@ -429,3 +435,16 @@ export type RunnerToServer =
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */
   | { t: "ping" };
+
+/** Texting's settings on a runner, as the web sees them (secrets stay on the runner). */
+export interface TextingStatus {
+  enabled: boolean;
+  /** the phone's last 4 digits */
+  phoneLast4?: string;
+  /** the Photon project's id and secret are both set */
+  keysSet: boolean;
+  /** what holds a field: the runner's environment (runner.env) wins over what was saved here */
+  fromEnv: { phone: boolean; keys: boolean };
+  connected: boolean;
+  lastError?: string;
+}

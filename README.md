@@ -71,9 +71,32 @@ for p in shared server runner web; do (cd $p && bun test && bunx tsc -p .); done
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600) and module data live |
 | `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
 | `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals live on (`tmux -L <socket>`); give a dev runner its own |
+| `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET` | | texting: the Photon project (else set in Settings → Texting) |
+| `TETHER_TEXT_PHONE` | | texting: the phone to text, e.g. `+13105551234` |
 
 Server: `TETHER_ALLOWED_ORIGINS` (comma-separated) admits browser sockets from other origins;
 by default only pages on the app's own host may open one.
+
+## Texting
+
+The runner can text you an iMessage (through [Photon Spectrum](https://photon.codes)) at the same
+moments a push notification goes out: a request, "needs you" in the terminal, a turn finished or
+failed. Nothing is texted for a session you're looking at in Tether. Texts say only the folder, the
+agent and what happened (`[2] my-app · Claude: Finished.`), like pushes.
+
+Reply to send that session a message (into its running turn when the harness allows it). A reply to
+a session with an open request denies it, with your text as the note; approve in Tether. Each text
+starts with its session's number, and a session takes replies for 30 minutes after its last text:
+
+- `2 do X`, `[2] do X`, or a threaded reply to one of its texts: goes to session 2.
+- Plain text with one session open: goes to it.
+- Plain text with several open: Tether texts back a numbered list; answer with the number.
+- Just `2`: your next text goes to session 2.
+
+Setup: a Photon account with an iMessage project, and your phone added and verified on it. Put the
+project's id and secret and your phone in **Settings → Texting**, or in `runner.env` (table above)
+and restart the runner. They're kept on the runner (`texting.json`, mode 600), never on the app.
+The app's server can't text: a Foliation app has no internet egress.
 
 ## Sessions (P1)
 
