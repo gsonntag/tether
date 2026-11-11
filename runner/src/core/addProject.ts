@@ -54,6 +54,16 @@ function sameRepo(dir: string, url: string): boolean {
   }
 }
 
+/**
+ * Whether a clone of the repo got to the end: a commit checked out and the index written (git
+ * writes it last). A clone that was killed (a runner restart, a dropped connection) leaves a
+ * `.git` already pointing at the repo but no commit, or no index.
+ */
+function finished(dir: string): boolean {
+  if (!existsSync(join(dir, ".git", "index"))) return false;
+  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+}
+
 /** How far a running `git clone --progress` is, from its stderr (`Receiving objects:  45% (450/1000)`). */
 const PHASES: Record<string, [number, number]> = {
   "Receiving objects": [0, 75],
@@ -101,8 +111,12 @@ export class CloneJobs {
     const cloneId = crypto.randomUUID();
     if (existsSync(dest)) {
       if (!(statSync(dest).isDirectory() && sameRepo(dest, url))) throw new Error(`${dest} already exists. Pick another folder.`);
-      this.finish(cloneId, { state: "done", path: dest, percent: 100 });
-      return { cloneId };
+      if (finished(dest)) {
+        this.finish(cloneId, { state: "done", path: dest, percent: 100 });
+        return { cloneId };
+      }
+      // What an interrupted clone of this same repo left: cloned again from the start.
+      rmSync(dest, { recursive: true, force: true });
     }
     const job: Job = { status: { state: "running", path: dest, phase: "Connecting" } };
     this.jobs.set(cloneId, job);
