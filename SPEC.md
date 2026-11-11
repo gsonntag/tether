@@ -1010,6 +1010,29 @@ On Codex its tools are app-server dynamic tools (`dynamicTools` on `thread/start
 written to the rollout, so they survive a resume (checked on 0.164). Codex's shell, patch, web, apps
 and subagent tools are switched off by config, passed again on each resume, and the chat runs read-only.
 
+### The Home agent's check-in
+
+"Ask all agents if they're done": the Home agent's `check_in_sessions` tool
+(`modules/homeAgent/checkIn.ts`) asks every session the lists show that isn't archived, a
+subagent or one of its own chats (optionally one project's, or named ones) whether its task is
+done and all its work is merged or applied. Only idle sessions are asked: one that's running, waiting
+for the person, has messages queued or work running, or is open in a terminal is skipped and named
+in the report, never interrupted. At most 40 sessions are asked at a time; each answer is a turn.
+
+The message asks for one line, `TETHER-CHECK-IN: {"done", "merged", "cleaned_up", "branch",
+"worktree", "note"}`. A session that is done and merged first removes the worktrees it made (`git
+worktree remove` without `--force`, `git branch -d`), never the main checkout, its own folder, or
+any other recent session's folder in the same repo (the message lists those). Tether checks the
+answer against git: a named branch, or the session's own separate worktree, must be clean and in
+main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
+used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
+done, merged and cleaned up is archived, as the archive button does it (`SessionCore.setArchived`).
+
+The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
+the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A
+check-in in progress survives a runner restart. `archive_session` archives one session, only when
+the person asks.
+
 ### API session dollars and retry times
 
 An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**. A total

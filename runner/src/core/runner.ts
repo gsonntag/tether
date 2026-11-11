@@ -247,6 +247,7 @@ export function createRunner(o: RunnerOptions) {
           core.touch(s, { title });
         },
         interrupt: (id: string) => live.interrupt(id),
+        setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);
           // Not read yet: it joins what the store has when it's read.

@@ -7,6 +7,11 @@
 // keep it going until the task is done. A session the person steps into (types in it, or stops
 // it) is theirs from then on: no more reports, and the agent can't message it.
 //
+// On request it also checks in with every session (check_in_sessions, checkIn.ts): it asks each
+// idle one whether it's done and all its work is merged or applied, and tells the finished ones to
+// remove the worktrees they made; it checks the answers against git, archives the finished ones,
+// and sends the chat one report of what was archived and what wasn't.
+//
 // `/new` or `/clear` on Home (homeAgentClear) drops the current chat: the next message starts a
 // fresh one, a new Claude session with none of the old context. The old chat is stopped if it runs
 // and lets go of the sessions it started (they keep going on their own, in the lists). Every
@@ -22,6 +27,7 @@ import type { BillingSource, SourceOption } from "../../../../shared/credentials
 import type { HomeAgentSettings } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
+import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, verify, type Git } from "./checkIn";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
 export const MAX_REPORTS = 12;
@@ -51,6 +57,26 @@ interface Child {
   released?: "person" | "limit" | "cleared";
 }
 
+/** One session in a check-in. */
+interface Entry {
+  title: string;
+  project: string;
+  /** other sessions' folders in its repo: never its worktrees to remove */
+  keep?: string[];
+  /** set once it's settled: archived, kept (with why), or not asked (with why) */
+  outcome?: "archived" | "kept" | "skipped";
+  reason?: string;
+}
+
+/** One "are you done?" round, from one chat. */
+interface CheckIn {
+  chat: string;
+  at: number;
+  /** when the sessions that haven't answered are reported as unanswered */
+  deadline: number;
+  entries: Record<string, Entry>;
+}
+
 interface State {
   current?: string;
   /** grows with each change of `current`, across restarts (HomeChatUpdate.rev) */
@@ -58,6 +84,7 @@ interface State {
   children: Record<string, Child>;
   /** what it runs on, as the person chose it; none: Claude Code on the source a new session gets */
   settings?: HomeAgentSettings;
+  checkIns?: Record<string, CheckIn>;
 }
 
 const HARNESSES: HarnessId[] = ["claude", "codex"];
@@ -79,6 +106,8 @@ How to work:
 - For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status. You can read any session but only message the ones you started.
 - After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started finishes a turn or needs the person.
 - On a report: if the task is complete and verified, tell the person in one casual sentence only what's notable (where the work is, e.g. the PR or issue link), or nothing more than that it's done. If the session stopped early (it asked something you can answer from what the person said, stopped halfway, or says it's done but skipped verification), use send_to_session with a specific instruction to keep it going. If it needs a decision only the person can make, or it keeps failing, tell the person in one sentence and stop.
+- When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
+- Use archive_session only when the person asks to archive a specific session (for example one the check-in kept). Never archive on your own judgment.
 - Never do the coding yourself. You have no shell and can't edit files.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
@@ -167,17 +196,8 @@ async function overview(folder: string): Promise<string> {
     out.push(`Can't list it: ${(e as Error).message}`);
   }
   if (names.length) out.push(`Top level (${names.length}): ${names.slice(0, 80).join("  ")}${names.length > 80 ? "  …" : ""}`);
-  const git = async (...args: string[]) => {
-    try {
-      const p = Bun.spawn(["git", ...args], { cwd: folder, stdout: "pipe", stderr: "ignore", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-      const t = setTimeout(() => p.kill(), 5000);
-      const s = await new Response(p.stdout).text();
-      clearTimeout(t);
-      return (await p.exited) === 0 ? s.trim() : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  const run = runGit();
+  const git = (...args: string[]) => run(folder, ...args);
   const branch = await git("rev-parse", "--abbrev-ref", "HEAD");
   if (branch) {
     const status = (await git("status", "--porcelain")) ?? "";
@@ -204,13 +224,36 @@ async function overview(folder: string): Promise<string> {
 export class HomeAgent {
   state: State = { rev: 0, children: {} };
   private file: string;
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** sessions whose check-in answer is being judged now */
+  private judging = new Set<string>();
 
-  constructor(private ctx: ModuleContext, readonly folder: string) {
+  constructor(
+    private ctx: ModuleContext,
+    readonly folder: string,
+    /** git for checking answers (tests replace it) */
+    private git: Git = runGit(),
+    private waitMs = CHECKIN_WAIT_MS,
+  ) {
     this.file = join(ctx.dataDir, "state.json");
     try {
       const v = JSON.parse(readFileSync(this.file, "utf8"));
-      if (v && typeof v === "object") this.state = { current: typeof v.current === "string" ? v.current : undefined, rev: Number.isSafeInteger(v.rev) ? v.rev : 0, children: v.children && typeof v.children === "object" ? v.children : {}, ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}) };
+      if (v && typeof v === "object")
+        this.state = {
+          current: typeof v.current === "string" ? v.current : undefined,
+          rev: Number.isSafeInteger(v.rev) ? v.rev : 0,
+          children: v.children && typeof v.children === "object" ? v.children : {},
+          ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}),
+          checkIns: v.checkIns && typeof v.checkIns === "object" ? v.checkIns : {},
+        };
     } catch {}
+    // Check-ins a restart interrupted: their clocks start again (one already past reports now).
+    for (const id of Object.keys(this.state.checkIns ?? {})) this.arm(id);
+  }
+
+  stop() {
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
   }
 
   private save() {
@@ -467,6 +510,27 @@ export class HomeAgent {
         },
       },
       {
+        name: "check_in_sessions",
+        description:
+          "Asks every idle session (recent, not archived; optionally one project's) whether its task is done and all its work is merged or applied. Tether checks the answers against git, archives the finished sessions, and sends you one report when all have answered. Sessions that are busy or waiting for the person are skipped, not interrupted.",
+        input: {
+          project_path: z.string().optional().describe("Only this project's sessions (from list_projects)."),
+          session_ids: z.array(z.string()).optional().describe("Only these sessions."),
+        },
+        run: async (a: { project_path?: string; session_ids?: string[] }) => this.checkIn(chat, a),
+      },
+      {
+        name: "archive_session",
+        description: "Archives a session (keeps it out of Recent; it stays searchable), as the archive button does. Only when the person asks for that session.",
+        input: { session_id: z.string() },
+        run: async (a: { session_id: string }) => {
+          if (typeof a.session_id !== "string" || !a.session_id) throw new Error("session_id is required.");
+          if (this.isChat(a.session_id)) throw new Error("That's one of your own chats.");
+          await s.setArchived(a.session_id, true);
+          return `Archived ${await this.describe(a.session_id)}.`;
+        },
+      },
+      {
         name: "send_to_session",
         description: "Sends a message to a session you started: it goes now if the session is idle, else after its current turn.",
         input: { session_id: z.string(), message: z.string().min(1) },
@@ -535,7 +599,146 @@ export class HomeAgent {
     return look ? `Session ${id} ("${look.summary.title || "Untitled"}" in ${look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})` : `Session ${id}`;
   }
 
+  /** The check-in waiting on a session's answer, if one is. */
+  private waiting(id: string): [string, CheckIn] | undefined {
+    for (const [k, b] of Object.entries(this.state.checkIns ?? {})) if (b.entries[id] && !b.entries[id]!.outcome) return [k, b];
+    return undefined;
+  }
+
+  /** Starts a check-in from `chat`: asks the sessions that can answer now, and says who was asked. */
+  async checkIn(chat: string, a: { project_path?: string; session_ids?: string[] }): Promise<string> {
+    const s = this.ctx.sessions;
+    // What Recent shows: top-level sessions that aren't archived, but the Home agent's own chats.
+    const all = s.list().filter((r) => !r.archived && !r.parentSessionId && !this.isChat(r.id) && resolve(r.projectPath) !== resolve(this.folder));
+    const project = a.project_path ? resolve(s.folder(a.project_path)) : undefined;
+    const only = a.session_ids?.length ? new Set(a.session_ids) : undefined;
+    const rows = all
+      .filter((r) => (!project || resolve(r.projectPath) === project) && (!only || only.has(r.id)))
+      .sort((x, y) => y.updatedAt - x.updatedAt);
+    const entries: Record<string, Entry> = {};
+    const asked: string[] = [];
+    for (const r of rows) {
+      const e: Entry = { title: r.title || "Untitled", project: r.projectPath };
+      entries[r.id] = e;
+      const why = this.waiting(r.id) ? "an earlier check-in is still waiting on it" : asked.length >= CHECKIN_MAX ? `only ${CHECKIN_MAX} sessions are asked at a time` : skipReason(r, this.ctx.session(r.id));
+      if (why) {
+        e.outcome = "skipped";
+        e.reason = why;
+      } else asked.push(r.id);
+    }
+    // Every recent session's folder, by repo: a session asked to clean up must leave the others' alone.
+    const folders = [...new Set(all.map((r) => resolve(r.projectPath)))];
+    const repos = new Map(await Promise.all(folders.map(async (f) => [f, await repoOf(f, this.git)] as const)));
+    for (const sid of asked) {
+      const own = resolve(entries[sid]!.project);
+      const repo = repos.get(own);
+      entries[sid]!.keep = repo ? folders.filter((f) => f !== own && repos.get(f) === repo) : [];
+    }
+    if (!rows.length) return project ? `No recent sessions in ${project} to check in with.` : "No recent sessions to check in with.";
+    const id = `c${Date.now().toString(36)}`;
+    const batch: CheckIn = { chat, at: Date.now(), deadline: Date.now() + this.waitMs, entries };
+    this.state.checkIns = { ...this.state.checkIns, [id]: batch };
+    this.save();
+    for (const sid of asked) {
+      try {
+        await s.queue(sid, FROM_TETHER + checkInMessage(entries[sid]!.project, entries[sid]!.keep));
+      } catch (e) {
+        entries[sid]!.outcome = "skipped";
+        entries[sid]!.reason = `couldn't send to it: ${(e as Error).message}`;
+      }
+    }
+    this.save();
+    const line = (sid: string) => `- ${sid} "${entries[sid]!.title}" (${entries[sid]!.project})${entries[sid]!.reason ? `: ${entries[sid]!.reason}` : ""}`;
+    const sent = Object.keys(entries).filter((k) => !entries[k]!.outcome);
+    const skipped = Object.keys(entries).filter((k) => entries[k]!.outcome === "skipped");
+    if (!sent.length) {
+      delete this.state.checkIns![id];
+      this.save();
+      return [`Asked nobody: no session could answer now.`, `Skipped (${skipped.length}):`, ...skipped.map(line)].join("\n");
+    }
+    this.arm(id);
+    return [
+      `Asked ${sent.length} session${sent.length === 1 ? "" : "s"}; you'll get one report when they've answered (at most ${Math.round(this.waitMs / 60_000)} minutes).`,
+      ...sent.map(line),
+      ...(skipped.length ? [`Skipped, not asked (${skipped.length}):`, ...skipped.map(line)] : []),
+    ].join("\n");
+  }
+
+  private arm(id: string) {
+    const b = this.state.checkIns?.[id];
+    if (!b) return;
+    clearTimeout(this.timers.get(id));
+    const t = setTimeout(() => void this.finish(id), Math.max(0, b.deadline - Date.now()));
+    t.unref?.();
+    this.timers.set(id, t);
+  }
+
+  /** A session answered the check-in (its turn ended): judge it, and archive it when it's finished. */
+  private async answered(batchId: string, id: string, error?: string, stopped?: boolean) {
+    const b = this.state.checkIns?.[batchId];
+    const e = b?.entries[id];
+    if (!b || !e || e.outcome || this.judging.has(id)) return;
+    // Not settled until it's judged (the report waits for it), but judged once.
+    this.judging.add(id);
+    try {
+      await this.judge(e, id, error, stopped);
+    } finally {
+      this.judging.delete(id);
+    }
+    this.save();
+    if (Object.values(b.entries).every((x) => x.outcome)) await this.finish(batchId);
+  }
+
+  /** Settles one answer: archived when it's finished, else kept with why. Set only at the end. */
+  private async judge(e: Entry, id: string, error?: string, stopped?: boolean) {
+    if (stopped) return Object.assign(e, { outcome: "kept", reason: "the person stopped it" });
+    if (error) return Object.assign(e, { outcome: "kept", reason: `its turn failed: ${error}` });
+    const answer = parseAnswer(lastReply(await this.ctx.sessions.recent(id, 10).catch(() => [] as Msg[])));
+    const found = answer?.done && answer.merged ? await verify(e.project, answer, this.git, new Set(), e.keep).catch(() => undefined) : undefined;
+    const v = judge(answer, found);
+    if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
+    try {
+      await this.ctx.sessions.setArchived(id, true);
+      Object.assign(e, { outcome: "archived", reason: v.reason });
+    } catch (err) {
+      Object.assign(e, { outcome: "kept", reason: `finished, but archiving failed: ${(err as Error).message}` });
+    }
+  }
+
+
+  /** Reports a check-in to its chat and forgets it; those that haven't answered are reported so. */
+  async finish(batchId: string) {
+    const b = this.state.checkIns?.[batchId];
+    if (!b) return;
+    clearTimeout(this.timers.get(batchId));
+    this.timers.delete(batchId);
+    delete this.state.checkIns![batchId];
+    this.save();
+    const all = Object.entries(b.entries);
+    for (const [, e] of all) if (!e.outcome) Object.assign(e, { outcome: "kept", reason: "no answer in time (it may still be working)" });
+    const line = ([id, e]: [string, Entry]) => `- ${id} "${e.title}" (${e.project})${e.reason ? `: ${e.reason}` : ""}`;
+    const of = (o: Entry["outcome"]) => all.filter(([, e]) => e.outcome === o);
+    const [archived, kept, skipped] = [of("archived"), of("kept"), of("skipped")];
+    const body = [
+      `Check-in finished: ${archived.length + kept.length} session${archived.length + kept.length === 1 ? "" : "s"} asked.`,
+      `Archived (${archived.length}):${archived.length ? "" : " none"}`,
+      ...archived.map(line),
+      `Not archived (${kept.length}):${kept.length ? "" : " none"}`,
+      ...kept.map(line),
+      ...(skipped.length ? [`Not asked (${skipped.length}):`, ...skipped.map(line)] : []),
+      "Give the person a short summary: which were archived, and which weren't and why.",
+    ].join("\n");
+    try {
+      await this.ctx.sessions.queue(b.chat, FROM_TETHER + body);
+    } catch (e) {
+      this.ctx.log(`couldn't report a check-in to ${b.chat}: ${(e as Error).message}`);
+    }
+  }
+
   async turnEnded(id: string, error?: string, stopped?: boolean) {
+    // A check-in's answer isn't one of the session's reports.
+    const w = this.waiting(id);
+    if (w) return this.answered(w[0], id, error, stopped);
     const c = this.state.children[id];
     if (!c || c.released) return;
     if (stopped) {
@@ -560,6 +763,14 @@ export class HomeAgent {
   }
 
   async needsPerson(id: string, what: string) {
+    const w = this.waiting(id);
+    if (w) {
+      const e = w[1].entries[id]!;
+      e.outcome = "kept";
+      e.reason = `it's waiting for the person: ${what}`;
+      this.save();
+      if (Object.values(w[1].entries).every((x) => x.outcome)) await this.finish(w[0]);
+    }
     const c = this.state.children[id];
     if (!c || c.released) return;
     await this.report(id, c, `${await this.describe(id)} is waiting for the person: ${what}. Only they can answer it, in that session. Tell them in one casual sentence.`);
@@ -601,6 +812,7 @@ export const homeAgentModule: Module = {
       ctx.bus.on("attention", ({ sessionId, message }) => void agent.needsPerson(sessionId, message || "in its terminal")),
     ];
     return () => {
+      agent.stop();
       unset();
       offs.forEach((off) => off?.());
     };

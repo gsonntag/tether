@@ -13,6 +13,7 @@ import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { SessionSummary } from "../../../../shared/transcript";
 import { ago, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
+import { ANSWER_TAG } from "./checkIn";
 
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
@@ -60,7 +61,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect((await op("homeAgent")).sessionId).toBe(chat);
   expect([...setups.keys()]).toEqual([homeFolder]);
   const s = setups.get(homeFolder)!("x");
-  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "send_to_session"]);
+  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "check_in_sessions", "archive_session", "send_to_session"]);
   expect(s.deny).toContain("Bash");
   expect(s.deny).toContain("Edit");
   // Brief replies, always (a relayed report was "a big wall of text").
@@ -348,4 +349,110 @@ test("settingsOf keeps only what's valid", () => {
   expect(settingsOf({ harness: "codex", source: "azure", model: " dep " })).toEqual({ harness: "codex", source: "azure", model: "dep" });
   expect(settingsOf({ harness: "other", source: "subscription" })).toBeUndefined();
   expect(settingsOf(null)).toBeUndefined();
+});
+
+test("check_in_sessions asks idle sessions, archives the finished ones, skips busy ones, and reports once", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await setup();
+  // What each session answers the check-in with, by native id; "busy" never ends its first turn.
+  const answers = new Map<string, string>();
+  const busy = new Set<string>();
+  fake.script = (text) =>
+    text.includes(ANSWER_TAG)
+      ? [(s, d) => say(`c-${d.sent.length}`, answers.get(d.nativeId) ?? "Not sure.")(s, d), idle]
+      : [(s, d) => say(`a-${d.sent.length}`, `did ${text}`)(s, d), (s, d) => (busy.has(d.nativeId) ? undefined : idle(s, d))];
+  const make = async (what: string, answer?: string, isBusy = false) => {
+    const id = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+    const native = id.split(":")[1]!;
+    if (answer) answers.set(native, answer);
+    if (isBusy) busy.add(native);
+    await op("renameSession", { sessionId: id, title: what });
+    await op("send", { sessionId: id, text: what });
+    await until(() => !!driverOf(id)?.sent.length && (isBusy || runner.core.sessions.get(id)?.state.status === "idle"));
+    return id;
+  };
+  const finished = await make("task a", `Merged.\n${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": null, "worktree": null, "note": "PR merged"}`);
+  const halfway = await make("task b", `${ANSWER_TAG} {"done": false, "merged": false, "branch": "b", "worktree": null, "note": "tests still failing"}`);
+  const vague = await make("task c", "I think so?");
+  const messy = await make("task e", `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": false, "note": "worktree has a stray build"}`);
+  const working = await make("task d", undefined, true);
+
+  const said = await tools(chat).check_in_sessions!({});
+  expect(said).toContain("Asked 4 sessions");
+  expect(said).toContain(`${working} "task d" (${project}): it's running a turn`);
+  expect(said).not.toContain(chat);
+  // The running session wasn't sent anything.
+  expect(driverOf(working)!.sent.length).toBe(1);
+  // One report, after all three answered.
+  await until(() => driverOf(chat)?.sent.length === 1);
+  const report = driverOf(chat)!.sent[0]!;
+  expect(report.startsWith(FROM_TETHER)).toBe(true);
+  expect(report).toContain("Archived (1):");
+  expect(report).toContain(`${finished} "task a" (${project}): PR merged`);
+  expect(report).toContain("Not archived (3):");
+  expect(report).toContain(`${messy} "task e" (${project}): done and merged, but it didn't clean up its worktrees: worktree has a stray build`);
+  expect(report).toContain(`${halfway} "task b" (${project}): not done: tests still failing`);
+  expect(report).toContain(`${vague} "task c" (${project}): its reply had no check-in line to go by`);
+  expect(report).toContain("Not asked (1):");
+  expect(runner.core.sessions.get(finished)!.summary.archived).toBe(true);
+  expect(runner.core.sessions.get(halfway)!.summary.archived).toBeUndefined();
+  expect(runner.core.sessions.get(messy)!.summary.archived).toBeUndefined();
+  // Each asked session was told to clean up.
+  expect(driverOf(finished)!.sent[1]).toContain("git worktree remove");
+  // Archived sessions aren't asked again.
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  expect(await tools(chat).check_in_sessions!({ session_ids: [finished] })).toContain("No recent sessions");
+  // archive_session archives one on request, but never a chat.
+  expect(await tools(chat).archive_session!({ session_id: vague })).toContain("Archived");
+  expect(runner.core.sessions.get(vague)!.summary.archived).toBe(true);
+  await expect(tools(chat).archive_session!({ session_id: chat })).rejects.toThrow("your own chats");
+});
+
+test("a check-in answer from a session the agent started isn't one of its reports", async () => {
+  const { runner, fake, chat, tools, driverOf, project } = await setup();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true}` : "done"), idle];
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
+  expect(driverOf(chat)!.sent[0]).toContain("Report 1 of");
+  await tools(chat).check_in_sessions!({ project_path: project });
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain("Check-in finished");
+  expect(driverOf(chat)!.sent[1]).toContain("Archived (1):");
+  await Bun.sleep(50);
+  expect(driverOf(chat)!.sent.length).toBe(2);
+  expect(await tools(chat).session_status!({ session_id: child })).toContain(`Reports so far: 1 of ${MAX_REPORTS}`);
+});
+
+test("a session with its worktree left isn't archived, and it's told to spare other sessions' worktrees", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await setup();
+  const git = async (cwd: string, ...args: string[]) => {
+    const p = Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    if ((await p.exited) !== 0) throw new Error(await new Response(p.stderr).text());
+  };
+  await git(project, "init", "-q", "-b", "main");
+  await git(project, "commit", "-q", "--allow-empty", "-m", "init");
+  const left = join(project, "..", "left");
+  const theirs = join(project, "..", "theirs");
+  await git(project, "worktree", "add", "-qb", "left-branch", left);
+  await git(project, "worktree", "add", "-qb", "their-branch", theirs);
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "worktree": "${left}"}` : "ok"), idle];
+  const start = async (folder: string, what: string) => {
+    const id = (await op("newSession", { harness: "claude", projectPath: folder })).sessionId as string;
+    await op("renameSession", { sessionId: id, title: what });
+    await op("send", { sessionId: id, text: what });
+    await until(() => !!driverOf(id)?.sent.length && runner.core.sessions.get(id)?.state.status === "idle");
+    return id;
+  };
+  const mine = await start(project, "mine");
+  const other = await start(theirs, "other");
+  await tools(chat).check_in_sessions!({ session_ids: [mine] });
+  // The worktree another session works in is named as off limits; the one it made isn't.
+  await until(() => driverOf(mine)!.sent.length === 2);
+  const asked = driverOf(mine)!.sent[1]!;
+  expect(asked).toContain(`other sessions are using:\n     ${theirs}`);
+  expect(asked).not.toContain(`     ${left}`);
+  expect(driverOf(other)!.sent.length).toBe(1);
+  await until(() => driverOf(chat)?.sent.length === 1);
+  expect(driverOf(chat)!.sent[0]).toContain(`${mine} "mine" (${project}): done and merged, but its worktree is still there: ${left}`);
+  expect(runner.core.sessions.get(mine)!.summary.archived).toBeUndefined();
 });

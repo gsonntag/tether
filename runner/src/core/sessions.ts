@@ -530,6 +530,15 @@ export class SessionCore {
     return partChunk(p, offset);
   }
 
+  /** Keeps a session out of Recent (or back in); archived sessions stay searchable. */
+  async setArchived(s: Session, archived: boolean) {
+    if ((this.o.prefs.get(s.id).archived === true) === archived) return;
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined });
+    this.o.prefs.flush();
+    this.touch(s);
+    await this.discover();
+  }
+
   /**
    * The session's row changed (status, mode, title, activity): the sidebar hears. `queuePaused` is
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
