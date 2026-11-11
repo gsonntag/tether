@@ -424,7 +424,8 @@ export class HomeAgent implements HomeEnd {
     const id = this.state.texts;
     if (!id || !this.state.tabs.includes(id)) return false;
     const look = this.ctx.session(id);
-    return !!look && (look.status !== "idle" || look.busy || (look.state?.queue?.length ?? 0) > 0 || !!this.textTurn);
+    const st = look?.state;
+    return !!look && (look.status !== "idle" || look.busy || (st?.queue?.length ?? 0) > 0 || st?.mode === "terminal" || !!st?.queueHeld || !!st?.restartWait || !!this.textTurn);
   }
 
   /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */

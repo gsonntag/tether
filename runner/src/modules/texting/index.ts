@@ -32,7 +32,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript";
+import type { Msg, Request, RequestAnswer, RunStatus } from "../../../../shared/transcript";
 import { isImageType, safeName, splitAttachments, type Attachment } from "../../../../shared/attachments";
 import { fromTexted } from "../../../../shared/fromTether";
 import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
@@ -153,15 +153,15 @@ export class Texter {
   private held?: { files: InboundFile[]; hold: { text: string; at: number }; back?: Back };
   private heldTimer?: ReturnType<typeof setTimeout>;
   /** where the text the picker holds came from (files or not): picked from elsewhere, it's no channel's answer */
-  private heldFrom?: { hold: { text: string; at: number }; back?: Back };
+  private heldFrom?: { hold: { text: string; at: number }; place?: string };
   /**
    * A message from a shared place (a server channel) that started a turn, by session (or HOME). The
    * one rule: only that turn's answer may go back there. It's set only when the session was idle
    * with nothing queued as the message came ("armed"), becomes "active" when the turn it starts
-   * starts, and goes on any other input (a DM, Tether's web, a report, another turn) and once used.
+   * starts and its message has been seen ("starting" in between), and goes on any other input (a DM, Tether's web, a report, another turn) and once used.
    * Kept in memory only: after a restart everything goes to the DM.
    */
-  private channelTurns = new Map<string, { via: string; place: string; expect: string; msgId?: string; phase: "armed" | "active" }>();
+  private channelTurns = new Map<string, { via: string; place: string; expect: string; msgId?: string; phase: "armed" | "starting" | "active" }>();
 
   /** when each session's link last went out */
   private linked = new Map<string, number>();
@@ -246,7 +246,9 @@ export class Texter {
       return !!busy && !busy();
     }
     const look = this.ctx.session(id);
-    return !!look && look.status === "idle" && !look.busy && !(look.state?.queue?.length ?? 0);
+    // Not driven from its terminal, its queue not held, not waiting out a restart: a message now runs as the next turn.
+    const st = look?.state;
+    return !!look && look.status === "idle" && !look.busy && !(st?.queue?.length ?? 0) && st?.mode !== "terminal" && !st?.queueHeld && !st?.restartWait;
   }
 
   /** Which channelTurns key a session's events are for: HOME for the Home agent's Texts chat. */
@@ -453,8 +455,10 @@ export class Texter {
         if (msg.id !== ct.msgId) this.channelTurns.delete(key);
         return;
       }
-      if (shown(msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) === ct.expect) ct.msgId = msg.id;
-      else this.channelTurns.delete(key);
+      if (shown(msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) !== ct.expect) return void this.channelTurns.delete(key);
+      ct.msgId = msg.id;
+      // Its turn started before the message showed: now it's that turn's.
+      if (ct.phase === "starting") ct.phase = "active";
       return;
     }
     if (msg.role !== "assistant") return;
@@ -463,13 +467,20 @@ export class Texter {
     if (text) this.lastSaid.set(sessionId, replyForPeople(text));
   }
 
-  turnStarted(sessionId: string) {
-    this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
-    // The turn a channel message started, or any other one (which ends the channel's claim).
-    const key = this.turnKey(sessionId);
-    const ct = this.channelTurns.get(key);
-    if (ct?.phase === "armed") ct.phase = "active";
-    else this.channelTurns.delete(key);
+  /**
+   * A turn started (running after idle), or a turn went on after waiting on the person (`from`
+   * "waiting": a permission answered; the same turn, which keeps its claim and its count).
+   */
+  turnStarted(sessionId: string, from?: RunStatus) {
+    if (from !== "waiting") {
+      this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
+      // The turn a channel message started (active once its message has been seen), or any other one
+      // (which ends the channel's claim).
+      const key = this.turnKey(sessionId);
+      const ct = this.channelTurns.get(key);
+      if (ct?.phase === "armed") ct.phase = ct.msgId !== undefined ? "active" : "starting";
+      else this.channelTurns.delete(key);
+    }
     this.lastSaid.delete(sessionId);
     this.settled(sessionId);
   }
@@ -480,10 +491,6 @@ export class Texter {
     this.store.save();
   }
 
-  /**
-   * A failed turn texts. A finished one texts the agent's last message when the person texted it
-   * this turn (its answer) or when it ends by asking them something; otherwise nothing.
-   */
   /**
    * What a turn's end texts, taken the moment it ends: its last words, whether it answers the
    * person's message, and its channel claim. The text goes out FINISH_DELAY_MS later, maybe after the
@@ -502,7 +509,7 @@ export class Texter {
     // One message answered; the rest wait for the turns still to come (queued ones). Nothing queued
     // or running: none (several sent into one turn got one answer).
     const look = this.ctx.session(sessionId);
-    const more = !!look && (look.status !== "idle" || (look.state?.queue?.length ?? 0) > 0);
+    const more = !!look && (look.status !== "idle" || ((look.state?.queue?.length ?? 0) > 0 && !look.state?.queueHeld));
     const left = more ? waiting - 1 : 0;
     if (left > 0) this.talking.set(sessionId, left);
     else this.talking.delete(sessionId);
@@ -515,14 +522,25 @@ export class Texter {
    * turn's snapshot, taken when it ended (endOf; now, when not given).
    */
   async turnEnded(sessionId: string, error?: string, end: TurnEnd = this.endOf(sessionId)) {
-    const { last, talking, claim } = end;
+    const { talking, claim } = end;
     // The Home agent's Texts chat answers by its own texts (homeText).
     if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return;
-    // Still idle and not waiting on a request after the delay (else it tells itself). Moved on to a
-    // next turn (a queued message): this turn is over all the same, and its answer is still owed.
     const look = this.ctx.session(sessionId);
     const movedOn = (this.turns.get(sessionId) ?? 0) !== end.turn;
-    if (movedOn ? !look || !!look.summary.parentSessionId : !endWorthTelling(look)) return;
+    let last = end.last;
+    if (movedOn) {
+      // A next turn started (a queued message): this one is over all the same. Only what's owed goes:
+      // the answer to the person's message, or a failure; never a question alone.
+      if (!look || look.summary.parentSessionId || (!talking && !error)) return;
+    } else {
+      // Still this turn's: still idle and not waiting on a request (else it tells itself). Its words
+      // as they are now: a terminal session's file watcher can lag behind the turn's end.
+      if (!endWorthTelling(look)) return;
+      last = this.lastSaid.get(sessionId) ?? last;
+      this.lastSaid.delete(sessionId);
+      // Nothing newer to tell this turn from: its count can go.
+      this.turns.delete(sessionId);
+    }
     // What follows the person's message goes back the way it came; only the answer of the turn a
     // channel message started may go to that channel (its claim), a failure goes to their DM.
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via: talking ? this.backTo(sessionId) : undefined });
@@ -568,7 +586,9 @@ export class Texter {
   private async answer(m: Inbound) {
     const home = this.ctx.homeLine?.home;
     const via = m.via;
-    const back: Back | undefined = via ? { via, ...(m.place ? { place: m.place } : {}), ...(m.shared ? { shared: true } : {}) } : undefined;
+    // Tether's own replies (the picker, a problem, a file notice) go privately: a shared place (a
+    // channel) only ever gets the answer of the turn its message claimed (arm, below).
+    let back: Back | undefined = via ? { via, ...(m.place && !m.shared ? { place: m.place } : {}) } : undefined;
     const mine = m.files ?? [];
     const before = this.router.state.held;
     const d = this.router.route(!m.text.trim() && mine.length ? NO_WORDS : m.text, m.replyTo, !!home, mine.length ? { filesOnly: NO_WORDS } : undefined);
@@ -589,8 +609,8 @@ export class Texter {
     if (this.held && this.held.hold !== hold) await this.dropHeld();
     const heldThis = !!hold && hold !== before;
     // A held text picked from another place than it was written: no channel's answer.
-    const elsewhere = tookHeld && (this.heldFrom?.hold !== before || this.heldFrom?.back?.place !== back?.place);
-    if (heldThis) this.heldFrom = { hold, ...(back ? { back } : {}) };
+    const elsewhere = tookHeld && (this.heldFrom?.hold !== before || this.heldFrom?.place !== m.place);
+    if (heldThis) this.heldFrom = { hold, ...(m.place ? { place: m.place } : {}) };
     else if (!hold) this.heldFrom = undefined;
     if (heldThis && mine.length) {
       this.held = { files: mine, hold, ...(back ? { back } : {}) };
@@ -614,15 +634,19 @@ export class Texter {
       // The way back: the connector, and the place only when it's private (a DM).
       // A channel message keeps the DM this session was last written from (the place private answers go).
       const was = this.store.replyVia[key];
-      const dm = back.shared ? (was?.via === back.via ? was.place : undefined) : back.place;
+      const dm = m.shared ? (was?.via === back.via ? was.place : undefined) : back.place;
       const keep = { via: back.via, ...(dm ? { place: dm } : {}) };
       this.store.replyVia = Object.fromEntries([...Object.entries(this.store.replyVia).filter(([k]) => k !== key), [key, keep]].slice(-REPLY_VIA_MAX));
       this.store.save();
+      // From here on, Tether's own replies go to the DM this session is answered in.
+      back = keep;
     }
     /** A channel message to an idle session (or Home): the turn it starts may answer in the channel. */
     const arm = () => {
-      if (back?.shared && back.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via: back.via, place: back.place, expect: shown(words), phase: "armed" });
+      if (via && m.shared && m.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via, place: m.place, expect: shown(words), phase: "armed" });
     };
+    /** One more message the session owes an answer to: queued, it's its own turn's; else (a steer, a request answer) the current turn answers it. */
+    const owe = (queued: boolean) => this.talking.set(key, queued ? (this.talking.get(key) ?? 0) + 1 : Math.max(1, this.talking.get(key) ?? 0));
     if (d.kind === "home") {
       try {
         const mark = this.channel(via)?.connector.mark;
@@ -662,14 +686,17 @@ export class Texter {
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
-        this.talking.set(d.sessionId, (this.talking.get(d.sessionId) ?? 0) + 1);
+        owe(false);
         if (files.length) await this.say(TEXTS.filesWithAnswer(d.n), back);
       } else {
         const stored = await this.stash(d.sessionId, files, back);
         arm();
+        const queued = () => this.ctx.session(d.sessionId)?.state?.queue?.length ?? 0;
+        const before = queued();
         if (stored.length) await this.ctx.sessions.tell(d.sessionId, words, stored);
         else await this.ctx.sessions.tell(d.sessionId, words);
-        this.talking.set(d.sessionId, (this.talking.get(d.sessionId) ?? 0) + 1);
+        // Into the queue: a turn of its own to come. Else it started a turn or went into the running one.
+        owe(queued() > before);
       }
       // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
       // person's text says Tether read it and passed it on.
@@ -692,7 +719,7 @@ export const textingModule: Module = {
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),
       ctx.bus.on("attention", ({ sessionId }) => void later(0, () => t.attention(sessionId))),
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
-      ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
+      ctx.bus.on("turnStarted", ({ sessionId, from }) => t.turnStarted(sessionId, from)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))))),
     ];

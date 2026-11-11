@@ -481,6 +481,7 @@ describe("second review round", () => {
       expect(new TextingStore(file, {}).replyVia["claude:a"]).toEqual({ via: "discord", place: "dm-1" });
       s.dc.hear({ text: "1 go", place: "chan-9", shared: true });
       await tick();
+      s.t.said("claude:a", { id: "u-go", role: "user", ts: 1, parts: [{ type: "text", text: "go" }] });
       s.t.turnStarted("claude:a");
       s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Done that." }] });
       await s.t.turnEnded("claude:a");
@@ -535,6 +536,7 @@ describe("round 3", () => {
     // Home: they write in the channel while it's idle; the turn it starts.
     s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
     await tick();
+    s.t.said("claude:texts", { id: "u-hi", role: "user", ts: 1, parts: [{ type: "text", text: "[From Discord] hi" }] });
     s.t.turnStarted("claude:texts");
     // A report's outcome: private.
     expect(await s.line.phone!.send("done: PR #3")).toBe(true);
@@ -554,6 +556,8 @@ describe("round 3", () => {
     s.dc.hear({ text: "1 try again", place: "chan-1", shared: true });
     await tick();
     s.t.turnStarted("claude:a");
+    // The message shows after its turn started: the claim is that turn's from then.
+    s.t.said("claude:a", { id: "u-again", role: "user", ts: 1, parts: [{ type: "text", text: "try again" }] });
     s.t.said("claude:a", { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text: "Retried." }] });
     await s.t.turnEnded("claude:a");
     expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Retried.", place: "chan-1", shared: true });
@@ -675,6 +679,7 @@ describe("round 4: only the turn a channel message started answers in the channe
     s.home.busy = false;
     s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
     await tick();
+    s.t.said("claude:texts", user("[From Discord] hi"));
     s.t.turnStarted("claude:texts");
     expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
     expect(s.dc.sent.at(-1)).toEqual({ text: "[home] hey", place: "chan-1", shared: true });
@@ -815,9 +820,13 @@ describe("round 5", () => {
     s.t.turnStarted("claude:a");
     look.status = "running";
     // The second text comes while turn 1 runs: queued behind it.
+    const tell = (s.t as any).ctx.sessions.tell;
+    (s.t as any).ctx.sessions.tell = async (id: string, text: string) => {
+      look.state.queue = [{ id: "q1", text, queuedAt: 1 }];
+      return tell(id, text);
+    };
     s.im.hear({ text: "1 second thing" });
     await tick();
-    look.state.queue = [{ id: "q1", text: "second thing", queuedAt: 1 }];
     expect(s.told.map((x) => x[1])).toEqual(["first thing", "second thing"]);
     s.t.said("claude:a", agent("Answer one."));
     // Turn 1 ends (its text goes out FINISH_DELAY_MS later); turn 2 starts at once from the queue.
@@ -872,5 +881,146 @@ describe("round 5", () => {
     };
     await expect(s.t.test("discord")).rejects.toThrow("Missing Access");
     expect(s.t.channel("discord")!.lastError).toBeUndefined();
+  });
+});
+
+describe("round 6", () => {
+  const user = (id: string, text: string) => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  const agent = (text: string) => ({ id: "a", role: "assistant" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+
+  test("1: a turn the session moved on from texts only what's owed: never a question alone; a failure yes", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const n = s.dc.sent.length + s.im.sent.length;
+    // A turn nobody texted, ending on a question; the next (queued from the web) starts before its end goes.
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Should I also do the docs?"));
+    const end1 = s.t.endOf("claude:a");
+    s.t.turnStarted("claude:a");
+    await s.t.turnEnded("claude:a", undefined, end1);
+    expect(s.dc.sent.length + s.im.sent.length).toBe(n);
+    // A failure is still told.
+    const end2 = s.t.endOf("claude:a");
+    s.t.turnStarted("claude:a");
+    await s.t.turnEnded("claude:a", "overloaded 529", end2);
+    expect(s.im.sent.at(-1)!.text).toStartWith("[1] Claude stopped");
+  });
+
+  test("2: a steer or a request answer doesn't pile up: after \"do it\" and a \"y\", a held queue, the next web turn isn't texted", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const look = s.look("claude:a");
+    s.im.hear({ text: "1 do it" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    look.status = "running";
+    // A request in the same turn, answered "y" by text.
+    look.requests = ["r1"];
+    look.state.requests = [{ id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 }];
+    s.im.hear({ text: "1 y" });
+    await tick();
+    look.requests = [];
+    look.state.requests = [];
+    s.t.said("claude:a", agent("Did it."));
+    // The turn ends; the queue is held (a stop), with a web message in it.
+    look.status = "idle";
+    look.state.queue = [{ id: "q", text: "later", queuedAt: 1 }];
+    look.state.queueHeld = true;
+    await s.t.turnEnded("claude:a");
+    expect(s.im.sent.at(-1)!.text).toBe("[1] Did it.");
+    // Released later, from the web: its turn isn't an answer to anything they texted.
+    look.state.queue = [];
+    look.state.queueHeld = false;
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Did the later thing."));
+    await s.t.turnEnded("claude:a");
+    expect(s.im.sent.at(-1)!.text).toBe("[1] Did it.");
+  });
+
+  test("3: Tether's own replies to a channel message go to the DM", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 from dm", place: "dm-1" });
+    await tick();
+    // A number nothing has: the picker, privately.
+    s.dc.hear({ text: "7 hi", place: "chan-1", shared: true });
+    await tick();
+    expect(s.dc.sent.at(-1)!.text).toContain("[7] isn't waiting");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    expect(s.dc.sent.at(-1)!.place).not.toBe("chan-1");
+    // A closed request's reply: privately, to the session's DM.
+    const look = s.look("claude:a");
+    look.requests = ["r1"];
+    look.state.requests = [{ id: "r1", sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "ls", openedAt: 1 }];
+    await s.t.request(look.state.requests[0]);
+    look.requests = [];
+    s.dc.hear({ text: "y", replyTo: s.t.router.state.sent.at(-1)!.id, place: "chan-1", shared: true });
+    await tick();
+    expect(s.dc.sent.at(-1)).toEqual({ text: TEXTS.alreadyAnswered(1), place: "dm-1" });
+    // A failed delivery: privately too.
+    (s.t as any).ctx.sessions.tell = async () => {
+      throw new Error("gone");
+    };
+    s.dc.hear({ text: "1 hey", place: "chan-1", shared: true });
+    await tick();
+    expect(s.dc.sent.at(-1)).toEqual({ text: TEXTS.couldNotSend("[1]", "gone"), place: "dm-1" });
+  });
+
+  test("4: no claim on a session in terminal mode, with its queue held, or waiting out a restart; and none until its message is seen", async () => {
+    for (const st of [{ mode: "terminal" }, { queueHeld: true }, { restartWait: true }]) {
+      const s = setup();
+      await s.t.start();
+      await s.t.attention("claude:a");
+      Object.assign(s.look("claude:a").state, st);
+      s.dc.hear({ text: "1 go", place: "chan-1", shared: true });
+      await tick();
+      s.t.said("claude:a", user("u", "go"));
+      s.t.turnStarted("claude:a");
+      s.t.said("claude:a", agent("Went."));
+      await s.t.turnEnded("claude:a");
+      expect([st, s.dc.sent.at(-1)!.shared]).toEqual([st, undefined]);
+    }
+    // Its turn started, its message never seen: no claim.
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 go", place: "chan-1", shared: true });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Went."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+  });
+
+  test("5: a permission answered mid-turn (waiting → running) keeps the channel's claim", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 deploy", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("u", "deploy"));
+    s.t.turnStarted("claude:a", "idle");
+    s.t.turnStarted("claude:a", "waiting");
+    s.t.said("claude:a", agent("Deployed."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Deployed.", place: "chan-1", shared: true });
+  });
+
+  test("6: a terminal session's late words still make its answer; the count goes once it's told", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.im.hear({ text: "1 check it" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    // The turn ends before the file watcher catches up.
+    const end = s.t.endOf("claude:a");
+    s.t.said("claude:a", agent("Checked: fine?"));
+    await s.t.turnEnded("claude:a", undefined, end);
+    expect(s.im.sent.at(-1)!.text).toBe("[1] Checked: fine?");
+    expect((s.t as any).turns.has("claude:a")).toBe(false);
   });
 });
