@@ -262,6 +262,33 @@ describe("automatic rate limit retry integration", () => {
     expect(second.prefs.get(restored.id).retry).toBeUndefined();
   });
 
+  test("cancelling a waiting retry ends the turn as stopped; a Tether send replaces it without holding the queue", async () => {
+    for (const how of ["cancel", "tether"] as const) {
+      const { adapter, bus, core, live } = setup();
+      adapter.addStored(how, []);
+      live.retries.gapMs = 1;
+      live.retries.time = (_attempt, now) => now + 60_000;
+      adapter.script = () => (adapter.drivers[0]?.sent.length === 1 ? [limit(1)] : [say("ok", "ok"), idle]);
+      const ends: CoreEvents["turnEnded"][] = [];
+      bus.on("turnEnded", (e) => ends.push(e));
+      await live.send(`claude:${how}`, "initial");
+      const s = await core.open(`claude:${how}`);
+      await until(() => !!s.retry);
+      expect(ends).toEqual([expect.objectContaining({ recovering: true })]);
+      if (how === "cancel") {
+        await live.cancelRetry(s.id);
+        expect(ends.at(-1)).toEqual({ sessionId: s.id, stopped: true });
+      } else {
+        await live.send(s.id, "on your behalf", [], { tether: true });
+        await until(() => ends.length === 2);
+        expect(ends.at(-1)?.recovering).toBeUndefined();
+        expect(ends.at(-1)?.stopped).toBeUndefined();
+        expect(s.state.queueHeld).toBeFalsy();
+      }
+      expect(s.retry).toBeUndefined();
+    }
+  });
+
   test("Stop, a direct send, and a model change cancel a waiting retry", async () => {
     for (const action of ["stop", "send", "model"] as const) {
       const { adapter, core, live } = setup();

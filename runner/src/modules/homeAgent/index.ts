@@ -758,7 +758,8 @@ export class HomeAgent implements HomeEnd {
     const revived = !!look.summary.archived;
     if (revived) await s.setArchived(id, false);
     // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
-    const behind = look.status !== "idle" || look.state.queue.length > 0;
+    // A rate limit retry waiting is the previous turn, not over yet.
+    const behind = look.status !== "idle" || look.state.queue.length > 0 || !!look.state.retry;
     const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
     if (behind) next.queued = true;
     this.state.children[id] = next;

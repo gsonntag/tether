@@ -151,15 +151,23 @@ export class LiveControl {
     const source = this.sourceOf(s);
     const deployment = this.deploymentOf(s);
     const credential = this.opts.credentials?.snapshot(source, deployment);
-    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, credential?.revision, credential?.endpoint, deployment ?? s.state.modelResolved ?? s.state.model])).digest("hex");
+    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, credential?.revision, credential?.endpoint, deployment ?? s.state.model])).digest("hex");
     const fingerprint = createHash("sha256").update(JSON.stringify([scope, s.state.model, s.state.effort, s.state.permissionMode])).digest("hex");
     return { scope, fingerprint };
   }
 
-  private cancelRetrySession(s: Session) {
+  /**
+   * Ends a retry chain before it recovers. A waiting chain's turn already ended as "recovering",
+   * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
+   * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
+   */
+  private cancelRetrySession(s: Session, o: { tether?: boolean } = {}) {
+    const waiting = (s.retry ?? this.core.o.prefs.get(s.id).retry)?.phase === "waiting";
     s.retrySuppressed = true;
     this.retries.clear(s);
+    if (o.tether) return;
     this.queue.hold(s, "stopped");
+    if (waiting) this.core.o.bus.emit("turnEnded", { sessionId: s.id, stopped: true });
   }
 
   async cancelRetry(id: string) {
@@ -246,7 +254,7 @@ export class LiveControl {
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
       if (o.queued) throw new Error("A rate limit retry is waiting.");
-      this.cancelRetrySession(s);
+      this.cancelRetrySession(s, { tether: o.tether });
     }
     // A subagent the harness lets you message: into its running turn (SPEC §6a).
     if (s.summary.parentSessionId) return this.steer(id, text, attachments);
