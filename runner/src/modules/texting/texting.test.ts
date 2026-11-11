@@ -8,6 +8,7 @@ import { asksQuestion, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
+import type { TetherNote, Thread, Waiter } from "./thread";
 
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
 
@@ -24,6 +25,9 @@ function setup(viewers: Record<string, string[]> = {}) {
     "claude:a": { summary: { id: "claude:a", title: "secret plans", projectPath: "/home/me/web" }, status: "idle", requests: [], state: { requests: [] } },
     "codex:b": { summary: { id: "codex:b", projectPath: "/home/me/api" }, status: "idle", requests: [], state: { requests: [] } },
   };
+  const waiters: Waiter[] = [];
+  const notes: TetherNote[] = [];
+  const thread: Thread = { waiters: (now) => waiters.filter((w) => w.until > now), publish: (n) => void notes.push(n), clear: () => {} };
   const told: [string, string][] = [];
   const answered: [string, string, RequestAnswer][] = [];
   const t = new Texter(
@@ -38,6 +42,7 @@ function setup(viewers: Record<string, string[]> = {}) {
     new TextingStore(undefined, ENV),
     open,
     () => clock.t,
+    thread,
   );
   const say = (id: string, text: string) => t.said(id, { id: "x", role: "assistant", ts: 1, parts: [{ type: "text", text }] });
   const open1 = (id: string, r: Request) => {
@@ -45,7 +50,7 @@ function setup(viewers: Record<string, string[]> = {}) {
     sessions[id].state.requests = [r];
     return t.request(r);
   };
-  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock };
+  return { t, texts, told, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock, waiters, notes };
 }
 
 const bash = (id = "r1"): Request => ({ id, sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "npm test -- --watch=false", openedAt: 1 });
@@ -233,5 +238,66 @@ describe("settings", () => {
     expect(inboundOf({ type: "text", text: "hi" })).toEqual({ text: "hi" });
     expect(inboundOf({ type: "reply", content: { type: "text", text: "yes" }, target: { id: "m9" } })).toEqual({ text: "yes", replyTo: "m9" });
     expect(inboundOf({ type: "reaction" })).toBeUndefined();
+  });
+});
+
+describe("the thread shared with textme", () => {
+  test("a reply to a textme sent after Tether's last text is left to it: no picker", async () => {
+    const { t, texts, told, hear, clock, waiters, say } = setup();
+    await t.start();
+    say("claude:a", "Should I deploy?");
+    await t.turnEnded("claude:a");
+    await t.turnEnded("codex:b", "boom");
+    const before = texts.length;
+    clock.t += 60_000;
+    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
+    clock.t += 1000;
+    await hear({ text: "no" });
+    expect(texts.length).toBe(before);
+    expect(told).toEqual([]);
+    // but a number for an open session is Tether's
+    await hear({ text: "2 retry it" });
+    expect(told).toEqual([["codex:b", "retry it"]]);
+  });
+
+  test("a threaded reply to a textme's text is its own, even when Tether texted later", async () => {
+    const { t, texts, told, hear, clock, waiters } = setup();
+    await t.start();
+    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
+    clock.t += 1000;
+    await t.turnEnded("codex:b", "boom");
+    await hear({ text: "no", replyTo: "tm1" });
+    expect(told).toEqual([]);
+    expect(texts.length).toBe(1);
+    // Tether texted last: plain text is Tether's again
+    await hear({ text: "try again" });
+    expect(told).toEqual([["codex:b", "try again"]]);
+  });
+
+  test("a textme past its wait counts for nothing", async () => {
+    const { t, told, hear, clock, waiters } = setup();
+    await t.start();
+    await t.turnEnded("codex:b", "boom");
+    waiters.push({ pid: 1, sentAt: clock.t + 1, until: clock.t + 60_000 });
+    clock.t += 2 * 60_000;
+    await hear({ text: "try again" });
+    expect(told).toEqual([["codex:b", "try again"]]);
+  });
+
+  test("publishes what textme needs: last text, open numbers, sent ids", async () => {
+    const { t, notes, clock } = setup();
+    await t.start();
+    await t.turnEnded("codex:b", "boom");
+    expect(notes.at(-1)).toMatchObject({ lastOut: clock.t, open: [{ n: 1 }], sent: ["m1"] });
+  });
+
+  test("the picker leaves out sessions already answered", async () => {
+    const { t, texts, hear } = setup();
+    await t.start();
+    await t.turnEnded("claude:a", "boom");
+    await t.turnEnded("codex:b", "boom");
+    t.turnStarted("claude:a"); // answered in Tether
+    await hear({ text: "hm" });
+    expect(texts.at(-1)).toBe("Which session, by number?\n[2] failed: an error, just now");
   });
 });

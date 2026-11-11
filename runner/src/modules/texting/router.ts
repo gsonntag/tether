@@ -3,8 +3,13 @@
 // text. A reply that names a number, or answers one of Tether's texts in a thread, goes to that
 // session; plain text goes to the only open session, or is held while Tether asks which one with a
 // numbered picker. Pure: the clock is passed in and the state is plain data, saved by the caller.
+//
+// The thread is shared with textme (thread.ts): a reply that answers a waiting textme's text in a
+// thread or starts with its [tag], or any reply that isn't for one of Tether's open sessions by number while a textme texted
+// more recently than Tether did, isn't Tether's, and Tether says nothing.
 
 import { TEXTS } from "./texts";
+import { addressedToWaiter, type TetherNote, type Waiter } from "./thread";
 
 export const OPEN_MS = 30 * 60_000;
 export const HELD_MS = 10 * 60_000;
@@ -18,6 +23,8 @@ export interface Slot {
   status: string;
   /** when it was last texted or answered */
   at: number;
+  /** the person answered it (by text, or in Tether) since its last text: not in the picker */
+  answered?: boolean;
 }
 
 export interface RouterState {
@@ -28,6 +35,8 @@ export interface RouterState {
   aimed?: { n: number; at: number };
   /** Tether's own texts, newest last: a threaded reply names one */
   sent: { id: string; sessionId: string }[];
+  /** when Tether last texted anything */
+  lastOut?: number;
 }
 
 export type Decision =
@@ -72,7 +81,7 @@ export class Router {
       slot = { n, sessionId, status, at: 0 };
       s.push(slot);
     }
-    Object.assign(slot, { status, at: this.now() });
+    Object.assign(slot, { status, at: this.now(), answered: false });
     // Just the number and the message ("[6] ok"): no folder, no agent.
     return { n: slot.n, text: `[${slot.n}] ${body}` };
   }
@@ -82,8 +91,31 @@ export class Router {
     this.state.sent = [...this.state.sent.filter((x) => x.id !== id), { id, sessionId }].slice(-MAX_SENT);
   }
 
-  /** What to do with the person's text. `replyTo`: the message it answers in a thread. */
-  route(raw: string, replyTo?: string): Decision {
+  /** Tether texted something (any text: a picker too). */
+  noteOut() {
+    this.state.lastOut = this.now();
+  }
+
+  /** The session was answered elsewhere (in Tether, the terminal): it isn't waiting on a text now. */
+  settle(sessionId: string) {
+    const slot = this.state.slots.find((x) => x.sessionId === sessionId);
+    if (slot) slot.answered = true;
+  }
+
+  /** What textme needs to know to leave Tether's replies alone (thread.ts). */
+  note(): TetherNote {
+    return {
+      lastOut: this.state.lastOut ?? 0,
+      open: this.open().map((s) => ({ n: s.n, until: s.at + OPEN_MS })),
+      sent: this.state.sent.map((x) => x.id),
+    };
+  }
+
+  /**
+   * What to do with the person's text. `replyTo`: the message it answers in a thread. `waiters`:
+   * the textme processes waiting for a reply on the same thread (thread.ts).
+   */
+  route(raw: string, replyTo?: string, waiters: Waiter[] = []): Decision {
     this.prune();
     const text = raw.trim();
     if (!text) return { kind: "none" };
@@ -93,12 +125,20 @@ export class Router {
       const slot = this.state.slots.find((x) => x.sessionId === threaded.sessionId);
       if (slot) return this.deliver(slot, text);
     }
+    // A threaded answer to a textme's text is that textme's.
+    if (replyTo && waiters.some((w) => w.id === replyTo)) return { kind: "none" };
+    // So is one that starts with its tag.
+    if (addressedToWaiter(text, waiters)) return { kind: "none" };
 
     const m = NUMBERED.exec(text);
+    const named = m && this.state.slots.find((x) => x.n === Number(m[1]));
+    // Not for an open session by number, and a textme texted after Tether did: it's answering that.
+    if (!named && waiters.some((w) => w.sentAt > (this.state.lastOut ?? 0))) return { kind: "none" };
+
     if (m) {
       const n = Number(m[1]);
       const rest = m[2]!.trim();
-      const slot = this.state.slots.find((x) => x.n === n);
+      const slot = named;
       if (!slot) {
         if (rest) this.state.held = { text: rest, at: this.now() };
         return { kind: "reply", text: this.open().length ? this.picker(TEXTS.notWaiting(n)) : NOTHING_OPEN };
@@ -120,10 +160,13 @@ export class Router {
     return { kind: "reply", text: this.picker() };
   }
 
-  /** A one-sentence question ("Which session, by number?") and a row per open session. */
+  /** A one-sentence question ("Which session, by number?") and a row per session still waiting on
+   * the person (every open one when none is: a number still reaches any open session). */
   picker(head: string = TEXTS.which): string {
     const now = this.now();
-    const rows = this.open().map((s) => `[${s.n}] ${s.status}, ${ago(now - s.at)}`);
+    const open = this.open();
+    const waiting = open.filter((s) => !s.answered);
+    const rows = (waiting.length ? waiting : open).map((s) => `[${s.n}] ${s.status}, ${ago(now - s.at)}`);
     return `${head}\n${rows.join("\n")}`;
   }
 
@@ -131,6 +174,7 @@ export class Router {
     this.state.held = undefined;
     this.state.aimed = undefined;
     slot.at = this.now();
+    slot.answered = true;
     return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, text };
   }
 
