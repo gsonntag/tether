@@ -805,21 +805,62 @@ describe("round 5", () => {
     expect((s.t as any).channelTurns.size).toBe(0);
   });
 
-  test("N1: a stale delayed turnEnded doesn't take the next turn's text, claim or talking", async () => {
-    const s = await claimed();
-    const first = s.t.turnOf("claude:a");
-    // The next turn starts before the first one's delayed end runs.
-    s.dc.hear({ text: "1 and more", place: "dm-1" });
+  test("N1: two quick iMessage texts, the second queued: two answers, each with its own text", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    const look = s.look("claude:a");
+    s.im.hear({ text: "1 first thing" });
     await tick();
     s.t.turnStarted("claude:a");
-    s.t.said("claude:a", agent("Half way…"));
-    const before = s.dc.sent.length;
-    await s.t.turnEnded("claude:a", undefined, first);
-    expect(s.dc.sent.length).toBe(before);
-    // The current turn's end still answers (talking kept).
-    s.t.said("claude:a", agent("All of it."));
-    await s.t.turnEnded("claude:a", undefined, s.t.turnOf("claude:a"));
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] All of it.", place: "dm-1" });
+    look.status = "running";
+    // The second text comes while turn 1 runs: queued behind it.
+    s.im.hear({ text: "1 second thing" });
+    await tick();
+    look.state.queue = [{ id: "q1", text: "second thing", queuedAt: 1 }];
+    expect(s.told.map((x) => x[1])).toEqual(["first thing", "second thing"]);
+    s.t.said("claude:a", agent("Answer one."));
+    // Turn 1 ends (its text goes out FINISH_DELAY_MS later); turn 2 starts at once from the queue.
+    look.status = "idle";
+    const end1 = s.t.endOf("claude:a");
+    look.state.queue = [];
+    look.status = "running";
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Working on the second…"));
+    await s.t.turnEnded("claude:a", undefined, end1);
+    expect(s.im.sent.at(-1)!.text).toBe("[1] Answer one.");
+    // Turn 2 ends: its own answer, once.
+    s.t.said("claude:a", agent("Answer two."));
+    look.status = "idle";
+    const end2 = s.t.endOf("claude:a");
+    await s.t.turnEnded("claude:a", undefined, end2);
+    expect(s.im.sent.slice(-2).map((o) => o.text)).toEqual(["[1] Answer one.", "[1] Answer two."]);
+    // Nothing more waits: a later turn of its own isn't texted.
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Unprompted note."));
+    await s.t.turnEnded("claude:a");
+    expect(s.im.sent.at(-1)!.text).toBe("[1] Answer two.");
+  });
+
+  test("N1: turn 1's delayed end doesn't take turn 2's channel claim", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 first", place: "dm-1" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("First done."));
+    const end1 = s.t.endOf("claude:a");
+    // Idle now: a channel message starts turn 2 before turn 1's text goes.
+    s.dc.hear({ text: "1 second", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("c1", "second"));
+    s.t.turnStarted("claude:a");
+    await s.t.turnEnded("claude:a", undefined, end1);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] First done.", place: "dm-1" });
+    s.t.said("claude:a", agent("Second done."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[1] Second done.", place: "chan-1", shared: true });
   });
 
   test("a failed test send leaves no error on the connector's status", async () => {

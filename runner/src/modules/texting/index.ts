@@ -69,6 +69,18 @@ const shown = (text: string) => {
   return splitAttachments(fromTexted(t)?.text ?? t).text.trim();
 };
 
+/** What a turn's end texts (Texter.endOf), taken as it ends. */
+export interface TurnEnd {
+  /** the agent's last words in the turn */
+  last?: string;
+  /** the turn answers a message the person sent */
+  talking: boolean;
+  /** the channel message that started it, where its answer may go */
+  claim?: Back;
+  /** which of the session's turns it was (Texter counts them) */
+  turn: number;
+}
+
 /** What the agent reads for a message with only files in it. */
 export const FILES_ONLY = "(sent a file)";
 /** A message with only files, while it's routed (no one can type it: NUL is taken out of what they send). */
@@ -130,8 +142,13 @@ export class Texter {
   private failed?: string;
   /** each session's last words from the agent this turn (to tell whether it ended asking something) */
   private lastSaid = new Map<string, string>();
-  /** sessions the person texted: the agent's answer goes back by text */
-  private talking = new Set<string>();
+  /**
+   * Sessions the person texted, with how many of their messages still wait for an answer: each
+   * turn's end answers one (two quick texts, the second queued: two turns, two answers).
+   */
+  private talking = new Map<string, number>();
+  /** each session's turns so far (turnStarted counts them): a turn's end can tell whether another started since */
+  private turns = new Map<string, number>();
   /** files that came with the text the router holds for the picker, which hold that is, and where they came from */
   private held?: { files: InboundFile[]; hold: { text: string; at: number }; back?: Back };
   private heldTimer?: ReturnType<typeof setTimeout>;
@@ -145,8 +162,7 @@ export class Texter {
    * Kept in memory only: after a restart everything goes to the DM.
    */
   private channelTurns = new Map<string, { via: string; place: string; expect: string; msgId?: string; phase: "armed" | "active" }>();
-  /** each session's turns so far (turnStarted): a delayed turnEnded acts only for the turn that's still current */
-  private turns = new Map<string, number>();
+
   /** when each session's link last went out */
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
@@ -447,13 +463,8 @@ export class Texter {
     if (text) this.lastSaid.set(sessionId, replyForPeople(text));
   }
 
-  /** The session's current turn number (turnStarted counts them). */
-  turnOf(sessionId: string): number {
-    return this.turns.get(sessionId) ?? 0;
-  }
-
   turnStarted(sessionId: string) {
-    this.turns.set(sessionId, this.turnOf(sessionId) + 1);
+    this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
     // The turn a channel message started, or any other one (which ends the channel's claim).
     const key = this.turnKey(sessionId);
     const ct = this.channelTurns.get(key);
@@ -473,22 +484,50 @@ export class Texter {
    * A failed turn texts. A finished one texts the agent's last message when the person texted it
    * this turn (its answer) or when it ends by asking them something; otherwise nothing.
    */
-  async turnEnded(sessionId: string, error?: string, turn?: number) {
-    // Delayed (FINISH_DELAY_MS): if another turn started since, this one's end is stale; the new turn
-    // has its own text, claim and talking.
-    if (turn !== undefined && turn !== this.turnOf(sessionId)) return;
+  /**
+   * What a turn's end texts, taken the moment it ends: its last words, whether it answers the
+   * person's message, and its channel claim. The text goes out FINISH_DELAY_MS later, maybe after the
+   * next turn started; it reads none of that turn's state and leaves its claim and talking alone.
+   */
+  endOf(sessionId: string): TurnEnd {
     const last = this.lastSaid.get(sessionId);
     this.lastSaid.delete(sessionId);
+    const ct = this.channelTurns.get(sessionId);
+    let claim: Back | undefined;
+    if (ct?.phase === "active") {
+      this.channelTurns.delete(sessionId);
+      claim = { via: ct.via, place: ct.place, shared: true };
+    }
+    const waiting = this.talking.get(sessionId) ?? 0;
+    // One message answered; the rest wait for the turns still to come (queued ones). Nothing queued
+    // or running: none (several sent into one turn got one answer).
+    const look = this.ctx.session(sessionId);
+    const more = !!look && (look.status !== "idle" || (look.state?.queue?.length ?? 0) > 0);
+    const left = more ? waiting - 1 : 0;
+    if (left > 0) this.talking.set(sessionId, left);
+    else this.talking.delete(sessionId);
+    return { ...(last !== undefined ? { last } : {}), talking: waiting > 0, ...(claim ? { claim } : {}), turn: this.turns.get(sessionId) ?? 0 };
+  }
+
+  /**
+   * A failed turn texts. A finished one texts the agent's last message when the person texted it
+   * this turn (its answer) or when it ends by asking them something; otherwise nothing. `end`: the
+   * turn's snapshot, taken when it ended (endOf; now, when not given).
+   */
+  async turnEnded(sessionId: string, error?: string, end: TurnEnd = this.endOf(sessionId)) {
+    const { last, talking, claim } = end;
     // The Home agent's Texts chat answers by its own texts (homeText).
-    if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return void this.talking.delete(sessionId);
-    if (!endWorthTelling(this.ctx.session(sessionId))) return;
-    const talking = this.talking.delete(sessionId);
+    if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return;
+    // Still idle and not waiting on a request after the delay (else it tells itself). Moved on to a
+    // next turn (a queued message): this turn is over all the same, and its answer is still owed.
+    const look = this.ctx.session(sessionId);
+    const movedOn = (this.turns.get(sessionId) ?? 0) !== end.turn;
+    if (movedOn ? !look || !!look.summary.parentSessionId : !endWorthTelling(look)) return;
     // What follows the person's message goes back the way it came; only the answer of the turn a
-    // channel message started may go to that channel (backTo), a failure goes to their DM.
+    // channel message started may go to that channel (its claim), a failure goes to their DM.
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)), { via: talking ? this.backTo(sessionId) : undefined });
     // An answer to something the person texted is the back-and-forth: no link.
-    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via: talking ? this.backTo(sessionId, true) : undefined });
-    this.channelTurns.delete(sessionId);
+    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking, via: talking ? (claim ?? this.backTo(sessionId)) : undefined });
   }
 
   // ── in: the person's replies, one at a time ──
@@ -623,14 +662,14 @@ export class Texter {
         // Talking: the agent reads it as the reason and carries on (a plan stays a plan).
         const answer: RequestAnswer = "answer" in r ? r.answer : { allow: false, reason: r.talk };
         await this.ctx.sessions.answer(d.sessionId, open.id, answer);
-        this.talking.add(d.sessionId);
+        this.talking.set(d.sessionId, (this.talking.get(d.sessionId) ?? 0) + 1);
         if (files.length) await this.say(TEXTS.filesWithAnswer(d.n), back);
       } else {
         const stored = await this.stash(d.sessionId, files, back);
         arm();
         if (stored.length) await this.ctx.sessions.tell(d.sessionId, words, stored);
         else await this.ctx.sessions.tell(d.sessionId, words);
-        this.talking.add(d.sessionId);
+        this.talking.set(d.sessionId, (this.talking.get(d.sessionId) ?? 0) + 1);
       }
       // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
       // person's text says Tether read it and passed it on.
@@ -655,7 +694,7 @@ export const textingModule: Module = {
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, ((turn) => () => t.turnEnded(sessionId, error, turn))(t.turnOf(sessionId))))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))))),
     ];
     // iMessage's own ops, for a web from before connectors.
     const imessage = t.channel(IMESSAGE)!;
