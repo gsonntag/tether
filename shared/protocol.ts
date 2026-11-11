@@ -270,6 +270,14 @@ export interface Ops {
   textingTest: { args: {}; result: null };
   /** What a short link's code (`#/l/<code>`, runner modules/links) opens on this runner (the browser takes the runner to be the one it asked); null: not one of its codes, or expired. */
   resolveLink: { args: { code: string }; result: { sessionId: string } | null };
+  /** Messaging connectors (iMessage, Discord, …; SPEC §11 Texting): each one's settings and status. Never a secret. */
+  messagingStatus: { args: {}; result: MessagingStatus };
+  /** Changes one connector's settings (`values`: its forms' inputs; an empty string clears one) or turns it on or off. Its link restarts. */
+  setConnector: { args: { id: string; enabled?: boolean; values?: Record<string, string> }; result: MessagingStatus };
+  /** Where Tether's texts go: one connector, or (none) wherever the person last wrote. */
+  setMessagingPrefer: { args: { prefer: string | null }; result: MessagingStatus };
+  /** Sends a test message on one connector. */
+  testConnector: { args: { id: string }; result: null };
   /**
    * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
    * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)
@@ -537,6 +545,42 @@ export type RunnerToServer =
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */
   | { t: "ping" };
+
+/** One of a connector's settings forms: some inputs saved together. */
+export interface ConnectorForm {
+  key: string;
+  label: string;
+  /** what's set now, never a secret: "••••1234", "Set · from runner.env", "Not set" */
+  status: string;
+  /** set in runner.env: read-only here */
+  fromEnv?: boolean;
+  inputs: { key: string; placeholder: string; secret?: boolean; type?: "text" | "tel"; optional?: boolean }[];
+  /** it can be cleared (an Unset button) */
+  unset?: boolean;
+  /** a line under it */
+  note?: string;
+}
+
+/** A messaging connector on a runner, as the web sees it (secrets stay on the runner). */
+export interface ConnectorStatus {
+  id: string;
+  label: string;
+  enabled: boolean;
+  /** everything it needs is set */
+  configured: boolean;
+  connected: boolean;
+  lastError?: string;
+  about: string;
+  forms: ConnectorForm[];
+}
+
+export interface MessagingStatus {
+  connectors: ConnectorStatus[];
+  /** the connector Tether's texts go to; unset: the one the person last wrote on */
+  prefer?: string;
+  /** the one the person last wrote on */
+  lastUsed?: string;
+}
 
 /** Texting's settings on a runner, as the web sees them (secrets stay on the runner). */
 export interface TextingStatus {

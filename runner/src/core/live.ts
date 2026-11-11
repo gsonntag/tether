@@ -535,10 +535,10 @@ export class LiveControl {
    * The person's words to the agent, sent for them (a plan's notes or feedback): into the running
    * turn when the harness takes that, else as a new message.
    */
-  async tell(id: string, text: string) {
+  async tell(id: string, text: string, attachments: Attachment[] = []) {
     const s = await this.core.open(id);
-    if (s.state.status !== "idle" && s.capabilities.canSteer && s.driver?.steer && s.state.mode !== "terminal") return this.steer(id, text);
-    return this.send(id, text);
+    if (s.state.status !== "idle" && s.capabilities.canSteer && s.driver?.steer && s.state.mode !== "terminal") return this.steer(id, text, attachments);
+    return this.send(id, text, attachments);
   }
 
   /** Going into plan mode: the mode it leaves is kept, so approving a plan goes back to it. */
@@ -1732,7 +1732,7 @@ export class LiveControl {
       // At once, not after the usual short delay: a crash right after a turn ends mustn't look mid-turn.
       this.core.o.prefs.flush();
     }
-    if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
+    if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id, from: before });
     if (now === "idle") {
       // The next turn runs with the settings as shown; not while its subagents still run on the old
       // ones. A harness that reports what still runs (persistent) keeps this itself.

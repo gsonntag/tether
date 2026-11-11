@@ -2,6 +2,8 @@
 // P3 attaches each browser through one of these running `tmux attach` (SPEC §8). Findings and
 // caveats: docs/notes/pty.md.
 
+import { childEnv } from "../childEnv";
+
 export interface PtyOptions {
   cwd?: string;
   env?: Record<string, string | undefined>;
@@ -24,7 +26,7 @@ export interface Pty {
 export function spawnPty(argv: string[], opts: PtyOptions): Pty {
   const proc = Bun.spawn(argv, {
     cwd: opts.cwd,
-    env: { TERM: "xterm-256color", ...(opts.env ?? process.env) } as Record<string, string>,
+    env: { TERM: "xterm-256color", ...(opts.env ?? childEnv()) } as Record<string, string>,
     terminal: {
       cols: opts.cols ?? 80,
       rows: opts.rows ?? 24,

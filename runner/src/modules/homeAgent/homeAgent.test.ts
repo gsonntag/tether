@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { FROM_DISCORD, FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import { HomeLine } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
@@ -972,10 +972,12 @@ async function texting() {
   const line = new HomeLine();
   const sent: string[] = [];
   const personTexts: [string, string][] = [];
-  line.phone = { send: async (t) => (sent.push(t), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
+  /** for each text, whether it was the direct answer to a text (it may go back to where they wrote it) */
+  const answers: boolean[] = [];
+  line.phone = { send: async (t, o) => (sent.push(t), answers.push(!!o?.answer), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
   const t = await setup({ homeLine: line });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, personTexts, textsTab };
+  return { ...t, line, sent, answers, personTexts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1007,8 +1009,23 @@ test("a text goes to the Texts tab, marked as texted, and the reply goes back by
   expect(sent.length).toBe(2);
 });
 
+test("a Discord message goes to the Texts tab marked as Discord's, with its files, and the reply goes back", async () => {
+  const { line, sent, driverOf, textsTab } = await texting();
+  const file = { path: "/tmp/tether-attachments/x/1a2b3c4d-shot.png", name: "shot.png", mimeType: "image/png", size: 3 };
+  let storedFor = "";
+  await line.home!.take("what's this?", { mark: FROM_DISCORD, files: async (chat) => ((storedFor = chat), [file]) });
+  const texts = await textsTab();
+  expect(storedFor).toBe(texts);
+  await until(() => sent.length === 1);
+  const got = driverOf(texts)!.sent[0]!;
+  expect(got).toStartWith(`${FROM_DISCORD}what's this?`);
+  expect(got).toContain(file.path);
+  expect(tetherOrigin(got)?.origin).toEqual({ kind: "discord" });
+  expect(sent[0]).toStartWith(`echo ${FROM_DISCORD}what's this?`);
+});
+
 test("texted work: a finished-turn report's outcome goes back by text, a turn that only keeps it going doesn't", async () => {
-  const { line, sent, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  const { line, sent, answers, runner, driverOf, textsTab, tools, project, fake } = await texting();
   await line.home!.take("fix the tests in project");
   await until(() => sent.length === 1);
   const texts = await textsTab();
@@ -1036,6 +1053,8 @@ test("texted work: a finished-turn report's outcome goes back by text, a turn th
   expect(sent.length).toBe(3);
   expect(sent[2]).toContain("Report 3 of");
   expect(sent.some((t) => t.includes("Report 2 of"))).toBe(false);
+  // Only the answer to the person's text is an answer (it may go to a channel); reports go privately.
+  expect(answers).toEqual([true, false, false]);
 });
 
 test("reports to another tab, and watch reports in the Texts tab, aren't texted", async () => {
@@ -1101,12 +1120,14 @@ test("closing the Texts tab: the next text makes a new one", async () => {
 });
 
 test("a failed turn on a text is texted briefly", async () => {
-  const { line, sent, fake } = await texting();
+  const { line, sent, answers, fake } = await texting();
   const plain = fake.script;
   fake.script = (text) => (text.includes("boom") ? [async (sink) => sink.state({ status: "idle", error: "429 rate_limit_error" } as any)] : plain(text));
   await line.home!.take("boom");
   await until(() => sent.length === 1);
   expect(sent[0]).toBe("Couldn't do that: rate limited.");
+  // A failure isn't an answer: it goes to them privately, never to a channel.
+  expect(answers).toEqual([false]);
 });
 
 test("the Home agent keeps its own style rules: none of the sessions' added instructions", () => {

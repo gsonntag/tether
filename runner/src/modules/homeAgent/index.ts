@@ -38,7 +38,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
-import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, fromTether, tetherPurpose } from "../../../../shared/fromTether";
+import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, fromTether, fromTexted, TEXTED_VIA, tetherPurpose } from "../../../../shared/fromTether";
 import { replyForPeople } from "../../../../shared/checkIn";
 import { statusLabel, type HarnessReport, type HarnessVersion } from "../../../../shared/harnessUpdates";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
@@ -47,7 +47,7 @@ import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/prot
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
-import { HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd } from "../homeLine";
+import { HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd, type TakeVia } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
@@ -204,8 +204,8 @@ How to work:
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
-- Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
-- You're the person's PM over text: text_person texts their phone, and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started over iMessage), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session.
+- Texts: a message starting with "[From iMessage]" is the person texting you from their phone (one starting with "[From <app>]", like "[From Discord]", is them writing from that messaging app, the same thing), and your reply goes back to them as a text, the way it came. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- You're the person's PM over text: text_person texts their phone (or whichever messaging app Tether reaches them on), and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started from a messaging app), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -420,6 +420,14 @@ export class HomeAgent implements HomeEnd {
     return !!this.state.texts && this.state.texts === id;
   }
 
+  textsBusy(): boolean {
+    const id = this.state.texts;
+    if (!id || !this.state.tabs.includes(id)) return false;
+    const look = this.ctx.session(id);
+    const st = look?.state;
+    return !!look && (look.status !== "idle" || look.busy || (st?.queue?.length ?? 0) > 0 || st?.mode === "terminal" || !!st?.queueHeld || !!st?.restartWait || !!this.textTurn);
+  }
+
   /** A session it drives wanted to text the person: a report to its chat instead (homeLine.ts relay). */
   async relay(sessionId: string, message: string): Promise<string | undefined> {
     const c = this.state.children[sessionId];
@@ -429,10 +437,11 @@ export class HomeAgent implements HomeEnd {
     return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
-  /** The person texted the Home agent: to the Texts tab, as theirs, after its turn if one runs. */
-  async take(text: string): Promise<void> {
+  /** The person texted the Home agent: to the Texts tab, as theirs (marked with the connector it came by), after its turn if one runs. */
+  async take(text: string, via: TakeVia = {}): Promise<void> {
     const chat = await this.textsChat();
-    await this.ctx.sessions.queue(chat, FROM_IMESSAGE + text);
+    const files = via.files ? await via.files(chat) : [];
+    await this.ctx.sessions.queue(chat, (via.mark ?? FROM_IMESSAGE) + text, files);
   }
 
   /** The Texts tab: the one texts went to, else a new one (current once a text lands in it). */
@@ -465,7 +474,7 @@ export class HomeAgent implements HomeEnd {
     }
     if (msg.role !== "user") return;
     const raw = text(msg);
-    const texted = msg.origin?.kind === "imessage" || (!msg.origin && raw.startsWith(FROM_IMESSAGE));
+    const texted = (!!msg.origin && Object.hasOwn(TEXTED_VIA, msg.origin.kind)) || (!msg.origin && !!fromTexted(raw));
     const report = (msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined)) && raw.includes(TEXTED);
     if (texted) t.kind = "text";
     else if (report && t.kind === "quiet") t.kind = "report";
@@ -481,7 +490,9 @@ export class HomeAgent implements HomeEnd {
     if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
     if (!words) return;
-    await phone.send(words).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
+    // Only the answer to a text the person sent may go back to where they wrote it (a channel others
+    // read); a report's outcome goes to them privately.
+    await phone.send(words, { answer: t.kind === "text" && !error }).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
   /**
@@ -945,7 +956,7 @@ export class HomeAgent implements HomeEnd {
       },
       {
         name: "text_person",
-        description: `Texts the person an iMessage on their phone, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Not for answering their texts: those replies are texted already.`,
+        description: `Texts the person in the messaging app Tether reaches them on, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Not for answering their texts: those replies are texted already.`,
         input: { message: z.string().min(1).describe("The text: one short sentence.") },
         run: async (a: { message: string }) => {
           const phone = this.ctx.homeLine?.phone;

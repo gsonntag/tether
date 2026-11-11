@@ -31,18 +31,38 @@ export function tetherPurpose(text: string): TetherPurpose | undefined {
 }
 
 /**
- * The person's own words, texted to the Home agent over iMessage (runner/src/modules/texting), start
- * with this marker: the chat shows them as the person's, marked as a text, and the agent knows its
- * reply goes back to a phone.
+ * The messaging apps the person can reach Tether by (runner/src/modules/texting/connectors.ts, one
+ * connector each), by the origin kind their messages show as. A new connector is a line here: its
+ * marker, the chat's "via …" label and the origin kind all come from it.
  */
-export const FROM_IMESSAGE = "[From iMessage] ";
+export const MESSAGING_APPS = { imessage: "iMessage", discord: "Discord" } as const;
+export type TextedKind = keyof typeof MESSAGING_APPS;
 
-/** The text without the marker when the person texted it, else undefined. */
-export const fromImessage = (text: string): string | undefined => (text.startsWith(FROM_IMESSAGE) ? text.slice(FROM_IMESSAGE.length) : undefined);
+/**
+ * The person's own words, sent to the Home agent through a connector, start with "[From <app>] ":
+ * the chat shows them as the person's, marked as sent from that app, and the agent knows its reply
+ * goes back there.
+ */
+export const textedMark = (kind: TextedKind) => `[From ${MESSAGING_APPS[kind]}] `;
+
+/** Every connector's marker, by its kind. */
+export const TEXTED_MARKS = Object.fromEntries(Object.keys(MESSAGING_APPS).map((k) => [k, textedMark(k as TextedKind)])) as Record<TextedKind, string>;
+
+export const FROM_IMESSAGE = TEXTED_MARKS.imessage;
+export const FROM_DISCORD = TEXTED_MARKS.discord;
+
+/** What the person sent by a connector: which one and their words, else undefined. */
+export function fromTexted(text: string): { kind: TextedKind; text: string } | undefined {
+  for (const [kind, mark] of Object.entries(TEXTED_MARKS) as [TextedKind, string][]) if (text.startsWith(mark)) return { kind, text: text.slice(mark.length) };
+  return undefined;
+}
+
+/** "via iMessage", "via Discord" */
+export const TEXTED_VIA: Record<TextedKind, string> = MESSAGING_APPS;
 
 /** Who wrote a message Tether passed on. `session`: another session (the peers module), by title and id. */
 export interface TetherOrigin {
-  kind: "tether" | "shell" | "session" | "imessage";
+  kind: "tether" | "shell" | "session" | TextedKind;
   name?: string;
   sessionId?: string;
   /** a session's note to every session (tether_broadcast) */
@@ -96,8 +116,8 @@ export function tetherOrigin(text: string): { origin: TetherOrigin; text: string
     const purpose = tetherPurpose(text);
     return { origin: { kind: "tether", ...(purpose ? { purpose } : {}) }, text: t };
   }
-  const im = fromImessage(text);
-  if (im !== undefined) return { origin: { kind: "imessage" }, text: im };
+  const im = fromTexted(text);
+  if (im) return { origin: { kind: im.kind }, text: im.text };
   const sh = parseShellMessage(text);
   if (sh) return { origin: { kind: "shell", name: sh.command }, text: sh.text };
   const peer = parseSessionMessage(text);
@@ -115,7 +135,7 @@ export function titleText(text: string): string {
   if (t.startsWith("\u200b")) return t.slice(1);
   const sh = parseShellMessage(t);
   if (sh) return `$ ${sh.command}`;
-  return fromTether(t) ?? fromImessage(t) ?? parseSessionMessage(t)?.text ?? text;
+  return fromTether(t) ?? fromTexted(t)?.text ?? parseSessionMessage(t)?.text ?? text;
 }
 
 /** Text a person typed never passes for one of Tether's own messages (a zero-width space in front). */

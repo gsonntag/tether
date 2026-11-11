@@ -1,6 +1,8 @@
 // Texting's settings and the router's state (texting.json in the module's folder, mode 600). The
 // Photon project's id and secret and the phone may instead come from the runner's environment
 // (runner.env): TETHER_PHOTON_PROJECT_ID, TETHER_PHOTON_PROJECT_SECRET, TETHER_TEXT_PHONE. Those win.
+// Other connectors (connector.ts) keep theirs under `connectors.<id>` in the same file; `prefer` is
+// the connector Tether's texts go to, `lastVia` the one the person last wrote on.
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -31,19 +33,39 @@ export function normalPhone(v: string): string | undefined {
   return digits.startsWith("+") ? digits : digits.length === 10 ? `+1${digits}` : `+${digits}`;
 }
 
+/** The top-level keys this version writes; any other is kept as it was. */
+const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia"]);
+
 export class TextingStore {
   settings: TextingSettings = {};
   router: RouterState = emptyState();
+  /** other connectors' settings, by id */
+  connectors: Record<string, Record<string, unknown>> = {};
+  /** the connector Tether's texts go to (unset: wherever the person last wrote) */
+  prefer?: string;
+  /** the connector the person last wrote on */
+  lastVia?: string;
+  /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
+  replyVia: Record<string, { via: string; place?: string }> = {};
+  /** what else the file held (a newer or older Tether's): written back as it was */
+  private other: Record<string, unknown> = {};
 
   constructor(
     private file?: string,
-    private env: Env = process.env,
+    readonly env: Env = process.env,
   ) {
     if (file) {
       try {
         const v = JSON.parse(readFileSync(file, "utf8"));
+        if (v && typeof v === "object" && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) if (!KNOWN.has(k)) this.other[k] = x;
         if (v?.settings && typeof v.settings === "object") this.settings = v.settings;
         if (Array.isArray(v?.router?.slots) && Array.isArray(v?.router?.sent)) this.router = v.router;
+        if (v?.connectors && typeof v.connectors === "object" && !Array.isArray(v.connectors)) this.connectors = v.connectors;
+        if (typeof v?.prefer === "string") this.prefer = v.prefer;
+        if (typeof v?.lastVia === "string") this.lastVia = v.lastVia;
+        if (v?.replyVia && typeof v.replyVia === "object" && !Array.isArray(v.replyVia))
+          for (const [k, b] of Object.entries(v.replyVia as Record<string, any>))
+            if (b && typeof b.via === "string") this.replyVia[k] = { via: b.via, ...(typeof b.place === "string" ? { place: b.place } : {}) };
       } catch {}
     }
     for (const k of [this.settings.projectSecret, this.env.TETHER_PHOTON_PROJECT_SECRET]) if (k) registerSecret(k);
@@ -99,12 +121,24 @@ export class TextingStore {
     this.save();
   }
 
+  /** A connector's own settings (a copy; `setSection` saves them). */
+  section<T extends object>(id: string): Partial<T> {
+    const v = this.connectors[id];
+    return v && typeof v === "object" ? ({ ...v } as Partial<T>) : {};
+  }
+
+  setSection(id: string, v: object) {
+    this.connectors = { ...this.connectors, [id]: { ...v } };
+    this.save();
+  }
+
   save() {
     if (!this.file) return;
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ settings: this.settings, router: this.router }), { mode: 0o600 });
+      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}) };
+      writeFileSync(tmp, JSON.stringify({ ...this.other, settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);
     } catch {}

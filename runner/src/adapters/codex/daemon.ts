@@ -6,6 +6,7 @@
 import { existsSync } from "node:fs";
 import { HARNESS_BINS } from "../detect";
 import { CodexRpc, DAEMON_SOCKET } from "./rpc";
+import { childEnv } from "../../childEnv";
 
 const NOT_RUNNING = /isn't running/;
 
@@ -26,7 +27,7 @@ export function daemonStartArgv(env: Record<string, string | undefined> = proces
 async function startDaemon(): Promise<void> {
   starting ??= (async () => {
     try {
-      const p = Bun.spawn(daemonStartArgv(), { stdout: "ignore", stderr: "pipe", stdin: "ignore" });
+      const p = Bun.spawn(daemonStartArgv(), { env: childEnv(), stdout: "ignore", stderr: "pipe", stdin: "ignore" });
       const timer = setTimeout(() => p.kill(), 30_000);
       const code = await p.exited;
       clearTimeout(timer);

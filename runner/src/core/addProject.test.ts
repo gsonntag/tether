@@ -116,6 +116,16 @@ describe("cloneRepo", () => {
     expect(jobs.status(jobs.start("acme/widget", dest).cloneId)).toEqual({ state: "done", path: dest, percent: 100 });
   });
 
+  test("a folder whose origin is an alias git rewrites to the repo (url.<x>.insteadOf) is the same repo", async () => {
+    fakeGitHub();
+    const dest = join(scratch(), "widget");
+    await clone("acme/widget", dest);
+    git("-C", dest, "remote", "set-url", "origin", "gh:acme/widget");
+    git("-C", dest, "config", "url.https://github.com/.insteadOf", "gh:");
+    const jobs = new CloneJobs();
+    expect(jobs.status(jobs.start("acme/widget", dest).cloneId)).toEqual({ state: "done", path: dest, percent: 100 });
+  });
+
   test("what an interrupted clone left is cloned again, not taken as done", async () => {
     fakeGitHub();
     const dest = join(scratch(), "widget");

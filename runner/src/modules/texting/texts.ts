@@ -56,6 +56,12 @@ export const TEXTS = {
   noHome: "The Home agent isn't running on this runner.",
   /** the Home agent's chat failed on something the person texted */
   homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
+  /** a file the person sent that didn't come along (too big, a host Tether doesn't take, or it didn't download) */
+  fileSkipped: (name: string) => `Couldn't take ${name}, it's too big or it didn't download.`,
+  /** files sent with a message that went nowhere (a reply asking which session, say) */
+  filesNotSent: "Your file didn't go anywhere, send it again with the session's number.",
+  /** files sent with an answer to a request: the request was answered, the files weren't passed on */
+  filesWithAnswer: (n: number) => `[${n}] I answered the request but your file didn't go, send it again after.`,
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

@@ -1296,6 +1296,41 @@ person's own message (`live.tell`, defanged). A reply passed on gets a ✅ react
 person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
+*Connectors* (`texting/connector.ts`, listed in `texting/connectors.ts`). Texts travel over
+messaging connectors: iMessage (`imessage.ts`, Photon) and a Discord bot (`discord.ts`, its Gateway
+WebSocket and REST API with no library: identify with GUILD_MESSAGES, DIRECT_MESSAGES and
+MESSAGE_CONTENT, heartbeats, resume after a drop, reconnect with backoff; a refused token or intent
+stops it with why). A connector is only a transport: its settings (secrets write-only), a link that
+hears the person and sends text (and images, where it takes them), and its status. Everything above
+(numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
+Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
+else the first connected (one that's on and really connected). Whatever follows the person's
+message about a session (or the Home agent) goes back on the connector it came by, saved per session
+(`replyVia`, with the DM it came from). A shared place (a Discord channel others read) gets Tether's
+direct reply to that message (the picker, a problem with it) and the answer of the one turn it
+started, under one rule: the channel message counts only if the session (or Home's Texts chat) was
+idle with nothing queued when it came; any other input (a DM, Tether's web, a report, a request
+answer, a held text picked from elsewhere, another turn) ends that claim; only the turn it started
+may answer there, once. In doubt, the DM. Reports, failures, requests and text_person go privately. Files the person sends are stored with the session (or
+the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
+text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
+isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one
+channel set, where only a message that starts by mentioning the bot or replies to one of its
+messages counts; anyone else, bots, webhooks and the bot itself are ignored silently. Tether's own
+messages go to the owner's DM; only an answer to something written in the channel goes there.
+Messages are split at 2000 characters, masked links are spelled out (and any left escaped);
+mentions never ping. At most 900 fresh identifies a day across reconnects; a resume URL off
+discord.gg is never used. Its settings live in `texting.json` under `connectors.discord`
+(mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
+`TETHER_DISCORD_CHANNEL_ID`); it's off until set. Tether's secrets (`TETHER_TOKEN`, the connectors'
+keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`
+(`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. A token set in `runner.env` also stays in
+`/proc/<runner pid>/environ`, readable to same-user processes: the settings page (`texting.json`) is
+the recommended place for it. The Home agent sees Discord's words marked
+`[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
+`setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
+stay for an older web).
+
 *Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
 in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
 with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
