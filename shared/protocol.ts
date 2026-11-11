@@ -125,6 +125,12 @@ export interface Ops {
   homeAgentClear: { args: Record<string, never>; result: { rev: number } };
   /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers */
   homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean } };
+  /**
+   * "Archive done sessions" on Home: the Home agent's check-in (check_in_sessions) without a chat.
+   * `start` begins one unless one is running; `dismiss` forgets the last result. Always answers with
+   * where things stand: the check-in running now, and the last one's result
+   */
+  homeAgentCheckIn: { args: { start?: boolean; dismiss?: boolean }; result: CheckInStatus };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
@@ -438,6 +444,22 @@ export interface HomeChatUpdate {
   /** absent: none, the next message starts one */
   sessionId?: string;
   rev: number;
+}
+
+/** One session in a check-in's result, with why it was or wasn't archived (or asked). */
+export interface CheckInRow {
+  id: string;
+  title: string;
+  project: string;
+  reason?: string;
+}
+
+/** Where the Home agent's check-ins stand (the homeAgentCheckIn op). */
+export interface CheckInStatus {
+  /** one running now: how many were asked and how many have been settled */
+  running?: { id: string; at: number; deadline: number; asked: number; answered: number };
+  /** the last one that finished (kept until dismissed or replaced) */
+  last?: { id: string; at: number; archived: CheckInRow[]; kept: CheckInRow[]; skipped: CheckInRow[] };
 }
 
 // ---------- messages ----------
