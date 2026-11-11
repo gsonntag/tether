@@ -32,7 +32,7 @@ import type { Msg, Request, RequestAnswer } from "../../../../shared/transcript"
 import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
-import { openSpectrum, timed, type Inbound, type OpenLink, type TextLink } from "./link";
+import { openSpectrum, timed, TIMED_OUT, type Inbound, type OpenLink, type TextLink } from "./link";
 import { HELD_MS, HOME, Router, type About } from "./router";
 import { homeLabel, homeList, PERSON_TEXT_MAX, replyContext, type TextedFile } from "../homeLine";
 import { download, imagemagick, incomingImage, sweepMagickTemp, pickIncoming, readOutgoingImage, type Convert, type InboundFile, type OutImage } from "./images";
@@ -133,6 +133,9 @@ export class Texter {
   /** images that came with the text the router holds (its id), waiting for the person to pick a session */
   private heldFiles?: { id: number; files: TextedFile[]; at: number };
   private heldTimer?: ReturnType<typeof setTimeout>;
+  /** The last send / image send timed out (Photon may still have delivered it): don't tell the agent to resend. */
+  private unsure = false;
+  private imageUnsure = false;
   /** turns HEIC into JPEG (tests replace it) */
   convert: Convert = imagemagick;
   readonly caps: AgentTextCaps;
@@ -217,12 +220,15 @@ export class Texter {
 
   /** Texts the person; `sent`: it went (Photon may give no id). */
   private async send(text: string): Promise<{ sent: boolean; id?: string }> {
+    this.unsure = false;
     if (!this.link) return { sent: false };
     try {
       const id = await timed(this.link.send(text), "a send");
       this.router.noteOut();
         return { sent: true, ...(id ? { id } : {}) };
     } catch (e: any) {
+      // Only the send itself timing out leaves it unknown whether it went (not opening the chat).
+      this.unsure = e instanceof Error && e.message.startsWith(TIMED_OUT("a send"));
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
       this.ctx.log(`texting: ${this.lastError}`);
       return { sent: false };
@@ -263,12 +269,14 @@ export class Texter {
 
   /** An image after a text, threaded like it (a reply to the image goes where a reply to the text would). */
   private async sendImage(image: OutImage, sessionId: string, about?: string, requestId?: string, home?: string): Promise<boolean> {
+    this.imageUnsure = false;
     if (!this.link?.sendFile) return false;
     try {
       const id = await timed(this.link.sendFile(image), "an image");
       if (id) this.router.noteSent(id, sessionId, requestId, about, home);
       return true;
     } catch (e: any) {
+      this.imageUnsure = e instanceof Error && e.message.startsWith(TIMED_OUT("an image"));
       this.lastError = `Couldn't send an image: ${e?.message ?? e}`;
       this.ctx.log(`texting: ${this.lastError}`);
       return false;
@@ -310,14 +318,15 @@ export class Texter {
       if ("problem" in r) return { text: `${r.problem} Nothing was sent.`, isError: true };
       image = r;
     }
+    this.unsure = this.imageUnsure = false;
     const { sent, imageSent } = from === HOME ? await this.homeSend(words, o.about, image, o.chat) : await this.tell(from, TEXTED_YOU, words, { always: true, image });
     if (!sent) {
       this.caps.undo(from);
-      const slow = /didn't answer/.test(this.lastError ?? "");
+      const slow = this.unsure;
       return { text: slow ? `Photon didn't answer in time (${this.lastError}), so the text may or may not have gone. Don't send it again; mention it in your reply if it matters.` : `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
     }
     const cut = words.length < body.trim().length ? ` It was cut to ${PERSON_TEXT_MAX} characters.` : "";
-    const pic = image ? (imageSent ? " The image went with it." : ` The image didn't go (${this.lastError ?? "not connected"}).`) : "";
+    const pic = image ? (imageSent ? " The image went with it." : this.imageUnsure ? ` Photon didn't answer in time for the image, so it may or may not have gone; don't send it again.` : ` The image didn't go (${this.lastError ?? "not connected"}).`) : "";
     return { text: `Texted the person.${cut}${pic} If they reply, their reply comes to you as a message.` };
   }
 

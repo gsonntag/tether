@@ -33,11 +33,14 @@ export interface TextLink {
 /** How long one call to Photon may take (a send, a reaction, opening the chat): a stalled Photon mustn't freeze the texts queue. Tests shorten it. */
 export const PHOTON = { ms: 30_000 };
 
+/** The start of `timed`'s error for `what`. */
+export const TIMED_OUT = (what: string) => `Photon didn't answer ${what}`;
+
 /** `p`, or a rejection after `ms` ("Photon didn't answer …"): the call itself is left to finish or fail on its own. */
 export function timed<T>(p: Promise<T>, what: string, ms = PHOTON.ms): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, no) => {
-    timer = setTimeout(() => no(new Error(`Photon didn't answer ${what} within ${Math.round(ms / 1000)}s`)), ms);
+    timer = setTimeout(() => no(new Error(`${TIMED_OUT(what)} within ${Math.round(ms / 1000)}s`)), ms);
     (timer as { unref?: () => void }).unref?.();
   });
   p.catch(() => {});

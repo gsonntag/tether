@@ -8,7 +8,7 @@ import { REQUEST_MAX } from "./describe";
 import { commandWords } from "./summary";
 import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, HEIC_NOTE, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
-import { fromOwner, inboundOf, PHOTON, senderPhone, timed, type Inbound, type OpenLink } from "./link";
+import { fromOwner, inboundOf, PHOTON, senderPhone, timed, TIMED_OUT, type Inbound, type OpenLink } from "./link";
 import { HELD_MS } from "./router";
 import { normalPhone, TextingStore } from "./store";
 import { HomeLine, PERSON_TEXT_MAX, type Home, type HomeEnd, type TextedFile } from "../homeLine";
@@ -1122,6 +1122,35 @@ describe("round 5: a stalled Photon, and restarts", () => {
       await t.heard({ text: "second", react: stuck });
       expect(told).toEqual([["claude:a", "first"], ["claude:a", "second"]]);
       expect(logs.filter((l) => l.includes("couldn't react")).length).toBe(2);
+    } finally {
+      PHOTON.ms = was;
+    }
+  });
+
+  test("text_person after a send timed out says don't resend; a send that plainly failed says it didn't go", async () => {
+    const was = PHOTON.ms;
+    PHOTON.ms = 20;
+    try {
+      const sessions: Record<string, any> = { "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } } };
+      let mode: "hang" | "fail" | "ok" = "hang";
+      const t = new Texter(
+        { log: () => {}, runnerId: "box", appUrl: "https://x/", session: (id) => sessions[id], viewersOf: () => [], sessions: { tell: async () => {}, answer: async () => {} } },
+        new TextingStore(undefined, ENV),
+        async () => ({
+          send: () => (mode === "hang" ? new Promise<string>(() => {}) : mode === "fail" ? Promise.reject(new Error(`${TIMED_OUT("opening the chat")} within 1s`)) : Promise.resolve("id1")),
+          closed: new Promise(() => {}),
+          stop: async () => {},
+        }),
+      );
+      await t.start();
+      const hung = await t.personText("claude:a", "PR is up");
+      expect(hung.isError).toBe(true);
+      expect(hung.text).toContain("Don't send it again");
+      mode = "fail";
+      const failed = await t.personText("claude:a", "PR is up again");
+      expect(failed.text).toContain("didn't go");
+      expect(failed.text).not.toContain("Don't send it again");
+      await t.stop();
     } finally {
       PHOTON.ms = was;
     }
