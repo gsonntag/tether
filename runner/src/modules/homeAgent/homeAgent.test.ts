@@ -10,8 +10,9 @@ import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
+import { CredentialStore } from "../../credentials";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ago, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, stateOf } from ".";
+import { ago, homeAgentModule, inProject, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf } from ".";
 
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
@@ -24,7 +25,7 @@ async function until(f: () => boolean, ms = 3000) {
   }
 }
 
-async function setup() {
+async function setup(o: { anthropicKey?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tether-home-"));
   stops.push(() => rmSync(dir, { recursive: true, force: true }));
   const homeFolder = join(dir, "home");
@@ -32,9 +33,12 @@ async function setup() {
   mkdirSync(homeFolder);
   mkdirSync(project);
   const fake = new FakeAdapter();
+  fake.capabilities = { ...fake.capabilities, sourceSwitch: true };
   const setups = new Map<string, (nativeId: string) => AgentSetup>();
   (fake as Adapter).agentSetup = (folder, make) => (setups.set(folder, make), () => void setups.delete(folder));
-  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [fake], prefsFile: join(dir, "runner.json"), homeFolder, core: { evictMs: 60_000 } });
+  const credentials = new CredentialStore(join(dir, "credentials.json"));
+  if (o.anthropicKey) credentials.set("anthropic", "sk-ant-test-0000000000000000");
+  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [fake], prefsFile: join(dir, "runner.json"), homeFolder, core: { evictMs: 60_000 }, credentials });
   stops.push(() => runner.core.stop());
   mkdirSync(join(dir, "data"));
   const announced: HomeChatUpdate[] = [];
@@ -149,7 +153,7 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const { rev } = await op("homeAgentClear");
   expect(rev).toBeGreaterThan(first.rev);
   expect(announced.at(-1)).toEqual({ rev });
-  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev });
+  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev, settings: { harness: "claude", source: "subscription" }, harnesses: ["claude"] });
   // Kept across a restart.
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ rev });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).current).toBeUndefined();
@@ -296,4 +300,52 @@ test("stateOf, inProject, lastPrompt and ago", () => {
   expect(ago(0, 5 * 60_000)).toBe("5m ago");
   expect(ago(0, 3 * 3_600_000)).toBe("3h ago");
   expect(ago(0, 3 * 86_400_000)).toBe("3d ago");
+});
+
+test("its model and source are kept for every chat, and the current chat takes them", async () => {
+  const { runner, op, chat } = await setup();
+  const first = await op("homeAgent");
+  expect(first.settings).toEqual({ harness: "claude", source: "subscription" });
+  expect(first.harnesses).toEqual(["claude"]);
+  // A model, on the same harness and source: the same chat, its model changed.
+  const r = await op("homeAgentSet", { harness: "claude", source: "subscription", model: "claude-opus-5-5" });
+  expect(r.sessionId).toBe(chat);
+  expect(r.settings).toEqual({ harness: "claude", source: "subscription", model: "claude-opus-5-5" });
+  expect(runner.core.sessions.get(chat)!.state.model).toBe("claude-opus-5-5");
+  expect((await op("homeAgent")).settings.model).toBe("claude-opus-5-5");
+  // A new chat starts on it.
+  const next = (await op("homeAgentNew")).sessionId;
+  expect(next).not.toBe(chat);
+  expect(runner.core.sessions.get(next)!.state.model).toBe("claude-opus-5-5");
+  // "default" is no model: the harness's own.
+  expect((await op("homeAgentSet", { harness: "claude", source: "subscription", model: "default" })).settings).toEqual({ harness: "claude", source: "subscription" });
+});
+
+test("a source that isn't set up, or a harness that can't run it, is refused and nothing is kept", async () => {
+  const { op } = await setup();
+  await expect(op("homeAgentSet", { harness: "claude", source: "anthropic" })).rejects.toThrow("Anthropic API key isn't set up on this runner.");
+  await expect(op("homeAgentSet", { harness: "codex", source: "subscription" })).rejects.toThrow("Codex can't run the Home agent on this runner.");
+  await expect(op("homeAgentSet", { harness: "claude" })).rejects.toThrow("Pick an agent and a source.");
+  expect((await op("homeAgent")).settings).toEqual({ harness: "claude", source: "subscription" });
+});
+
+test("a Claude source change keeps the same chat, from its next start", async () => {
+  const { runner, op, chat } = await setup({ anthropicKey: true });
+  const r = await op("homeAgentSet", { harness: "claude", source: "anthropic" });
+  expect(r.sessionId).toBe(chat);
+  expect(runner.core.o.prefs.get(chat).source).toBe("anthropic");
+  const next = (await op("homeAgentNew")).sessionId;
+  expect(runner.core.o.prefs.get(next).source).toBe("anthropic");
+});
+
+test("the choice is saved with the module's state", async () => {
+  const { op, dataDir } = await setup();
+  await op("homeAgentSet", { harness: "claude", source: "subscription", model: "claude-haiku-5-5" });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).settings).toEqual({ harness: "claude", source: "subscription", model: "claude-haiku-5-5" });
+});
+
+test("settingsOf keeps only what's valid", () => {
+  expect(settingsOf({ harness: "codex", source: "azure", model: " dep " })).toEqual({ harness: "codex", source: "azure", model: "dep" });
+  expect(settingsOf({ harness: "other", source: "subscription" })).toBeUndefined();
+  expect(settingsOf(null)).toBeUndefined();
 });

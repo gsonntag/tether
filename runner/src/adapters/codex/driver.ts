@@ -28,6 +28,7 @@ import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
+import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
 
 /** A message as Codex's input: its text, and the attached images Codex reads from disk. */
 const input = (text: string, attachments: Attachment[] = []) => [
@@ -68,7 +69,7 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   assertCredentialCurrent(opts.credential);
   const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}) });
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...codexStartExtras(projectPath), ...(source ? { modelProvider: sourceProvider(source.source) } : {}) });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
     if (source) rememberSource(id, source);
@@ -161,7 +162,7 @@ export class CodexDriver implements Driver {
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
-      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true }).catch((e: any) => {
+      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...codexResumeExtras(projectPath) }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw e;
       });
@@ -608,6 +609,10 @@ export class CodexDriver implements Driver {
     // Not about this thread (account, auth, …): another client may answer it; Tether never does.
     const thread: string | undefined = p?.threadId;
     if (!thread) return null;
+    // Tether's own tools (setup.ts), for this thread: answered here, never shown as a request.
+    if (method === "item/tool/call" && thread === this.nativeId) {
+      return codexToolCall(this.projectPath, this.nativeId, p).then((r) => r ?? { contentItems: [{ type: "inputText", text: "Tether has no tools for this session." }], success: false });
+    }
     if (thread === this.nativeId || this.stream.child(thread)) return this.ask(method, p, id, thread);
     // A subagent's, before its spawn was reported: it shows in its own view once that comes, else
     // in the main session's (never lost, never answered on its own).

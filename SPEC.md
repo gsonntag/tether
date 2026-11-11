@@ -989,6 +989,27 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
 
+### The Home agent's model and source
+
+The Home agent (`runner/src/modules/homeAgent`) is a long-lived chat, so unlike a session its
+harness, source and model are remembered: `homeAgentSet` keeps them in the module's `state.json`
+(`settings`), and every new chat starts on them. A chip above the chat ("Claude Code · Haiku 5.5 ·
+Claude plan", the source in the API colour on a key) opens a small form with the same lists as New
+session: the harnesses that can run it, the sources set up for that harness (`billingSources`), and
+that harness's models (Azure: its deployments). With nothing chosen it's Claude Code on the source a
+new session gets, with no model (the harness's default).
+
+The current chat takes a change at once, keeping its conversation: a model by `setModel`; a Claude
+source from its next start (`setSessionSource`, the same session); another harness, or another Codex
+source (a thread can't cross app-servers), by a Move (§15), whose new chat becomes current and gets
+the reports of the sessions the old one started. A move needs the chat idle; a refused change saves
+nothing. A source change Codex later carries into a new thread (`continuedIn`) is followed the same way.
+
+On Codex its tools are app-server dynamic tools (`dynamicTools` on `thread/start`, answered from
+`item/tool/call`; experimental), and its instructions the thread's developer instructions; both are
+written to the rollout, so they survive a resume (checked on 0.164). Codex's shell, patch, web, apps
+and subagent tools are switched off by config, passed again on each resume, and the chat runs read-only.
+
 ### API session dollars and retry times
 
 An API badge includes the cumulative API-only session amount in USD. Estimates say **est.**. A total

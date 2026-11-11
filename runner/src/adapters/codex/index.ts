@@ -11,6 +11,7 @@ import { DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, createThread } from "./driver";
+import { setCodexSetup } from "./setup";
 import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
@@ -50,6 +51,7 @@ const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]
 
 export const codexAdapter: Adapter = {
   id: "codex",
+  agentSetup: setCodexSetup,
   capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" } },
   move: codexMove,
   billing: {
