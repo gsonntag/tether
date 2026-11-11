@@ -1266,7 +1266,8 @@ export const homeAgentModule: Module = {
     void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chats' mode: ${(e as Error).message}`));
 
     const offs = [
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void agent.turnEnded(sessionId, error, stopped)),
+      // A rate-limit retry is still that turn: no report, answer or failure until it really ends.
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && agent.turnEnded(sessionId, error, stopped))),
       ctx.bus.on("message", ({ sessionId, msg }) => agent.personSpoke(sessionId, msg)),
       ctx.bus.on("requestOpened", ({ request }) => void agent.needsPerson(request.sessionId, request.title || request.question || (request.tool ? `permission for ${request.tool}` : "a question"))),
       ctx.bus.on("attention", ({ sessionId, message }) => void agent.needsPerson(sessionId, message || "in its terminal")),

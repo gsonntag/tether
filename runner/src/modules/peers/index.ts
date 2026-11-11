@@ -399,7 +399,8 @@ export const peersModule: Module = {
     const offs = [
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void peers.turnEnded(sessionId, error, stopped)),
+      // A rate-limit retry is still that turn: its ask stays open for the turn that recovers.
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && peers.turnEnded(sessionId, error, stopped))),
     ];
     ctx.log(`peers: tools for every session, calls on ${socket.socketPath}`);
     return () => {
