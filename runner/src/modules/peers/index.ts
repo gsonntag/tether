@@ -122,7 +122,7 @@ export class Peers {
       case PEER_TOOLS.ask:
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
       case PEER_TOOLS.broadcast:
-        return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status) });
+        return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       default:
         return { text: `There's no tool ${c.tool}.`, isError: true };
     }
@@ -322,13 +322,21 @@ export class Peers {
     });
   }
 
-  async broadcastFrom(from: string, text: string, f: { project?: string; status?: string }): Promise<PeerAnswer> {
+  /**
+   * An agent's note to all: its own project's sessions unless it names a `project` or asks for
+   * `scope: "all"`.
+   */
+  async broadcastFrom(from: string, text: string, f: { project?: string; status?: string; scope?: string }): Promise<PeerAnswer> {
     this.checkText(text);
+    const project = f.project?.trim();
+    const all = !project && f.scope === "all";
+    const own = project || all ? undefined : (this.ctx.session(from) ?? (await this.ctx.sessions.open(from).catch(() => undefined)))?.summary.projectPath;
+    if (!project && !all && !own) return { text: "Couldn't tell this session's project, so nothing was sent. Pass project, or scope \"all\".", isError: true };
     const why = this.caps.checkBroadcast(from);
     if (why) return this.refused(from, why);
     const status = f.status === "idle" || f.status === "working" || f.status === "waiting" ? f.status : undefined;
-    const targets = matching(this.others(from), { ...(status ? { status } : {}) }).filter((s) => this.inProject(s, f.project ?? ""));
-    if (!targets.length) return { text: "No other session matches, so nothing was sent." };
+    const targets = matching(this.others(from), { ...(status ? { status } : {}), ...(own ? { projectPath: own } : {}) }).filter((s) => this.inProject(s, project ?? ""));
+    if (!targets.length) return { text: own ? "No other session in this project matches, so nothing was sent. Pass project, or scope \"all\", for others." : "No other session matches, so nothing was sent." };
     if (targets.length > BROADCAST_MAX) return this.refused(from, `${targets.length} sessions match (at most ${BROADCAST_MAX} at once). Narrow it with project or status.`);
     // Reserved before anything waits; given back if it reached nobody.
     const hops = this.caps.hopsFrom(from);

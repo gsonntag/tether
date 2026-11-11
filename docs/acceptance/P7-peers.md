@@ -38,3 +38,4 @@ broadcasts a project filter in tests.
 | 10 | Restart the runner during an open ask. | unit: a runner that is away says nothing was sent; one cut off mid-call says the message may already be queued (check with tether_sessions). The queued question is the core queue's (runner.json), and its hops survive with it. |
 | 11 | Screenshots: origin bubble, tool cards, Send to all, desktop and phone. | by hand |
 | 12 | A plan-mode session sends to a bypassPermissions one; unknown modes; the receiver's hint. | unit (peers.test.ts "a stricter session's message to a looser one waits for the person's OK", p5.test.ts "held for your OK"). |
+| 13 | An agent's broadcast without project or scope; with `project`; with `scope: "all"`. | unit: its own project only; the named one; every project. The person's Send to all is unchanged. |

@@ -740,8 +740,9 @@ event (with the message's text) and the queued message's id from `SessionActions
   `tether` (`mcp.ts`, run with the runner's `bun`) with `tether_sessions` (id, title, folder,
   agent, idle / working / waiting, last activity; filter by project or text), `tether_send {to,
   text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
-  minutes by default, 60 at most) and `tether_broadcast {text, project?, status?}`
-  (fire-and-forget, at most 20 sessions, never the sender). `to` is an id or a title only one
+  minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
+  (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
+  passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
   session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
   `default_tools_approval_mode = "approve"`.
 - **Transport.** The MCP server posts each call to the runner's Unix socket

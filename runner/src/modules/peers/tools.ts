@@ -41,12 +41,13 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.broadcast,
     description:
-      "Sends one note to every other session (at most 20), or to those in a project or with a status. Fire-and-forget: nobody's answer comes back. Use it rarely, for something every session needs to know (for example: main changed, rebase before pushing).",
+      "Sends one note to the other sessions in this session's project (at most 20), or with a status. Other projects only when you pass `project`, or `scope: \"all\"` for every project. Fire-and-forget: nobody's answer comes back. Use it rarely, for something every session needs to know (for example: main changed, rebase before pushing).",
     inputSchema: {
       type: "object",
       properties: {
         text,
-        project: { type: "string", description: "Only sessions in this project (its folder path or folder name)." },
+        project: { type: "string", description: "Sessions in this project (its folder path or folder name) instead of your own." },
+        scope: { type: "string", enum: ["project", "all"], description: 'Leave out (or "project") for your own project; "all" for every project.' },
         status: { type: "string", enum: ["idle", "working", "waiting"], description: "Only sessions that are idle, working, or waiting on the person." },
       },
       required: ["text"],

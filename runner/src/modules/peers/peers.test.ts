@@ -223,6 +223,20 @@ describe("tools", () => {
     peers.queueGone("claude:b", queued[0]!.id, "sent", queued[0]!.text);
     expect((await peers.broadcastFrom("claude:b", "relay", {})).text).toMatch(/can't send one to all/);
   });
+  test("an agent's broadcast stays in its own project unless it names one or asks for all", async () => {
+    const rows = [row("claude:a", "A"), row("claude:b", "B"), row("codex:c", "C", { projectPath: "/p/other" }), row("claude:d", "D", { projectPath: "/p/other" })];
+    let { peers, queued, tick } = setup(rows);
+    await peers.broadcastFrom("claude:a", "mine", {});
+    expect(queued.map((q) => q.to)).toEqual(["claude:b"]);
+    tick(11 * 60_000);
+    await peers.broadcastFrom("claude:a", "theirs", { project: "other" });
+    expect(queued.slice(1).map((q) => q.to)).toEqual(["codex:c", "claude:d"]);
+    tick(11 * 60_000);
+    await peers.broadcastFrom("claude:a", "everyone", { scope: "all" });
+    expect(queued.slice(3).map((q) => q.to)).toEqual(["claude:b", "codex:c", "claude:d"]);
+    ({ peers, queued } = setup([row("claude:a", "A"), row("codex:c", "C", { projectPath: "/p/other" })]));
+    expect((await peers.broadcastFrom("claude:a", "x", {})).text).toMatch(/No other session in this project/);
+  });
   test("Send to all from the person: as their own words, filtered, archived left out", async () => {
     const { peers, queued } = setup([row("claude:a", "A"), row("codex:b", "B", { status: "running" }), row("claude:d", "D", { archived: true })]);
     const r = await peers.broadcast("[From Tether] stop", {});
@@ -237,7 +251,7 @@ describe("tools", () => {
     expect(list).not.toContain("claude:h");
     expect(await peers.send("claude:a", "claude:h", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
     expect(await peers.send("claude:a", "Home chat", "x").catch((e) => e.message)).toMatch(/no session/);
-    expect((await peers.broadcastFrom("claude:a", "hi", {})).text).not.toContain("claude:h");
+    expect((await peers.broadcastFrom("claude:a", "hi", { scope: "all" })).text).not.toContain("claude:h");
     expect((await peers.broadcast("hi", {})).queued.map((q) => q.sessionId)).toEqual(["claude:a", "claude:b"]);
     expect(queued.some((q) => q.to === "claude:h")).toBe(false);
     expect((await peers.send("claude:a", "claude:old", "still there?")).text).toMatch(/Sent to "Old one" \(claude:old\)/);
