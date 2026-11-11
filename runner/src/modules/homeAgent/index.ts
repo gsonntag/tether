@@ -36,6 +36,7 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import { FROM_IMESSAGE, FROM_TETHER, fromTether } from "../../../../shared/fromTether";
+import { statusLabel, type HarnessReport, type HarnessVersion } from "../../../../shared/harnessUpdates";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
@@ -911,6 +912,12 @@ export class HomeAgent implements HomeEnd {
           return said;
         },
       },
+      {
+        name: "check_harness_updates",
+        description: "Whether the coding agents installed on this machine (Claude Code, Codex, Tether's Claude Agent SDK) have newer versions out: installed vs latest, and how each was installed. Read-only: updates are run by the person from Settings → Updates.",
+        input: { refresh: z.boolean().optional().describe("Look again instead of using the last few minutes' check.") },
+        run: async (a: { refresh?: boolean }) => harnessUpdateLines(await this.ctx.ops.call("harnessVersions", { refresh: a.refresh === true })),
+      },
     ];
   }
 
@@ -1282,6 +1289,13 @@ export class HomeAgent implements HomeEnd {
     delete c.queued;
     this.save();
   }
+}
+
+/** check_harness_updates' answer: one line per harness. */
+export function harnessUpdateLines(r: HarnessReport): string {
+  const line = (h: HarnessVersion) =>
+    `- ${h.name}: ${h.installed ? `${h.installed}${h.latest ? `, latest ${h.latest}` : ""}` : "not installed"} — ${statusLabel(h)}${h.error ? ` (${h.error})` : ""}${h.status === "available" && h.updatable ? ` (updates with \`${h.command}\`)` : ""}`;
+  return [...r.harnesses.map(line), "", "To update, the person uses Settings → Updates in Tether."].join("\n");
 }
 
 export const homeAgentModule: Module = {

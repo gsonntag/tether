@@ -15,6 +15,7 @@ import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
 import { textingModule } from "./texting";
+import { updatesModule } from "./updates";
 
 /** What a module may know about a session (read-only). */
 export interface SessionLook {
@@ -108,7 +109,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

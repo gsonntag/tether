@@ -3,16 +3,14 @@
 
 import type { HarnessInfo } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
+import { parseVersion } from "../../../shared/harnessUpdates";
+
+export { parseVersion };
 
 export const HARNESS_BINS: Record<HarnessId, string> = {
   claude: process.env.CLAUDE_BIN || "claude",
   codex: process.env.CODEX_BIN || "codex",
 };
-
-/** "2.1.312 (Claude Code)" -> "2.1.312"; "codex-cli 0.164.0" -> "0.164.0" */
-export function parseVersion(out: string): string | null {
-  return out.match(/\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?/)?.[0] ?? null;
-}
 
 const TIMED_OUT = Symbol("timed out");
 

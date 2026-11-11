@@ -2434,7 +2434,8 @@
 .t-credentials { box-sizing: border-box; flex: 1; min-width: 0; max-width: 720px; display: flex; flex-direction: column; gap: 20px; }
 @media (max-width: 767px) {
   .t-settings-body { flex-direction: column; gap: 16px; }
-  .t-settings-nav { width: 100%; flex-direction: row; }
+  .t-settings-nav { width: 100%; flex-direction: row; overflow-x: auto; scrollbar-width: none; }
+  .t-settings-nav a { flex: none; }
   .t-settings-nav a { padding: 10px 12px; }
   .t-credentials { width: 100%; }
 }
@@ -2966,3 +2967,43 @@
 }
 /* The tab's top edge meets the box under it. */
 .t-home-tabbar + .t-home-chat-box.t-session { border-top-left-radius: 0; }
+
+/* Settings → Updates */
+.t-updates-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.t-updates-runner { border: 1px solid var(--t-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.t-updates-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.t-updates-head > .t-credential-status { margin-left: 0; }
+.t-updates-head > :last-child:not(:first-child):not(.t-credential-status) { margin-left: auto; }
+.t-updates-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.t-updates-table th { text-align: left; font-weight: 500; font-size: 12px; color: var(--t-muted); padding: 0 8px 6px; border-bottom: 1px solid var(--t-border); }
+.t-updates-table td { padding: 10px 8px; vertical-align: middle; font-variant-numeric: tabular-nums; }
+.t-updates-row + .t-updates-row > tr:first-child > td { border-top: 1px solid var(--t-border); }
+.t-updates-name { display: flex; flex-direction: column; gap: 2px; }
+.t-updates-name > :first-child { font-weight: 600; }
+.t-updates-method { font-size: 12px; color: var(--t-muted); }
+.t-updates-status { font-size: 13px; white-space: nowrap; color: var(--t-muted); }
+.t-updates-status.current { color: var(--color-text-green, var(--color-success)); }
+.t-updates-status.available { color: var(--color-accent); font-weight: 600; }
+.t-updates-action { text-align: right; white-space: nowrap; width: 1%; }
+.t-updates-detail > td { padding-top: 0; }
+.t-updates-detail > td > * + * { margin-top: 6px; }
+.t-updates-note { font-size: 12px; color: var(--t-muted); overflow-wrap: anywhere; }
+.t-updates-result { font-size: 13px; }
+.t-updates-result.ok { color: var(--color-text-green, var(--color-success)); }
+.t-updates-result.fail { color: var(--color-text-red, var(--color-error)); }
+.t-updates-output summary { font-size: 12px; color: var(--t-muted); cursor: pointer; font-family: var(--t-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.t-updates-output pre { margin: 6px 0 0; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--color-overlay-hover, rgba(127, 127, 127, 0.08)); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  /* Each harness is a small card: name and button on top, the versions and status as labelled lines. */
+  .t-updates-runner { padding: 12px; }
+  .t-updates-table thead { display: none; }
+  .t-updates-table, .t-updates-row, .t-updates-row > tr { display: block; }
+  .t-updates-row > tr:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 0; }
+  .t-updates-row > tr > td { display: block; padding: 0; border: 0 !important; }
+  .t-updates-row + .t-updates-row { border-top: 1px solid var(--t-border); }
+  .t-updates-row > tr > td.t-updates-name { display: flex; grid-column: 1; grid-row: 1; }
+  .t-updates-action { grid-column: 2; grid-row: 1; align-self: center; width: auto; }
+  .t-updates-row td[data-label] { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+  .t-updates-row td[data-label]::before { content: attr(data-label); color: var(--t-muted); }
+  .t-updates-detail { display: block; padding-bottom: 10px; }
+}

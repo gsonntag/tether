@@ -7,9 +7,10 @@ import { useStore } from "../store";
 import { AgentSettings } from "./AgentSettings";
 import { AzureSettings } from "./AzureSettings";
 import { DeviceNotifications } from "./DeviceNotifications";
+import { HarnessUpdates } from "./HarnessUpdates";
 import { TextingSettings } from "./TextingSettings";
 
-type Page = "credentials" | "azure" | "texting" | "notifications" | "agents";
+type Page = "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
 /** Settings, per runner: Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Texting (iMessage) and this device's Notifications. */
@@ -27,12 +28,13 @@ export function Settings({ page }: { page: Page }) {
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Texting</a>
         <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
         <a href="#/settings/agents" aria-current={page === "agents" ? "page" : undefined}>Agents</a>
+        <a href="#/settings/updates" aria-current={page === "updates" ? "page" : undefined}>Updates</a>
       </nav>
       <div className="t-credentials">
       {page === "notifications" ? <>
       <Heading level={2}>Notifications</Heading>
       <DeviceNotifications />
-      </> : <>
+      </> : page === "updates" ? <HarnessUpdates /> : <>
       <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Texting" : page === "agents" ? "Agents" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}</select></label>}
       {!runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
