@@ -2,10 +2,15 @@
 // session in its own folder (RunnerOptions.homeFolder) with Tether's tools (core/adapter.ts
 // AgentSetup): list the projects, look at one, start a session there with a prompt and full
 // permissions, list every session on the machine and read how any of them is doing, and send more
-// to a session it started. Each time a session it
-// started ends a turn, its last reply goes to the chat as a message from Tether, so the agent can
+// to any session the lists show (send_to_session). Each time a session it started, or one it
+// messaged, ends a turn, its last reply goes to the chat as a message from Tether, so the agent can
 // keep it going until the task is done. A session the person steps into (types in it, or stops
-// it) is theirs from then on: no more reports, and the agent can't message it.
+// it) is theirs from then on: no more reports until the agent messages it again (when the person
+// asks it to).
+//
+// Unless the person turns "Watch all sessions" off, it also hears about every other session on the
+// machine (watch): when one it doesn't follow finishes a turn, fails or starts waiting for the
+// person, a short line about it goes to the current chat, several close together in one message.
 //
 // On request it also checks in with every session (check_in_sessions, checkIn.ts): it asks each
 // idle one whether it's done and all its work is merged or applied, and tells the finished ones to
@@ -40,6 +45,13 @@ const LINE_MAX = 140;
 /** list_sessions: rows by default, and at most. */
 const LIST_DEFAULT = 20;
 const LIST_MAX = 50;
+/**
+ * Watch reports: how long a line waits for others to come with it (each new one restarts the wait),
+ * and the longest the first one waits. Tests shorten them.
+ */
+export const WATCH = { quietMs: 20_000, maxMs: 90_000 };
+/** How much of a watched session's last reply its line carries. */
+const WATCH_REPLY_MAX = 280;
 /** Each harness's mode that runs without asking. */
 const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", codex: "full-access" };
 /**
@@ -50,10 +62,14 @@ const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", cod
 const OWN_MODE: Record<HarnessId, string> = { claude: "default", codex: "read-only" };
 
 interface Child {
-  /** the chat that started it */
+  /** the chat that started it, or last messaged it */
   chat: string;
   reports: number;
-  /** the person stepped in, it hit MAX_REPORTS, or its chat was cleared: no more reports, no more messages from the agent */
+  /** the agent didn't start it: it took it on by messaging it */
+  messaged?: boolean;
+  /** the agent's message waits behind a turn that isn't the agent's: that turn's end isn't reported */
+  queued?: boolean;
+  /** the person stepped in, it hit MAX_REPORTS, or its chat was cleared: no more reports (a new message follows it again, but past the limit) */
   released?: "person" | "limit" | "cleared";
 }
 
@@ -85,6 +101,14 @@ interface State {
   /** what it runs on, as the person chose it; none: Claude Code on the source a new session gets */
   settings?: HomeAgentSettings;
   checkIns?: Record<string, CheckIn>;
+  /** "Watch all sessions"; none: on */
+  watchAll?: boolean;
+}
+
+/** What a watched session did, for the next watch report. */
+interface Watched {
+  kind: "finished" | "failed" | "waiting";
+  detail?: string;
 }
 
 const HARNESSES: HarnessId[] = ["claude", "codex"];
@@ -103,8 +127,10 @@ How to work:
 - Find the project with list_projects. Use project_overview when you need to know more about one. If more than one project could be meant, ask the person which in one short question. Never guess.
 - Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, etc. only if they asked for it). Tell it to work autonomously to completion without stopping to ask for confirmation, and to verify its work before finishing. The session runs with full permissions.
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
-- For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status. You can read any session but only message the ones you started.
-- After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started finishes a turn or needs the person.
+- For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status.
+- You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person, archived, or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
+- After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started or messaged finishes a turn or needs the person.
+- Tether also watches every other session on this machine for you (unless the person turned off "Watch all sessions"): when sessions you didn't start finish a turn, fail, or start waiting for the person, you get one short report ("[From Tether] Sessions you didn't start: ..."), several at once when they come close together. These aren't yours: don't message them unless the person asked you to. If one failed or is waiting for the person, tell them in one casual sentence which and what it needs. If one just finished, mention it only if the person was waiting on it or asked about it; otherwise reply with a few words at most. Sessions you started still get their own reports: keep those going until the task is done.
 - On a report: if the task is complete and verified, tell the person in one casual sentence only what's notable (where the work is, e.g. the PR or issue link), or nothing more than that it's done. If the session stopped early (it asked something you can answer from what the person said, stopped halfway, or says it's done but skipped verification), use send_to_session with a specific instruction to keep it going. If it needs a decision only the person can make, or it keeps failing, tell the person in one sentence and stop.
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - Use archive_session only when the person asks to archive a specific session (for example one the check-in kept). Never archive on your own judgment.
@@ -227,6 +253,10 @@ export class HomeAgent {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** sessions whose check-in answer is being judged now */
   private judging = new Set<string>();
+  /** watch news waiting for the next report, by session */
+  private watched = new Map<string, Watched>();
+  private watchTimer?: ReturnType<typeof setTimeout>;
+  private watchSince?: number;
 
   constructor(
     private ctx: ModuleContext,
@@ -245,6 +275,7 @@ export class HomeAgent {
           children: v.children && typeof v.children === "object" ? v.children : {},
           ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}),
           checkIns: v.checkIns && typeof v.checkIns === "object" ? v.checkIns : {},
+          ...(v.watchAll === false ? { watchAll: false } : {}),
         };
     } catch {}
     // Check-ins a restart interrupted: their clocks start again (one already past reports now).
@@ -254,6 +285,81 @@ export class HomeAgent {
   stop() {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    clearTimeout(this.watchTimer);
+  }
+
+  /** "Watch all sessions" (default on); `on` changes it. Off drops what's waiting to be reported. */
+  watch(on?: unknown): { watchAll: boolean } {
+    if (typeof on === "boolean") {
+      if (on) delete this.state.watchAll;
+      else {
+        this.state.watchAll = false;
+        this.watched.clear();
+        clearTimeout(this.watchTimer);
+        this.watchTimer = undefined;
+      }
+      this.save();
+    }
+    return { watchAll: this.state.watchAll !== false };
+  }
+
+  /**
+   * Whether a session's turn or request goes in a watch report: watching is on, it's a top-level
+   * session that isn't archived, not one of the agent's chats, not answering a check-in, and not one
+   * a chat follows (those report themselves).
+   */
+  private watchable(id: string): boolean {
+    if (this.state.watchAll === false || this.isChat(id) || this.waiting(id)) return false;
+    const c = this.state.children[id];
+    if (c && !c.released) return false;
+    const look = this.ctx.session(id);
+    if (!look) return false;
+    return !look.summary.archived && !look.summary.parentSessionId && resolve(look.summary.projectPath) !== resolve(this.folder);
+  }
+
+  /** Puts a session's news in the next watch report: the newest per session, sent once things go quiet. */
+  private noteWatched(id: string, w: Watched) {
+    this.watched.set(id, w);
+    clearTimeout(this.watchTimer);
+    this.watchSince ??= Date.now();
+    const wait = Math.max(0, Math.min(WATCH.quietMs, this.watchSince + WATCH.maxMs - Date.now()));
+    this.watchTimer = setTimeout(() => void this.flushWatched(), wait);
+    this.watchTimer.unref?.();
+  }
+
+  /** Sends what's waiting as one report to the current chat (none: dropped, nobody would see it). */
+  async flushWatched() {
+    clearTimeout(this.watchTimer);
+    this.watchTimer = undefined;
+    this.watchSince = undefined;
+    const items = [...this.watched];
+    this.watched.clear();
+    const chat = await this.current();
+    if (!chat || !items.length) return;
+    const lines: string[] = [];
+    for (const [id, w] of items) {
+      const look = this.ctx.session(id);
+      // Archived (or gone) since: not news any more.
+      if (look?.summary.archived) continue;
+      const head = look ? `${id} "${oneLine(look.summary.title || "Untitled", 60)}" (${basename(look.summary.projectPath) || look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})` : id;
+      if (w.kind === "waiting") lines.push(`- ${head}: waiting for the person: ${w.detail}`);
+      else if (w.kind === "failed") lines.push(`- ${head}: failed: ${oneLine(w.detail ?? "", 300)}`);
+      else {
+        const reply = lastReply(await this.ctx.sessions.recent(id, 20).catch(() => [] as Msg[]));
+        lines.push(`- ${head}: finished a turn${reply ? `. It said: ${oneLine(reply, WATCH_REPLY_MAX)}` : "."}`);
+      }
+    }
+    if (!lines.length) return;
+    const body = [
+      `Sessions you didn't start (watching all sessions; they aren't yours to drive):`,
+      ...lines,
+      `Tell the person in one casual sentence if one failed or needs them; otherwise reply with a few words at most. Use session_status for more.`,
+    ].join("\n");
+    try {
+      await this.ctx.sessions.queue(chat, FROM_TETHER + body);
+    } catch (e) {
+      this.ctx.log(`couldn't send a watch report to ${chat}: ${(e as Error).message}`);
+    }
   }
 
   private save() {
@@ -396,11 +502,43 @@ export class HomeAgent {
     return !!look && resolve(look.summary.projectPath) === resolve(this.folder);
   }
 
-  private ownChild(chat: string, id: unknown): [string, Child] {
-    if (typeof id !== "string" || !id) throw new Error("session_id is required.");
+  /**
+   * send_to_session: any session the lists show, but the agent's own chats and subagents. It's
+   * refused when it can't take a message from Tether now (archived, open in a terminal, waiting for
+   * the person); a turn that runs just means after it. The chat follows it from then on, as one
+   * it started: a session the person had taken over, or another chat's, is this chat's again.
+   */
+  async message(chat: string, sessionId: unknown, message: string): Promise<string> {
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("session_id is required.");
+    const id = sessionId.trim();
+    const s = this.ctx.sessions;
+    if (this.isChat(id)) throw new Error("That's one of your own chats.");
     const c = this.state.children[id];
-    if (!c || c.chat !== chat) throw new Error("That isn't a session you started in this chat.");
-    return [id, c];
+    if (c?.chat === chat && c.released === "limit") throw new Error(`This session has sent ${MAX_REPORTS} reports; you've stopped following it. Tell the person where it stands.`);
+    const look = await s.open(id).catch(() => undefined);
+    if (!look) throw new Error(`There's no session ${id}.`);
+    if (resolve(look.summary.projectPath) === resolve(this.folder)) throw new Error("That's one of your own chats.");
+    if (look.summary.parentSessionId) throw new Error("That's a subagent of another session: message its session instead.");
+    if (look.summary.archived) throw new Error("That session is archived. Ask the person to unarchive it first if it should go on.");
+    if (look.summary.mode === "terminal" || look.state.mode === "terminal" || look.state.terminal) throw new Error("That session is open in a terminal: the person is working in it there. Leave it to them.");
+    if (look.requests.length || look.state.requests.length) throw new Error(`That session is waiting for the person${look.state.requests[0] ? ` (${asks(look.state.requests[0])})` : ""}. Only they can answer it, in that session.`);
+    if (look.summary.queuePaused || look.state.queueHeld) throw new Error("That session's queue is paused (after a Stop, a failure or a restart): it waits for the person.");
+    // Its next turn's end would be read as its check-in answer.
+    if (this.waiting(id)) throw new Error("That session is answering your check-in: wait for the check-in report.");
+    // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
+    const behind = look.status !== "idle" || look.state.queue.length > 0;
+    const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
+    if (behind) next.queued = true;
+    this.state.children[id] = next;
+    this.save();
+    await s.queue(id, FROM_TETHER + message).catch((e) => {
+      if (next === c) delete next.queued;
+      else if (c) this.state.children[id] = c;
+      else delete this.state.children[id];
+      this.save();
+      throw e;
+    });
+    return behind ? "Queued: it goes after the session's current turn. You'll get a report when your message's turn finishes." : "Sent. You'll get a report when it finishes the turn.";
   }
 
   /** The tools a chat (by its session id) gets. */
@@ -487,6 +625,7 @@ export class HomeAgent {
           const st = stateOf({ ...look.summary, status: look.status, requests: look.requests.length }, look.state.error);
           const error = look.state.error ?? look.summary.failure;
           const mine = c?.chat === chat;
+          const whose = c?.messaged ? "You messaged it" : "You started it";
           return [
             `Session ${id} ("${look.summary.title || "Untitled"}", ${look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})`,
             `State: ${STATE_LABELS[st]}, last active ${ago(look.summary.updatedAt)}${error ? `. Last error: ${oneLine(error, 300)}` : ""}`,
@@ -494,14 +633,14 @@ export class HomeAgent {
             look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure or a restart): it waits for the person." : "",
             look.state.queue.length ? `${look.state.queue.length} message${look.state.queue.length === 1 ? "" : "s"} queued.` : "",
             !mine
-              ? "You didn't start it: you can read it but not message it."
+              ? "You didn't start it. You can message it with send_to_session when the person asks you to; you'd then get its reports."
               : c.released === "person"
-                ? "The person has taken this session over: leave it to them."
+                ? "The person has taken this session over: leave it to them unless they ask you to message it."
                 : c.released === "limit"
                   ? "You've stopped following it (report limit)."
                   : c.released === "cleared"
                     ? "Your chat was cleared; you've stopped following it."
-                    : `Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
+                    : `${whose}. Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
             prompt ? `Latest prompt:\n${cut(prompt, STATUS_MAX)}` : "",
             reply ? `Latest reply:\n${cut(reply, STATUS_MAX)}` : "No reply yet.",
           ]
@@ -532,16 +671,10 @@ export class HomeAgent {
       },
       {
         name: "send_to_session",
-        description: "Sends a message to a session you started: it goes now if the session is idle, else after its current turn.",
+        description:
+          "Sends a message to any session (an id from list_sessions or start_session), whoever started it: it goes now if the session is idle, else after its current turn. You get a report when that turn finishes, and you follow the session from then on. Refused for sessions that are archived, open in a terminal, or waiting for the person. Message a session you didn't start only when the person asks you to or their task needs it.",
         input: { session_id: z.string(), message: z.string().min(1) },
-        run: async (a: { session_id: string; message: string }) => {
-          const [id, c] = this.ownChild(chat, a.session_id);
-          if (c.released === "person") throw new Error("The person has taken this session over. Leave it to them.");
-          if (c.released === "limit") throw new Error(`This session has sent ${MAX_REPORTS} reports; you've stopped following it. Tell the person where it stands.`);
-          if (c.released === "cleared") throw new Error("The person cleared this chat; you've stopped following that session.");
-          await s.queue(id, FROM_TETHER + a.message);
-          return "Sent. You'll get a report when it finishes the turn.";
-        },
+        run: async (a: { session_id: string; message: string }) => this.message(chat, a.session_id, a.message),
       },
     ];
   }
@@ -740,7 +873,9 @@ export class HomeAgent {
     const w = this.waiting(id);
     if (w) return this.answered(w[0], id, error, stopped);
     const c = this.state.children[id];
-    if (!c || c.released) return;
+    if (!c || c.released) return this.watchTurn(id, error, stopped);
+    // The turn the agent's message waited behind: not its report (a Stop there is still the person's).
+    if (c.queued && !stopped) return;
     if (stopped) {
       // The person pressed Stop: it's theirs now.
       c.released = "person";
@@ -762,6 +897,19 @@ export class HomeAgent {
     await this.report(id, c, lines.join("\n\n"));
   }
 
+  /**
+   * A turn ended in a session the agent doesn't follow. Not news: the person stopped it, or it goes
+   * straight on (messages queued, or background work it will come back from), or the person has it
+   * open (they see it end). A failure always is.
+   */
+  private watchTurn(id: string, error?: string, stopped?: boolean) {
+    if (stopped || !this.watchable(id)) return;
+    const look = this.ctx.session(id)!;
+    if (error) return this.noteWatched(id, { kind: "failed", detail: error });
+    if (look.state.queue.length || look.background || look.requests.length || this.ctx.viewersOf(id).length) return;
+    this.noteWatched(id, { kind: "finished" });
+  }
+
   async needsPerson(id: string, what: string) {
     const w = this.waiting(id);
     if (w) {
@@ -772,17 +920,27 @@ export class HomeAgent {
       if (Object.values(w[1].entries).every((x) => x.outcome)) await this.finish(w[0]);
     }
     const c = this.state.children[id];
-    if (!c || c.released) return;
+    if (!c || c.released) {
+      if (!w && this.watchable(id) && !this.ctx.viewersOf(id).length) this.noteWatched(id, { kind: "waiting", detail: oneLine(what, 300) });
+      return;
+    }
     await this.report(id, c, `${await this.describe(id)} is waiting for the person: ${what}. Only they can answer it, in that session. Tell them in one casual sentence.`);
   }
 
-  /** Someone typed into a session the agent started: it's theirs from now. */
+  /** Someone typed into a session the agent follows: it's theirs from now. Tether's own message going in starts the agent's turn. */
   personSpoke(id: string, msg: Msg) {
     const c = this.state.children[id];
-    if (!c || c.released || msg.role !== "user" || msg.origin?.kind === "tether") return;
+    if (!c || c.released || msg.role !== "user") return;
     // A harness that hasn't parsed the marker yet shows Tether's own text as it was sent.
-    if (msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER))) return;
+    if (msg.origin?.kind === "tether" || msg.parts.some((p) => p.type === "text" && p.text.startsWith(FROM_TETHER))) {
+      if (c.queued) {
+        delete c.queued;
+        this.save();
+      }
+      return;
+    }
     c.released = "person";
+    delete c.queued;
     this.save();
   }
 }
@@ -802,6 +960,7 @@ export const homeAgentModule: Module = {
       return { ...(sessionId ? { sessionId } : {}), folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
     });
     ctx.ops.register("homeAgentSet", (a) => agent.set(a));
+    ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.clear());
 

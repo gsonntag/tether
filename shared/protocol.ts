@@ -117,6 +117,8 @@ export interface Ops {
   homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
   /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */
   homeAgentClear: { args: Record<string, never>; result: { rev: number } };
+  /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers */
+  homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean } };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
