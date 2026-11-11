@@ -8,6 +8,8 @@
 // label: `h` is the primary one (the Texts tab), `h1`, `h2`, … the others (homeAgent/index.ts gives
 // each tab its number, kept while it's open).
 
+import type { Attachment } from "../../../shared/attachments";
+
 /** Who the Home agent is when it texts (PhoneEnd.text), and what a Home text is noted under (texting/router.ts). */
 export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
@@ -22,7 +24,7 @@ export const homeLabel = (n: number) => (n === 0 ? "h" : `h${n}`);
 /** The open homes as a short list for a text: "h, h1, h3". */
 export const homeList = (homes: { n: number }[]) => [...homes].sort((a, b) => a.n - b.n).map((h) => homeLabel(h.n)).join(", ");
 
-/** A file the person texted (an image), as bytes: the runner stores it as the receiving session's attachment. */
+/** A file as bytes (an image an agent texts, read and checked: texting/images.ts). */
 export interface TextedFile {
   name: string;
   mimeType: string;
@@ -58,6 +60,12 @@ export function aboutOf(text: string): string | undefined {
   return REPLY_CONTEXT.exec(text)?.[1];
 }
 
+/** Said to an agent with a HEIC photo that couldn't be made a JPEG (texting/images.ts): it's attached by its path only. */
+export const HEIC_NOTE = "(The photo is HEIC and couldn't be converted, so it's attached by its path only.)";
+
+/** The line a message carries after its words when one of its attachments is a HEIC photo, else "". */
+export const heicNote = (list: Attachment[]) => (list.some((a) => /^image\/hei[cf]$/.test(a.mimeType)) ? `\n\n${HEIC_NOTE}` : "");
+
 /** One of the Home agent's homes: its number (0: the primary one) and its chat, once there is one. */
 export interface Home {
   n: number;
@@ -67,21 +75,32 @@ export interface Home {
 /** Which home a text goes to: by number (a prefix), or by chat (a reply to that chat's text). */
 export type HomeTarget = { n: number } | { chat: string };
 
+/** How the person's text reached Tether (texting/connector.ts). */
+export interface TakeVia {
+  /** what marks it as theirs, by its connector ("[From iMessage] ", shared/fromTether.ts); iMessage's when unset */
+  mark?: string;
+  /** the files that came with it, stored for the chat that takes them */
+  files?: (sessionId: string) => Promise<Attachment[]>;
+}
+
 /** The Home agent's end. */
 export interface HomeEnd {
   /**
    * The person's text to a home (none: the primary one, made if it's gone), after its turn if one
-   * runs, with the images they texted. Throws when that home isn't open.
+   * runs, marked with the connector it came by, with the files they sent. Throws when that home
+   * isn't open.
    */
-  take(text: string, files?: TextedFile[], to?: HomeTarget): Promise<void>;
+  take(text: string, via?: TakeVia, to?: HomeTarget): Promise<void>;
   /** the open homes, the primary one (n 0) always among them (its chat absent until it's made) */
   homes(): Home[];
-  /** a new home (a new Home tab): its number; `text` (and `files`), if any, is its first message */
-  newHome(text: string, files?: TextedFile[]): Promise<number>;
+  /** a new home (a new Home tab): its number; `text` (and `via`'s files), if any, is its first message */
+  newHome(text: string, via?: TakeVia): Promise<number>;
   /** deletes home `n` (its chat is archived, as closing its tab does): the homes left. Throws for the primary one or one that isn't open */
   deleteHome(n: number): Promise<Home[]>;
   /** whether a session is a chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
+  /** the Texts chat is running a turn or has messages waiting (a text now wouldn't start the next turn) */
+  textsBusy?(): boolean;
   /**
    * A session's text_person, when the Home agent drives that session (started or messaged it, and
    * the person hasn't stepped in): the message goes to the Home agent as a report instead, and it
@@ -95,11 +114,12 @@ export interface HomeEnd {
 export interface PhoneEnd {
   /**
    * Texts the person as one of the Home agent's chats ("[home] ok, on it"; "[h1] …" from home 1);
-   * false when it didn't go (texting off, not connected). `about`: the session the text is about,
-   * so a reply right after it is read as about that session too. `chat`: the chat that texts
-   * (none: the primary home).
+   * false when it didn't go (texting off, not connected). `answer`: it's the direct answer to a text
+   * they sent, so it may go back to where they wrote it (a server channel); anything else goes to
+   * them privately. `about`: the session the text is about, so a reply right after it is read as
+   * about that session too. `chat`: the chat that texts (none: the primary home).
    */
-  send(text: string, about?: string, chat?: string): Promise<boolean>;
+  send(text: string, o?: { answer?: boolean; about?: string; chat?: string }): Promise<boolean>;
   /**
    * An agent's text_person: texts the person for session `from` (or the Home agent, texting/router.ts
    * HOME, as `chat`), and their reply comes back to it. `image`: a path to an image file sent after

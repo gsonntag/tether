@@ -9,6 +9,7 @@ import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
 import type { BillingSource } from "../../../shared/credentials";
+import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
@@ -25,7 +26,6 @@ import { registerShellOps, ShellRuns } from "./shellRuns";
 import type { Session } from "./session";
 import { chosenOf, SessionCore } from "./sessions";
 import type { SpawnPty } from "../terminal/attach";
-import type { TextedFile } from "../modules/homeLine";
 import { TerminalControl } from "../terminal/control";
 import { registerTerminalOps } from "../terminal/ops";
 import { systemdScopeWrap, Tmux, TMUX_SOCKET } from "../terminal/tmux";
@@ -229,11 +229,7 @@ export function createRunner(o: RunnerOptions) {
         sourceOf: async (id: string) => live.sourceOf(await core.open(id)),
         sourceForNew: (harness: HarnessId, source: unknown) => live.sourceForNew(harness, source),
         send: (id: string, text: string) => live.send(id, text, [], { tether: true }),
-        tell: async (id: string, text: string, files: TextedFile[] = []) => {
-          const list = files.map((f) => live.attachments.put(id, f));
-          await live.tell(id, defang(text), list);
-          live.attachments.markUsed(list);
-        },
+        tell: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.tell(id, defang(text), attachments)),
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
@@ -241,12 +237,7 @@ export function createRunner(o: RunnerOptions) {
         list: () => core.book.list(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
-        queue: async (id: string, text: string, files: TextedFile[] = []) => {
-          const list = files.map((f) => live.attachments.put(id, f));
-          const r = await live.queue.add(id, text, list);
-          live.attachments.markUsed(list);
-          return r;
-        },
+        queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
           return (await core.load(s)).newest(limit).messages;

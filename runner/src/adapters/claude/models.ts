@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { effortLabel, findModel, prettyModel } from "../../../../shared/labels";
 import { CLAUDE_UNSET, type Choice, type ModelList, type ModelOption } from "../../../../shared/transcript";
 import { CLAUDE_BIN } from "./bin";
+import { claudeEnv } from "./credentials";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -57,7 +58,7 @@ async function fetchModels(): Promise<ModelList | undefined> {
   async function* idle(): AsyncGenerator<never> {
     await new Promise(() => {});
   }
-  const q = query({ prompt: idle(), options: { cwd: homedir(), persistSession: false, settingSources: [], tools: [], pathToClaudeCodeExecutable: CLAUDE_BIN } as any });
+  const q = query({ prompt: idle(), options: { cwd: homedir(), persistSession: false, settingSources: [], tools: [], env: claudeEnv(), pathToClaudeCodeExecutable: CLAUDE_BIN } as any });
   try {
     const infos = await Promise.race([q.supportedModels(), Bun.sleep(20_000).then(() => Promise.reject(new Error("timed out")))]);
     return infos.length ? modelList(infos) : undefined;

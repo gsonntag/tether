@@ -1,24 +1,14 @@
 // The connection to Photon Spectrum (iMessage): sends texts to one phone and hears that phone's
-// replies. One long-lived listener; history Photon replays on connect is skipped.
+// replies. One long-lived listener; history Photon replays on connect is skipped. The iMessage
+// connector (imessage.ts) runs it.
 
 import type { TextedFile } from "../homeLine";
-import type { InboundFile } from "./images";
+import { ATTACH_FILE_MAX } from "../../../../shared/limits";
+import { withTimeout, type Inbound, type InboundFile } from "./connector";
+import { download } from "./images";
 import { normalPhone, type LinkConfig } from "./store";
 
-export interface Inbound {
-  /** its words ("" when it's only an image) */
-  text: string;
-  /** what came with it (photos, files), not downloaded yet */
-  files?: InboundFile[];
-  /** parts Tether can't pass on (a voice note, a contact card, a poll, an app card): the person is told once */
-  unsupported?: number;
-  /** its message id, when Photon gives one: a text heard twice is taken once */
-  id?: string;
-  /** the message it answers in a thread */
-  replyTo?: string;
-  /** puts a reaction on this message on the person's phone (a tapback; any emoji) */
-  react?: (emoji: string) => Promise<void>;
-}
+export type { Inbound } from "./connector";
 
 export interface TextLink {
   /** the sent message's id, when Photon gives one */
@@ -36,16 +26,8 @@ export const PHOTON = { ms: 30_000 };
 /** The start of `timed`'s error for `what`. */
 export const TIMED_OUT = (what: string) => `Photon didn't answer ${what}`;
 
-/** `p`, or a rejection after `ms` ("Photon didn't answer …"): the call itself is left to finish or fail on its own. */
-export function timed<T>(p: Promise<T>, what: string, ms = PHOTON.ms): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, no) => {
-    timer = setTimeout(() => no(new Error(`${TIMED_OUT(what)} within ${Math.round(ms / 1000)}s`)), ms);
-    (timer as { unref?: () => void }).unref?.();
-  });
-  p.catch(() => {});
-  return Promise.race([p, late]).finally(() => clearTimeout(timer));
-}
+/** `p`, or a rejection after `ms` ("Photon didn't answer …", connector.ts withTimeout): the call itself is left to finish or fail on its own. */
+export const timed = <T>(p: Promise<T>, what: string, ms = PHOTON.ms): Promise<T> => withTimeout(p, what, ms, "Photon");
 
 export type OpenLink = (cfg: LinkConfig, onInbound: (m: Inbound) => void, log: (line: string) => void) => Promise<TextLink>;
 
@@ -88,12 +70,13 @@ export function inboundOf(content: any): Inbound | undefined {
   if (content.type === "text" && typeof content.text === "string") return { text: content.text };
   if (content.type === "markdown" && typeof content.markdown === "string") return { text: content.markdown };
   if (content.type === "attachment" && typeof content.read === "function") {
+    // Fetched only when something takes it: streamed, stopped past `max` bytes or DOWNLOAD.ms (images.ts download).
+    const raw = { read: () => content.read(), ...(typeof content.stream === "function" ? { stream: () => content.stream() } : {}) };
     const file: InboundFile = {
       name: typeof content.name === "string" ? content.name : "",
       mimeType: typeof content.mimeType === "string" ? content.mimeType : "application/octet-stream",
       ...(typeof content.size === "number" ? { size: content.size } : {}),
-      read: () => content.read(),
-      ...(typeof content.stream === "function" ? { stream: () => content.stream() } : {}),
+      read: (max = ATTACH_FILE_MAX) => download(raw, max),
     };
     return { text: "", files: [file] };
   }

@@ -222,6 +222,12 @@ export class Router {
     if (st.aimed?.chat === from) st.aimed.chat = to;
   }
 
+  /** The text held for the picker now (an expired one gone), if any. */
+  heldNow(): RouterState["held"] {
+    this.prune();
+    return this.state.held;
+  }
+
   /** A session's slot is waiting on the person again (a text that went to it didn't answer its request). */
   unsettle(sessionId: string) {
     const slot = this.state.slots.find((x) => x.sessionId === sessionId);
@@ -248,9 +254,10 @@ export class Router {
   /**
    * What to do with the person's text. `replyTo`: the message it answers in a thread. `home`: the
    * Home agent runs and takes texts: true, or its open homes (the primary one, n 0, always among
-   * them).
+   * them). `files`: files came with it, so just a number (or "h", "h1") with no words delivers them,
+   * as `filesOnly` says.
    */
-  route(raw: string, replyTo?: string, home: boolean | Home[] = false): Decision {
+  route(raw: string, replyTo?: string, home: boolean | Home[] = false, files?: { filesOnly: string }): Decision {
     this.prune();
     const text = raw.trim();
     if (!text) return { kind: "none" };
@@ -291,6 +298,7 @@ export class Router {
       if (!h) return { kind: "reply", text: TEXTS.noSuchHome(homeLabel(c.n), homeList(homes)) };
       if (c.rest) return this.toHome(c.rest, h);
       if (this.state.held) return this.toHome(this.state.held.text, h);
+      if (files) return this.toHome(files.filesOnly, h);
       this.state.aimed = { n: c.n, at: this.now(), home: true, ...(c.n !== 0 && h.chat ? { chat: h.chat } : {}) };
       return { kind: "reply", text: c.n === 0 ? TEXTS.whatToSendHome : TEXTS.whatToSendTo(homeLabel(c.n)) };
     }
@@ -307,6 +315,7 @@ export class Router {
       if (rest) return this.deliver(slot, rest);
       const held = this.state.held;
       if (held) return this.deliver(slot, held.text);
+      if (files) return this.deliver(slot, files.filesOnly);
       this.state.aimed = { n, at: this.now() };
       return { kind: "reply", text: TEXTS.whatToSend(n) };
     }
@@ -387,6 +396,8 @@ export class Router {
     const st = this.state;
     st.slots = st.slots.filter((s) => now - s.at < OPEN_MS);
     if (st.held && now - st.held.at >= HELD_MS) st.held = undefined;
+    // A hold from before holds had ids gets one: what goes with it is kept by its id.
+    if (st.held && st.held.id === undefined) st.held.id = st.heldSeq = (st.heldSeq ?? 0) + 1;
     if (st.aimed && (now - st.aimed.at >= HELD_MS || (!st.aimed.home && st.aimed.n !== HOME_N && !st.slots.some((s) => s.n === st.aimed!.n)))) st.aimed = undefined;
   }
 }

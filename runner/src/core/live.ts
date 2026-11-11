@@ -1732,7 +1732,7 @@ export class LiveControl {
       // At once, not after the usual short delay: a crash right after a turn ends mustn't look mid-turn.
       this.core.o.prefs.flush();
     }
-    if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id });
+    if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id, from: before });
     if (now === "idle") {
       // The next turn runs with the settings as shown; not while its subagents still run on the old
       // ones. A harness that reports what still runs (persistent) keeps this itself.

@@ -56,10 +56,22 @@ export const TEXTS = {
   noHome: "The Home agent isn't running on this runner.",
   /** the Home agent's chat failed on something the person texted */
   homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
+  /** a file the person sent that didn't come along (too big, a host Tether doesn't take, or it didn't download) */
+  fileSkipped: (name: string) => `Couldn't take ${name}, it's too big or it didn't download.`,
+  /** files sent with a message that went nowhere (a reply asking which session, the picker's hold expiring, a restart) */
+  filesNotSent: "Your file didn't go anywhere, send it again with the session's number.",
+  /** files sent with an answer to a request, where the session can't take them after it: the request was answered, the files weren't passed on */
+  filesWithAnswer: (n: number) => `[${n}] I answered the request but your file didn't go, send it again after.`,
+  /** a voice note, a contact card, a poll: nothing Tether can pass on */
+  onlyTextAndFiles: "Only text and files get through, so I left the rest out.",
+  /** sending failed, and the files with it didn't go either */
+  couldNotSendWithFile: (tag: string, error: string) => `Couldn't send to ${tag} (nor your file): ${bare(error.split("\n")[0]!.split(/(?<=[.!?])\s/)[0]!)}.`,
   /** "h1 …" for a home that isn't open */
   noSuchHome: (label: string, list: string) => `There's no ${label}, your homes are ${list}.`,
-  /** a threaded reply to a home that was deleted */
+  /** just "h1" aimed at a home that was deleted since */
   homeGone: (list: string) => `That home was deleted, your homes are ${list}.`,
+  /** a text to a home that was deleted since: sent to h instead */
+  homeGoneSentToH: "That home was deleted, so I sent it to h.",
   /** just "h1": what to send there */
   whatToSendTo: (label: string) => `What should I send to ${label}?`,
   /** "hn" with nothing to send: the new home's name */
@@ -68,20 +80,8 @@ export const TEXTS = {
   homeDeleted: (label: string, list: string) => `Deleted ${label}, your homes are ${list}.`,
   /** "hn" with MAX_EXTRA_HOMES open already */
   homesFull: (list: string) => `You have ${list} already, delete one with hd and its number first.`,
-  /** a voice note, a contact card, a poll: nothing Tether can pass on */
-  onlyTextAndImages: "Only text and images get through, so I left the rest out.",
   /** "hd0" or the like */
   cantDeletePrimary: "h is your main home, so it can't be deleted.",
-  /** images that came with a text but couldn't go with it */
-  imagesNotSent: "Your image didn't go with that, send it again with your message.",
-  /** the person texted a file that isn't an image (or one too big): it's left out */
-  onlyImages: "Only images come through by text, so I left the other file out.",
-  /** an image held while the person was to pick a session, dropped when the pick didn't come in time */
-  heldImageExpired: "The image you sent earlier didn't go anywhere, send it again with a session number.",
-  /** sending failed, and the images with it didn't go either */
-  couldNotSendWithImage: (tag: string, error: string) => `Couldn't send to ${tag} (nor your image): ${bare(error.split("\n")[0]!.split(/(?<=[.!?])\s/)[0]!)}.`,
-  /** a text to a home that was deleted since: sent to h instead */
-  homeGoneSentToH: "That home was deleted, so I sent it to h.",
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

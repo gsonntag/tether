@@ -1,13 +1,14 @@
 // The session core's events (SPEC §3). Modules subscribe to these; the core never imports a module.
 
 import type { PushKeys } from "../../../shared/protocol";
-import type { Msg, Request, SessionMode, ToolPart } from "../../../shared/transcript";
+import type { Msg, Request, RunStatus, SessionMode, ToolPart } from "../../../shared/transcript";
 
 /** How a request closed: decided, stopped with its turn, or answered in the harness's own UI. */
 export type RequestOutcome = "allowed" | "denied" | "answered" | "cancelled" | "elsewhere";
 
 export interface CoreEvents {
-  turnStarted: { sessionId: string };
+  /** `from`: the status before ("waiting": the turn goes on after the person answered it, not a new one) */
+  turnStarted: { sessionId: string; from?: RunStatus };
   /** `stopped`: a person stopped it. `recovering`: an intermediate failure, with no final notification. */
   turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean };
   message: { sessionId: string; msg: Msg };

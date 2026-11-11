@@ -8,9 +8,10 @@ import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
+import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
-import type { HomeLine, TextedFile } from "./homeLine";
+import type { HomeLine } from "./homeLine";
 import { linksModule } from "./links";
 import type { ShortLinks } from "./links/store";
 import { moveModule } from "./move";
@@ -54,8 +55,8 @@ export interface SessionActions {
   sourceForNew(harness: HarnessId, source: unknown): Promise<BillingSource>;
   /** a message from Tether, sent as a turn */
   send(id: string, text: string): Promise<void>;
-  /** the person's own words, as if typed in the composer: into the running turn when it takes that, else sent (`files`: images they texted, stored as its attachments) */
-  tell(id: string, text: string, files?: TextedFile[]): Promise<void>;
+  /** the person's own words (and files, stored under attachmentsDir), as if typed in the composer: into the running turn when it takes that, else sent */
+  tell(id: string, text: string, attachments?: Attachment[]): Promise<void>;
   /** the person answers an open request (as the answerRequest op does) */
   answer(id: string, requestId: string, a: RequestAnswer): Promise<void>;
   /** a Tether notice, kept with the session */
@@ -69,7 +70,7 @@ export interface SessionActions {
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
   /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */
-  queue(id: string, text: string, files?: TextedFile[]): Promise<{ id: string }>;
+  queue(id: string, text: string, attachments?: Attachment[]): Promise<{ id: string }>;
   /** the newest `limit` messages of its transcript */
   recent(id: string, limit: number): Promise<Msg[]>;
   rename(id: string, title: string): Promise<void>;

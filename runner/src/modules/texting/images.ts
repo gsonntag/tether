@@ -1,4 +1,5 @@
-// Images over text, both ways (Photon Spectrum carries iMessage attachments: link.ts). The runner
+// Images over text, both ways (any connector that takes them: Connector.images; iMessage through
+// Photon Spectrum, link.ts, and Discord). The runner
 // reads these files itself, outside any session's sandbox, and they go only to the person's own
 // phone (out) or into the session the person texted (in).
 //
@@ -10,18 +11,19 @@
 // failed tries count (texting/index.ts takes a text from the rate cap first; peers counts them with
 // failedImages).
 //
-// In: images the person texts go to the session (or Home agent) the text goes to, as attachments
-// (the runner stores them like an upload: core/attachments.ts). Each is downloaded within DOWNLOAD.ms
-// and at most IN_IMAGE_MAX bytes (counted as it streams), checked by its bytes; HEIC is turned into
-// JPEG when ImageMagick can (the agents can't read HEIC), and an image too big for the agent to see
-// (over ATTACH_IMAGE_EDGE, or NATIVE_IMAGE_MAX bytes) is scaled down the same way; when that fails it
-// goes as it came. Other files are left out, and the person is told.
+// In: files the person sends go to the session (or Home agent) the text goes to, as attachments
+// (texting/index.ts stash, like an upload: core/attachments.ts). iMessage's are downloaded within
+// DOWNLOAD.ms and at most their cap (counted as they stream: download). An image is checked by its
+// bytes (one that isn't what it says is kept as a plain file); HEIC is turned into JPEG when
+// ImageMagick can (the agents can't read HEIC), and an image too big for the agent to see (over
+// ATTACH_IMAGE_EDGE, or NATIVE_IMAGE_MAX bytes) is scaled down the same way; when that fails it goes
+// as it came.
 
 import { spawn } from "node:child_process";
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
-import { ATTACH_IMAGE_EDGE, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
+import { ATTACH_IMAGE_EDGE, ATTACH_IMAGE_MAX } from "../../../../shared/limits";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import type { TextedFile } from "../homeLine";
 
@@ -127,26 +129,17 @@ export class ImageFailures {
   }
 }
 
-/** A file the person texted, before it's downloaded (link.ts). */
-export interface InboundFile {
-  name: string;
-  mimeType: string;
-  size?: number;
+/** A file Photon gives (link.ts), before it's downloaded: its whole bytes, or a stream of them. */
+export interface RawFile {
   read(): Promise<Buffer>;
   stream?(): Promise<ReadableStream<Uint8Array>>;
-}
-
-/** Which of the person's files Tether can pass on (images, not too big, at most ATTACH_MAX), and how many it can't. */
-export function pickIncoming(files: InboundFile[]): { take: InboundFile[]; left: number } {
-  const take = files.filter((f) => /^image\//i.test(f.mimeType) && !/svg/i.test(f.mimeType) && !(typeof f.size === "number" && f.size > IN_IMAGE_MAX)).slice(0, ATTACH_MAX);
-  return { take, left: files.length - take.length };
 }
 
 /**
  * A file's bytes, within `ms` and at most `max` (counted as they stream, whatever its size says):
  * throws past either, and stops the download.
  */
-export async function download(f: InboundFile, max = IN_IMAGE_MAX, ms = DOWNLOAD.ms): Promise<Buffer> {
+export async function download(f: RawFile, max = IN_IMAGE_MAX, ms = DOWNLOAD.ms): Promise<Buffer> {
   let stop: () => void = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, no) => {
@@ -342,7 +335,7 @@ const jpgName = (name: string) => `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.j
  * image after all. HEIC becomes JPEG when it can (else `heic`: kept as it is, by path only), and a
  * PNG, JPEG or WebP too big for the agent to see (tooBigToSee) is scaled down to a JPEG (else kept).
  */
-export async function incomingImage(f: Pick<InboundFile, "name">, data: Buffer, convert: Convert = imagemagick): Promise<(TextedFile & { heic?: boolean }) | undefined> {
+export async function incomingImage(f: { name: string }, data: Buffer, convert: Convert = imagemagick): Promise<(TextedFile & { heic?: boolean }) | undefined> {
   if (!data.length || data.length > IN_IMAGE_MAX) return undefined;
   const mimeType = sniffImage(data);
   if (!mimeType) return undefined;

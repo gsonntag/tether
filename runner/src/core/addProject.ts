@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import type { ActiveClone, CloneStatus, FolderList } from "../../../shared/protocol";
 import { parseRepo } from "../../../shared/repo";
 import { expandPath } from "./sessions";
+import { childEnv } from "../childEnv";
 
 const MAX_FOLDERS = 500;
 
@@ -46,12 +47,16 @@ export function listFolders(path: string): FolderList {
 /** Whether `dir` is itself a clone of `url` (not just inside one). */
 function sameRepo(dir: string, url: string): boolean {
   if (!existsSync(join(dir, ".git"))) return false;
-  const origin = Bun.spawnSync(["git", "-C", dir, "remote", "get-url", "origin"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
-  try {
-    return parseRepo(origin).url === url;
-  } catch {
-    return false;
-  }
+  // The URL as configured, or as git reads it (`remote get-url` applies url.<x>.insteadOf rewrites):
+  // either one naming the repo will do.
+  const read = (args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { env: childEnv(), stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
+  return [read(["config", "--get", "remote.origin.url"]), read(["remote", "get-url", "origin"])].some((origin) => {
+    try {
+      return parseRepo(origin).url === url;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -61,7 +66,7 @@ function sameRepo(dir: string, url: string): boolean {
  */
 function finished(dir: string): boolean {
   if (!existsSync(join(dir, ".git", "index"))) return false;
-  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"], { env: childEnv(), stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 }
 
 /** How far a running `git clone --progress` is, from its stderr (`Receiving objects:  45% (450/1000)`). */
@@ -158,7 +163,7 @@ export class CloneJobs {
       // Its own process group, so stopping it stops ssh too (which would hold the pipe open).
       detached: true,
       env: {
-        ...process.env,
+        ...childEnv(),
         GIT_TERMINAL_PROMPT: "0",
         // Nobody can answer a passphrase prompt; a host seen for the first time is trusted.
         GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",

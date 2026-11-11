@@ -1296,6 +1296,41 @@ person's own message (`live.tell`, defanged). A reply passed on gets a ✅ react
 person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
+*Connectors* (`texting/connector.ts`, listed in `texting/connectors.ts`). Texts travel over
+messaging connectors: iMessage (`imessage.ts`, Photon) and a Discord bot (`discord.ts`, its Gateway
+WebSocket and REST API with no library: identify with GUILD_MESSAGES, DIRECT_MESSAGES and
+MESSAGE_CONTENT, heartbeats, resume after a drop, reconnect with backoff; a refused token or intent
+stops it with why). A connector is only a transport: its settings (secrets write-only), a link that
+hears the person and sends text (and images, where it takes them), and its status. Everything above
+(numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
+Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
+else the first connected (one that's on and really connected). Whatever follows the person's
+message about a session (or the Home agent) goes back on the connector it came by, saved per session
+(`replyVia`, with the DM it came from). A shared place (a Discord channel others read) gets Tether's
+direct reply to that message (the picker, a problem with it) and the answer of the one turn it
+started, under one rule: the channel message counts only if the session (or Home's Texts chat) was
+idle with nothing queued when it came; any other input (a DM, Tether's web, a report, a request
+answer, a held text picked from elsewhere, another turn) ends that claim; only the turn it started
+may answer there, once. In doubt, the DM. Reports, failures, requests and text_person go privately. Files the person sends are stored with the session (or
+the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
+text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
+isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one
+channel set, where only a message that starts by mentioning the bot or replies to one of its
+messages counts; anyone else, bots, webhooks and the bot itself are ignored silently. Tether's own
+messages go to the owner's DM; only an answer to something written in the channel goes there.
+Messages are split at 2000 characters, masked links are spelled out (and any left escaped);
+mentions never ping. At most 900 fresh identifies a day across reconnects; a resume URL off
+discord.gg is never used. Its settings live in `texting.json` under `connectors.discord`
+(mode 600) or `runner.env` (`TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`,
+`TETHER_DISCORD_CHANNEL_ID`); it's off until set. Tether's secrets (`TETHER_TOKEN`, the connectors'
+keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`
+(`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. A token set in `runner.env` also stays in
+`/proc/<runner pid>/environ`, readable to same-user processes: the settings page (`texting.json`) is
+the recommended place for it. The Home agent sees Discord's words marked
+`[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
+`setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
+stay for an older web).
+
 *Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
 in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
 with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
@@ -1325,7 +1360,9 @@ if the home is deleted meanwhile (and its number reused), the person is told it'
    Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
    `home:` row.
 
-*Homes.* Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
+*Homes.* (The router is shared, so all of this, the Home/H prefixes and reply threading work the
+same on every connector, Discord included; the way back, `replyVia` and a channel's claim, is kept
+for the Home agent as a whole, not per home.) Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
 tab (made by the first text to `h`, again if it was closed; Home shows no delete for it, though
 `/new` in it still starts a fresh one), and every other tab is `h1`, `h2`, …. A tab keeps its number
 while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
@@ -1353,43 +1390,50 @@ being about that session (relays it there) unless the words name another. A numb
 or a session's own text since, turns away from it. The router's state (texting.json) keeps it
 across restarts.
 
-*Images.* Photon carries iMessage attachments both ways. The runner reads these files itself,
-outside every session's sandbox, and they go only to the person's own phone (out) or into the
-session the person texted (in). Images the person texts (PNG, JPEG, GIF, WebP, HEIC by their bytes,
-up to 10 MB, at most 10) go with their words to whoever the text goes to, stored as that session's
-attachments (§9: the agent sees them as images and by path). Each downloads beside the text queue
-(at most 30 s to download and 30 s to convert, waiting for a slot included, so a text never waits
-more than about a minute) and stops past 10 MB however big it said it was; one that
-fails or times out is dropped, the words still go, and the person is told. HEIC is turned into JPEG
-with ImageMagick when the runner has it, and so is a PNG, JPEG or WebP over 2048 px on its long edge
-(ATTACH_IMAGE_EDGE) or too big for the model APIs (NATIVE_IMAGE_MAX), scaled to fit: `convert` told
-the input's coder, `-limit memory 256MiB -limit map 512MiB -limit disk 256MiB -limit area 128MP
--limit width 16KP -limit height 16KP -limit time …`, its temporary files in a `tether-magick-*`
-folder of its own that's removed after (ones older than an hour are swept when texting starts), at
-most 2 at once (a finished one hands its slot straight on), output capped. Without it (or when it
-fails, or no slot frees in time) a big image goes as it came, and a HEIC by path, named `.heic`
-whatever the sender called it, with a note saying so. An image alone is "(image)"; while a request waits it goes after the
-turn and the request still waits on the person. Images held with a text the picker holds go when
-that text goes, or with whatever text takes the held one over (`2 what's wrong here`, `h1 …`,
-`hn …`), and a caption sent after its photo takes the photo along. Held images are kept in memory
-only: after a runner restart they're gone, and the person is told so when the held text goes (a
-held photo alone isn't passed on as an empty "(image)"). Held images the person never sends on
-(no pick within 10 minutes) are dropped and the person is told then, once. A send that fails says
-so and that the image didn't go, in one text. A voice note, contact card, poll or app
-card gets one short text per message ("Only text and images get through, so I left the rest
-out."); the words with it still go. Reactions and read receipts are ignored. Other files are left out;
-any image that doesn't go, for whatever reason, is reported to the person. `text_person` takes an
-optional `image`: an absolute path to a .png/.jpg/.gif/.webp/.heic file, opened once without
-following a final symlink or blocking on a FIFO, checked on that handle (a regular file of at most
-10 MB whose first bytes match), sent as the bytes checked. Every refusal says the same thing (no
-telling which paths exist), a try counts against the agent's text cap (sessions' pre-check: at most
-5 refusals per 10 minutes), and nothing goes. A relayed session's image path goes to the Home agent
-in its report.
+*Files and images.* Files the person sends on any connector (iMessage attachments through Photon,
+Discord's from its CDN) go as the *Connectors* paragraph says, stored by the runner, which reads them
+itself, outside every session's sandbox; what Tether sends goes only to the person. Each read is
+bounded: at most its cap (10 MB an image, 25 MB a file), counted as it streams whatever size it
+claimed, and 30 s (iMessage's download; Discord's own limits; the stash's outer bound), so a stalled
+download can't hold up the text queue; one that fails is skipped and the person is told. An image
+is what its bytes say (PNG, JPEG, GIF, WebP, HEIC): one that only claims to be is stored as a plain
+file. HEIC is turned into JPEG with ImageMagick when the runner has it, and so is a PNG, JPEG or WebP
+over 2048 px on its long edge (ATTACH_IMAGE_EDGE) or too big for the model APIs (NATIVE_IMAGE_MAX),
+scaled to fit: `convert` told the input's coder, `-limit memory 256MiB -limit map 512MiB -limit
+disk 256MiB -limit area 128MP -limit width 16KP -limit height 16KP -limit time …`, its temporary
+files in a `tether-magick-*` folder of its own that's removed after (ones older than an hour are
+swept when texting starts), at most 2 at once (a finished one hands its slot straight on), waiting
+and running within 30 s, output capped. Without it (or when it fails, or no slot frees in time) a big
+image goes as it came, and a HEIC by path, named `.heic` whatever the sender called it, with a note
+saying so in the message (`homeLine.ts` heicNote). Files alone are "(sent a file)"; while a request
+waits they go to the agent and the request still waits on the person; with an answer to a request
+they follow it (queued after its turn). Files held with a text the picker holds go where it goes,
+or with whatever text takes the held one over (`2 what's wrong here`, `h1 …`, `hn …`), and a
+caption sent after its photo takes the photo along. Held files are kept in memory only: after a
+runner restart they're gone, and the person is told so when the held text goes (a hold of only
+files isn't passed on as words). Held files the person never sends on (no pick within 10 minutes)
+are dropped and the person is told then, once. A send that fails says so and that the file didn't
+go, in one text. A voice note, contact card, poll or app card (iMessage) gets one short text per
+message ("Only text and files get through, so I left the rest out."); the words with it still go.
+Reactions and read receipts are ignored. Every call into a connector made while handling the
+person's text (a send, the ✅, opening iMessage's chat) gives up after 30 s (`PHOTON.ms`): logged,
+and the queue goes on; a text whose send timed out may have gone, so text_person tells the agent
+not to send it again.
 
-Only texts from the person's own number are heard: the sender's Apple address must be a phone
-number (no `@`; an Apple ID email is never taken, whatever digits it has) that is exactly the
-configured phone once both are in E.164 (`+1 555-123-4567` is `+15551234567`); another country's
-number ending in the same digits isn't. A link sent with its preview (`richlink`) is its URL as words.
+Out, `text_person` takes an optional `image` where the connector takes images (`Connector.images`:
+iMessage, each image its own message after the words; Discord, an attachment): an absolute path to
+a .png/.jpg/.gif/.webp/.heic file, opened once without following a final symlink or blocking on a
+FIFO, checked on that handle (a regular file of at most 10 MB whose first bytes match), sent as the
+bytes checked (`Outbound.files`). Every refusal says the same thing (no telling which paths exist),
+a try counts against the agent's text cap (sessions' pre-check: at most 5 refusals per 10 minutes),
+and nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
+on an `image path:` line that can't open or close a fence (`unfence`).
+
+On iMessage only texts from the person's own number are heard (`link.ts` fromOwner): the sender's
+Apple address must be a phone number (no `@`; an Apple ID email is never taken, whatever digits it
+has) that is exactly the configured phone once both are in E.164 (`+1 555-123-4567` is
+`+15551234567`); another country's number ending in the same digits isn't. (Discord: the owner user
+ids.) A link sent with its preview (`richlink`) is its URL as words.
 A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
 to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It
 arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts`; the chat shows it

@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONVERT_MAX, MAGICK, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
+import { CONVERT_MAX, MAGICK, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, readOutgoingImage, sniffImage, tooBigToSee, type RawFile } from "./images";
+import { inboundOf } from "./link";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { aboutOf, replyContext } from "../homeLine";
 
@@ -80,12 +81,23 @@ describe("an agent's image to text", () => {
 });
 
 describe("images the person texts", () => {
-  const f = (mimeType: string, size?: number): InboundFile => ({ name: "x", mimeType, ...(size !== undefined ? { size } : {}), read: async () => PNG });
-
-  test("only images, not too big, pass", () => {
-    const { take, left } = pickIncoming([f("image/jpeg"), f("image/heic"), f("application/pdf"), f("image/svg+xml"), f("image/png", 50 * 1024 * 1024)]);
-    expect(take.map((x) => x.mimeType)).toEqual(["image/jpeg", "image/heic"]);
-    expect(left).toBe(3);
+  test("an iMessage file is fetched only when taken, streamed, and stopped past the cap it's read with", async () => {
+    let reads = 0;
+    const stream = async () =>
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          reads++;
+          for (let i = 0; i < 4; i++) c.enqueue(new Uint8Array(10));
+          c.close();
+        },
+      });
+    const m = inboundOf({ type: "attachment", name: "a.pdf", mimeType: "application/pdf", size: 1, read: async () => Buffer.alloc(40), stream });
+    expect(reads).toBe(0);
+    const file = m!.files![0]!;
+    expect([file.name, file.mimeType, file.size]).toEqual(["a.pdf", "application/pdf", 1]);
+    expect((await file.read(100)).length).toBe(40);
+    // It said 1 byte: what counts is what comes.
+    await expect(file.read(25)).rejects.toThrow(/too big/);
   });
 
   test("a downloaded one is typed by its bytes, and dropped when it isn't an image", async () => {
@@ -111,7 +123,7 @@ describe("images the person texts", () => {
           c.close();
         },
       });
-    const f = (o: Partial<InboundFile>): InboundFile => ({ name: "x", mimeType: "image/png", size: 0, read: async () => PNG, ...o });
+    const f = (o: Partial<RawFile>): RawFile => ({ read: async () => PNG, ...o });
     expect((await download(f({ stream: chunks(3, 10) }), 100)).length).toBe(30);
     await expect(download(f({ stream: chunks(30, 10) }), 100)).rejects.toThrow(/too big/);
     await expect(download(f({ read: async () => Buffer.alloc(200) }), 100)).rejects.toThrow(/too big/);

@@ -4,6 +4,7 @@
 import type { HarnessInfo } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { parseVersion } from "../../../shared/harnessUpdates";
+import { childEnv } from "../childEnv";
 
 export { parseVersion };
 
@@ -17,7 +18,7 @@ const TIMED_OUT = Symbol("timed out");
 async function versionOf(bin: string, timeoutMs: number): Promise<string | null | typeof TIMED_OUT> {
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try {
-    proc = Bun.spawn([bin, "--version"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    proc = Bun.spawn([bin, "--version"], { env: childEnv(), stdout: "pipe", stderr: "ignore", stdin: "ignore" });
   } catch {
     return null; // not installed
   }

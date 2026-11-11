@@ -11,6 +11,7 @@ import { HARNESS_BINS } from "../detect";
 import { connect } from "./daemon";
 import { remember, remembered, rememberedThreads } from "./remember";
 import { CodexRpc } from "./rpc";
+import { childEnv } from "../../childEnv";
 
 export type ApiSource = "openai" | "azure";
 export interface PrivateSource { id: string; source: ApiSource; projectPath: string }
@@ -53,7 +54,7 @@ export function providerConfig(source: ApiSource, endpoint?: string): Record<str
 
 /** A restricted inherited environment: no alternate provider key, proxy credential, or trace sink. */
 export function privateEnvironment(home: string, key?: string): Record<string, string | undefined> {
-  const env = { ...process.env };
+  const env: Record<string, string | undefined> = childEnv();
   for (const k of Object.keys(env)) if (/^(CODEX_|OPENAI_|AZURE_|ANTHROPIC_|CLAUDE_|RUST_|OTEL_|TETHER_GATEWAY_)/.test(k) || k === "TETHER_TOKEN") delete env[k];
   env.CODEX_HOME = home;
   if (key) env.TETHER_CODEX_API_KEY = key;
@@ -81,7 +82,7 @@ async function stopPrivate(source: PrivateSource, record: ProcessRecord) {
   // Record and Linux start time identify only the private process Tether itself started.
   if (birthOf(record.pid) !== record.birth) return;
   if (record.unit) {
-    const p = Bun.spawn(["systemctl", "--user", "stop", record.unit], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const p = Bun.spawn(["systemctl", "--user", "stop", record.unit], { env: childEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     if (await p.exited !== 0) throw new Error("Couldn't stop this session's private Codex process. Nothing was sent.");
   } else {
     try { process.kill(-record.pid, "SIGTERM"); } catch {}

@@ -2,11 +2,11 @@
 // session it started is reported back to its chat, and a session the person steps into is theirs.
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
-import { HomeLine, replyContext } from "../homeLine";
+import { FROM_DISCORD, FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { HEIC_NOTE, HomeLine, replyContext } from "../homeLine";
 import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
@@ -975,17 +975,18 @@ async function texting(o: { attachments?: boolean } = {}) {
   const line = new HomeLine();
   const sent: string[] = [];
   const personTexts: [string, string][] = [];
-  /** what each text was about (send's `about`), and text_person's options */
+  /** what each text was about (send's `about`), which chat sent it, whether it was the direct answer to a text (it may go back to where they wrote it), and text_person's options */
   const abouts: (string | undefined)[] = [];
   const sentChats: (string | undefined)[] = [];
+  const answers: boolean[] = [];
   const personOpts: ({ image?: string; about?: string; chat?: string } | undefined)[] = [];
   line.phone = {
-    send: async (t, about, chat) => (sent.push(t), abouts.push(about), sentChats.push(chat), true),
+    send: async (t, o) => (sent.push(t), abouts.push(o?.about), sentChats.push(o?.chat), answers.push(!!o?.answer), true),
     text: async (from, body, o) => (personTexts.push([from, body]), personOpts.push(o), { text: "Texted the person." }),
   };
   const t = await setup({ homeLine: line, ...o });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, abouts, sentChats, personTexts, personOpts, textsTab };
+  return { ...t, line, sent, abouts, sentChats, answers, personTexts, personOpts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1017,8 +1018,23 @@ test("a text goes to the Texts tab, marked as texted, and the reply goes back by
   expect(sent.length).toBe(2);
 });
 
+test("a Discord message goes to the Texts tab marked as Discord's, with its files, and the reply goes back", async () => {
+  const { line, sent, driverOf, textsTab } = await texting();
+  const file = { path: "/tmp/tether-attachments/x/1a2b3c4d-shot.png", name: "shot.png", mimeType: "image/png", size: 3 };
+  let storedFor = "";
+  await line.home!.take("what's this?", { mark: FROM_DISCORD, files: async (chat) => ((storedFor = chat), [file]) });
+  const texts = await textsTab();
+  expect(storedFor).toBe(texts);
+  await until(() => sent.length === 1);
+  const got = driverOf(texts)!.sent[0]!;
+  expect(got).toStartWith(`${FROM_DISCORD}what's this?`);
+  expect(got).toContain(file.path);
+  expect(tetherOrigin(got)?.origin).toEqual({ kind: "discord" });
+  expect(sent[0]).toStartWith(`echo ${FROM_DISCORD}what's this?`);
+});
+
 test("texted work: a finished-turn report's outcome goes back by text, a turn that only keeps it going doesn't", async () => {
-  const { line, sent, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  const { line, sent, answers, runner, driverOf, textsTab, tools, project, fake } = await texting();
   await line.home!.take("fix the tests in project");
   await until(() => sent.length === 1);
   const texts = await textsTab();
@@ -1046,6 +1062,8 @@ test("texted work: a finished-turn report's outcome goes back by text, a turn th
   expect(sent.length).toBe(3);
   expect(sent[2]).toContain("Report 3 of");
   expect(sent.some((t) => t.includes("Report 2 of"))).toBe(false);
+  // Only the answer to the person's text is an answer (it may go to a channel); reports go privately.
+  expect(answers).toEqual([true, false, false]);
 });
 
 test("reports to another tab, and watch reports in the Texts tab, aren't texted", async () => {
@@ -1111,12 +1129,14 @@ test("closing the Texts tab: the next text makes a new one", async () => {
 });
 
 test("a failed turn on a text is texted briefly", async () => {
-  const { line, sent, fake } = await texting();
+  const { line, sent, answers, fake } = await texting();
   const plain = fake.script;
   fake.script = (text) => (text.includes("boom") ? [async (sink) => sink.state({ status: "idle", error: "429 rate_limit_error" } as any)] : plain(text));
   await line.home!.take("boom");
   await until(() => sent.length === 1);
   expect(sent[0]).toBe("Couldn't do that: rate limited.");
+  // A failure isn't an answer: it goes to them privately, never to a channel.
+  expect(answers).toEqual([false]);
 });
 
 test("the Home agent keeps its own style rules: none of the sessions' added instructions", () => {
@@ -1266,20 +1286,27 @@ test("homes: hn makes one (h2, h3, …), its number reaches it, its texts are ma
   expect(home.homes().map((h) => h.n)).toEqual([0, 1, 2, 3]);
 });
 
-test("the person's texted images reach the Texts tab as attachments", async () => {
-  const { line, runner, driverOf, textsTab } = await texting({ attachments: true });
+test("the person's texted images reach the Texts tab as attachments, and a HEIC one that couldn't be converted says so", async () => {
+  const { line, runner, driverOf, textsTab, dataDir } = await texting({ attachments: true });
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
-  await line.home!.take("what's this?", [{ name: "IMG_1.png", mimeType: "image/png", data: png }]);
+  const path = join(dataDir, "IMG_1.png");
+  writeFileSync(path, png);
+  await line.home!.take("what's this?", { files: async () => [{ path, name: "IMG_1.png", mimeType: "image/png", size: png.length }] });
   const texts = await textsTab();
   await until(() => !!driverOf(texts)?.sent.length);
   const got = driverOf(texts)!.sent[0]!;
   expect(got).toStartWith(`${FROM_IMESSAGE}what's this?`);
   expect(got).toContain("Attached files:");
-  const path = /- (\/\S+IMG_1\.png) \(image\/png/.exec(got)?.[1];
-  expect(path).toBeDefined();
-  expect(readFileSync(path!).equals(png)).toBe(true);
-  void runner;
+  expect(got).toContain(`- ${path} (image/png`);
+  expect(got).not.toContain(HEIC_NOTE);
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  const heic = join(dataDir, "IMG_2.heic");
+  writeFileSync(heic, png);
+  await line.home!.take("and this", { files: async () => [{ path: heic, name: "IMG_2.heic", mimeType: "image/heic", size: png.length }] });
+  await until(() => driverOf(texts)!.sent.length === 2);
+  expect(driverOf(texts)!.sent[1]).toContain(`and this\n\n${HEIC_NOTE}`);
 });
+
 
 test("a relayed text_person with an image tells the Home agent the image's path", async () => {
   const { line, runner, driverOf, tools, project, chat, op } = await texting();
