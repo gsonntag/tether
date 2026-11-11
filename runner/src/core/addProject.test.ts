@@ -116,6 +116,26 @@ describe("cloneRepo", () => {
     expect(jobs.status(jobs.start("acme/widget", dest).cloneId)).toEqual({ state: "done", path: dest, percent: 100 });
   });
 
+  test("what an interrupted clone left is cloned again, not taken as done", async () => {
+    fakeGitHub();
+    const dest = join(scratch(), "widget");
+    // A killed clone: .git already points at the repo, nothing fetched or checked out.
+    git("init", "-q", dest);
+    git("-C", dest, "remote", "add", "origin", "git@github.com:acme/widget.git");
+    expect(await clone("acme/widget", dest)).toEqual({ state: "done", path: dest, percent: 100 });
+    expect(existsSync(join(dest, "README"))).toBe(true);
+  });
+
+  test("a clone killed while checking out (no index yet) is cloned again", async () => {
+    fakeGitHub();
+    const dest = join(scratch(), "widget");
+    await clone("acme/widget", dest);
+    rmSync(join(dest, ".git", "index"));
+    rmSync(join(dest, "README"));
+    expect(await clone("acme/widget", dest)).toMatchObject({ state: "done" });
+    expect(existsSync(join(dest, "README"))).toBe(true);
+  });
+
   test("refuses an existing folder that is something else, before starting", () => {
     const dest = scratch();
     expect(() => new CloneJobs().start("acme/widget", dest)).toThrow("already exists");
