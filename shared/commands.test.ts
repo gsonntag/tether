@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { menuMatches, menuPick, menuQuery, parseCommand, settingRoute, type HarnessCommand } from "./commands";
+import { HOME_COMMANDS, isHomeReset, menuMatches, menuPick, menuQuery, parseCommand, settingRoute, type HarnessCommand } from "./commands";
 
 const list: HarnessCommand[] = [
   { name: "posthog:compact-thing", description: "" },
@@ -47,5 +47,17 @@ describe("the menu", () => {
     expect(settingRoute("model", "haiku")).toEqual({ setting: "model", value: "haiku" });
     expect(settingRoute("effort", "")).toEqual({ setting: "effort" });
     expect(settingRoute("rename", "")).toBeUndefined();
+  });
+});
+
+describe("Home's /new and /clear", () => {
+  test("either alone resets; anything more is a message", () => {
+    for (const t of ["/new", "/clear", " /NEW ", "/Clear\n"]) expect(isHomeReset(t)).toBe(true);
+    for (const t of ["/new chat", "new", "/newer", "/clear all", "please /clear", "/compact"]) expect(isHomeReset(t)).toBe(false);
+  });
+  test("the menu offers both", () => {
+    expect(menuMatches(HOME_COMMANDS, "").map((c) => c.name)).toEqual(["new", "clear"]);
+    expect(menuMatches(HOME_COMMANDS, "cl").map((c) => c.name)).toEqual(["clear"]);
+    expect(menuPick(HOME_COMMANDS[0]!, "/new", "Enter")).toBe("send");
   });
 });

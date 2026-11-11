@@ -262,6 +262,16 @@ describe("subscriptions", () => {
     fromRunner(r, { t: "summary", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } });
     for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } }]);
   });
+
+  test("the Home agent's current chat goes to every browser, stamped with the runner", () => {
+    const { browser, runner, fromRunner } = setup();
+    const a = browser("a");
+    const b = browser("b");
+    const r = runner("box");
+    fromRunner(r, { t: "homeChat", sessionId: "claude:x", rev: 1 });
+    fromRunner(r, { t: "homeChat", rev: 2 });
+    for (const s of [a, b]) expect(s.take("homeChat")).toEqual([{ t: "homeChat", runnerId: "box", sessionId: "claude:x", rev: 1 }, { t: "homeChat", runnerId: "box", rev: 2 }]);
+  });
 });
 
 describe("terminal routing", () => {

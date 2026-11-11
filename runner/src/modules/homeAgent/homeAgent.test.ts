@@ -2,10 +2,11 @@
 // session it started is reported back to its chat, and a session the person steps into is theirs.
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_TETHER } from "../../../../shared/fromTether";
+import type { HomeChatUpdate } from "../../../../shared/protocol";
 import type { Adapter, AgentSetup } from "../../core/adapter";
 import { FakeAdapter } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
@@ -35,7 +36,8 @@ async function setup() {
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [fake], prefsFile: join(dir, "runner.json"), homeFolder, core: { evictMs: 60_000 } });
   stops.push(() => runner.core.stop());
   mkdirSync(join(dir, "data"));
-  const stop = await homeAgentModule.start({ bus: runner.bus, ops: runner.ops, dataDir: join(dir, "data"), log: () => {}, runnerId: "t", appUrl: "http://x", ...runner.look } as any);
+  const announced: HomeChatUpdate[] = [];
+  const stop = await homeAgentModule.start({ bus: runner.bus, ops: runner.ops, dataDir: join(dir, "data"), log: () => {}, runnerId: "t", appUrl: "http://x", ...runner.look, announceHomeChat: (u: HomeChatUpdate) => announced.push(u) } as any);
   if (stop) stops.push(stop);
   const op = async (name: string, args: unknown = {}): Promise<any> => {
     const r = await runner.ops.handle(name, args);
@@ -45,7 +47,7 @@ async function setup() {
   const chat = (await op("homeAgentNew")).sessionId as string;
   const tools = (sessionId: string) => Object.fromEntries(setups.get(homeFolder)!(sessionId.split(":")[1]!).tools.map((t) => [t.name, t.run]));
   const driverOf = (id: string) => fake.drivers.find((d) => `claude:${d.nativeId}` === id);
-  return { runner, fake, op, chat, tools, driverOf, project, homeFolder, setups };
+  return { runner, fake, op, chat, tools, driverOf, project, homeFolder, setups, announced, dataDir: join(dir, "data") };
 }
 
 test("the chat is current, and only its folder gets the tools", async () => {
@@ -127,6 +129,54 @@ test("after MAX_REPORTS reports it stops following", async () => {
   }
   expect(driverOf(chat)!.sent.at(-1)).toContain("stopped following");
   await expect(tools(chat).send_to_session!({ session_id: child, message: "more" })).rejects.toThrow("stopped following");
+});
+
+test("/new and /clear: no current chat until the next message, which starts a fresh one; every device is told", async () => {
+  const { op, chat, tools, project, runner, driverOf, announced, dataDir } = await setup();
+  const first = await op("homeAgent");
+  expect(first.sessionId).toBe(chat);
+  expect(announced).toEqual([{ sessionId: chat, rev: first.rev }]);
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
+
+  const { rev } = await op("homeAgentClear");
+  expect(rev).toBeGreaterThan(first.rev);
+  expect(announced.at(-1)).toEqual({ rev });
+  expect(await op("homeAgent")).toEqual({ folder: expect.any(String), rev });
+  // Kept across a restart.
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ rev });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).current).toBeUndefined();
+
+  // The old chat let go of what it started: the child's next turn wakes nobody, and it can't be driven from there.
+  await runner.look.sessions.send(child, `${FROM_TETHER}more`);
+  await until(() => driverOf(child)!.sent.length === 2 && runner.core.sessions.get(child)?.state.status === "idle");
+  await Bun.sleep(50);
+  expect(driverOf(chat)!.sent.length).toBe(1);
+  await expect(tools(chat).send_to_session!({ session_id: child, message: "more" })).rejects.toThrow("cleared this chat");
+  expect(await tools(chat).session_status!({ session_id: child })).toContain("stopped following");
+
+  // The next message's chat is a new session: none of the old context.
+  const next = await op("homeAgentNew");
+  expect(next.sessionId).not.toBe(chat);
+  expect(next.rev).toBeGreaterThan(rev);
+  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, rev: next.rev });
+  expect((await op("homeAgent")).sessionId).toBe(next.sessionId);
+});
+
+test("clearing a chat that's working stops it", async () => {
+  const { op, chat, runner, driverOf } = await setup();
+  await op("send", { sessionId: chat, text: "hi" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && !!driverOf(chat));
+  runner.core.sessions.get(chat)!.setState({ status: "running" });
+  await op("homeAgentClear");
+  expect(driverOf(chat)!.interrupted).toBe(1);
+  // An idle one is left alone.
+  const other = (await op("homeAgentNew")).sessionId;
+  await op("send", { sessionId: other, text: "hi" });
+  await until(() => runner.core.sessions.get(other)?.state.status === "idle" && !!driverOf(other));
+  await op("homeAgentClear");
+  expect(driverOf(other)!.interrupted).toBe(0);
 });
 
 test("lastReply is the newest assistant text", () => {

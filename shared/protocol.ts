@@ -97,10 +97,12 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
-  /** the Home agent's current chat (none before the first message) and the folder its chats run in */
-  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string } };
+  /** the Home agent's current chat (none before the first message) and the folder its chats run in. `rev`: as in HomeChatUpdate */
+  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string; rev: number } };
   /** a new Home agent chat, current from now; its first send starts it */
-  homeAgentNew: { args: Record<string, never>; result: { sessionId: string } };
+  homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
+  /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */
+  homeAgentClear: { args: Record<string, never>; result: { rev: number } };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
@@ -400,6 +402,17 @@ export type SummaryUpdate =
   | { kind: "upsert"; epoch: string; seq: number; sessions: SessionSummary[] }
   | { kind: "remove"; epoch: string; seq: number; ids: string[] };
 
+/**
+ * The Home agent's current chat changed (a new one, or `/new` cleared it): broadcast to every
+ * browser, so each device's Home shows the same chat. `rev` grows with each change (it's kept across
+ * restarts), so an answer to the `homeAgent` rpc and a broadcast can be put in order.
+ */
+export interface HomeChatUpdate {
+  /** absent: none, the next message starts one */
+  sessionId?: string;
+  rev: number;
+}
+
 // ---------- messages ----------
 
 export interface ResultMsg {
@@ -428,6 +441,7 @@ export type ServerToBrowser =
   | ResultMsg
   | { t: "event"; runnerId: string; sessionId: string; seq: number; event: SessionEvent }
   | { t: "summary"; runnerId: string; summary: SummaryUpdate }
+  | ({ t: "homeChat"; runnerId: string } & HomeChatUpdate)
   /** base64 terminal output, only to the browser that owns the attach */
   | { t: "term"; attachId: string; data: string }
   /** the attach is gone (the terminal exited, or its runner went away) */
@@ -455,6 +469,7 @@ export type RunnerToServer =
   | ResultMsg
   | { t: "event"; sessionId: string; seq: number; event: SessionEvent }
   | { t: "summary"; summary: SummaryUpdate }
+  | ({ t: "homeChat" } & HomeChatUpdate)
   | { t: "term"; attachId: string; data: string }
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */

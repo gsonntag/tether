@@ -58,6 +58,10 @@ describe("wire", () => {
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":true}')?.t).toBe("result");
     expect(parseRunnerMessage('{"t":"event","sessionId":"claude:x","seq":3,"event":{"type":"reset","messages":[]}}')?.t).toBe("event");
     expect(parseRunnerMessage('{"t":"summary","summary":{"kind":"remove","epoch":"e","seq":1,"ids":[]}}')?.t).toBe("summary");
+    // The Home agent's current chat: a session, or none (cleared by /new), with its rev.
+    expect(parseRunnerMessage('{"t":"homeChat","sessionId":"claude:x","rev":5,"extra":1}')).toEqual({ t: "homeChat", sessionId: "claude:x", rev: 5 });
+    expect(parseRunnerMessage('{"t":"homeChat","rev":6}')).toEqual({ t: "homeChat", rev: 6 });
+    for (const bad of ['{"t":"homeChat"}', '{"t":"homeChat","rev":"1"}', '{"t":"homeChat","rev":1,"sessionId":3}']) expect(parseRunnerMessage(bad)).toBeNull();
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":false,"error":"x","junk":1}')).toEqual({ t: "result", id: "s1", ok: false, data: undefined, error: "x" });
     expect(parseRunnerMessage('{"t":"term","attachId":"a1","data":""}')?.t).toBe("term");
     for (const bad of ['{"t":"hello"}', '{"t":"result","id":"s1"}', '{"t":"event","sessionId":"x","seq":1,"event":{}}', '{"t":"summary","summary":{"kind":"bogus","seq":1}}', '{"t":"summary","summary":{"kind":"all","sessions":[]}}', '{"t":"summary","summary":{"kind":"all","seq":1,"sessions":[]}}', '{"t":"term","attachId":"a"}', '{"t":"event","sessionId":"x","seq":1.5,"event":{}}', '{"t":"rpc"}', "{"])

@@ -7,6 +7,7 @@ import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import { moveModule } from "./move";
@@ -86,6 +87,8 @@ export interface ModuleContext {
   attachmentsDir?: string;
   /** the Home agent's folder (RunnerOptions.homeFolder); its sessions are left out of the lists */
   homeFolder?: string;
+  /** tells every browser the Home agent's current chat changed (dropped while disconnected: browsers ask again on reconnect) */
+  announceHomeChat?: (u: HomeChatUpdate) => void;
 }
 
 export interface Module {

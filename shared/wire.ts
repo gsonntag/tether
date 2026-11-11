@@ -71,6 +71,9 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
     case "summary":
       if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string) || !Number.isSafeInteger(m.summary.seq) || !isId(m.summary.epoch)) return null;
       return { t: "summary", summary: m.summary as unknown as SummaryUpdate };
+    case "homeChat":
+      if (!Number.isSafeInteger(m.rev) || (m.sessionId !== undefined && !isId(m.sessionId))) return null;
+      return { t: "homeChat", rev: m.rev as number, ...(m.sessionId !== undefined ? { sessionId: m.sessionId as string } : {}) };
     case "term":
       return isId(m.attachId) && typeof m.data === "string" ? { t: "term", attachId: m.attachId, data: m.data } : null;
     case "termEnd":
