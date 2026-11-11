@@ -13,6 +13,13 @@ export class OpRegistry {
     this.handlers.set(op, handler);
   }
 
+  /** Runs an op from inside the runner (a module using another's): its result, or its error thrown. */
+  async call<K extends OpName>(op: K, args: OpArgs<K>): Promise<OpResult<K>> {
+    const h = this.handlers.get(op);
+    if (!h) throw new Error(`This runner doesn't know "${op}".`);
+    return (await h(args as never)) as OpResult<K>;
+  }
+
   async handle(op: string, args: unknown): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
     const h = this.handlers.get(op as OpName);
     if (!h) return { ok: false, error: `This runner doesn't know "${op}". Update and restart it.` };

@@ -18,7 +18,9 @@ import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import { FROM_TETHER, fromTether } from "../../../../shared/fromTether";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, type SessionSummary } from "../../../../shared/transcript";
-import type { AgentSetup, AgentTool } from "../../core/adapter";
+import type { BillingSource, SourceOption } from "../../../../shared/credentials";
+import type { HomeAgentSettings } from "../../../../shared/protocol";
+import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
@@ -34,6 +36,12 @@ const LIST_DEFAULT = 20;
 const LIST_MAX = 50;
 /** Each harness's mode that runs without asking. */
 const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", codex: "full-access" };
+/**
+ * The mode the agent's own chats run in on each harness. Claude's tools that touch anything are
+ * taken away (AgentSetup.deny); Codex's shell, patch and web tools are switched off by config
+ * (adapters/codex/setup.ts), and its sandbox is read-only on top.
+ */
+const OWN_MODE: Record<HarnessId, string> = { claude: "default", codex: "read-only" };
 
 interface Child {
   /** the chat that started it */
@@ -48,6 +56,18 @@ interface State {
   /** grows with each change of `current`, across restarts (HomeChatUpdate.rev) */
   rev: number;
   children: Record<string, Child>;
+  /** what it runs on, as the person chose it; none: Claude Code on the source a new session gets */
+  settings?: HomeAgentSettings;
+}
+
+const HARNESSES: HarnessId[] = ["claude", "codex"];
+
+/** `v` as settings, if it is one. */
+export function settingsOf(v: unknown): HomeAgentSettings | undefined {
+  const o = v as Partial<HomeAgentSettings> | undefined;
+  if (!o || typeof o !== "object" || !HARNESSES.includes(o.harness as HarnessId) || typeof o.source !== "string" || !o.source) return undefined;
+  const model = typeof o.model === "string" && o.model.trim() && o.model !== "default" ? o.model.trim() : undefined;
+  return { harness: o.harness as HarnessId, source: o.source as BillingSource, ...(model ? { model } : {}) };
 }
 
 export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to you from Tether's home page. Your job is to turn what they ask for into a coding session in one of their projects, give it a strong first prompt, and see it through until the task is done.
@@ -189,7 +209,7 @@ export class HomeAgent {
     this.file = join(ctx.dataDir, "state.json");
     try {
       const v = JSON.parse(readFileSync(this.file, "utf8"));
-      if (v && typeof v === "object") this.state = { current: typeof v.current === "string" ? v.current : undefined, rev: Number.isSafeInteger(v.rev) ? v.rev : 0, children: v.children && typeof v.children === "object" ? v.children : {} };
+      if (v && typeof v === "object") this.state = { current: typeof v.current === "string" ? v.current : undefined, rev: Number.isSafeInteger(v.rev) ? v.rev : 0, children: v.children && typeof v.children === "object" ? v.children : {}, ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}) };
     } catch {}
   }
 
@@ -208,8 +228,7 @@ export class HomeAgent {
     const id = this.state.current;
     if (!id) return undefined;
     try {
-      await this.ctx.sessions.open(id);
-      return id;
+      return await this.follow(id);
     } catch {
       // Created but never sent to: nothing is stored, so it can't open after a restart.
       return undefined;
@@ -226,10 +245,91 @@ export class HomeAgent {
     return this.state.rev;
   }
 
+  /**
+   * Where a chat went on: a source change that took a new thread (a Codex carry) leaves the old one
+   * pointing at it (`continuedIn`). Its sessions follow it, and so does `current`.
+   */
+  private async follow(id: string): Promise<string> {
+    let at = id;
+    for (let i = 0; i < 20; i++) {
+      const next = (await this.ctx.sessions.open(at)).state.continuedIn;
+      if (!next || next === at) break;
+      at = next;
+    }
+    if (at !== id) this.moved(id, at);
+    return at;
+  }
+
+  /** A chat went on in `to`: it's current if `from` was, and the sessions `from` started report there. */
+  private moved(from: string, to: string) {
+    for (const c of Object.values(this.state.children)) if (c.chat === from) c.chat = to;
+    if (this.state.current === from) this.setCurrent(to);
+    else this.save();
+  }
+
+  /** The harnesses that can run it here: the runner has them, and they take Tether's tools. */
+  harnesses(): HarnessId[] {
+    return this.ctx.sessions.adapters().filter((a) => a.agentSetup && HARNESSES.includes(a.id)).map((a) => a.id);
+  }
+
+  /** What it runs on: the person's choice, else Claude Code (or what there is) on the source a new session gets. */
+  async settings(): Promise<HomeAgentSettings> {
+    const have = this.harnesses();
+    const set = this.state.settings;
+    if (set && have.includes(set.harness)) return set;
+    const harness = have.includes("claude") ? "claude" : (have[0] ?? "claude");
+    return { harness, source: (await this.ctx.sessions.sources(harness)).default ?? "subscription" };
+  }
+
   async newChat(): Promise<{ sessionId: string; rev: number }> {
-    const source = (await this.ctx.sessions.sources("claude")).default ?? "subscription";
-    const id = await this.ctx.sessions.create({ harness: "claude", projectPath: this.folder, source, permissionMode: "default" });
+    const { harness, source, model } = await this.settings();
+    const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode: OWN_MODE[harness], ...(model ? { model } : {}) });
     return { sessionId: id, rev: this.setCurrent(id) };
+  }
+
+  /**
+   * Keeps `asked` for every chat to come, and puts the current chat on it: the model at once,
+   * Claude's source from its next start (the same session), and anything else (another harness, or
+   * a Codex source, which needs a new thread) by a move, a new chat with the whole conversation.
+   * The move needs the chat idle; until something is applied nothing is saved.
+   */
+  async set(asked: unknown): Promise<{ sessionId?: string; settings: HomeAgentSettings; rev: number }> {
+    const next = settingsOf(asked);
+    if (!next) throw new Error("Pick an agent and a source.");
+    if (!this.harnesses().includes(next.harness)) throw new Error(`${HARNESS_LABELS[next.harness]} can't run the Home agent on this runner.`);
+    const sources = await this.ctx.sessions.sources(next.harness);
+    // A runner with no choice of source: its harness's own login.
+    const option = sources.options.length ? sources.options.find((o) => o.source === next.source) : next.source === "subscription" ? ({ source: next.source } as SourceOption) : undefined;
+    if (!option) throw new Error(`${this.adapter(next.harness)?.billing?.label(next.source).label ?? next.source} isn't set up on this runner.`);
+    const deployments = option.deployments?.map((d) => d.name) ?? (option.deployment ? [option.deployment] : undefined);
+    if (deployments && !(next.model && deployments.includes(next.model))) {
+      if (!deployments[0]) throw new Error("Add an Azure deployment in Credentials first.");
+      next.model = deployments[0];
+    }
+    let id = await this.current();
+    if (id) {
+      const look = await this.ctx.sessions.open(id);
+      const s = this.ctx.sessions;
+      const sameHarness = look.summary.harness === next.harness;
+      const own = await s.sourceOf(id);
+      const capabilities = this.adapter(next.harness)?.capabilities;
+      if (!sameHarness || (next.source !== own && !(capabilities?.sourceSwitch && !capabilities.sourceCarry))) {
+        const moved = await this.ctx.ops.call("moveSession", { sessionId: id, harness: next.harness, source: next.source, ...(next.model ? { model: next.model } : {}) });
+        await this.ctx.ops.call("setPermissionMode", { sessionId: moved.sessionId, mode: OWN_MODE[next.harness] }).catch((e) => this.ctx.log(`couldn't set the moved chat's mode: ${(e as Error).message}`));
+        this.moved(id, moved.sessionId);
+        id = moved.sessionId;
+      } else {
+        if (next.model && next.model !== look.state.model) await this.ctx.ops.call("setModel", { sessionId: id, model: next.model });
+        if (next.source !== own) await this.ctx.ops.call("setSessionSource", { sessionId: id, source: next.source });
+      }
+    }
+    this.state.settings = next;
+    this.save();
+    return { ...(id ? { sessionId: id } : {}), settings: next, rev: this.state.rev };
+  }
+
+  private adapter(h: HarnessId): Adapter | undefined {
+    return this.ctx.sessions.adapters().find((a) => a.id === h);
   }
 
   /**
@@ -260,9 +360,8 @@ export class HomeAgent {
     return [id, c];
   }
 
-  /** The tools a chat (by its Claude native id) gets. */
-  tools(nativeId: string): AgentTool[] {
-    const chat = `claude:${nativeId}`;
+  /** The tools a chat (by its session id) gets. */
+  tools(chat: string): AgentTool[] {
     const s = this.ctx.sessions;
     return [
       {
@@ -412,10 +511,10 @@ export class HomeAgent {
     return lines.join("\n") + more;
   }
 
-  setup(nativeId: string): AgentSetup {
+  setup(chat: string): AgentSetup {
     return {
       server: "tether",
-      tools: this.tools(nativeId),
+      tools: this.tools(chat),
       instructions: INSTRUCTIONS,
       // No shell, no edits, nothing from the network, no subagents: the sessions it starts do the work.
       deny: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
@@ -425,7 +524,7 @@ export class HomeAgent {
   /** Tells a chat about one of its sessions, through its queue (after its own turn, if one runs). */
   private async report(id: string, c: Child, body: string) {
     try {
-      await this.ctx.sessions.queue(c.chat, FROM_TETHER + body);
+      await this.ctx.sessions.queue(await this.follow(c.chat).catch(() => c.chat), FROM_TETHER + body);
     } catch (e) {
       this.ctx.log(`couldn't report ${id} to ${c.chat}: ${(e as Error).message}`);
     }
@@ -481,12 +580,17 @@ export const homeAgentModule: Module = {
   name: "homeAgent",
   start(ctx) {
     const folder = ctx.homeFolder;
-    const claude = ctx.sessions.adapters().find((a) => a.id === "claude");
-    if (!folder || !existsSync(folder) || !claude?.agentSetup) return;
+    const hosts = ctx.sessions.adapters().filter((a) => a.agentSetup && HARNESSES.includes(a.id));
+    if (!folder || !existsSync(folder) || !hosts.length) return;
     const agent = new HomeAgent(ctx, folder);
-    const unset = claude.agentSetup(folder, (nativeId) => agent.setup(nativeId));
+    const unsets = hosts.map((a) => a.agentSetup!(folder, (nativeId) => agent.setup(`${a.id}:${nativeId}`)));
+    const unset = () => unsets.forEach((f) => f());
 
-    ctx.ops.register("homeAgent", async () => ({ sessionId: await agent.current(), folder, rev: agent.state.rev }));
+    ctx.ops.register("homeAgent", async () => {
+      const sessionId = await agent.current();
+      return { ...(sessionId ? { sessionId } : {}), folder, rev: agent.state.rev, settings: await agent.settings(), harnesses: agent.harnesses() };
+    });
+    ctx.ops.register("homeAgentSet", (a) => agent.set(a));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.clear());
 

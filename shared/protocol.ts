@@ -70,6 +70,14 @@ export interface RunnerSettings {
   backgroundSubagents?: boolean;
 }
 
+/** What the Home agent runs on (runner/src/modules/homeAgent). No model: the harness's default. */
+export interface HomeAgentSettings {
+  harness: HarnessId;
+  source: BillingSource;
+  /** on Azure, a deployment's name */
+  model?: string;
+}
+
 export interface User {
   name: string;
   email: string;
@@ -97,8 +105,14 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
-  /** the Home agent's current chat (none before the first message) and the folder its chats run in. `rev`: as in HomeChatUpdate */
-  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string; rev: number } };
+  /** the Home agent's current chat (none before the first message), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
+  homeAgent: { args: Record<string, never>; result: { sessionId?: string; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
+  /**
+   * What the Home agent runs on, kept on the runner for every chat to come. The current chat takes it
+   * too: a model now, Claude's source from its next start, and a harness or a Codex source by a move
+   * (a new chat with the conversation, which becomes current). Answers with the chat that's current now
+   */
+  homeAgentSet: { args: HomeAgentSettings; result: { sessionId?: string; settings: HomeAgentSettings; rev: number } };
   /** a new Home agent chat, current from now; its first send starts it */
   homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
   /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */

@@ -11,7 +11,10 @@ import { rpc } from "../connection";
 import { setHomeChat } from "../presence";
 import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
 import { billingForDisplay } from "../sourceMenu";
+import type { HomeAgentSettings } from "../../../shared/protocol";
+import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
+import { HomeAgentSettingsChip } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RequestDock } from "./RequestDock";
 import { SessionCtx } from "./sessionContext";
@@ -29,12 +32,18 @@ export function HomeChat() {
   /** the current chat (kept in sync across devices by the runner's homeChat broadcasts): undefined while asking, null when there's none yet */
   const known = useStore((s) => (rid ? s.homeChats[rid] : undefined));
   const [error, setError] = useState<string>();
+  /** what it runs on; absent from a runner from before it could change */
+  const [agent, setAgent] = useState<{ runnerId: string; settings: HomeAgentSettings; harnesses: HarnessId[] }>();
 
   useEffect(() => {
     if (!rid || !linkOpen) return;
     let gone = false;
     rpc(rid, "homeAgent", {})
-      .then((r) => !gone && noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0 }))
+      .then((r) => {
+        if (gone) return;
+        noteHomeChat(rid, { sessionId: r.sessionId, rev: r.rev ?? 0 });
+        setAgent(r.settings ? { runnerId: rid, settings: r.settings, harnesses: r.harnesses ?? [r.settings.harness] } : undefined);
+      })
       .catch((e) => !gone && setError((e as Error).message));
     return () => {
       gone = true;
@@ -56,9 +65,20 @@ export function HomeChat() {
   if (!runner) return null;
   return (
     <section className="t-home-chat" aria-label="Home agent">
-      {current && (
+      {(current || (agent && agent.runnerId === rid)) && (
         <div className="t-home-chat-head">
-          <Button label="New chat" size="sm" variant="ghost" clickAction={() => clear().catch((e) => setError((e as Error).message))} />
+          {agent && agent.runnerId === rid && (
+            <HomeAgentSettingsChip
+              runnerId={rid!}
+              settings={agent.settings}
+              harnesses={agent.harnesses}
+              onChanged={(r) => {
+                setAgent({ ...agent, settings: r.settings });
+                if (r.sessionId) noteHomeChat(rid!, { sessionId: r.sessionId, rev: r.rev });
+              }}
+            />
+          )}
+          {current && <Button label="New chat" size="sm" variant="ghost" clickAction={() => clear().catch((e) => setError((e as Error).message))} />}
         </div>
       )}
       {error && <div className="t-form-error">{error}</div>}

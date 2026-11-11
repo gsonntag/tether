@@ -2639,3 +2639,24 @@
   justify-content: flex-end;
   margin-bottom: -4px;
 }
+.t-home-chat-head { gap: 6px; align-items: center; }
+.t-home-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--t-border);
+  border-radius: 999px;
+  background: none;
+  color: var(--t-muted, inherit);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.t-home-agent-chip:hover { color: inherit; }
+.t-home-agent-sep { opacity: .5; }
+.t-home-agent-chev { font-size: 10px; opacity: .7; }
+.t-home-agent-form { padding: 12px; }
