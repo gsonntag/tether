@@ -7,6 +7,10 @@
 // its session's number; a reply that isn't clear gets a numbered picker (router.ts). The runner sends
 // them, not the app: a Foliation app has no internet egress (server/src/push.ts).
 //
+// The person can text the Home agent too (homeLine.ts, router.ts): "home: ..." or plain words when
+// nothing else claims them go to its Texts chat, and its short replies come back as "[home] ..."
+// texts (homeAgent/index.ts decides which replies).
+//
 // The thread is shared with the `textme` CLI (the text-me skill), which texts from the same Photon
 // number and hears the same replies: each says what it last sent in a shared folder (thread.ts), and
 // a reply that's answering a textme's text is left to it, with no picker.
@@ -22,7 +26,7 @@ import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
-import { Router } from "./router";
+import { HOME, Router } from "./router";
 import { TextingStore } from "./store";
 import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
@@ -40,10 +44,14 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
 
 /** How long an agent's answer may be in a text. */
 const SAID_MAX = 1500;
+/** How long a Home agent text may be: it's meant to be a few words. */
+export const HOME_MAX = 600;
+/** How many of the person's texts are remembered, so one heard twice is taken once. */
+const HEARD_MAX = 200;
 /** A session's link goes in a text at most this often. */
 export const LINK_EVERY_MS = 5 * 60_000;
 
@@ -63,6 +71,8 @@ export class Texter {
   private talking = new Set<string>();
   /** when each session's link last went out */
   private linked = new Map<string, number>();
+  /** the ids of the person's texts already taken, newest last */
+  private heardIds: string[] = [];
 
   constructor(
     private ctx: Ctx,
@@ -142,17 +152,33 @@ export class Texter {
   }
 
   private async say(text: string): Promise<string | undefined> {
-    if (!this.link) return undefined;
+    return (await this.send(text)).id;
+  }
+
+  /** Texts the person; `sent`: it went (Photon may give no id). */
+  private async send(text: string): Promise<{ sent: boolean; id?: string }> {
+    if (!this.link) return { sent: false };
     try {
       const id = await this.link.send(text);
       this.router.noteOut();
       this.publish();
-      return id;
+      return { sent: true, ...(id ? { id } : {}) };
     } catch (e: any) {
       this.lastError = `Couldn't send a text: ${e?.message ?? e}`;
       this.ctx.log(`texting: ${this.lastError}`);
-      return undefined;
+      return { sent: false };
     }
+  }
+
+  /** The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it goes back to the Home agent. */
+  async homeText(body: string): Promise<boolean> {
+    const words = clip(body, HOME_MAX);
+    if (!this.link || !words) return false;
+    const { sent, id } = await this.send(this.router.stampHome(words));
+    if (id) this.router.noteSent(id, HOME);
+    this.store.save();
+    this.publish();
+    return sent;
   }
 
   async test() {
@@ -222,6 +248,8 @@ export class Texter {
   async turnEnded(sessionId: string, error?: string) {
     const last = this.lastSaid.get(sessionId);
     this.lastSaid.delete(sessionId);
+    // The Home agent's Texts chat answers by its own texts (homeText).
+    if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return void this.talking.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     const talking = this.talking.delete(sessionId);
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)));
@@ -232,16 +260,31 @@ export class Texter {
   // ── in: the person's replies, one at a time ──
 
   heard(m: Inbound): Promise<void> {
+    // The same text heard twice (a reconnect's replay) is taken once.
+    if (m.id) {
+      if (this.heardIds.includes(m.id)) return this.inbox;
+      this.heardIds = [...this.heardIds, m.id].slice(-HEARD_MAX);
+    }
     this.inbox = this.inbox.then(() => this.answer(m)).catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
     return this.inbox;
   }
 
   private async answer(m: Inbound) {
-    const d = this.router.route(m.text, m.replyTo, this.thread.waiters(this.now()));
+    const home = this.ctx.homeLine?.home;
+    const d = this.router.route(m.text, m.replyTo, this.thread.waiters(this.now()), !!home);
     this.store.save();
     this.publish();
     if (d.kind === "none") return;
     if (d.kind === "reply") return void (await this.say(d.text));
+    if (d.kind === "home") {
+      try {
+        await home!.take(d.text);
+        await m.react?.(READ).catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
+      } catch (e: any) {
+        await this.say(TEXTS.couldNotSend("the Home agent", String(e?.message ?? e)));
+      }
+      return;
+    }
     const tag = `[${d.n}]`;
     try {
       const look = this.ctx.session(d.sessionId);
@@ -281,6 +324,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),
@@ -301,6 +345,7 @@ export const textingModule: Module = {
     void t.start();
     return () => {
       offs.forEach((f) => f());
+      if (ctx.homeLine) ctx.homeLine.phone = undefined;
       void t.stop();
     };
   },

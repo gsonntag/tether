@@ -9,12 +9,13 @@ import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
 import type { TetherNote, Thread, Waiter } from "./thread";
+import { HomeLine } from "../homeLine";
 
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
 
 const LINK = "https://tether.example/#/s/box/";
 
-function setup(viewers: Record<string, string[]> = {}) {
+function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
   const clock = { t: 1_000_000 };
   const texts: string[] = [];
   let n = 0;
@@ -35,6 +36,7 @@ function setup(viewers: Record<string, string[]> = {}) {
       log: () => {},
       runnerId: "box",
       appUrl: "https://tether.example/",
+      homeLine,
       session: (id) => sessions[id],
       viewersOf: (id) => viewers[id] ?? [],
       sessions: { tell: async (id, text) => void told.push([id, text]), answer: async (id, r, a) => void answered.push([id, r, a]) },
@@ -460,5 +462,110 @@ describe("a reply to a request has exactly one effect", () => {
 
   test("the already-answered text is casual", () => {
     expect(casualText(TEXTS.alreadyAnswered(2))).toBe(true);
+  });
+});
+
+describe("texting the Home agent", () => {
+  function withHome() {
+    const line = new HomeLine();
+    const took: string[] = [];
+    let textsChat = "claude:home";
+    line.home = { take: async (text) => void took.push(text), isTextsChat: (id) => id === textsChat };
+    const s = setup({}, line);
+    line.phone = { send: (text) => s.t.homeText(text) };
+    return { ...s, line, took, setTextsChat: (id: string) => (textsChat = id) };
+  }
+
+  test("a text with nothing open goes to it with a ✅, and its reply comes back as a [home] text", async () => {
+    const { t, texts, took, told, hear, line, notes } = withHome();
+    await t.start();
+    const reacted: string[] = [];
+    await hear({ text: "start a session to fix the login in web", react: async (e) => void reacted.push(e) });
+    expect(took).toEqual(["start a session to fix the login in web"]);
+    expect(told).toEqual([]);
+    expect(reacted).toEqual(["✅"]);
+    // No ack from Tether itself: the Home agent answers.
+    expect(texts).toEqual([]);
+    expect(await line.phone!.send("ok, on it")).toBe(true);
+    expect(texts).toEqual(["[home] ok, on it"]);
+    expect(casualText(texts[0]!)).toBe(true);
+    // Its id is published for textme, and a threaded reply to it goes back to the Home agent.
+    expect(notes.at(-1)!.sent).toEqual(["m1"]);
+    await hear({ text: "also the docs", replyTo: "m1" });
+    expect(took.at(-1)).toBe("also the docs");
+  });
+
+  test("a prefixed text goes to it even while a session waits on a reply; plain text still goes to the session", async () => {
+    const { t, took, told, hear, say } = withHome();
+    await t.start();
+    say("claude:a", "Should I deploy?");
+    await t.turnEnded("claude:a");
+    await hear({ text: "home: what's running?" });
+    expect(took).toEqual(["what's running?"]);
+    await hear({ text: "yes deploy" });
+    expect(told).toEqual([["claude:a", "yes deploy"]]);
+    expect(took).toEqual(["what's running?"]);
+  });
+
+  test("after a Home text, plain text answers the Home agent, not the open session", async () => {
+    const { t, took, told, hear, say, line } = withHome();
+    await t.start();
+    say("claude:a", "Should I deploy?");
+    await t.turnEnded("claude:a");
+    await line.phone!.send("PR, merge + deploy, or just local changes?");
+    await hear({ text: "just a PR" });
+    expect(took).toEqual(["just a PR"]);
+    expect(told).toEqual([]);
+  });
+
+  test("a textme that texted after Tether keeps plain and prefixed texts; nothing goes twice", async () => {
+    const { t, texts, took, hear, clock, waiters, line } = withHome();
+    await t.start();
+    await line.phone!.send("ok");
+    clock.t += 1000;
+    waiters.push({ pid: 1, sentAt: clock.t, until: clock.t + 5 * 60_000, id: "tm1" });
+    clock.t += 1000;
+    await hear({ text: "sure" });
+    await hear({ text: "home: start x" });
+    expect(took).toEqual([]);
+    expect(texts).toEqual(["[home] ok"]);
+    // A threaded reply to the Home text is still the Home agent's.
+    await hear({ text: "start x", replyTo: "m1" });
+    expect(took).toEqual(["start x"]);
+  });
+
+  test("the same text heard twice goes to the Home agent once", async () => {
+    const { t, took, hear } = withHome();
+    await t.start();
+    await hear({ id: "in1", text: "home: start x" });
+    await hear({ id: "in1", text: "home: start x" });
+    await hear({ id: "in2", text: "home: start x" });
+    expect(took).toEqual(["start x", "start x"]);
+  });
+
+  test("a failure to hand it over says so; no Home agent says so", async () => {
+    const { t, texts, hear, line } = withHome();
+    await t.start();
+    line.home!.take = async () => {
+      throw new Error("The chat is gone.\nstack");
+    };
+    await hear({ text: "home: start x" });
+    expect(texts).toEqual(["Couldn't send to the Home agent: The chat is gone."]);
+    line.home = undefined;
+    await hear({ text: "home: start x" });
+    expect(texts.at(-1)).toBe(TEXTS.noHome);
+    for (const text of [TEXTS.noHome, TEXTS.whatToSendHome, TEXTS.homeFailed("rate limited")]) expect([text, casualText(text)]).toEqual([text, true]);
+  });
+
+  test("the Texts chat's own turn ends aren't texted as a session's, and nothing goes without a link", async () => {
+    const { t, texts, say, setTextsChat, line } = withHome();
+    setTextsChat("claude:a");
+    await t.start();
+    say("claude:a", "Which project, web or api?");
+    await t.turnEnded("claude:a");
+    await t.turnEnded("claude:a", "overloaded 529");
+    expect(texts).toEqual([]);
+    await t.stop();
+    expect(await line.phone!.send("ok")).toBe(false);
   });
 });
