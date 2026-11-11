@@ -68,6 +68,8 @@ export interface SessionActions {
   rename(id: string, title: string): Promise<void>;
   /** stops its running turn */
   interrupt(id: string): Promise<void>;
+  /** keeps a session out of Recent (or puts it back), as the archive button does */
+  setArchived(id: string, archived: boolean): Promise<void>;
 }
 
 export interface ModuleContext {
