@@ -12,6 +12,7 @@ import { CredentialStore, DATA_DIR } from "./credentials";
 import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
 import { HomeLine } from "./modules/homeLine";
+import { ShortLinks } from "./modules/links/store";
 
 // No silent defaults outside dev: a runner that quietly dialled localhost with token "dev" would
 // look healthy while serving nobody.
@@ -56,10 +57,11 @@ mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 // Private: it holds runner.json and the terminal hooks' socket.
 chmodSync(CONFIG_DIR, 0o700);
 const homeLine = new HomeLine();
+const links = new ShortLinks(join(CONFIG_DIR, "modules", "links", "links.json"));
 const stopModules = await startModules(MODULES, (m) => {
   const dataDir = join(CONFIG_DIR, "modules", m.name);
   mkdirSync(dataDir, { recursive: true });
-  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, attachmentsDir: join(CONFIG_DIR, "attachments"), homeLine, ...runner.look };
+  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, attachmentsDir: join(CONFIG_DIR, "attachments"), homeLine, links, ...runner.look };
 });
 
 console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);

@@ -268,6 +268,8 @@ export interface Ops {
   setTexting: { args: { enabled?: boolean; phone?: string; projectId?: string; projectSecret?: string }; result: TextingStatus };
   /** Sends a test text to the phone. */
   textingTest: { args: {}; result: null };
+  /** What a short link's code (`#/l/<code>`, runner modules/links) opens on this runner; null: not one of its codes, or expired. */
+  resolveLink: { args: { code: string }; result: { runnerId: string; sessionId: string } | null };
   /**
    * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
    * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)

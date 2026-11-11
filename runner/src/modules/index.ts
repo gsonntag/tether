@@ -11,6 +11,8 @@ import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
+import { linksModule } from "./links";
+import type { ShortLinks } from "./links/store";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
@@ -100,6 +102,8 @@ export interface ModuleContext {
   announceHomeChat?: (u: HomeChatUpdate) => void;
   /** texting ↔ the Home agent (homeLine.ts): one for the whole runner */
   homeLine?: HomeLine;
+  /** short links to sessions (links/store.ts): one for the whole runner */
+  links?: ShortLinks;
 }
 
 export interface Module {
@@ -109,7 +113,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

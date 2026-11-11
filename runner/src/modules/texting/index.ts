@@ -45,7 +45,7 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> };
 
 /** How long an agent's answer may be in a text. */
 const SAID_MAX = 1500;
@@ -215,6 +215,7 @@ export class Texter {
 
   /** The session in Tether. */
   url(sessionId: string): string {
+    if (this.ctx.links) return this.ctx.links.url(this.ctx.appUrl, sessionId);
     return `${this.ctx.appUrl.replace(/\/+$/, "")}/#/s/${encodeURIComponent(this.ctx.runnerId)}/${encodeURIComponent(sessionId)}`;
   }
 

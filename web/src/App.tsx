@@ -8,6 +8,7 @@ import { Settings } from "./components/Credentials";
 import { Home } from "./components/Home";
 import { NewSessionDialog } from "./components/NewSessionDialog";
 import { SessionView } from "./components/SessionView";
+import { ShortLink } from "./components/ShortLink";
 import { Sidebar } from "./components/Sidebar";
 import { useRoute } from "./route";
 import { useStore } from "./store";
@@ -38,6 +39,8 @@ export function App() {
         <Blocked auth={auth} />
       ) : route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" ? (
         <Settings page={route.page} />
+      ) : route.page === "link" ? (
+        <ShortLink key={route.code} code={route.code} />
       ) : route.page === "session" ? (
         <SessionView key={`${route.runnerId}\u0000${route.sessionId}`} runnerId={route.runnerId} sessionId={route.sessionId} />
       ) : (

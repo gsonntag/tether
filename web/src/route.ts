@@ -1,11 +1,12 @@
 // The page's place in the URL hash, so reload and the phone's back button work:
 //   #/                                 Home (runners)
 //   #/s/<runnerId>/<sessionId>          a session (both URI-encoded)
+//   #/l/<code>                          a short link from a text (runner modules/links): resolved, then replaced by its #/s/…
 //   #/settings/credentials, #/settings/azure, #/settings/texting, #/settings/notifications, #/settings/agents, #/settings/updates   Settings' subpages
 
 import { useSyncExternalStore } from "react";
 
-export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "session"; runnerId: string; sessionId: string };
+export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "session"; runnerId: string; sessionId: string } | { page: "link"; code: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
@@ -15,6 +16,8 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === "settings" && parts[1] === "agents") return { page: "agents" };
   if (parts[0] === "settings" && parts[1] === "updates") return { page: "updates" };
   if (parts[0] === "credentials" || parts[0] === "settings") return { page: "credentials" };
+  // Any code: one that can't be a code shows "doesn't exist" (ShortLink.tsx), not Home.
+  if (parts[0] === "l" && parts[1]) return { page: "link", code: parts.slice(1).join("/").replace(/\/+$/, "") };
   if (parts[0] === "s" && parts[1] && parts[2]) {
     try {
       return { page: "session", runnerId: decodeURIComponent(parts[1]), sessionId: decodeURIComponent(parts.slice(2).join("/")) };
@@ -32,6 +35,7 @@ export function presenceFor(hash: string, visible: boolean): { runnerId?: string
 }
 
 export function formatRoute(r: Route): string {
+  if (r.page === "link") return `#/l/${r.code}`;
   return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : "#/";
 }
 
