@@ -92,7 +92,7 @@ describe("caps", () => {
     const c = new PeerCaps(() => now);
     expect(c.checkBroadcast("a")).toBeUndefined();
     c.count("a", true);
-    expect(c.checkBroadcast("a")).toMatch(/minutes ago/);
+    expect(c.checkBroadcast("a")).toMatch(/1 minute ago/);
     c.turnFrom("b", { hops: 1, broadcast: true });
     expect(c.checkBroadcast("b")).toMatch(/can't send one to all/);
   });
