@@ -11,7 +11,7 @@
 // a security boundary.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookSocketPath } from "../../terminal/hooks";
 
@@ -26,15 +26,21 @@ export interface PeerCall {
 
 export type PeerAnswer = { text: string; isError?: boolean };
 
-/** The secret tokens are made from, kept in `dir` (made once). */
+/** The secret tokens are made from, kept in `dir` (made once), readable only by the user. */
 export function peerSecret(dir: string): string {
   const file = join(dir, "secret");
   try {
     const s = readFileSync(file, "utf8").trim();
-    if (/^[0-9a-f]{64}$/.test(s)) return s;
+    if (/^[0-9a-f]{64}$/.test(s)) {
+      // One made (or copied) with looser permissions is made private.
+      if ((statSync(file).mode & 0o077) !== 0) chmodSync(file, 0o600);
+      return s;
+    }
   } catch {}
   const s = randomBytes(32).toString("hex");
+  // `mode` only applies to a new file: one that was there keeps its own until chmod.
   writeFileSync(file, s + "\n", { mode: 0o600 });
+  chmodSync(file, 0o600);
   return s;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSessionMessage, peerHops, tetherOrigin } from "../../../../shared/fromTether";
@@ -114,6 +114,15 @@ describe("identity", () => {
     try {
       const secret = peerSecret(dir);
       expect(peerSecret(dir)).toBe(secret);
+      const file = join(dir, "secret");
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      chmodSync(file, 0o644);
+      expect(peerSecret(dir)).toBe(secret);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      writeFileSync(file, "junk\n", { mode: 0o644 });
+      chmodSync(file, 0o644);
+      expect(peerSecret(dir)).not.toBe(secret);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
       const sock = new PeerSocket(join(dir, "p.sock"), secret, async (c) => ({ text: `${c.from} ${c.tool} ${JSON.stringify(c.args)}` }));
       sock.start();
       const post = (body: unknown) => fetch("http://tether/call", { method: "POST", unix: sock.socketPath, body: JSON.stringify(body) } as RequestInit).then((r) => r.json());
