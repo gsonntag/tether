@@ -13,7 +13,7 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { SessionSummary } from "../../../../shared/transcript";
-import { ago, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
@@ -424,7 +424,7 @@ test("a busy session it didn't start gets the message after its turn, and only t
   expect(driverOf(chat)!.sent[0]).toContain("Report 1 of");
 });
 
-test("send_to_session refuses archived sessions, ones open in a terminal, and subagents", async () => {
+test("send_to_session refuses sessions open in a terminal and subagents", async () => {
   const { op, runner, chat, tools, driverOf, project } = await setup();
   const make = async () => {
     const id = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
@@ -432,19 +432,120 @@ test("send_to_session refuses archived sessions, ones open in a terminal, and su
     await until(() => runner.core.sessions.get(id)?.state.status === "idle");
     return id;
   };
-  const archived = await make();
-  await runner.look.sessions.setArchived(archived, true);
-  await expect(tools(chat).send_to_session!({ session_id: archived, message: "hi" })).rejects.toThrow("archived");
   const inTerminal = await make();
   runner.core.sessions.get(inTerminal)!.setState({ mode: "terminal" } as any);
   await expect(tools(chat).send_to_session!({ session_id: inTerminal, message: "hi" })).rejects.toThrow("open in a terminal");
+  // Archived and in a terminal: still the person's, and it stays archived.
+  const archivedTerminal = await make();
+  await runner.look.sessions.setArchived(archivedTerminal, true);
+  runner.core.sessions.get(archivedTerminal)!.setState({ mode: "terminal" } as any);
+  await expect(tools(chat).send_to_session!({ session_id: archivedTerminal, message: "hi" })).rejects.toThrow("open in a terminal");
+  expect(runner.core.sessions.get(archivedTerminal)!.summary.archived).toBe(true);
   const sub = await make();
-  (runner.core.sessions.get(sub)!.summary as any).parentSessionId = archived;
+  (runner.core.sessions.get(sub)!.summary as any).parentSessionId = inTerminal;
   await expect(tools(chat).send_to_session!({ session_id: sub, message: "hi" })).rejects.toThrow("subagent");
   await expect(tools(chat).send_to_session!({ session_id: "claude:nope", message: "hi" })).rejects.toThrow("no session");
-  for (const id of [archived, inTerminal, sub]) expect(driverOf(id)!.sent.length).toBe(1);
+  for (const id of [inTerminal, archivedTerminal, sub]) expect(driverOf(id)!.sent.length).toBe(1);
   // Nothing refused is followed.
-  expect(await tools(chat).session_status!({ session_id: archived })).toContain("You didn't start it");
+  expect(await tools(chat).session_status!({ session_id: inTerminal })).toContain("You didn't start it");
+});
+
+test("send_to_session revives an archived session: unarchived, sent, reported and followed", async () => {
+  const { op, runner, chat, tools, driverOf, project } = await setup();
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Build the site.", title: "Site" });
+  const id = /session (\S+) in/.exec(said)![1]!;
+  await until(() => driverOf(chat)?.sent.length === 1);
+  await until(() => runner.core.sessions.get(id)?.state.status === "idle");
+  expect(await tools(chat).archive_session!({ session_id: id, why: "done" })).toContain("Archived");
+  expect(runner.core.sessions.get(id)!.summary.archived).toBe(true);
+  expect(await tools(chat).list_sessions!({})).not.toContain(id);
+  // A follow-up later: the same session, with its context, back in the lists.
+  expect(await tools(chat).send_to_session!({ session_id: id, message: "Tweak the site again." })).toBe("Unarchived it. Sent. You'll get a report when it finishes the turn.");
+  expect(runner.core.sessions.get(id)!.summary.archived).toBeUndefined();
+  await until(() => driverOf(id)!.sent.length === 2);
+  expect(driverOf(id)!.sent[1]).toBe(`${FROM_TETHER}Tweak the site again.`);
+  await until(() => driverOf(chat)!.sent.length === 2);
+  expect(driverOf(chat)!.sent[1]).toContain("Report 2 of");
+  expect(await tools(chat).list_sessions!({})).toContain(id);
+  expect(await tools(chat).session_status!({ session_id: id })).toContain("You started it. Reports so far: 2 of");
+  // One the person archived and never touched by the agent revives the same way.
+  const theirs = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+  await op("send", { sessionId: theirs, text: "work" });
+  await until(() => runner.core.sessions.get(theirs)?.state.status === "idle");
+  await runner.look.sessions.setArchived(theirs, true);
+  expect(await tools(chat).send_to_session!({ session_id: theirs, message: "hi" })).toContain("Unarchived it. Sent.");
+  expect(runner.core.sessions.get(theirs)!.summary.archived).toBeUndefined();
+});
+
+test("archive_session: why done only for a finished session this chat started; person_asked for any", async () => {
+  const { op, fake, runner, chat, tools, driverOf, project } = await setup();
+  fake.script = (text) => (text.includes("HANG") ? [say(`a-${text}`, "Still on it.")] : [say(`a-${text}`, `echo ${text}`), idle]);
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  const start = async (prompt: string) => /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt }))![1]!;
+  // The person's own session: never "done" by the agent's judgment, only on request.
+  const theirs = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+  await op("send", { sessionId: theirs, text: "work" });
+  await until(() => runner.core.sessions.get(theirs)?.state.status === "idle");
+  await expect(tools(chat).archive_session!({ session_id: theirs, why: "done" })).rejects.toThrow("You didn't start that session");
+  // Messaging it doesn't make it the agent's to archive either.
+  await tools(chat).send_to_session!({ session_id: theirs, message: "more" });
+  await until(() => driverOf(theirs)!.sent.length === 2 && runner.core.sessions.get(theirs)?.state.status === "idle");
+  await expect(tools(chat).archive_session!({ session_id: theirs, why: "done" })).rejects.toThrow("You didn't start that session");
+  expect(runner.core.sessions.get(theirs)!.summary.archived).toBeUndefined();
+  expect(await tools(chat).archive_session!({ session_id: theirs, why: "person_asked" })).toContain("Archived");
+  expect(runner.core.sessions.get(theirs)!.summary.archived).toBe(true);
+  // Another chat's session isn't this chat's to archive as done.
+  const other = (await op("homeAgentNew")).sessionId as string;
+  const mine = await start("Fix it.");
+  await until(() => runner.core.sessions.get(mine)?.state.status === "idle" && driverOf(mine)!.sent.length === 1);
+  await expect(tools(other).archive_session!({ session_id: mine, why: "done" })).rejects.toThrow("You didn't start that session");
+  // Still working: not finished.
+  const working = await start("HANG on.");
+  await until(() => runner.core.sessions.get(working)?.state.status === "running");
+  await expect(tools(chat).archive_session!({ session_id: working, why: "done" })).rejects.toThrow("isn't finished");
+  expect(runner.core.sessions.get(working)!.summary.archived).toBeUndefined();
+  // Its own, finished: archived.
+  expect(await tools(chat).archive_session!({ session_id: mine, why: "done" })).toContain("Archived");
+  expect(runner.core.sessions.get(mine)!.summary.archived).toBe(true);
+  // The person stepped in: theirs now.
+  const taken = await start("Go.");
+  await until(() => runner.core.sessions.get(taken)?.state.status === "idle" && driverOf(taken)!.sent.length === 1);
+  runner.bus.emit("turnEnded", { sessionId: taken, stopped: true });
+  await Bun.sleep(50);
+  await expect(tools(chat).archive_session!({ session_id: taken, why: "done" })).rejects.toThrow("taken that session over");
+  await expect(tools(chat).archive_session!({ session_id: chat, why: "done" })).rejects.toThrow("your own chats");
+  await expect(tools(chat).archive_session!({ session_id: mine, why: "because" })).rejects.toThrow("why must be");
+});
+
+test("list_sessions: archived: true finds archived sessions to revive, and query searches titles and projects", async () => {
+  const t = await setup();
+  const { op, runner, chat, tools } = t;
+  const site = await personSession(t, "Tweak the site");
+  const login = await personSession(t, "Login fix");
+  for (const id of [site, login]) await op("send", { sessionId: id, text: "work" });
+  await until(() => [site, login].every((id) => runner.core.sessions.get(id)?.state.status === "idle"));
+  await runner.look.sessions.setArchived(site, true);
+  const list = tools(chat).list_sessions!;
+  // Archived ones are left out of the usual list...
+  const recent: string = await list({});
+  expect(recent).toContain(login);
+  expect(recent).not.toContain(site);
+  // ...and are what archived: true lists, marked so.
+  const archived: string = await list({ archived: true });
+  expect(archived).toContain(site);
+  expect(archived).toContain("· archived ·");
+  expect(archived).not.toContain(login);
+  // Never the agent's own chats (closed chats are archived too).
+  await op("homeAgentNew");
+  await op("homeAgentClose", { sessionId: chat }).catch(() => {});
+  expect(await list({ archived: true })).not.toContain(chat);
+  // query: title or project name, any case.
+  expect(await list({ archived: true, query: "SITE" })).toContain(site);
+  expect(await list({ archived: true, query: "login" })).toBe(`No archived sessions matching "login".`);
+  expect(await list({ query: "login" })).toContain(login);
+  expect(await list({ query: "project" })).toContain(login);
+  expect(await list({ query: "nothing like it" })).toBe(`No sessions matching "nothing like it".`);
 });
 
 test("stateOf, inProject, lastPrompt and ago", () => {
@@ -610,9 +711,9 @@ test("check_in_sessions asks idle sessions, archives the finished ones, skips bu
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
   expect(await tools(chat).check_in_sessions!({ session_ids: [finished] })).toContain("No recent sessions");
   // archive_session archives one on request, but never a chat.
-  expect(await tools(chat).archive_session!({ session_id: vague })).toContain("Archived");
+  expect(await tools(chat).archive_session!({ session_id: vague, why: "person_asked" })).toContain("Archived");
   expect(runner.core.sessions.get(vague)!.summary.archived).toBe(true);
-  await expect(tools(chat).archive_session!({ session_id: chat })).rejects.toThrow("your own chats");
+  await expect(tools(chat).archive_session!({ session_id: chat, why: "person_asked" })).rejects.toThrow("your own chats");
 });
 
 test("a check-in answer from a session the agent started isn't one of its reports", async () => {
@@ -796,15 +897,35 @@ test("the Watch all sessions toggle is on by default, kept, and off means no wat
 
 test("the prompt: one short end-goal question before a code change, unless done is already clear", () => {
   expect(INSTRUCTIONS).toContain(`before starting a session that changes code, know what "done" means for it`);
-  expect(INSTRUCTIONS).toContain(`"PR, merge + deploy, or just local changes?"`);
-  // Not when the chat already says (a standing instruction) or it's clear from context.
-  expect(INSTRUCTIONS).toContain("it isn't clear from context or from a standing instruction earlier in this chat");
+  // The three options, on one line (a phone).
+  expect(END_GOALS).toMatchInlineSnapshot(`"1) open a PR (you review and merge), 2) merge directly (and deploy/restart if it needs it), or 3) adversarial review first (subagents try to break it), then PR or merge?"`);
+  expect(END_GOALS).not.toContain("\n");
+  expect(INSTRUCTIONS).toContain(`offering these options on one line: "${END_GOALS}"`);
+  // Not when the chat already says (a standing instruction, or a project rule) or it's clear from context.
+  expect(INSTRUCTIONS).toContain("it isn't clear from context or from a standing instruction (one earlier in this chat");
   expect(INSTRUCTIONS).toContain(`"when any PR comes back, merge it and restart"`);
+  expect(INSTRUCTIONS).toContain(`"gavinsonntag.com: only the foliation branch"`);
+  // An answer that holds from now on is kept for that project.
+  expect(INSTRUCTIONS).toContain(`("always do X for jungle"), it's a standing instruction for that project for the rest of this chat`);
   // One question, not a questionnaire; not for read-only work.
   expect(INSTRUCTIONS).toContain("One quick question, never a list of them.");
   expect(INSTRUCTIONS).toContain("Research, questions and other read-only tasks don't need it.");
   // Before it starts: the rule comes ahead of the reply after starting one.
   expect(INSTRUCTIONS.indexOf("The end goal:")).toBeLessThan(INSTRUCTIONS.indexOf("After starting a session"));
+  // Adversarial review: the brief spells out the subagent workflow, the same way each time.
+  expect(ADVERSARIAL_BRIEF).toMatchInlineSnapshot(`"Work as a team of subagents: one implementer subagent makes the change; then at least two independent reviewer subagents, each given the diff and the goal but not the implementer's reasoning, try to break it, looking for bugs, security problems and regressions (including running the tests and the build). Fix every blocking issue they find and have fresh reviewers check again; repeat until the reviewers find no blocking issues. Only then deliver: <the chosen delivery: open a PR / merge directly (and deploy/restart if needed)>. In your report, say what the reviewers found and what you fixed."`);
+  expect(INSTRUCTIONS).toContain(`When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"`);
+  // Through to completion, then the loop is closed: wrap-up, then archive (its own sessions only).
+  expect(INSTRUCTIONS).toContain("work autonomously through to completion");
+  expect(INSTRUCTIONS).toContain("the worktree and branch it made, if any");
+  expect(INSTRUCTIONS).toContain("Close the loop on sessions you started.");
+  expect(INSTRUCTIONS).toContain("merge (only if that was chosen, or a standing instruction authorizes it), then deploy or restart if the project needs it, then remove the worktree and branch it made");
+  expect(INSTRUCTIONS).toContain(`archive it with archive_session (why: "done")`);
+  expect(INSTRUCTIONS).toContain("Never archive anyone else's session on your own judgment.");
+  expect(INSTRUCTIONS).not.toContain("Use archive_session only when the person asks");
+  // Follow-ups revive the original session.
+  expect(INSTRUCTIONS).toContain("revive the session that did it rather than starting a new one, since it has the context");
+  expect(INSTRUCTIONS).toContain("messaging an archived session unarchives it and sends");
   // Texts: a few words back, and a texted report's outcome only.
   expect(INSTRUCTIONS).toContain(`a message starting with "[From iMessage]" is the person texting you`);
   expect(INSTRUCTIONS).toContain(`"ok, on it"`);
