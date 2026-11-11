@@ -26,7 +26,7 @@ function setup(rows: SessionSummary[]) {
     log: () => {},
     session: look,
     sessions: {
-      list: async () => rows,
+      everySession: async () => rows,
       open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
       queue: async (to: string, text: string) => {
         const id = `q${++n}`;

@@ -140,7 +140,7 @@ export class Peers {
   }
 
   private async others(from: string): Promise<SessionSummary[]> {
-    return (await this.ctx.sessions.list()).filter((s) => reachable(s) && s.id !== from);
+    return (await this.ctx.sessions.everySession()).filter((s) => reachable(s) && s.id !== from);
   }
 
   private inProject(s: SessionSummary, project: string) {
@@ -289,7 +289,7 @@ export class Peers {
   async broadcast(text: string, filter: BroadcastFilter) {
     if (!text.trim()) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
-    const targets = matching(await this.ctx.sessions.list(), filter);
+    const targets = matching(await this.ctx.sessions.everySession(), filter);
     const queued: { sessionId: string; title: string }[] = [];
     const failed: { sessionId: string; title: string; error: string }[] = [];
     for (const t of targets) {

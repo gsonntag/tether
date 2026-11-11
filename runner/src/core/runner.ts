@@ -236,7 +236,7 @@ export function createRunner(o: RunnerOptions) {
         list: () => core.book.list(),
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string) => live.queue.add(id, text, []),
-        list: async () => (await core.listSessions({})).sessions.filter((s) => !s.parentSessionId),
+        everySession: async () => (await core.listSessions({})).sessions.filter((s) => !s.parentSessionId),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
           return (await core.load(s)).newest(limit).messages;

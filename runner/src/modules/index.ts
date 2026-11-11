@@ -64,8 +64,8 @@ export interface SessionActions {
   folder(path: string): string;
   /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */
   queue(id: string, text: string): Promise<{ id: string }>;
-  /** the sessions the lists show (not subagents), archived ones marked */
-  list(): Promise<SessionSummary[]>;
+  /** every main session the lists can show, stored ones too (not subagents), archived ones marked */
+  everySession(): Promise<SessionSummary[]>;
   /** the newest `limit` messages of its transcript */
   recent(id: string, limit: number): Promise<Msg[]>;
   rename(id: string, title: string): Promise<void>;
