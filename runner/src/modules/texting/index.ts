@@ -15,6 +15,10 @@
 // number and hears the same replies: each says what it last sent in a shared folder (thread.ts), and
 // a reply that's answering a textme's text is left to it, with no picker.
 //
+// An agent can text the person itself with its text_person tool (personText; never the text-me
+// skill, which textme refuses inside Tether's sessions): a short text stamped with its session's
+// number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
+//
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording); known secrets are redacted. Tether's own words read like a human's: "[6] ok", one
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
@@ -27,6 +31,7 @@ import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_M
 import { clip, readReply, requestText } from "./describe";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
 import { HOME, Router } from "./router";
+import { PERSON_TEXT_MAX } from "../homeLine";
 import { TextingStore } from "./store";
 import { FileThread, type Thread } from "./thread";
 import { TEXTS } from "./texts";
@@ -53,6 +58,36 @@ const SAID_MAX = 1500;
 export const HOME_MAX = 600;
 /** How many of the person's texts are remembered, so one heard twice is taken once. */
 const HEARD_MAX = 200;
+/** At most this many text_person texts from one session (or the Home agent) in AGENT_TEXT_MS, and from all of them together. */
+export const AGENT_TEXT_MAX = 3;
+export const AGENT_TEXTS_MAX = 10;
+export const AGENT_TEXT_MS = 10 * 60_000;
+/** The status a session's text_person text shows in the picker. */
+export const TEXTED_YOU = "texted you";
+
+/** The rate caps on agents' own texts. */
+export class AgentTextCaps {
+  private sent: { from: string; at: number }[] = [];
+  constructor(private now: () => number = Date.now) {}
+
+  /** Why `from` can't text now, or undefined (and it's counted). */
+  take(from: string): string | undefined {
+    const at = this.now();
+    this.sent = this.sent.filter((s) => at - s.at < AGENT_TEXT_MS);
+    const mins = AGENT_TEXT_MS / 60_000;
+    if (this.sent.filter((s) => s.from === from).length >= AGENT_TEXT_MAX) return `You've texted the person ${AGENT_TEXT_MAX} times in the last ${mins} minutes (at most ${AGENT_TEXT_MAX}). Nothing was sent: put it in your reply instead.`;
+    if (this.sent.length >= AGENT_TEXTS_MAX) return `Agents have texted the person ${AGENT_TEXTS_MAX} times in the last ${mins} minutes. Nothing was sent: put it in your reply instead.`;
+    this.sent.push({ from, at });
+    return undefined;
+  }
+
+  /** Gives back `from`'s last one (it didn't go). */
+  undo(from: string) {
+    const i = this.sent.map((s) => s.from).lastIndexOf(from);
+    if (i >= 0) this.sent.splice(i, 1);
+  }
+}
+
 /** A session's link goes in a text at most this often. */
 export const LINK_EVERY_MS = 5 * 60_000;
 
@@ -74,6 +109,7 @@ export class Texter {
   private linked = new Map<string, number>();
   /** the ids of the person's texts already taken, newest last */
   private heardIds: string[] = [];
+  readonly caps: AgentTextCaps;
 
   constructor(
     private ctx: Ctx,
@@ -83,6 +119,7 @@ export class Texter {
     private thread: Thread = new FileThread(),
   ) {
     this.router = new Router(store.router, now);
+    this.caps = new AgentTextCaps(now);
   }
 
   // ── the link ──
@@ -196,19 +233,40 @@ export class Texter {
     return `${this.ctx.appUrl.replace(/\/+$/, "")}/#/s/${encodeURIComponent(this.ctx.runnerId)}/${encodeURIComponent(sessionId)}`;
   }
 
-  /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now. */
-  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false, requestId?: string) {
-    if (!this.link) return;
-    if ([sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return;
+  /**
+   * An agent's own text (its text_person tool): at most PERSON_TEXT_MAX characters, stamped with its
+   * session's number (or [home]) so a reply goes back to it. Sent even while the session is open in
+   * Tether: the agent was asked to text. What the tool answers the agent.
+   */
+  async personText(from: string, body: string): Promise<{ text: string; isError?: boolean }> {
+    const words = clip(body, PERSON_TEXT_MAX);
+    if (!words) return { text: "The message is empty.", isError: true };
+    if (!this.link) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
+    const why = this.caps.take(from);
+    if (why) return { text: why, isError: true };
+    const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, [], false, undefined, true)).sent;
+    if (!sent) {
+      this.caps.undo(from);
+      return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
+    }
+    const cut = words.length < body.trim().length ? ` It was cut to ${PERSON_TEXT_MAX} characters.` : "";
+    return { text: `Texted the person.${cut} If they reply, their reply comes to you as a message.` };
+  }
+
+  /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
+  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false, requestId?: string, always = false): Promise<{ sent: boolean }> {
+    if (!this.link) return { sent: false };
+    if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
     // The link only now and then, and never on a quick back-and-forth.
     const at = this.now();
     const link = !quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS;
     if (link) this.linked.set(sessionId, at);
     const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body, requestId);
-    const id = await this.say(text);
+    const { sent, id } = await this.send(text);
     if (id) this.router.noteSent(id, sessionId, requestId);
     this.store.save();
     this.publish();
+    return { sent };
   }
 
   async request(r: Request) {
@@ -326,7 +384,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text) => t.homeText(text), text: (from, body) => t.personText(from, body) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

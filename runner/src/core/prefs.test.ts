@@ -34,3 +34,13 @@ test("runner settings are kept in runner.json and survive a session save", () =>
   p.setSettings({ backgroundSubagents: false });
   expect(JSON.parse(readFileSync(file, "utf8")).settings).toBeUndefined();
 });
+
+test("Concise replies: on unless turned off, and only `false` is kept", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "tether-prefs-")), "runner.json");
+  saveConfig({ runnerId: "r1" }, file);
+  const p = new Prefs(file, 0);
+  expect(p.settings().conciseReplies).toBeUndefined();
+  expect(p.setSettings({ conciseReplies: false })).toEqual({ conciseReplies: false });
+  expect(new Prefs(file).settings()).toEqual({ conciseReplies: false });
+  expect(p.setSettings({ conciseReplies: true })).toEqual({});
+});

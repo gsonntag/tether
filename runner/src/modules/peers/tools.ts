@@ -1,7 +1,7 @@
-// The tools every agent gets for talking to other sessions (SPEC §9a), as MCP describes them. The
+// The tools every agent gets for talking to other sessions, and to the person by text (SPEC §9a), as MCP describes them. The
 // stdio server (mcp.ts) lists these; the runner (index.ts) runs them.
 
-import { PEER_TOOLS } from "../../../../shared/peers";
+import { PEER_TOOLS, TEXT_PERSON } from "../../../../shared/peers";
 
 /** Longest an ask waits for its answer, and its default (minutes). */
 export const ASK_MAX_MIN = 60;
@@ -52,5 +52,11 @@ export const TOOL_DEFS = [
       },
       required: ["text"],
     },
+  },
+  {
+    name: TEXT_PERSON,
+    description:
+      "Texts the person an iMessage on their phone through Tether, marked with this session's number. Use it only when they asked to be texted (\"text me when it's done\") or you're blocked on something only they can answer. Keep it to one short sentence (it's cut at 300 characters), outcome first, with a link if there is one. If they reply, their reply comes to this session as a message. Never use the text-me skill or the textme CLI.",
+    inputSchema: { type: "object", properties: { message: { type: "string", description: "The text: one short sentence." } }, required: ["message"] },
   },
 ];

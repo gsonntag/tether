@@ -366,7 +366,7 @@ describe("the stdio MCP server", () => {
       m.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
       m.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
       m.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "tether_sessions", arguments: {}, _meta: { threadId: "t9" } } });
-      expect((await m.answer(2)).result.tools.map((t: any) => t.name)).toEqual(["tether_sessions", "tether_send", "tether_ask", "tether_broadcast"]);
+      expect((await m.answer(2)).result.tools.map((t: any) => t.name)).toEqual(["tether_sessions", "tether_send", "tether_ask", "tether_broadcast", "text_person"]);
       expect((await m.answer(3)).result.content[0].text).toBe("from codex:t9: tether_sessions {}");
       // A character split between two reads arrives whole.
       const bytes = new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "tether_send", arguments: { text: "café ✓" }, _meta: { threadId: "t9" } } }) + "\n");

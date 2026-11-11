@@ -69,6 +69,8 @@ export interface RunnerInfo {
 export interface RunnerSettings {
   /** Claude: every subagent the agent starts runs in the background (its Agent call is made with run_in_background) */
   backgroundSubagents?: boolean;
+  /** sessions Tether runs are told to end each turn with a short reply (SPEC §9a); absent: on, `false`: off. Never the Home agent */
+  conciseReplies?: boolean;
 }
 
 /** What the Home agent runs on (runner/src/modules/homeAgent). No model: the harness's default. */

@@ -13,11 +13,12 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
 import { WATCH } from "./index";
+import { CONCISE_RULE, TEXTING_RULE } from "../peers/instructions";
 
 const stops: (() => void)[] = [];
 const WATCH_DEFAULT = { ...WATCH };
@@ -69,7 +70,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect((await op("homeAgent")).sessionId).toBe(chat);
   expect([...setups.keys()]).toEqual([homeFolder]);
   const s = setups.get(homeFolder)!("x");
-  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "check_in_sessions", "archive_session", "send_to_session", "check_harness_updates"]);
+  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "check_in_sessions", "archive_session", "send_to_session", "text_person", "check_harness_updates"]);
   expect(s.deny).toContain("Bash");
   expect(s.deny).toContain("Edit");
   // Brief replies, always (a relayed report was "a big wall of text").
@@ -970,10 +971,11 @@ test("the iMessage marker: the person's own words, shown as texted", () => {
 async function texting() {
   const line = new HomeLine();
   const sent: string[] = [];
-  line.phone = { send: async (t) => (sent.push(t), true) };
+  const personTexts: [string, string][] = [];
+  line.phone = { send: async (t) => (sent.push(t), true), text: async (from, body) => (personTexts.push([from, body]), { text: "Texted the person." }) };
   const t = await setup({ homeLine: line });
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
-  return { ...t, line, sent, textsTab };
+  return { ...t, line, sent, personTexts, textsTab };
 }
 
 test("a text goes to the Texts tab, marked as texted, and the reply goes back by text", async () => {
@@ -1105,4 +1107,47 @@ test("a failed turn on a text is texted briefly", async () => {
   await line.home!.take("boom");
   await until(() => sent.length === 1);
   expect(sent[0]).toBe("Couldn't do that: rate limited.");
+});
+
+test("the Home agent keeps its own style rules: none of the sessions' added instructions", () => {
+  expect(INSTRUCTIONS).not.toContain(CONCISE_RULE);
+  expect(INSTRUCTIONS).not.toContain(TEXTING_RULE);
+  expect(INSTRUCTIONS).toContain("text_person texts the person");
+});
+
+test("text_person: the Home agent texts the person as [home], and a Texts turn that did isn't texted again", async () => {
+  const { line, sent, personTexts, runner, textsTab, tools, fake, chat, op, driverOf } = await texting();
+  // From a Home tab in Tether: it texts.
+  expect(await tools(chat).text_person!({ message: "PR #3 is merged" })).toContain("Texted");
+  expect(personTexts).toEqual([["home", "PR #3 is merged"]]);
+  // From the Texts tab, answering a text: its own text_person goes, its last words don't go again.
+  const plain = fake.script;
+  let texts = "";
+  fake.script = (text) => (text.includes("text me when") ? [async () => void (await tools(texts).text_person!({ message: "on it, will text when merged" })), ...plain(text)] : plain(text));
+  await line.home!.take("hi");
+  await until(() => sent.length === 1);
+  texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await line.home!.take("text me when it's merged");
+  await until(() => driverOf(texts)!.sent.length === 2 && runner.core.sessions.get(texts)?.state.status === "idle");
+  await Bun.sleep(50);
+  expect(personTexts.at(-1)).toEqual(["home", "on it, will text when merged"]);
+  expect(sent.length).toBe(1);
+  // Texting off: the tool says so.
+  line.phone = undefined;
+  await expect(tools(chat).text_person!({ message: "x" })).rejects.toThrow(/off/);
+  void op;
+});
+
+test(`a report carries at most ${REPLY_MAX} characters of the session's reply`, async () => {
+  const { runner, driverOf, tools, project, chat, op } = await setup();
+  await op("send", { sessionId: chat, text: "hi" });
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && !!driverOf(chat));
+  await tools(chat).start_session!({ project_path: project, prompt: "y".repeat(REPLY_MAX * 3) });
+  await until(() => driverOf(chat)!.sent.length === 2);
+  const report = driverOf(chat)!.sent[1]!;
+  expect(report).toContain("Report 1 of");
+  expect(report).toContain("(cut:");
+  expect(report).toContain("session_status shows more");
+  expect(report.length).toBeLessThan(REPLY_MAX + 1500);
 });

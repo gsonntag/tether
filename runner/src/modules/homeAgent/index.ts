@@ -29,7 +29,9 @@
 // they turn "Reply by text" off, that chat's answer to a text goes back as a short text, and so does
 // its answer to a finished-turn report from a session it started (the outcome: done with a link, or
 // what it needs); a turn that only kept a session going, a watch report, a "waiting for the person"
-// report (Tether texts the request itself) and tool calls aren't texted.
+// report (Tether texts the request itself) and tool calls aren't texted. Any chat can also text the
+// person itself with text_person (when they ask "text me when it's done"); a Texts turn that did
+// isn't texted again at its end.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -44,7 +46,7 @@ import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/prot
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
-import type { HomeEnd } from "../homeLine";
+import { HOME_SENDER, PERSON_TEXT_MAX, type HomeEnd } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
@@ -52,8 +54,8 @@ import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
 export const MAX_REPORTS = 12;
-/** How much of a session's last reply a report carries. */
-const REPLY_MAX = 6000;
+/** How much of a session's last reply a report carries (session_status has more; the transcript keeps it all). */
+export const REPLY_MAX = 2000;
 /** How much of a latest reply or prompt session_status carries. */
 const STATUS_MAX = 3000;
 /** How long a list_sessions line's "what it's on" may be. */
@@ -148,6 +150,8 @@ interface TextTurn {
   said?: string;
   /** it messaged a session this turn (keeping it going): a report's answer then isn't texted */
   nudged?: boolean;
+  /** it texted the person itself this turn (text_person): its answer isn't texted again */
+  texted?: boolean;
 }
 
 /** A report whose answer goes back by text carries this line, for the agent and to tell it apart. */
@@ -200,6 +204,7 @@ How to work:
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
 - Texts: a message starting with "[From iMessage]" is the person texting you from their phone, and your reply goes back to them as a text. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- text_person texts the person on their phone. Use it when they ask you to text them (for example "text me when the PR is merged": text them once it is), or for something urgent they need to know while away. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. One short sentence, outcome first. If they reply, it comes back to your Texts tab.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -463,6 +468,7 @@ export class HomeAgent implements HomeEnd {
     const phone = this.ctx.homeLine?.phone;
     if (!t || t.kind === "quiet" || stopped || !phone || this.state.replyByText === false) return;
     if (t.kind === "report" && t.nudged && !error) return;
+    if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
     if (!words) return;
     await phone.send(words).catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
@@ -928,6 +934,19 @@ export class HomeAgent implements HomeEnd {
         },
       },
       {
+        name: "text_person",
+        description: `Texts the person an iMessage on their phone, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Not for answering their texts: those replies are texted already.`,
+        input: { message: z.string().min(1).describe("The text: one short sentence.") },
+        run: async (a: { message: string }) => {
+          const phone = this.ctx.homeLine?.phone;
+          if (!phone) throw new Error("Texting is off in Tether, so nothing was sent. Say it in your reply instead.");
+          const r = await phone.text(HOME_SENDER, a.message);
+          if (r.isError) throw new Error(r.text);
+          if (this.isTextsChat(chat)) (this.textTurn ??= { kind: "quiet" }).texted = true;
+          return r.text;
+        },
+      },
+      {
         name: "check_harness_updates",
         description: "Whether the coding agents installed on this machine (Claude Code, Codex, Tether's Claude Agent SDK) have newer versions out: installed vs latest, and how each was installed. Read-only: updates are run by the person from Settings → Updates.",
         input: { refresh: z.boolean().optional().describe("Look again instead of using the last few minutes' check.") },
@@ -1245,7 +1264,7 @@ export class HomeAgent implements HomeEnd {
     const reply = lastReply(await this.ctx.sessions.recent(id, 30).catch(() => [] as Msg[]));
     const lines = [
       `${await this.describe(id)} finished a turn${error ? ` with an error: ${error}` : "."}`,
-      reply ? `Its last reply:\n<<<\n${cut(reply, REPLY_MAX)}\n>>>` : "It said nothing.",
+      reply ? `Its last reply:\n<<<\n${cut(reply, REPLY_MAX)}\n>>>${reply.length > REPLY_MAX ? "\n(session_status shows more.)" : ""}` : "It said nothing.",
       last
         ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you've stopped following this session and can't message it any more. Tell the person where it stands in one casual sentence.`
         : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done; if it is, send the wrap-up for its end goal (merge if chosen, deploy/restart if needed, remove its worktree and branch) and archive it once it confirms; or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,

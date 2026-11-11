@@ -132,7 +132,7 @@ export function createRunner(o: RunnerOptions) {
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
   ops.register("runnerSettings", () => prefs.settings());
-  ops.register("setRunnerSettings", (a) => prefs.setSettings({ ...(typeof a?.backgroundSubagents === "boolean" ? { backgroundSubagents: a.backgroundSubagents } : {}) }));
+  ops.register("setRunnerSettings", (a) => prefs.setSettings({ ...(typeof a?.backgroundSubagents === "boolean" ? { backgroundSubagents: a.backgroundSubagents } : {}), ...(typeof a?.conciseReplies === "boolean" ? { conciseReplies: a.conciseReplies } : {}) }));
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
   registerShellOps(ops, shellRuns);

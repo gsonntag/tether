@@ -70,17 +70,25 @@ export const codexTools = new ToolServerSlot();
  * A dotted key, like AGENT_CONFIG's (setup.ts): it adds `tether` to the person's own mcp_servers
  * (~/.codex/config.toml) instead of replacing them.
  */
-export function toolConfig(projectPath: string): { config?: Record<string, unknown> } {
+export function toolConfig(projectPath: string): { config?: Record<string, unknown>; developerInstructions?: string } {
   const s = codexTools.for(projectPath);
   if (!s) return {};
   const server = { command: s.command, args: s.args, env: s.env("codex:*"), default_tools_approval_mode: "approve", tool_timeout_sec: Math.ceil(s.timeoutMs / 1000) };
-  return { config: { [`mcp_servers.${s.name}`]: server } };
+  // Dotted down to each variable, so the person's own shell_environment_policy.set stays.
+  const shell = Object.fromEntries(Object.entries(s.shellEnv?.("codex:*") ?? {}).map(([k, v]) => [`shell_environment_policy.set.${k}`, v]));
+  const instructions = s.instructions?.();
+  return { config: { [`mcp_servers.${s.name}`]: server, ...shell }, ...(instructions ? { developerInstructions: instructions } : {}) };
 }
 
-/** A thread's extras (the Home agent's, setup.ts) with Tether's MCP server added to their config. */
+/**
+ * A thread's extras (the Home agent's, setup.ts) with Tether's MCP server added to their config, and
+ * Tether's session instructions as its developer instructions (on resume too, so a changed setting
+ * reaches the thread). The Home agent's folder gets no server, so its own instructions stay.
+ */
 export function withTools(extras: Record<string, unknown>, projectPath: string): Record<string, unknown> {
-  const t = toolConfig(projectPath).config;
-  return t ? { ...extras, config: { ...((extras.config as Record<string, unknown>) ?? {}), ...t } } : extras;
+  const t = toolConfig(projectPath);
+  if (!t.config) return extras;
+  return { ...extras, ...(t.developerInstructions && !extras.developerInstructions ? { developerInstructions: t.developerInstructions } : {}), config: { ...((extras.config as Record<string, unknown>) ?? {}), ...t.config } };
 }
 
 /** How long Codex has to confirm settings Tether applied. */

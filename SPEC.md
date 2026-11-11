@@ -831,6 +831,16 @@ event (with the message's text) and the queued message's id from `SessionActions
   "Sent to “<title>”", "Sent to all", with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
   to Tether) but has no tools.
+- **Tether's instructions** (`peers/instructions.ts`): every session that gets the server (not the
+  Home agent, which has its own rules) gets Tether's instructions too, appended to Claude Code's
+  system prompt or as a Codex thread's developer instructions (on resume as well), read at each
+  process start: with **Concise replies** on (a runner setting, Settings → Agents, default on),
+  "end each turn with a short reply: 1–3 sentences, outcome first, then a link; details (≤ ~5
+  bullets) only for a decision or a failure; no test counts, file lists or recaps unless asked";
+  always, "to text the person, use `text_person`, never the text-me skill or the textme CLI". Its
+  shell gets `TETHER_SESSION=<id>` (Codex: `shell_environment_policy.set.TETHER_SESSION`).
+- **`text_person(message)`** on the same server texts the person through the texting module (§11
+  Texting, "Agents texting the person").
 
 ## 10. UI
 
@@ -1318,6 +1328,21 @@ A failed text turn is texted as "Couldn't do that: <kind>." Not texted: tool cal
 check-ins not from the Texts tab, "waiting for the person" reports (Tether already texts the
 session's request itself), and anything typed in Tether. The Texts tab's own turn ends aren't
 texted as a session's.
+
+*Agents texting the person.* Inside Tether, texts go through Tether, never the text-me skill: every
+session Tether runs has `text_person(message)` (§9a), and so does the Home agent. A session's text
+is stamped with its number like any other (`[n] …`, status "texted you", the link as usual) and
+goes out even while the session is open in Tether; the Home agent's is a `[home]` text. Either is
+cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (a refused or
+failed one is the tool's error, and says to put it in the reply instead). A reply routes like a
+reply to any of Tether's texts (threaded, `n text`, the one open session; ✅, taken once), so it
+reaches that session as the person's message, and its answer comes back by text. A Texts-tab
+turn that used `text_person` isn't texted again by Reply by text. The text-me skill's `textme`
+refuses when `TETHER_SESSION` is set (it says to use `text_person`; `TEXTME_IN_TETHER=1`
+overrides), so a session can't text past Tether's router; outside Tether it works as before.
+
+*What reaches the Home agent.* A report carries at most 2000 characters of the session's last
+reply (session_status shows more), a watch report 280 per session; transcripts keep everything.
 
 *The Home agent's end goal.* Before it starts a session that changes code, the Home agent knows
 what "done" is: a PR, merge and deploy, or only local changes. If the person hasn't said, and
