@@ -10,6 +10,7 @@ import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
 import { openSession } from "../route";
 import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
+import { AddProject } from "./AddProject";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
@@ -58,6 +59,8 @@ export function NewSessionDialog() {
   const setMode = (m: string) => setModes((x) => ({ ...x, [harness]: m }));
   /** start in the harness's own TUI instead of through Tether (SPEC §8) */
   const [inTerminal, setInTerminal] = useState(false);
+  /** Add project's panel, in place of the project list */
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   /** what's there to bill to. Nothing from an older runner: no picker, and the runner decides */
@@ -68,6 +71,7 @@ export function NewSessionDialog() {
   useEffect(() => {
     if (!open || !rid) return;
     setError(undefined);
+    setAdding(false);
     void loadProjects(rid);
     if (!models) void loadModels(rid, harness);
     setSources(undefined);
@@ -175,9 +179,12 @@ export function NewSessionDialog() {
           </div>
         )}
         <div>
-          <label className="t-field-label" htmlFor="t-new-path">
-            Folder
-          </label>
+          <div className="t-field-row">
+            <label className="t-field-label" htmlFor="t-new-path">
+              Folder
+            </label>
+            {rid && !adding && <Button label="Add project" variant="secondary" size="sm" onClick={() => setAdding(true)} />}
+          </div>
           <input
             id="t-new-path"
             className="t-search"
@@ -198,7 +205,17 @@ export function NewSessionDialog() {
           </div>
         )}
         {check?.error && !(check.state === "relative" && shown.length > 0) && <div className="t-form-error">{check.error}</div>}
-        {shown.length > 0 && (
+        {adding && rid && (
+          <AddProject
+            runnerId={rid}
+            onCancel={() => setAdding(false)}
+            onPick={(p) => {
+              setPath(p);
+              setAdding(false);
+            }}
+          />
+        )}
+        {!adding && shown.length > 0 && (
           <div className="t-projects" role="listbox" aria-label="Projects">
             {shown.map((p) => (
               <button type="button" role="option" aria-selected={p.path === path} key={p.path} className="t-proj-opt" onClick={() => setPath(p.path)}>

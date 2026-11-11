@@ -145,6 +145,14 @@ export interface Ops {
   };
   /** What newSession would find at a path on the runner. Read-only. */
   checkFolder: { args: { projectPath: string }; result: FolderCheck };
+  /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
+  listFolders: { args: { path: string }; result: FolderList };
+  /**
+   * Add project: `git clone git@github.com:org/repo.git` into `path` (a new folder; parents are
+   * made). `repo` is `org/repo` or a GitHub URL; it always clones over SSH. A folder that already
+   * holds a clone of that repo is answered as it is.
+   */
+  cloneRepo: { args: { repo: string; path: string }; result: { path: string } };
   /**
    * Starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI,
    * then Enter (SPEC §9). `stop`: Stop and send now (the running turn is stopped first). Sending
@@ -260,6 +268,16 @@ export interface FolderCheck {
   state: "exists" | "missing" | "relative" | "error";
   /** what's wrong, for `relative` and `error` */
   error?: string;
+}
+
+/** listFolders: the folders inside `path` (expanded), by name, dot folders left out. */
+export interface FolderList {
+  path: string;
+  /** the folder above; none at / */
+  parent?: string;
+  folders: string[];
+  /** more folders than were listed */
+  more?: boolean;
 }
 
 /** A browser's push subscription (PushSubscription.toJSON()). */
