@@ -123,5 +123,17 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
   removed by hand, even after the session is deleted, and they hold the full conversation: every
   message, tool output, image and attachment, secrets included. Nothing sweeps them. Wanted: removal
   with the session, or a retention rule.
+- Claude sessions (and their subagents) surviving a runner restart. Today Claude Code is the
+  runner's child over stdio, so a restart ends it and every subagent in it; Tether only tells the
+  agent which subagents it lost and asks it to start them again (`liveSubagents`, `restartText` in
+  `runner/src/core/live.ts`). Wanted: Claude Code kept running across restarts, as Codex is
+  (`capabilities.persistent`, `adapters/codex/privateHost.ts`). Sketch: a small host process in its
+  own systemd scope owns the CLI's stdio and buffers its output while the runner is away. The
+  driver reaches it through the SDK's `spawnClaudeCodeProcess` (a socket-backed process) and after
+  a restart calls `Query.reinitialize()`, which redelivers pending `can_use_tool` requests and
+  re-registers hooks. Open points: replaying buffered frames into ClaudeStream, rebuilding the
+  transcript from the store, the hook callback that races a reinitialize (one denied-then-retried
+  tool call), cleaning up hosts nobody claims, and credential leases across restarts. Then
+  restart-and-relaunch stays only for real crashes.
 - Harness update notice on the dashboard.
 - Revert `TETHER_HIDE_PROJECTS=/tmp/*,*/scratch` and remove the two test trust entries in `~/.codex/config.toml` when the build-out ends.
