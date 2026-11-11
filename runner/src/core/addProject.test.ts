@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRepo } from "../../../shared/repo";
-import { cloneRepo, listFolders } from "./addProject";
+import { CloneJobs, listFolders, readProgress } from "./addProject";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
@@ -81,35 +81,92 @@ describe("cloneRepo", () => {
     return root;
   };
 
+  /** git@github.com: never answers: a command that sleeps stands in for it (git's ext transport) */
+  const stalledGitHub = () => {
+    const root = scratch();
+    writeFileSync(join(root, "slow.sh"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+    Object.assign(process.env, { GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: `url.ext::${root}/slow.sh .insteadOf`, GIT_CONFIG_VALUE_0: "git@github.com:", GIT_CONFIG_KEY_1: "protocol.ext.allow", GIT_CONFIG_VALUE_1: "always" });
+    cleanups.push(() => void ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"].forEach((k) => delete process.env[k]));
+  };
+
+  /** clones and waits for the end, like the dialog's polling */
+  const clone = async (repo: string, path: string, jobs = new CloneJobs()) => {
+    const { cloneId } = jobs.start(repo, path);
+    for (let i = 0; i < 400; i++) {
+      const st = jobs.status(cloneId);
+      if (st.state !== "running") return st;
+      await Bun.sleep(25);
+    }
+    throw new Error("clone never ended");
+  };
+
   test("clones into a new folder, making its parents", async () => {
     fakeGitHub();
     const dest = join(scratch(), "projects", "widget");
-    expect(await cloneRepo("https://github.com/acme/widget", dest)).toEqual({ path: dest });
+    expect(await clone("https://github.com/acme/widget", dest)).toEqual({ state: "done", path: dest, percent: 100 });
     expect(existsSync(join(dest, "README"))).toBe(true);
   });
 
-  test("a folder already holding the same repo is used as it is", async () => {
+  test("a folder already holding the same repo is done at once", async () => {
     fakeGitHub();
     const dest = join(scratch(), "widget");
-    await cloneRepo("acme/widget", dest);
+    await clone("acme/widget", dest);
     git("-C", dest, "remote", "set-url", "origin", "https://github.com/acme/widget");
-    expect(await cloneRepo("acme/widget", dest)).toEqual({ path: dest });
+    const jobs = new CloneJobs();
+    expect(jobs.status(jobs.start("acme/widget", dest).cloneId)).toEqual({ state: "done", path: dest, percent: 100 });
   });
 
-  test("refuses an existing folder that is something else", async () => {
+  test("refuses an existing folder that is something else, before starting", () => {
     const dest = scratch();
-    await expect(cloneRepo("acme/widget", dest)).rejects.toThrow("already exists");
+    expect(() => new CloneJobs().start("acme/widget", dest)).toThrow("already exists");
     expect(existsSync(dest)).toBe(true);
   });
 
-  test("a failed clone leaves nothing behind", async () => {
+  test("a failed clone says why and leaves nothing behind", async () => {
     fakeGitHub();
     const dest = join(scratch(), "missing");
-    await expect(cloneRepo("acme/missing", dest)).rejects.toThrow("git clone git@github.com:acme/missing.git failed");
+    const st = await clone("acme/missing", dest);
+    expect(st.state).toBe("failed");
+    expect(st.error).toContain("git clone git@github.com:acme/missing.git failed");
     expect(existsSync(dest)).toBe(false);
   });
 
-  test("refuses a relative path", async () => {
-    await expect(cloneRepo("acme/widget", "projects/widget")).rejects.toThrow("full path");
+  test("cancel stops a clone and removes what it wrote", async () => {
+    stalledGitHub();
+    const jobs = new CloneJobs();
+    const dest = join(scratch(), "widget");
+    const { cloneId } = jobs.start("acme/widget", dest);
+    await Bun.sleep(200);
+    expect(jobs.status(cloneId).state).toBe("running");
+    expect(() => jobs.start("acme/widget", dest)).toThrow("already being cloned");
+    jobs.cancel(cloneId);
+    expect(jobs.status(cloneId)).toMatchObject({ state: "failed", error: "Canceled." });
+    for (let i = 0; i < 200 && existsSync(dest); i++) await Bun.sleep(25);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  test("a clone that runs too long is stopped", async () => {
+    stalledGitHub();
+    const dest = join(scratch(), "w");
+    const st = await clone("acme/widget", dest, new CloneJobs({ timeoutMs: 300 }));
+    expect(st).toMatchObject({ state: "failed" });
+    expect(st.error).toContain("took over");
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  test("refuses a relative path", () => {
+    expect(() => new CloneJobs().start("acme/widget", "projects/widget")).toThrow("full path");
+  });
+});
+
+describe("readProgress", () => {
+  test("phases map onto one bar", () => {
+    expect(readProgress("Receiving objects:  40% (4/10), 1.00 MiB | 2.00 MiB/s")).toEqual({ phase: "Receiving objects", percent: 30, detail: "1.00 MiB · 2.00 MiB/s" });
+    expect(readProgress("Resolving deltas: 100% (3/3), done.")).toEqual({ phase: "Resolving deltas", percent: 90 });
+    expect(readProgress("Receiving objects: 100% (3/3), 10.96 MiB | 1.55 MiB/s, done.")).toMatchObject({ detail: "10.96 MiB · 1.55 MiB/s" });
+    expect(readProgress("Updating files:  50% (1/2)")).toEqual({ phase: "Updating files", percent: 95 });
+    expect(readProgress("remote: Counting objects:  12% (1/8)")).toEqual({ phase: "Counting objects" });
+    expect(readProgress("Cloning into 'x'...")).toBeUndefined();
+    expect(readProgress("fatal: repository not found")).toBeUndefined();
   });
 });
