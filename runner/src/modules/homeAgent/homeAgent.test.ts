@@ -570,6 +570,48 @@ test("a session with its worktree left isn't archived, and it's told to spare ot
   expect(runner.core.sessions.get(mine)!.summary.archived).toBeUndefined();
 });
 
+test("Archive done sessions (homeAgentCheckIn) runs the check-in without a chat and keeps its result for Home", async () => {
+  const { runner, fake, op, chat, driverOf, project, dataDir } = await setup();
+  // Nothing to check: the result says so at once.
+  const empty = await op("homeAgentCheckIn", { start: true });
+  expect(empty.running).toBeUndefined();
+  expect(empty.last).toMatchObject({ archived: [], kept: [], skipped: [] });
+
+  const answers = new Map<string, string>();
+  fake.script = (text) =>
+    text.includes(ANSWER_TAG) ? [(s, d) => say(`c-${d.sent.length}`, answers.get(d.nativeId) ?? "Not sure.")(s, d), idle] : [(s, d) => say(`a-${d.sent.length}`, "ok")(s, d), idle];
+  const make = async (what: string, answer: string) => {
+    const id = (await op("newSession", { harness: "claude", projectPath: project })).sessionId as string;
+    answers.set(id.split(":")[1]!, answer);
+    await op("renameSession", { sessionId: id, title: what });
+    await op("send", { sessionId: id, text: what });
+    await until(() => !!driverOf(id)?.sent.length && runner.core.sessions.get(id)?.state.status === "idle");
+    return id;
+  };
+  const done = await make("task a", `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "note": "PR merged"}`);
+  const notDone = await make("task b", `${ANSWER_TAG} {"done": false, "merged": false, "note": "tests failing"}`);
+
+  // Two presses at once start one check-in: each session is asked once.
+  const [first] = await Promise.all([op("homeAgentCheckIn", { start: true }), op("homeAgentCheckIn", { start: true })]);
+  if (first.running) expect(first.running.asked).toBe(2);
+  await until(() => driverOf(done)!.sent.length === 2 && driverOf(notDone)!.sent.length === 2);
+  let status: any;
+  await until(() => {
+    void op("homeAgentCheckIn").then((r) => (status = r));
+    return !!status && !status.running && status.last?.id !== empty.last.id;
+  });
+  expect(status.last.archived).toEqual([{ id: done, title: "task a", project, reason: "PR merged" }]);
+  expect(status.last.kept).toEqual([{ id: notDone, title: "task b", project, reason: "not done: tests failing" }]);
+  expect(runner.core.sessions.get(done)!.summary.archived).toBe(true);
+  // The Home agent's chat isn't woken: the result is Home's to show.
+  await Bun.sleep(50);
+  expect(driverOf(chat)?.sent.length ?? 0).toBe(0);
+  // The result is kept (saved, so it outlives a restart) until it's dismissed.
+  expect((await op("homeAgentCheckIn")).last.id).toBe(status.last.id);
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).lastCheckIn.id).toBe(status.last.id);
+  expect((await op("homeAgentCheckIn", { dismiss: true })).last).toBeUndefined();
+});
+
 /** A session the person starts and drives themselves, in `project`. */
 async function personSession(t: Awaited<ReturnType<typeof setup>>, text: string) {
   const id = (await t.op("newSession", { harness: "claude", projectPath: t.project })).sessionId as string;

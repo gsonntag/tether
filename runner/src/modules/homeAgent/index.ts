@@ -35,6 +35,7 @@ import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, verify, type Git } from "./checkIn";
+import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
 export const MAX_REPORTS = 12;
@@ -86,9 +87,10 @@ interface Entry {
   reason?: string;
 }
 
-/** One "are you done?" round, from one chat. */
+/** One "are you done?" round, from one chat, or from Home's "Archive done sessions" (no chat). */
 interface CheckIn {
-  chat: string;
+  /** the chat the report goes to; none: started from the button, the result is only kept (`lastCheckIn`) */
+  chat?: string;
   at: number;
   /** when the sessions that haven't answered are reported as unanswered */
   deadline: number;
@@ -103,6 +105,8 @@ interface State {
   /** what it runs on, as the person chose it; none: Claude Code on the source a new session gets */
   settings?: HomeAgentSettings;
   checkIns?: Record<string, CheckIn>;
+  /** the last finished "Archive done sessions" check-in's result, for Home until it's dismissed (a chat's goes to the chat) */
+  lastCheckIn?: CheckInStatus["last"];
   /** "Watch all sessions"; none: on */
   watchAll?: boolean;
 }
@@ -254,6 +258,8 @@ export class HomeAgent {
   state: State = { rev: 0, children: {} };
   private file: string;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** a button check-in being started (it awaits git before it's saved): a second press waits for it */
+  private starting?: Promise<unknown>;
   /** sessions whose check-in answer is being judged now */
   private judging = new Set<string>();
   /** watch news waiting for the next report, by session */
@@ -278,6 +284,7 @@ export class HomeAgent {
           children: v.children && typeof v.children === "object" ? v.children : {},
           ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}),
           checkIns: v.checkIns && typeof v.checkIns === "object" ? v.checkIns : {},
+          ...(v.lastCheckIn && typeof v.lastCheckIn === "object" ? { lastCheckIn: v.lastCheckIn } : {}),
           ...(v.watchAll === false ? { watchAll: false } : {}),
         };
     } catch {}
@@ -778,6 +785,79 @@ export class HomeAgent {
 
   /** Starts a check-in from `chat`: asks the sessions that can answer now, and says who was asked. */
   async checkIn(chat: string, a: { project_path?: string; session_ids?: string[] }): Promise<string> {
+    const { id, entries, project } = await this.begin(chat, a);
+    if (!Object.keys(entries).length) return project ? `No recent sessions in ${project} to check in with.` : "No recent sessions to check in with.";
+    const line = (sid: string) => `- ${sid} "${entries[sid]!.title}" (${entries[sid]!.project})${entries[sid]!.reason ? `: ${entries[sid]!.reason}` : ""}`;
+    const sent = Object.keys(entries).filter((k) => !entries[k]!.outcome);
+    const skipped = Object.keys(entries).filter((k) => entries[k]!.outcome === "skipped");
+    if (!id) return [`Asked nobody: no session could answer now.`, `Skipped (${skipped.length}):`, ...skipped.map(line)].join("\n");
+    return [
+      `Asked ${sent.length} session${sent.length === 1 ? "" : "s"}; you'll get one report when they've answered (at most ${Math.round(this.waitMs / 60_000)} minutes).`,
+      ...sent.map(line),
+      ...(skipped.length ? [`Skipped, not asked (${skipped.length}):`, ...skipped.map(line)] : []),
+    ].join("\n");
+  }
+
+  /**
+   * "Archive done sessions" on Home (the homeAgentCheckIn op): the same check-in as
+   * check_in_sessions, over every recent session, with no chat. Its result is kept for Home to show
+   * (`lastCheckIn`) instead of going to a chat. A press while one runs (from any device or chat)
+   * just answers where that one stands.
+   */
+  async checkInFromHome(a: { start?: boolean; dismiss?: boolean } = {}): Promise<CheckInStatus> {
+    if (a.dismiss && this.state.lastCheckIn) {
+      delete this.state.lastCheckIn;
+      this.save();
+    }
+    if (a.start) {
+      if (this.starting) await this.starting.catch(() => {});
+      else if (!this.runningCheckIn()) {
+        this.starting = this.begin(undefined, {}).then(({ id, entries }) => {
+          // Nobody could be asked (or there's nobody): that's the result already.
+          if (!id) this.keepResult(`c${Date.now().toString(36)}`, Date.now(), entries);
+        });
+        try {
+          await this.starting;
+        } finally {
+          this.starting = undefined;
+        }
+      }
+    }
+    return this.checkInStatus();
+  }
+
+  /** The newest check-in still waiting on answers, if one is. */
+  private runningCheckIn(): [string, CheckIn] | undefined {
+    return Object.entries(this.state.checkIns ?? {}).sort(([, x], [, y]) => y.at - x.at)[0];
+  }
+
+  checkInStatus(): CheckInStatus {
+    const r = this.runningCheckIn();
+    const running = r && {
+      id: r[0],
+      at: r[1].at,
+      deadline: r[1].deadline,
+      asked: Object.values(r[1].entries).filter((e) => e.outcome !== "skipped").length,
+      answered: Object.values(r[1].entries).filter((e) => e.outcome === "archived" || e.outcome === "kept").length,
+    };
+    return { ...(running ? { running } : {}), ...(this.state.lastCheckIn ? { last: this.state.lastCheckIn } : {}) };
+  }
+
+  /** Keeps a settled check-in's result as the last one, for Home. */
+  private keepResult(id: string, at: number, entries: Record<string, Entry>) {
+    const rows = (o: Entry["outcome"]): CheckInRow[] =>
+      Object.entries(entries)
+        .filter(([, e]) => e.outcome === o)
+        .map(([sid, e]) => ({ id: sid, title: e.title, project: e.project, ...(e.reason ? { reason: e.reason } : {}) }));
+    this.state.lastCheckIn = { id, at, archived: rows("archived"), kept: rows("kept"), skipped: rows("skipped") };
+    this.save();
+  }
+
+  /**
+   * Starts a check-in: settles who can't be asked now (skipped, with why) and asks the rest. No
+   * `id`: nobody was asked, and nothing is waiting.
+   */
+  private async begin(chat: string | undefined, a: { project_path?: string; session_ids?: string[] }): Promise<{ id?: string; entries: Record<string, Entry>; project?: string }> {
     const s = this.ctx.sessions;
     // What Recent shows: top-level sessions that aren't archived, but the Home agent's own chats.
     const all = s.list().filter((r) => !r.archived && !r.parentSessionId && !this.isChat(r.id) && resolve(r.projectPath) !== resolve(this.folder));
@@ -805,9 +885,9 @@ export class HomeAgent {
       const repo = repos.get(own);
       entries[sid]!.keep = repo ? folders.filter((f) => f !== own && repos.get(f) === repo) : [];
     }
-    if (!rows.length) return project ? `No recent sessions in ${project} to check in with.` : "No recent sessions to check in with.";
+    if (!rows.length) return { entries, project };
     const id = `c${Date.now().toString(36)}`;
-    const batch: CheckIn = { chat, at: Date.now(), deadline: Date.now() + this.waitMs, entries };
+    const batch: CheckIn = { ...(chat ? { chat } : {}), at: Date.now(), deadline: Date.now() + this.waitMs, entries };
     this.state.checkIns = { ...this.state.checkIns, [id]: batch };
     this.save();
     for (const sid of asked) {
@@ -819,20 +899,13 @@ export class HomeAgent {
       }
     }
     this.save();
-    const line = (sid: string) => `- ${sid} "${entries[sid]!.title}" (${entries[sid]!.project})${entries[sid]!.reason ? `: ${entries[sid]!.reason}` : ""}`;
-    const sent = Object.keys(entries).filter((k) => !entries[k]!.outcome);
-    const skipped = Object.keys(entries).filter((k) => entries[k]!.outcome === "skipped");
-    if (!sent.length) {
+    if (!Object.values(entries).some((e) => !e.outcome)) {
       delete this.state.checkIns![id];
       this.save();
-      return [`Asked nobody: no session could answer now.`, `Skipped (${skipped.length}):`, ...skipped.map(line)].join("\n");
+      return { entries, project };
     }
     this.arm(id);
-    return [
-      `Asked ${sent.length} session${sent.length === 1 ? "" : "s"}; you'll get one report when they've answered (at most ${Math.round(this.waitMs / 60_000)} minutes).`,
-      ...sent.map(line),
-      ...(skipped.length ? [`Skipped, not asked (${skipped.length}):`, ...skipped.map(line)] : []),
-    ].join("\n");
+    return { id, entries, project };
   }
 
   private arm(id: string) {
@@ -890,6 +963,8 @@ export class HomeAgent {
     const line = ([id, e]: [string, Entry]) => `- ${id} "${e.title}" (${e.project})${e.reason ? `: ${e.reason}` : ""}`;
     const of = (o: Entry["outcome"]) => all.filter(([, e]) => e.outcome === o);
     const [archived, kept, skipped] = [of("archived"), of("kept"), of("skipped")];
+    // From Home's button: its result is kept for Home to show, and no chat hears of it.
+    if (!b.chat) return this.keepResult(batchId, b.at, b.entries);
     const body = [
       `Check-in finished: ${archived.length + kept.length} session${archived.length + kept.length === 1 ? "" : "s"} asked.`,
       `Archived (${archived.length}):${archived.length ? "" : " none"}`,
@@ -999,6 +1074,7 @@ export const homeAgentModule: Module = {
     });
     ctx.ops.register("homeAgentSet", (a) => agent.set(a));
     ctx.ops.register("homeAgentWatch", (a) => agent.watch((a as { on?: unknown } | undefined)?.on));
+    ctx.ops.register("homeAgentCheckIn", (a) => agent.checkInFromHome((a ?? {}) as { start?: boolean; dismiss?: boolean }));
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.clear());
     // A chat from before modes could be chosen takes the chosen one (auto) once the runner is up.

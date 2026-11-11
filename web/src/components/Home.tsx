@@ -16,6 +16,7 @@ import { openSession } from "../route";
 import { folderName, inbox, waitingOn, type InboxKind, type InboxRow } from "../sessionList";
 import { BillingMarker, HarnessGlyph, shortAgo } from "./SessionRow";
 import { forgetRunner, useStore } from "../store";
+import { ArchiveDoneButton, ArchiveDoneResult, useArchiveDone, useHomeRunner } from "./ArchiveDone";
 import { HomeChat } from "./HomeChat";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
@@ -70,6 +71,8 @@ function Inbox() {
   const many = runners.filter((r) => r.online).length > 1;
   const unread = rows.filter((r) => r.inbox === "failed" || r.inbox === "finished");
   const markRead = (r: InboxRow) => void rpc(r.runnerId, "setRead", { sessionId: r.id, read: true }).catch(() => {});
+  const home = useHomeRunner();
+  const archiveDone = useArchiveDone(home?.id, home?.connectedAt);
   return (
     <VStack gap={3}>
       <div className="t-inbox-head">
@@ -77,8 +80,10 @@ function Inbox() {
         <span className="t-inbox-actions">
           {unread.length > 1 && <Button label="Mark all read" size="sm" variant="ghost" onClick={() => unread.forEach(markRead)} />}
           {runners.some((r) => r.online) && <Button label="Send to all" size="sm" variant="ghost" onClick={() => useStore.setState({ sendAllOpen: true })} />}
+          <ArchiveDoneButton a={archiveDone} />
         </span>
       </div>
+      {home && <ArchiveDoneResult a={archiveDone} runnerId={home.id} />}
       {rows.length === 0 ? (
         <div className="t-inline-status">Nothing needs you. Finished and failed turns show here until you look at them.</div>
       ) : (
