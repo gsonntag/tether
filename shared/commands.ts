@@ -42,6 +42,15 @@ export function menuPick(c: HarnessCommand, text: string, key: "Enter" | "Tab" |
   return !c.args || text.trim() === `/${c.name}` ? "send" : "fill";
 }
 
+/** The Home agent's own commands (web HomeChat): both start a fresh chat, the old context dropped. */
+export const HOME_COMMANDS: HarnessCommand[] = [
+  { name: "new", description: "Start a new chat" },
+  { name: "clear", description: "Clear the chat and start over" },
+];
+
+/** `/new` or `/clear`, alone (any case): what Home handles itself instead of sending. */
+export const isHomeReset = (text: string) => /^\/(new|clear)$/i.test(text.trim());
+
 export const needsTerminal = (name: string) => `/${name} needs the terminal.`;
 
 /** What the core does itself with a typed command, instead of passing it on (Adapter.commandRoute). */

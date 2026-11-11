@@ -2,7 +2,7 @@
 // session lists and projects, and the sessions this page has open.
 
 import { create } from "zustand";
-import { PROTOCOL_VERSION, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
@@ -56,6 +56,8 @@ interface State {
   pushKey?: string;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
+  /** each runner's Home agent chat (none: the next message starts one), newest `rev` wins */
+  homeChats: Record<string, HomeChatUpdate>;
 }
 
 const known = loadKnown();
@@ -73,6 +75,7 @@ export const useStore = create<State>(() => ({
   modelLists: {},
   views: {},
   newSessionOpen: false,
+  homeChats: {},
 }));
 
 const set = useStore.setState;
@@ -126,6 +129,8 @@ export function start() {
         }
       }
   });
+  // Another device started a Home chat or cleared it (/new): this one's Home follows.
+  on("homeChat", ({ runnerId, sessionId, rev }) => noteHomeChat(runnerId, { sessionId, rev }));
   on("event", (m) => {
     const entry = models.get(key(m.runnerId, m.sessionId));
     if (!entry) return;
@@ -267,6 +272,13 @@ export function failedSend(runnerId: string, sessionId: string, text: string) {
 export async function setArchived(runnerId: string, sessionId: string, archived: boolean) {
   await rpc(runnerId, "setSessionArchived", { sessionId, archived });
   set({ archiveEdit: { runnerId, sessionId, archived } });
+}
+
+/** A runner's Home agent chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
+export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
+  const cur = get().homeChats[runnerId];
+  if (cur && cur.rev >= u.rev) return;
+  set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: { rev: u.rev, ...(u.sessionId ? { sessionId: u.sessionId } : {}) } } }));
 }
 
 /** Drops a disconnected runner from this browser's list. */

@@ -5,6 +5,11 @@
 // started ends a turn, its last reply goes to the chat as a message from Tether, so the agent can
 // keep it going until the task is done. A session the person steps into (types in it, or stops
 // it) is theirs from then on: no more reports, and the agent can't message it.
+//
+// `/new` or `/clear` on Home (homeAgentClear) drops the current chat: the next message starts a
+// fresh one, a new Claude session with none of the old context. The old chat is stopped if it runs
+// and lets go of the sessions it started (they keep going on their own, in the lists). Every
+// change of the current chat is broadcast, so each device's Home follows.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -25,12 +30,14 @@ interface Child {
   /** the chat that started it */
   chat: string;
   reports: number;
-  /** the person stepped in, or it hit MAX_REPORTS: no more reports, no more messages from the agent */
-  released?: "person" | "limit";
+  /** the person stepped in, it hit MAX_REPORTS, or its chat was cleared: no more reports, no more messages from the agent */
+  released?: "person" | "limit" | "cleared";
 }
 
 interface State {
   current?: string;
+  /** grows with each change of `current`, across restarts (HomeChatUpdate.rev) */
+  rev: number;
   children: Record<string, Child>;
 }
 
@@ -111,14 +118,14 @@ async function overview(folder: string): Promise<string> {
 }
 
 export class HomeAgent {
-  state: State = { children: {} };
+  state: State = { rev: 0, children: {} };
   private file: string;
 
   constructor(private ctx: ModuleContext, readonly folder: string) {
     this.file = join(ctx.dataDir, "state.json");
     try {
       const v = JSON.parse(readFileSync(this.file, "utf8"));
-      if (v && typeof v === "object") this.state = { current: typeof v.current === "string" ? v.current : undefined, children: v.children && typeof v.children === "object" ? v.children : {} };
+      if (v && typeof v === "object") this.state = { current: typeof v.current === "string" ? v.current : undefined, rev: Number.isSafeInteger(v.rev) ? v.rev : 0, children: v.children && typeof v.children === "object" ? v.children : {} };
     } catch {}
   }
 
@@ -145,12 +152,35 @@ export class HomeAgent {
     }
   }
 
-  async newChat(): Promise<string> {
-    const source = (await this.ctx.sessions.sources("claude")).default ?? "subscription";
-    const id = await this.ctx.sessions.create({ harness: "claude", projectPath: this.folder, source, permissionMode: "default" });
+  /** `current` becomes `id` (none: cleared), saved and told to every browser. */
+  private setCurrent(id: string | undefined) {
+    // A clock-based rev stays ahead of what browsers saw even if state.json was lost.
+    this.state.rev = Math.max(this.state.rev + 1, Date.now());
     this.state.current = id;
     this.save();
-    return id;
+    this.ctx.announceHomeChat?.({ ...(id ? { sessionId: id } : {}), rev: this.state.rev });
+    return this.state.rev;
+  }
+
+  async newChat(): Promise<{ sessionId: string; rev: number }> {
+    const source = (await this.ctx.sessions.sources("claude")).default ?? "subscription";
+    const id = await this.ctx.sessions.create({ harness: "claude", projectPath: this.folder, source, permissionMode: "default" });
+    return { sessionId: id, rev: this.setCurrent(id) };
+  }
+
+  /**
+   * `/new` and `/clear`: no current chat, so the next message starts a fresh one with none of this
+   * one's context. This one is stopped if it runs, and the sessions it started go on without it:
+   * a report would wake a chat nobody sees.
+   */
+  async clear(): Promise<{ rev: number }> {
+    const old = this.state.current;
+    if (old) {
+      for (const c of Object.values(this.state.children)) if (c.chat === old && !c.released) c.released = "cleared";
+      const look = this.ctx.session(old);
+      if (look && look.status !== "idle") await this.ctx.sessions.interrupt(old).catch((e) => this.ctx.log(`couldn't stop ${old}: ${(e as Error).message}`));
+    }
+    return { rev: this.setCurrent(undefined) };
   }
 
   /** Whether `id` is one of the Home agent's own chats. */
@@ -237,7 +267,7 @@ export class HomeAgent {
             `Status: ${look.status}${look.state.error ? `, last error: ${look.state.error}` : ""}`,
             look.requests.length ? `Waiting for the person on ${look.requests.length} request${look.requests.length === 1 ? "" : "s"}.` : "",
             look.state.queue.length ? `${look.state.queue.length} message${look.state.queue.length === 1 ? "" : "s"} queued.` : "",
-            c.released === "person" ? "The person has taken this session over: leave it to them." : c.released === "limit" ? "You've stopped following it (report limit)." : `Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
+            c.released === "person" ? "The person has taken this session over: leave it to them." : c.released === "limit" ? "You've stopped following it (report limit)." : c.released === "cleared" ? "Your chat was cleared; you've stopped following it." : `Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
             reply ? `Latest reply:\n${cut(reply, REPLY_MAX)}` : "No reply yet.",
           ]
             .filter(Boolean)
@@ -252,6 +282,7 @@ export class HomeAgent {
           const [id, c] = this.ownChild(chat, a.session_id);
           if (c.released === "person") throw new Error("The person has taken this session over. Leave it to them.");
           if (c.released === "limit") throw new Error(`This session has sent ${MAX_REPORTS} reports; you've stopped following it. Tell the person where it stands.`);
+          if (c.released === "cleared") throw new Error("The person cleared this chat; you've stopped following that session.");
           await s.queue(id, FROM_TETHER + a.message);
           return "Sent. You'll get a report when it finishes the turn.";
         },
@@ -333,8 +364,9 @@ export const homeAgentModule: Module = {
     const agent = new HomeAgent(ctx, folder);
     const unset = claude.agentSetup(folder, (nativeId) => agent.setup(nativeId));
 
-    ctx.ops.register("homeAgent", async () => ({ sessionId: await agent.current(), folder }));
-    ctx.ops.register("homeAgentNew", async () => ({ sessionId: await agent.newChat() }));
+    ctx.ops.register("homeAgent", async () => ({ sessionId: await agent.current(), folder, rev: agent.state.rev }));
+    ctx.ops.register("homeAgentNew", () => agent.newChat());
+    ctx.ops.register("homeAgentClear", () => agent.clear());
 
     const offs = [
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void agent.turnEnded(sessionId, error, stopped)),

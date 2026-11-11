@@ -6,7 +6,7 @@ import { hostname } from "node:os";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
 import type { BillingSource } from "../../../shared/credentials";
 import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
@@ -190,6 +190,7 @@ export function createRunner(o: RunnerOptions) {
       },
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
+      announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
