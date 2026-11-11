@@ -1024,3 +1024,73 @@ describe("round 6", () => {
     expect((s.t as any).turns.has("claude:a")).toBe(false);
   });
 });
+
+describe("final round", () => {
+  const user = (id: string, text: string) => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  const agent = (text: string) => ({ id: "a", role: "assistant" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+
+  test("a Stop drops the channel claim: a later waiting→running turn's words don't go to the channel", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 deploy", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("u", "deploy"));
+    s.t.turnStarted("claude:a", "idle");
+    s.t.turnStopped("claude:a");
+    // Later the session goes on after waiting on the person (no new turn by the counter's rules).
+    s.dc.hear({ text: "1 go on", place: "dm-1" });
+    await tick();
+    s.t.turnStarted("claude:a", "waiting");
+    s.t.said("claude:a", agent("Went on."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+  });
+
+  test("an iMessage text, then Stop: a later Home-driven turn isn't texted", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.im.hear({ text: "1 do x" });
+    await tick();
+    s.t.turnStarted("claude:a");
+    s.t.turnStopped("claude:a");
+    const n = s.im.sent.length;
+    // The Home agent sends it more (send_to_session): its turn isn't an answer to the person.
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Did more of x."));
+    await s.t.turnEnded("claude:a");
+    expect(s.im.sent.length).toBe(n);
+  });
+
+  test("a failure on the way to a retry drops the claim but keeps the answer owed", async () => {
+    const s = setup();
+    await s.t.start();
+    await s.t.attention("claude:a");
+    s.dc.hear({ text: "1 build", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:a", user("u", "build"));
+    s.t.turnStarted("claude:a");
+    s.t.turnStopped("claude:a", true);
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Built."));
+    await s.t.turnEnded("claude:a");
+    expect(s.dc.sent.at(-1)!.text).toBe("[1] Built.");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+  });
+
+  test("subagents' turns aren't counted, and untold turns leave no count", async () => {
+    const s = setup();
+    await s.t.start();
+    const sessions = (s.t as any).ctx.session;
+    (s.t as any).ctx.session = (id: string) => (id === "claude:sub" ? { summary: { id, parentSessionId: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } } : sessions(id));
+    s.t.turnStarted("claude:sub");
+    expect((s.t as any).turns.has("claude:sub")).toBe(false);
+    await s.t.turnEnded("claude:sub");
+    // A turn nothing tells (not texted, not asking): no count left either.
+    s.t.turnStarted("claude:a");
+    s.t.said("claude:a", agent("Quietly done."));
+    await s.t.turnEnded("claude:a");
+    expect((s.t as any).turns.size).toBe(0);
+  });
+});

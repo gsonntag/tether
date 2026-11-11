@@ -473,7 +473,8 @@ export class Texter {
    */
   turnStarted(sessionId: string, from?: RunStatus) {
     if (from !== "waiting") {
-      this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
+      // Subagents' turns are never told: not counted.
+      if (!this.ctx.session(sessionId)?.summary.parentSessionId) this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
       // The turn a channel message started (active once its message has been seen), or any other one
       // (which ends the channel's claim).
       const key = this.turnKey(sessionId);
@@ -522,11 +523,32 @@ export class Texter {
    * turn's snapshot, taken when it ended (endOf; now, when not given).
    */
   async turnEnded(sessionId: string, error?: string, end: TurnEnd = this.endOf(sessionId)) {
+    const movedOn = (this.turns.get(sessionId) ?? 0) !== end.turn;
+    try {
+      await this.tellEnd(sessionId, error, end, movedOn);
+    } finally {
+      // Told or not, a turn with nothing newer leaves no count behind.
+      if (!movedOn) this.turns.delete(sessionId);
+    }
+  }
+
+  /**
+   * A turn stopped by the person (or failing on the way to a retry, `recovering`): nothing is told.
+   * Stopped, its claim and the messages it owed answers to go; recovering, only its claim (the retry
+   * still owes the answer).
+   */
+  turnStopped(sessionId: string, recovering = false) {
+    this.channelTurns.delete(this.turnKey(sessionId));
+    if (recovering) return;
+    void this.endOf(sessionId);
+    this.turns.delete(sessionId);
+  }
+
+  private async tellEnd(sessionId: string, error: string | undefined, end: TurnEnd, movedOn: boolean) {
     const { talking, claim } = end;
     // The Home agent's Texts chat answers by its own texts (homeText).
     if (this.ctx.homeLine?.home?.isTextsChat(sessionId)) return;
     const look = this.ctx.session(sessionId);
-    const movedOn = (this.turns.get(sessionId) ?? 0) !== end.turn;
     let last = end.last;
     if (movedOn) {
       // A next turn started (a queued message): this one is over all the same. Only what's owed goes:
@@ -538,8 +560,6 @@ export class Texter {
       if (!endWorthTelling(look)) return;
       last = this.lastSaid.get(sessionId) ?? last;
       this.lastSaid.delete(sessionId);
-      // Nothing newer to tell this turn from: its count can go.
-      this.turns.delete(sessionId);
     }
     // What follows the person's message goes back the way it came; only the answer of the turn a
     // channel message started may go to that channel (its claim), a failure goes to their DM.
@@ -721,7 +741,9 @@ export const textingModule: Module = {
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId, from }) => t.turnStarted(sessionId, from)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) =>
+        stopped || recovering ? t.turnStopped(sessionId, !stopped) : void later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))),
+      ),
     ];
     // iMessage's own ops, for a web from before connectors.
     const imessage = t.channel(IMESSAGE)!;
