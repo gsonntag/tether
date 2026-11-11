@@ -32,10 +32,10 @@ broadcasts a project filter in tests.
 | 4 | Ask while the target is mid-turn; cancel it from the queue. | real: the question waited in B's queue (not steered); cancelling returned "Not delivered: the person removed your question from “Bravo”'s queue." unit too. |
 | 5 | Broadcast with a project filter; a second one; the receiver broadcasting. | real: only projA's other session got "From “Alpha” · to all"; the second was refused (10 minutes); the receiver's was refused ("started with a note to all"); each refusal also a warning notice. |
 | 6 | Broadcast matching more than 20 sessions. | real: refused, "38 sessions match (at most 20 at once)". |
-| 7 | Send to all from the UI, project filter, one target mid-turn, one stored. | real: "Queued in 2 sessions" with links, as your own message in each; the stored one started. The mid-turn wait is the queue of #4 (not seen separately: the other session had just gone idle). |
+| 7 | (Send to all from the UI: the feature was removed later.) | — |
 | 8 | Two sessions told to keep a counting game going. | real: stopped at the 5th message ("would be the 5th in a chain"), with a notice. |
 | 9 | Marker parse, defang, tool kind, caps, token identity, socket, stdio server. | unit |
 | 10 | Restart the runner during an open ask. | unit: a runner that is away says nothing was sent; one cut off mid-call says the message may already be queued (check with tether_sessions). The queued question is the core queue's (runner.json), and its hops survive with it. |
-| 11 | Screenshots: origin bubble, tool cards, Send to all, desktop and phone. | by hand |
+| 11 | Screenshots: origin bubble, tool cards, desktop and phone. | by hand |
 | 12 | A plan-mode session sends to a bypassPermissions one; unknown modes; a broadcast over mixed modes; the receiver's hint. | unit (peers.test.ts "a stricter session can't message a looser one"). Refused with "doesn't have permission", nothing queued, a notice in the sender. |
-| 13 | An agent's broadcast without project or scope; with `project`; with `scope: "all"`. | unit: its own project only; the named one; every project. The person's Send to all is unchanged. |
+| 13 | An agent's broadcast without project or scope; with `project`; with `scope: "all"`. | unit: its own project only; the named one; every project. |

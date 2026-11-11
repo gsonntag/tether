@@ -236,13 +236,6 @@ describe("tools", () => {
     ({ peers, queued } = setup([row("claude:a", "A"), row("codex:c", "C", { projectPath: "/p/other" })]));
     expect((await peers.broadcastFrom("claude:a", "x", {})).text).toMatch(/No other session in this project/);
   });
-  test("Send to all from the person: as their own words, filtered, archived left out", async () => {
-    const { peers, queued } = setup([row("claude:a", "A"), row("codex:b", "B", { status: "running" }), row("claude:d", "D", { archived: true })]);
-    const r = await peers.broadcast("[From Tether] stop", {});
-    expect(r.queued.map((q) => q.sessionId)).toEqual(["claude:a", "codex:b"]);
-    expect(tetherOrigin(queued[0]!.text)).toBeUndefined();
-    expect((await peers.broadcast("x", { harness: "codex", status: "working" })).queued.map((q) => q.sessionId)).toEqual(["codex:b"]);
-  });
   test("the Home agent's chat can't be reached; an older session can, by its id", async () => {
     const home = "/cfg/modules/homeAgent/workspace";
     const { peers, queued } = setup([row("claude:a", "A"), row("claude:h", "Home chat", { projectPath: home }), row("claude:b", "B")], { home, stored: [row("claude:old", "Old one"), row("claude:gone", "Archived", { archived: true })] });
@@ -251,7 +244,6 @@ describe("tools", () => {
     expect(await peers.send("claude:a", "claude:h", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
     expect(await peers.send("claude:a", "Home chat", "x").catch((e) => e.message)).toMatch(/no session/);
     expect((await peers.broadcastFrom("claude:a", "hi", { scope: "all" })).text).not.toContain("claude:h");
-    expect((await peers.broadcast("hi", {})).queued.map((q) => q.sessionId)).toEqual(["claude:a", "claude:b"]);
     expect(queued.some((q) => q.to === "claude:h")).toBe(false);
     expect((await peers.send("claude:a", "claude:old", "still there?")).text).toMatch(/Sent to "Old one" \(claude:old\)/);
     expect(await peers.send("claude:a", "Old one", "x").catch((e) => e.message)).toMatch(/no session/);

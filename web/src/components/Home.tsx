@@ -79,7 +79,6 @@ function Inbox() {
         <Heading level={2}>Sessions</Heading>
         <span className="t-inbox-actions">
           {unread.length > 1 && <Button label="Mark all read" size="sm" variant="ghost" onClick={() => unread.forEach(markRead)} />}
-          {runners.some((r) => r.online) && <Button label="Send to all" size="sm" variant="ghost" onClick={() => useStore.setState({ sendAllOpen: true })} />}
           <ArchiveDoneButton a={archiveDone} />
         </span>
       </div>

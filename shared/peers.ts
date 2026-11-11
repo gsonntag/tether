@@ -3,7 +3,7 @@
 
 import type { HarnessId, SessionSummary } from "./transcript";
 
-/** Narrows Send to all (and an agent's tether_broadcast). Empty: every session. */
+/** Narrows an agent's tether_broadcast. Empty: every session. */
 export interface BroadcastFilter {
   projectPath?: string;
   harness?: HarnessId;

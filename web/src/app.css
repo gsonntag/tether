@@ -1551,37 +1551,6 @@
   color: var(--t-muted);
   overflow-wrap: anywhere;
 }
-/* Send to all (SPEC §9a) */
-.t-sendall-filters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 8px;
-}
-.t-sendall-text {
-  resize: vertical;
-  min-height: 88px;
-  font: inherit;
-}
-.t-sendall-result {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-}
-.t-sendall-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-}
-.t-sendall-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.t-sendall-foot .t-inline-status {
-  margin-right: auto;
-}
 .t-inbox {
   display: flex;
   flex-direction: column;

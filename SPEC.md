@@ -792,11 +792,6 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
-- **Send to all (the person).** "Send to all" beside Home's Sessions heading and the sidebar's
-  Recent heading opens a dialog: project, agent and status pickers (default: every non-archived
-  session but the Home agent's chat, reset each time it opens), the message, the count beside
-  Send. It runs `broadcast {text, filter}`, which queues the text in each matching session as your
-  own words (no caps) and says "Queued in N sessions" with links.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
   "Sent to “<title>”", "Sent to all", with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
