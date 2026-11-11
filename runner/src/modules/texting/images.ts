@@ -13,13 +13,16 @@
 // In: images the person texts go to the session (or Home agent) the text goes to, as attachments
 // (the runner stores them like an upload: core/attachments.ts). Each is downloaded within DOWNLOAD.ms
 // and at most IN_IMAGE_MAX bytes (counted as it streams), checked by its bytes; HEIC is turned into
-// JPEG when ImageMagick can (the agents can't read HEIC). Other files are left out, and the person
-// is told.
+// JPEG when ImageMagick can (the agents can't read HEIC), and an image too big for the agent to see
+// (over ATTACH_IMAGE_EDGE, or NATIVE_IMAGE_MAX bytes) is scaled down the same way; when that fails it
+// goes as it came. Other files are left out, and the person is told.
 
 import { spawn } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { basename, extname, isAbsolute } from "node:path";
-import { ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, extname, isAbsolute, join } from "node:path";
+import { ATTACH_IMAGE_EDGE, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
+import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import type { TextedFile } from "../homeLine";
 
 /** The biggest image an agent can text. */
@@ -176,44 +179,124 @@ export async function download(f: InboundFile, max = IN_IMAGE_MAX, ms = DOWNLOAD
   }
 }
 
-/** Turns HEIC/HEIF bytes into JPEG: the JPEG, or undefined when it can't (no converter, a bad file). */
-export type Convert = (data: Buffer) => Promise<Buffer | undefined>;
+/** An image's width and height from its first bytes (PNG, GIF, JPEG, WebP), else undefined. */
+export function imageDims(b: Uint8Array): { w: number; h: number } | undefined {
+  const be16 = (i: number) => (b[i]! << 8) | b[i + 1]!;
+  const le16 = (i: number) => b[i]! | (b[i + 1]! << 8);
+  const be32 = (i: number) => ((b[i]! << 24) >>> 0) + (b[i + 1]! << 16) + (b[i + 2]! << 8) + b[i + 3]!;
+  const ok = (w: number, h: number) => (w > 0 && h > 0 ? { w, h } : undefined);
+  const t = sniffImage(b);
+  if (t === "image/png" && b.length >= 24) return ok(be32(16), be32(20));
+  if (t === "image/gif" && b.length >= 10) return ok(le16(6), le16(8));
+  if (t === "image/jpeg") {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) return undefined;
+      const m = b[i + 1]!;
+      if (m === 0xff) {
+        i++;
+        continue;
+      }
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return ok(be16(i + 7), be16(i + 5));
+      i += 2 + be16(i + 2);
+    }
+    return undefined;
+  }
+  if (t === "image/webp" && b.length >= 30) {
+    const kind = String.fromCharCode(...b.slice(12, 16));
+    if (kind === "VP8 ") return ok(le16(26) & 0x3fff, le16(28) & 0x3fff);
+    if (kind === "VP8L") {
+      const v = b[21]! | (b[22]! << 8) | (b[23]! << 16) | (b[24]! << 24);
+      return ok((v & 0x3fff) + 1, ((v >>> 14) & 0x3fff) + 1);
+    }
+    if (kind === "VP8X") return ok(1 + (b[24]! | (b[25]! << 8) | (b[26]! << 16)), 1 + (b[27]! | (b[28]! << 8) | (b[29]! << 16)));
+  }
+  return undefined;
+}
+
+/** Whether a texted image is too big for the agent to see as an image: over the edge, or over what the model APIs take. */
+export function tooBigToSee(data: Buffer): boolean {
+  if (data.length > NATIVE_IMAGE_MAX) return true;
+  const d = imageDims(data);
+  return !!d && Math.max(d.w, d.h) > ATTACH_IMAGE_EDGE;
+}
+
+/** Turns image bytes (`from`: their ImageMagick coder) into a JPEG at most ATTACH_IMAGE_EDGE on its long edge: the JPEG, or undefined when it can't. */
+export type Convert = (data: Buffer, from: "heic" | "png" | "jpeg" | "webp") => Promise<Buffer | undefined>;
+
+/** At most this many conversions at once (each is a process that can take a lot of memory). */
+export const CONVERT_MAX = 2;
+let converting = 0;
+const waiting: (() => void)[] = [];
+/** Runs `f` when a conversion slot is free. */
+async function inSlot<T>(f: () => Promise<T>): Promise<T> {
+  if (converting >= CONVERT_MAX) await new Promise<void>((go) => waiting.push(go));
+  converting++;
+  try {
+    return await f();
+  } finally {
+    converting--;
+    waiting.shift()?.();
+  }
+}
 
 /**
- * ImageMagick (`convert`), told the input is HEIC (never left to guess a coder from the bytes), with
- * a time limit and an output cap. Undefined when it isn't installed or fails.
+ * ImageMagick (`convert`), told what the input is (never left to guess a coder from the bytes),
+ * bounded (memory, disk, time; its temporary files in a folder of its own, removed after), at most
+ * CONVERT_MAX at once, scaled down to ATTACH_IMAGE_EDGE, output capped. Undefined when it isn't
+ * installed or fails.
  */
-export const imagemagick: Convert = (data) =>
-  new Promise((done) => {
-    let out: Buffer[] = [];
-    let size = 0;
-    let p;
+export const imagemagick: Convert = (data, from) =>
+  inSlot(async () => {
+    let tmp: string | undefined;
     try {
-      p = spawn("convert", ["heic:-", "-auto-orient", "-quality", "85", "jpeg:-"], { stdio: ["pipe", "pipe", "ignore"] });
+      tmp = mkdtempSync(join(tmpdir(), "tether-magick-"));
     } catch {
-      return done(undefined);
+      return undefined;
     }
-    const timer = setTimeout(() => p.kill("SIGKILL"), DOWNLOAD.convertMs);
-    p.on("error", () => (clearTimeout(timer), done(undefined)));
-    p.stdout.on("data", (c: Buffer) => {
-      size += c.length;
-      if (size > IN_IMAGE_MAX) {
-        out = [];
-        p.kill("SIGKILL");
-      } else out.push(c);
-    });
-    p.on("close", (code) => {
-      clearTimeout(timer);
-      const jpeg = Buffer.concat(out);
-      done(code === 0 && size <= IN_IMAGE_MAX && sniffImage(jpeg) === "image/jpeg" ? jpeg : undefined);
-    });
-    p.stdin.on("error", () => {});
-    p.stdin.end(data);
+    try {
+      return await new Promise<Buffer | undefined>((done) => {
+        let out: Buffer[] = [];
+        let size = 0;
+        let p;
+        try {
+          p = spawn(
+            "convert",
+            ["-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "1GiB", "-limit", "time", "30", `${from}:-`, "-auto-orient", "-resize", `${ATTACH_IMAGE_EDGE}x${ATTACH_IMAGE_EDGE}>`, "-quality", "85", "jpeg:-"],
+            { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, MAGICK_TEMPORARY_PATH: tmp, MAGICK_TMPDIR: tmp, TMPDIR: tmp } },
+          );
+        } catch {
+          return done(undefined);
+        }
+        const timer = setTimeout(() => p.kill("SIGKILL"), DOWNLOAD.convertMs);
+        p.on("error", () => (clearTimeout(timer), done(undefined)));
+        p.stdout.on("data", (c: Buffer) => {
+          size += c.length;
+          if (size > IN_IMAGE_MAX) {
+            out = [];
+            p.kill("SIGKILL");
+          } else out.push(c);
+        });
+        p.on("close", (code) => {
+          clearTimeout(timer);
+          const jpeg = Buffer.concat(out);
+          done(code === 0 && size <= IN_IMAGE_MAX && sniffImage(jpeg) === "image/jpeg" ? jpeg : undefined);
+        });
+        p.stdin.on("error", () => {});
+        p.stdin.end(data);
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
+const CODER: Record<string, "heic" | "png" | "jpeg" | "webp"> = { "image/heic": "heic", "image/heif": "heic", "image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp" };
+const jpgName = (name: string) => `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.jpg`;
+
 /**
- * A downloaded file as one to pass on: its real type from its bytes (HEIC turned into JPEG when it
- * can be: else `heic`, kept by path only), or undefined when it isn't an image after all.
+ * A downloaded file as one to pass on: its real type from its bytes, or undefined when it isn't an
+ * image after all. HEIC becomes JPEG when it can (else `heic`: kept as it is, by path only), and a
+ * PNG, JPEG or WebP too big for the agent to see (tooBigToSee) is scaled down to a JPEG (else kept).
  */
 export async function incomingImage(f: Pick<InboundFile, "name">, data: Buffer, convert: Convert = imagemagick): Promise<(TextedFile & { heic?: boolean }) | undefined> {
   if (!data.length || data.length > IN_IMAGE_MAX) return undefined;
@@ -221,9 +304,13 @@ export async function incomingImage(f: Pick<InboundFile, "name">, data: Buffer, 
   if (!mimeType) return undefined;
   const name = f.name || "image";
   if (isHeif(mimeType)) {
-    const jpeg = await convert(data).catch(() => undefined);
-    if (jpeg) return { name: `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.jpg`, mimeType: "image/jpeg", data: jpeg };
+    const jpeg = await convert(data, "heic").catch(() => undefined);
+    if (jpeg) return { name: jpgName(name), mimeType: "image/jpeg", data: jpeg };
     return { name, mimeType, data, heic: true };
+  }
+  if (CODER[mimeType] && tooBigToSee(data)) {
+    const jpeg = await convert(data, CODER[mimeType]!).catch(() => undefined);
+    if (jpeg) return { name: jpgName(name), mimeType: "image/jpeg", data: jpeg };
   }
   return { name, mimeType, data };
 }

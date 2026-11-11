@@ -18,7 +18,7 @@ import { setHomeChat } from "../presence";
 import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
 import { billingForDisplay } from "../sourceMenu";
 import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
-import { afterClose, canDelete, homeTag, loadTab, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
+import { afterClose, canDelete, homesFull, homeTag, loadTab, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import { Composer } from "./Composer";
@@ -272,7 +272,14 @@ function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId:
           </div>
         )}
       </div>
-      <button type="button" className="t-home-tab-new" aria-label="New Home" title={labels ? `New Home (${nextHomeTag(labels)}; or text "hn")` : "New chat"} disabled={tab === NEW} onClick={() => onShow(NEW)}>
+      <button
+        type="button"
+        className="t-home-tab-new"
+        aria-label="New Home"
+        title={!labels ? "New chat" : homesFull(labels) ? "At most 9 Homes besides h: delete one first" : `New Home (${nextHomeTag(labels)}; or text "hn")`}
+        disabled={tab === NEW || homesFull(labels)}
+        onClick={() => onShow(NEW)}
+      >
         <PlusIcon aria-hidden />
         {labels && <span className="t-home-tab-new-label">New Home</span>}
       </button>

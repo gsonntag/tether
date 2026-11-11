@@ -47,7 +47,7 @@ import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/prot
 import { mapMode } from "../../../../shared/move";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
-import { HOME_SENDER, homeLabel, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TextedFile } from "../homeLine";
+import { HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TextedFile } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
@@ -744,6 +744,8 @@ export class HomeAgent implements HomeEnd {
     }
     if (this.state.textHomes?.includes(from)) this.state.textHomes = this.state.textHomes.map((t) => (t === from ? to : t));
     this.label();
+    // Replies to its texts follow it (texting's router keeps them by chat).
+    this.ctx.homeLine?.phone?.moved?.(from, to);
     this.announce();
   }
 
@@ -778,6 +780,8 @@ export class HomeAgent implements HomeEnd {
   }
 
   async newChat(): Promise<{ sessionId: string; rev: number }> {
+    if (this.homes().filter((h) => h.n !== 0).length >= MAX_EXTRA_HOMES)
+      throw new Error(`At most ${MAX_EXTRA_HOMES} Home tabs besides Texts (h1 to h${MAX_EXTRA_HOMES}): close one first.`);
     const { harness, source, model, mode } = await this.settings();
     const permissionMode = await this.modeFor(harness, mode);
     const id = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
@@ -1049,7 +1053,11 @@ export class HomeAgent implements HomeEnd {
         description:
           "Archives a session (keeps it out of Recent; it stays searchable, and send_to_session revives it), as the archive button does. why \"done\": a session you started that has confirmed it's done, delivered and cleaned up. why \"person_asked\": any session, only when the person asked to archive it.",
         input: { session_id: z.string(), why: z.enum(["done", "person_asked"]).describe("done: your own finished session; person_asked: the person asked for this one.") },
-        run: async (a: { session_id: string; why: "done" | "person_asked" }) => this.archive(chat, a.session_id, a.why),
+        run: async (a: { session_id: string; why: "done" | "person_asked" }) => {
+          const said = await this.archive(chat, a.session_id, a.why);
+          if (this.isTextsChat(chat)) act(this.turnOf(chat), a.session_id.trim());
+          return said;
+        },
       },
       {
         name: "send_to_session",

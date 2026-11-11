@@ -66,6 +66,10 @@ export const TEXTS = {
   homeStarted: (label: string) => `Started ${label}, text ${label} to reach it.`,
   /** "hd1": done, and what's left */
   homeDeleted: (label: string, list: string) => `Deleted ${label}, your homes are ${list}.`,
+  /** "hn" with MAX_EXTRA_HOMES open already */
+  homesFull: (list: string) => `You have ${list} already, delete one with hd and its number first.`,
+  /** a voice note, a contact card, a poll: nothing Tether can pass on */
+  onlyTextAndImages: "Only text and images get through, so I left the rest out.",
   /** "hd0" or the like */
   cantDeletePrimary: "h is your main home, so it can't be deleted.",
   /** images that came with a text but couldn't go with it */

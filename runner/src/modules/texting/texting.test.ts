@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
@@ -752,6 +752,7 @@ describe("replies tied to what was just texted, and images", () => {
     const h = await t.personText("home", "the chart", { image: join(dir, "shot.png") });
     expect(h.isError).toBeUndefined();
     expect(files.length).toBe(2);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -765,8 +766,14 @@ describe("inbound attachments from Photon", () => {
     const group = { type: "group", items: [{ content: att("a.png", "image/png") }, { content: { type: "text", text: "what's this?" } }] };
     expect(inboundOf(group)).toMatchObject({ text: "what's this?", files: [{ name: "a.png" }] });
     expect(inboundOf({ type: "reply", content: group, target: { id: "m3" } })).toMatchObject({ text: "what's this?", replyTo: "m3", files: [{ name: "a.png" }] });
-    // Nothing usable: nothing.
-    expect(inboundOf({ type: "group", items: [{ content: { type: "poll" } }] })).toBeUndefined();
+    // What can't be passed on is counted (the person hears so); reactions and the like are ignored.
+    expect(inboundOf({ type: "group", items: [{ content: { type: "poll" } }] })).toEqual({ text: "", unsupported: 1 });
+    expect(inboundOf({ type: "voice", name: "a.m4a", read: async () => Buffer.alloc(1) })).toEqual({ text: "", unsupported: 1 });
+    expect(inboundOf({ type: "custom", raw: { imessage_type: "unsupported-message" } })).toEqual({ text: "", unsupported: 1 });
+    expect(inboundOf({ type: "group", items: [{ content: { type: "contact" } }, { content: { type: "text", text: "call him" } }] })).toEqual({ text: "call him", unsupported: 1 });
+    expect(inboundOf({ type: "effect", effect: "slam", content: { type: "text", text: "now" } })).toEqual({ text: "now" });
+    expect(inboundOf({ type: "reaction", emoji: "❤️" })).toBeUndefined();
+    expect(inboundOf({ type: "custom", raw: { imessage_type: "reply-target" } })).toBeUndefined();
   });
 });
 
@@ -900,3 +907,97 @@ describe("round 2: homes over text, image downloads, held images", () => {
     expect(texts).toEqual([]);
   });
 });
+
+describe("round 3: held photos on every path, unsupported content, restarts", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+  const photo = () => ({ name: "IMG_1.png", mimeType: "image/png", size: PNG.length, read: async () => PNG });
+  const IMG = [{ name: "IMG_1.png", mimeType: "image/png", data: PNG }];
+  /** Two sessions waiting, a Home agent with h1, and a photo held by the picker. */
+  async function heldPhoto() {
+    const line = new HomeLine();
+    const took: [string, unknown, TextedFile[] | undefined][] = [];
+    const made: [string, TextedFile[] | undefined][] = [];
+    line.home = fakeHome({ extra: [{ n: 1, chat: "claude:home1" }], take: async (text, f, to) => void took.push([text, to, f]) });
+    const newHome = line.home.newHome;
+    line.home.newHome = async (text, f) => (made.push([text, f]), newHome(text, f));
+    const s = setup({}, line);
+    await s.t.start();
+    s.say("claude:a", "Which?");
+    await s.t.turnEnded("claude:a");
+    s.say("codex:b", "Which?");
+    await s.t.turnEnded("codex:b");
+    await s.hear({ text: "", files: [photo()] });
+    expect(s.t.router.state.held).toMatchObject({ text: "(image)", images: 1 });
+    return { ...s, took, made, line };
+  }
+
+  test('"2 what is wrong here": the held photo goes with it', async () => {
+    const s = await heldPhoto();
+    await s.hear({ text: "2 what is wrong here" });
+    expect(s.told).toEqual([["codex:b", "what is wrong here"]]);
+    expect(s.toldFiles).toEqual([["codex:b", IMG]]);
+    expect(s.texts).not.toContain(TEXTS.imagesNotSent);
+  });
+
+  test('"h …" and "h1 …": the held photo goes to that home', async () => {
+    let s = await heldPhoto();
+    await s.hear({ text: "h what is wrong here" });
+    expect(s.took).toEqual([["what is wrong here", { n: 0 }, IMG]]);
+    s = await heldPhoto();
+    await s.hear({ text: "h1 what is wrong here" });
+    expect(s.took).toEqual([["what is wrong here", { n: 1 }, IMG]]);
+  });
+
+  test('"hn …": the held photo is the new home\'s', async () => {
+    const s = await heldPhoto();
+    await s.hear({ text: "hn what is wrong here" });
+    expect(s.made).toEqual([["what is wrong here", IMG]]);
+  });
+
+  test("a restart loses held photos (memory only): the person is told, and no bare (image) goes on", async () => {
+    const s = await heldPhoto();
+    // A new Texter on the same saved state: the router remembers the held text, not its photo.
+    const again = new Texter((s.t as any).ctx, s.t.store, async () => ({ send: async (x: string) => (s.texts.push(x), "z"), closed: new Promise(() => {}), stop: async () => {} }), () => s.clock.t);
+    await again.start();
+    await again.heard({ text: "2" });
+    expect(s.told).toEqual([]);
+    expect(s.texts.at(-1)).toBe(TEXTS.imagesNotSent);
+    // Words held with a lost photo still go; the person is told about the photo.
+    await again.heard({ text: "make it blue", files: [] });
+    expect(again.router.state.held).toMatchObject({ text: "make it blue" });
+  });
+
+  test("a voice note (or a card, a poll) gets one short text, once per message; words with it still go", async () => {
+    const { t, hear, texts, told, say } = setup();
+    await t.start();
+    await hear({ text: "", unsupported: 2 });
+    expect(texts).toEqual([TEXTS.onlyTextAndImages]);
+    say("claude:a", "Which?");
+    await t.turnEnded("claude:a");
+    await hear({ text: "the blue one", unsupported: 1, files: [{ name: "x.pdf", mimeType: "application/pdf", read: async () => Buffer.alloc(1) }] });
+    expect(told).toEqual([["claude:a", "the blue one"]]);
+    expect(texts.filter((x) => x === TEXTS.onlyTextAndImages).length).toBe(2);
+    expect(texts).not.toContain(TEXTS.onlyImages);
+    expect(casualText(TEXTS.onlyTextAndImages)).toBe(true);
+  });
+
+  test("a Home chat's move reaches texting: replies follow it", async () => {
+    const line = new HomeLine();
+    const took: unknown[] = [];
+    const extra = [{ n: 1, chat: "claude:home1" }];
+    line.home = fakeHome({ extra, take: async (text, _f, to) => void took.push([text, to]) });
+    const s = setup({}, line);
+    await s.t.start();
+    textingModuleLike(s.t, line);
+    await line.phone!.send("PR up, merge?", "claude:a", "claude:home1");
+    extra[0]!.chat = "codex:home1";
+    line.phone!.moved!("claude:home1", "codex:home1");
+    await s.hear({ text: "merge it", replyTo: "m1" });
+    expect(took).toEqual([['(replying to your text about session claude:a, "secret plans" in /home/me/web) merge it', { n: 1 }]]);
+  });
+});
+
+/** The phone end as the texting module plugs it in. */
+function textingModuleLike(t: Texter, line: HomeLine) {
+  line.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o), moved: (from, to) => t.homeMoved(from, to) };
+}

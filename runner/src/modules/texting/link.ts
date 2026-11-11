@@ -10,6 +10,8 @@ export interface Inbound {
   text: string;
   /** what came with it (photos, files), not downloaded yet */
   files?: InboundFile[];
+  /** parts Tether can't pass on (a voice note, a contact card, a poll, an app card): the person is told once */
+  unsupported?: number;
   /** its message id, when Photon gives one: a text heard twice is taken once */
   id?: string;
   /** the message it answers in a thread */
@@ -32,9 +34,18 @@ export type OpenLink = (cfg: LinkConfig, onInbound: (m: Inbound) => void, log: (
 
 const digits = (s: string) => s.replace(/\D/g, "").slice(-10);
 
-/** A message's text and files: plain, markdown, an attachment, several parts (a photo with words), or a threaded reply (with what it answers). */
+/** What the person can send that isn't text or a file: kept as "unsupported", so they hear it didn't go. (Reactions, read receipts and the like aren't messages: ignored.) */
+const UNSUPPORTED = new Set(["voice", "contact", "poll", "app"]);
+
+/**
+ * A message's text and files: plain, markdown, an attachment, several parts (a photo with words), a
+ * threaded reply (with what it answers), or one with an effect; what can't be passed on is counted.
+ */
 export function inboundOf(content: any): Inbound | undefined {
   if (!content) return undefined;
+  if (UNSUPPORTED.has(content.type) || (content.type === "custom" && content.raw?.imessage_type === "unsupported-message"))
+    return { text: "", unsupported: 1 };
+  if (content.type === "effect") return inboundOf(content.content);
   if (content.type === "text" && typeof content.text === "string") return { text: content.text };
   if (content.type === "markdown" && typeof content.markdown === "string") return { text: content.markdown };
   if (content.type === "attachment" && typeof content.read === "function") {
@@ -51,7 +62,8 @@ export function inboundOf(content: any): Inbound | undefined {
     const parts = content.items.map((i: any) => inboundOf(i?.content)).filter(Boolean) as Inbound[];
     if (!parts.length) return undefined;
     const files = parts.flatMap((p) => p.files ?? []);
-    return { text: parts.map((p) => p.text).filter((t) => t.trim()).join("\n"), ...(files.length ? { files } : {}) };
+    const unsupported = parts.reduce((n, p) => n + (p.unsupported ?? 0), 0);
+    return { text: parts.map((p) => p.text).filter((t) => t.trim()).join("\n"), ...(files.length ? { files } : {}), ...(unsupported ? { unsupported } : {}) };
   }
   if (content.type === "reply") {
     const inner = inboundOf(content.content);

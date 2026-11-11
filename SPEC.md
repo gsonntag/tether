@@ -1307,14 +1307,18 @@ with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
    - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[home]`): the primary home; `h1`/`home1`,
      `h2`, …: that home. The prefix and separator are taken off. Just `h1` sends a held text there,
      or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
-   - `hn`/`homenew`/`home-new`/`home new`: a new home; the rest of the text (and its images) is its
-     first message. With nothing after it: "Started h2, text h2 to reach it."
+   - `hn`/`homenew`/`home-new`: a new home; the rest of the text (and its images) is its first
+     message. With nothing after it: "Started h2, text h2 to reach it." At most 9 homes besides `h`
+     (`h1`–`h9`; Home's New Home button stops there too): past that, a short text listing the homes
+     says to delete one with `hd` and its number. Not `home new …`: "Home new build is broken" is
+     words to `h`.
    - `hd1`/`hd 1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1 (archives its
      chat, as closing its tab does) and answers with the homes left. `h` can't be deleted. No y/n:
      the syntax isn't something typed by accident, a longer text never deletes, and an archived chat
      comes back from the archive. (`home delete 1` is words to `h`.)
    Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`, `hnn`, `hn's`,
-   `h1n1`, `homeless`, `home-newbie`, `hello1`).
+   `h1n1`, `homeless`, `home-newbie`, `hello1`). Just `h1` aims the next text at that home's chat:
+if the home is deleted meanwhile (and its number reused), the person is told it's gone instead.
 3. `n text` (and just `n`) goes to session n, as before.
 4. Plain text goes to the home that sent Tether's last text when that was a home's (the primary one
    when no session is open).
@@ -1327,7 +1331,9 @@ tab (made by the first text to `h`, again if it was closed; Home shows no delete
 while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
 making a new home gives `h2` again, and a reply threaded to the deleted one's text is told it's gone
 rather than reaching the new one. The numbers are in the Home agent's state.json (they survive a
-restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). A home's texts start
+restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). When a Home chat moves to a new
+thread (a harness or source change), its number, and texting's record of its texts (threads, the
+last text, what it was about), go with it. A home's texts start
 `[home]` (primary) or `[h1]`, …. A tab the person has texted (or made with `hn`) answers by text
 like the Texts tab. Home shows each tab's name (h, h1, …), a **New Home** button, and on every tab
 but `h` a delete that asks first ("Delete h2? Its chat is archived and texts to h2 stop reaching
@@ -1335,7 +1341,8 @@ it.") before closing the tab through the usual close (stopped if running, archiv
 let go).
 
 *Replies about what was just texted.* A home's text can say which session it's about: the session
-its turn acted on, when it acted on exactly one (started it, messaged it, or answered its report),
+its turn acted on, when it acted on exactly one (started it, messaged it, archived it, or answered
+its report),
 never what the person's text was about (they may have turned to something new); or
 `text_person`'s `session_id`, which must be a session that exists. A text to that same home within
 30 minutes (`router.ts` REPLY_MS), or a threaded reply to it at any age, arrives with a line naming
@@ -1352,10 +1359,18 @@ up to 10 MB, at most 10) go with their words to whoever the text goes to, stored
 attachments (§9: the agent sees them as images and by path). Each downloads beside the text queue
 (the queue waits at most 45 s for it) and stops past 10 MB however big it said it was; one that
 fails or times out is dropped, the words still go, and the person is told. HEIC is turned into JPEG
-with ImageMagick when the runner has it (told the input is HEIC, time-limited); otherwise it goes
-by path with a note saying so. An image alone is "(image)"; while a request waits it goes after the
+with ImageMagick when the runner has it, and so is a PNG, JPEG or WebP over 2048 px on its long edge
+(ATTACH_IMAGE_EDGE) or too big for the model APIs (NATIVE_IMAGE_MAX), scaled to fit: `convert` told
+the input's coder, `-limit memory 256MiB -limit map 512MiB -limit disk 1GiB -limit time 30`, its
+temporary files in a folder of its own that's removed after, at most 2 at once, output capped.
+Without it (or when it fails) a big image goes as it came, and a HEIC by path with a note saying so. An image alone is "(image)"; while a request waits it goes after the
 turn and the request still waits on the person. Images held with a text the picker holds go when
-that text goes (a caption sent after its photo takes the photo along). Other files are left out;
+that text goes, or with whatever text takes the held one over (`2 what's wrong here`, `h1 …`,
+`hn …`), and a caption sent after its photo takes the photo along. Held images are kept in memory
+only: after a runner restart they're gone, and the person is told so when the held text goes (a
+held photo alone isn't passed on as an empty "(image)"). A voice note, contact card, poll or app
+card gets one short text per message ("Only text and images get through, so I left the rest
+out."); the words with it still go. Reactions and read receipts are ignored. Other files are left out;
 any image that doesn't go, for whatever reason, is reported to the person. `text_person` takes an
 optional `image`: an absolute path to a .png/.jpg/.gif/.webp/.heic file, opened once without
 following a final symlink or blocking on a FIFO, checked on that handle (a regular file of at most

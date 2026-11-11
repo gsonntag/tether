@@ -228,6 +228,12 @@ export class Texter {
    * The Home agent texts the person ("[home] ok, on it"): whether it went. A threaded reply to it
    * goes back to the Home agent; `about`: the session it's about, which a reply goes with.
    */
+  /** A Home chat went on in another (a move): replies to its texts follow it. */
+  homeMoved(from: string, to: string) {
+    this.router.movedHome(from, to);
+    this.store.save();
+  }
+
   async homeText(body: string, about?: string, chat?: string): Promise<boolean> {
     return (await this.homeSend(body, about, undefined, chat)).sent;
   }
@@ -417,37 +423,57 @@ export class Texter {
   }
 
   /** The images held with the held text `id`, taken (and those of other held texts dropped). */
-  private takeHeld(id: number | undefined): TextedFile[] {
+  private takeHeld(id: number | undefined): { files: TextedFile[]; lost: boolean } {
     const h = this.heldFiles;
+    if (!h) return { files: [], lost: false };
+    // Others' are kept: they're for a held text still waiting.
+    if (h.id !== id && this.now() - h.at < HELD_MS && this.router.state.held?.id === h.id) return { files: [], lost: false };
     this.heldFiles = undefined;
-    if (!h) return [];
-    if (h.id === id && this.now() - h.at < HELD_MS) return h.files;
-    return [];
+    if (h.id === id && this.now() - h.at < HELD_MS) return { files: h.files, lost: false };
+    return { files: [], lost: true };
   }
 
   private async answer(m: Inbound, got: Got) {
     const home = this.ctx.homeLine?.home;
-    if (got.notImages) await this.say(TEXTS.onlyImages);
+    // At most one word about what didn't come through, per message.
+    if (m.unsupported) await this.say(TEXTS.onlyTextAndImages);
+    else if (got.notImages) await this.say(TEXTS.onlyImages);
     else if (got.failed) await this.say(TEXTS.imagesNotSent);
+    let toldLost = !m.unsupported && !got.notImages && !!got.failed;
     const words = m.text.trim();
     const heic = got.files.some((f) => f.heic);
     const own: TextedFile[] = got.files.map(({ heic: _, ...f }) => f);
     const text = words || (own.length ? IMAGE_ONLY : "");
-    const heldBefore = this.router.state.held?.id;
+    const heldBefore = this.router.state.held ? { ...this.router.state.held } : undefined;
     const d = this.router.route(text, m.replyTo, home ? home.homes() : false);
-    this.store.save();
-    // Images go with their words: now, or (held while the person picks a session) when the held
-    // text goes. A text that replaces a held one takes its images along (a photo, then its caption).
+    // Images go with their words: now, or (held while the person picks a session) wherever the
+    // held text's turn goes: its own words, or the words that take it over ("2 what's wrong here",
+    // "h1 …", "hn …"). A text that replaces a held one takes its images along (a photo, then its
+    // caption).
     let files = own;
     const heldNow = this.router.state.held;
     if (d.kind === "deliver" || d.kind === "home" || d.kind === "newHome") {
-      files = [...this.takeHeld(d.held), ...own];
-    } else if (heldNow && heldNow.id !== heldBefore) {
+      const held = this.takeHeld(d.held);
+      files = [...held.files, ...own];
+      // Held images that are gone (a restart: they're kept in memory only; or they expired): the
+      // person is told, and a held "(image)" with nothing left isn't passed on as if it were one.
+      const lost = held.lost || (d.held !== undefined && heldBefore?.id === d.held && !!heldBefore.images && !held.files.length);
+      if (lost && !toldLost) {
+        toldLost = true;
+        await this.say(TEXTS.imagesNotSent);
+      }
+      if (lost && d.text === IMAGE_ONLY && !files.length) {
+        if (d.kind === "deliver") this.router.unsettle(d.sessionId);
+        this.store.save();
+        return;
+      }
+    } else if (heldNow && heldNow.id !== heldBefore?.id) {
       const carried = this.heldFiles && this.now() - this.heldFiles.at < HELD_MS ? this.heldFiles.files : [];
       this.heldFiles = carried.length || own.length ? { id: heldNow.id!, files: [...carried, ...own], at: this.now() } : undefined;
-      own.length = 0;
+      if (this.heldFiles) heldNow.images = this.heldFiles.files.length;
       files = [];
     }
+    this.store.save();
     // Anything below that doesn't pass the images on says so (never lost without a word).
     let passed = files.length === 0;
     const withNote = (t: string) => (heic ? `${t}\n\n${HEIC_NOTE}` : t);
@@ -531,7 +557,7 @@ export class Texter {
         await this.say(TEXTS.couldNotSend(tag, String(e?.message ?? e)));
       }
     } finally {
-      if (!passed) await this.say(TEXTS.imagesNotSent);
+      if (!passed && !toldLost) await this.say(TEXTS.imagesNotSent);
     }
   }
 }
@@ -541,7 +567,7 @@ export const textingModule: Module = {
   start(ctx) {
     const store = new TextingStore(join(ctx.dataDir, "texting.json"));
     const t = new Texter(ctx, store);
-    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o) };
+    if (ctx.homeLine) ctx.homeLine.phone = { send: (text, about, chat) => t.homeText(text, about, chat), text: (from, body, o) => t.personText(from, body, o), moved: (from, to) => t.homeMoved(from, to) };
     const later = (ms: number, f: () => Promise<void>) => setTimeout(() => void f().catch((e) => ctx.log(`texting failed: ${e?.message ?? e}`)), ms);
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),

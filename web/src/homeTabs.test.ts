@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { afterClose, canDelete, homeTag, loadTab, mergeHomeChat, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "./homeTabs";
+import { afterClose, canDelete, homesFull, homeTag, loadTab, mergeHomeChat, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "./homeTabs";
 
 const memory = () => {
   const m = new Map<string, string>();
@@ -76,4 +76,12 @@ test("tab updates: a newer rev replaces; the same rev fills in tabs and labels; 
   expect(mergeHomeChat(cur, { rev: 2, sessionId: "b", chats: ["a", "b"], labels: { a: 1, b: 2 } })).toEqual({ rev: 2, sessionId: "b", chats: ["a", "b"], labels: { a: 1, b: 2 } });
   // A newer change made here (no labels yet): the open tabs keep theirs.
   expect(mergeHomeChat({ ...cur, labels: { a: 1, b: 2 } }, { rev: 3, sessionId: "a", chats: ["a"] })).toEqual({ rev: 3, sessionId: "a", chats: ["a"], labels: { a: 1 } });
+});
+
+test("at most 9 Homes besides h", () => {
+  const nine = Object.fromEntries([["t", 0], ...Array.from({ length: 9 }, (_, i) => [`c${i}`, i + 1])]);
+  expect(homesFull(nine)).toBe(true);
+  const { c0: _, ...eight } = nine;
+  expect(homesFull(eight)).toBe(false);
+  expect(homesFull(undefined)).toBe(false);
 });

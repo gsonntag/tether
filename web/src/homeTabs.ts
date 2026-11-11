@@ -77,6 +77,12 @@ export function homeTag(labels: Record<string, number> | undefined, id: string):
 /** Whether a tab can be deleted from Home: any but the primary home (h), which stays. */
 export const canDelete = (labels: Record<string, number> | undefined, id: string) => labels?.[id] !== 0;
 
+/** At most this many Home tabs besides Texts (runner/src/modules/homeLine.ts MAX_EXTRA_HOMES). */
+export const MAX_EXTRA_HOMES = 9;
+
+/** Whether there's room for another Home tab. */
+export const homesFull = (labels: Record<string, number> | undefined) => Object.values(labels ?? {}).filter((n) => n !== 0).length >= MAX_EXTRA_HOMES;
+
 /** The name the next new Home tab will get: the lowest number no open tab has. */
 export function nextHomeTag(labels: Record<string, number> | undefined): string {
   const used = new Set(Object.values(labels ?? {}));

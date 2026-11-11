@@ -1292,3 +1292,32 @@ test("a relayed text_person with an image tells the Home agent the image's path"
   expect(driverOf(chat)!.sent[2]).toContain("With an image: /tmp/header.png");
   expect(driverOf(chat)!.sent[2]).toContain(`session_id ${child}`);
 });
+
+test("round 3: archiving a session tags the reply; a moved Home chat tells texting and keeps its number; at most 9 extra homes", async () => {
+  const { line, sent, abouts, runner, textsTab, tools, project, fake, chat, op } = await texting();
+  // Texting's end hears moves.
+  const moves: [string, string][] = [];
+  line.phone!.moved = (from, to) => void moves.push([from, to]);
+  await line.home!.take("hi");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  // A session to archive (started from another tab, idle).
+  const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  await until(() => runner.core.sessions.get(child)?.state.status === "idle");
+  const plain = fake.script;
+  fake.script = (text) => (text.includes("archive that one") ? [async () => void (await tools(texts).archive_session!({ session_id: child, why: "person_asked" })), ...plain(text)] : plain(text));
+  await line.home!.take("archive that one");
+  await until(() => sent.length === 2);
+  expect(abouts[1]).toBe(child);
+  // A move: texting is told, and the number goes with it.
+  const before = (await op("homeAgent")).labels[chat];
+  (line.home as any).moved(chat, "claude:moved-1");
+  expect(moves).toEqual([[chat, "claude:moved-1"]]);
+  expect((line.home as any).labels()["claude:moved-1"]).toBe(before);
+  // The cap.
+  const extras = () => line.home!.homes().filter((h) => h.n !== 0).length;
+  while (extras() < 9) await op("homeAgentNew");
+  await expect(op("homeAgentNew")).rejects.toThrow(/At most 9/);
+  await expect(line.home!.newHome("x")).rejects.toThrow(/At most 9/);
+});

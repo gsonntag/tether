@@ -13,6 +13,9 @@ export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
 export const PERSON_TEXT_MAX = 300;
 
+/** At most this many homes besides the primary one (h1 … h9). */
+export const MAX_EXTRA_HOMES = 9;
+
 /** A home's label as the person texts it and sees it: "h" for the primary one (0), "h1", "h2", … */
 export const homeLabel = (n: number) => (n === 0 ? "h" : `h${n}`);
 
@@ -104,6 +107,8 @@ export interface PhoneEnd {
    * What the tool answers the agent.
    */
   text(from: string, body: string, o?: { image?: string; about?: string; chat?: string }): Promise<{ text: string; isError?: boolean }>;
+  /** a Home chat went on in another (a move, homeAgent moved()): replies to its texts go to `to` now */
+  moved?(from: string, to: string): void;
 }
 
 export class HomeLine {

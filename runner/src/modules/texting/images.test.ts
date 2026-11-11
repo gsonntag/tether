@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { download, IMAGE_REFUSED, ImageFailures, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, type InboundFile } from "./images";
+import { download, IMAGE_REFUSED, ImageFailures, imageDims, imagemagick, incomingImage, pickIncoming, readOutgoingImage, sniffImage, tooBigToSee, type InboundFile } from "./images";
+import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { aboutOf, replyContext } from "../homeLine";
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
@@ -27,6 +28,7 @@ describe("sniffImage", () => {
 
 describe("an agent's image to text", () => {
   const dir = mkdtempSync(join(tmpdir(), "tether-img-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const file = (name: string, data: Buffer | string) => (writeFileSync(join(dir, name), data), join(dir, name));
 
   test("a real image goes, read once and typed by its bytes", () => {
@@ -98,7 +100,7 @@ describe("images the person texts", () => {
     expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => undefined)).toEqual({ name: "IMG_2.HEIC", mimeType: "image/heic", data: HEIC, heic: true });
     expect(await incomingImage({ name: "IMG_2.HEIC" }, HEIC, async () => Promise.reject(new Error("x")))).toMatchObject({ heic: true });
     // The real converter on a file that isn't HEIC: no JPEG (whether or not ImageMagick is here).
-    expect(await imagemagick(Buffer.from("not heic"))).toBeUndefined();
+    expect(await imagemagick(Buffer.from("not heic"), "heic")).toBeUndefined();
   });
 
   test("a download stops past its size, whatever the file said, and past its time", async () => {
@@ -132,5 +134,42 @@ describe("the reply's context line", () => {
     expect(aboutOf(replyContext({ sessionId: "codex:1" }) + "y")).toBe("codex:1");
     expect(aboutOf("merge it")).toBeUndefined();
     expect(aboutOf("tell it (replying to your text about session claude:abc) x")).toBeUndefined();
+  });
+});
+
+describe("scaling texted images down", () => {
+  const png = (w: number, h: number) => {
+    const b = Buffer.alloc(40);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  };
+
+  test("sizes from the first bytes, and when an image is too big to see", () => {
+    expect(imageDims(png(3000, 1500))).toEqual({ w: 3000, h: 1500 });
+    expect(tooBigToSee(png(3000, 1500))).toBe(true);
+    expect(tooBigToSee(png(2048, 1024))).toBe(false);
+    expect(tooBigToSee(Buffer.concat([png(10, 10), Buffer.alloc(NATIVE_IMAGE_MAX)]))).toBe(true);
+  });
+
+  test("a big PNG becomes a scaled JPEG; when that fails it goes as it came", async () => {
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+    const asked: string[] = [];
+    expect(await incomingImage({ name: "shot.png" }, png(4000, 3000), async (_d, from) => (asked.push(from), JPEG))).toEqual({ name: "shot.jpg", mimeType: "image/jpeg", data: JPEG });
+    expect(asked).toEqual(["png"]);
+    expect(await incomingImage({ name: "shot.png" }, png(4000, 3000), async () => undefined)).toMatchObject({ name: "shot.png", mimeType: "image/png" });
+    // A small one isn't touched.
+    expect(await incomingImage({ name: "s.png" }, png(100, 100), async () => (asked.push("x"), JPEG))).toMatchObject({ mimeType: "image/png" });
+    expect(asked).toEqual(["png"]);
+  });
+
+  test("with ImageMagick here: really scaled to the edge, several at once, its temp folders removed", async () => {
+    if (spawnSync("convert", ["-version"]).status !== 0) return;
+    const big = spawnSync("convert", ["-size", "3000x1500", "gradient:red-blue", "png:-"]).stdout as Buffer;
+    const before = readdirSync(tmpdir()).filter((n) => n.startsWith("tether-magick-")).length;
+    const outs = await Promise.all([1, 2, 3].map(() => imagemagick(big, "png")));
+    for (const o of outs) expect(imageDims(o!)).toEqual({ w: 2048, h: 1024 });
+    expect(readdirSync(tmpdir()).filter((n) => n.startsWith("tether-magick-")).length).toBe(before);
   });
 });

@@ -10,7 +10,8 @@
 // one of these, in any case, followed by a space, a colon, a comma or nothing, is a command for it
 // (parseHome):
 // - "h …" / "home …" (and "@h", "[home]"): to the primary home; "h1 …" / "home1 …": to home 1.
-// - "hn …" / "homenew …" / "home-new …" / "home new …": a new home, the rest its first message.
+// - "hn …" / "homenew …" / "home-new …": a new home, the rest its first message (at most
+//   MAX_EXTRA_HOMES besides h). Not "home new …": "Home new build is broken" is words to h.
 // - "hd1" / "hd 1" / "homedelete 1" / "home-delete 1", as the whole text: deletes home 1 (never `h`).
 // Never a word that only starts with them ("hey", "how", "Homer", "homework", "hnn", "h1n1"). A
 // threaded reply to a home's text, and plain text when Tether's last text was a home's (or no
@@ -27,7 +28,7 @@
 // Tether owns every reply on the thread: the text-me skill (textme), which used to share the
 // Photon number and split replies with it, is gone; agents text through Tether's text_person.
 
-import { HOME_SENDER, homeLabel, homeList, type Home } from "../homeLine";
+import { HOME_SENDER, homeLabel, homeList, MAX_EXTRA_HOMES, type Home } from "../homeLine";
 import { TEXTS } from "./texts";
 
 export const OPEN_MS = 30 * 60_000;
@@ -58,11 +59,11 @@ export interface Slot {
 export interface RouterState {
   slots: Slot[];
   /** plain text waiting for the person to pick a session (`id`: which one, for what came with it) */
-  held?: { text: string; at: number; id?: number };
+  held?: { text: string; at: number; id?: number; images?: number };
   /** the last held text's id */
   heldSeq?: number;
   /** the person sent just a number (or a home's name: `home`): their next text goes there */
-  aimed?: { n: number; at: number; home?: boolean };
+  aimed?: { n: number; at: number; home?: boolean; chat?: string };
   /**
    * Tether's own texts, newest last: a threaded reply names one (`about`: the session a Home text
    * was about; `home`: the chat of a home other than the primary one that sent it)
@@ -90,7 +91,7 @@ export type Decision =
   | { kind: "deliver"; sessionId: string; n: number; text: string; requestId?: string; held?: number }
   /**
    * the person's words to the Home agent: to home `home` (absent: the primary one); `about`: the
-   * session the text they answer was about; `held`: the held text's id, when that's what goes
+   * session the text they answer was about; `held`: the held text's id when this took it over (its words, or these instead)
    */
   | { kind: "home"; text: string; about?: About; home?: number; held?: number }
   /** a new home, `text` its first message (maybe none) */
@@ -107,8 +108,8 @@ export type HomeCommand = { cmd: "to"; n: number; rest: string } | { cmd: "new";
 
 /** "hd1", "hd 1", "homedelete 1", "home-delete 1": the whole text. */
 const DELETE_HOME = /^\s*(?:hd|home-?delete)\s*(\d{1,2})\s*[.!]?\s*$/i;
-/** "hn", "homenew", "home-new", "home new", as the first word. */
-const NEW_HOME = /^\s*(?:hn|home-?new|home\s+new)(?=[\s:,]|$)[\s:,]*([\s\S]*)$/i;
+/** "hn", "homenew", "home-new", as the first word. */
+const NEW_HOME = /^\s*(?:hn|home-?new)(?=[\s:,]|$)[\s:,]*([\s\S]*)$/i;
 /** "h", "home", "h1", "home12" (and in brackets, or after @), as the first word. */
 const TO_HOME = /^\s*(?:\[\s*(?:home|h)(\d{1,2})?\s*\]|@(?:home|h)(\d{1,2})?(?![\w-])|(?:home|h)(\d{1,2})?(?=[\s:,]|$))[\s:,]*([\s\S]*)$/i;
 
@@ -210,6 +211,15 @@ export class Router {
     return { sessionId: a.sessionId, byHome: true };
   }
 
+  /** Home chat `from` went on in `to` (a move): its texts, and what they were about, are `to`'s. */
+  movedHome(from: string, to: string) {
+    const st = this.state;
+    for (const e of st.sent) if (e.home === from) e.home = to;
+    if (st.homeChat === from) st.homeChat = to;
+    if (st.about?.home === from) st.about.home = to;
+    if (st.aimed?.chat === from) st.aimed.chat = to;
+  }
+
   /** A session's slot is waiting on the person again (a text that went to it didn't answer its request). */
   unsettle(sessionId: string) {
     const slot = this.state.slots.find((x) => x.sessionId === sessionId);
@@ -266,7 +276,8 @@ export class Router {
       return { kind: "deleteHome", n: c.n };
     }
     if (c?.cmd === "new") {
-      const held = !c.rest ? this.state.held : undefined;
+      if (homes.filter((h) => h.n !== 0).length >= MAX_EXTRA_HOMES) return { kind: "reply", text: TEXTS.homesFull(homeList(homes)) };
+      const held = this.state.held;
       this.state.held = undefined;
       this.state.aimed = undefined;
       return { kind: "newHome", text: c.rest || held?.text || "", ...(held?.id !== undefined ? { held: held.id } : {}) };
@@ -275,8 +286,8 @@ export class Router {
       const h = homes.find((x) => x.n === c.n);
       if (!h) return { kind: "reply", text: TEXTS.noSuchHome(homeLabel(c.n), homeList(homes)) };
       if (c.rest) return this.toHome(c.rest, h);
-      if (this.state.held) return this.toHome(this.state.held.text, h, undefined, this.state.held.id);
-      this.state.aimed = { n: c.n, at: this.now(), home: true };
+      if (this.state.held) return this.toHome(this.state.held.text, h);
+      this.state.aimed = { n: c.n, at: this.now(), home: true, ...(c.n !== 0 && h.chat ? { chat: h.chat } : {}) };
       return { kind: "reply", text: c.n === 0 ? TEXTS.whatToSendHome : TEXTS.whatToSendTo(homeLabel(c.n)) };
     }
 
@@ -291,15 +302,20 @@ export class Router {
       }
       if (rest) return this.deliver(slot, rest);
       const held = this.state.held;
-      if (held) return this.deliver(slot, held.text, slot.requestId, held.id);
+      if (held) return this.deliver(slot, held.text);
       this.state.aimed = { n, at: this.now() };
       return { kind: "reply", text: TEXTS.whatToSend(n) };
     }
 
     const aim = this.state.aimed;
     if (aim && (aim.home || aim.n === HOME_N) && running) {
-      const h = homes.find((x) => x.n === aim.n);
-      if (h) return this.toHome(text, h);
+      // Aimed at a home by its chat: a number freed and taken again since is another home.
+      const h = aim.chat ? homes.find((x) => x.n !== 0 && x.chat === aim.chat) : primary;
+      if (!h) {
+        this.state.aimed = undefined;
+        return { kind: "reply", text: TEXTS.homeGone(homeList(homes)) };
+      }
+      return this.toHome(text, h);
     }
     const aimed = aim && !aim.home && this.state.slots.find((x) => x.n === aim.n);
     if (aimed) return this.deliver(aimed, text);
@@ -332,15 +348,21 @@ export class Router {
     return `${head}\n${rows.join("\n")}`;
   }
 
-  /** To home `h`, about what its last text was about (or `about`, a thread's); `held`: the held text's id, when that's what goes. */
-  private toHome(text: string, h: Home, thread?: About | null, held?: number): Decision {
+  /**
+   * To home `h`, about what its last text was about (or `thread`, a thread's). `held`: the held
+   * text's id when there was one, whether its words go or these replace them: what came with it
+   * goes the same way (texting/index.ts).
+   */
+  private toHome(text: string, h: Home, thread?: About | null): Decision {
     const about = thread === undefined ? this.recent(h.n === 0 ? undefined : h.chat) : (thread ?? undefined);
+    const held = this.state.held?.id;
     this.state.held = undefined;
     this.state.aimed = undefined;
     return { kind: "home", text, ...(about ? { about } : {}), ...(h.n !== 0 ? { home: h.n } : {}), ...(held !== undefined ? { held } : {}) };
   }
 
-  private deliver(slot: Slot, text: string, requestId = slot.requestId, held?: number): Decision {
+  private deliver(slot: Slot, text: string, requestId = slot.requestId): Decision {
+    const held = this.state.held?.id;
     this.state.held = undefined;
     this.state.aimed = undefined;
     slot.at = this.now();
