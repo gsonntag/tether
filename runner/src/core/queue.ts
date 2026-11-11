@@ -83,8 +83,7 @@ export class MessageQueue {
 
   // ---------------- ops ----------------
 
-  /** `hold: "peer"`: it (and the queue with it) waits for the person's OK, whatever else would release it. */
-  async add(id: string, text: string, attachments: Attachment[], o: { shell?: QueuedMessage["shell"]; hold?: "peer" } = {}): Promise<{ id: string }> {
+  async add(id: string, text: string, attachments: Attachment[], o: { shell?: QueuedMessage["shell"] } = {}): Promise<{ id: string }> {
     const s = await this.root(id);
     // Control characters (a command's raw output) never wait: they'd take 6 bytes each in a frame.
     text = stripControls(text);
@@ -96,10 +95,7 @@ export class MessageQueue {
     this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
-    // Held for your OK: over a hold something else would lift by itself (Back to Tether, the quiet
-    // wait's end); one after Stop or a failure already waits for you.
-    const waitsForYou = s.state.queueHeld && (s.state.queueHeldBy === "stopped" || s.state.queueHeldBy === "failed" || s.state.queueHeldBy === "peer");
-    const by = o.hold ? (waitsForYou ? undefined : o.hold) : s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
+    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
     this.save(s, [...s.state.queue, m], by);
     this.later(s.id);
     return { id: m.id };

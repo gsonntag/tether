@@ -231,31 +231,39 @@ export class Peers {
   }
 
   /**
-   * Puts a peer message in `to`'s queue; says where it stands. A target whose permissions are
-   * looser than the sender's (unknown: the loosest) gets it held for the person's OK.
+   * Why `from` may not message `to`, if it may not: a session can't reach one whose permissions are
+   * looser than its own (an unknown sender: the strictest; an unknown target: the loosest), so it
+   * can't get done through another what it isn't allowed to do itself.
    */
-  private async deliver(me: { level: Level }, to: SessionSummary, body: string): Promise<{ msgId: string; where: string; terminal: boolean; held: boolean }> {
-    const before = await this.ctx.sessions.open(to.id).catch(() => undefined);
-    const held = (this.level(before) ?? Infinity) > me.level;
-    const { id } = await this.ctx.sessions.queue(to.id, body, held ? { hold: "peer" } : undefined);
+  private async forbidden(from: string, to: SessionSummary): Promise<string | undefined> {
+    const me = await this.sender(from);
+    const target = this.level(await this.ctx.sessions.open(to.id).catch(() => undefined));
+    if (target !== undefined && target <= me.level) return undefined;
+    const theirs = target === undefined ? "permissions Tether can't tell" : LEVEL_WORDS[target];
+    return `This session doesn't have permission to message ${this.who(to.id, to.title)}: it runs with ${theirs}, looser than this session's (${LEVEL_WORDS[me.level]}). Nothing was sent.`;
+  }
+
+  /** Puts a peer message in `to`'s queue; says where it stands. */
+  private async deliver(to: SessionSummary, body: string): Promise<{ msgId: string; where: string; terminal: boolean }> {
+    const { id } = await this.ctx.sessions.queue(to.id, body);
     const look = await this.ctx.sessions.open(to.id).catch(() => undefined);
     const agent = AGENT_NAMES[to.harness as HarnessId] ?? "It";
     const terminal = look?.state.mode === "terminal";
-    const where = held
-      ? "Its permissions are looser than this session's, so it waits in its queue for the person's OK."
-      : terminal
+    const where = terminal
       ? "Its terminal is driving, so it waits in the queue until the person goes back to Tether."
       : look?.state.queueHeld
         ? "Its queue is paused for the person, so it waits there until they carry on."
         : look && look.status !== "idle"
           ? `${agent} is working: it gets this when its current turn ends.`
           : "It's idle, so it starts on it now.";
-    return { msgId: id, where, terminal, held };
+    return { msgId: id, where, terminal };
   }
 
   async send(from: string, to: string, text: string): Promise<PeerAnswer> {
     this.checkText(text);
     const t = await this.target(from, to);
+    const no = await this.forbidden(from, t);
+    if (no) return this.refused(from, no);
     const why = this.caps.check(from, t.id, "send");
     if (why) return this.refused(from, why);
     // Reserved before anything waits (and given back if it doesn't go).
@@ -264,7 +272,7 @@ export class Peers {
     const d = await (async () => {
       const me = await this.sender(from);
       const body = sessionMessage(me, text, this.hint(me, `from another session, not the person. To answer, use tether_send with to "${from}"; only if an answer is needed.`), false, hops);
-      return this.deliver(me, t, body);
+      return this.deliver(t, body);
     })().catch((e) => {
       undo();
       throw e;
@@ -275,6 +283,8 @@ export class Peers {
   async ask(from: string, to: string, text: string, minutes: number, signal?: AbortSignal): Promise<PeerAnswer> {
     this.checkText(text);
     const t = await this.target(from, to);
+    const no = await this.forbidden(from, t);
+    if (no) return this.refused(from, no);
     const why = this.caps.check(from, t.id, "ask");
     if (why) return this.refused(from, why);
     // Reserved before anything waits, so two asks side by side see each other (a cycle, the open
@@ -288,7 +298,7 @@ export class Peers {
       const hint = terminal
         ? `a question from another session, not the person. Answer it with tether_send to "${from}".`
         : "a question from another session, not the person. Your final reply this turn goes back to it automatically.";
-      return this.deliver(me, t, sessionMessage(me, text, this.hint(me, hint), false, hops));
+      return this.deliver(t, sessionMessage(me, text, this.hint(me, hint), false, hops));
     })().catch((e) => {
       undo();
       close();
@@ -313,8 +323,7 @@ export class Peers {
       };
       this.asks.push(ask);
       const timer = setTimeout(() => {
-        const held = d.held && this.ctx.session(t.id)?.state.queueHeldBy === "peer";
-        const still = ask.delivered ? "is still working on it" : held ? "still waits in its queue for the person's OK (its permissions are looser than yours)" : "hasn't got to it yet (it waits in its queue)";
+        const still = ask.delivered ? "is still working on it" : "hasn't got to it yet (it waits in its queue)";
         this.finish(ask, { text: `No answer within ${Math.round(wait / 60_000)} minutes: ${this.who(t.id, t.title)} ${still}. Ask again later, or check with tether_sessions.`, isError: true });
       }, wait);
       // The asking agent stopped waiting (its turn was stopped): the question stays queued.
@@ -345,16 +354,22 @@ export class Peers {
     const body = sessionMessage(me, text, this.hint(me, `a note from another session to every session, not the person. Reply only if it asks you to, with tether_send to "${from}".`), true, hops);
     const sent: string[] = [];
     const failed: string[] = [];
+    const denied: string[] = [];
     for (const t of targets) {
       try {
-        const d = await this.deliver(me, t, body);
-        sent.push(`- ${t.id} ("${markTitle(t.title)}")${d.held ? ": waits for the person's OK (looser permissions)" : ""}`);
+        // A looser session is left out (forbidden), the rest still get it.
+        if (await this.forbidden(from, t)) {
+          denied.push(`- ${t.id} ("${markTitle(t.title)}")`);
+          continue;
+        }
+        await this.deliver(t, body);
+        sent.push(`- ${t.id} ("${markTitle(t.title)}")`);
       } catch (e) {
         failed.push(`- ${t.id} ("${markTitle(t.title)}"): ${(e as Error).message}`);
       }
     }
     if (!sent.length) undo();
-    return { text: [`Sent to ${sent.length} session${sent.length === 1 ? "" : "s"}:`, ...sent, ...(failed.length ? ["Couldn't send to:", ...failed] : [])].join("\n") };
+    return { text: [`Sent to ${sent.length} session${sent.length === 1 ? "" : "s"}:`, ...sent, ...(denied.length ? ["No permission (their permissions are looser than this session's), not sent to:", ...denied] : []), ...(failed.length ? ["Couldn't send to:", ...failed] : [])].join("\n") };
   }
 
   /** Send to all, from the person: their own message in each matching session's queue. No caps. */

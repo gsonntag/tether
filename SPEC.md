@@ -768,15 +768,14 @@ event (with the message's text) and the queued message's id from `SessionActions
   hides; the hint also says the sender's permissions. The transcript shows it as "From “<title>” ·
   Open it" (· to all), the queue as "From “<title>”: …". A person's text that starts like one gets
   defang's mark.
-- **Stricter to looser waits for you.** Each session's permission mode has a level on the scale
+- **Stricter to looser is refused.** Each session's permission mode has a level on the scale
   Move uses (`core/permissionLevel.ts`, shared/move.ts `LEVELS`): Claude plan < default <
   acceptEdits < auto < bypassPermissions; Codex read-only < untrusted < auto (workspace-write) <
-  full-access. A message (send, ask or broadcast) to a session whose level is above the sender's
-  goes into its queue held (`queueHeldBy: "peer"`, "Held for your OK", Resume lets it go; Home
-  lists it as needing you, like any paused queue). An unknown level counts as the loosest for the
-  target and the strictest for the sender; equal or stricter goes straight through. The tool says
-  it waits for the person's OK; an ask keeps waiting (its timeout still applies). The hold covers
-  the whole queue, like the others; sending something yourself releases it too.
+  full-access. A send or ask to a session whose level is above the sender's is refused: nothing is
+  queued, the tool says the session doesn't have permission (both levels named), and the sender's
+  transcript gets a notice. A broadcast leaves such sessions out and lists them. An unknown level
+  counts as the loosest for the target and the strictest for the sender; equal or stricter goes
+  through. So a session can't get done through another what it may not do itself.
 - **Ask.** The answer is the target's last written reply in the turn that took the question (the
   next turn end after it went out), cut at 20 KB with "open session X for the rest". Otherwise:
   "turn failed: …", "the person stopped …'s turn", "Not delivered: the person removed your question

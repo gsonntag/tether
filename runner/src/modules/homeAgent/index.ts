@@ -630,7 +630,7 @@ export class HomeAgent {
             `Session ${id} ("${look.summary.title || "Untitled"}", ${look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})`,
             `State: ${STATE_LABELS[st]}, last active ${ago(look.summary.updatedAt)}${error ? `. Last error: ${oneLine(error, 300)}` : ""}`,
             ...look.state.requests.map((r) => `Waiting for the person: ${asks(r)}`),
-            look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure, a restart, or a message from a stricter session): it waits for the person." : "",
+            look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure or a restart): it waits for the person." : "",
             look.state.queue.length ? `${look.state.queue.length} message${look.state.queue.length === 1 ? "" : "s"} queued.` : "",
             !mine
               ? "You didn't start it. You can message it with send_to_session when the person asks you to; you'd then get its reports."
