@@ -15,7 +15,8 @@
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
-// wording); known secrets are redacted. Tether's own words read like a human's: "[6] ok", one
+// wording), a request's in plain words with no raw command (describe.ts, summary.ts); known secrets
+// are redacted. Tether's own words read like a human's: "[6] ok", one
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
 // passed on (texts.ts has the whole rule).
 
@@ -228,7 +229,7 @@ export class Texter {
     if (!this.link) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
     const why = this.caps.take(from);
     if (why) return { text: why, isError: true };
-    const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, [], false, undefined, true)).sent;
+    const sent = from === HOME ? await this.homeText(words) : (await this.tell(from, TEXTED_YOU, words, { always: true })).sent;
     if (!sent) {
       this.caps.undo(from);
       return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
@@ -238,12 +239,14 @@ export class Texter {
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
-  async tell(sessionId: string, status: string, body: string, also: string[] = [], quick = false, requestId?: string, always = false): Promise<{ sent: boolean }> {
+  async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean } = {}): Promise<{ sent: boolean }> {
+    const { also = [], quick = false, requestId, always = false } = o;
     if (!this.link) return { sent: false };
     if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
     // The link only now and then, and never on a quick back-and-forth.
     const at = this.now();
-    const link = !quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS;
+    // A request's text always has it: the full command is there, not in the text.
+    const link = !!o.link || (!quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS);
     if (link) this.linked.set(sessionId, at);
     const { text } = this.router.stamp(sessionId, status, link ? `${body}\n\n${this.url(sessionId)}` : body, requestId);
     const { sent, id } = await this.send(text);
@@ -257,7 +260,7 @@ export class Texter {
     if (!look || !requestStillOpen(look, r.id)) return;
     const root = look.summary.parentSessionId;
     const { status, body } = requestText(r, agentOf(r.sessionId));
-    await this.tell(r.sessionId, status, body, root ? [root] : [], false, r.id);
+    await this.tell(r.sessionId, status, body, { also: root ? [root] : [], requestId: r.id, link: true });
   }
 
   async attention(sessionId: string) {
@@ -296,7 +299,7 @@ export class Texter {
     const talking = this.talking.delete(sessionId);
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, TEXTS.failed(agentOf(sessionId), failureKind(error)));
     // An answer to something the person texted is the back-and-forth: no link.
-    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), [], talking);
+    else if (last && (talking || asksQuestion(last))) await this.tell(sessionId, asksQuestion(last) ? "asked you something" : "answered", clip(last, SAID_MAX), { quick: talking });
   }
 
   // ── in: the person's replies, one at a time ──
