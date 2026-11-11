@@ -11,6 +11,7 @@ import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import { moveModule } from "./move";
+import { peersModule } from "./peers";
 import { pushModule } from "./push";
 import { textingModule } from "./texting";
 
@@ -61,8 +62,8 @@ export interface SessionActions {
   list(): SessionSummary[];
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
-  /** a message from Tether through the session's queue: now when it's idle, else after its turn */
-  queue(id: string, text: string): Promise<void>;
+  /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */
+  queue(id: string, text: string): Promise<{ id: string }>;
   /** the newest `limit` messages of its transcript */
   recent(id: string, limit: number): Promise<Msg[]>;
   rename(id: string, title: string): Promise<void>;
@@ -102,7 +103,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

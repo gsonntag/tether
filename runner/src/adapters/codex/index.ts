@@ -10,7 +10,7 @@ import { call } from "./daemon";
 import { DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { codexCommandRoute, commandList, enabledSkills } from "./commands";
-import { CodexDriver, createThread } from "./driver";
+import { CodexDriver, codexTools, createThread } from "./driver";
 import { setCodexSetup } from "./setup";
 import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
@@ -54,6 +54,7 @@ export const codexAdapter: Adapter = {
   agentSetup: setCodexSetup,
   capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" } },
   move: codexMove,
+  toolServer: (server) => codexTools.set(server),
   billing: {
     keys: HARNESS_KEYS.codex,
     label: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),

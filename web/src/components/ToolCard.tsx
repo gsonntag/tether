@@ -4,6 +4,8 @@ import { memo, type ReactNode } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowTopRightOnSquareIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { peerAction, peerTarget } from "../../../shared/peers";
+import { peerHead } from "../peerCard";
 import type { ToolPart } from "../../../shared/transcript";
 import { lineDiff, withContext } from "../diff";
 import { rpc } from "../connection";
@@ -172,6 +174,47 @@ export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
   }
 }
 
+/**
+ * The session a peer tool reached: the one its answer names (the runner resolved it), else `to`
+ * when that is a listed session's id. Its title as the list has it now.
+ */
+function usePeerTarget(runnerId: string, p: ToolPart | undefined): { id?: string; title?: string } {
+  const said = p ? peerTarget(p.output) : undefined;
+  const to = p ? str((p.input as any)?.to) : undefined;
+  const id = said?.id ?? to;
+  const listed = useStore((s) => (id ? s.summaries[runnerId]?.sessions?.[id] : undefined));
+  if (listed) return listed;
+  return said ?? EMPTY_TARGET;
+}
+const EMPTY_TARGET = {};
+
+function PeerDetails({ p, target }: { p: ToolPart; target: { id?: string; title?: string } }) {
+  const i = (p.input ?? {}) as Record<string, any>;
+  const { runnerId } = useSessionCtx();
+  const ask = peerAction(p.name) === "ask";
+  return (
+    <>
+      {target.id && (
+        <button type="button" className="t-link" onClick={() => openSession(runnerId, target.id!)}>
+          Open {target.title ? `“${target.title}”` : "it"} <Icon icon={ArrowTopRightOnSquareIcon} size="xsm" />
+        </button>
+      )}
+      {str(i.text) && (
+        <>
+          <span className="t-label">{ask ? "Question" : "Message"}</span>
+          <pre className="t-pre wrap">{i.text}</pre>
+        </>
+      )}
+      {p.output && (
+        <>
+          <span className="t-label">{ask && p.status === "done" ? "Answer" : p.status === "error" ? "Why" : "Result"}</span>
+          <pre className="t-pre wrap">{p.output}</pre>
+        </>
+      )}
+    </>
+  );
+}
+
 /** Open by default: diffs and todo lists (what you want to see), and failures. */
 const openByDefault = (p: ToolPart) => p.kind === "edit" || p.kind === "todo" || p.status === "error";
 
@@ -179,7 +222,10 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   const [open, setOpen] = useRowState<boolean | undefined>(`tool:${part.id}`, undefined);
   const isOpen = open ?? openByDefault(part);
   const { runnerId, sessionId } = useSessionCtx();
-  const sum = summary(part, root);
+  const peer = part.kind === "peer";
+  const target = usePeerTarget(runnerId, peer ? part : undefined);
+  const head = peer ? peerHead(part, target.title) : undefined;
+  const sum = head ? head.sum : summary(part, root);
   // The call waits on your answer (the requests dock, above the composer).
   const waiting = useStore((s) => part.status === "running" && !!s.views[viewKey(runnerId, sessionId)]?.state?.requests.some((r) => r.toolId === part.id));
   // A background subagent: Claude answers the call at once ("launched") while the subagent runs on,
@@ -197,7 +243,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
   return (
     <div className="t-tool" data-kind={part.kind}>
       <button type="button" className="t-tool-head" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
-        <span className="t-tool-name">{part.name}</span>
+        <span className="t-tool-name">{head ? head.label : part.name}</span>
         <span className="t-tool-sum" title={sum}>
           {sum}
         </span>
@@ -214,7 +260,7 @@ export const ToolCard = memo(function ToolCard({ part, root, extra }: { part: To
       {isOpen && (
         <div className="t-tool-body">
           {background}
-          <ToolDetails p={part} root={root} />
+          {peer ? <PeerDetails p={part} target={target} /> : <ToolDetails p={part} root={root} />}
           {extra}
         </div>
       )}

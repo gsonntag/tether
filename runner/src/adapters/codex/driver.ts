@@ -29,6 +29,7 @@ import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
 import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
+import { ToolServerSlot } from "../toolServer";
 
 /** A message as Codex's input: its text, and the attached images Codex reads from disk. */
 const input = (text: string, attachments: Attachment[] = []) => [
@@ -57,6 +58,30 @@ export function startSettings(opts: StartOpts) {
   return out;
 }
 
+/** Tether's MCP server for every Codex thread (the peers module). */
+export const codexTools = new ToolServerSlot();
+
+/**
+ * Tether's MCP server as a thread's own config (thread/start, thread/resume). The daemon honors it
+ * per thread, env included (checked on 0.167.1); a thread another client already has loaded keeps
+ * what it was loaded with. Its tools run without asking and may wait as long as an ask does. The
+ * thread's id isn't known before thread/start, so the server reads it from each call's `_meta`.
+ * A dotted key, like AGENT_CONFIG's (setup.ts): it adds `tether` to the person's own mcp_servers
+ * (~/.codex/config.toml) instead of replacing them.
+ */
+export function toolConfig(projectPath: string): { config?: Record<string, unknown> } {
+  const s = codexTools.for(projectPath);
+  if (!s) return {};
+  const server = { command: s.command, args: s.args, env: s.env("codex:*"), default_tools_approval_mode: "approve", tool_timeout_sec: Math.ceil(s.timeoutMs / 1000) };
+  return { config: { [`mcp_servers.${s.name}`]: server } };
+}
+
+/** A thread's extras (the Home agent's, setup.ts) with Tether's MCP server added to their config. */
+export function withTools(extras: Record<string, unknown>, projectPath: string): Record<string, unknown> {
+  const t = toolConfig(projectPath).config;
+  return t ? { ...extras, config: { ...((extras.config as Record<string, unknown>) ?? {}), ...t } } : extras;
+}
+
 /** How long Codex has to confirm settings Tether applied. */
 const CONFIRM_MS = Number(process.env.TETHER_CODEX_CONFIRM_MS ?? 8_000);
 
@@ -69,7 +94,7 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   assertCredentialCurrent(opts.credential);
   const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...codexStartExtras(projectPath), ...(source ? { modelProvider: sourceProvider(source.source) } : {}) });
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...withTools(codexStartExtras(projectPath), projectPath) });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
     if (source) rememberSource(id, source);
@@ -162,7 +187,7 @@ export class CodexDriver implements Driver {
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
-      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...codexResumeExtras(projectPath) }).catch((e: any) => {
+      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...withTools(codexResumeExtras(projectPath), projectPath) }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw e;
       });

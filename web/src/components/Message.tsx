@@ -138,6 +138,30 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
   if (msg.role === "user" && msg.origin?.kind === "shell") return <ShellSent msg={msg} />;
   if (msg.role === "user" && msg.origin) {
     // Not something you typed: another session's message, a channel, a report.
+    // Another Tether session (SPEC §9a): by its title, with a way there.
+    const from = msg.origin.kind === "session" ? msg.origin : undefined;
+    if (from)
+      return (
+        <div className="t-msg from">
+          <div className="t-from-head">
+            From {from.name ? `“${from.name}”` : "another session"}
+            {from.all ? " · to all" : ""}
+            {from.sessionId && (
+              <>
+                {" · "}
+                <button type="button" className="t-link" onClick={() => openSession(runnerId, from.sessionId!)}>
+                  Open it
+                </button>
+              </>
+            )}
+          </div>
+          <div className="t-parts">
+            {parts.map((p, i) => (
+              <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={false} cut={cutFor(i)} root={projectPath} />
+            ))}
+          </div>
+        </div>
+      );
     const who =
       msg.origin.kind === "peer" ? "From another session" : msg.origin.kind === "channel" ? "From a channel" : msg.origin.kind === "tether" ? (/^Tether: /.test(msg.parts[0]?.type === "text" ? msg.parts[0].text : "") ? "Tether" : "From Tether, on your behalf") : "From the system";
     return (

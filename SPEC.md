@@ -725,6 +725,83 @@ Only the owner can run one (the same auth as sending).
   the runner stops SIGKILLs the groups at once; a runner gone before its SIGKILL leaves the group on
   the card, and the next start ends it.
 
+## 9a. Sessions talking to each other
+
+An agent can message or ask another session on its runner, Claude Code or Codex, and send a note
+to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
+(`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
+event (with the message's text) and the queued message's id from `SessionActions.queue`.
+
+- **Reach.** `tether_sessions`, titles and broadcasts cover what the lists show (`SessionActions.list`:
+  the last 3 days and every live session); an explicit id reaches an older session too (opened
+  through `SessionActions.open`). Never archived sessions, subagents or the Home agent's chat.
+
+- **Tools.** Every live session (except the Home agent's folder) gets a stdio MCP server named
+  `tether` (`mcp.ts`, run with the runner's `bun`) with `tether_sessions` (id, title, folder,
+  agent, idle / working / waiting, last activity; filter by project or text), `tether_send {to,
+  text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
+  minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
+  (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
+  passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
+  session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
+  `default_tools_approval_mode = "approve"`.
+- **Transport.** The MCP server posts each call to the runner's Unix socket
+  (`<config>/modules/peers/peers.sock`, private, shortened like the hooks socket when too long; an
+  ask's request stays open until the answer). Identity: the server's environment carries its
+  session id and a token, HMAC(secret, id), the secret kept in the module's folder so tokens
+  survive restarts. A subagent's call speaks for its main session. Anything running as the user
+  could still forge a call: the token keeps sessions apart, it isn't a security boundary.
+- **Claude** gets the server in its `query()` options (`mcpServers`, with a per-server `timeout`
+  of 65 minutes so an ask can wait). **Codex** gets it as the thread's own `config`
+  (the dotted key `mcp_servers.tether`, with `tool_timeout_sec`, so the person's own
+  `mcp_servers` stay) on `thread/start` and `thread/resume`. Checked on
+  the daemon (0.167.1) with two threads at once: each thread runs its own MCP process with its own
+  env, and a resume of an unloaded thread takes the new config; a thread another client already
+  has loaded keeps what it was loaded with. As a thread's id isn't known before `thread/start`,
+  Codex's servers carry `codex:*` and the runner takes the thread from the call's `_meta.threadId`
+  (the daemon sets it, not the model). (`dynamicTools` on `thread/start` was the alternative; it
+  can't be added to an existing thread.)
+- **Delivery.** A message goes into the target's queue (§9) and never steers: it waits for a
+  running turn, obeys holds, survives restarts and can be cancelled from any device; a peer
+  message can't be edited. It starts with `[From session "<title>" (<id>)] ` (`to all]` for a
+  broadcast) and ends with a short hint for the agent, `\n\n[Tether: …]`, which the transcript
+  hides; the hint also says the sender's permissions. The transcript shows it as "From “<title>” ·
+  Open it" (· to all), the queue as "From “<title>”: …". A person's text that starts like one gets
+  defang's mark.
+- **Stricter to looser is refused.** Each session's permission mode has a level on the scale
+  Move uses (`core/permissionLevel.ts`, shared/move.ts `LEVELS`): Claude plan < default <
+  acceptEdits < auto < bypassPermissions; Codex read-only < untrusted < auto (workspace-write) <
+  full-access. A send or ask to a session whose level is above the sender's is refused: nothing is
+  queued, the tool says the session doesn't have permission (both levels named), and the sender's
+  transcript gets a notice. A broadcast leaves such sessions out and lists them. An unknown level
+  counts as the loosest for the target and the strictest for the sender; equal or stricter goes
+  through. So a session can't get done through another what it may not do itself.
+- **Ask.** The answer is the target's last written reply in the turn that took the question (the
+  next turn end after it went out), cut at 20 KB with "open session X for the rest". Otherwise:
+  "turn failed: …", "the person stopped …'s turn", "Not delivered: the person removed your question
+  from …'s queue", or after the timeout "still working on it" / "hasn't got to it yet". A target in
+  terminal mode gets the question queued with a hint to answer by `tether_send`, and the ask
+  returns at once. A runner restart ends an open call with an error: a runner that wasn't there says
+  nothing was sent; one cut off mid-call says the message may already be queued (check with
+  `tether_sessions`, don't resend blindly). A queued question stays queued.
+- **Caps** (`caps.ts`): no messages to itself; a message carries hops (the sender's turn's + 1,
+  where a turn started by the person or Tether is 0; written in its hint, `hop N.`, so a message
+  queued across a restart keeps them, and a turn's end forgets them) and the 5th in a chain is refused; 10 messages
+  per sender per 10 minutes; 3 open asks; an ask to a session that waits (directly or through others)
+  on the asker is refused; one broadcast per 10 minutes, and none from a turn a broadcast started.
+  A message is counted (and an ask opened) right after the check, before anything waits, so calls
+  side by side can't all pass; one that doesn't go is given back.
+  A refusal is the tool's error and a warning notice in the sender's transcript.
+- **Send to all (the person).** "Send to all" beside Home's Sessions heading and the sidebar's
+  Recent heading opens a dialog: project, agent and status pickers (default: every non-archived
+  session but the Home agent's chat, reset each time it opens), the message, the count beside
+  Send. It runs `broadcast {text, filter}`, which queues the text in each matching session as your
+  own words (no caps) and says "Queued in N sessions" with links.
+- Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
+  "Sent to “<title>”", "Sent to all", with the message, an Open link and the answer. The link goes
+  to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
+  to Tether) but has no tools.
+
 ## 10. UI
 
 - **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long

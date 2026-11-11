@@ -29,6 +29,7 @@ import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { PartChunk } from "./limits";
+import type { BroadcastFilter } from "./peers";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
@@ -122,6 +123,11 @@ export interface Ops {
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
+  /**
+   * Send to all (SPEC §9a): your message queued in every session `filter` matches (not archived,
+   * not subagents), as your own. Each target's queue applies: a running turn gets it afterwards.
+   */
+  broadcast: { args: { text: string; filter?: BroadcastFilter }; result: { queued: { sessionId: string; title: string }[]; failed: { sessionId: string; title: string; error: string }[] } };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

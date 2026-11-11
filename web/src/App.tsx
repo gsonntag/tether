@@ -7,6 +7,7 @@ import { LockClosedIcon } from "@heroicons/react/24/outline";
 import { Settings } from "./components/Credentials";
 import { Home } from "./components/Home";
 import { NewSessionDialog } from "./components/NewSessionDialog";
+import { SendToAll } from "./components/SendToAll";
 import { SessionView } from "./components/SessionView";
 import { Sidebar } from "./components/Sidebar";
 import { useRoute } from "./route";
@@ -44,6 +45,7 @@ export function App() {
         <Home />
       )}
       <NewSessionDialog />
+      <SendToAll />
     </AppShell>
   );
 }

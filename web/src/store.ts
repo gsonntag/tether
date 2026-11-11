@@ -50,6 +50,8 @@ interface State {
   views: Record<string, SessionView>;
   /** the new-session dialog */
   newSessionOpen: boolean;
+  /** the Send to all dialog */
+  sendAllOpen: boolean;
   /** the sidebar shows only this folder's sessions */
   projectFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
@@ -76,6 +78,7 @@ export const useStore = create<State>(() => ({
   views: {},
   newSessionOpen: false,
   homeChats: {},
+  sendAllOpen: false,
 }));
 
 const set = useStore.setState;

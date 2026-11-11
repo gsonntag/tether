@@ -1,6 +1,7 @@
 // What a tool call is, whatever the harness calls it (ported from v1): the transcript picks its card
 // from `kind` instead of guessing from names. Adapters tag every tool part with classifyTool.
 
+import { peerAction } from "../../../shared/peers";
 import type { ToolKind, ToolPart } from "../../../shared/transcript";
 
 export type ToolTags = Pick<ToolPart, "kind" | "command" | "path">;
@@ -41,7 +42,8 @@ function kindFromInput(name: string, input: any): ToolKind | undefined {
 export function classifyTool(name: string, input: unknown): ToolTags & { kind: ToolKind } {
   const lower = (typeof name === "string" ? name : "").toLowerCase();
   const mcp = lower.startsWith("mcp__");
-  const kind = (!mcp && (NAMES[lower] ?? kindFromInput(lower, input))) || "other";
+  // Tether's own tools for talking to other sessions (modules/peers): "Sent to …", "Asked …".
+  const kind = peerAction(lower) ? "peer" : (!mcp && (NAMES[lower] ?? kindFromInput(lower, input))) || "other";
   const out: ToolTags & { kind: ToolKind } = { kind };
   const command = kind === "shell" ? commandOf(input) : undefined;
   const path = kind === "read" || kind === "edit" || kind === "write" ? pathOf(input) : undefined;

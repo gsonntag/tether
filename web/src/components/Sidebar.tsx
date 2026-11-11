@@ -182,7 +182,20 @@ export function Sidebar() {
             </span>
           </>
         ) : (
-          <span className="t-grow">{q ? "Matching sessions" : "Recent"}</span>
+          <>
+            <span className="t-grow">{q ? "Matching sessions" : "Recent"}</span>
+            {online.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  useStore.setState({ sendAllOpen: true });
+                }}
+              >
+                Send to all
+              </button>
+            )}
+          </>
         )}
       </div>
       <div className="t-rows">
