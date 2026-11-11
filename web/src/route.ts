@@ -1,16 +1,17 @@
 // The page's place in the URL hash, so reload and the phone's back button work:
 //   #/                                 Home (runners)
 //   #/s/<runnerId>/<sessionId>          a session (both URI-encoded)
-//   #/settings/credentials, #/settings/azure, #/settings/texting   Settings' subpages
+//   #/settings/credentials, #/settings/azure, #/settings/texting, #/settings/notifications   Settings' subpages
 
 import { useSyncExternalStore } from "react";
 
-export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "session"; runnerId: string; sessionId: string };
+export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "session"; runnerId: string; sessionId: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
   if (parts[0] === "settings" && parts[1] === "azure") return { page: "azure" };
   if (parts[0] === "settings" && parts[1] === "texting") return { page: "texting" };
+  if (parts[0] === "settings" && parts[1] === "notifications") return { page: "notifications" };
   if (parts[0] === "credentials" || parts[0] === "settings") return { page: "credentials" };
   if (parts[0] === "s" && parts[1] && parts[2]) {
     try {
@@ -29,7 +30,7 @@ export function presenceFor(hash: string, visible: boolean): { runnerId?: string
 }
 
 export function formatRoute(r: Route): string {
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : "#/";
 }
 
 export function navigate(r: Route) {
