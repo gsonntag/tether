@@ -1112,7 +1112,7 @@ test("a failed turn on a text is texted briefly", async () => {
 test("the Home agent keeps its own style rules: none of the sessions' added instructions", () => {
   expect(INSTRUCTIONS).not.toContain(CONCISE_RULE);
   expect(INSTRUCTIONS).not.toContain(TEXTING_RULE);
-  expect(INSTRUCTIONS).toContain("text_person texts the person");
+  expect(INSTRUCTIONS).toContain("text_person texts their phone");
 });
 
 test("text_person: the Home agent texts the person as [home], and a Texts turn that did isn't texted again", async () => {
@@ -1150,4 +1150,31 @@ test(`a report carries at most ${REPLY_MAX} characters of the session's reply`, 
   expect(report).toContain("(cut:");
   expect(report).toContain("session_status shows more");
   expect(report.length).toBeLessThan(REPLY_MAX + 1500);
+});
+
+test("the Home agent is the PM over text: a session it drives that tries to text goes to it as a report; one the person took over texts itself", async () => {
+  const { op, chat, tools, project, runner, driverOf, line } = await texting();
+  const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
+  const answer = await line.home!.relay!(child, "blocked: which database?");
+  expect(answer).toContain("Not texted");
+  await until(() => driverOf(chat)!.sent.length === 2);
+  const report = driverOf(chat)!.sent[1]!;
+  expect(report.startsWith(FROM_TETHER)).toBe(true);
+  expect(report).toContain("wanted to text the person");
+  expect(report).toContain("blocked: which database?");
+  expect(report).not.toContain(TEXTED);
+  // A session it never touched, and one the person stepped into: theirs to text.
+  expect(await line.home!.relay!("claude:nobody", "hi")).toBeUndefined();
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  await op("send", { sessionId: child, text: "I'll take it from here" });
+  await until(() => runner.core.sessions.get(child)?.state.status === "idle" && driverOf(child)!.sent.length === 2);
+  expect(await line.home!.relay!(child, "done")).toBeUndefined();
+});
+
+test("the Home agent's instructions make it the PM over text", () => {
+  expect(INSTRUCTIONS).toContain("You're the person's PM over text");
+  expect(INSTRUCTIONS).toContain("Batch several sessions' news into one text");
+  expect(INSTRUCTIONS).toContain("never text routine progress");
+  expect(INSTRUCTIONS).toContain("relay any instruction to the right session with send_to_session");
 });

@@ -1330,7 +1330,15 @@ session's request itself), and anything typed in Tether. The Texts tab's own tur
 texted as a session's.
 
 *Agents texting the person.* Inside Tether, texts go through Tether, never the text-me skill: every
-session Tether runs has `text_person(message)` (§9a), and so does the Home agent. A session's text
+session Tether runs has `text_person(message)` (§9a), and so does the Home agent. The Home agent is the
+main texter, the person's PM: when they're away or prefer texts (they texted it, asked "text me
+when done", or Reply by text is on) it texts short updates (what needs them, what shipped with a
+link, decisions), batching sessions into one text, never routine progress; replies to `[home]`
+texts come back to it and it relays instructions with send_to_session. A session the Home agent
+drives (started or messaged it, the person hasn't stepped in) doesn't text: its `text_person`
+goes to the Home agent as a report (`homeLine.ts` relay) and the tool tells it to report back
+instead. A session the person runs themselves (or stepped into) texts directly. Requests' own
+texts are unchanged. A session's text
 is stamped with its number like any other (`[n] …`, status "texted you", the link as usual) and
 goes out even while the session is open in Tether; the Home agent's is a `[home]` text. Either is
 cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (a refused or
