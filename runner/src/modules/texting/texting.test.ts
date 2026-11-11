@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
 import type { Request, RequestAnswer } from "../../../../shared/transcript";
-import { asksQuestion, LINK_EVERY_MS, Texter } from ".";
+import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, LINK_EVERY_MS, Texter } from ".";
 import { casualText, OK, TEXTS } from "./texts";
 import { inboundOf, type Inbound, type OpenLink } from "./link";
 import { normalPhone, TextingStore } from "./store";
 import type { TetherNote, Thread, Waiter } from "./thread";
-import { HomeLine } from "../homeLine";
+import { HomeLine, PERSON_TEXT_MAX } from "../homeLine";
 
 const ENV = { TETHER_PHOTON_PROJECT_ID: "proj", TETHER_PHOTON_PROJECT_SECRET: "sec-0123456789", TETHER_TEXT_PHONE: "+13105551234" };
 
@@ -472,7 +472,7 @@ describe("texting the Home agent", () => {
     let textsChat = "claude:home";
     line.home = { take: async (text) => void took.push(text), isTextsChat: (id) => id === textsChat };
     const s = setup({}, line);
-    line.phone = { send: (text) => s.t.homeText(text) };
+    line.phone = { send: (text) => s.t.homeText(text), text: (from, body) => s.t.personText(from, body) };
     return { ...s, line, took, setTextsChat: (id: string) => (textsChat = id) };
   }
 
@@ -567,5 +567,71 @@ describe("texting the Home agent", () => {
     expect(texts).toEqual([]);
     await t.stop();
     expect(await line.phone!.send("ok")).toBe(false);
+  });
+});
+
+describe("an agent texting the person (text_person)", () => {
+  test("goes out under the session's number, even while it's open in Tether, and a reply comes back to it", async () => {
+    const { t, texts, told, hear } = setup({ "claude:a": ["phone"] });
+    await t.start();
+    const r = await t.personText("claude:a", "PR is up: https://github.com/x/y/pull/1");
+    expect(r.isError).toBeUndefined();
+    expect(texts).toEqual([`[1] PR is up: https://github.com/x/y/pull/1\n\n${LINK}claude%3Aa`]);
+    // A threaded reply, and a plain one, go back to that session as the person's words.
+    await hear({ text: "merge it", replyTo: "m1" });
+    await hear({ text: "and deploy" });
+    expect(told).toEqual([["claude:a", "merge it"], ["claude:a", "and deploy"]]);
+  });
+
+  test("the session's answer to the reply comes back by text", async () => {
+    const { t, texts, hear, say } = setup();
+    await t.start();
+    await t.personText("codex:b", "blocked: which database?");
+    await hear({ text: "postgres", replyTo: "m1" });
+    say("codex:b", "ok, using postgres");
+    await t.turnEnded("codex:b");
+    expect(texts.at(-1)).toBe("[1] ok, using postgres");
+  });
+
+  test(`cut at ${PERSON_TEXT_MAX} characters`, async () => {
+    const { t, texts } = setup();
+    await t.start();
+    const r = await t.personText("claude:a", "x".repeat(1000));
+    expect(r.text).toContain("cut");
+    expect(texts[0]!.split("\n")[0]!.length).toBeLessThanOrEqual(PERSON_TEXT_MAX + 4);
+  });
+
+  test("rate-capped per session; the cap frees up after a while", async () => {
+    const { t, texts, clock } = setup();
+    await t.start();
+    for (let i = 0; i < AGENT_TEXT_MAX; i++) expect((await t.personText("claude:a", `n${i}`)).isError).toBeUndefined();
+    const over = await t.personText("claude:a", "one more");
+    expect(over.isError).toBe(true);
+    expect(texts.length).toBe(AGENT_TEXT_MAX);
+    // Another session isn't held back by it.
+    expect((await t.personText("codex:b", "hi")).isError).toBeUndefined();
+    clock.t += AGENT_TEXT_MS;
+    expect((await t.personText("claude:a", "later")).isError).toBeUndefined();
+  });
+
+  test("texting off or empty: an error, nothing sent", async () => {
+    const { t, texts } = setup();
+    expect((await t.personText("claude:a", "hi")).isError).toBe(true);
+    await t.start();
+    expect((await t.personText("claude:a", "   ")).isError).toBe(true);
+    expect(texts).toEqual([]);
+  });
+
+  test("the Home agent's goes out as [home], and a reply goes back to it", async () => {
+    const line = new HomeLine();
+    const took: string[] = [];
+    line.home = { take: async (text) => void took.push(text), isTextsChat: () => false };
+    const s = setup({}, line);
+    await s.t.start();
+    const r = await s.t.personText("home", "PR #12 is merged and live");
+    expect(r.isError).toBeUndefined();
+    expect(s.texts).toEqual(["[home] PR #12 is merged and live"]);
+    await s.hear({ text: "thanks", replyTo: "m1" });
+    expect(took).toEqual(["thanks"]);
   });
 });

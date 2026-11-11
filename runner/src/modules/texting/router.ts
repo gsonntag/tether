@@ -14,12 +14,13 @@
 // did, isn't Tether's, and Tether says nothing. textme applies the same rule, so a reply is taken
 // once: "home: ..." while a textme texted last is that textme's (it can't tell "home:" apart).
 
+import { HOME_SENDER } from "../homeLine";
 import { TEXTS } from "./texts";
 import { addressedToWaiter, type TetherNote, type Waiter } from "./thread";
 
 export const OPEN_MS = 30 * 60_000;
 /** The `sessionId` a Home agent text is noted under (`sent`). */
-export const HOME = "home";
+export const HOME = HOME_SENDER;
 /** How a Home agent text starts. */
 export const HOME_TAG = "[home]";
 export const HELD_MS = 10 * 60_000;

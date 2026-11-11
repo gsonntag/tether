@@ -54,6 +54,9 @@ export class Prefs {
   setSettings(patch: RunnerSettings): RunnerSettings {
     if (typeof patch.backgroundSubagents === "boolean") this.runnerSettings.backgroundSubagents = patch.backgroundSubagents || undefined;
     if (this.runnerSettings.backgroundSubagents === undefined) delete this.runnerSettings.backgroundSubagents;
+    // On unless turned off: only `false` is kept.
+    if (patch.conciseReplies === true) delete this.runnerSettings.conciseReplies;
+    else if (patch.conciseReplies === false) this.runnerSettings.conciseReplies = false;
     this.dirty = true;
     this.flush();
     return this.settings();

@@ -129,10 +129,11 @@ export class ClaudeDriver implements Driver {
         ...(tools ? { mcpServers: tools.mcpServers } : {}),
         settingSources: ["user", "project", "local"],
         settings: claudeAuthSettings(this.lease.helper),
-        systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : {}) },
+        // Tether's instructions: the Home agent's own, or every other session's (concise replies, texting).
+        systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : tools?.append ? { append: tools.append } : {}) },
         canUseTool,
         hooks: { PreToolUse: [{ matcher: SUBAGENT_TOOLS, hooks: [background] }] },
-        env: claudeEnv(opts.credential),
+        env: { ...claudeEnv(opts.credential), ...tools?.env },
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {
           this.stderr.push(redact(data));
