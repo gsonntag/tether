@@ -5,7 +5,7 @@ import { rpc } from "../connection";
 import { useStore } from "../store";
 
 /**
- * Texting, per runner: iMessages through Photon when a session needs you, finishes or fails, and
+ * Texting, per runner: iMessages through Photon when a session needs you, asks you something or fails, and
  * replies by text that go back to the session. The keys stay on the runner; this only sees whether
  * they're set.
  */
@@ -51,7 +51,7 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     <p className="t-inline-status">
-      Get an iMessage when a session needs you, finishes or fails (not while you're looking at it in Tether). Reply to send it a message. Each text starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether texts back a list to choose from.
+      Get an iMessage when a session needs you, asks you something or fails (not while you're looking at it in Tether). Reply to send it a message. Each text starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether texts back a list to choose from.
     </p>
     <div className="t-credential-slot" aria-label="Texting">
       <div className="t-credential-title"><span>Texting</span><span className="t-credential-status">{state}{status.lastError ? ` · ${status.lastError}` : ""}</span></div>

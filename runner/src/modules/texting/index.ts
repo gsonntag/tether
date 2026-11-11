@@ -1,6 +1,6 @@
-// Texting (SPEC §11 Texting): the same moments as push notifications (a request, "needs you" in the
-// terminal, a turn finished or failed) go to the person's phone as iMessages through Photon
-// Spectrum, and their replies go back to the session. Each text starts with its session's number;
+// Texting (SPEC §11 Texting): a request, "needs you" in the terminal, a failed turn, or a turn that
+// ended with the agent asking you something goes to the person's phone as an iMessage through Photon
+// Spectrum (a turn that just finished doesn't), and their replies go back to the session. Each text starts with its session's number;
 // a reply that isn't clear gets a numbered picker (router.ts). The runner sends them, not the app:
 // a Foliation app has no internet egress (server/src/push.ts).
 //
@@ -8,7 +8,7 @@
 // and what kind of thing happened, never a title, a command or the agent's words.
 
 import { join } from "node:path";
-import type { Request } from "../../../../shared/transcript";
+import type { Msg, Request } from "../../../../shared/transcript";
 import type { Module, ModuleContext } from "..";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, pushTitle, REQUEST_DELAY_MS, requestBody, requestStillOpen } from "../push";
 import { openSpectrum, type Inbound, type OpenLink, type TextLink } from "./link";
@@ -17,6 +17,16 @@ import { TextingStore } from "./store";
 
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
+
+/**
+ * Whether an agent's message ends by asking the person something: its last paragraph (code left out)
+ * has a sentence ending in "?". Only this yes or no leaves the runner, never the words.
+ */
+export function asksQuestion(text: string): boolean {
+  const prose = text.replace(/```[\s\S]*?(```|$)/g, "").replace(/`[^`\n]*`/g, "").trim();
+  const last = prose.split(/\n\s*\n/).pop() ?? "";
+  return /\?(?=["')\]*_]*(\s|$))/.test(last);
+}
 
 type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log"> & { sessions: Pick<ModuleContext["sessions"], "tell" | "deny"> };
 
@@ -30,6 +40,8 @@ export class Texter {
   private inbox = Promise.resolve();
   connected = false;
   lastError?: string;
+  /** each session's last words from the agent this turn (to tell whether it ended asking something) */
+  private lastSaid = new Map<string, string>();
 
   constructor(
     private ctx: Ctx,
@@ -152,10 +164,24 @@ export class Texter {
     await this.tell(sessionId, "needs you in the terminal", `${agentOf(sessionId)} needs you in the terminal. A reply is typed into it.`);
   }
 
+  /** The agent said something: kept until its turn ends (only the last message counts). */
+  said(sessionId: string, msg: Msg) {
+    if (msg.role !== "assistant") return;
+    const text = msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n").trim();
+    if (text) this.lastSaid.set(sessionId, text);
+  }
+
+  turnStarted(sessionId: string) {
+    this.lastSaid.delete(sessionId);
+  }
+
+  /** A failed turn texts; a finished one only when the agent ended by asking you something. */
   async turnEnded(sessionId: string, error?: string) {
+    const last = this.lastSaid.get(sessionId);
+    this.lastSaid.delete(sessionId);
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
     if (error) await this.tell(sessionId, `failed: ${failureKind(error)}`, `Failed: ${failureKind(error)}.`);
-    else await this.tell(sessionId, "finished", "Finished.");
+    else if (last && asksQuestion(last)) await this.tell(sessionId, "asked you something", `${agentOf(sessionId)} has a question for you.`);
   }
 
   // ── in: the person's replies, one at a time ──
@@ -195,6 +221,8 @@ export const textingModule: Module = {
     const offs = [
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => t.request(request))),
       ctx.bus.on("attention", ({ sessionId }) => void later(0, () => t.attention(sessionId))),
+      ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
+      ctx.bus.on("turnStarted", ({ sessionId }) => t.turnStarted(sessionId)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped }) => void (!stopped && later(FINISH_DELAY_MS, () => t.turnEnded(sessionId, error)))),
     ];
     const status = () => store.status(t);
