@@ -50,12 +50,14 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setRow(el);
   }, []);
   /** No room beside the transcript: the panel goes over the chat, as on a phone. */
-  const cover = useTermCover(row);
+  const noRoom = useTermCover(row);
   const [panel, setPanel] = useState<PanelState | null>(() => {
     if (terminalNext !== k) return null;
     terminalNext = undefined;
     return { tab: "tui", wantTui: true, nonce: 1 };
   });
+  // The agent's own interface (Claude Code, Codex) takes the whole screen; shells sit beside the chat.
+  const cover = noRoom || panel?.tab === "tui";
   /** the question before handing a busy session to the terminal (SPEC §8) */
   const [ask, setAsk] = useState<{ text: string; confirm: string } | null>(null);
   /** Back to Tether from the banner (panel closed): asked first, as from the panel */
