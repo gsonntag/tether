@@ -80,14 +80,21 @@ by default only pages on the app's own host may open one.
 ## Texting
 
 The runner can text you an iMessage (through [Photon Spectrum](https://photon.codes)) when a session
-has a request, needs you in the terminal, fails, or ends its turn by asking you something. A turn
-that just finishes doesn't text. Nothing is texted for a session you're looking at in Tether. Texts
-say only the folder, the agent and what happened (`[2] my-app · Claude: Claude has a question for
-you.`), like pushes; never the agent's words.
+has a request, needs you in the terminal, fails, or ends its turn by asking you something; and it
+texts back the agent's answer to anything you text it. A turn that just finishes doesn't text.
+Nothing is texted for a session you're looking at in Tether. Each text has a link to the session.
 
-Reply to send that session a message (into its running turn when the harness allows it). A reply to
-a session with an open request denies it, with your text as the note; approve in Tether. Each text
-starts with its session's number, and a session takes replies for 30 minutes after its last text:
+Texts say what the agent wants: the command it wants to run, the file, the question and its
+options, the plan. Known secrets (your API keys) are redacted, but anything else the agent writes
+can be in a text.
+
+- A command, an edit or a plan: reply `y` to allow, `n` to deny (the turn stops), or anything else
+  to tell the agent (it reads it and answers you by text).
+- A question: reply with an option's letter (`a`), or your own answer.
+- No request open: your reply is a message to the session, and its answer comes back by text.
+
+Each text starts with its session's number, and a session takes replies for 30 minutes after its
+last text:
 
 - `2 do X`, `[2] do X`, or a threaded reply to one of its texts: goes to session 2.
 - Plain text with one session open: goes to it.

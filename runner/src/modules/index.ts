@@ -7,7 +7,7 @@ import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
-import type { HarnessId, LiveState, Msg, ProjectInfo, RunStatus, SessionSummary } from "../../../shared/transcript";
+import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import { moveModule } from "./move";
 import { pushModule } from "./push";
@@ -50,8 +50,8 @@ export interface SessionActions {
   send(id: string, text: string): Promise<void>;
   /** the person's own words, as if typed in the composer: into the running turn when it takes that, else sent */
   tell(id: string, text: string): Promise<void>;
-  /** the person denies an open request, with their note to the agent */
-  deny(id: string, requestId: string, reason?: string): Promise<void>;
+  /** the person answers an open request (as the answerRequest op does) */
+  answer(id: string, requestId: string, a: RequestAnswer): Promise<void>;
   /** a Tether notice, kept with the session */
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
   /** the folders with sessions (the lists' projects), newest activity first */
