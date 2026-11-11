@@ -180,6 +180,7 @@ export class Texter {
   async stop() {
     this.stopped = true;
     clearTimeout(this.heldTimer);
+    this.heldTimer = undefined;
     clearTimeout(this.retry);
     await this.connecting;
     const link = this.link;
@@ -312,7 +313,8 @@ export class Texter {
     const { sent, imageSent } = from === HOME ? await this.homeSend(words, o.about, image, o.chat) : await this.tell(from, TEXTED_YOU, words, { always: true, image });
     if (!sent) {
       this.caps.undo(from);
-      return { text: `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
+      const slow = /didn't answer/.test(this.lastError ?? "");
+      return { text: slow ? `Photon didn't answer in time (${this.lastError}), so the text may or may not have gone. Don't send it again; mention it in your reply if it matters.` : `The text didn't go (${this.lastError ?? "not connected"}). Say it in your reply instead.`, isError: true };
     }
     const cut = words.length < body.trim().length ? ` It was cut to ${PERSON_TEXT_MAX} characters.` : "";
     const pic = image ? (imageSent ? " The image went with it." : ` The image didn't go (${this.lastError ?? "not connected"}).`) : "";
@@ -426,13 +428,13 @@ export class Texter {
     return replyContext({ sessionId: a.sessionId, ...(look?.summary.title ? { title: look.summary.title } : {}), ...(look ? { project: look.summary.projectPath } : {}) });
   }
 
-  /** The images held with the held text `id`, taken (and those of other held texts dropped). */
   /** The ✅ on the person's text (at most PHOTON.ms: a stalled Photon is logged and passed by). */
   private async read(m: Inbound) {
     if (!m.react) return;
     await timed(m.react(READ), "a reaction").catch((e) => this.ctx.log(`texting: couldn't react: ${e?.message ?? e}`));
   }
 
+  /** The images held with the held text `id`, taken (and those of other held texts dropped). */
   private takeHeld(id: number | undefined): TextedFile[] {
     const h = this.heldFiles;
     if (!h || h.id !== id) return [];

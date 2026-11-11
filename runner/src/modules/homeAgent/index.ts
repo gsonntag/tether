@@ -53,6 +53,11 @@ import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 
+/** Text going inside a <<< >>> fence, unable to close or open one: any run of 3+ "<" or ">" becomes 2 (can't rebuild a run). */
+export function unfence(s: string): string {
+  return s.replace(/<{3,}/g, "<<").replace(/>{3,}/g, ">>");
+}
+
 /** Reports a session may send before the agent stops following it: a loop can't run forever. */
 export const MAX_REPORTS = 12;
 /** How much of a session's last reply a report carries (session_status has more; the transcript keeps it all). */
@@ -508,8 +513,8 @@ export class HomeAgent implements HomeEnd {
     const words = message.trim().slice(0, PERSON_TEXT_MAX * 4);
     // The image's path is the session's words like the rest: inside the fence, on one line, and
     // unable to close it. (text_person checks the file again before anything goes.)
-    const pic = image ? `\n[image: ${image.replace(/[\x00-\x1f\x7f\u2028\u2029]+/g, " ").replace(/<<<|>>>/g, "").replace(/\]/g, ")").slice(0, 500)}]` : "";
-    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person${image ? " (with the image after [image: …], which text_person's image sends on)" : ""}:\n<<<\n${words.replace(/<<<|>>>/g, "")}${pic}\n>>>\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person (session_id ${sessionId}), condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
+    const pic = image ? `\nimage path: ${unfence(image.replace(/[\x00-\x1f\x7f\u2028\u2029]+/g, " ")).slice(0, 500)}` : "";
+    await this.report(sessionId, c, `${await this.describe(sessionId)} wanted to text the person${image ? " (with the image on its last \"image path:\" line, which text_person's image sends on)" : ""}:\n<<<\n${unfence(words)}${pic}\n>>>\n\nIt wasn't texted. You're their PM over text: if it needs them (a decision, a blocker) or something shipped, text them with text_person (session_id ${sessionId}), condensed and with any other news; otherwise keep it for your next reply. Don't relay routine progress.`);
     return "Not texted: Tether's Home agent drives this session and texts the person for it. Your message went to it as a report. Don't text the person yourself; put outcomes and questions in your final reply.";
   }
 
@@ -1424,7 +1429,7 @@ export class HomeAgent implements HomeEnd {
     const reply = lastReply(await this.ctx.sessions.recent(id, 30).catch(() => [] as Msg[]));
     const lines = [
       `${await this.describe(id)} finished a turn${error ? ` with an error: ${error}` : "."}`,
-      reply ? `Its last reply:\n<<<\n${cut(reply, REPLY_MAX)}\n>>>${reply.length > REPLY_MAX ? "\n(session_status shows more.)" : ""}` : "It said nothing.",
+      reply ? `Its last reply:\n<<<\n${unfence(cut(reply, REPLY_MAX))}\n>>>${reply.length > REPLY_MAX ? "\n(session_status shows more.)" : ""}` : "It said nothing.",
       last
         ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you've stopped following this session and can't message it any more. Tell the person where it stands in one casual sentence.`
         : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done; if it is, send the wrap-up for its end goal (merge if chosen, deploy/restart if needed, remove its worktree and branch) and archive it once it confirms; or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,

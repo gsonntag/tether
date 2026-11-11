@@ -1140,10 +1140,17 @@ describe("round 5: a stalled Photon, and restarts", () => {
     s.say("codex:b", "Which?");
     await s.t.turnEnded("codex:b");
     await s.hear({ text: "", files: [{ name: "a.png", mimeType: "image/png", read: async () => PNG }] });
-    expect((s.t as any).heldTimer).toBeDefined();
+    const before = (s.t as any).heldTimer;
+    expect(before).toBeDefined();
     await s.t.restart();
     expect((s.t as any).heldFiles).toBeDefined();
-    expect((s.t as any).heldTimer).toBeDefined();
+    // A fresh timer, not the cleared one: past HELD_MS, it fires on its own and tells the person.
+    expect((s.t as any).heldTimer).not.toBe(before);
+    s.clock.t += HELD_MS + 1;
+    await s.t.restart();
+    const deadline = Date.now() + 2000;
+    while (!s.texts.includes(TEXTS.heldImageExpired) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(s.texts.filter((x) => x === TEXTS.heldImageExpired).length).toBe(1);
     await s.t.stop();
   });
 });

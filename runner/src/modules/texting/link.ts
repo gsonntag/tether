@@ -38,6 +38,7 @@ export function timed<T>(p: Promise<T>, what: string, ms = PHOTON.ms): Promise<T
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, no) => {
     timer = setTimeout(() => no(new Error(`Photon didn't answer ${what} within ${Math.round(ms / 1000)}s`)), ms);
+    (timer as { unref?: () => void }).unref?.();
   });
   p.catch(() => {});
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
