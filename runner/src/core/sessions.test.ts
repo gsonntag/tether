@@ -287,6 +287,47 @@ describe("new sessions", () => {
     expect(list.sessions[sessionId]).toBeUndefined();
   });
 
+  test("a browser's new session opens before its harness has started, saying it's starting; a first send waits for that start", async () => {
+    const { adapter, core, live, events } = setup();
+    let open!: () => void;
+    adapter.startGate = new Promise<void>((r) => (open = r));
+    adapter.script = (t) => [say(`a-${t}`, "ok"), idle];
+    const { sessionId } = await live.newSession({ harness: "claude", projectPath: tmpdir() }, true);
+    const s = core.sessions.get(sessionId)!;
+    expect(adapter.drivers).toHaveLength(0);
+    expect(s.state.starting).toBe("start");
+    const v = new Viewer(await core.subscribe(sessionId));
+    const sent = live.send(sessionId, "hi", [], { clientId: "c-1" });
+    await Bun.sleep(5);
+    expect(s.state).toMatchObject({ status: "running", starting: "start" });
+    open();
+    await sent;
+    v.apply(events(sessionId));
+    expect(v.state.starting ?? undefined).toBeUndefined();
+    expect(adapter.drivers).toHaveLength(1);
+    expect(v.w.messages[0]).toMatchObject({ role: "user", clientId: "c-1" });
+    // Only the message of that send carries it.
+    await live.send(sessionId, "again");
+    expect(s.transcript!.messages.filter((m) => m.clientId)).toHaveLength(1);
+  });
+
+  test("a resume says so, and a start that fails clears it with the error", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", [user("m0")]);
+    let open!: () => void;
+    adapter.startGate = new Promise<void>((r) => (open = r));
+    adapter.startError = "No way to start.";
+    const sent = live.send("claude:s1", "go", [], { clientId: "c-2" });
+    await Bun.sleep(5);
+    const s = await core.open("claude:s1");
+    expect(s.state.starting).toBe("resume");
+    open();
+    await expect(sent).rejects.toThrow("No way to start.");
+    expect(s.state.starting).toBeUndefined();
+    expect(s.state.error).toBe("No way to start.");
+    expect(s.clientId).toBeUndefined();
+  });
+
   test("a folder that isn't there is refused", async () => {
     const { live } = setup();
     await expect(live.newSession({ harness: "claude", projectPath: "/no/such/folder" })).rejects.toThrow("no folder");

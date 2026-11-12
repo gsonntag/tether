@@ -142,6 +142,8 @@ export interface Msg {
   origin?: { kind: string; name?: string; sessionId?: string; all?: boolean; purpose?: "checkIn" };
   /** user: a slash command as the harness stored it, not a prompt (which may start with "/" too) */
   localCommand?: boolean;
+  /** user: the browser's id for the send that made it (protocol send `clientId`); only while the runner holds it in memory */
+  clientId?: string;
   /**
    * user: a message to a subagent that Tether passed on through the main agent (SPEC §6a,
    * subagents.steer "via-parent"): whether the main agent delivered it.
@@ -303,6 +305,8 @@ export interface LiveState {
   retry?: RetryState;
   mode: SessionMode;
   status: RunStatus;
+  /** the harness process is starting: "start" for a new session, "resume" for one with history */
+  starting?: "start" | "resume";
   /** the model the session uses: an alias ("opus", "default") or a full id */
   model?: string;
   /** what `model` runs now, when the harness says (e.g. "claude-opus-5-5") */

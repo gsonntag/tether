@@ -81,11 +81,17 @@ export const Composer = forwardRef<
     /** the session's commands and skills (none: no menu) */
     loadCommands?: () => Promise<HarnessCommand[]>;
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
+    /**
+     * Send and Stop and send now, optimistically: the box clears at once and the message shows in
+     * the chat as pending (store.ts sendPending), which handles a failure itself. None: onSend, the
+     * box keeping the text until the runner answers.
+     */
+    sendNow?: (kind: "send" | "stopSend", text: string, attachments: Attachment[]) => void;
     onStop: () => Promise<void>;
     /** a send or Stop failed: the chat shows it */
     onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, onSend, onStop, onFailed }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, onSend, sendNow, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -263,8 +269,7 @@ export const Composer = forwardRef<
     const key = draftKey;
     const sentText = text;
     const sentFiles = new Set(files.filter((f) => f.attachment).map((f) => f.key));
-    try {
-      await onSend(kind, t, ready);
+    const clear = () => {
       // Typed on during the send: what was sent goes, what follows it stays.
       const rest = (cur: string | undefined) => (cur === undefined ? undefined : cur.startsWith(sentText) ? cur.slice(sentText.length).replace(/^\s+/, "") : cur);
       const left = rest(drafts.get(key));
@@ -278,6 +283,16 @@ export const Composer = forwardRef<
         for (const f of l) if (sentFiles.has(f.key) && f.preview) URL.revokeObjectURL(f.preview);
         return l.filter((f) => !sentFiles.has(f.key));
       });
+    };
+    if (sendNow && (kind === "send" || kind === "stopSend")) {
+      // Shown in the chat at once (pending); the box is free for the next message.
+      setBusy(false);
+      clear();
+      return sendNow(kind, t, ready);
+    }
+    try {
+      await onSend(kind, t, ready);
+      clear();
     } catch (e) {
       onFailed((e as Error).message);
     } finally {

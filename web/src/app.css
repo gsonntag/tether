@@ -1605,6 +1605,31 @@
 .t-relay.failed {
   color: var(--color-text-red, var(--color-error));
 }
+/* A message sent from this page whose own message hasn't come yet (pendingSends.ts). */
+.t-msg.user.t-pending.sending .t-bubble {
+  opacity: 0.6;
+}
+.t-msg.user.t-pending.failed .t-bubble {
+  border-color: var(--color-text-red, var(--color-error));
+}
+.t-pending-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+.t-link-btn {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font: inherit;
+  color: var(--color-text-primary, inherit);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.t-start-error {
+  color: var(--color-text-red, var(--color-error));
+}
 
 .t-queue {
   flex: none;

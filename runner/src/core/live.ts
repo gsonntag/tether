@@ -215,7 +215,7 @@ export class LiveControl {
     }
   }
 
-  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts): Promise<{ sessionId: string }> {
+  async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts, background = false): Promise<{ sessionId: string }> {
     this.core.adapter(args.harness); // throws for a harness this runner can't drive, before anything is made
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
     const folder = this.core.folder(args.projectPath, args.createFolder === true);
@@ -236,8 +236,11 @@ export class LiveControl {
       return { sessionId: s.id };
     }
     // Started now, so a problem (not signed in, …) shows before anything is typed. A failure is
-    // already in the session's state; the session still opens.
-    await this.ensureDriver(s).catch(() => {});
+    // already in the session's state; the session still opens. `background` (a browser's
+    // newSession): not waited for, so the session opens at once with its state saying it's starting
+    // (a first message waits for the same start).
+    const started = this.ensureDriver(s).catch(() => {});
+    if (!background) await started;
     return { sessionId: s.id };
   }
 
@@ -247,7 +250,7 @@ export class LiveControl {
    * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
    * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const s = await this.core.open(id);
@@ -293,6 +296,7 @@ export class LiveControl {
     if (s.state.status === "idle" && !s.sending && !o.tether && !o.continued && this.commands.routed(s, text)) {
       const me = {};
       s.sending = me;
+      s.clientId = o.clientId;
       try {
         return await this.commands.run(s, text);
       } finally {
@@ -359,11 +363,13 @@ export class LiveControl {
       s.turnActed = false;
       s.limitHit = undefined;
       s.rateHit = undefined;
+      s.clientId = o.clientId;
       await d.send(withAttachments(text, attachments), attachments, shown);
       s.fresh = false;
       if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
     } catch (e) {
+      if (s.sending === me) s.clientId = undefined;
       if (s.sending === me && e instanceof SendCancelled && s.state.status !== "idle") {
         s.stopped = true;
         this.status(s, "idle");
@@ -1505,6 +1511,7 @@ export class LiveControl {
     const sink = this.sink(s);
     let d: Driver;
     let opts: StartOpts;
+    s.setState({ starting: s.fresh ? "start" : "resume" });
     try {
       opts = await this.startOpts(s, observe);
       if (observe) opts.observe = true;
@@ -1517,7 +1524,7 @@ export class LiveControl {
       // Not live after all: stored, tailing its store if someone watches it, and evictable. A send
       // that was starting it ends its turn as failed (send's catch).
       // (A Back to Tether that failed: modeChanged pauses what waited for the terminal, with Resume.)
-      this.setMode(s, "stored", { error, ...(s.sending ? {} : { status: "idle" as const }) });
+      this.setMode(s, "stored", { error, starting: undefined, ...(s.sending ? {} : { status: "idle" as const }) });
       this.core.tail(s);
       this.core.scheduleEvict(s);
       throw e;
@@ -1534,7 +1541,7 @@ export class LiveControl {
       if (error) s.apply({ type: "msg", msg: notice(error, "error") });
       this.toStored(s, error);
     };
-    this.setMode(s, "live", { error: undefined, continuedIn: undefined });
+    this.setMode(s, "live", { error: undefined, continuedIn: undefined, starting: undefined });
     this.scheduleIdle(s);
     return d;
   }

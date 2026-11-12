@@ -15,13 +15,15 @@ import { ArrowsPointingInIcon, ArrowsPointingOutIcon, PlusIcon, XMarkIcon } from
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { rpc } from "../connection";
 import { setHomeChat } from "../presence";
-import { failedSend, loadOlder, noteHomeChat, openView, useStore, viewKey } from "../store";
+import { failedSend, loadOlder, noteHomeChat, openView, sendPending, useStore, viewKey } from "../store";
+import { startRow } from "../pendingSends";
+import { PendingSends, StartStatus, usePending } from "./PendingSends";
 import { billingForDisplay } from "../sourceMenu";
 import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
 import { afterClose, canDelete, homesFull, homeTag, loadTab, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
 import type { HomeAgentSettings } from "../../../shared/protocol";
-import type { HarnessId } from "../../../shared/transcript";
-import { Composer } from "./Composer";
+import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
+import { Composer, putDraft } from "./Composer";
 import { HomeAgentPickers } from "./HomeAgentSettings";
 import { QueueList } from "./QueueList";
 import { RateLimitRetry } from "./RateLimitRetry";
@@ -169,6 +171,18 @@ export function HomeChat() {
             const sessionId = await newChat();
             await rpc(rid!, "send", { sessionId, text });
           }}
+          // The chat's tab opens on the message, pending, while its agent starts.
+          sendNow={(_kind, text) => {
+            if (isHomeReset(text)) return;
+            const runnerId = rid!;
+            newChat().then(
+              (sessionId) => void sendPending(runnerId, sessionId, text),
+              (e) => {
+                setError((e as Error).message);
+                putDraft(`home:${runnerId}`, text);
+              },
+            );
+          }}
           onStop={async () => {}}
           onFailed={(message) => setError(message)}
         />
@@ -312,6 +326,7 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
     return () => setHomeChat(undefined);
   }, [runnerId, sessionId]);
   const view = useStore((s) => s.views[k]);
+  const pending = usePending(runnerId, sessionId);
   const linkOpen = useStore((s) => s.link === "open");
   const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: view?.session?.projectPath, home: true }), [runnerId, sessionId, view?.session?.projectPath]);
   if (!view?.window || !view.state) {
@@ -319,7 +334,10 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
   }
   const state = view.state;
   const waiting = state.requests.length > 0;
-  const running = state.status === "running" || state.status === "waiting" || waiting;
+  const sendingNow = pending.some((p) => p.status === "sending");
+  const running = state.status === "running" || state.status === "waiting" || waiting || sendingNow;
+  const harness = view.session?.harness;
+  const starting = startRow({ state, pending, label: harness ? HARNESS_LABELS[harness] : "agent", hasMessages: view.window.messages.length > 0 });
   return (
     <SessionCtx.Provider value={ctx}>
       <div className="t-session t-home-chat-box">
@@ -328,13 +346,18 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
           window={view.window}
           onOlder={() => loadOlder(runnerId, sessionId)}
           footer={
-            running && !waiting ? (
-              <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
-                <Spinner size="sm" /> Working…
-              </div>
-            ) : running ? undefined : (
-              <HomeWaiting runnerId={runnerId} />
-            )
+            <>
+              <PendingSends runnerId={runnerId} sessionId={sessionId} list={pending} />
+              {starting ? (
+                <StartStatus row={starting} />
+              ) : running && !waiting ? (
+                <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
+                  <Spinner size="sm" /> Working…
+                </div>
+              ) : running ? undefined : (
+                <HomeWaiting runnerId={runnerId} />
+              )}
+            </>
           }
         />
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={view.session?.projectPath} />
@@ -364,6 +387,10 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
             if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
             else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
             else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
+          }}
+          sendNow={(kind, text, list) => {
+            if (isHomeReset(text)) return void onReset().catch((e) => failedSend(runnerId, sessionId, (e as Error).message));
+            sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" });
           }}
           onStop={async () => {
             await rpc(runnerId, "interrupt", { sessionId });
