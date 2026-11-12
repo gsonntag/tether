@@ -280,6 +280,8 @@ export interface Ops {
   textingTest: { args: {}; result: null };
   /** What a short link's code (`#/l/<code>`, runner modules/links) opens on this runner (the browser takes the runner to be the one it asked); null: not one of its codes, or expired. */
   resolveLink: { args: { code: string }; result: { sessionId: string } | null };
+  /** The session's short-link code on this runner (made, or its own renewed), for the address bar; null when none can be kept. */
+  linkFor: { args: { sessionId: string }; result: { code: string } | null };
   /** Messaging connectors (iMessage, Discord, …; SPEC §11 Texting): each one's settings and status. Never a secret. */
   messagingStatus: { args: {}; result: MessagingStatus };
   /** Changes one connector's settings (`values`: its forms' inputs; an empty string clears one) or turns it on or off. Its link restarts. */

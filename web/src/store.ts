@@ -8,7 +8,9 @@ import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/p
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
+import { linkCache } from "./linkCache";
 import { startPresence, tellPresence } from "./presence";
+import { openSession, parseRoute, shortenHash, startShortUrls } from "./route";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
 import { setHomeFolders, type Watching } from "./sessionList";
@@ -98,10 +100,16 @@ export function start() {
   /** the next runners frame follows our own (re)connect: every runner's lists may be stale */
   let afterHello = false;
   startPresence();
-  // A notification clicked while a Tether window is open: that window opens the session.
+  // The bar shows a session by its short link: codes come from its runner.
+  linkCache.setAsk((runnerId, sessionId) => rpc(runnerId, "linkFor", { sessionId }, 8_000).then((r) => r?.code ?? null));
+  startShortUrls();
+  // A notification clicked while a Tether window is open: that window opens the session (by its short link, when known).
   registerWorker((url) => {
     const at = url.indexOf("#");
-    if (at >= 0) location.hash = url.slice(at);
+    if (at < 0) return;
+    const r = parseRoute(url.slice(at));
+    if (r.page === "session") openSession(r.runnerId, r.sessionId);
+    else location.hash = url.slice(at);
   });
   on("hello", (m) => {
     set((s) => ({ user: m.user, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
@@ -121,6 +129,11 @@ export function start() {
     saveKnown(runners);
     setHomeFolders(runners);
     set({ runners });
+    // A runner that came online may give the open session its short link now.
+    if (runners.some((r) => r.online && !before.find((b) => b.id === r.id)?.online)) {
+      linkCache.retrySoon();
+      shortenHash();
+    }
     // A runner that connected (or came back) hears of this device's subscription.
     void syncPush(get().pushKey, runners.filter((r) => r.online && (back.includes(r.id) || !before.find((b) => b.id === r.id)?.online)).map((r) => r.id));
   });

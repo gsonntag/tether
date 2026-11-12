@@ -200,6 +200,25 @@ describe("resolveLink op", () => {
   });
 });
 
+describe("linkFor op", () => {
+  test("one stable code per session, renewed each time; none for a bad id", async () => {
+    const ops = new OpRegistry();
+    const clock = { t: 0 };
+    const links = new ShortLinks(undefined, () => clock.t);
+    await linksModule.start({ ops, links, runnerId: "box" } as any);
+    const a = (await ops.handle("linkFor", { sessionId: "claude:a" })) as any;
+    expect(a.ok).toBe(true);
+    const code = a.data.code;
+    clock.t = 6 * DAY;
+    expect(await ops.handle("linkFor", { sessionId: "claude:a" })).toEqual({ ok: true, data: { code } });
+    clock.t = 12 * DAY;
+    expect(await ops.handle("resolveLink", { code })).toEqual({ ok: true, data: { sessionId: "claude:a" } });
+    expect(((await ops.handle("linkFor", { sessionId: "codex:b" })) as any).data.code).not.toBe(code);
+    expect(await ops.handle("linkFor", { sessionId: "" })).toEqual({ ok: true, data: null });
+    expect(await ops.handle("linkFor", {})).toEqual({ ok: true, data: null });
+  });
+});
+
 describe("texting", () => {
   test("a text's link is the short one", async () => {
     const texts: string[] = [];

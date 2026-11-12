@@ -1,6 +1,6 @@
 // A short link (`#/l/<code>`, runner modules/links): the code doesn't say which runner made it, so
 // every connected runner is asked (over the signed-in rpc, so it opens nothing the person couldn't
-// already) and the first that knows it wins. The page then becomes the session's own #/s/… in place.
+// already) and the first that knows it wins. The page then shows the session, keeping its short URL.
 //
 // Only a runner's real answer is a "no": a dropped link, a runner restarting or a relay that lost it
 // is asked again once the link is back (or the runner is), so a good link never reads as expired.
